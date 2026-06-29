@@ -139,10 +139,11 @@ class TestConventions:
         """A convention renders only for a target it lists — broad or specific."""
         loader = OntologyLoader()
         ontology = loader.load("finance")
-        # finance's sign convention targets `extraction` (broad) + the SPECIFIC
-        # `validation:sign_conventions` — NOT every validation.
+        # finance's sign convention targets `extraction` (broad) + `qa` (broad, the
+        # cockpit Q&A agent) + the SPECIFIC `validation:sign_conventions` — NOT every
+        # validation.
         assert loader.format_conventions_for_prompt(ontology, "extraction")
-        assert loader.format_conventions_for_prompt(ontology, "qa") == ""
+        assert loader.format_conventions_for_prompt(ontology, "qa")
         # Broad `validation` (no qualifier) does NOT match the scoped target.
         assert loader.format_conventions_for_prompt(ontology, "validation") == ""
         # The named validation gets it; an unrelated one does not.

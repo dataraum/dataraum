@@ -9,6 +9,12 @@ vi.mock("#/config", () => ({
 	config: { dataraumWorkspaceId: "ws-test", anthropicApiKey: "k" },
 }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
+// query.ts reads the workspace vertical (for DAT-645 conventions) via the cockpit
+// registry, which transitively pulls the bun-SQL client — stub it so the unit
+// import stays node-resolvable.
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspaceRow: async () => ({ vertical: "finance" }),
+}));
 
 // findById drives reuse classification; the other library exports exist only so
 // snippet-search (pulled via query.ts) imports cleanly.

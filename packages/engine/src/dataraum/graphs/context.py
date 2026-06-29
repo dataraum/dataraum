@@ -339,6 +339,12 @@ class GraphExecutionContext:
     # long-format data where field_mappings is empty. None when no vertical.
     concept_vocabulary: str | None = None
 
+    # Vertical conventions for the extraction consumer (DAT-645): verbatim,
+    # LLM-facing domain guidance (e.g. the sign/natural-balance rule) the SQL
+    # agent applies when authoring a measure. Opaque to the engine — see
+    # OntologyConvention. Empty string when the vertical declares none.
+    conventions: str = ""
+
     # Metadata
     built_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -796,12 +802,17 @@ def build_execution_context(
     # is empty for the P&L concepts; serving the ontology lets the agent ground which
     # discriminator VALUES are revenue/cogs/opex from the value-sets it's now fed.
     concept_vocabulary: str | None = None
+    # Vertical conventions for the EXTRACTION consumer (DAT-645) — the sign rule
+    # etc. piped verbatim so the SQL agent grounds a credit-normal measure positive.
+    conventions: str = ""
     if vertical:
         try:
             from dataraum.analysis.semantic.ontology import OntologyLoader
 
-            ontology = OntologyLoader().load(vertical)
+            loader = OntologyLoader()
+            ontology = loader.load(vertical)
             concept_vocabulary = _format_concept_vocabulary(ontology)
+            conventions = loader.format_conventions_for_prompt(ontology, "extraction")
         except Exception as e:
             logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
 
@@ -1084,6 +1095,7 @@ def build_execution_context(
         enriched_views=enriched_view_contexts,
         field_mappings=field_mappings,
         concept_vocabulary=concept_vocabulary,
+        conventions=conventions,
     )
 
 

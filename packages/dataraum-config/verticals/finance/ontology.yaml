@@ -276,3 +276,43 @@ concepts:
     temporal_behavior: point_in_time
     typical_role: measure
     unit_from_concept: currency
+
+# Domain conventions, piped VERBATIM to any SQL-authoring agent (extraction +
+# validation) — DAT-645. The engine parses only the generic envelope (id /
+# targets / statement / concept_groups) and lints that group members are declared
+# concepts; it never interprets "sign" or "credit_normal" — those are opaque
+# labels the LLM reads. Single source of truth: validations/sign_conventions.yaml
+# consumes this block instead of re-declaring its own account lists, so the
+# extraction and validation paths can no longer disagree about sign.
+conventions:
+    # Scoped routing: ALL extraction (every measure needs a sign), but only the
+    # sign_conventions VALIDATION — a sign rule is noise in unrelated checks like a
+    # raw debit=credit trial-balance test (qa = fast-follow).
+  - id: sign_natural_balance
+    targets: [extraction, "validation:sign_conventions"]
+    statement: >
+      Express every monetary measure in its natural-balance direction so a healthy
+      value reads POSITIVE. By account family: asset and expense accounts are
+      DEBIT-normal (natural balance = SUM(debit) - SUM(credit)); liability, equity,
+      revenue, and income accounts are CREDIT-normal (natural balance = SUM(credit) -
+      SUM(debit)). Sign a measure by the normal balance of the accounts it is drawn
+      from; the concept groups below list which measures are credit- vs debit-normal.
+      Exclude contra accounts (names containing accumulated, allowance, contra,
+      reserve) — they legitimately invert. A measure not listed has no fixed normal
+      balance (raw ledger columns such as debit, credit, transaction_amount, or period
+      balances) — sign it from its account context, not from this rule.
+    concept_groups:
+      credit_normal:
+        - revenue
+        - accounts_payable
+        - current_liabilities
+        - equity
+      debit_normal:
+        - cost_of_goods_sold
+        - operating_expense
+        - depreciation
+        - tax
+        - accounts_receivable
+        - inventory
+        - current_assets
+        - cash

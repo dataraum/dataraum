@@ -349,6 +349,38 @@ class TestValidationAgentGenerateSQL:
         assert generated.columns_used == ["debit", "credit"]
         assert generated.is_valid is True
 
+    def test_generate_sql_pipes_conventions(self, validation_agent, mock_provider):
+        """DAT-645: the vertical's conventions reach the prompt context verbatim."""
+        spec = ValidationSpec(
+            validation_id="sign_conventions",
+            name="Sign",
+            description="d",
+            category="financial",
+            check_type="constraint",
+        )
+        schema = {
+            "table_name": "transactions",
+            "duckdb_path": "typed_transactions",
+            "columns": [{"column_name": "debit", "data_type": "DECIMAL"}],
+        }
+        mock_provider.converse.return_value = Result.ok(
+            _make_tool_response(
+                {
+                    "sql": "SELECT 1 AS x",
+                    "explanation": "e",
+                    "columns_used": [],
+                    "tables_used": [],
+                    "can_validate": True,
+                    "skip_reason": None,
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema, conventions="CREDIT-NORMAL = credit - debit")
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert rendered_context["conventions"] == "CREDIT-NORMAL = credit - debit"
+
     def test_generate_sql_cannot_validate(self, validation_agent, mock_provider):
         """Test when LLM indicates validation cannot be performed."""
         spec = ValidationSpec(

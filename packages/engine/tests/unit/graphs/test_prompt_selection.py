@@ -75,6 +75,7 @@ def test_extract_node_uses_the_grounding_prompt_on_balanced_tier(monkeypatch) ->
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     rich = MagicMock()
     rich.field_mappings.mappings = {"revenue": object()}
+    rich.conventions = "CREDIT-NORMAL → credit - debit"  # DAT-645: vertical conventions
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
     agent._generate_sql(MagicMock(), graph, ctx, {})
@@ -83,3 +84,5 @@ def test_extract_node_uses_the_grounding_prompt_on_balanced_tier(monkeypatch) ->
     assert name == "graph_sql_generation"
     provider.get_model_for_tier.assert_called_with("balanced")
     assert prompt_ctx["rich_context"] == "META" and prompt_ctx["field_mappings"] == "MAPS"
+    # DAT-645: the vertical's conventions are piped verbatim into the prompt context.
+    assert prompt_ctx["vertical_conventions"] == "CREDIT-NORMAL → credit - debit"

@@ -5,6 +5,46 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-645 — vertical sign conventions wired into grounding + validation
+
+**Branch:** `feat/dat-645-vertical-conventions`.
+
+### What changed (grounding INPUT, not a new response shape)
+The finance ontology now declares a `conventions.sign_natural_balance` block
+(`verticals/finance/ontology.yaml`) stating that measures are expressed in their
+natural-balance direction (credit-normal = credit−debit, debit-normal = debit−credit)
+so they read positive. The engine pipes this verbatim into BOTH SQL-authoring agents:
+- **extraction** (`graphs/context.py` → `graphs/agent.py` `_generate_sql` → the
+  `graph_sql_generation` prompt's new `{vertical_conventions}` slot), and
+- **validation** (`validation_phase.py` → `validation/agent.py` → the `validation_sql`
+  prompt's new `{conventions}` slot).
+The engine stays domain-agnostic — it routes an opaque string; only the vertical YAML
+holds credit/debit vocabulary.
+
+### Why eval cares (calibration to run)
+- **Profitability tree should now GROUND and EXECUTE.** Before, `revenue` grounded with
+  a non-deterministic sign (often `SUM(debit)−SUM(credit)` = negative) and failed its
+  declared `value > 0`, cascading 8 dependent metrics to ungroundable. With the sign
+  convention fed in, `revenue` (and other credit-normal measures) should ground positive
+  and the gross_profit/margin/ebitda/net_income tree should reach `executed`. Re-run the
+  finance grounding calibration; expect MORE metrics executed, not fewer.
+- **`sign_conventions` validation SQL changed framing.** It no longer declares its own
+  `credit_normal_types`/`debit_normal_types` lists or expects `revenue ≤ 0` (net-debit).
+  It now consumes the shared convention and checks **natural balance ≥ 0**. If eval holds
+  a fixed ground-truth SQL/snapshot for `sign_conventions`, it will diverge — update it.
+  The pass/fail outcome on clean data is unchanged (still ~0 violations).
+
+### Thresholds / new fields
+None. No score thresholds, no new stored response fields — this changes LLM prompt
+INPUT (an extra `<domain_conventions>` block), not engine output shape.
+
+### testdata hints
+Any finance fixture exercising the profitability tree is the regression: revenue should
+ground positive and the margin metrics should execute. A vertical without a `conventions`
+block is unaffected (the block renders empty).
+
+---
+
 ## DAT-643 — formula/constant authoring is fully deterministic (shadow + LLM fallback retired)
 
 **Branch:** `refactor/dat-643-retire-shadow`.

@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.config import load_all_validation_specs
 from dataraum.analysis.validation.db_models import ValidationResultRecord
@@ -174,13 +175,25 @@ class ValidationPhase(BasePhase):
             )
         table_names = ", ".join(t["table_name"] for t in schema.get("tables", []))
 
+        # DAT-645: the vertical's conventions, piped verbatim into the SQL
+        # generation of the validations they target. A convention is routed
+        # PER-SPEC (qualifier = the validation id), so a sign rule reaches only the
+        # validations that name it (e.g. `validation:sign_conventions`) and stays
+        # out of unrelated checks. Same source of truth the graph agent uses for
+        # extraction. Empty when the vertical declares none.
+        ontology_loader = OntologyLoader()
+        ontology = ontology_loader.load(vertical) if vertical else None
+
         # bind → execute per artifact
         results: list[ValidationResult] = []
         for validation_id, spec in specs.items():
             artifact = artifacts[validation_id]
 
+            conventions = ontology_loader.format_conventions_for_prompt(
+                ontology, "validation", qualifier=validation_id
+            )
             generated, bind_failure = agent.bind_validation(
-                ctx.duckdb_conn, table_ids, spec, schema
+                ctx.duckdb_conn, table_ids, spec, schema, conventions=conventions
             )
             if bind_failure is not None:
                 # Ungroundable: stays declared, reason on the row.

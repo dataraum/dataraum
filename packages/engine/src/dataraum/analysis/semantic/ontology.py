@@ -186,29 +186,35 @@ class OntologyLoader:
         return "\n".join(lines)
 
     def format_conventions_for_prompt(
-        self, ontology: OntologyDefinition | None, target: str
+        self, ontology: OntologyDefinition | None, target: str, qualifier: str | None = None
     ) -> str:
         """Render the vertical's conventions for one consumer (DAT-645).
 
         Returns the verbatim ``statement`` plus each ``concept_groups`` entry, for
-        every convention whose ``targets`` include ``target`` (e.g. ``extraction``
-        or ``validation``). The engine routes by the generic ``target`` label only
-        and emits the content as-is — it never interprets the group labels or the
-        statement. Empty string when nothing applies, so the prompt omits the
-        section entirely.
+        every convention whose ``targets`` include this consumer. A target may be
+        BROAD (``"validation"`` — every validation) or SPECIFIC
+        (``"validation:sign_conventions"`` — only that spec); ``qualifier`` carries
+        the specific id so a convention reaches ONLY the consumers it names. This
+        keeps an irrelevant convention (e.g. a sign rule) out of unrelated prompts
+        (e.g. a raw debit=credit check) — relevance is the vertical's call, not the
+        engine's. The engine routes by the generic label only; it never interprets
+        the group labels or the statement. Empty string when nothing applies.
 
         Args:
             ontology: Ontology definition, or None.
-            target: Consumer label to filter conventions by.
+            target: Consumer label (e.g. ``"extraction"``, ``"validation"``).
+            qualifier: Optional specific id (e.g. a validation's id) — a convention
+                also matches if its targets include ``f"{target}:{qualifier}"``.
 
         Returns:
             Formatted conventions text, or "" when none target this consumer.
         """
         if ontology is None or not ontology.conventions:
             return ""
+        specific = f"{target}:{qualifier}" if qualifier else None
         blocks: list[str] = []
         for conv in ontology.conventions:
-            if target not in conv.targets:
+            if target not in conv.targets and (specific is None or specific not in conv.targets):
                 continue
             lines = [conv.statement.strip()]
             for group, members in conv.concept_groups.items():

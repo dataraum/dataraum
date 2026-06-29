@@ -285,8 +285,11 @@ concepts:
 # consumes this block instead of re-declaring its own account lists, so the
 # extraction and validation paths can no longer disagree about sign.
 conventions:
+    # Scoped routing: ALL extraction (every measure needs a sign), but only the
+    # sign_conventions VALIDATION — a sign rule is noise in unrelated checks like a
+    # raw debit=credit trial-balance test (qa = fast-follow).
   - id: sign_natural_balance
-    targets: [extraction, validation]   # generic consumer labels (qa = fast-follow)
+    targets: [extraction, "validation:sign_conventions"]
     statement: >
       Express every monetary measure in its natural-balance direction so a healthy
       value reads POSITIVE. By account family: asset and expense accounts are

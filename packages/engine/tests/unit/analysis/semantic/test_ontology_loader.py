@@ -136,12 +136,44 @@ class TestConventions:
         assert "debit_normal:" in out and "cost_of_goods_sold" in out
 
     def test_conventions_routed_by_target(self) -> None:
-        """A convention only renders for a target listed in its `targets`."""
+        """A convention renders only for a target it lists — broad or specific."""
         loader = OntologyLoader()
         ontology = loader.load("finance")
-        # finance's sign convention targets extraction + validation, not qa.
-        assert loader.format_conventions_for_prompt(ontology, "validation")
+        # finance's sign convention targets `extraction` (broad) + the SPECIFIC
+        # `validation:sign_conventions` — NOT every validation.
+        assert loader.format_conventions_for_prompt(ontology, "extraction")
         assert loader.format_conventions_for_prompt(ontology, "qa") == ""
+        # Broad `validation` (no qualifier) does NOT match the scoped target.
+        assert loader.format_conventions_for_prompt(ontology, "validation") == ""
+        # The named validation gets it; an unrelated one does not.
+        assert loader.format_conventions_for_prompt(
+            ontology, "validation", qualifier="sign_conventions"
+        )
+        assert (
+            loader.format_conventions_for_prompt(ontology, "validation", qualifier="trial_balance")
+            == ""
+        )
+
+    def test_qualifier_matches_specific_target(self) -> None:
+        """A `target:qualifier` target is reached only with the matching qualifier."""
+        loader = OntologyLoader()
+        ont = OntologyDefinition(
+            **self._ontology(
+                [
+                    {
+                        "id": "c",
+                        "targets": ["validation:sign_conventions"],
+                        "statement": "rule",
+                        "concept_groups": {},
+                    }
+                ]
+            )
+        )
+        assert loader.format_conventions_for_prompt(ont, "validation") == ""
+        assert loader.format_conventions_for_prompt(ont, "validation", qualifier="other") == ""
+        assert loader.format_conventions_for_prompt(
+            ont, "validation", qualifier="sign_conventions"
+        )
 
     def test_format_conventions_none(self) -> None:
         assert OntologyLoader().format_conventions_for_prompt(None, "extraction") == ""

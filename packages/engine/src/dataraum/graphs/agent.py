@@ -76,7 +76,9 @@ def _ordered_dep_steps(graph: TransformationGraph, output_step: GraphStep) -> li
         if step_id in done:
             return
         if step_id in on_path:
-            raise ValueError(f"formula '{output_step.step_id}' has a dependency cycle at '{step_id}'")
+            raise ValueError(
+                f"formula '{output_step.step_id}' has a dependency cycle at '{step_id}'"
+            )
         on_path.add(step_id)
         step = graph.steps.get(step_id)
         if step is not None:

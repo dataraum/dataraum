@@ -33,6 +33,7 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { z } from "zod";
 
 import { config } from "../config";
+import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { findById } from "../db/metadata/snippet-library";
 import { saveQuerySnippet } from "../db/metadata/snippet-writer";
 import {
@@ -48,7 +49,7 @@ import {
 	MODEL,
 	QUERY_SUBAGENT_MAX_ITERATIONS,
 } from "../llm";
-import { getQueryInstructions } from "../prompts";
+import { buildConventionsBlock, getQueryInstructions } from "../prompts";
 import {
 	AgentActionableError,
 	asAgentError,
@@ -571,6 +572,7 @@ export async function querySubAgent(
 		driversBlock,
 		vocabularyBlock,
 		nearUniqueColumns,
+		workspace,
 	] = await Promise.all([
 		buildSchemaBlock(),
 		buildEntitiesBlock(),
@@ -579,9 +581,20 @@ export async function querySubAgent(
 		buildDriversBlock(),
 		buildVocabularyBlock(),
 		loadNearUniqueColumns(),
+		resolveActiveWorkspaceRow(),
 	]);
 
-	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}`;
+	// DAT-645: the vertical's conventions (e.g. the sign / natural-balance rule),
+	// piped verbatim — the same source of truth the engine's extraction/validation
+	// agents use, now reaching the third SQL author. Empty (section omitted) when
+	// the vertical declares none or none target `qa`. Reused snippets are already
+	// sign-correct from extraction; this steers NEW SQL composed for a concept that
+	// has no snippet yet.
+	const conventionsBlock = await buildConventionsBlock(workspace.vertical);
+
+	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${
+		conventionsBlock ? `\n\n${conventionsBlock}` : ""
+	}`;
 
 	// Per-invocation capture cell — the run_steps tool writes the last successful
 	// validation (and the last failure) here, so it's isolated across concurrent

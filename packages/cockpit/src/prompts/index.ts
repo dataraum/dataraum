@@ -3,6 +3,7 @@
 // with the agents that use them. Per-agent prompt builders export from their own
 // module.
 
+export { buildConventionsBlock } from "./conventions";
 export {
 	getFrameCyclesInstructions,
 	getFrameInstructions,

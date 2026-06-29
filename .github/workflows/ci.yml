@@ -154,9 +154,6 @@ jobs:
 
     docs:
         runs-on: ubuntu-latest
-        defaults:
-            run:
-                working-directory: packages/engine
         if: >-
             github.event_name == 'pull_request' ||
             (github.event_name == 'push' && github.ref == 'refs/heads/main')

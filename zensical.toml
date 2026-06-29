@@ -1,0 +1,26 @@
+[project]
+site_name = "DataRaum"
+site_description = "The understanding layer that grounds a business's operating model in its own data"
+site_url = "https://dataraum.github.io/dataraum"
+docs_dir = "docs"
+
+# Nav grows as pages land. Concept-first ordering; tech architecture is a leaf.
+nav = [
+  "index.md",
+  { "Getting Started" = [
+    "getting-started/overview.md",
+  ] },
+  { "Concepts" = [
+    "concepts/approach.md",
+    "concepts/the-journey.md",
+    "concepts/pipeline.md",
+    "concepts/learnable-surface.md",
+    "concepts/measurement.md",
+  ] },
+  { "Under the hood" = [
+    "platform/architecture.md",
+  ] },
+  { "Vision" = [
+    "vision/architecture-future.md",
+  ] },
+]

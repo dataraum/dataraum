@@ -1,4 +1,13 @@
-# Architecture
+# Architecture (vision)
+
+!!! warning "This is the north-star, not the current system"
+    This document describes the **target** architecture — the design DataRaum is
+    converging on. It is kept as a record of intent, not as a description of what
+    runs today. Parts of it are built, parts are partial, and parts (the `simulate`
+    stage, the `canonical` lifecycle state, the endorsement workflow) are not built
+    at all. **For what the platform actually does today, start at the
+    [Overview](../getting-started/overview.md) and the
+    [Platform](../platform/architecture.md) section.**
 
 *dataraum — target architecture, May 2026*
 

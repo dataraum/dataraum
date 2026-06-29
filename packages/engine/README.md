@@ -132,12 +132,13 @@ uv run python -m dataraum.worker.main
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — system design and pipeline overview
-- [Pipeline](docs/pipeline.md) — 19-phase pipeline reference
-- [Entropy](docs/entropy.md) — uncertainty quantification system
-- [Data Model](docs/data-model.md) — metadata schema
-- [Configuration](docs/configuration.md) — config directory reference
-- [Contributing](docs/contributing.md) — development setup and patterns
+Platform docs live at the workspace root in [`docs/`](../../docs/index.md) (published via
+Zensical). The engine's pipeline, entropy/measurement model, and journey are covered there:
+
+- [Pipeline & phases](../../docs/concepts/pipeline.md)
+- [Measurement & detectors](../../docs/concepts/measurement.md)
+- [The journey](../../docs/concepts/the-journey.md)
+- [Platform architecture](../../docs/platform/architecture.md)
 
 ## License
 

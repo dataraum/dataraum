@@ -506,6 +506,13 @@ class TestComposeGroundingFree:
         with pytest.raises(ValueError, match="days_in_period"):
             self._agent()._compose_grounding_free(graph.get_output_step(), graph, {}, {})
 
+    def test_formula_without_expression_fails_loud(self) -> None:
+        # A FORMULA step with no expression is a malformed graph (loader defect) —
+        # born-loud, never a silent fall-through to the LLM.
+        graph = _formula_with_deps("", [])
+        with pytest.raises(ValueError, match="no expression"):
+            self._agent()._compose_grounding_free(graph.get_output_step(), graph, {}, {})
+
 
 class TestDeterministicAuthoringEndToEnd:
     """execute() authors a formula/constant deterministically — the LLM is never called

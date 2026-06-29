@@ -5,6 +5,35 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-643 — formula/constant authoring is fully deterministic (shadow + LLM fallback retired)
+
+**Branch:** `refactor/dat-643-retire-shadow`.
+
+### What changed (run behavior, NOT a detector/response shape)
+Metric grounding's formula/constant path no longer touches the LLM at all. DAT-636
+had already made `formula_composer` the primary author but kept the LLM running as a
+comparison **shadow** and left a whole-graph **fallback** for a formula whose deps
+weren't cached. Both are deleted (`graphs/agent.py`): `execute()` now branches on the
+authored node's type — FORMULA/CONSTANT compose deterministically via
+`_compose_grounding_free` (born-loud `Result.fail` on a missing dep / unresolved
+constant / malformed expression), EXTRACT is the sole LLM authoring surface.
+`_generate_sql` is extract-only and the `graph_formula_composition` prompt is removed.
+
+### Calibration to run
+**None — calibration-neutral.** No detector, threshold, phase output, or response
+field changed. Persisted snippets on the happy path are byte-identical (the
+deterministic composer was already the source of truth). The only behavioral delta is
+on the FAILURE path: a key mismatch between warm-mint and per-metric lookup now
+honest-fails the formula instead of an LLM re-deriving a shared extract — so grounding
+becomes *more* deterministic, never less. Recall/precision cannot regress.
+
+### testdata hints
+None. The natural regression is the finance-clean profitability tree: `revenue`
+authored exactly once (one `graph_sql_generation` dump), `gross_profit`/`gross_margin`/
+`ebitda` composed deterministically over it — no per-formula re-authoring.
+
+---
+
 ## DAT-641 — concurrent-typing DuckLake commit conflict is now Temporal-retryable
 
 **Branch:** `worktree-dat-641`.

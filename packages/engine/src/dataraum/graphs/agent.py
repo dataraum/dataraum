@@ -4,8 +4,10 @@ Pipeline per graph:
 1. Load graph specification (YAML with accounting context)
 2. Analyze actual data schema (columns, types)
 3. Look up cached SQL snippets from the knowledge base
-4. Use LLM to generate executable SQL (with snippet hints)
-5. Cache generated SQL in-memory + save as snippets for cross-agent reuse
+4. Author the output node by type (DAT-643): a FORMULA/CONSTANT is composed
+   DETERMINISTICALLY over already-grounded deps (no LLM); an EXTRACT is the sole
+   LLM authoring surface (or a cache-assemble when already minted on a prior run)
+5. Save as snippets for cross-agent reuse
 6. Execute SQL and capture results
 """
 

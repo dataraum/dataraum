@@ -469,7 +469,11 @@ class TestWarmingPrimesCache:
             {
                 "rev": _wm_extract("rev", "revenue"),
                 "cogs": _wm_extract("cogs", "cost_of_goods_sold"),
-                "gp": _wm_formula("gp", "revenue - cogs", ["rev", "cogs"]),
+                # A formula's operands ARE its dependency step_ids (the deterministic
+                # composer references each as `(SELECT value FROM <step_id>)`) — exactly
+                # as real metric graphs author them (gross_profit.yaml: `revenue -
+                # cost_of_goods_sold` over deps named revenue/cost_of_goods_sold).
+                "gp": _wm_formula("gp", "rev - cogs", ["rev", "cogs"]),
             },
         )
         net = _wm_graph(
@@ -478,9 +482,7 @@ class TestWarmingPrimesCache:
                 "rev2": _wm_extract("rev2", "revenue"),
                 "cogs2": _wm_extract("cogs2", "cost_of_goods_sold"),
                 "opex": _wm_extract("opex", "operating_expense"),
-                "ni": _wm_formula(
-                    "ni", "revenue - cogs - operating_expense", ["rev2", "cogs2", "opex"]
-                ),
+                "ni": _wm_formula("ni", "rev2 - cogs2 - opex", ["rev2", "cogs2", "opex"]),
             },
         )
 

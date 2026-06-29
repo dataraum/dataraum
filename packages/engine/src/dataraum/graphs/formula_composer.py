@@ -8,11 +8,12 @@ the final SQL is therefore mechanical: substitute each operand with
 ``(SELECT value FROM <step_id>)``, guard division denominators with ``NULLIF`` so
 a zero divisor yields NULL (never a runtime error), and alias the result ``value``.
 
-This is the deterministic counterpart to the LLM ``graph_formula_composition``
-prompt. It cannot fabricate a missing dependency (an unknown operand fails loud),
-cannot leak prompt placeholders, and is byte-for-byte reproducible — so it
-dissolves the fragilities of the LLM formula path (round-trip, fabrication,
-cross-run drift) by construction. The expression grammar is closed: identifiers
+This is the SOLE formula/constant authoring path (DAT-643 retired the LLM
+``graph_formula_composition`` prompt and its comparison shadow). It cannot fabricate a
+missing dependency (an unknown operand fails loud), cannot leak prompt placeholders, and
+is byte-for-byte reproducible — so it dissolves the fragilities of the old LLM formula
+path (round-trip, fabrication, cross-run drift) by construction. The expression grammar
+is closed: identifiers
 (dependency step_ids), numeric literals, ``+ - * /``, unary minus, and
 parentheses. Anything else (a call, an attribute, an unknown name) is a malformed
 catalogue formula and is raised, not guessed.

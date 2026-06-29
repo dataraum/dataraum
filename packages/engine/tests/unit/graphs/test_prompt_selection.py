@@ -1,10 +1,9 @@
-"""Unit tests for per-node prompt selection in _generate_sql (DAT-636 P2).
+"""The LLM authoring surface is a single leaf EXTRACT (DAT-643).
 
-The authoring pass runs one single-output mini-graph per node, so the output
-step IS the node being authored. A FORMULA node gets the lean composition prompt
-(graph_formula_composition) on the balanced/Sonnet tier with NO grounding evidence
-(Sonnet for now — the P2 smoke showed Haiku leaked placeholders); an EXTRACT node gets
-the full grounding prompt (graph_sql_generation), also on balanced/Sonnet.
+``_generate_sql`` is reached ONLY for an EXTRACT node: a FORMULA/CONSTANT is composed
+deterministically and can never call the LLM. So there is no longer a per-node prompt
+*selection* — the one prompt is the full grounding prompt (``graph_sql_generation``) on
+the balanced/Sonnet tier, fed the dataset context + field mappings.
 """
 
 from __future__ import annotations
@@ -52,64 +51,12 @@ def _mocks() -> tuple[MagicMock, MagicMock]:
     provider = MagicMock()
     provider.get_model_for_tier.side_effect = lambda tier: f"model-{tier}"
     # No tool_calls → _generate_sql returns Result.fail AFTER prompt selection, which
-    # is all these tests assert.
+    # is all this test asserts.
     provider.converse.return_value.unwrap.return_value = MagicMock(tool_calls=[])
     return renderer, provider
 
 
-def test_formula_node_selects_lean_formula_prompt_on_balanced_tier() -> None:
-    gp = GraphStep(
-        step_id="gross_profit",
-        step_type=StepType.FORMULA,
-        expression="revenue - cost_of_goods_sold",
-        depends_on=["revenue", "cost_of_goods_sold"],
-        output_step=True,
-    )
-    graph = _graph("gross_profit", {"gross_profit": gp})
-    renderer, provider = _mocks()
-    agent = _agent_with(renderer, provider)
-    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")  # no rich_context
-
-    agent._generate_sql(
-        MagicMock(),
-        graph,
-        ctx,
-        {},
-        cached_snippets={"revenue": {"sql": "SELECT 1 AS value", "description": "rev"}},
-    )
-
-    name, prompt_ctx = renderer.render_split.call_args.args
-    assert name == "graph_formula_composition"
-    provider.get_model_for_tier.assert_called_with("balanced")
-    # Lean context: deps + graph, NONE of the grounding evidence.
-    assert set(prompt_ctx) == {"graph_yaml", "parameters", "dependency_steps"}
-    assert "rich_context" not in prompt_ctx and "field_mappings" not in prompt_ctx
-
-
-def test_constant_node_selects_lean_prompt_without_grounding_evidence() -> None:
-    """A CONSTANT (e.g. days_in_period) is grounding-free like a formula — it takes
-    the lean prompt and must NOT require rich_context/field_mappings."""
-    cst = GraphStep(
-        step_id="days_in_period",
-        step_type=StepType.CONSTANT,
-        parameter="days_in_period",
-        output_step=True,
-    )
-    graph = _graph("days_in_period", {"days_in_period": cst})
-    renderer, provider = _mocks()
-    agent = _agent_with(renderer, provider)
-    # No rich_context — a constant needs none. (Pre-fix this raised Result.fail.)
-    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")
-
-    agent._generate_sql(MagicMock(), graph, ctx, {"days_in_period": 30})
-
-    name, prompt_ctx = renderer.render_split.call_args.args
-    assert name == "graph_formula_composition"
-    provider.get_model_for_tier.assert_called_with("balanced")
-    assert set(prompt_ctx) == {"graph_yaml", "parameters", "dependency_steps"}
-
-
-def test_extract_node_selects_grounding_prompt_on_balanced_tier(monkeypatch) -> None:
+def test_extract_node_uses_the_grounding_prompt_on_balanced_tier(monkeypatch) -> None:
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
     monkeypatch.setattr(
         "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"

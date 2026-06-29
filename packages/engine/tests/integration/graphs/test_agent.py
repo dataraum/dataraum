@@ -17,7 +17,6 @@ import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.core.models.base import Result
-from dataraum.graphs import agent as agent_module
 from dataraum.graphs.agent import (
     ExecutionContext,
     GeneratedCode,
@@ -455,8 +454,12 @@ def _constant_graph() -> TransformationGraph:
     )
 
 
-class TestAuthorGroundingFree:
-    """Deterministic authoring (DAT-636 step 3) — formula + constant, no LLM."""
+class TestComposeGroundingFree:
+    """Deterministic composition — formula + constant, no LLM (DAT-643).
+
+    ``_compose_grounding_free`` is the SOLE formula/constant authoring path: it
+    composes from already-grounded deps or fails born-loud — it NEVER falls back to
+    the LLM (``execute`` only ever calls it for a FORMULA/CONSTANT output step)."""
 
     @staticmethod
     def _agent() -> GraphAgent:
@@ -470,36 +473,50 @@ class TestAuthorGroundingFree:
             "revenue": {"sql": "SELECT 1000 AS value", "description": ""},
             "cost_of_goods_sold": {"sql": "SELECT 600 AS value", "description": ""},
         }
-        code = self._agent()._author_grounding_free(graph, cached, {})
-        assert code is not None
+        code = self._agent()._compose_grounding_free(
+            graph.get_output_step(), graph, cached, {}
+        )
         assert code.llm_model == "deterministic"
         assert code.final_sql == (
             "SELECT ((SELECT value FROM revenue) - (SELECT value FROM cost_of_goods_sold)) AS value"
         )
         assert {s["step_id"] for s in code.steps} == {"revenue", "cost_of_goods_sold"}
 
-    def test_formula_with_missing_dep_falls_back_to_llm(self) -> None:
+    def test_formula_with_missing_dep_fails_loud(self) -> None:
         graph = _formula_with_deps(
             "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
         )
-        # cost_of_goods_sold not cached → deterministic authoring declines (None).
+        # cost_of_goods_sold not cached → born-loud ValueError, NEVER an LLM fallback.
         cached = {"revenue": {"sql": "SELECT 1000 AS value", "description": ""}}
-        assert self._agent()._author_grounding_free(graph, cached, {}) is None
+        with pytest.raises(ValueError, match="cost_of_goods_sold"):
+            self._agent()._compose_grounding_free(graph.get_output_step(), graph, cached, {})
 
     def test_constant_composed_from_resolved_param(self) -> None:
-        code = self._agent()._author_grounding_free(_constant_graph(), {}, {"days_in_period": 30})
-        assert code is not None
+        graph = _constant_graph()
+        code = self._agent()._compose_grounding_free(
+            graph.get_output_step(), graph, {}, {"days_in_period": 30}
+        )
         assert code.llm_model == "deterministic"
         assert code.final_sql == "SELECT 30 AS value"
         assert code.steps == []
 
-    def test_extract_returns_none(self, sample_graph) -> None:
-        # sample_graph's output is an EXTRACT — genuinely needs LLM grounding.
-        assert self._agent()._author_grounding_free(sample_graph, {}, {}) is None
+    def test_constant_without_resolved_value_fails_loud(self) -> None:
+        graph = _constant_graph()
+        # No resolved value for the parameter → born-loud, not a silent None.
+        with pytest.raises(ValueError, match="days_in_period"):
+            self._agent()._compose_grounding_free(graph.get_output_step(), graph, {}, {})
+
+    def test_formula_without_expression_fails_loud(self) -> None:
+        # A FORMULA step with no expression is a malformed graph (loader defect) —
+        # born-loud, never a silent fall-through to the LLM.
+        graph = _formula_with_deps("", [])
+        with pytest.raises(ValueError, match="no expression"):
+            self._agent()._compose_grounding_free(graph.get_output_step(), graph, {}, {})
 
 
 class TestDeterministicAuthoringEndToEnd:
-    """execute() authors formula/constant deterministically and runs the LLM as a shadow."""
+    """execute() authors a formula/constant deterministically — the LLM is never called
+    (DAT-643 retired both the comparison shadow and the legacy whole-graph fallback)."""
 
     @staticmethod
     def _formula_snippets(session: Session) -> list:
@@ -513,7 +530,7 @@ class TestDeterministicAuthoringEndToEnd:
             if s.snippet_type == "formula"
         ]
 
-    def test_formula_authored_deterministically_not_from_llm(
+    def test_formula_authored_deterministically_never_calls_the_llm(
         self, session: Session, duckdb_with_data
     ):
         # The LLM mock would emit "SELECT 42 AS value"; the DETERMINISTIC path wins and
@@ -529,37 +546,9 @@ class TestDeterministicAuthoringEndToEnd:
         assert formulas[0].llm_model == "deterministic"
         assert formulas[0].sql == "SELECT 42.0 AS value"
         assert formulas[0].normalized_expression
-
-    def test_shadow_logs_agreement_with_llm(self, session: Session, duckdb_with_data, monkeypatch):
-        # LLM shadow returns 42, matching the deterministic 42.0 → agree.
-        agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
-        context = _make_execution_context(duckdb_with_data)
-        log = MagicMock()
-        monkeypatch.setattr(agent_module, "logger", log)
-
-        agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
-
-        shadow = [
-            c for c in log.info.call_args_list if c.args and c.args[0] == "formula_shadow_compare"
-        ]
-        assert len(shadow) == 1
-        assert shadow[0].kwargs["agree"] is True
-        assert shadow[0].kwargs["deterministic_value"] == 42.0
-
-    def test_shadow_flags_divergence(self, session: Session, duckdb_with_data, monkeypatch):
-        # LLM shadow returns 999, deterministic computes 42 → divergence flagged.
-        agent = _agent_with_sql(steps=[], final_sql="SELECT 999 AS value")
-        context = _make_execution_context(duckdb_with_data)
-        log = MagicMock()
-        monkeypatch.setattr(agent_module, "logger", log)
-
-        agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
-
-        shadow = [
-            c for c in log.info.call_args_list if c.args and c.args[0] == "formula_shadow_compare"
-        ]
-        assert len(shadow) == 1
-        assert shadow[0].kwargs["agree"] is False
+        # The structural guarantee: no LLM call at all for a formula — no shadow, no
+        # fallback. (The mock provider would have served SQL had it been asked.)
+        agent.provider.converse.assert_not_called()
 
 
 class TestGraphAgentSnippets:

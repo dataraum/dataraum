@@ -175,6 +175,19 @@ class TestConventions:
             ont, "validation", qualifier="sign_conventions"
         )
 
+    def test_broad_target_matches_even_with_qualifier(self) -> None:
+        """A BROAD `validation` target reaches every spec — the qualifier doesn't
+        narrow a convention that already opted into all of them."""
+        loader = OntologyLoader()
+        ont = OntologyDefinition(
+            **self._ontology(
+                [{"id": "c", "targets": ["validation"], "statement": "rule", "concept_groups": {}}]
+            )
+        )
+        # Broad target matches with OR without a qualifier.
+        assert loader.format_conventions_for_prompt(ont, "validation")
+        assert loader.format_conventions_for_prompt(ont, "validation", qualifier="anything")
+
     def test_format_conventions_none(self) -> None:
         assert OntologyLoader().format_conventions_for_prompt(None, "extraction") == ""
 

@@ -53,26 +53,37 @@ logger = get_logger(__name__)
 
 
 def _ordered_dep_steps(graph: TransformationGraph, output_step: GraphStep) -> list[str]:
-    """Transitive dependency step ids of ``output_step``, deps-before-dependents.
+    """``output_step``'s transitive dependency subgraph, deps-before-dependents.
 
     Depth-first post-order over ``depends_on`` (DAT-645): a step is appended only
-    after all its own deps, so the resulting list is a valid CTE materialization
-    order for a NESTED formula (an inner formula's snippet references its own
-    extract deps, which must be defined as earlier CTEs). A dep that is not a step
-    in ``graph`` (a leaf snippet supplied only via the cache, e.g. in a unit
-    fixture) is treated as a leaf with no further deps. Excludes ``output_step``.
+    after all its own deps, so the result is a valid CTE materialization order for a
+    NESTED formula (an inner formula's snippet references its own extract deps, which
+    must be defined as earlier CTEs). Visits only the transitive deps of
+    ``output_step`` — the output step itself is never in the list. A dep that is not a
+    step in ``graph`` (a leaf snippet supplied only via the cache, e.g. in a unit
+    fixture) is treated as a leaf with no further deps.
+
+    Raises:
+        ValueError: a ``depends_on`` cycle. The warm DAG already rejects cycles
+            (``node_warming.build_warm_dag``), so this only fires on a malformed graph
+            reaching the composer off that path — born-loud, not a silently-wrong order.
     """
     order: list[str] = []
-    seen: set[str] = set()
+    done: set[str] = set()
+    on_path: set[str] = set()
 
     def visit(step_id: str) -> None:
-        if step_id in seen:
+        if step_id in done:
             return
-        seen.add(step_id)
+        if step_id in on_path:
+            raise ValueError(f"formula '{output_step.step_id}' has a dependency cycle at '{step_id}'")
+        on_path.add(step_id)
         step = graph.steps.get(step_id)
         if step is not None:
             for dep in step.depends_on:
                 visit(dep)
+        on_path.discard(step_id)
+        done.add(step_id)
         order.append(step_id)
 
     for dep in output_step.depends_on:

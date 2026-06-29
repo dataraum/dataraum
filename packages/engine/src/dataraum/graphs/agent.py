@@ -531,6 +531,9 @@ class GraphAgent(LLMFeature):
             # DAT-616: feed back what prior runs learned for this concept — the
             # honest-fail reason + prior value→concept filter decisions.
             "prior_context": self._build_prior_context(session, graph, cached_snippets),
+            # DAT-645: the vertical's conventions (e.g. the sign/natural-balance
+            # rule), piped verbatim — the engine does not interpret them.
+            "vertical_conventions": context.rich_context.conventions,
         }
 
         # Render prompt with system/user split.

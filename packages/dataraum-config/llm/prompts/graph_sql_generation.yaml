@@ -143,6 +143,15 @@ system_prompt: |
   `sum` on a `point_in_time` column), trust `temporal_behavior` and note the reason in assumptions.
   </temporal_signals>
 
+  <domain_conventions>
+  The active vertical may supply authoritative conventions in the <domain_conventions> block of
+  the evidence. When present, they govern how a measure is computed or expressed and OVERRIDE any
+  default you would otherwise assume. Apply every convention whose terms match the concept you are
+  grounding, composing its rule into the SQL; a concept no convention mentions follows the default.
+  These are the vertical's words, not yours — honor them literally rather than substituting your
+  own domain assumptions.
+  </domain_conventions>
+
   <duckdb_dialect>
   CRITICAL DuckDB rules (violations cause runtime errors or silent wrongness):
   1. Table references: ALWAYS use the enriched views (enriched_*) when available in <data_schema>,
@@ -202,6 +211,10 @@ user_prompt: |
   <field_mappings>
   {field_mappings}
   </field_mappings>
+
+  <domain_conventions description="Authoritative vertical conventions to apply when grounding. Empty when the vertical declares none — then use the defaults.">
+  {vertical_conventions}
+  </domain_conventions>
 
   <graph_specification description="The single concept to ground — its standard_field, statement, and aggregation.">
   {graph_yaml}

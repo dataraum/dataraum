@@ -374,171 +374,129 @@ class TestGraphAgentVerifier:
         assert result.value.output_value == 0
 
 
-def _formula_graph() -> TransformationGraph:
-    """A single-output FORMULA graph whose composed SQL lives in final_sql.
+class TestComposeMetricFromDag:
+    """Per-metric composition from the DAG — no cross-metric formula reuse (DAT-646).
 
-    The expression is a bare constant (no operands) so it is self-consistent with
-    the empty depends_on and self-contained final_sql the round-trip test uses —
-    composer correctness over real multi-operand formulas is covered exhaustively
-    in test_formula_composer.py; this fixture only exercises the save-path.
-    """
-    return TransformationGraph(
-        graph_id="gross_profit",
-        version="1.0",
-        metadata=GraphMetadata(
-            name="Gross Profit",
-            description="",
-            category="test",
-            source=GraphSource.SYSTEM,
-            tags=[],
-        ),
-        output=OutputDef(output_type=OutputType.SCALAR, metric_id="gp"),
-        parameters=[],
-        steps={
-            "gp": GraphStep(
-                step_id="gp",
-                step_type=StepType.FORMULA,
-                expression="42",
-                depends_on=[],
-                output_step=True,
-            ),
-        },
-        interpretation=None,
-    )
-
-
-def _formula_with_deps(expression: str, depends_on: list[str]) -> TransformationGraph:
-    """A single formula output step (deps supplied via generated_code, not graph steps)."""
-    return TransformationGraph(
-        graph_id="margin",
-        version="1.0",
-        metadata=GraphMetadata(
-            name="Margin", description="", category="test", source=GraphSource.SYSTEM, tags=[]
-        ),
-        output=OutputDef(output_type=OutputType.SCALAR, metric_id="m"),
-        parameters=[],
-        steps={
-            "out": GraphStep(
-                step_id="out",
-                step_type=StepType.FORMULA,
-                expression=expression,
-                depends_on=depends_on,
-                output_step=True,
-            ),
-        },
-        interpretation=None,
-    )
-
-
-def _constant_graph() -> TransformationGraph:
-    """A single CONSTANT output step over a `days_in_period` parameter."""
-    from dataraum.graphs.models import ParameterDef
-
-    return TransformationGraph(
-        graph_id="dip",
-        version="1.0",
-        metadata=GraphMetadata(
-            name="DIP", description="", category="test", source=GraphSource.SYSTEM, tags=[]
-        ),
-        output=OutputDef(output_type=OutputType.SCALAR, metric_id="dip"),
-        parameters=[ParameterDef(name="days_in_period", param_type="integer", default=30)],
-        steps={
-            "out": GraphStep(
-                step_id="out",
-                step_type=StepType.CONSTANT,
-                parameter="days_in_period",
-                output_step=True,
-            ),
-        },
-        interpretation=None,
-    )
-
-
-class TestComposeGroundingFree:
-    """Deterministic composition — formula + constant, no LLM (DAT-643).
-
-    ``_compose_grounding_free`` is the SOLE formula/constant authoring path: it
-    composes from already-grounded deps or fails born-loud — it NEVER falls back to
-    the LLM (``execute`` only ever calls it for a FORMULA/CONSTANT output step)."""
+    Formulas/constants are composed HERE, not warmed or cached: an EXTRACT leaf uses
+    its warmed cached snippet; a FORMULA/CONSTANT is composed from THIS metric's graph.
+    So two metrics that share an arithmetic shape can no longer alias a formula snippet
+    (the net_margin/ebitda_margin collision). The composer returns ``None`` on a missing
+    leaf / malformed step (the caller honest-fails) — never the LLM."""
 
     @staticmethod
     def _agent() -> GraphAgent:
         return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
 
-    def test_formula_composed_from_cached_deps(self) -> None:
-        graph = _formula_with_deps(
-            "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
+    @staticmethod
+    def _ext(sid: str) -> GraphStep:
+        return GraphStep(
+            step_id=sid,
+            step_type=StepType.EXTRACT,
+            source=StepSource(standard_field=sid, statement="income_statement"),
+            aggregation="sum",
+        )
+
+    def _metric(self, graph_id: str, steps: dict[str, GraphStep]) -> TransformationGraph:
+        return TransformationGraph(
+            graph_id=graph_id,
+            version="1.0",
+            metadata=GraphMetadata(
+                name=graph_id, description="", category="profitability", source=GraphSource.SYSTEM
+            ),
+            output=OutputDef(output_type=OutputType.SCALAR),
+            steps=steps,
+        )
+
+    def test_formula_composed_from_cached_extract_leaves(self) -> None:
+        graph = self._metric(
+            "gross_profit",
+            {
+                "revenue": self._ext("revenue"),
+                "cost_of_goods_sold": self._ext("cost_of_goods_sold"),
+                "gp": GraphStep(
+                    step_id="gp",
+                    step_type=StepType.FORMULA,
+                    expression="revenue - cost_of_goods_sold",
+                    depends_on=["revenue", "cost_of_goods_sold"],
+                    output_step=True,
+                ),
+            },
         )
         cached = {
             "revenue": {"sql": "SELECT 1000 AS value", "description": ""},
             "cost_of_goods_sold": {"sql": "SELECT 600 AS value", "description": ""},
         }
-        code = self._agent()._compose_grounding_free(
-            graph.get_output_step(), graph, cached, {}
-        )
-        assert code.llm_model == "deterministic"
-        assert code.final_sql == (
+        code = self._agent()._compose_metric_from_dag(graph, cached, {})
+        assert code is not None
+        assert code.llm_model == "composed"
+        # Extract leaves use their cached snippet; the formula is COMPOSED, not looked up.
+        by_id = {s["step_id"]: s["sql"] for s in code.steps}
+        assert by_id["revenue"] == "SELECT 1000 AS value"
+        assert by_id["gp"] == (
             "SELECT ((SELECT value FROM revenue) - (SELECT value FROM cost_of_goods_sold)) AS value"
         )
-        assert {s["step_id"] for s in code.steps} == {"revenue", "cost_of_goods_sold"}
+        assert code.final_sql == "SELECT * FROM gp"
 
-    def test_formula_with_missing_dep_fails_loud(self) -> None:
-        graph = _formula_with_deps(
-            "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
+    def test_missing_extract_leaf_returns_none(self) -> None:
+        graph = self._metric(
+            "gross_profit",
+            {
+                "revenue": self._ext("revenue"),
+                "cost_of_goods_sold": self._ext("cost_of_goods_sold"),
+                "gp": GraphStep(
+                    step_id="gp",
+                    step_type=StepType.FORMULA,
+                    expression="revenue - cost_of_goods_sold",
+                    depends_on=["revenue", "cost_of_goods_sold"],
+                    output_step=True,
+                ),
+            },
         )
-        # cost_of_goods_sold not cached → born-loud ValueError, NEVER an LLM fallback.
+        # cost_of_goods_sold leaf absent → None (the caller honest-fails it as ungroundable).
         cached = {"revenue": {"sql": "SELECT 1000 AS value", "description": ""}}
-        with pytest.raises(ValueError, match="cost_of_goods_sold"):
-            self._agent()._compose_grounding_free(graph.get_output_step(), graph, cached, {})
+        assert self._agent()._compose_metric_from_dag(graph, cached, {}) is None
 
     def test_constant_composed_from_resolved_param(self) -> None:
-        graph = _constant_graph()
-        code = self._agent()._compose_grounding_free(
-            graph.get_output_step(), graph, {}, {"days_in_period": 30}
+        graph = self._metric(
+            "dip",
+            {
+                "out": GraphStep(
+                    step_id="out",
+                    step_type=StepType.CONSTANT,
+                    parameter="days_in_period",
+                    output_step=True,
+                )
+            },
         )
-        assert code.llm_model == "deterministic"
-        assert code.final_sql == "SELECT 30 AS value"
-        assert code.steps == []
+        code = self._agent()._compose_metric_from_dag(graph, {}, {"days_in_period": 30})
+        assert code is not None
+        assert code.steps[0]["sql"] == "SELECT 30 AS value"
+        assert code.final_sql == "SELECT * FROM out"
 
-    def test_constant_without_resolved_value_fails_loud(self) -> None:
-        graph = _constant_graph()
-        # No resolved value for the parameter → born-loud, not a silent None.
-        with pytest.raises(ValueError, match="days_in_period"):
-            self._agent()._compose_grounding_free(graph.get_output_step(), graph, {}, {})
+    def test_constant_without_value_returns_none(self) -> None:
+        graph = self._metric(
+            "dip",
+            {"out": GraphStep(step_id="out", step_type=StepType.CONSTANT, parameter="d", output_step=True)},
+        )
+        assert self._agent()._compose_metric_from_dag(graph, {}, {}) is None
 
-    def test_formula_without_expression_fails_loud(self) -> None:
-        # A FORMULA step with no expression is a malformed graph (loader defect) —
-        # born-loud, never a silent fall-through to the LLM.
-        graph = _formula_with_deps("", [])
-        with pytest.raises(ValueError, match="no expression"):
-            self._agent()._compose_grounding_free(graph.get_output_step(), graph, {}, {})
+    def test_formula_without_expression_returns_none(self) -> None:
+        graph = self._metric(
+            "bad",
+            {"out": GraphStep(step_id="out", step_type=StepType.FORMULA, expression="", output_step=True)},
+        )
+        assert self._agent()._compose_metric_from_dag(graph, {}, {}) is None
 
-    def test_nested_formula_materializes_transitive_extract_ctes(self) -> None:
-        """A formula-over-formula must materialize the INNER formula's extract deps as
-        CTEs too (DAT-645). operating_income = gross_profit - operating_expense, where
-        gross_profit = revenue - cost_of_goods_sold: gross_profit's snippet references
-        revenue/cogs, so those must be earlier CTEs or execution fails 'Table revenue
-        does not exist'. Direct deps alone are not enough."""
-
-        def _ext(sid: str) -> GraphStep:
-            return GraphStep(
-                step_id=sid,
-                step_type=StepType.EXTRACT,
-                source=StepSource(standard_field=sid, statement="income_statement"),
-                aggregation="sum",
-            )
-
-        graph = TransformationGraph(
-            graph_id="operating_income",
-            version="1.0",
-            metadata=GraphMetadata(
-                name="oi", description="", category="profitability", source=GraphSource.SYSTEM
-            ),
-            output=OutputDef(output_type=OutputType.SCALAR),
-            steps={
-                "revenue": _ext("revenue"),
-                "cost_of_goods_sold": _ext("cost_of_goods_sold"),
-                "operating_expense": _ext("operating_expense"),
+    def test_nested_formula_composes_inner_formula_per_metric(self) -> None:
+        """A formula-over-formula composes the INNER formula per-metric (DAT-646): the
+        intermediate gross_profit is composed HERE (not from a shared cache), and its
+        extract CTEs are materialized before it."""
+        graph = self._metric(
+            "operating_income",
+            {
+                "revenue": self._ext("revenue"),
+                "cost_of_goods_sold": self._ext("cost_of_goods_sold"),
+                "operating_expense": self._ext("operating_expense"),
                 "gross_profit": GraphStep(
                     step_id="gross_profit",
                     step_type=StepType.FORMULA,
@@ -554,72 +512,63 @@ class TestComposeGroundingFree:
                 ),
             },
         )
+        # Only the EXTRACT leaves are cached — gross_profit is NOT (composed per-metric).
         cached = {
             "revenue": {"sql": "SELECT 1000 AS value", "description": ""},
             "cost_of_goods_sold": {"sql": "SELECT 600 AS value", "description": ""},
             "operating_expense": {"sql": "SELECT 100 AS value", "description": ""},
-            "gross_profit": {
-                "sql": "SELECT ((SELECT value FROM revenue) - "
-                "(SELECT value FROM cost_of_goods_sold)) AS value",
-                "description": "",
-            },
         }
-
-        code = self._agent()._compose_grounding_free(graph.get_output_step(), graph, cached, {})
-
+        code = self._agent()._compose_metric_from_dag(graph, cached, {})
+        assert code is not None
         step_ids = [s["step_id"] for s in code.steps]
-        # The full transitive closure is materialized — not just the direct deps.
-        assert set(step_ids) == {
-            "revenue",
-            "cost_of_goods_sold",
-            "operating_expense",
-            "gross_profit",
-        }
-        # The inner formula CTE is defined AFTER its extract deps (valid order).
+        assert step_ids[-1] == "operating_income"  # output last
+        # The inner formula CTE is composed AFTER its extract deps (valid order).
         assert step_ids.index("gross_profit") > step_ids.index("revenue")
         assert step_ids.index("gross_profit") > step_ids.index("cost_of_goods_sold")
-        # final_sql composes the OUTPUT's direct deps (each a materialized CTE).
-        assert code.final_sql == (
+        by_id = {s["step_id"]: s["sql"] for s in code.steps}
+        assert by_id["gross_profit"] == (
+            "SELECT ((SELECT value FROM revenue) - (SELECT value FROM cost_of_goods_sold)) AS value"
+        )
+        assert by_id["operating_income"] == (
             "SELECT ((SELECT value FROM gross_profit) - "
             "(SELECT value FROM operating_expense)) AS value"
         )
+        assert code.final_sql == "SELECT * FROM operating_income"
 
+    def test_same_shape_metrics_compose_distinctly_no_alias(self) -> None:
+        """THE DAT-646 fix: two margins with the SAME arithmetic shape compose their own
+        SQL — no cross-metric formula aliasing (was: net_margin reused ebitda's CTE)."""
 
-class TestDeterministicAuthoringEndToEnd:
-    """execute() authors a formula/constant deterministically — the LLM is never called
-    (DAT-643 retired both the comparison shadow and the legacy whole-graph fallback)."""
+        def _margin(graph_id: str, numerator: str) -> TransformationGraph:
+            return self._metric(
+                graph_id,
+                {
+                    numerator: self._ext(numerator),
+                    "revenue": self._ext("revenue"),
+                    "m": GraphStep(
+                        step_id="m",
+                        step_type=StepType.FORMULA,
+                        expression=f"{numerator} / revenue",
+                        depends_on=[numerator, "revenue"],
+                        output_step=True,
+                    ),
+                },
+            )
 
-    @staticmethod
-    def _formula_snippets(session: Session) -> list:
-        from sqlalchemy import select
-
-        from dataraum.query.snippet_models import SQLSnippetRecord
-
-        return [
-            s
-            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
-            if s.snippet_type == "formula"
-        ]
-
-    def test_formula_authored_deterministically_never_calls_the_llm(
-        self, session: Session, duckdb_with_data
-    ):
-        # The LLM mock would emit "SELECT 42 AS value"; the DETERMINISTIC path wins and
-        # composes the expression itself → "SELECT 42.0 AS value", llm_model=deterministic.
-        agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
-        context = _make_execution_context(duckdb_with_data)
-
-        result = agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
-
-        assert result.success
-        formulas = self._formula_snippets(session)
-        assert len(formulas) == 1
-        assert formulas[0].llm_model == "deterministic"
-        assert formulas[0].sql == "SELECT 42.0 AS value"
-        assert formulas[0].normalized_expression
-        # The structural guarantee: no LLM call at all for a formula — no shadow, no
-        # fallback. (The mock provider would have served SQL had it been asked.)
-        agent.provider.converse.assert_not_called()
+        agent = self._agent()
+        leaf = {"sql": "SELECT 1 AS value", "description": ""}
+        code_a = agent._compose_metric_from_dag(
+            _margin("ebitda_margin", "ebitda"), {"ebitda": leaf, "revenue": leaf}, {}
+        )
+        code_b = agent._compose_metric_from_dag(
+            _margin("net_margin", "net_income"), {"net_income": leaf, "revenue": leaf}, {}
+        )
+        assert code_a is not None and code_b is not None
+        a_sql = next(s["sql"] for s in code_a.steps if s["step_id"] == "m")
+        b_sql = next(s["sql"] for s in code_b.steps if s["step_id"] == "m")
+        # Each references its OWN numerator — no aliasing to the other metric's operand.
+        assert "ebitda" in a_sql and "net_income" not in a_sql
+        assert "net_income" in b_sql and "ebitda" not in b_sql
 
 
 class TestGraphAgentSnippets:

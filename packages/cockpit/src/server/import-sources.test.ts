@@ -184,11 +184,20 @@ describe("runImport (DAT-639) — guard before write", () => {
 		workflow_id: "wf_1",
 		run_id: "run_1",
 	}));
+	// Pass-through stand-in for run-context's AsyncLocalStorage binding (injected,
+	// never statically imported — see ImportDeps). Asserted in the bound-run case.
+	const runWithConversation = vi.fn(
+		(
+			_id: string,
+			start: () => Promise<{ workflow_id: string; run_id: string }>,
+		) => start(),
+	);
 
 	beforeEach(() => {
 		persistRecipeSources.mockClear();
 		persistFileSources.mockClear();
 		triggerAddSource.mockClear();
+		runWithConversation.mockClear();
 	});
 
 	it("rejects on a candidate colliding with an existing workspace table — NO persist, NO trigger", async () => {
@@ -205,6 +214,7 @@ describe("runImport (DAT-639) — guard before write", () => {
 					// `orders.csv` → narrow name `orders`, already live in the workspace.
 					existingRawTableNames: async () => new Set(["orders"]),
 					triggerAddSource,
+					runWithConversation,
 				},
 			),
 		).rejects.toThrow(/already exists in this workspace/);
@@ -233,6 +243,7 @@ describe("runImport (DAT-639) — guard before write", () => {
 				persistFileSources,
 				existingRawTableNames: async () => new Set(["vendors"]),
 				triggerAddSource,
+				runWithConversation,
 			},
 		);
 		expect(persistRecipeSources).toHaveBeenCalledOnce();
@@ -242,5 +253,29 @@ describe("runImport (DAT-639) — guard before write", () => {
 		});
 		expect(result.workflow_id).toBe("wf_1");
 		expect(result.run_id).toBe("run_1");
+	});
+
+	it("binds the trigger to the conversation when one is present", async () => {
+		await runImport(
+			{
+				queries: [],
+				files: [{ file_uri: "s3://b/ws/uploads/aaa/widgets.csv" }],
+			},
+			"conv_42",
+			{
+				persistRecipeSources,
+				persistFileSources,
+				existingRawTableNames: async () => new Set<string>(),
+				triggerAddSource,
+				runWithConversation,
+			},
+		);
+		// The trigger fires INSIDE the conversation binding (run-context), so the
+		// completion-watcher can route this run's progress back to the chat.
+		expect(runWithConversation).toHaveBeenCalledWith(
+			"conv_42",
+			expect.any(Function),
+		);
+		expect(triggerAddSource).toHaveBeenCalledOnce();
 	});
 });

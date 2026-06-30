@@ -20,7 +20,6 @@
 
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { runWithConversation } from "#/lib/run-context";
 import type { FileSourceSpec } from "#/select/file-source";
 // `persistRecipeSources` / `persistFileSources` + `triggerAddSource` pull
 // config-bearing modules (duckdb/probe, config) at load. They run ONLY server-side
@@ -28,9 +27,13 @@ import type { FileSourceSpec } from "#/select/file-source";
 // keep THIS module's graph config-free. The probe WIDGET imports this server fn at
 // module scope; a static pull would drag config into every test that eagerly loads
 // the widget registry (the canvas registry is deliberately config-free).
-// `runWithConversation` is just AsyncLocalStorage (config-free), so it stays a
-// normal import. The persist-fn TYPES are erased at build, so importing them as
-// `type` keeps the module graph config-free while the union helper stays typed.
+// `runWithConversation` (run-context) imports `node:async_hooks` — config-free but
+// NOT browser-safe: that Node builtin is shimmed-empty in the client bundle this
+// server fn is reachable from (the probe widget), and accessing it there crashes
+// the route. So it's an injected `ImportDeps` collaborator wired from the handler's
+// dynamic imports, never a static import here. The persist-fn TYPES are erased at
+// build, so importing them as `type` keeps the module graph config-free while the
+// union helper stays typed.
 // `mappers` is config-free (node:crypto + a type + UPLOAD_PREFIX only), so the
 // candidate-name derivation stays a static import — it does NOT drag config into
 // this module's graph the way the persist fns / metadata client do.
@@ -203,6 +206,16 @@ export interface ImportDeps extends ImportSetPersisters {
 	triggerAddSource: (input: {
 		sources: string[];
 	}) => Promise<{ workflow_id: string; run_id: string }>;
+	/** Bind the trigger to its originating conversation (run-context's
+	 * AsyncLocalStorage) so the completion-watcher narrates it. Injected — NOT a
+	 * static import — because run-context pulls `node:async_hooks`, which crashes the
+	 * client bundle this file is reachable from. The server fn wires the real one
+	 * (generic `runWithConversation<T>`, which assigns to this concrete use) via
+	 * dynamic import. Typed to the trigger result it always wraps here. */
+	runWithConversation: (
+		conversationId: string,
+		start: () => Promise<{ workflow_id: string; run_id: string }>,
+	) => Promise<{ workflow_id: string; run_id: string }>;
 }
 
 /**
@@ -235,7 +248,7 @@ export async function runImport(
 	// progress + narration by conversationId). Off-route (no id) → bare trigger,
 	// the null-conversation run the watcher simply doesn't narrate.
 	const run = await (conversationId
-		? runWithConversation(conversationId, () =>
+		? deps.runWithConversation(conversationId, () =>
 				deps.triggerAddSource({ sources: sourceIds }),
 			)
 		: deps.triggerAddSource({ sources: sourceIds }));
@@ -268,6 +281,9 @@ export const importSources = createServerFn({ method: "POST" })
 		const { existingRawTableNames } = await import(
 			"#/db/metadata/workspace-state"
 		);
+		// run-context pulls `node:async_hooks` (server-only) — dynamic-import it here
+		// so it never lands in the probe widget's client bundle.
+		const { runWithConversation } = await import("#/lib/run-context");
 
 		return runImport(
 			{ queries: data.queries, files: data.files },
@@ -277,6 +293,7 @@ export const importSources = createServerFn({ method: "POST" })
 				persistFileSources,
 				existingRawTableNames,
 				triggerAddSource,
+				runWithConversation,
 			},
 		);
 	});

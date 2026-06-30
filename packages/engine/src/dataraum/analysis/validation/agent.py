@@ -248,11 +248,7 @@ class ValidationAgent(LLMFeature):
             # INCONCLUSIVE (ran, but the result shape cannot be judged) — the
             # phase keeps the artifact at ``grounded`` with the reason, and
             # the result never pollutes the FAILED measurements (DAT-439).
-            status, message, details = evaluate_result(
-                spec=spec,
-                result_rows=result_rows,
-                row_count=row_count,
-            )
+            status, message, details = evaluate_result(spec=spec, result_rows=result_rows)
 
             return ValidationResult(
                 validation_id=spec.validation_id,

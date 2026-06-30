@@ -152,6 +152,8 @@ class CrossTableConsistencyDetector(EntropyDetector):
                 context.duckdb_conn,
                 result.sql_used,
                 tolerance=result.tolerance if result.tolerance is not None else DEFAULT_TOLERANCE,
+                # check_type isn't stored on the record (ADR-0017) — the evidence
+                # message uses a generic label; the score is unaffected.
             )
             score = _score(verdict, result.severity)
             if verdict.status == ValidationStatus.ERROR:

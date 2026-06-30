@@ -11,7 +11,7 @@ non-negative numeric ``deviation`` (0 = perfectly satisfied) and a ``magnitude``
 deleted column-name string-matching).
 
 Entry points:
-- ``evaluate_result(spec, rows, n)`` — pure judgement over already-fetched rows.
+- ``evaluate_result(spec, rows)`` — pure judgement over already-fetched rows.
 - ``verdict_from_sql(conn, sql, tolerance=...)`` — re-run SQL, then judge. The
   spec-free form the in-run entropy detector uses (it holds ``tolerance`` from
   the result record, not a full spec).
@@ -101,7 +101,7 @@ def verdict_from_sql(
             details={"check_type": check_type},
         )
 
-    status, message, details = _judge(check_type, tolerance, result_rows, len(result_rows))
+    status, message, details = _judge(check_type, tolerance, result_rows)
     return ValidationVerdict(
         status=status,
         passed=status == ValidationStatus.PASSED,
@@ -127,14 +127,12 @@ def evaluate_validation(
 def evaluate_result(
     spec: ValidationSpec,
     result_rows: list[dict[str, Any]],
-    row_count: int,
 ) -> tuple[ValidationStatus, str, dict[str, Any]]:
     """Pure judgement over already-fetched rows, keyed off a spec."""
     return _judge(
         spec.check_type,
         float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE)),
         result_rows,
-        row_count,
     )
 
 
@@ -142,7 +140,6 @@ def _judge(
     check_type: str,
     tolerance: float,
     result_rows: list[dict[str, Any]],
-    row_count: int,
 ) -> tuple[ValidationStatus, str, dict[str, Any]]:
     """The contract judgement (ADR-0017): ``deviation <= tolerance``.
 
@@ -156,7 +153,7 @@ def _judge(
     Returns ``(status, message, details)``; ``details`` carries the flat
     ``deviation``/``magnitude``/``tolerance`` the entropy scorer reads.
     """
-    if row_count == 0 or not result_rows:
+    if not result_rows:
         return (
             ValidationStatus.ERROR,
             f"{check_type or 'validation'} check inconclusive: query returned no rows",

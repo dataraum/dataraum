@@ -755,7 +755,9 @@ def build_execution_context(
 
     val_specs = load_all_validation_specs(vertical) if vertical else {}
     validation_contexts: list[ValidationContext] = []
-    if om_run_id is not None and duckdb_conn is not None:
+    # No specs (no vertical) ⇒ every row would be skipped at the spec lookup, so
+    # skip the read entirely rather than scan validation_results for nothing.
+    if om_run_id is not None and duckdb_conn is not None and val_specs:
         # One row per validation_id per run (uq_validation_result_run) — no
         # latest-wins dedup needed. ValidationResultRecord has no source_id;
         # filter post-hoc by table_id overlap (table_ids is a JSON array).

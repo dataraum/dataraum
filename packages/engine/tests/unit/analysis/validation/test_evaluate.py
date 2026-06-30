@@ -46,7 +46,7 @@ class TestSharedVerdictVectors:
     @pytest.mark.parametrize("case", _VECTORS, ids=[c["name"] for c in _VECTORS])
     def test_vector(self, case: dict) -> None:
         spec = _eval_spec(case["check_type"], tolerance=case["tolerance"])
-        status, _, _ = evaluate_result(spec, case["rows"], len(case["rows"]))
+        status, _, _ = evaluate_result(spec, case["rows"])
         assert status.value == case["expected"]["status"]
         assert (status == ValidationStatus.PASSED) == case["expected"]["passed"]
 
@@ -56,7 +56,7 @@ class TestEvaluateResultDetails:
 
     def test_passed_carries_deviation_and_magnitude(self) -> None:
         spec = _eval_spec("balance", tolerance=0.01)
-        status, _, details = evaluate_result(spec, [{"deviation": 0.0, "magnitude": 150.0}], 1)
+        status, _, details = evaluate_result(spec, [{"deviation": 0.0, "magnitude": 150.0}])
         assert status == ValidationStatus.PASSED
         assert details["deviation"] == 0.0
         assert details["magnitude"] == 150.0
@@ -64,21 +64,21 @@ class TestEvaluateResultDetails:
 
     def test_failed_carries_deviation(self) -> None:
         spec = _eval_spec("balance", tolerance=0.01)
-        status, _, details = evaluate_result(spec, [{"deviation": 50.0, "magnitude": 150.0}], 1)
+        status, _, details = evaluate_result(spec, [{"deviation": 50.0, "magnitude": 150.0}])
         assert status == ValidationStatus.FAILED
         assert details["deviation"] == 50.0
 
     def test_absent_magnitude_defaults_to_deviation_then_one(self) -> None:
         # magnitude falls back so the scorer's deviation/magnitude never divides by 0.
         spec = _eval_spec("balance", tolerance=0.01)
-        _, _, details = evaluate_result(spec, [{"deviation": 5.0}], 1)
+        _, _, details = evaluate_result(spec, [{"deviation": 5.0}])
         assert details["magnitude"] == 5.0
-        _, _, zero = evaluate_result(spec, [{"deviation": 0.0}], 1)
+        _, _, zero = evaluate_result(spec, [{"deviation": 0.0}])
         assert zero["magnitude"] == 1.0
 
     def test_missing_deviation_is_inconclusive_not_failed(self) -> None:
         spec = _eval_spec("comparison")
-        status, message, _ = evaluate_result(spec, [{"po_count": 5}], 1)
+        status, message, _ = evaluate_result(spec, [{"po_count": 5}])
         assert status == ValidationStatus.ERROR
         assert "inconclusive" in message
         assert "deviation" in message

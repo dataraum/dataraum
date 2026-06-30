@@ -46,7 +46,6 @@ import {
 	classifyComponents,
 	componentsToSave,
 	exhaustionDiagnostic,
-	isMissingStructuredResult,
 	noResultNarrative,
 	persistLearnedSnippets,
 	type QueryDraft,
@@ -360,27 +359,6 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 });
 
 // --- Exhaustion handling (DAT-608) -----------------------------------------------
-
-describe("isMissingStructuredResult", () => {
-	it("is true for chat()'s finalization error code", () => {
-		const err = Object.assign(new Error("missing structured result"), {
-			code: "structured-output-missing-result",
-		});
-		expect(isMissingStructuredResult(err)).toBe(true);
-		// A bare object carrying the code also matches (defensive).
-		expect(
-			isMissingStructuredResult({ code: "structured-output-missing-result" }),
-		).toBe(true);
-	});
-
-	it("is false for infra errors, aborts, and non-errors (they must propagate)", () => {
-		expect(isMissingStructuredResult(new Error("ECONNREFUSED"))).toBe(false);
-		expect(isMissingStructuredResult({ code: "something-else" })).toBe(false);
-		expect(isMissingStructuredResult(null)).toBe(false);
-		expect(isMissingStructuredResult(undefined)).toBe(false);
-		expect(isMissingStructuredResult("missing structured result")).toBe(false);
-	});
-});
 
 describe("salvageDraft (validated-but-unfinalized run)", () => {
 	it("turns the last validated run into a draft: concepts from components, no guessed tables", () => {

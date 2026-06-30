@@ -50,11 +50,7 @@ import {
 	QUERY_SUBAGENT_MAX_ITERATIONS,
 } from "../llm";
 import { buildConventionsBlock, getQueryInstructions } from "../prompts";
-import {
-	AgentActionableError,
-	asAgentError,
-	withAgentError,
-} from "./agent-error";
+import { asAgentError, withAgentError } from "./agent-error";
 import { computeGrainNote, loadNearUniqueColumns } from "./grain-note";
 import { listTables } from "./list-tables";
 import { lookValuesTool } from "./look-values";
@@ -203,11 +199,13 @@ export interface RunStepsFailure {
 	steps: string[];
 }
 
-/** The per-invocation capture cell: the last successful validation (for the grid)
- * AND the last failure (for the exhaustion diagnostic). */
+/** The per-invocation capture cell: the last successful run_steps validation (for the
+ * grid), the last failure (for the no-result diagnostic), and the model's final answer
+ * draft once it calls `emit_result`. */
 interface RunStepsCapture {
 	value: ValidatedRun | null;
 	lastError: RunStepsFailure | null;
+	draft: QueryDraft | null;
 }
 
 // --- Reuse classification (CLASSIFY-don't-substitute; informed by the engine's
@@ -487,23 +485,10 @@ export async function persistLearnedSnippets(
 	}
 }
 
-// --- Exhaustion handling (DAT-608): the agent loop can end without the model
-// emitting the final structured answer (it hit the step limit, often after
-// repeatedly mis-grounding columns). `chat()` then throws a finalization error
-// (code `structured-output-missing-result`). Rather than let that surface as an
-// opaque "missing structured result", salvage a validated query if one exists, or
-// return an actionable diagnostic so the OUTER agent retries with a concrete hint.
-
-/** True when a thrown error is `chat()`'s "loop ended without a structured output"
- * finalization error (vs an infra error / abort, which must propagate). Keys on the
- * stable `code`, set by @tanstack/ai's chat finalizer. */
-export function isMissingStructuredResult(err: unknown): boolean {
-	return (
-		typeof err === "object" &&
-		err !== null &&
-		(err as { code?: unknown }).code === "structured-output-missing-result"
-	);
-}
+// --- No-result handling (DAT-608): the agent loop can end without the model emitting
+// an answer (it gave up, or hit the iteration ceiling). `emit_result` not being called
+// is how that surfaces now — captured.draft stays null. We salvage a validated query if
+// one exists, else tell the no-result story from the last state (see noResultNarrative).
 
 /** Synthesize a draft from a validated-but-unfinalized run: the model proved a
  * query via run_steps but ran out of steps before writing the summary. The grid
@@ -615,86 +600,97 @@ export async function querySubAgent(
 		conventionsBlock ? `\n\n${conventionsBlock}` : ""
 	}`;
 
-	// Per-invocation capture cell — the run_steps tool writes the last successful
-	// validation (and the last failure) here, so it's isolated across concurrent
-	// answer calls.
-	const captured: RunStepsCapture = { value: null, lastError: null };
+	// Per-invocation capture cell — run_steps writes the last validation (+ last failure)
+	// and emit_result writes the model's final draft. Isolated across concurrent calls.
+	const captured: RunStepsCapture = {
+		value: null,
+		lastError: null,
+		draft: null,
+	};
 
-	// Combined tools + outputSchema is native for claude-sonnet-4-6 — one call
-	// runs the tool loop and returns the validated structured draft (no separate
-	// finalize round-trip). The concrete schema gives a typed result.
-	let draft: QueryDraft;
-	try {
-		draft = await chat({
-			adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-			abortController: linkedAbortController(signal),
-			modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
-			agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
-			systemPrompts: [getQueryInstructions()],
-			messages: [{ role: "user", content: userMessage }],
-			tools: [
-				snippetSearchTool,
-				lookValuesTool,
-				makeRunStepsTool(captured, nearUniqueColumns),
-			],
-			// Per-turn LLM telemetry (DAT-600). Logs this nested sub-agent loop
-			// SEPARATELY from the orchestrator; `iterations` exposes its round-trip
-			// depth (the multiplier DAT-605 quantifies).
-			middleware: [llmTelemetryMiddleware("answer_subagent")],
-			outputSchema: QueryDraftSchema,
-		});
-	} catch (err) {
-		// Re-throw everything that ISN'T "loop ended without a structured answer":
-		// infra (network/DB), aborts (DOMException `AbortError` — no `code` prop), AND
-		// `structured-output-validation-failed` (Zod rejected a syntactically valid
-		// model response — rare on the native-combined path). The outer asAgentError
-		// converts these to `{ error }`; only the exhaustion case is handled below.
-		if (!isMissingStructuredResult(err)) throw err;
-		// DAT-608: the agent loop exhausted its step budget without finalizing.
-		if (captured.value) {
-			// A query DID validate — salvage it as the answer (grid + components),
-			// so a near-miss returns the real result instead of failing the turn.
-			const salvaged = salvageDraft(captured.value);
-			const dq = await readDataQuality(salvaged.tables_touched);
-			// Save-on-clean for the salvage path; the success path below is not reached
-			// (this returns), so captured.value is never double-saved.
-			void persistLearnedSnippets(captured.value);
-			return assembleAnswer(salvaged, captured.value, dq);
+	// The structured answer arrives as an EXPLICIT `emit_result` tool call, deliberately
+	// NOT native `chat({ outputSchema })`. Native combined mode (Anthropic 4.x) harvests
+	// the model's FINAL-TURN TEXT as the structured output — so a prose preamble ("Let me
+	// now compose…") emitted before the model means to call run_steps gets harvested as
+	// the `answer`, ending the loop before any SQL runs (the silent no-result bug). A
+	// plain tool can't be finalized by prose: the loop runs until the model EXPLICITLY
+	// emits its answer (or gives up), and run_steps stays a real step in between. Mirrors
+	// frame-family's induceStructured lesson, adapted from one-shot to this tool loop.
+	const emitResult = toolDefinition({
+		name: "emit_result",
+		description:
+			"Return your final answer as this tool's arguments, AFTER validating the query " +
+			"with run_steps. Call this exactly once, as your last action.",
+		inputSchema: QueryDraftSchema,
+	}).server((input) => {
+		captured.draft = input as QueryDraft;
+		return { ok: true };
+	});
+
+	const abortController = linkedAbortController(signal);
+	const stream = await chat({
+		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		abortController,
+		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
+		systemPrompts: [getQueryInstructions()],
+		messages: [{ role: "user", content: userMessage }],
+		tools: [
+			snippetSearchTool,
+			lookValuesTool,
+			makeRunStepsTool(captured, nearUniqueColumns),
+			emitResult,
+		],
+		// Per-turn LLM telemetry (DAT-600). Logs this nested sub-agent loop SEPARATELY
+		// from the orchestrator; `iterations` exposes its round-trip depth.
+		middleware: [llmTelemetryMiddleware("answer_subagent")],
+	});
+
+	// Drain the agent-loop stream so the tools actually execute. Stop as soon as the
+	// model emits its answer — draining further bills an extra turn that only re-confirms
+	// (abort the in-flight request, then break). If the loop ends with no emit (the model
+	// gave up, or hit the iteration ceiling), captured.draft stays null.
+	for await (const _chunk of stream) {
+		if (captured.draft !== null) {
+			abortController?.abort();
+			break;
 		}
-		// Nothing validated — surface an actionable diagnostic (last error + what it
-		// tried) so the outer agent retries with a concrete hint, not on the opaque
-		// "missing structured result".
-		throw new AgentActionableError(exhaustionDiagnostic(captured.lastError));
 	}
 
-	const dataQuality = await readDataQuality(draft.tables_touched);
-	// Save-on-clean (P2a): grow the snippet library from this answer's fresh/
-	// adapted steps. Fire-and-forget — the learning write runs AFTER the answer is
-	// assembled and is never on the answer's critical path; persistLearnedSnippets
-	// swallows its own errors, so it can neither block nor fail the answer.
+	const dataQuality = await readDataQuality(
+		captured.draft?.tables_touched ?? [],
+	);
+	// Save-on-clean (P2a): grow the snippet library from this answer's fresh/adapted
+	// steps. Fire-and-forget — runs AFTER assembly, never on the critical path.
 	void persistLearnedSnippets(captured.value);
 
-	// The model can finalize a structured draft WITHOUT validating a runnable query
-	// (captured.value === null): it satisfies QueryDraftSchema with an empty answer and
-	// never calls run_steps, so `chat()` never throws and the exhaustion catch above is
-	// bypassed. Returning assembleAnswer(draft, null) there is the "blank no-result with
-	// no error message" bug — nothing to show, nothing to debug. Instead surface the last
-	// state: a self-explaining narrative for the user + a structured log line carrying the
-	// last validation failure (SQL tried + error) so the run leaves a debuggable trace.
-	if (!captured.value) {
-		console.info("answer_no_result", {
-			had_narrative: draft.answer.trim().length > 0,
-			last_error: captured.lastError?.message ?? null,
-			last_sql: captured.lastError?.sql ?? null,
-			steps_attempted: captured.lastError?.steps ?? [],
-		});
-		return assembleAnswer(
-			{ ...draft, answer: noResultNarrative(captured.lastError) },
-			null,
-			dataQuality,
-		);
+	if (captured.value) {
+		// A query validated — that's the answer. Use the model's emitted draft, or salvage
+		// from the validated run if it validated but never emitted (the grid IS the answer,
+		// DAT-608: a near-miss returns the real result rather than failing the turn).
+		const draft = captured.draft ?? salvageDraft(captured.value);
+		return assembleAnswer(draft, captured.value, dataQuality);
 	}
-	return assembleAnswer(draft, captured.value, dataQuality);
+
+	// No validated query → an honest no-result (the last state), never a blank. The
+	// narrative tells the story from facts (the last validation failure, or a plain
+	// "stopped before running any SQL"); the log line leaves a debuggable trace.
+	console.info("answer_no_result", {
+		emitted_answer: captured.draft !== null,
+		last_error: captured.lastError?.message ?? null,
+		last_sql: captured.lastError?.sql ?? null,
+		steps_attempted: captured.lastError?.steps ?? [],
+	});
+	return assembleAnswer(
+		{
+			answer: noResultNarrative(captured.lastError),
+			assumptions: captured.draft?.assumptions ?? [],
+			concepts_used: captured.draft?.concepts_used ?? [],
+			tables_touched: [],
+		},
+		null,
+		dataQuality,
+	);
 }
 
 export const answerTool = toolDefinition({

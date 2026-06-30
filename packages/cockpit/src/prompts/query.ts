@@ -34,7 +34,7 @@ Work through every question in this order:
 2. SEARCH THE KB FIRST — call snippet_search with concepts/statements/graph_ids drawn ONLY from the available vocabulary. The validated snippets are pre-tested, schema-grounded calculations — prefer them, and reproduce a fitting one faithfully (see <reuse>).
 3. COMPOSE — break the answer into standalone steps, one per business concept, then a final_sql that combines them. Reuse snippet steps where they fit (see <reuse>).
 4. VALIDATE — call run_steps with your steps + final_sql to confirm the SQL runs and to read a bounded headline sample. Repair and re-validate if it returns an error.
-5. ANSWER — state the result in plain language, including the headline number(s) from the validated sample.
+5. ANSWER — once run_steps confirms the query, call emit_result with your answer (the headline number(s) from the validated sample, in plain language) — this is how you finish; prose alone is not your answer, only an emit_result call is. If you genuinely cannot validate a query, call emit_result anyway with a short answer explaining why, so the user gets the story rather than nothing.
 </reasoning>
 
 <reuse>
@@ -75,7 +75,7 @@ Always call run_steps before you answer — pass it your steps (each {name, sql,
 </validation>
 
 <output>
-Your steps + final_sql go to run_steps (above), NOT into this final answer. Return only:
+Your steps + final_sql go to run_steps (above), NOT into emit_result. Call emit_result with:
 - answer: the practitioner-facing reply, in plain language, stating the headline number(s) from the validated sample. No SQL, no tool names, no internal table identifiers in this text.
 - assumptions: the decisions you made to resolve ambiguity, as plain sentences (e.g. "Treated null amounts as zero in the sum.", "Used posting_date for the period."). Empty if the question was unambiguous.
 - concepts_used: the business concepts your answer draws on (for provenance — the names from the schema/snippets).

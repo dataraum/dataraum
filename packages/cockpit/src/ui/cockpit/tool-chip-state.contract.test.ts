@@ -233,7 +233,7 @@ function toolResultParts(messages: TurnMessage[]): TurnPart[] {
 // ---------------------------------------------------------------------------
 
 describe("@tanstack/ai tool-call part contract (installed version, bun.lock-owned)", () => {
-	it("an errored SERVER tool execution parks at input-complete with the error in output + a tool-result part state error", async () => {
+	it("an errored SERVER tool execution reaches state error with the error in output + a tool-result part state error", async () => {
 		const failing = toolDefinition({
 			name: TOOL_NAME,
 			description: "scripted: always throws",
@@ -245,11 +245,13 @@ describe("@tanstack/ai tool-call part contract (installed version, bun.lock-owne
 		const messages = await driveTurn([failing] as unknown as ChatTools);
 		const part = soleToolCallPart(messages);
 
-		// THE missing-error-terminal contract: the part NEVER reaches an error
-		// state — it stays "input-complete" (processor.js maps `output-error` →
-		// "input-complete"). `state === "complete"` therefore must not be the
-		// rail's only done-condition.
-		expect(part.state).toBe("input-complete");
+		// The errored part now reaches a terminal "error" state directly. (Up to
+		// @tanstack/ai 0.28 processor.js mapped `output-error` → "input-complete"
+		// and the part NEVER reached an error state; 0.38 fixed that.) The error
+		// still ALSO rides in `output` and the sibling tool-result part below, so
+		// the rail's output-shape detection stays correct regardless of the state
+		// flip — `state === "complete"` is therefore still not its only done-cond.
+		expect(part.state).toBe("error");
 
 		// The error rides in `output` — pin its EXACT shape so a bump that moves
 		// it breaks here. executeServerTool pushes `{ error: message }`,

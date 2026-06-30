@@ -274,23 +274,30 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// The `answer` sub-agent composes + validates the SQL; the human grid streams
 	// the FULL result from the composed statement. Unlike run_sql, the grid SQL is
 	// in the RESULT (result.grid.sql) — the composed final_sql isn't in the call
-	// input (just the question). An errored sub-agent (`{ error }`, no grid) or a
-	// run with no runnable query (grid null) leaves the canvas unchanged. When a
-	// grid IS present, the confidence the answer carries rides onto the canvas with
-	// it (DAT-500) instead of being dropped — band, grounded ratio, reuse, assumptions.
+	// input (just the question). A hard sub-agent error (`{ error }`) stays a chat-rail
+	// chip (leaves the canvas unchanged). A run with NO runnable query (grid null) is a
+	// legitimate no-result: we surface it as an explicit answer-result with `sql: null`
+	// so the user sees "couldn't compute that" instead of a stale/blank canvas. When a
+	// grid IS present, the confidence the answer carries rides onto the canvas with it
+	// (DAT-500) — band, grounded ratio, reuse, assumptions.
 	answer: (result) => {
 		if (isAgentError(result)) return null;
 		const r = result as Record<string, unknown> | null;
+		// The narrative `answer` field, read defensively (cockpit boundary rule): a
+		// drifted result with a non-string answer yields "" rather than throwing.
+		const summary = typeof r?.answer === "string" ? r.answer : "";
 		const grid = (r?.grid ?? null) as { sql?: unknown } | null;
 		if (!grid || typeof grid.sql !== "string" || grid.sql.length === 0) {
-			return null;
+			// No runnable query: show the no-result state when there's a narrative to
+			// explain it; a fully-empty result (no grid, no narrative) maps to nothing.
+			return summary
+				? { kind: "answer-result", sql: null, summary, confidence: null }
+				: null;
 		}
 		return {
 			kind: "answer-result",
 			sql: grid.sql,
-			// The narrative `answer` field, read defensively (cockpit boundary rule):
-			// a drifted result with a non-string answer yields "" rather than throwing.
-			summary: typeof r?.answer === "string" ? r.answer : "",
+			summary,
 			confidence: readAnswerConfidence(r),
 		};
 	},
@@ -360,7 +367,11 @@ export function canvasFromMessages(
 	const callById = new Map<string, { name: string; input: unknown }>();
 
 	for (const message of messages) {
-		for (const part of message.parts) {
+		// `parts` is optional on UIMessage and can be transiently undefined mid-stream
+		// (e.g. an assistant turn whose tool result is still assembling, as the parallel
+		// `answer` no-result case produces). Iterating it unguarded crashes the whole
+		// transcript (`undefined.length` once the for-of lowers to an indexed loop).
+		for (const part of message.parts ?? []) {
 			if (part.type === "tool-call") {
 				const input = parseToolArguments(part);
 				callById.set(part.id, { name: part.name, input });
@@ -410,7 +421,8 @@ export function canvasFromCallId(
 	let hasOutput = false;
 
 	for (const message of messages) {
-		for (const part of message.parts) {
+		// See canvasFromMessages: `parts` can be transiently undefined mid-stream.
+		for (const part of message.parts ?? []) {
 			if (part.type === "tool-call" && part.id === callId) {
 				name = part.name;
 				input = parseToolArguments(part);

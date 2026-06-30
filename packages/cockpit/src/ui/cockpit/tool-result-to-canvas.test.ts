@@ -289,10 +289,26 @@ describe("toolResultToCanvas", () => {
 		});
 	});
 
-	it("returns null for answer with no grid or an agent error (canvas unchanged)", () => {
+	it("leaves the canvas unchanged for a no-grid answer with no narrative, or an agent error", () => {
 		expect(toolResultToCanvas("answer", { grid: null })).toBeNull();
 		expect(toolResultToCanvas("answer", {})).toBeNull();
 		expect(toolResultToCanvas("answer", { error: "boom" })).toBeNull();
+	});
+
+	it("maps a no-grid answer WITH a narrative to an explicit no-result card", () => {
+		// The sub-agent couldn't compose a runnable query — a legitimate outcome. Show
+		// it (sql:null + the narrative) rather than a stale/blank canvas.
+		expect(
+			toolResultToCanvas("answer", {
+				answer: "I couldn't find revenue accounts to compute that.",
+				grid: null,
+			}),
+		).toEqual({
+			kind: "answer-result",
+			sql: null,
+			summary: "I couldn't find revenue accounts to compute that.",
+			confidence: null,
+		});
 	});
 
 	it("tolerates a drifted answer result without throwing (non-object fields, bad types)", () => {
@@ -497,6 +513,31 @@ describe("canvasFromMessages", () => {
 			kind: "result-grid",
 			sql: "SELECT * FROM orders",
 		});
+	});
+
+	it("tolerates a message whose `parts` is undefined (no crash mid-stream)", () => {
+		// `parts` is optional on UIMessage and can be transiently absent while an
+		// assistant turn assembles (the parallel-`answer` no-result case). Iterating it
+		// unguarded crashed the whole transcript ('undefined' has no 'length'); the walk
+		// must skip it and still read the real canvas from a well-formed sibling message.
+		const partless = { id: "m0", role: "assistant" } as unknown as UIMessage;
+		const good = msg([
+			{
+				type: "tool-call",
+				id: "c1",
+				name: "list_sources",
+				arguments: "{}",
+				state: "complete",
+				output: [],
+			},
+		]);
+		expect(() => canvasFromMessages([partless, good])).not.toThrow();
+		expect(canvasFromMessages([partless, good])).toEqual({
+			kind: "source-list",
+			sources: [],
+		});
+		expect(() => canvasFromCallId([partless, good], "c1")).not.toThrow();
+		expect(canvasFromCallId([partless, good], "c1")?.kind).toBe("source-list");
 	});
 
 	it("returns null when there are no tool parts", () => {

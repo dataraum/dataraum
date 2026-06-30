@@ -8,13 +8,25 @@
 
 import { MantineProvider } from "@mantine/core";
 import { cleanup, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
-import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
+import {
+	AnswerNoResult,
+	ConfidenceStrip,
+} from "#/ui/cockpit/widgets/answer-result";
 import { theme } from "#/ui/theme";
 
 afterEach(cleanup);
+
+function renderInMantine(node: ReactNode) {
+	render(
+		<MantineProvider theme={theme} env="test">
+			{node}
+		</MantineProvider>,
+	);
+}
 
 function renderStrip(confidence: AnswerConfidence) {
 	render(
@@ -103,5 +115,27 @@ describe("ConfidenceStrip", () => {
 		expect(screen.getByText("• assumption 0")).toBeTruthy();
 		expect(screen.queryByText("• assumption 10")).toBeNull();
 		expect(screen.getByText("…and 4 more")).toBeTruthy();
+	});
+});
+
+describe("AnswerNoResult", () => {
+	it("shows a 'No result' badge plus the agent's narrative", () => {
+		renderInMantine(
+			<AnswerNoResult summary="I couldn't find revenue accounts to compute that." />,
+		);
+		expect(screen.getByText("No result")).toBeTruthy();
+		expect(
+			screen.getByText("I couldn't find revenue accounts to compute that."),
+		).toBeTruthy();
+	});
+
+	it("falls back to a default explanation when the narrative is empty", () => {
+		renderInMantine(<AnswerNoResult summary="" />);
+		expect(screen.getByText("No result")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"The engine couldn’t compose a grounded query for that question.",
+			),
+		).toBeTruthy();
 	});
 });

@@ -128,6 +128,26 @@ export function ConfidenceStrip({
 }
 
 /**
+ * Pure no-result surface: the answer sub-agent couldn't compose a runnable query (a
+ * legitimate outcome). Shows a plain "No result" badge + the narrative the agent gave
+ * (or a default), so the user knows the question was understood but not answerable —
+ * never a stale grid or a blank canvas. No I/O, so it's unit-testable on its own.
+ */
+export function AnswerNoResult({ summary }: { summary: string }) {
+	return (
+		<Stack gap="xs" data-testid="canvas-answer-no-result">
+			<Badge variant="light" color="gray" size="sm" tt="none" w="fit-content">
+				No result
+			</Badge>
+			<Text size="sm" c="dimmed">
+				{summary ||
+					"The engine couldn’t compose a grounded query for that question."}
+			</Text>
+		</Stack>
+	);
+}
+
+/**
  * The registered widget: the confidence strip on top, a mint-to-Report action, and
  * the streaming result table below. The table reuses the run_sql result-grid stream
  * verbatim (same NDJSON endpoint, virtualization, and sort) — confidence is purely
@@ -156,6 +176,14 @@ export function AnswerResultWidget({
 	// A chart the user authored over this result (DAT-626) — frozen into the report
 	// at mint. Null = table-only report (first-class), the default.
 	const [chartConfig, setChartConfig] = useState<ChartConfig | null>(null);
+
+	// No-result state: the answer sub-agent couldn't compose a runnable query — a
+	// legitimate outcome, surfaced explicitly (with its narrative) rather than a stale
+	// grid or a blank canvas. Nothing to stream, chart, or mint, so this returns before
+	// the grid machinery (and narrows `state.sql` to string for everything below).
+	if (state.sql === null) {
+		return <AnswerNoResult summary={state.summary} />;
+	}
 
 	// POST to the mint endpoint over fetch (not an imported server fn) so this
 	// canvas-registered widget never drags the cockpit_db client / config into the

@@ -371,3 +371,82 @@ class TestValidationLifecycleFlow:
         assert [(r.validation_id, r.run_id, r.status) for r in records] == [
             ("double_entry", "run-1", "passed")
         ]
+
+
+class TestValidationParallelism:
+    """DAT-651: the per-validation loop fans out when a manager is wired.
+
+    The agent boundary (bind/execute) is mocked; the mocks are keyed by the
+    spec ARGUMENT, never an ordered side_effect list — concurrent calls arrive
+    in non-deterministic order, so only argument-driven mapping is correct. The
+    final lifecycle + result state must still be deterministic.
+    """
+
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.execute_validation")
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
+    @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
+    def test_manager_present_fans_out_all_executed(
+        self,
+        mock_load: MagicMock,
+        mock_bind: MagicMock,
+        mock_execute: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        specs = {vid: _spec(vid) for vid in ("double_entry", "trial_balance", "sign_conventions")}
+        mock_load.return_value = specs
+
+        def _bind(duckdb_conn, table_ids, spec, schema, conventions=""):  # noqa: ANN001, ANN202
+            return MagicMock(sql_query=f"SELECT 1 -- {spec.validation_id}"), None
+
+        def _exec(duckdb_conn, table_ids, spec, schema, generated):  # noqa: ANN001, ANN202
+            return _result(spec.validation_id, ValidationStatus.PASSED, "ok")
+
+        mock_bind.side_effect = _bind
+        mock_execute.side_effect = _exec
+
+        ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        ctx.manager = MagicMock()  # presence flips on the ThreadPoolExecutor path
+
+        result = ValidationPhase()._run(ctx)
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        artifacts = _artifacts(session, "run-om-1")
+        assert {a.state for a in artifacts.values()} == {ArtifactState.EXECUTED.value}
+        assert result.outputs["executed"] == 3
+        # One lake-scoped cursor taken per spec — proof the parallel dispatch ran.
+        assert ctx.manager.duckdb_cursor.call_count == 3
+        records = session.execute(select(ValidationResultRecord)).scalars().all()
+        assert {(r.validation_id, r.status) for r in records} == {
+            ("double_entry", "passed"),
+            ("trial_balance", "passed"),
+            ("sign_conventions", "passed"),
+        }
+
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
+    @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
+    def test_worker_exception_propagates(
+        self,
+        mock_load: MagicMock,
+        mock_bind: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """A worker exception (e.g. a retryable ProviderError, DAT-503) PROPAGATES.
+
+        It must ride to the durable boundary for Temporal retry — never be
+        captured as a per-spec ERROR result.
+        """
+        mock_load.return_value = {"double_entry": _spec("double_entry")}
+        mock_bind.side_effect = RuntimeError("provider boom")
+
+        ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        ctx.manager = MagicMock()
+
+        with pytest.raises(RuntimeError, match="provider boom"):
+            ValidationPhase()._run(ctx)

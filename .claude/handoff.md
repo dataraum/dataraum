@@ -5,6 +5,31 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-630 — ground the business_cycles agent (context + prompts, no deterministic path)
+
+**Branch:** `feat/dat-630-cycle-grounding`.
+
+### What changed (business_cycles detection — better context + prompt + a guardrail; the LLM still authors)
+The cycle agent missed cycles that complete on a NUMERIC condition (a ledger that balances) because it was served status columns only. Four moves, no deterministic detector:
+- **Context feed** (`analysis/cycles/context.py`): the cycle agent now gets (a) arithmetic `DerivedColumn` relationships (`sum`/`difference`/`product`/`ratio`, run-scoped to `relationship_run_id`, fail-closed) as numeric-completion signals, and (b) semantic field mappings via the **same** `graphs/field_mapping.load_semantic_mappings` the metric agent uses. Slice value-counts are now read run-scoped to the table's generation head (`base_runs.semantic_runs`), fail-closed.
+- **Prompt** (`dataraum-config/llm/prompts/business_cycles.yaml` → v2.0.0): a first-class numeric-completion path alongside status-completion + a grounding-discipline block (cite only served references, ground via mappings, abstain rather than force-fit, honest confidence).
+- **Membership floor** (`analysis/cycles/verify.py`, new): drops any detected cycle citing a column/value not in the served context — a guardrail on the agent, not a re-detector (never re-derives a rate).
+- **Confidence gate** (`pipeline/phases/business_cycles_phase.py`): a measured cycle below 0.5 confidence still reaches `executed` but is flagged in `state_reason` (mirrors `metrics_phase._low_confidence_reason`); new `low_confidence` output tally.
+
+Validation surface deliberately deferred to a follow-up.
+
+### Calibration to run
+- **Cycle detection on the cycle-relevant scenarios** (`month_end_close`, `multi_system_recon`, `erp_migration` in dataraum-testdata): confirm `journal_entry_cycle`/`period_close` now detect when a numeric completion signal (a balancing derived relationship) is present, and still honestly abstain when none is — the key acceptance check. No regression on cycles that already detected via status columns.
+- Confirm the membership floor produces no false rejects on real detections (a dropped cycle reads as "not detected").
+
+### Thresholds / new fields
+- New low-confidence floor `_LOW_CONFIDENCE_FLOOR = 0.5` in the cycles phase (mirrors metrics). No DB schema change (`confidence`/`state_reason` already exist). New phase output key `low_confidence`.
+
+### testdata hints
+- The numeric-completion path needs a scenario where a GL/ledger balances (debit/credit net, or a reconciliation ties out) so the correlations phase emits a `difference`/`ratio` `DerivedColumn` for the cycle agent to ground on — a GL **without** a lifecycle status column is exactly the gap this closes.
+
+---
+
 ## DAT-646 — formula SQL is composed + persisted PER-METRIC (kills cross-metric aliasing)
 
 **Branch:** `refactor/dat-646-formula-identity`.

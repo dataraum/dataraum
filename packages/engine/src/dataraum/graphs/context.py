@@ -741,8 +741,18 @@ def build_execution_context(
     # 13b. Load validation results — run-versioned since DAT-438: scope to the
     # SAME promoted operating_model head as the cycles above (resolved once at
     # 13). Fail-closed (DAT-429): no run ⇒ no current validation results.
+    #
+    # The pass/fail VERDICT is recomputed ON DEMAND (DAT-617): re-run each
+    # check's run-versioned ``sql_used`` against current data rather than read a
+    # stored verdict that goes stale on re-import. A bind failure (no
+    # ``sql_used`` — skipped / generation error) has no data verdict to
+    # recompute; its grounding outcome is durable, so surface what bind recorded
+    # on the row. With no connection (unit context) the read stays stored-only.
+    from dataraum.analysis.validation.config import load_all_validation_specs
     from dataraum.analysis.validation.db_models import ValidationResultRecord
+    from dataraum.analysis.validation.evaluate import evaluate_validation
 
+    val_specs = load_all_validation_specs(vertical) if vertical else {}
     validation_contexts: list[ValidationContext] = []
     if om_run_id is not None:
         # One row per validation_id per run (uq_validation_result_run) — no
@@ -753,16 +763,30 @@ def build_execution_context(
         for val_rec in session.execute(val_stmt).scalars().all():
             if not (table_id_set & set(val_rec.table_ids)):
                 continue
-            validation_contexts.append(
-                ValidationContext(
-                    validation_id=val_rec.validation_id,
-                    status=val_rec.status,
-                    severity=val_rec.severity,
-                    passed=val_rec.passed,
-                    message=val_rec.message or "",
-                    details=val_rec.details,
+            spec = val_specs.get(val_rec.validation_id)
+            if val_rec.sql_used and spec is not None and duckdb_conn is not None:
+                verdict = evaluate_validation(duckdb_conn, val_rec.sql_used, spec)
+                validation_contexts.append(
+                    ValidationContext(
+                        validation_id=val_rec.validation_id,
+                        status=verdict.status.value,
+                        severity=spec.severity.value,
+                        passed=verdict.passed,
+                        message=verdict.message,
+                        details=verdict.details,
+                    )
                 )
-            )
+            else:
+                validation_contexts.append(
+                    ValidationContext(
+                        validation_id=val_rec.validation_id,
+                        status=val_rec.status,
+                        severity=val_rec.severity,
+                        passed=val_rec.passed,
+                        message=val_rec.message or "",
+                        details=val_rec.details,
+                    )
+                )
 
     # 13c. Load enriched views
     from dataraum.analysis.views.db_models import EnrichedView
@@ -789,8 +813,11 @@ def build_execution_context(
     if vertical and om_run_id is not None:
         try:
             # Same promoted operating_model run as 13/13b — cycles, their
-            # validation evidence, and health all describe ONE run.
-            cycle_health_report = compute_cycle_health(session, vertical=vertical, run_id=om_run_id)
+            # validation evidence, and health all describe ONE run. duckdb_conn
+            # lets the pass rate re-run each check's sql_used on demand (DAT-617).
+            cycle_health_report = compute_cycle_health(
+                session, duckdb_conn=duckdb_conn, vertical=vertical, run_id=om_run_id
+            )
         except Exception as e:
             logger.warning("cycle_health_failed", error=str(e))
 

@@ -16,8 +16,8 @@
 // the one workspace schema, so this filter is redundant-but-correct today; it
 // becomes load-bearing once workspaces multiply (DAT-357).
 //
-// Producer-side APIs (find_by_key, find_by_expression, save_snippet,
-// record_usage) are intentionally absent: lookup-only here; the write seam is P2a.
+// Producer-side APIs (find_by_key, save_snippet, record_usage) are intentionally
+// absent: lookup-only here; the write seam is P2a.
 
 import { and, eq, inArray, isNotNull, like, or, type SQL } from "drizzle-orm";
 

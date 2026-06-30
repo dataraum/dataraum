@@ -17,9 +17,12 @@ from uuid import uuid4
 import duckdb
 import pytest
 
+from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.cycles.context import build_cycle_detection_context
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import TableEntity
+from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.lifecycle import BaseRunMap
 from dataraum.storage import Column, Source, Table
 
@@ -150,3 +153,166 @@ def test_scopes_to_pinned_run(session, two_tables_two_runs) -> None:
     assert len(entities) == 1
     assert entities[0]["is_fact_table"] is True
     assert entities[0]["description"] == "CURRENT classification"
+
+
+@pytest.fixture
+def ledger_with_derivations(session):
+    """A ledger table with a debit/credit/net triple + derivation rows.
+
+    Under ``run-current``: a ``difference`` derivation (net = debit − credit) at
+    98% and a ``upper`` string transform. Under ``run-stale``: the same
+    difference at 10%. Returns ``table_ids``.
+    """
+    source = Source(name="ledger_source", source_type="csv")
+    session.add(source)
+    session.flush()
+
+    ledger = Table(
+        source_id=source.source_id,
+        table_name="journal",
+        layer="typed",
+        row_count=1000,
+        duckdb_path="typed_journal",
+    )
+    session.add(ledger)
+    session.flush()
+
+    debit = Column(
+        table_id=ledger.table_id, column_name="debit", column_position=0, raw_type="DECIMAL"
+    )
+    credit = Column(
+        table_id=ledger.table_id, column_name="credit", column_position=1, raw_type="DECIMAL"
+    )
+    net = Column(table_id=ledger.table_id, column_name="net", column_position=2, raw_type="DECIMAL")
+    name = Column(
+        table_id=ledger.table_id, column_name="name", column_position=3, raw_type="VARCHAR"
+    )
+    name_up = Column(
+        table_id=ledger.table_id, column_name="name_upper", column_position=4, raw_type="VARCHAR"
+    )
+    session.add_all([debit, credit, net, name, name_up])
+    session.flush()
+
+    def _derived(run_id, derived_col, sources, dtype, formula, rate):
+        return DerivedColumn(
+            run_id=run_id,
+            table_id=ledger.table_id,
+            derived_column_id=derived_col.column_id,
+            source_column_ids=[c.column_id for c in sources],
+            derivation_type=dtype,
+            formula=formula,
+            match_rate=rate,
+            total_rows=1000,
+            matching_rows=int(1000 * rate),
+        )
+
+    session.add_all(
+        [
+            _derived("run-current", net, [debit, credit], "difference", "debit - credit", 0.98),
+            _derived("run-current", name_up, [name], "upper", "UPPER(name)", 1.0),
+            _derived("run-stale", net, [debit, credit], "difference", "debit - credit", 0.10),
+        ]
+    )
+    session.commit()
+    return [ledger.table_id]
+
+
+def test_derived_relationships_scoped_and_arithmetic_only(session, ledger_with_derivations) -> None:
+    """Only the pinned run's ARITHMETIC derivations surface — string ops excluded."""
+    ctx = _build(
+        session,
+        ledger_with_derivations,
+        base_runs=BaseRunMap(relationship_run_id="run-current"),
+    )
+
+    derived = ctx["derived_relationships"]
+    assert len(derived) == 1  # the difference; the upper transform and the stale row are out
+    dr = derived[0]
+    assert dr["derivation_type"] == "difference"
+    assert dr["match_rate"] == 0.98
+    assert dr["derived_column"] == "net"
+    assert sorted(dr["source_columns"]) == ["credit", "debit"]
+
+
+def test_derived_relationships_fail_closed_when_unpinned(session, ledger_with_derivations) -> None:
+    """No pinned run ⇒ no derived relationships — never a cross-run read."""
+    ctx = _build(session, ledger_with_derivations, base_runs=BaseRunMap())
+    assert ctx["derived_relationships"] == []
+
+
+@pytest.fixture
+def sliced_status_column(session):
+    """A status column with a slice (under the catalogue run) + a typed profile
+    (under the generation run). Returns ``(table_id, catalogue_run, gen_run)``."""
+    source = Source(name="status_source", source_type="csv")
+    session.add(source)
+    session.flush()
+
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="invoices",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_invoices",
+    )
+    session.add(tbl)
+    session.flush()
+
+    col = Column(table_id=tbl.table_id, column_name="status", column_position=0, raw_type="VARCHAR")
+    session.add(col)
+    session.flush()
+
+    session.add(
+        SliceDefinition(
+            run_id="cat",
+            table_id=tbl.table_id,
+            column_id=col.column_id,
+            column_name="status",
+            slice_priority=1,
+            distinct_values=["paid", "open"],
+        )
+    )
+    session.add(
+        StatisticalProfile(
+            column_id=col.column_id,
+            run_id="gen",
+            layer="typed",
+            total_count=100,
+            null_count=0,
+            profile_data={
+                "top_values": [
+                    {"value": "paid", "count": 80, "percentage": 80.0},
+                    {"value": "open", "count": 20, "percentage": 20.0},
+                ]
+            },
+        )
+    )
+    session.commit()
+    return tbl.table_id, "cat", "gen"
+
+
+def test_value_counts_scoped_to_generation_run(session, sliced_status_column) -> None:
+    """Value counts read at the table's pinned generation head, not an arbitrary run."""
+    table_id, cat, gen = sliced_status_column
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={table_id: gen}),
+    )
+    slices = ctx["slice_definitions"]
+    assert len(slices) == 1
+    values = {vc["value"] for vc in slices[0]["value_counts"]}
+    assert values == {"paid", "open"}
+
+
+def test_value_counts_fail_closed_without_generation_pin(session, sliced_status_column) -> None:
+    """No pinned generation run for the table ⇒ no value counts (never an arbitrary run)."""
+    table_id, cat, _ = sliced_status_column
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={}),
+    )
+    slices = ctx["slice_definitions"]
+    assert len(slices) == 1
+    assert slices[0]["value_counts"] == []

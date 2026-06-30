@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.cycles.config import format_cycle_vocabulary_for_context
 from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
@@ -36,9 +37,17 @@ from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
+from dataraum.graphs.field_mapping import format_mappings_for_prompt, load_semantic_mappings
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
+
+# Arithmetic derivations are the numeric-completion signals a cycle can close on
+# (a journal balances when a difference holds; a reconciliation when a ratio
+# does). String transforms (concat/upper/lower/substr) carry no completion
+# meaning — exclude them so the agent isn't served noise. The domain knowledge
+# of WHICH balance means completion stays in the LLM + cycles.yaml, never here.
+_ARITHMETIC_DERIVATIONS = frozenset({"sum", "difference", "product", "ratio"})
 
 if TYPE_CHECKING:
     import duckdb
@@ -237,8 +246,15 @@ def build_cycle_detection_context(
 
     slice_list = []
     for sd in slices:
-        # Get value counts from statistical profile if available
-        value_counts = _get_value_counts_for_column(session, sd.column_id)
+        # Value counts from the statistical profile, scoped to the table's
+        # add_source generation head (``semantic_runs``) — the same per-table pin
+        # the annotations use, and the run the typed profile was written under.
+        # The verify floor (DAT-630) builds its membership set from these values,
+        # so an unscoped read would leak a stale run's values; fail-closed to []
+        # when the table has no pinned generation run.
+        value_counts = _get_value_counts_for_column(
+            session, sd.column_id, run_id=base_runs.semantic_runs.get(sd.table_id)
+        )
 
         slice_list.append(
             {
@@ -254,6 +270,57 @@ def build_cycle_detection_context(
         )
 
     context["slice_definitions"] = slice_list
+
+    # 5b. Derived (numeric) relationships — the completion signal a status column
+    # can't carry. The correlations phase already detected which arithmetic
+    # relationships hold and how often (``match_rate``); a cycle that closes on a
+    # balance/ratio (a GL journal, a reconciliation) grounds HERE, not on a status
+    # value. Run-scoped + fail-closed like every other run-versioned read above.
+    derived_list: list[dict[str, Any]] = []
+    if run_id is not None:
+        derived_rows = list(
+            session.execute(
+                select(DerivedColumn).where(
+                    DerivedColumn.table_id.in_(table_ids),
+                    DerivedColumn.run_id == run_id,
+                    DerivedColumn.derivation_type.in_(_ARITHMETIC_DERIVATIONS),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for dc in derived_rows:
+            derived_col = column_by_id.get(dc.derived_column_id)
+            table = table_by_id.get(dc.table_id)
+            source_cols = [
+                column_by_id[cid].column_name for cid in dc.source_column_ids if cid in column_by_id
+            ]
+            # A derivation whose columns we can't resolve in-scope is unusable —
+            # never serve a half-named relationship the agent could mis-ground on.
+            if (
+                derived_col is None
+                or table is None
+                or len(source_cols) != len(dc.source_column_ids)
+            ):
+                continue
+            derived_list.append(
+                {
+                    "table_name": table.table_name,
+                    "derived_column": derived_col.column_name,
+                    "source_columns": source_cols,
+                    "derivation_type": dc.derivation_type,
+                    "formula": dc.formula,
+                    "match_rate": dc.match_rate,
+                }
+            )
+
+    context["derived_relationships"] = derived_list
+
+    # 5c. Semantic field mappings (business_concept → column) — the SAME loader
+    # the metric graph agent grounds with, so a cycle's completion concepts bind
+    # to real columns instead of being improvised. Catalogue-grain, run-scoped.
+    field_mappings = load_semantic_mappings(session, table_ids, catalogue_run_id=run_id)
+    context["field_mappings"] = format_mappings_for_prompt(field_mappings)
 
     # 6. Temporal profiles
     temporal_stmt = (
@@ -306,6 +373,7 @@ def build_cycle_detection_context(
         "total_columns": sum(len(t.columns) for t in tables),
         "total_relationships": len(rel_list),
         "slice_dimensions_found": len(slice_list),
+        "derived_relationships_found": len(derived_list),
         "temporal_columns": len(context["temporal_profiles"]),
         "enriched_views": len(enriched_list),
         "fact_tables": sum(1 for e in context["entity_classifications"] if e["is_fact_table"]),
@@ -361,18 +429,29 @@ def _load_pinned_annotations(
 def _get_value_counts_for_column(
     session: Session,
     column_id: str,
+    *,
+    run_id: str | None,
 ) -> list[dict[str, Any]]:
-    """Get value counts from statistical profile for a column.
+    """Get value counts from the typed statistical profile for a column.
+
+    Run-scoped (DAT-413/630): the profile is read at ``run_id`` — the table's
+    add_source generation head. ``None`` reads EMPTY (fail-closed), never an
+    arbitrary coexisting run's profile, since the verify floor trusts these
+    values as the workspace's value-set.
 
     Args:
-        session: SQLAlchemy session
-        column_id: Column to look up
+        session: SQLAlchemy session.
+        column_id: Column to look up.
+        run_id: The table's pinned generation run; ``None`` ⇒ empty.
 
     Returns:
         List of {value, count, percentage} dicts, or empty list.
     """
+    if run_id is None:
+        return []
     profile_stmt = select(StatisticalProfile).where(
         StatisticalProfile.column_id == column_id,
+        StatisticalProfile.run_id == run_id,
         StatisticalProfile.layer == "typed",
     )
     profile = session.execute(profile_stmt).scalars().first()
@@ -396,13 +475,14 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
 
     Organizes metadata into sections that support cycle detection:
     1. Domain vocabulary (reference framework)
-    2. Dataset summary
-    3. Pre-identified categorical dimensions (= cycle indicators)
-    4. Enriched views (pre-joined tables)
-    5. Relationships
-    6. Temporal patterns
-    7. Quality signals
-    8. Column semantics by table
+    2. Dataset summary + table classifications
+    3. Pre-identified categorical dimensions (= status-completion indicators)
+    4. Derived numeric relationships (= numeric-completion signals)
+    5. Semantic field mappings (concept → column)
+    6. Enriched views (pre-joined tables)
+    7. Relationships + graph topology
+    8. Temporal patterns
+    9. Column semantics by table
 
     Args:
         context: Context dictionary from build_cycle_detection_context
@@ -434,6 +514,9 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     lines.append(f"- Dimension tables: {summary.get('dimension_tables', 0)}")
     lines.append(
         f"- Categorical dimensions (status/type columns): {summary.get('slice_dimensions_found', 0)}"
+    )
+    lines.append(
+        f"- Derived numeric relationships: {summary.get('derived_relationships_found', 0)}"
     )
     lines.append(f"- Temporal columns: {summary.get('temporal_columns', 0)}")
     lines.append(f"- Graph pattern: {summary.get('graph_pattern', 'unknown')}")
@@ -487,6 +570,31 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             elif sd.get("values"):
                 lines.append(f"  Values: {', '.join(sd['values'])}")
             lines.append("")
+
+    # Derived (numeric) relationships — completion signals a status column can't carry
+    derived = context.get("derived_relationships", [])
+    if derived:
+        lines.append("## DERIVED NUMERIC RELATIONSHIPS (Completion Signals)")
+        lines.append("")
+        lines.append("Arithmetic relationships the pipeline detected between columns, with how")
+        lines.append("often each holds (match rate). A cycle that completes on a NUMERIC")
+        lines.append("condition rather than a status value (e.g. a ledger that balances, a")
+        lines.append("reconciliation that ties out) grounds on one of these — use the match")
+        lines.append("rate as the completion_rate. Only relationships present here are real.")
+        lines.append("")
+        for dr in derived:
+            srcs = ", ".join(dr["source_columns"])
+            lines.append(
+                f"- {dr['table_name']}.{dr['derived_column']} = {dr['formula']} "
+                f"({dr['derivation_type']} of [{srcs}], holds {dr['match_rate']:.0%})"
+            )
+        lines.append("")
+
+    # Semantic field mappings (business_concept → column) — the metric grounding feed
+    field_mappings = context.get("field_mappings", "")
+    if field_mappings:
+        lines.append(field_mappings)
+        lines.append("")
 
     # Enriched views
     enriched = context.get("enriched_views", [])

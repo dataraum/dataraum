@@ -54,6 +54,14 @@ _log = get_logger(__name__)
 # cycle.declare/bind/execute for this stage only.
 _STAGE = "operating_model"
 
+# DAT-630: a cycle that grounds + measures still reaches ``executed`` only as
+# strongly as the agent's honest confidence in the detection. Below this floor
+# the executed cycle is FLAGGED — its ``state_reason`` names the weak signal — so
+# downstream agents (cycles are signals, not scripture) can weigh it instead of
+# treating a thin detection as plainly green. The number still shows; we surface
+# the doubt. Mirrors the metric phase's ``_low_confidence_reason`` (same floor).
+_LOW_CONFIDENCE_FLOOR = 0.5
+
 
 @analysis_phase
 class BusinessCyclesPhase(BasePhase):
@@ -214,7 +222,16 @@ class BusinessCyclesPhase(BasePhase):
                 # Stays grounded with the reason; never reported as executed.
                 artifact.state_reason = "detected but no completion measurement could be derived"
             else:
-                transition(artifact, operation="execute", stage=_STAGE)
+                # Executed, but flagged when the detection confidence is thin
+                # (DAT-630) — the state_reason carries the doubt downstream.
+                reason = _low_confidence_cycle_reason(cycle)
+                transition(artifact, operation="execute", stage=_STAGE, state_reason=reason)
+                if reason:
+                    _log.warning(
+                        "cycle_executed_low_confidence",
+                        canonical_type=canonical_type,
+                        confidence=cycle.confidence,
+                    )
             persisted.append(cycle)
 
         _persist_cycles(ctx.session, persisted, run_id=run_id)
@@ -222,6 +239,9 @@ class BusinessCyclesPhase(BasePhase):
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
         declared_stuck = sum(1 for a in artifacts.values() if a.state == "declared")
+        low_confidence = sum(
+            1 for a in artifacts.values() if a.state == "executed" and a.state_reason is not None
+        )
 
         # Surface detected cycles + data-quality observations as preview lines.
         previews: list[str] = []
@@ -234,6 +254,7 @@ class BusinessCyclesPhase(BasePhase):
             outputs={
                 "declared": len(artifacts),
                 "executed": executed,
+                "low_confidence": low_confidence,
                 "stuck_grounded": grounded_stuck,
                 "stuck_declared": declared_stuck,
                 "detected_cycles": len(persisted),
@@ -253,6 +274,18 @@ class BusinessCyclesPhase(BasePhase):
                 f"{declared_stuck} ungroundable, {grounded_stuck} detected but unmeasured"
             ),
         )
+
+
+def _low_confidence_cycle_reason(cycle: DetectedCycle) -> str | None:
+    """Reason string if the detection confidence is below the floor, else ``None``.
+
+    The agent records an honest per-cycle ``confidence``; below
+    :data:`_LOW_CONFIDENCE_FLOOR` the executed cycle is flagged rather than
+    rendered plainly green. ``None`` keeps it unflagged.
+    """
+    if cycle.confidence >= _LOW_CONFIDENCE_FLOOR:
+        return None
+    return f"low-confidence detection ({cycle.confidence:.2f} < {_LOW_CONFIDENCE_FLOOR:.2f})"
 
 
 def _persist_cycles(

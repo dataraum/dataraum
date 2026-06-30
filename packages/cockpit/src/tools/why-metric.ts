@@ -27,10 +27,6 @@ import { sqlSnippets } from "../db/metadata/schema";
 import { renderEvidenceDetail, stripSrcDigests } from "../lib/display-names";
 import { metricSnippetSource } from "./look-metric";
 
-// Bound the steps rendered into context/DOM (rule 15). A metric DAG is normally
-// a handful of steps, but the surface must stay usable if a graph is large.
-const MAX_STEPS = 40;
-
 // --- Tool output (mirrors the why_* found/anatomy conventions, keyed on the
 // metric's graph_id).
 
@@ -72,7 +68,7 @@ const WhyMetricResult = z.object({
 	// How many persisted SQL steps back the metric.
 	snippet_count: z.number(),
 	// The per-step SQL fragments — the metric's executable knowledge, the "how it
-	// computes". Bounded (MAX_STEPS).
+	// computes". Every persisted step is served (no cap, DAT-649).
 	steps: z.array(MetricStep),
 	pending_teaches: z.number(),
 });
@@ -120,7 +116,7 @@ export function projectWhyMetric(
 	snippets: MetricSnippetRow[],
 	pendingTeaches: number,
 ): WhyMetricResult {
-	const steps: MetricStep[] = snippets.slice(0, MAX_STEPS).map((s) => ({
+	const steps: MetricStep[] = snippets.map((s) => ({
 		snippet_id: s.snippetId,
 		type: s.snippetType,
 		label: stepLabel(s),

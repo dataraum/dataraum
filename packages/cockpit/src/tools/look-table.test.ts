@@ -112,7 +112,7 @@ describe("projectColumnReadiness (DAT-350)", () => {
 		expect(out.semantic).toBeNull();
 	});
 
-	it("caps top drivers at 3 (the overview shows the worst few)", () => {
+	it("surfaces ALL top drivers (no cap) — every ranked driver is served (DAT-649)", () => {
 		const many = Array.from({ length: 6 }, (_, i) => ({
 			node: `n${i}`,
 			dimension_path: `p.${i}`,
@@ -121,8 +121,15 @@ describe("projectColumnReadiness (DAT-350)", () => {
 			impact_delta: 0.5 - i * 0.01,
 		}));
 		const out = projectColumnReadiness(row({ topDrivers: many }));
-		expect(out.top_drivers).toHaveLength(3);
-		expect(out.top_drivers.map((d) => d.label)).toEqual(["L0", "L1", "L2"]);
+		expect(out.top_drivers).toHaveLength(6);
+		expect(out.top_drivers.map((d) => d.label)).toEqual([
+			"L0",
+			"L1",
+			"L2",
+			"L3",
+			"L4",
+			"L5",
+		]);
 	});
 
 	it("degrades a malformed JSONB blob to empty rather than throwing", () => {
@@ -357,7 +364,7 @@ describe("projectTableBand (DAT-415)", () => {
 		]);
 	});
 
-	it("caps top drivers at 3", () => {
+	it("surfaces ALL top drivers (no cap) (DAT-649)", () => {
 		const many = Array.from({ length: 6 }, (_, i) => ({
 			node: `n${i}`,
 			dimension_path: `p.${i}`,
@@ -366,8 +373,15 @@ describe("projectTableBand (DAT-415)", () => {
 			impact_delta: 0.5 - i * 0.01,
 		}));
 		const out = projectTableBand(tableRow({ topDrivers: many }));
-		expect(out.top_drivers).toHaveLength(3);
-		expect(out.top_drivers.map((d) => d.label)).toEqual(["L0", "L1", "L2"]);
+		expect(out.top_drivers).toHaveLength(6);
+		expect(out.top_drivers.map((d) => d.label)).toEqual([
+			"L0",
+			"L1",
+			"L2",
+			"L3",
+			"L4",
+			"L5",
+		]);
 	});
 
 	it("degrades a malformed JSONB blob to empty rather than throwing", () => {

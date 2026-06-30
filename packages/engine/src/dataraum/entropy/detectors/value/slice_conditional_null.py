@@ -40,7 +40,7 @@ logger = get_logger(__name__)
 # A categorical with more distinct values than this is not a slice dimension (an
 # identifier / free text); the Cochran rule already abstains on too-many-tiny-slices,
 # so this only bounds the scan, it does not tune the statistic.
-_MAX_SLICE_CARDINALITY = 50
+_MAX_SLICE_CARDINALITY = 200
 # distinct/total above this ⇒ an identifier (distinct ≈ rowcount) → never a slice.
 _NEAR_UNIQUE_RATIO = 0.99
 # evidence keeps the strongest driving slices only.

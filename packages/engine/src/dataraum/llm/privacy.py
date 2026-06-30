@@ -57,9 +57,8 @@ class DataSampler:
             else:
                 # Use real top values from profile
                 if profile.top_values:
-                    samples[key] = [
-                        vc.value for vc in profile.top_values[: self.config.max_sample_values]
-                    ]
+                    # Serve all stored top values (already bounded upstream, DAT-649).
+                    samples[key] = [vc.value for vc in profile.top_values]
                 else:
                     samples[key] = []
 

@@ -308,7 +308,7 @@ class SlicingPhase(BasePhase):
         """Remove columns that are objectively bad slice candidates.
 
         Mutates context_data in place, removing columns with:
-        - distinct_count > 50 (too high cardinality for slicing)
+        - distinct_count > 200 (too high cardinality for slicing)
         - null_ratio > 0.5 (majority NULL)
         - cardinality_ratio > 0.5 (approaching identifier territory)
 
@@ -337,7 +337,7 @@ class SlicingPhase(BasePhase):
                 card_ratio = col.get("cardinality_ratio")
                 is_enriched = col.get("is_enriched_dimension", False)
 
-                if distinct is not None and distinct > 50:
+                if distinct is not None and distinct > 200:
                     continue
                 if null_ratio is not None and null_ratio > 0.5:
                     continue

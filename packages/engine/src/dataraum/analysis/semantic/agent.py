@@ -453,7 +453,7 @@ class SemanticAgent(LLMFeature):
             if graph_structure.schema_cycles:
                 cycle_strs = [
                     " → ".join(c.tables) + " → " + c.tables[0]
-                    for c in graph_structure.schema_cycles[:5]
+                    for c in graph_structure.schema_cycles
                 ]
                 lines.append(f"Cycles: {'; '.join(cycle_strs)}")
             lines.append("")
@@ -461,8 +461,6 @@ class SemanticAgent(LLMFeature):
         if not candidates:
             lines.append("No pre-computed relationship candidates available.")
             return "\n".join(lines)
-
-        _MAX_JOIN_COLS = 10
 
         for rel in candidates:
             table1 = rel.get("table1", "?")
@@ -484,22 +482,17 @@ class SemanticAgent(LLMFeature):
             if not join_cols:
                 lines.append("  (none detected)")
             else:
-                # Sort by overlap descending, take top N. The DB candidate-dict wire
-                # format (load_relationship_candidates_for_semantic) keys the overlap
+                # Sort by overlap descending. The DB candidate-dict wire format
+                # (load_relationship_candidates_for_semantic) keys the overlap
                 # score `confidence`, NOT `join_confidence` — reading only the latter
-                # showed the LLM overlap=0.00 for every candidate and truncated the
-                # top-N arbitrarily. Read both so the strongest pairs surface.
+                # showed the LLM overlap=0.00 for every candidate. Read both so the
+                # strongest pairs surface; all pairs are served (no cap, DAT-649).
                 def _overlap(jc: dict[str, Any]) -> float:
                     return float(jc.get("join_confidence", jc.get("confidence", 0.0)))
 
                 sorted_cols = sorted(join_cols, key=_overlap, reverse=True)
-                total_cols = len(sorted_cols)
-                display_cols = sorted_cols[:_MAX_JOIN_COLS]
 
-                if total_cols > _MAX_JOIN_COLS:
-                    lines.append(f"  (showing top {_MAX_JOIN_COLS} of {total_cols} candidates)")
-
-                for jc in display_cols:
+                for jc in sorted_cols:
                     col1 = jc.get("column1", "?")
                     col2 = jc.get("column2", "?")
                     join_conf = _overlap(jc)

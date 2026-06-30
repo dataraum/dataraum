@@ -204,7 +204,6 @@ def analyze_basic_temporal(
         sig_gap_mult = gap_cfg["significant_gap_multiplier"]
         sev_severe_mult = gap_cfg["severity_severe_multiplier"]
         sev_moderate_mult = gap_cfg["severity_moderate_multiplier"]
-        max_gaps_limit = gap_cfg["max_gaps"]
 
         gaps = []
         if median_gap:
@@ -228,7 +227,6 @@ def analyze_basic_temporal(
                 FROM gaps
                 WHERE gap_seconds > {gap_threshold}
                 ORDER BY gap_seconds DESC
-                LIMIT {max_gaps_limit}
             """
             ).fetchall()
 

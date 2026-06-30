@@ -42,7 +42,6 @@ from dataraum.analysis.drivers.tree import (
     DEFAULT_ALPHA,
     DEFAULT_MAX_DEPTH,
     DEFAULT_N_PERM,
-    DEFAULT_TOP_K_SLICES,
     discover_tree,
 )
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
@@ -287,7 +286,6 @@ def discover_drivers(
     min_support: int = DEFAULT_MIN_SUPPORT,
     missingness_gate: float = DEFAULT_MISSINGNESS_GATE,
     n_perm: int = DEFAULT_N_PERM,
-    top_k_slices: int = DEFAULT_TOP_K_SLICES,
     icc_threshold: float = DEFAULT_ICC_THRESHOLD,
     min_entities: int = DEFAULT_MIN_ENTITIES,
     max_rows: int = DEFAULT_MAX_ROWS,
@@ -455,7 +453,6 @@ def discover_drivers(
             min_support=min_support,
             missingness_gate=missingness_gate,
             n_perm=n_perm,
-            top_k_slices=top_k_slices,
             icc_threshold=icc_threshold,
             min_entities=min_entities,
         )
@@ -470,7 +467,6 @@ def discover_drivers(
         min_support=min_support,
         missingness_gate=missingness_gate,
         n_perm=n_perm,
-        top_k_slices=top_k_slices,
     )
 
 
@@ -644,7 +640,6 @@ def _routed_ranking(
     min_support: int,
     missingness_gate: float,
     n_perm: int,
-    top_k_slices: int,
     icc_threshold: float,
     min_entities: int,
 ) -> DriverRanking:
@@ -686,7 +681,6 @@ def _routed_ranking(
                     seed=seed + i,
                     alpha=alpha,
                     n_perm=n_perm,
-                    top_k_slices=top_k_slices,
                     min_entities=min_entities,
                 ),
                 "entity",
@@ -706,7 +700,6 @@ def _routed_ranking(
                     min_support=min_support,
                     missingness_gate=missingness_gate,
                     n_perm=n_perm,
-                    top_k_slices=top_k_slices,
                     cluster_key=top_entity if high_icc else None,
                 ),
                 "row",
@@ -744,7 +737,6 @@ def _row_wise_ranking(
     min_support: int,
     missingness_gate: float,
     n_perm: int,
-    top_k_slices: int,
     cluster_key: str | None = None,
 ) -> DriverRanking:
     """Rank ``dims`` row-wise. ``cluster_key`` set → de-mean the measure within entity.
@@ -781,7 +773,6 @@ def _row_wise_ranking(
         min_support=min_support,
         missingness_gate=missingness_gate,
         n_perm=n_perm,
-        top_k_slices=top_k_slices,
     )
 
 
@@ -794,7 +785,6 @@ def _entity_grain_ranking(
     seed: int,
     alpha: float,
     n_perm: int,
-    top_k_slices: int,
     min_entities: int,
 ) -> DriverRanking:
     """Collapse to one row per entity and rank the (pre-partitioned) entity-level dims.
@@ -826,5 +816,4 @@ def _entity_grain_ranking(
         alpha=alpha,
         min_support=min_entities,
         n_perm=n_perm,
-        top_k_slices=top_k_slices,
     )

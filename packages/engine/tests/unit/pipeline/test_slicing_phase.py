@@ -391,7 +391,7 @@ class TestRunTimeAxisFill:
     ) -> None:
         """A real date axis is high-cardinality and prompt-prefiltered — fill still lands.
 
-        ``_pre_filter_columns`` drops ``distinct_count > 50`` columns as
+        ``_pre_filter_columns`` drops ``distinct_count > 200`` columns as
         slice-DIMENSION candidates, and a time axis is exactly such a column.
         Validating the agent's choice against the filtered list deterministically
         rejected every real enriched date axis (the live DAT-491 false-reject:

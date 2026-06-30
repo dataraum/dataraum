@@ -21,7 +21,7 @@ classifiers = [
 
 dependencies = [
     # Data processing
-    "duckdb==1.5.2",
+    "duckdb==1.5.4",
     "pint>=0.23",
     # Database (SQLAlchemy + Postgres backend)
     "sqlalchemy[asyncio]==2.0.49",

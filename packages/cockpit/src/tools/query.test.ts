@@ -47,6 +47,7 @@ import {
 	componentsToSave,
 	exhaustionDiagnostic,
 	isMissingStructuredResult,
+	noResultNarrative,
 	persistLearnedSnippets,
 	type QueryDraft,
 	readDataQuality,
@@ -433,5 +434,41 @@ describe("exhaustionDiagnostic (no query ever validated)", () => {
 		expect(msg.length).toBeGreaterThan(0);
 		expect(msg).not.toContain("undefined");
 		expect(msg).not.toContain("null");
+	});
+});
+
+describe("noResultNarrative (finalized-but-unvalidated run)", () => {
+	const draft = (answer: string): QueryDraft => ({
+		answer,
+		assumptions: [],
+		concepts_used: [],
+		tables_touched: [],
+	});
+
+	it("keeps the model's own explanation when it wrote one", () => {
+		expect(
+			noResultNarrative(
+				draft("No revenue rows fell in the requested period."),
+				null,
+			),
+		).toBe("No revenue rows fell in the requested period.");
+	});
+
+	it("synthesizes from the last validation failure when the narrative is empty", () => {
+		// The common no-result shape: model finalized a blank answer. Tell the story from
+		// the last state instead of returning nothing.
+		const msg = noResultNarrative(draft("   "), {
+			message: 'Binder Error: column "amount" not found',
+			sql: "SELECT amount FROM lake.typed.invoices",
+			steps: ["revenue"],
+		});
+		expect(msg).toContain('Binder Error: column "amount" not found');
+		expect(msg).toContain("SELECT amount FROM lake.typed.invoices");
+	});
+
+	it("falls back to a generic story when empty AND nothing was even attempted", () => {
+		const msg = noResultNarrative(draft(""), null);
+		expect(msg.length).toBeGreaterThan(0);
+		expect(msg).not.toContain("undefined");
 	});
 });

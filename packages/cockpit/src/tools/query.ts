@@ -552,6 +552,20 @@ export function exhaustionDiagnostic(
 	);
 }
 
+/** The narrative for a finalized-but-unvalidated run (DAT-608 sibling): the model can
+ * satisfy QueryDraftSchema with an empty `answer` and never call run_steps, finalizing a
+ * blank draft — which sails PAST the exhaustion catch (it never threw). Tell the story
+ * instead: keep the model's own explanation if it wrote one, else synthesize it from the
+ * last validation failure (the SQL it tried + why) or a generic "couldn't compose a
+ * query". So a no-result is always self-explaining, never blank. Pure; unit-tested. */
+export function noResultNarrative(
+	draft: QueryDraft,
+	lastError: RunStepsFailure | null,
+): string {
+	const own = draft.answer.trim();
+	return own.length > 0 ? own : exhaustionDiagnostic(lastError);
+}
+
 /**
  * The query sub-agent: ONE nested chat() over [snippet_search, run_steps] with the
  * concrete `QueryDraftSchema`, then deterministic post-processing (the grid +
@@ -655,6 +669,27 @@ export async function querySubAgent(
 	// assembled and is never on the answer's critical path; persistLearnedSnippets
 	// swallows its own errors, so it can neither block nor fail the answer.
 	void persistLearnedSnippets(captured.value);
+
+	// The model can finalize a structured draft WITHOUT validating a runnable query
+	// (captured.value === null): it satisfies QueryDraftSchema with an empty answer and
+	// never calls run_steps, so `chat()` never throws and the exhaustion catch above is
+	// bypassed. Returning assembleAnswer(draft, null) there is the "blank no-result with
+	// no error message" bug — nothing to show, nothing to debug. Instead surface the last
+	// state: a self-explaining narrative for the user + a structured log line carrying the
+	// last validation failure (SQL tried + error) so the run leaves a debuggable trace.
+	if (!captured.value) {
+		console.info("answer_no_result", {
+			had_narrative: draft.answer.trim().length > 0,
+			last_error: captured.lastError?.message ?? null,
+			last_sql: captured.lastError?.sql ?? null,
+			steps_attempted: captured.lastError?.steps ?? [],
+		});
+		return assembleAnswer(
+			{ ...draft, answer: noResultNarrative(draft, captured.lastError) },
+			null,
+			dataQuality,
+		);
+	}
 	return assembleAnswer(draft, captured.value, dataQuality);
 }
 

@@ -289,15 +289,18 @@ describe("toolResultToCanvas", () => {
 		});
 	});
 
-	it("leaves the canvas unchanged for a no-grid answer with no narrative, or an agent error", () => {
-		expect(toolResultToCanvas("answer", { grid: null })).toBeNull();
-		expect(toolResultToCanvas("answer", {})).toBeNull();
+	it("leaves the canvas unchanged only for an agent error or a non-object answer result", () => {
+		// An agent error stays a chat-rail chip; a null/drifted non-object carries
+		// nothing to show. Everything that IS an answer result maps to a card (below).
 		expect(toolResultToCanvas("answer", { error: "boom" })).toBeNull();
+		expect(toolResultToCanvas("answer", null)).toBeNull();
+		expect(toolResultToCanvas("answer", "nope")).toBeNull();
 	});
 
-	it("maps a no-grid answer WITH a narrative to an explicit no-result card", () => {
+	it("ALWAYS maps a no-grid answer to a no-result card — clicking 'view' must show it", () => {
 		// The sub-agent couldn't compose a runnable query — a legitimate outcome. Show
-		// it (sql:null + the narrative) rather than a stale/blank canvas.
+		// it (sql:null) rather than a stale/blank canvas, WHETHER OR NOT the tool wrote a
+		// narrative (it usually doesn't — the widget supplies a default message then).
 		expect(
 			toolResultToCanvas("answer", {
 				answer: "I couldn't find revenue accounts to compute that.",
@@ -307,6 +310,19 @@ describe("toolResultToCanvas", () => {
 			kind: "answer-result",
 			sql: null,
 			summary: "I couldn't find revenue accounts to compute that.",
+			confidence: null,
+		});
+		// Empty narrative (the common no-result shape) + the bare {} drift → still a card.
+		expect(toolResultToCanvas("answer", { answer: "", grid: null })).toEqual({
+			kind: "answer-result",
+			sql: null,
+			summary: "",
+			confidence: null,
+		});
+		expect(toolResultToCanvas("answer", {})).toEqual({
+			kind: "answer-result",
+			sql: null,
+			summary: "",
 			confidence: null,
 		});
 	});

@@ -5,6 +5,14 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-651 — validation phase parallelized (latency only)
+
+**Branch:** `feat/dat-651-parallel-validation`. **No calibration action required.**
+
+The validation phase's per-spec loop (bind LLM + EXPLAIN, then execute) now fans across a bounded `ThreadPoolExecutor` (per-worker `manager.duckdb_cursor()`; session mutations applied serially on the main thread after the pool joins). **Pure latency refactor — identical observable output**: same lifecycle states, same `validation_results`, same order. No new fields, no threshold/format change. Eval should see no diff in validation outcomes; if it does, that's a regression to flag.
+
+---
+
 ## DAT-630 — ground the business_cycles agent (context + prompts, no deterministic path)
 
 **Branch:** `feat/dat-630-cycle-grounding`.

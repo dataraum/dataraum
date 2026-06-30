@@ -29,6 +29,7 @@ import {
 	Select,
 	Stack,
 	Text,
+	Textarea,
 	TextInput,
 } from "@mantine/core";
 import { ClientOnly } from "@tanstack/react-router";
@@ -296,16 +297,23 @@ function ChartModalContent({
 			    result seeds the manual mapping below, which the user can fine-tune. */}
 			<Stack gap={6}>
 				<Group gap="xs" align="flex-end" wrap="nowrap">
-					<TextInput
+					<Textarea
 						label="Describe the chart"
 						placeholder="e.g. revenue by month as a line, colored by region"
 						value={instruction}
 						size="xs"
+						autosize
+						minRows={2}
+						maxRows={4}
 						style={{ flex: 1 }}
 						data-testid="chart-instruction"
 						onChange={(e) => setInstruction(e.currentTarget.value)}
 						onKeyDown={(e) => {
-							if (e.key === "Enter" && !authoring) authorFromInstruction();
+							// Enter submits; Shift+Enter keeps the newline (it's a textarea).
+							if (e.key === "Enter" && !e.shiftKey) {
+								e.preventDefault();
+								if (!authoring) authorFromInstruction();
+							}
 						}}
 					/>
 					<Button

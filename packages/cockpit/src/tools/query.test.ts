@@ -438,26 +438,8 @@ describe("exhaustionDiagnostic (no query ever validated)", () => {
 });
 
 describe("noResultNarrative (finalized-but-unvalidated run)", () => {
-	const draft = (answer: string): QueryDraft => ({
-		answer,
-		assumptions: [],
-		concepts_used: [],
-		tables_touched: [],
-	});
-
-	it("keeps the model's own explanation when it wrote one", () => {
-		expect(
-			noResultNarrative(
-				draft("No revenue rows fell in the requested period."),
-				null,
-			),
-		).toBe("No revenue rows fell in the requested period.");
-	});
-
-	it("synthesizes from the last validation failure when the narrative is empty", () => {
-		// The common no-result shape: model finalized a blank answer. Tell the story from
-		// the last state instead of returning nothing.
-		const msg = noResultNarrative(draft("   "), {
+	it("tells the real story from the last validation failure when a query was tried", () => {
+		const msg = noResultNarrative({
 			message: 'Binder Error: column "amount" not found',
 			sql: "SELECT amount FROM lake.typed.invoices",
 			steps: ["revenue"],
@@ -466,9 +448,13 @@ describe("noResultNarrative (finalized-but-unvalidated run)", () => {
 		expect(msg).toContain("SELECT amount FROM lake.typed.invoices");
 	});
 
-	it("falls back to a generic story when empty AND nothing was even attempted", () => {
-		const msg = noResultNarrative(draft(""), null);
+	it("states plainly that no SQL was run when nothing was attempted (NOT a model placeholder)", () => {
+		// The model's `answer` field is deliberately ignored here — it's often a mid-
+		// compose placeholder ("Let me now compose…") that would mislead the reader and
+		// feed the orchestrator a non-fact. State the honest fact instead.
+		const msg = noResultNarrative(null);
 		expect(msg.length).toBeGreaterThan(0);
+		expect(msg).toContain("stopped before");
 		expect(msg).not.toContain("undefined");
 	});
 });

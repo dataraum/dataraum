@@ -553,17 +553,21 @@ export function exhaustionDiagnostic(
 }
 
 /** The narrative for a finalized-but-unvalidated run (DAT-608 sibling): the model can
- * satisfy QueryDraftSchema with an empty `answer` and never call run_steps, finalizing a
- * blank draft — which sails PAST the exhaustion catch (it never threw). Tell the story
- * instead: keep the model's own explanation if it wrote one, else synthesize it from the
- * last validation failure (the SQL it tried + why) or a generic "couldn't compose a
- * query". So a no-result is always self-explaining, never blank. Pure; unit-tested. */
-export function noResultNarrative(
-	draft: QueryDraft,
-	lastError: RunStepsFailure | null,
-): string {
-	const own = draft.answer.trim();
-	return own.length > 0 ? own : exhaustionDiagnostic(lastError);
+ * satisfy QueryDraftSchema and never call run_steps, finalizing a draft with no validated
+ * query — which sails PAST the exhaustion catch (it never threw). Tell the story from
+ * FACTS we trust, NOT the model's `answer` field: that field is frequently a mid-compose
+ * placeholder ("Let me now compose…") the model finalized prematurely, which both
+ * misleads the reader and feeds the orchestrator a non-fact it hallucinates a cause from.
+ * If a query WAS tried and failed, that's the real story (SQL + validation error); if
+ * none was tried, say so plainly. Pure; unit-tested. */
+export function noResultNarrative(lastError: RunStepsFailure | null): string {
+	if (lastError) return exhaustionDiagnostic(lastError);
+	return (
+		"I couldn't compose a runnable query for this question — I stopped before " +
+		"validating any SQL, so there's no result to show. This usually means the " +
+		"question didn't map cleanly to the staged concepts. Try rephrasing it, or " +
+		"inspect the relevant tables or metrics first."
+	);
 }
 
 /**
@@ -685,7 +689,7 @@ export async function querySubAgent(
 			steps_attempted: captured.lastError?.steps ?? [],
 		});
 		return assembleAnswer(
-			{ ...draft, answer: noResultNarrative(draft, captured.lastError) },
+			{ ...draft, answer: noResultNarrative(captured.lastError) },
 			null,
 			dataQuality,
 		);

@@ -5,48 +5,45 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
-## DAT-617 (P1) — engine validation verdicts computed on demand (calibration-neutral)
+## DAT-617 — validation verdict on demand from a contracted SQL output (ADR-0017)
 
-**Branch:** `feat/dat-617-validation-on-demand-p1`. **No calibration action required for P1.**
+**Branch:** `feat/dat-617-validation-on-demand-p1`. **Re-verify `cross_table_consistency`; do NOT recalibrate blind.**
 
-### What changed (read-path behavior, NOT a detector or stored shape)
-The validation pass/fail VERDICT is no longer read from the stored
-`validation_results` row by the engine consumers — it is recomputed by re-running
-the row's run-versioned `sql_used` against current data. Rationale: a stored
-verdict goes stale the moment data is re-imported; the SQL doesn't.
-- New `analysis/validation/evaluate.py`: `evaluate_result` (the per-`check_type`
-  judgement, **moved verbatim** from `ValidationAgent._evaluate_result` — same
-  `details` shapes: `magnitude`/`difference`/`violation_rate`/`total_rows`/…) +
-  `evaluate_validation(conn, sql_used, spec)` (re-run, then judge).
-  `agent.execute_validation` (the WRITE path) just delegates to `evaluate_result`
-  — byte-identical output.
-- `analysis/cycles/health.py` and `graphs/context.py` recompute the verdict on
-  demand instead of reading stored `passed`/`status`.
+### What changed
+The validation pass/fail VERDICT is no longer stored — it is recomputed on demand
+by re-running the run-versioned `sql_used` (a stored verdict goes stale on
+re-import, the SQL doesn't). Two coupled moves:
 
-### Why eval should not see a diff (P1)
-- **`_persist_results` and the `validation_results` schema are UNCHANGED** — the
-  verdict columns are still written exactly as before.
-- The `cross_table_consistency` **entropy detector is UNCHANGED** — it still reads
-  the stored `status`/`severity`/`details` (incl. `details["magnitude"]`). It runs
-  in-run on same-run rows (never stale), so its scores are identical.
-- In-run consumers read same-run data, so the recomputed verdict == the stored
-  one. The only intended behavioral delta is the **post-promote query path**: if
-  data was re-imported under the promoted run, the engine's cycle-health pass rate
-  and the GraphAgent's validation context now reflect CURRENT data, not the stale
-  stored verdict. That is the fix.
+1. **Contracted SQL output (prompt `validation_sql` → v2.0.0).** Every check now
+   returns ONE row with a non-negative `deviation` (0 = clean) + `magnitude`. The
+   judgement collapses to the uniform `deviation <= tolerance`
+   (`analysis/validation/evaluate.py::_judge`). The old per-`check_type` result
+   shapes (`difference`/`equation_holds`/`orphan_rate`/`total_rows`/… + the
+   column-name string-matching) are **deleted**.
+2. **`validation_results` slimmed.** Dropped: the data-derived verdict
+   (`status`, `passed`, `message`, `details`). Kept: `sql_used` + the declared
+   judgement params `severity`, `tolerance`.
 
-### Heads-up for P2 (not P1, but eval should know)
-The `details["magnitude"]` coupling the `cross_table_consistency` scorer depends on
-lives in **that detector** (`entropy/detectors/computational/cross_table_consistency.py`),
-not in `graphs/context.py`. P2 drops the stored verdict columns — at which point the
-detector MUST migrate to `evaluate_validation`, and `details` will come from the
-re-run rather than the stored row. The `magnitude` field is produced identically by
-the moved `evaluate_result`, so the scorer contract is preserved across the move; the
-recalibration to watch is whether re-run-derived `details` ever differ from the
-write-time `details` for the same run (they should not).
+### Why eval cares (RE-VERIFY, not recalibrate)
+- **The `cross_table_consistency` detector changed inputs.** It now re-runs
+  `sql_used` and reads `verdict.details` `deviation`/`magnitude` (uniform), not the
+  old per-check_type `details` keys. The SCORE math is unchanged — non-critical =
+  `min(1, deviation/magnitude)`, critical-failed = categorical 1.0, passed/inconclusive
+  = 0.0. If the LLM's contracted SQL computes the same numbers the old free-form SQL
+  did, the detector's recall/precision is **unchanged** → confirm with the
+  `cross_table_consistency` calibration; the thing to watch is whether the new
+  `deviation` differs numerically from the old `difference`/rate.
+- **The `validation_sql` prompt changed** → any eval fixture asserting a fixed
+  validation SQL string/shape will diverge; update to the `deviation`/`magnitude`
+  contract. A check whose authored SQL doesn't return `deviation` now reads
+  **inconclusive** (ERROR), never FAILED.
+- **Schema:** `validation_results` dropped 4 columns + added `tolerance` →
+  `schema.sql` re-dumped; the cockpit drizzle mirror re-pull + the `look-validation`
+  rewire is the remaining cross-package step (docker-gated, not in this branch yet).
 
 ### Thresholds / new fields
-None. No schema change, no threshold change, no new stored field in P1.
+No score threshold changed. `validation_results`: `-status,-passed,-message,-details`,
+`+tolerance`. The verdict is never stored.
 
 ---
 

@@ -166,10 +166,36 @@ class AnthropicProvider(LLMProvider):
                 "messages": messages,
             }
 
+            # Prompt caching (DAT-601): when request.cache is set, mark the stable
+            # prefix — tools + system — with one cache_control breakpoint so it is
+            # cached once and read (not re-billed) on every later identical call.
+            # The breakpoint goes on the LAST stable block in the canonical
+            # tools -> system -> messages order, and the cache covers everything
+            # before it: a breakpoint on the system block also caches the tools,
+            # so we only fall back to marking the last tool when there is no
+            # system. The per-call-varying first user message stays uncached.
+            cache_control = {"type": "ephemeral"}
             if request.system:
-                kwargs["system"] = request.system
+                if request.cache:
+                    kwargs["system"] = [
+                        cast(
+                            Any,
+                            {
+                                "type": "text",
+                                "text": request.system,
+                                "cache_control": cache_control,
+                            },
+                        )
+                    ]
+                else:
+                    kwargs["system"] = request.system
 
             if tools:
+                if request.cache and not request.system:
+                    tools = [
+                        *tools[:-1],
+                        cast(ToolParam, {**tools[-1], "cache_control": cache_control}),
+                    ]
                 kwargs["tools"] = tools
 
             if request.tool_choice:

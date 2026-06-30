@@ -656,6 +656,11 @@ class GraphAgent(LLMFeature):
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
+            # Cache the tools + system prefix (DAT-601): SQL generation runs once
+            # per metric graph and the system prompt (the large static SQL-gen
+            # instructions + DuckDB dialect rules) is identical for every graph —
+            # served from cache on each later cache-miss generation.
+            cache=True,
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —

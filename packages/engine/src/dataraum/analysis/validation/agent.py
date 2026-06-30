@@ -357,6 +357,11 @@ class ValidationAgent(LLMFeature):
             max_tokens=self.MAX_TOKENS,
             temperature=temperature,
             model=model,
+            # Cache the tools + system prefix (DAT-601): validation generates SQL
+            # once per spec and the system prompt (rules + the multi-table schema,
+            # identical for every spec in the run) is the bulk of each request, so
+            # it is written once and read on every later spec instead of re-billed.
+            cache=True,
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —

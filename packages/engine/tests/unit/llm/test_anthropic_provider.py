@@ -25,6 +25,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
     PermanentProviderError,
+    ToolDefinition,
     TransientProviderError,
 )
 
@@ -228,3 +229,64 @@ class TestConverseTelemetry:
         assert resp.cache_creation_input_tokens == 0
         assert log.info.call_args.kwargs["cache_read_input_tokens"] == 0
         assert log.info.call_args.kwargs["cache_creation_input_tokens"] == 0
+
+
+def _tool() -> ToolDefinition:
+    return ToolDefinition(name="t", description="d", input_schema={"type": "object"})
+
+
+class TestPromptCaching:
+    """request.cache (DAT-601) marks the stable tools+system prefix with one
+    cache_control breakpoint; default-off leaves the request untouched."""
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+        provider = _provider()
+        captured: dict[str, object] = {}
+
+        def capture(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return _ok_response()
+
+        monkeypatch.setattr(provider.client.messages, "create", capture)
+        self._provider = provider
+        return captured
+
+    def test_cache_off_sends_plain_system_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = self._capture(monkeypatch)
+        self._provider.converse(
+            ConversationRequest(messages=[Message(role="user", content="hi")], system="sys")
+        )
+        assert captured["system"] == "sys"  # plain string, no cache_control wrapping
+
+    def test_cache_on_wraps_system_and_leaves_tools(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = self._capture(monkeypatch)
+        self._provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                system="sys",
+                tools=[_tool()],
+                cache=True,
+            )
+        )
+        system = captured["system"]
+        assert isinstance(system, list)
+        assert system[0]["text"] == "sys"
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        # A system breakpoint already caches the tools prefix — tools stay unmarked.
+        tools = captured["tools"]
+        assert isinstance(tools, list)
+        assert "cache_control" not in tools[-1]
+
+    def test_cache_on_without_system_marks_last_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured = self._capture(monkeypatch)
+        self._provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                tools=[_tool(), _tool()],
+                cache=True,
+            )
+        )
+        tools = captured["tools"]
+        assert isinstance(tools, list)
+        assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in tools[0]

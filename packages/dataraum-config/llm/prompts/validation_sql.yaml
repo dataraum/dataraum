@@ -88,9 +88,22 @@ system_prompt: |
   yours — honor them literally.
   </domain_conventions>
 
+  <schema>
+  The following tables and columns are available — the SAME schema applies to
+  every validation in this run. Use the exact column names as shown, with proper
+  quoting, and reference tables by their duckdb_path.
+
+  {schema}
+  </schema>
+
   Use the generate_validation_sql tool to provide your response.
 
 # User prompt - provides context and task
+#
+# The multi-table schema is stable across every per-spec call in a run, so it
+# lives in the system prompt above and is served from the prompt cache (DAT-601).
+# The per-spec validation and its scoped conventions stay here (they vary by
+# call); conventions are deliberately NOT cached (DAT-645 scopes them per check).
 user_prompt: |
   <task>
   Generate a DuckDB SQL query for this validation check.
@@ -104,13 +117,6 @@ user_prompt: |
   {sql_hints}
   {expected_outcome}
   </validation_spec>
-
-  <schema>
-  The following tables and columns are available.
-  IMPORTANT: Use the exact column names as shown, with proper quoting.
-
-  {schema}
-  </schema>
 
   <domain_conventions>
   {conventions}

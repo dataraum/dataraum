@@ -122,19 +122,6 @@ system_prompt: |
   Only set it when there is a concrete dimension column — never guess a unit.
   </unit_detection>
 
-  Use the annotate_columns tool to provide your analysis.
-
-# User prompt - provides data and context
-user_prompt: |
-  <task>
-  Annotate each column in the following tables with its semantic role,
-  entity type, business term, and ontology concept mapping.
-  </task>
-
-  <schema>
-  {tables_json}
-  </schema>
-
   <ontology name="{ontology_name}">
   Map columns to these domain concepts where applicable.
   Use the EXACT concept name when a column matches semantically.
@@ -145,6 +132,24 @@ user_prompt: |
   <required_standard_fields>
   {required_standard_fields}
   </required_standard_fields>
+
+  Use the annotate_columns tool to provide your analysis.
+
+# User prompt - provides data and context
+#
+# Stable reference material (ontology, required standard fields) lives in the
+# system prompt above so it is identical across every per-table call (DAT-573
+# chunks one call per table) and can be served from the prompt cache (DAT-601).
+# The user prompt carries only the per-table schema that changes between calls.
+user_prompt: |
+  <task>
+  Annotate each column in the following tables with its semantic role,
+  entity type, business term, and ontology concept mapping.
+  </task>
+
+  <schema>
+  {tables_json}
+  </schema>
 
   Annotate all columns using the annotate_columns tool.
 

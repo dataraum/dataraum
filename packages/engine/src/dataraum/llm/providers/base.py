@@ -104,6 +104,16 @@ class ConversationRequest(BaseModel):
     # has no phase context of its own, so each call site stamps the prompt
     # template / feature name it is invoking (e.g. "graph_sql_generation").
     label: str | None = None
+    # Prompt caching (DAT-601): mark the stable prefix (tools + system) with a
+    # cache_control breakpoint so it is written once and read (not re-billed) on
+    # every later call with the SAME prefix. Set True only where the same tools +
+    # system are re-sent across many calls in a tight loop (column annotation
+    # chunks one call per table; validation generates SQL once per spec over an
+    # identical schema; graph SQL runs per metric). The first call writes the
+    # cache (+25% on those tokens), each later one reads it (~10% of base price);
+    # cache_read climbing in the DAT-600 telemetry confirms the hit. Leave False
+    # for one-shot agents — a lone cache write with no read is pure overhead.
+    cache: bool = False
 
 
 class ConversationResponse(BaseModel):

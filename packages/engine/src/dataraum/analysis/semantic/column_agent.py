@@ -149,6 +149,11 @@ class ColumnAnnotationAgent(LLMFeature):
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
+            # Cache the tools + system prefix (DAT-601): column annotation chunks
+            # one call per table and the system prompt (instructions + ontology +
+            # required standard fields) is identical across every table in the
+            # run — written once, read on each later table instead of re-billed.
+            cache=True,
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —

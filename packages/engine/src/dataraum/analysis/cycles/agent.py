@@ -139,6 +139,10 @@ class BusinessCycleAgent(LLMFeature):
             max_tokens=self.MAX_TOKENS,
             temperature=temperature,
             model=model,
+            # Cache the tools + system prefix (DAT-601): cycle grounding is one
+            # synthesis call per run, so this pays off across reruns within the
+            # cache TTL — the active-teaching loop (repeated operating_model runs).
+            cache=True,
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —

@@ -1,11 +1,13 @@
 // The chart authoring modal (DAT-626 / ADR-0015).
 //
 // Opens to an EMPTY state — no auto/default chart (a type-sniffing heuristic isn't
-// worth the code; ADR-0015). The user drives, two ways:
-//   - manual column→encoding mapping (deterministic; this phase), and
-//   - a typed instruction to the chart agent (Phase 3, wired into the same draft).
-// Either produces a draft → validated config → LIVE preview. Accept freezes the
-// config; the caller decides what "freeze" means (mint it with a report, etc.).
+// worth the code; ADR-0015). Describing the chart is the PRIMARY path: a typed
+// instruction → the forced-tool chart agent → a config that seeds the draft. The
+// per-encoding controls are the same draft, surfaced behind an "Edit" disclosure
+// that opens to a one-line readout of the current mapping (the deterministic
+// escape hatch + the way to fine-tune a generated config). Either path produces a
+// draft → validated config → LIVE preview. Accept freezes the config; the caller
+// decides what "freeze" means (mint it with a report, etc.).
 //
 // The preview data is ONE capped page from the grid stream (`/api/run-sql`, max
 // GRID_MAX_PAGE rows): charts are for aggregated results, so the cap doubles as the
@@ -20,7 +22,7 @@ import {
 	Alert,
 	Button,
 	Center,
-	Divider,
+	Collapse,
 	Group,
 	Loader,
 	Modal,
@@ -30,7 +32,7 @@ import {
 	TextInput,
 } from "@mantine/core";
 import { ClientOnly } from "@tanstack/react-router";
-import { Sparkles, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronUp, Sparkles, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	AGGREGATES,
@@ -46,6 +48,7 @@ import {
 	draftToConfig,
 	type EncodingDraft,
 	emptyDraft,
+	summarizeDraft,
 } from "#/charts/manual-mapping";
 import { type ChartData, useChartData } from "#/charts/use-chart-data";
 import { validateChartConfig } from "#/charts/validate";
@@ -195,6 +198,9 @@ function ChartModalContent({
 	const [instruction, setInstruction] = useState("");
 	const [authoring, setAuthoring] = useState(false);
 	const [authorError, setAuthorError] = useState<string | null>(null);
+	// The per-encoding controls are secondary — collapsed behind a readout of the
+	// current mapping, opened on demand to fine-tune or to map from scratch.
+	const [editing, setEditing] = useState(false);
 	// Abort an in-flight author when the user cancels/closes or fires a new one —
 	// otherwise the server's forced-tool loop keeps billing Anthropic calls after the
 	// modal is gone (the fetch unmount doesn't close the connection).
@@ -320,57 +326,8 @@ function ChartModalContent({
 				)}
 			</Stack>
 
-			<Divider label="or map columns manually" labelPosition="center" />
-
-			<TextInput
-				label="Title"
-				placeholder="Optional chart title"
-				value={draft.title ?? ""}
-				size="xs"
-				data-testid="chart-title"
-				onChange={(e) =>
-					setDraft((d) => ({ ...d, title: e.currentTarget.value }))
-				}
-			/>
-
-			<Select
-				label="Mark"
-				data={CHART_MARKS.map((m) => ({ value: m, label: m }))}
-				value={draft.mark}
-				allowDeselect={false}
-				size="xs"
-				maw={200}
-				data-testid="chart-mark"
-				onChange={(mark) =>
-					mark && setDraft((d) => ({ ...d, mark: mark as ChartDraft["mark"] }))
-				}
-			/>
-
-			<EncodingControls
-				label="X"
-				draft={draft.x}
-				columns={columnData}
-				suggestFor={suggestFor}
-				onChange={(x) => setDraft((d) => ({ ...d, x }))}
-			/>
-			<EncodingControls
-				label="Y"
-				draft={draft.y}
-				columns={columnData}
-				suggestFor={suggestFor}
-				onChange={(y) => setDraft((d) => ({ ...d, y }))}
-			/>
-			<EncodingControls
-				label="Color"
-				optional
-				draft={draft.color}
-				columns={columnData}
-				suggestFor={suggestFor}
-				onChange={(color) => setDraft((d) => ({ ...d, color }))}
-			/>
-
 			{/* Live preview / empty state. A chart shows only once both axes resolve to
-			    a valid config; otherwise prompt the user. */}
+			    a valid config; otherwise prompt the user toward either path. */}
 			{validConfig ? (
 				<ClientOnly>
 					<ChartView
@@ -386,10 +343,91 @@ function ChartModalContent({
 							? validation && !validation.ok
 								? validation.error
 								: "Adjust the mapping to preview a chart."
-							: "Pick an X and Y column to preview a chart."}
+							: "Describe the chart above, or map the columns yourself."}
 					</Text>
 				</Center>
 			)}
+
+			{/* The encoding controls — secondary, collapsed behind a one-line readout
+			    of the current mapping. A generated config seeds this; opening lets the
+			    user fine-tune it (or map from scratch when there's nothing yet). */}
+			<Stack gap="xs">
+				<Group justify="space-between" wrap="nowrap" gap="xs">
+					<Text
+						size="xs"
+						c="dimmed"
+						truncate
+						style={{ flex: 1, minWidth: 0 }}
+						data-testid="chart-mapping-summary"
+					>
+						{candidate ? summarizeDraft(draft) : "No columns mapped yet"}
+					</Text>
+					<Button
+						variant="subtle"
+						color="gray"
+						size="compact-xs"
+						rightSection={
+							editing ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+						}
+						data-testid="chart-edit-toggle"
+						onClick={() => setEditing((e) => !e)}
+					>
+						{editing ? "Done" : "Edit"}
+					</Button>
+				</Group>
+
+				<Collapse expanded={editing}>
+					<Stack gap="md" pt="xs">
+						<TextInput
+							label="Title"
+							placeholder="Optional chart title"
+							value={draft.title ?? ""}
+							size="xs"
+							data-testid="chart-title"
+							onChange={(e) =>
+								setDraft((d) => ({ ...d, title: e.currentTarget.value }))
+							}
+						/>
+
+						<Select
+							label="Mark"
+							data={CHART_MARKS.map((m) => ({ value: m, label: m }))}
+							value={draft.mark}
+							allowDeselect={false}
+							size="xs"
+							maw={200}
+							data-testid="chart-mark"
+							onChange={(mark) =>
+								mark &&
+								setDraft((d) => ({ ...d, mark: mark as ChartDraft["mark"] }))
+							}
+						/>
+
+						<EncodingControls
+							label="X"
+							draft={draft.x}
+							columns={columnData}
+							suggestFor={suggestFor}
+							onChange={(x) => setDraft((d) => ({ ...d, x }))}
+						/>
+						<EncodingControls
+							label="Y"
+							draft={draft.y}
+							columns={columnData}
+							suggestFor={suggestFor}
+							onChange={(y) => setDraft((d) => ({ ...d, y }))}
+						/>
+						<EncodingControls
+							label="Color"
+							optional
+							draft={draft.color}
+							columns={columnData}
+							suggestFor={suggestFor}
+							onChange={(color) => setDraft((d) => ({ ...d, color }))}
+						/>
+					</Stack>
+				</Collapse>
+			</Stack>
 
 			<Group justify="space-between">
 				<Button

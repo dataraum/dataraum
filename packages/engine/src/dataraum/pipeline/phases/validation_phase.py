@@ -25,6 +25,7 @@ with an explicit ``no_declared_validations`` outcome.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -34,8 +35,10 @@ from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.config import load_all_validation_specs
 from dataraum.analysis.validation.db_models import ValidationResultRecord
 from dataraum.analysis.validation.models import (
+    GeneratedSQL,
     ValidationResult,
     ValidationRunResult,
+    ValidationSpec,
     ValidationStatus,
 )
 from dataraum.analysis.validation.resolver import get_multi_table_schema_for_llm
@@ -55,6 +58,17 @@ _log = get_logger(__name__)
 # The journey stage this phase runs under — the lifecycle guard authorizes
 # validation.declare/bind/execute for this stage only.
 _STAGE = "operating_model"
+
+# DAT-651: the per-validation work (one LLM bind + EXPLAIN, then a pure-DuckDB
+# execute) is independent and is the phase's dominant wall-clock — N serial LLM
+# round-trips. Fan it across a bounded pool; max_workers IS the concurrency cap
+# (mirrors the metrics fan-out). Kept modest to avoid hammering the LLM provider.
+_MAX_CONCURRENT_VALIDATIONS = 4
+
+# (generated, bind_failure, exec_result) — the worker's outcome, keyed back to its
+# validation_id by the caller. Exactly one of bind_failure / exec_result is set;
+# the main thread applies the lifecycle transition from it.
+_WorkOutcome = tuple[GeneratedSQL | None, ValidationResult | None, ValidationResult | None]
 
 
 @analysis_phase
@@ -184,34 +198,87 @@ class ValidationPhase(BasePhase):
         ontology_loader = OntologyLoader()
         ontology = ontology_loader.load(vertical) if vertical else None
 
-        # bind → execute per artifact
-        results: list[ValidationResult] = []
-        for validation_id, spec in specs.items():
-            artifact = artifacts[validation_id]
-
-            conventions = ontology_loader.format_conventions_for_prompt(
+        # bind → execute per declared spec, parallelized (DAT-651). The per-spec
+        # work is PURE compute — one LLM bind + EXPLAIN, then a pure-DuckDB
+        # execute — and touches NEITHER the SQLAlchemy session NOR the lifecycle
+        # artifacts (a Session is not thread-safe). It runs on a bounded pool;
+        # the session mutations (transitions + state_reason + persist) are then
+        # applied serially on the main thread, in deterministic spec order.
+        # Conventions are read-only ontology text, pre-computed here (off the pool).
+        conventions_by_id = {
+            validation_id: ontology_loader.format_conventions_for_prompt(
                 ontology, "validation", qualifier=validation_id
             )
+            for validation_id in specs
+        }
+
+        def _bind_and_execute(
+            validation_id: str, spec: ValidationSpec, duckdb_conn: Any
+        ) -> _WorkOutcome:
+            """Ground + execute one spec on the given cursor — no session/artifact touch.
+
+            An LLM ``ProviderError`` (DAT-503) is left to PROPAGATE: it rides to
+            the durable boundary for retry and must never be captured as a
+            per-spec ERROR result.
+            """
             generated, bind_failure = agent.bind_validation(
-                ctx.duckdb_conn, table_ids, spec, schema, conventions=conventions
+                duckdb_conn, table_ids, spec, schema, conventions=conventions_by_id[validation_id]
             )
+            if bind_failure is not None:
+                return None, bind_failure, None
+            assert generated is not None  # bind contract: exactly one side set
+            exec_result = agent.execute_validation(duckdb_conn, table_ids, spec, schema, generated)
+            return generated, None, exec_result
+
+        # Dispatch: concurrent on per-worker lake-scoped cursors when a manager is
+        # wired (``manager.duckdb_cursor()`` is DuckDB's thread-safe primitive — an
+        # independent connection that re-issues ``USE lake.typed``, which a bare
+        # ``.cursor()`` would NOT inherit and reusing one connection across threads
+        # would serialize). No manager (unit context) → serial on the phase's
+        # already-scoped connection, identical to the pre-DAT-651 path.
+        collected: dict[str, _WorkOutcome] = {}
+        if ctx.manager is not None:
+            manager = ctx.manager
+
+            def _isolated(validation_id: str, spec: ValidationSpec) -> _WorkOutcome:
+                with manager.duckdb_cursor() as cursor:
+                    return _bind_and_execute(validation_id, spec, cursor)
+
+            with ThreadPoolExecutor(
+                max_workers=_MAX_CONCURRENT_VALIDATIONS, thread_name_prefix="validation"
+            ) as pool:
+                futures = {
+                    pool.submit(_isolated, validation_id, spec): validation_id
+                    for validation_id, spec in specs.items()
+                }
+                for future in as_completed(futures):
+                    collected[futures[future]] = future.result()
+        else:
+            for validation_id, spec in specs.items():
+                collected[validation_id] = _bind_and_execute(validation_id, spec, ctx.duckdb_conn)
+
+        # Apply the lifecycle transitions + collect results serially on the MAIN
+        # thread (the artifacts live in ctx.session), in deterministic spec order.
+        results: list[ValidationResult] = []
+        for validation_id in specs:
+            artifact = artifacts[validation_id]
+            generated, bind_failure, exec_result = collected[validation_id]
             if bind_failure is not None:
                 # Ungroundable: stays declared, reason on the row.
                 artifact.state_reason = bind_failure.message
                 results.append(bind_failure)
                 continue
             assert generated is not None  # bind contract: exactly one side set
+            assert exec_result is not None
             transition(artifact, operation="bind", stage=_STAGE, grounded_against=grounded_against)
-
-            result = agent.execute_validation(ctx.duckdb_conn, table_ids, spec, schema, generated)
-            if result.status == ValidationStatus.ERROR:
-                # Execution error OR inconclusive evaluation (the SQL ran but
-                # its result shape cannot be judged, DAT-439): stays grounded,
-                # with the reason on the row.
-                artifact.state_reason = result.message
+            if exec_result.status == ValidationStatus.ERROR:
+                # Execution error OR inconclusive evaluation (the SQL ran but its
+                # result shape cannot be judged, DAT-439): stays grounded, with
+                # the reason on the row.
+                artifact.state_reason = exec_result.message
             else:
                 transition(artifact, operation="execute", stage=_STAGE)
-            results.append(result)
+            results.append(exec_result)
 
         run_result = ValidationRunResult.from_results(
             run_id=run_id,

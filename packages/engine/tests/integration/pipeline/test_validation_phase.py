@@ -450,3 +450,49 @@ class TestValidationParallelism:
 
         with pytest.raises(RuntimeError, match="provider boom"):
             ValidationPhase()._run(ctx)
+
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.execute_validation")
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
+    @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
+    def test_one_worker_raises_no_partial_apply(
+        self,
+        mock_load: MagicMock,
+        mock_bind: MagicMock,
+        mock_execute: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """One spec raises mid-batch: it propagates AND no sibling is half-applied.
+
+        Session mutations happen only AFTER the pool joins, so a worker raising
+        must leave every artifact at ``declared`` — no transition applied to the
+        specs that did succeed.
+        """
+        mock_load.return_value = {
+            vid: _spec(vid) for vid in ("double_entry", "trial_balance", "sign_conventions")
+        }
+
+        def _bind(duckdb_conn, table_ids, spec, schema, conventions=""):  # noqa: ANN001, ANN202
+            if spec.validation_id == "trial_balance":
+                raise RuntimeError("provider boom")
+            return MagicMock(sql_query="SELECT 1"), None
+
+        mock_bind.side_effect = _bind
+        mock_execute.side_effect = lambda *a, **k: _result(
+            a[2].validation_id, ValidationStatus.PASSED, "ok"
+        )
+
+        ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        ctx.manager = MagicMock()
+
+        with pytest.raises(RuntimeError, match="provider boom"):
+            ValidationPhase()._run(ctx)
+
+        session.flush()
+        # No transition reached the session — every declared artifact stays declared,
+        # and nothing was persisted (the apply loop never ran).
+        artifacts = _artifacts(session, "run-om-1")
+        assert {a.state for a in artifacts.values()} == {ArtifactState.DECLARED.value}
+        assert session.execute(select(ValidationResultRecord)).scalars().all() == []

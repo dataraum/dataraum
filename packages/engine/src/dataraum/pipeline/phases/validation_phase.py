@@ -65,10 +65,10 @@ _STAGE = "operating_model"
 # (mirrors the metrics fan-out). Kept modest to avoid hammering the LLM provider.
 _MAX_CONCURRENT_VALIDATIONS = 4
 
-# (validation_id, generated, bind_failure, exec_result) — the worker's outcome.
-# Exactly one of bind_failure / exec_result is set; the main thread applies the
-# lifecycle transition from it.
-_WorkOutcome = tuple[str, GeneratedSQL | None, ValidationResult | None, ValidationResult | None]
+# (generated, bind_failure, exec_result) — the worker's outcome, keyed back to its
+# validation_id by the caller. Exactly one of bind_failure / exec_result is set;
+# the main thread applies the lifecycle transition from it.
+_WorkOutcome = tuple[GeneratedSQL | None, ValidationResult | None, ValidationResult | None]
 
 
 @analysis_phase
@@ -225,10 +225,10 @@ class ValidationPhase(BasePhase):
                 duckdb_conn, table_ids, spec, schema, conventions=conventions_by_id[validation_id]
             )
             if bind_failure is not None:
-                return validation_id, None, bind_failure, None
+                return None, bind_failure, None
             assert generated is not None  # bind contract: exactly one side set
             exec_result = agent.execute_validation(duckdb_conn, table_ids, spec, schema, generated)
-            return validation_id, generated, None, exec_result
+            return generated, None, exec_result
 
         # Dispatch: concurrent on per-worker lake-scoped cursors when a manager is
         # wired (``manager.duckdb_cursor()`` is DuckDB's thread-safe primitive — an
@@ -252,8 +252,7 @@ class ValidationPhase(BasePhase):
                     for validation_id, spec in specs.items()
                 }
                 for future in as_completed(futures):
-                    work = future.result()
-                    collected[work[0]] = work
+                    collected[futures[future]] = future.result()
         else:
             for validation_id, spec in specs.items():
                 collected[validation_id] = _bind_and_execute(validation_id, spec, ctx.duckdb_conn)
@@ -263,7 +262,7 @@ class ValidationPhase(BasePhase):
         results: list[ValidationResult] = []
         for validation_id in specs:
             artifact = artifacts[validation_id]
-            _vid, generated, bind_failure, exec_result = collected[validation_id]
+            generated, bind_failure, exec_result = collected[validation_id]
             if bind_failure is not None:
                 # Ungroundable: stays declared, reason on the row.
                 artifact.state_reason = bind_failure.message

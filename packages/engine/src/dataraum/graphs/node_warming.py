@@ -19,10 +19,12 @@ This module is the **pure** layer — no execution, fully unit-testable:
 * :class:`NodeDecision` — one node's run-scoped authoring outcome (the binding
   map value); the pass itself lives in ``metrics_phase``.
 
-The node key mirrors the snippet cache key *exactly* (extract → standard_field /
-statement / aggregation; constant → parameter / value; formula → normalized
-expression), so authoring mints precisely what the per-metric assembly's
-``_lookup_snippets`` later finds.
+Only **EXTRACT** steps carry a node key (DAT-646: extract → standard_field /
+statement / aggregation) — they are the sole LLM authoring surface and the only
+nodes worth deduping across metrics. FORMULA and CONSTANT steps key to ``None``
+and never enter this DAG: they are deterministic and metric-specific, so the
+per-metric ``assemble`` composes each one fresh from its own dep list rather than
+sharing it by shape (which is exactly the cross-metric aliasing DAT-646 removed).
 """
 
 from __future__ import annotations
@@ -34,7 +36,6 @@ from typing import TYPE_CHECKING
 import networkx as nx
 
 from dataraum.graphs.models import StepType
-from dataraum.query.snippet_utils import normalize_expression
 
 if TYPE_CHECKING:
     from dataraum.graphs.models import GraphStep, TransformationGraph
@@ -48,11 +49,12 @@ NodeKey = tuple[str | None, ...]
 class WarmNode:
     """A unique cache-keyed node in the cross-metric DAG.
 
-    ``key`` is the global dedup identity (mirrors the snippet cache key, so
-    warming this node mints exactly what a later per-metric lookup finds).
-    ``graph`` / ``step`` are the *representative* occurrence — the first one
-    seen — used to build the warming mini-graph. The snippet is concept-keyed,
-    so which representative we pick does not affect later lookups.
+    ``key`` is the global dedup identity of an EXTRACT leaf (its standard_field /
+    statement / aggregation — DAT-646), so warming this node mints exactly what a
+    later per-metric lookup finds. ``graph`` / ``step`` are the *representative*
+    occurrence — the first one seen — used to build the warming mini-graph. The
+    snippet is concept-keyed, so which representative we pick does not affect later
+    lookups.
     """
 
     key: NodeKey
@@ -77,49 +79,25 @@ class NodeDecision:
     reason: str | None = None
 
 
-def _resolve_constant_value(step: GraphStep, graph: TransformationGraph) -> str | None:
-    """Resolve a constant step's parameter default to its string cache value.
-
-    INVARIANT (DAT-636): a constant's resolved value is part of its ``NodeKey``,
-    and the authoring pass keys off the *representative* graph while the per-metric
-    assembly keys off *its own* graph. So two graphs that share a parameter name
-    MUST agree on its default, or the same concept gets two keys and the assembly
-    lookup misses (→ honest-fail "not authored"). Vertical configs use globally
-    consistent defaults today; a divergent default is a config error, surfaced
-    born-loud rather than silently mis-grounded.
-    """
-    if not step.parameter:
-        return None
-    for param in graph.parameters:
-        if param.name == step.parameter:
-            return str(param.default) if param.default is not None else None
-    return None
-
-
 def node_key(step: GraphStep, graph: TransformationGraph) -> NodeKey | None:
-    """Global dedup key for a step, mirroring the snippet cache key.
+    """Cross-metric dedup key for a step — ONLY leaf EXTRACTs warm (DAT-646).
 
-    Returns ``None`` for a step that cannot be cache-keyed (an extract with no
-    source, a formula with no expression) — such a step is never warmed; it
-    falls through to per-metric authoring as before.
+    An EXTRACT is the sole LLM authoring surface and is genuinely shared across
+    metrics (e.g. ``revenue``), so it is warmed ONCE, keyed by its concept. A
+    FORMULA or CONSTANT is deterministic and metric-specific: it is NOT warmed and
+    NOT cross-metric shared — the per-metric ``assemble`` composes it directly from
+    the DAG. (Keying a formula by its normalized SHAPE aliased distinct metrics that
+    share an arithmetic pattern — e.g. every ``x / revenue * 100`` margin collapsed
+    to one snippet, reusing the wrong operand's CTE — DAT-646. The fix is to not
+    share formulas at all, not to refine the key.)
+
+    Returns ``None`` for a step that is never warmed: a FORMULA, a CONSTANT, or an
+    extract with no source.
     """
     if step.step_type == StepType.EXTRACT:
         if not step.source:
             return None
         return ("extract", step.source.standard_field, step.source.statement, step.aggregation)
-    if step.step_type == StepType.CONSTANT:
-        # Mirror _save_snippets/_lookup_snippets: keyed by parameter name (or the
-        # local step_id when there is no parameter) + the resolved value. The
-        # step_id fallback is graph-local, so two graphs sharing a step_id but
-        # different values could in principle collide — that's the EXISTING cache
-        # keying (we mirror it exactly so warming mints what lookup finds); it
-        # does not arise in practice (parameterized constants carry a parameter).
-        return ("constant", step.parameter or step.step_id, _resolve_constant_value(step, graph))
-    if step.step_type == StepType.FORMULA:
-        if not step.expression:
-            return None
-        normalized, _, _ = normalize_expression(step.expression)
-        return ("formula", normalized)
     return None
 
 
@@ -181,67 +159,19 @@ def warming_generations(dag: nx.DiGraph) -> list[list[NodeKey]]:
     return [list(generation) for generation in nx.topological_generations(dag)]
 
 
-def ungroundable_dep_reason(node: WarmNode, bindings: dict[NodeKey, NodeDecision]) -> str | None:
-    """First dependency of ``node`` that did not ground, or ``None`` if all did.
-
-    Gates formula/composite authoring (DAT-636): a node whose dependency is
-    ungroundable must NOT reach the LLM. The composition prompt is told to
-    reproduce each dependency step EXACTLY — given an ABSENT dependency it
-    fabricates one instead (e.g. a `dio` formula over an ungroundable
-    `cost_of_goods_sold` emitted ``SELECT 30 AS value``, copying the
-    days_in_period constant), and the save path then persists that fabrication
-    as a healthy extract snippet: a cross-run precision landmine. Honest-fail
-    the node here instead — symmetric to the per-metric assembly's guard.
-
-    The barrier between warming generations guarantees every dependency is
-    already decided in ``bindings`` by the time its dependent node is gated — so
-    a dependency that is missing, un-keyable, or not grounded is treated as
-    ungroundable (fail loud), never silently passed through (which would hand the
-    LLM a dep it can only fabricate).
-    """
-    graph = node.graph
-    for dep_id in node.step.depends_on:
-        dep_step = graph.steps.get(dep_id)
-        if dep_step is None:
-            return f"dependency '{dep_id}' is ungroundable: not defined in the graph"
-        dep_key = node_key(dep_step, graph)
-        if dep_key is None:
-            return f"dependency '{dep_id}' is ungroundable: has no cache key (never authored)"
-        decision = bindings.get(dep_key)
-        if decision is None or not decision.grounded:
-            reason = decision.reason if decision and decision.reason else "not authored"
-            return f"dependency '{dep_id}' is ungroundable: {reason}"
-    return None
-
-
 def build_mini_graph(node: WarmNode) -> TransformationGraph:
-    """Minimal single-output graph for warming one node.
+    """Minimal single-output graph for warming one EXTRACT leaf.
 
-    The representative step plus its transitive dependency steps (taken from the
-    representative graph, original local step ids preserved so ``depends_on``
-    resolves), with **only** the warmed node marked as the output step. The
-    deps are already warm by the time a later-generation node is warmed, so the
-    agent assembles them from cache and only authors this node.
+    Post-DAT-646 the warm DAG holds ONLY edge-less EXTRACT leaves — formulas and
+    constants are composed per-metric and never warmed — so a node has no dependency
+    steps to carry: the mini-graph is exactly the one extract, marked as the output.
+    The representative ``graph_id`` is preserved so the minted snippet is sourced to
+    that metric (``graph:{graph_id}``); a concept shared across metrics is decided once
+    under whichever metric warmed it first.
 
-    Steps are **copied** (:func:`dataclasses.replace`) — the originals belong to
-    the real metric graphs that execute later in the phase; warming must never
-    mutate their ``output_step`` flag.
+    The step is **copied** (:func:`dataclasses.replace`) — the original belongs to the
+    real metric graph that executes later in the phase; warming must never mutate its
+    ``output_step`` flag.
     """
-    graph = node.graph
-    needed: dict[str, GraphStep] = {}
-    stack = [node.step.step_id]
-    while stack:
-        step_id = stack.pop()
-        if step_id in needed:
-            continue
-        step = graph.steps.get(step_id)
-        if step is None:
-            continue
-        needed[step_id] = step
-        stack.extend(step.depends_on)
-
-    mini_steps = {
-        step_id: dataclasses.replace(step, output_step=(step_id == node.step.step_id))
-        for step_id, step in needed.items()
-    }
-    return dataclasses.replace(graph, steps=mini_steps)
+    mini_step = dataclasses.replace(node.step, output_step=True)
+    return dataclasses.replace(node.graph, steps={node.step.step_id: mini_step})

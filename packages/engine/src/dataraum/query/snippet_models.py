@@ -5,13 +5,17 @@ Snippets are keyed SQL fragments that grow through usage by both the
 Graph Agent (producer) and Query Agent (consumer).
 
 Snippet types:
-- extract: Level 1 graph steps (keyed by standard_field + statement + aggregation)
-- constant: Parameter-derived values (keyed by parameter_name + parameter_value)
-- formula: Level 2+ formulas (keyed by normalized expression pattern)
-- query: Query-agent-derived patterns (keyed by semantic hash)
+- extract: Level 1 graph steps (keyed by standard_field + statement + aggregation) —
+  the sole shared, cross-metric cache the graph agent discovers by key.
+- constant: Parameter-derived values (keyed by parameter_name + parameter_value).
+- formula: a metric's composed computation, persisted PER-METRIC (keyed by source +
+  expression, DAT-646) — never shared across metrics by expression shape. The cockpit
+  reuse KB groups it by ``source`` (``graph:{graph_id}``); the engine does not look it
+  up by shape.
+- query: Query-agent-derived patterns (keyed by semantic hash).
 
-Discovery uses term-based vocabulary matching against standard_field,
-statement, aggregation, and graph_id values.
+Cockpit consumer discovery groups snippets by ``source`` and matches term-based
+vocabulary against standard_field, statement, and aggregation values.
 """
 
 from __future__ import annotations

@@ -534,3 +534,22 @@ class TestWarmingPrimesCache:
 
         assert r_gross.success and r_net.success
         assert authored == [], "assembly must make the per-metric fan-out LLM-free"
+
+        # DAT-646 P2: assemble persists each metric's composed FORMULA snippet sourced
+        # to ITS OWN graph — the cockpit reuse KB groups by source, and two metrics must
+        # never share a formula row. (This drives the real assemble → _save_composed_
+        # snippets wiring, not the unit-level call.)
+        session.flush()
+        formulas = [
+            s
+            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
+            if s.snippet_type == "formula"
+        ]
+        by_source = {s.source: s for s in formulas}
+        assert by_source.keys() == {"graph:gross_profit", "graph:net_income"}
+        # Each metric's snippet is the WHOLE standalone composition (a WITH chain), not a
+        # shared shape — distinct rows, distinct SQL.
+        assert (
+            by_source["graph:gross_profit"].snippet_id != by_source["graph:net_income"].snippet_id
+        )
+        assert by_source["graph:gross_profit"].sql.lstrip().startswith("WITH")

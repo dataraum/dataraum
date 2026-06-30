@@ -491,22 +491,17 @@ def _warm_generations_parallel(
     grounded. Returns the run-scoped binding map; a node that raises is recorded
     ungroundable so its dependent metrics honest-fail born-loud at assembly.
     """
-    from dataraum.graphs.node_warming import NodeDecision, ungroundable_dep_reason
+    from dataraum.graphs.node_warming import NodeDecision
 
     bindings: dict[NodeKey, NodeDecision] = {}
     with ThreadPoolExecutor(
         max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric-warm"
     ) as pool:
         for generation in generations:
-            # Gate before authoring: a node whose dependency did not ground is
-            # recorded ungroundable WITHOUT an LLM call — never let the composition
-            # prompt fabricate the missing dep and poison the snippet cache (DAT-636).
+            # Only leaf EXTRACTs warm now (DAT-646) — they have no dependencies, so
+            # there is no dep-gate: each is authored once, concept-keyed.
             futures: dict[Future[NodeDecision], NodeKey] = {}
             for key in generation:
-                reason = ungroundable_dep_reason(nodes[key], bindings)
-                if reason is not None:
-                    bindings[key] = NodeDecision(grounded=False, reason=reason)
-                    continue
                 futures[
                     pool.submit(
                         _warm_isolated,
@@ -580,11 +575,7 @@ def _warm_generations_serial(
 ) -> dict[NodeKey, NodeDecision]:
     """Serial fallback: shared session + cursor, sequential dependency order."""
     from dataraum.graphs.agent import ExecutionContext
-    from dataraum.graphs.node_warming import (
-        NodeDecision,
-        build_mini_graph,
-        ungroundable_dep_reason,
-    )
+    from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
 
     exec_ctx = ExecutionContext.with_rich_context(
         session=session,
@@ -598,11 +589,7 @@ def _warm_generations_serial(
     bindings: dict[NodeKey, NodeDecision] = {}
     for generation in generations:
         for key in generation:
-            # Gate before authoring — see _warm_generations (DAT-636 cache-poison guard).
-            reason = ungroundable_dep_reason(nodes[key], bindings)
-            if reason is not None:
-                bindings[key] = NodeDecision(grounded=False, reason=reason)
-                continue
+            # Only leaf EXTRACTs warm (DAT-646) — no deps, so no dep-gate.
             try:
                 result = agent.execute(
                     session, build_mini_graph(nodes[key]), exec_ctx, workspace_id=schema_mapping_id

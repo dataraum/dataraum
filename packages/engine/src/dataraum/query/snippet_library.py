@@ -1,15 +1,17 @@
 """SQL Snippet Library — the engine-owned snippet Knowledge Base substrate.
 
 Manages snippet lifecycle for the LIVE producer path (the GraphAgent in
-``graphs/agent.py`` + ``metrics_phase``): upsert, exact-key + expression-pattern
-discovery, and usage/failure tracking. The natural-language CONSUMER discovery
-surface — key-based graph search, full-graph injection, vocabulary, stats — moved
-to the cockpit TS tier (the ``answer`` sub-agent, DAT-485/494) and was removed in
-DAT-487; the cockpit reads the same ``sql_snippets`` substrate directly via Drizzle.
+``graphs/agent.py`` + ``metrics_phase``): upsert, exact-key discovery, and
+usage/failure tracking. The natural-language CONSUMER discovery surface — key-based
+graph search, full-graph injection, vocabulary, stats — moved to the cockpit TS tier
+(the ``answer`` sub-agent, DAT-485/494) and was removed in DAT-487; the cockpit reads
+the same ``sql_snippets`` substrate directly via Drizzle.
 
 Discovery (graph agent only):
-1. Exact key match — extract/constant steps (``find_by_key``, O(1) with index)
-2. Expression pattern match — formula steps (``find_by_expression``, O(N), N < 100)
+1. Exact key match — EXTRACT leaves (``find_by_key``, O(1) with index). EXTRACTs are
+   the sole shared, cross-metric cache. FORMULA/CONSTANT snippets are NOT discovered
+   here (DAT-646): they are composed per-metric and persisted source-scoped only for
+   the cockpit reuse KB — never reused by expression shape (the old aliasing bug).
 
 Usage:
     library = SnippetLibrary(session, workspace_id=workspace_id)
@@ -47,7 +49,6 @@ from sqlalchemy import select, update
 
 from dataraum.core.logging import get_logger
 from dataraum.query.snippet_models import SnippetUsageRecord, SQLSnippetRecord
-from dataraum.query.snippet_utils import normalize_expression
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -61,7 +62,7 @@ class SnippetMatch:
 
     snippet: SQLSnippetRecord
     match_confidence: float  # 0.0-1.0
-    match_strategy: str  # "exact_key" | "expression_pattern"
+    match_strategy: str  # "exact_key"
 
 
 class SnippetLibrary:
@@ -209,40 +210,6 @@ class SnippetLibrary:
 
         return self.session.execute(stmt).scalar_one_or_none()
 
-    def find_by_expression(
-        self,
-        expression: str,
-        schema_mapping_id: str,
-    ) -> SnippetMatch | None:
-        """Find formula snippet by normalized expression pattern.
-
-        Used by the graph agent for formula steps.
-
-        Args:
-            expression: Formula expression to match
-            schema_mapping_id: Schema mapping identifier
-
-        Returns:
-            SnippetMatch if found, None otherwise
-        """
-        normalized, sorted_fields, _ = normalize_expression(expression)
-
-        stmt = select(SQLSnippetRecord).where(
-            SQLSnippetRecord.snippet_type == "formula",
-            SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
-            SQLSnippetRecord.normalized_expression == normalized,
-        )
-
-        record = self.session.execute(stmt).scalar_one_or_none()
-        if record is None:
-            return None
-
-        return SnippetMatch(
-            snippet=record,
-            match_confidence=0.9,
-            match_strategy="expression_pattern",
-        )
-
     # --- Persistence ---
 
     def save_snippet(
@@ -301,13 +268,26 @@ class SnippetLibrary:
                 parameter_value=parameter_value,
             )
         elif snippet_type == "formula" and normalized_expression:
-            # Check for existing formula with same expression
+            # Per-metric identity (DAT-646): a formula snippet is unique per SOURCE
+            # (``graph:{graph_id}``) + expression, NOT by expression alone. Two metrics
+            # that share an arithmetic shape (``ebitda/revenue`` vs ``net_income/revenue``)
+            # must NOT collapse to one row — that shape-keyed dedup was the cross-metric
+            # aliasing bug. ``normalized_expression`` is retained as internal metadata.
             stmt = select(SQLSnippetRecord).where(
                 SQLSnippetRecord.snippet_type == "formula",
                 SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
+                SQLSnippetRecord.source == source,
                 SQLSnippetRecord.normalized_expression == normalized_expression,
             )
-            existing = self.session.execute(stmt).scalar_one_or_none()
+            # ``.first()``, NOT ``scalar_one_or_none()``: formula rows have all-NULL
+            # semantic-key columns, so ``uq_snippet_semantic_key`` (which backstops
+            # extract/constant dedup) never fires for them — Postgres treats NULLs as
+            # distinct. Under at-least-once activity redelivery two concurrent sessions
+            # could each miss-then-insert the SAME (source, expression), leaving two
+            # rows; ``scalar_one_or_none`` would then raise ``MultipleResultsFound`` on
+            # the next save. These snippets are cockpit-KB-only (the engine never reads
+            # them back), so taking any existing row is correct and crash-free.
+            existing = self.session.execute(stmt).scalars().first()
 
         if existing and existing.failure_count > 0:
             # Replace failed snippet with fresh generation

@@ -447,7 +447,7 @@ class _StubCtx:
 
 
 class TestWarmSharedNodes:
-    def test_shared_extract_warmed_once_extracts_before_formulas(
+    def test_only_extracts_warmed_deduped_no_formulas(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
@@ -483,32 +483,33 @@ class TestWarmSharedNodes:
             om_run_id="run-test",
         )
 
-        # cost_of_goods_sold + revenue each warmed exactly once (deduped).
+        # Only leaf EXTRACTs warm (DAT-646), each shared concept exactly once.
         assert agent.warmed.count("extract:cost_of_goods_sold") == 1
         assert agent.warmed.count("extract:revenue") == 1
         assert agent.warmed.count("extract:operating_expense") == 1
-        # The two distinct formula expressions warmed once each.
-        formulas = [w for w in agent.warmed if w.startswith("formula:")]
-        assert len(formulas) == 2
-        # Every extract is warmed before any formula (dependency order).
-        first_formula = next(i for i, w in enumerate(agent.warmed) if w.startswith("formula:"))
-        assert all(w.startswith("extract:") for w in agent.warmed[:first_formula])
+        # FORMULAS are NOT warmed — they are composed per-metric in `assemble`.
+        assert not any(w.startswith("formula:") for w in agent.warmed)
+        # Exactly the three distinct extract concepts, nothing else.
+        assert len(agent.warmed) == 3
 
-    def test_cyclic_metric_set_is_best_effort_no_raise(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_formula_only_metric_warms_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A metric with no EXTRACT leaves contributes no warm nodes (DAT-646).
+
+        Formulas are not keyed and never enter the warm DAG, so a degenerate
+        formula-only set — including a formula cycle that earlier exercised the
+        warm-DAG cycle guard — now simply warms nothing rather than being tolerated.
+        (The real dep-cycle guard moved to ``_ordered_dep_steps`` at compose time.)"""
         monkeypatch.setattr(
             "dataraum.graphs.agent.ExecutionContext.with_rich_context",
             classmethod(lambda cls, **kw: MagicMock()),
         )
         a = _real_formula("a", "x_one - y_two", ["b"])
         b = _real_formula("b", "y_two - x_one", ["a"])
-        cyclic = _real_graph("cyclic", {"a": a, "b": b})
+        formula_only = _real_graph("formula_only", {"a": a, "b": b})
         agent = _RecordingWarmAgent()
 
-        # A cyclic set must not raise — warming is skipped, execute surfaces it.
         bindings = gep._warm_shared_nodes(
-            {"cyclic": cyclic},
+            {"formula_only": formula_only},
             _StubCtx(),  # type: ignore[arg-type]
             agent,  # type: ignore[arg-type]
             _WORKSPACE_ID,

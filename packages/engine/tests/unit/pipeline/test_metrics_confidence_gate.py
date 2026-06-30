@@ -60,20 +60,38 @@ def test_weakest_below_floor_is_flagged() -> None:
     assert "COGS proxied via transaction_type" in reason
 
 
-def test_assemble_from_snippets_propagates_confidence() -> None:
-    """Cache-assembly must carry snippet assumptions forward (the gate's fuel)."""
-    from unittest.mock import MagicMock
-
+def test_compose_metric_from_dag_propagates_confidence() -> None:
+    """Per-metric composition must carry each EXTRACT leaf's assumptions forward — the
+    gate's fuel (DAT-646: extract leaves come from the warm cache with their authored
+    confidence; the formula/constant CTEs are composed on top)."""
     from dataraum.graphs.agent import GraphAgent
+    from dataraum.graphs.models import (
+        GraphMetadata,
+        GraphSource,
+        GraphStep,
+        OutputDef,
+        OutputType,
+        StepSource,
+        StepType,
+        TransformationGraph,
+    )
 
-    # Minimal graph: one step keyed by step_id, output step.
-    step = MagicMock()
-    step.step_id = "cost_of_goods_sold"
-    graph = MagicMock()
-    graph.steps = {"cost_of_goods_sold": step}
-    graph.graph_id = "gross_profit"
-    graph.get_output_step.return_value = step
-
+    step = GraphStep(
+        step_id="cost_of_goods_sold",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field="cost_of_goods_sold", statement="income_statement"),
+        aggregation="sum",
+        output_step=True,
+    )
+    graph = TransformationGraph(
+        graph_id="gross_profit",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="g", description="", category="profitability", source=GraphSource.SYSTEM
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR),
+        steps={"cost_of_goods_sold": step},
+    )
     cached = {
         "cost_of_goods_sold": {
             "sql": "SELECT SUM(amount) AS value FROM v WHERE x IN ('a')",
@@ -91,7 +109,7 @@ def test_assemble_from_snippets_propagates_confidence() -> None:
     }
 
     agent = GraphAgent.__new__(GraphAgent)  # bypass __init__; method is pure
-    code = agent._assemble_from_snippets(graph, MagicMock(), cached, {})
+    code = agent._compose_metric_from_dag(graph, cached, {})
 
     assert code is not None
     assert len(code.assumptions) == 1

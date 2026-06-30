@@ -383,10 +383,12 @@ class TestValidationAgentBindExecute:
 
         schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
 
-        # Mock LLM to return valid SQL with tool call
+        # Mock LLM to return valid SQL with tool call — the contracted output
+        # (ADR-0017): one row with `deviation` + `magnitude`. The data is
+        # balanced (debits == credits) so deviation = 0 → PASSED.
         tool_input = {
-            "sql": "SELECT SUM(debit) as total_debits, SUM(credit) as total_credits, ABS(SUM(debit) - SUM(credit)) as difference FROM typed_journal_entries",
-            "explanation": "Sums and compares debits and credits",
+            "sql": "SELECT ABS(SUM(debit) - SUM(credit)) AS deviation, GREATEST(ABS(SUM(debit)), ABS(SUM(credit))) AS magnitude FROM typed_journal_entries",
+            "explanation": "Net debit/credit deviation and its scale",
             "columns_used": ["journal_entries.debit", "journal_entries.credit"],
             "tables_used": ["journal_entries"],
             "can_validate": True,
@@ -497,8 +499,9 @@ class TestValidationAgentBindExecute:
     def test_execute_inconclusive_result_is_error(
         self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
     ):
-        """End-to-end execute pin: SQL runs but returns an unjudgeable shape
-        → status ERROR (inconclusive), never FAILED (DAT-439 item 1)."""
+        """End-to-end execute pin: SQL runs but ignores the output contract
+        (no ``deviation`` column) → status ERROR (inconclusive), never FAILED
+        (DAT-439 item 1 / ADR-0017)."""
         table = table_with_data
 
         spec = ValidationSpec(
@@ -536,4 +539,5 @@ class TestValidationAgentBindExecute:
 
         assert result.status == ValidationStatus.ERROR
         assert result.passed is False
-        assert "Comparison check inconclusive" in result.message
+        assert "inconclusive" in result.message
+        assert "deviation" in result.message

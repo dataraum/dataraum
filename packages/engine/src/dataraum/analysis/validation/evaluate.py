@@ -1,17 +1,21 @@
-"""On-demand validation verdict — re-run the stored SQL and judge it.
+"""On-demand validation verdict — re-run the stored SQL and judge it (ADR-0017).
 
 The durable validation artifact stores the run-versioned SQL, not the pass/fail
 verdict: a stored verdict goes stale the moment data is re-imported, the SQL does
-not (DAT-617). So the verdict is *computed*, never stored-and-read. Both the
-execute phase (at write time, on freshly generated SQL) and every verdict
-consumer (on demand, by re-running ``sql_used`` at read time) judge a result
-through the ONE per-``check_type`` evaluation here — there is no second copy of
-the pass/fail logic to drift.
+not (DAT-617). So the verdict is *computed*, never stored-and-read.
 
-``evaluate_result`` is the pure judgement over already-fetched rows;
-``evaluate_validation`` is the on-demand wrapper that runs ``sql_used`` first.
-A bind failure (no ``sql_used``) has no data verdict to recompute — its
-grounding outcome is durable and lives on the lifecycle artifact, not here.
+The judgement is uniform: every validation SQL returns ONE row with a
+non-negative numeric ``deviation`` (0 = perfectly satisfied) and a ``magnitude``
+(the reference scale). The verdict is the single rule ``deviation <= tolerance``
+— no per-check_type branching, no guessing which column carries the answer (the
+deleted column-name string-matching).
+
+Entry points:
+- ``evaluate_result(spec, rows, n)`` — pure judgement over already-fetched rows.
+- ``verdict_from_sql(conn, sql, tolerance=...)`` — re-run SQL, then judge. The
+  spec-free form the in-run entropy detector uses (it holds ``tolerance`` from
+  the result record, not a full spec).
+- ``evaluate_validation(conn, sql, spec)`` — ``verdict_from_sql`` keyed off a spec.
 """
 
 from __future__ import annotations
@@ -27,8 +31,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Numeric tolerance applied to balance/comparison/aggregate checks when the spec
-# declares none (parameters.tolerance). Shared by the write-time and read-time paths.
+# Numeric tolerance applied when the spec/record declares none.
 DEFAULT_TOLERANCE = 0.01
 
 
@@ -37,8 +40,8 @@ class ValidationVerdict:
     """The recomputed pass/fail judgement for one validation.
 
     ``status`` PASSED/FAILED is a judged measurement of the data; ERROR means
-    the evaluation is INCONCLUSIVE (the SQL ran but its result shape cannot be
-    judged, OR re-running it failed). ``passed`` is ``status == PASSED``.
+    the evaluation is INCONCLUSIVE (the SQL ran but did not honor the output
+    contract, OR re-running it failed). ``passed`` is ``status == PASSED``.
     """
 
     status: ValidationStatus
@@ -47,43 +50,40 @@ class ValidationVerdict:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-def evaluate_validation(
+def verdict_from_sql(
     duckdb_conn: duckdb.DuckDBPyConnection,
     sql_used: str | None,
-    spec: ValidationSpec,
+    *,
+    tolerance: float = DEFAULT_TOLERANCE,
+    check_type: str = "",
 ) -> ValidationVerdict:
     """Re-run a validation's stored SQL against current data and judge it.
 
     The on-demand verdict (DAT-617): consumers hold the run-versioned
-    ``sql_used`` and the declared spec, never a stale stored pass/fail. Re-run
-    the SQL on the given connection (which must point at the current typed
-    lake) and re-apply the same per-``check_type`` evaluation the execute phase
-    uses.
+    ``sql_used`` and the declared ``tolerance``, never a stale stored pass/fail.
+    Re-run the SQL on the given connection (which must point at the current
+    typed lake) and apply the contract judgement.
 
-    A re-run that raises is INCONCLUSIVE (ERROR), never FAILED — a query that
-    no longer plans against re-imported data is ignorance, not a measured data
-    failure (mirrors ``execute_validation``).
+    A re-run that raises is INCONCLUSIVE (ERROR), never FAILED — a query that no
+    longer plans against re-imported data is ignorance, not a measured failure.
 
     Args:
         duckdb_conn: Connection scoped to the current typed lake.
         sql_used: The validation's grounded SQL. ``None``/empty means the spec
-            never bound (skipped or generation error) — there is no data
-            verdict to recompute; the caller keeps the durable grounding
-            outcome from the lifecycle artifact instead.
-        spec: The declared validation spec (drives check_type + tolerance).
+            never bound (skipped / generation error) — no data verdict to
+            recompute; the caller keeps the durable grounding outcome instead.
+        tolerance: The declared pass threshold (``deviation <= tolerance``).
+        check_type: Optional label carried into the message/details.
 
     Returns:
         ValidationVerdict with the freshly computed status/passed/message/details.
     """
     if not sql_used:
-        # Unbound: no grounded SQL to run. The absence is the grounding outcome
-        # (durable, does not go stale) — surfaced by the caller from the
-        # lifecycle artifact, not recomputed here.
         return ValidationVerdict(
             status=ValidationStatus.ERROR,
             passed=False,
             message="No SQL bound for this validation",
-            details={"check_type": spec.check_type},
+            details={"check_type": check_type},
         )
 
     try:
@@ -93,15 +93,15 @@ def evaluate_validation(
             dict(zip(col_names, row, strict=True)) for row in result_obj.fetchall()
         ]
     except Exception as e:
-        logger.warning("validation_reevaluate_failed", validation_id=spec.validation_id, error=str(e))
+        logger.warning("validation_reevaluate_failed", error=str(e))
         return ValidationVerdict(
             status=ValidationStatus.ERROR,
             passed=False,
             message=f"SQL execution error: {e}",
-            details={"check_type": spec.check_type},
+            details={"check_type": check_type},
         )
 
-    status, message, details = evaluate_result(spec, result_rows, len(result_rows))
+    status, message, details = _judge(check_type, tolerance, result_rows, len(result_rows))
     return ValidationVerdict(
         status=status,
         passed=status == ValidationStatus.PASSED,
@@ -110,203 +110,93 @@ def evaluate_validation(
     )
 
 
+def evaluate_validation(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    sql_used: str | None,
+    spec: ValidationSpec,
+) -> ValidationVerdict:
+    """``verdict_from_sql`` keyed off a declared spec (its tolerance + check_type)."""
+    return verdict_from_sql(
+        duckdb_conn,
+        sql_used,
+        tolerance=float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE)),
+        check_type=spec.check_type,
+    )
+
+
 def evaluate_result(
     spec: ValidationSpec,
     result_rows: list[dict[str, Any]],
     row_count: int,
 ) -> tuple[ValidationStatus, str, dict[str, Any]]:
-    """Evaluate validation result based on check type.
+    """Pure judgement over already-fetched rows, keyed off a spec."""
+    return _judge(
+        spec.check_type,
+        float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE)),
+        result_rows,
+        row_count,
+    )
 
-    PASSED/FAILED is a *judged measurement* of the data. ERROR means the
-    evaluation is INCONCLUSIVE: the SQL ran, but the result shape cannot be
-    judged (no recognizable columns, zero rows on a summary check, an
-    unrecognized check type). An inconclusive evaluation is not a data
-    failure — reporting it FAILED would pollute the failure measurements
-    ``cross_table_consistency`` scores, so it must never reach FAILED
-    (DAT-439; the artifact stays ``grounded`` with the reason).
 
-    Args:
-        spec: Validation spec
-        result_rows: Query result rows
-        row_count: Total row count
+def _judge(
+    check_type: str,
+    tolerance: float,
+    result_rows: list[dict[str, Any]],
+    row_count: int,
+) -> tuple[ValidationStatus, str, dict[str, Any]]:
+    """The contract judgement (ADR-0017): ``deviation <= tolerance``.
 
-    Returns:
-        Tuple of (status, message, details) with status PASSED/FAILED/ERROR
+    Every validation SQL returns ONE row with a non-negative numeric
+    ``deviation`` (0 = perfectly satisfied) and a ``magnitude`` (the reference
+    scale severity is judged against). PASSED/FAILED is the judged measurement.
+    ERROR means INCONCLUSIVE: the SQL ran but did not honor the contract (no
+    row, or no numeric ``deviation``). Inconclusive is never FAILED — it would
+    pollute the ``cross_table_consistency`` failure measurements (DAT-439).
+
+    Returns ``(status, message, details)``; ``details`` carries the flat
+    ``deviation``/``magnitude``/``tolerance`` the entropy scorer reads.
     """
-    check_type = spec.check_type
-    params = spec.parameters
-    tolerance = params.get("tolerance", DEFAULT_TOLERANCE)
-
-    def measured(passed: bool) -> ValidationStatus:
-        return ValidationStatus.PASSED if passed else ValidationStatus.FAILED
-
-    if check_type == "balance":
-        # Balance checks compare two values
-        if row_count == 0:
-            return (
-                ValidationStatus.ERROR,
-                "Balance check inconclusive: query returned no rows",
-                {"check_type": check_type},
-            )
-
-        row = result_rows[0]
-
-        # Look for difference column first (preferred: LLM computes the diff)
-        if "difference" in row or "diff" in row:
-            diff = abs(float(row.get("difference", row.get("diff", 0)) or 0))
-            # Promote magnitude into flat details so the scorer can
-            # read it directly (it expects details["magnitude"]).
-            mag = abs(float(row.get("magnitude") or 0)) or abs(diff) or 1
-            return (
-                measured(diff <= tolerance),
-                f"Balance difference: {diff:.2f} (tolerance: {tolerance})",
-                {
-                    "check_type": check_type,
-                    "difference": diff,
-                    "magnitude": mag,
-                    "tolerance": tolerance,
-                    "row": row,
-                },
-            )
-
-        # Look for standard balance column names
-        value_cols = [k for k in row.keys() if "total" in k.lower() or "sum" in k.lower()]
-        if len(value_cols) >= 2:
-            val1 = float(row[value_cols[0]] or 0)
-            val2 = float(row[value_cols[1]] or 0)
-            diff = abs(val1 - val2)
-            return (
-                measured(diff <= tolerance),
-                f"Balance check: {value_cols[0]}={val1:.2f}, {value_cols[1]}={val2:.2f}, diff={diff:.2f}",
-                {
-                    "check_type": check_type,
-                    "values": row,
-                    "difference": diff,
-                    "tolerance": tolerance,
-                },
-            )
-
-        # No recognizable columns — inconclusive, never FAILED
+    if row_count == 0 or not result_rows:
         return (
             ValidationStatus.ERROR,
-            f"Balance check inconclusive: could not identify balance columns in result. "
-            f"Columns returned: {list(row.keys())}",
+            f"{check_type or 'validation'} check inconclusive: query returned no rows",
+            {"check_type": check_type},
+        )
+
+    row = result_rows[0]
+    raw_deviation = row.get("deviation")
+    if raw_deviation is None:
+        return (
+            ValidationStatus.ERROR,
+            f"{check_type or 'validation'} check inconclusive: SQL did not return the "
+            f"contracted 'deviation' column (got {list(row.keys())})",
+            {"check_type": check_type, "row": row},
+        )
+    try:
+        deviation = abs(float(raw_deviation))
+        # magnitude falls back so the scorer's deviation/magnitude never divides
+        # by zero: a 0/absent magnitude falls to the deviation itself, then 1.0.
+        magnitude = abs(float(row.get("magnitude") or 0)) or deviation or 1.0
+    except (TypeError, ValueError):
+        return (
+            ValidationStatus.ERROR,
+            f"{check_type or 'validation'} check inconclusive: non-numeric deviation "
+            f"{raw_deviation!r}",
             {"check_type": check_type, "row": row},
         )
 
-    elif check_type == "constraint":
-        # Constraint checks return violating rows; an empty result IS the
-        # judgement (no violations), unlike the summary checks above.
-        if row_count == 0:
-            return (
-                ValidationStatus.PASSED,
-                "No constraint violations found",
-                {"check_type": check_type},
-            )
-        # Extract total_rows from result columns if the LLM included it
-        details: dict[str, Any] = {"check_type": check_type, "violation_count": row_count}
-        if result_rows:
-            for key in ("total_rows", "total_count", "total"):
-                val = result_rows[0].get(key)
-                if val is not None:
-                    details["total_rows"] = int(val)
-                    break
-            # Check for violation_count column (LLM may return a single summary row)
-            vc = result_rows[0].get("violation_count")
-            if vc is not None and row_count == 1:
-                # Single row with violation_count → summary, not raw violations
-                details["violation_count"] = int(vc)
-        return (
-            ValidationStatus.FAILED,
-            f"Found {details['violation_count']} constraint violations",
-            details,
-        )
-
-    elif check_type == "comparison":
-        # Comparison checks (e.g., Assets = Liabilities + Equity)
-        if row_count == 0:
-            return (
-                ValidationStatus.ERROR,
-                "Comparison check inconclusive: query returned no rows",
-                {"check_type": check_type},
-            )
-
-        row = result_rows[0]
-        tolerance = params.get("tolerance", DEFAULT_TOLERANCE)
-
-        # Check for an equation_holds or is_valid column
-        if "equation_holds" in row:
-            passed = bool(row["equation_holds"])
-            return (
-                measured(passed),
-                f"Equation check: {'passed' if passed else 'failed'}",
-                {**row, "check_type": check_type},
-            )
-
-        if "is_valid" in row:
-            passed = bool(row["is_valid"])
-            return (
-                measured(passed),
-                f"Comparison check: {'passed' if passed else 'failed'}",
-                {**row, "check_type": check_type},
-            )
-
-        # Check for difference column
-        if "difference" in row:
-            diff = abs(float(row["difference"] or 0))
-            return (
-                measured(diff <= tolerance),
-                f"Comparison difference: {diff:.2f}",
-                {"check_type": check_type, "difference": diff},
-            )
-
-        # No recognizable columns — inconclusive, never FAILED (the
-        # smoke-proven three_way_match shape, DAT-439).
-        return (
-            ValidationStatus.ERROR,
-            f"Comparison check inconclusive: could not identify comparison columns in result. "
-            f"Columns returned: {list(row.keys())}",
-            {"check_type": check_type, "row": row},
-        )
-
-    elif check_type == "aggregate":
-        # Aggregate checks return summary values with a rate metric
-        if row_count == 0:
-            return (
-                ValidationStatus.ERROR,
-                "Aggregate check inconclusive: query returned no rows",
-                {"check_type": check_type},
-            )
-
-        row = result_rows[0]
-        details = {**row, "check_type": check_type}
-
-        # Check orphan_rate / violation_rate against tolerance
-        rate = None
-        for key in ("orphan_rate", "violation_rate", "mismatch_rate", "error_rate"):
-            val = row.get(key)
-            if val is not None:
-                rate = float(val)
-                break
-
-        if rate is not None:
-            return (measured(rate <= tolerance), f"Aggregate rate: {rate:.4f}", details)
-
-        # DAT-439 decision: no rate metric stays PASSED — the prompt
-        # contract for aggregate checks is "summary values for review"
-        # (no rate required); the rate judgement above is opportunistic.
-        return (ValidationStatus.PASSED, "Aggregate check completed", details)
-
-    else:
-        # Unrecognized check type: the evaluator has no semantics to
-        # judge with — inconclusive, never a row_count>0 guess (DAT-439
-        # sweep; previously "assume passing if any results").
-        return (
-            ValidationStatus.ERROR,
-            f"Cannot evaluate check_type {check_type!r}: no evaluation semantics defined "
-            f"(query returned {row_count} rows)",
-            {"check_type": check_type, "row_count": row_count},
-        )
+    passed = deviation <= tolerance
+    status = ValidationStatus.PASSED if passed else ValidationStatus.FAILED
+    return (
+        status,
+        f"{check_type or 'validation'}: deviation {deviation:.6g} (tolerance {tolerance:.6g})",
+        {
+            "check_type": check_type,
+            "deviation": deviation,
+            "magnitude": magnitude,
+            "tolerance": tolerance,
+        },
+    )
 
 
 __all__ = [
@@ -314,4 +204,5 @@ __all__ = [
     "ValidationVerdict",
     "evaluate_result",
     "evaluate_validation",
+    "verdict_from_sql",
 ]

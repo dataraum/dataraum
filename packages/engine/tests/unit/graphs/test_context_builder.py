@@ -280,31 +280,31 @@ class TestBuilderExtractsTableEntity:
         assert ctx1.tables[0].is_fact_table is False
 
 
-class TestBuilderExtractsValidationDetails:
-    """Verify builder reads ValidationResultRecord.details.
+class TestBuilderRecomputesValidationVerdict:
+    """The validation verdict is recomputed on demand (ADR-0017), not read.
 
-    Run-versioned since DAT-438: the builder reads validation results only at
-    the workspace's promoted operating_model catalog head — the test seeds the
-    head. Without it, the read is fail-closed empty.
+    The builder no longer surfaces a stored verdict — it re-runs ``sql_used``.
+    Recompute needs a DuckDB connection AND a declared spec, so the unit path
+    (no connection) is fail-closed empty; the populated path is covered by the
+    integration metrics/validation-phase tests (real connection + vertical).
     """
 
-    def test_validation_details(self, session: Session) -> None:
+    def test_no_connection_yields_no_validations(self, session: Session) -> None:
         from dataraum.analysis.validation.db_models import ValidationResultRecord
         from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
 
         source_id, table_id, column_id = _insert_source_table_column(session)
 
+        # The slimmed record: grounded SQL + declared params, no verdict.
         session.add(
             ValidationResultRecord(
                 result_id=_id(),
                 run_id="run-om",
                 validation_id="balance_check",
                 table_ids=[table_id],
-                status="failed",
                 severity="critical",
-                passed=False,
-                message="Balance mismatch",
-                details={"summary": "Off by 42.50", "affected_rows": 3},
+                tolerance=0.01,
+                sql_used="SELECT 42.5 AS deviation, 100 AS magnitude",
             )
         )
         session.add(
@@ -314,10 +314,10 @@ class TestBuilderExtractsValidationDetails:
         )
         session.flush()
 
+        # No duckdb_conn → the builder cannot re-run, so it surfaces nothing
+        # (never a stale stored verdict).
         ctx = build_execution_context(session, [table_id])
-
-        assert len(ctx.validations) == 1
-        assert ctx.validations[0].details == {"summary": "Off by 42.50", "affected_rows": 3}
+        assert ctx.validations == []
 
 
 class TestBuilderExtractsCycleVolume:

@@ -745,16 +745,17 @@ def build_execution_context(
     # The pass/fail VERDICT is recomputed ON DEMAND (DAT-617): re-run each
     # check's run-versioned ``sql_used`` against current data rather than read a
     # stored verdict that goes stale on re-import. A bind failure (no
-    # ``sql_used`` — skipped / generation error) has no data verdict to
-    # recompute; its grounding outcome is durable, so surface what bind recorded
-    # on the row. With no connection (unit context) the read stays stored-only.
+    # ``sql_used``) has no data verdict to recompute and no grounded SQL to feed
+    # the metric agent — its grounding outcome lives in ``lifecycle_artifacts``,
+    # surfaced by the cockpit, not in this data-quality context. So skip the
+    # unbound rows here (and the unit/no-connection path, which can't re-run).
     from dataraum.analysis.validation.config import load_all_validation_specs
     from dataraum.analysis.validation.db_models import ValidationResultRecord
     from dataraum.analysis.validation.evaluate import evaluate_validation
 
     val_specs = load_all_validation_specs(vertical) if vertical else {}
     validation_contexts: list[ValidationContext] = []
-    if om_run_id is not None:
+    if om_run_id is not None and duckdb_conn is not None:
         # One row per validation_id per run (uq_validation_result_run) — no
         # latest-wins dedup needed. ValidationResultRecord has no source_id;
         # filter post-hoc by table_id overlap (table_ids is a JSON array).
@@ -764,29 +765,19 @@ def build_execution_context(
             if not (table_id_set & set(val_rec.table_ids)):
                 continue
             spec = val_specs.get(val_rec.validation_id)
-            if val_rec.sql_used and spec is not None and duckdb_conn is not None:
-                verdict = evaluate_validation(duckdb_conn, val_rec.sql_used, spec)
-                validation_contexts.append(
-                    ValidationContext(
-                        validation_id=val_rec.validation_id,
-                        status=verdict.status.value,
-                        severity=spec.severity.value,
-                        passed=verdict.passed,
-                        message=verdict.message,
-                        details=verdict.details,
-                    )
+            if not (val_rec.sql_used and spec is not None):
+                continue
+            verdict = evaluate_validation(duckdb_conn, val_rec.sql_used, spec)
+            validation_contexts.append(
+                ValidationContext(
+                    validation_id=val_rec.validation_id,
+                    status=verdict.status.value,
+                    severity=spec.severity.value,
+                    passed=verdict.passed,
+                    message=verdict.message,
+                    details=verdict.details,
                 )
-            else:
-                validation_contexts.append(
-                    ValidationContext(
-                        validation_id=val_rec.validation_id,
-                        status=val_rec.status,
-                        severity=val_rec.severity,
-                        passed=val_rec.passed,
-                        message=val_rec.message or "",
-                        details=val_rec.details,
-                    )
-                )
+            )
 
     # 13c. Load enriched views
     from dataraum.analysis.views.db_models import EnrichedView

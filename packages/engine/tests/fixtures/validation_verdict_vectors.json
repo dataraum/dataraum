@@ -1,0 +1,82 @@
+{
+  "_comment": "ADR-0017 shared verdict truth table. The single source of truth for the validation judgement, asserted by BOTH the engine (pytest: tests/unit/analysis/validation/test_evaluate.py) and the cockpit (vitest, the TS mirror). The judgement is uniform: passed = deviation <= tolerance; a missing/absent/non-numeric deviation (or no row) is inconclusive (status 'error', never 'failed'). Keep the two consumers in lockstep — a divergence is a test failure, not a production surprise.",
+  "cases": [
+    {
+      "name": "balance_clean_passes",
+      "check_type": "balance",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": 0.0, "magnitude": 150.0 }],
+      "expected": { "status": "passed", "passed": true }
+    },
+    {
+      "name": "balance_off_fails",
+      "check_type": "balance",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": 50.0, "magnitude": 150.0 }],
+      "expected": { "status": "failed", "passed": false }
+    },
+    {
+      "name": "deviation_exactly_at_tolerance_passes",
+      "check_type": "comparison",
+      "tolerance": 0.5,
+      "rows": [{ "deviation": 0.5, "magnitude": 1000.0 }],
+      "expected": { "status": "passed", "passed": true }
+    },
+    {
+      "name": "aggregate_rate_over_tolerance_fails",
+      "check_type": "aggregate",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": 0.5, "magnitude": 1.0 }],
+      "expected": { "status": "failed", "passed": false }
+    },
+    {
+      "name": "constraint_zero_violations_passes",
+      "check_type": "constraint",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": 0.0, "magnitude": 1000.0 }],
+      "expected": { "status": "passed", "passed": true }
+    },
+    {
+      "name": "constraint_violations_fail",
+      "check_type": "constraint",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": 3.0, "magnitude": 1000.0 }],
+      "expected": { "status": "failed", "passed": false }
+    },
+    {
+      "name": "no_rows_is_inconclusive",
+      "check_type": "balance",
+      "tolerance": 0.01,
+      "rows": [],
+      "expected": { "status": "error", "passed": false }
+    },
+    {
+      "name": "missing_deviation_column_is_inconclusive",
+      "check_type": "comparison",
+      "tolerance": 0.01,
+      "rows": [{ "po_count": 5, "invoice_count": 3 }],
+      "expected": { "status": "error", "passed": false }
+    },
+    {
+      "name": "non_numeric_deviation_is_inconclusive",
+      "check_type": "balance",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": "not-a-number", "magnitude": 10.0 }],
+      "expected": { "status": "error", "passed": false }
+    },
+    {
+      "name": "negative_deviation_uses_absolute_value",
+      "check_type": "comparison",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": -42.0, "magnitude": 1000.0 }],
+      "expected": { "status": "failed", "passed": false }
+    },
+    {
+      "name": "absent_magnitude_still_judges_on_deviation",
+      "check_type": "balance",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": 0.0 }],
+      "expected": { "status": "passed", "passed": true }
+    }
+  ]
+}

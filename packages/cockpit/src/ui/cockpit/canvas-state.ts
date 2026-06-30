@@ -122,11 +122,21 @@ export type CanvasState =
 	// same result-grid path (the table is unchanged; confidence rides on top).
 	// `summary` is the answer narrative (the AnswerSchema `answer` field) — carried
 	// so the Report mint (DAT-624) can freeze it alongside the SQL + confidence.
+	// Discriminated on `sql`: a grounded result carries the grid SQL + confidence; a
+	// NO-RESULT answer (the sub-agent couldn't compose a runnable query — a legitimate
+	// outcome) carries `sql: null` + `confidence: null`, and the widget shows an
+	// explicit "no result" state (with the narrative) rather than a stale/blank canvas.
 	| {
 			kind: "answer-result";
 			sql: string;
 			summary: string;
 			confidence: AnswerConfidence;
+	  }
+	| {
+			kind: "answer-result";
+			sql: null;
+			summary: string;
+			confidence: null;
 	  }
 	// DAT-576/DAT-597: the editable probe surface — the staging hub default. The user
 	// picks a configured DB source, writes/edits read-only SQL, and runs it against

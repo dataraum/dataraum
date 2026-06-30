@@ -1,16 +1,25 @@
 """Membership floor for detected cycles (DAT-630).
 
 A guardrail on the cycle agent's output — not a detector. The LLM authors the
-cycles; this rejects any whose cited categorical reference (a ``status_column``,
-a ``completion_value``, a stage ``indicator_value``, an entity/fact column) does
-NOT appear in the served context. An improvised column or value is a
-hallucination: dropping the cycle keeps the signal honest, the same role
+cycles; this rejects any whose cited **categorical** reference (a
+``status_column``, a ``completion_value``, a stage ``indicator_value``, an
+entity/fact column) does NOT appear in the served context. An improvised column
+or value is a hallucination; dropping the cycle is the same role
 ``graphs/verifier.py`` plays for metrics.
 
-Deliberately membership-only: it never re-derives a completion rate or re-judges
-a numeric signal (that would creep back toward a deterministic detector). A
-value is rejected ONLY when the cited column has a served value-set that the
-value is absent from — when no value-set was served we cannot prove
+**Scope — categorical only, by design.** This floor covers the status-completion
+path: it catches a made-up column or value. It does NOT police the
+numeric-completion path — a cycle that completes on a derived relationship
+carries no status column/stages and so passes through untouched. The numeric
+path's honesty rests on the prompt's cite-only-served discipline plus the phase
+confidence gate (low confidence → flagged), not on this floor. We deliberately
+don't cross-check the claimed number here: re-judging a numeric signal would
+creep back toward the deterministic detector this design rejects. If a fabricated
+numeric cycle ever surfaces on real data, tighten then — not preemptively against
+synthetic edge cases.
+
+Membership-only: a value is rejected ONLY when the cited column has a served
+value-set the value is absent from — when no value-set was served we cannot prove
 improvisation, so we don't reject (no false-loud).
 """
 

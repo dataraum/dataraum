@@ -32,6 +32,7 @@ from dataraum.analysis.cycles.models import (
     DetectedCycle,
     EntityFlow,
 )
+from dataraum.analysis.cycles.verify import verify_cycles
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.llm.features._base import LLMFeature
@@ -281,6 +282,13 @@ class BusinessCycleAgent(LLMFeature):
                 evidence=cd.get("evidence", []),
             )
             cycles.append(cycle)
+
+        # Membership floor (DAT-630): drop any cycle citing a column/value the
+        # context never served — an improvised reference is a hallucination, and
+        # an honest "not detected" beats a fabricated cycle. Loud, never silent.
+        cycles, rejections = verify_cycles(cycles, context)
+        for reason in rejections:
+            logger.warning("cycle_rejected_improvised_reference", reason=reason)
 
         # Build analysis
         if output:

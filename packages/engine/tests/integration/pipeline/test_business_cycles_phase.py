@@ -106,6 +106,7 @@ def _detected(
     canonical_type: str,
     *,
     completion_rate: float | None = 0.85,
+    confidence: float = 0.9,
 ) -> DetectedCycle:
     return DetectedCycle(
         cycle_id=str(uuid4()),
@@ -117,7 +118,7 @@ def _detected(
         tables_involved=["invoices"],
         status_column="status",
         completion_rate=completion_rate,
-        confidence=0.9,
+        confidence=confidence,
     )
 
 
@@ -266,6 +267,45 @@ class TestCycleLifecycleFlow:
         assert result.outputs["stuck_grounded"] == 1
         assert result.outputs["stuck_declared"] == 1
         assert result.outputs["detected_cycles"] == 2
+
+    @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
+    @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
+    def test_low_confidence_detection_executes_but_flagged(
+        self,
+        mock_types: MagicMock,
+        mock_ground: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """A measured cycle below the confidence floor reaches executed but carries the doubt (DAT-630)."""
+        mock_types.return_value = {
+            "order_to_cash": {"business_value": "high"},
+            "accounts_payable": {"business_value": "high"},
+        }
+        mock_ground.return_value = Result.ok(
+            _analysis(
+                [
+                    _detected("order_to_cash", confidence=0.3),  # below floor → flagged
+                    _detected("accounts_payable", confidence=0.9),  # confident → clean
+                ]
+            )
+        )
+
+        result = BusinessCyclesPhase()._run(
+            _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        )
+        session.flush()
+
+        artifacts = _artifacts(session, "run-om-1")
+        # Both EXECUTED — the number still shows; only the doubt differs.
+        assert artifacts["order_to_cash"].state == ArtifactState.EXECUTED.value
+        assert artifacts["accounts_payable"].state == ArtifactState.EXECUTED.value
+        assert "low-confidence detection" in (artifacts["order_to_cash"].state_reason or "")
+        assert artifacts["accounts_payable"].state_reason is None
+        assert result.outputs["executed"] == 2
+        assert result.outputs["low_confidence"] == 1
 
     @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
     @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")

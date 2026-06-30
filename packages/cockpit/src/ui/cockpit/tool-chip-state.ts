@@ -2,9 +2,11 @@
 // chips render from. Pure, no React.
 //
 // SDK CONTRACT (two halves, DAT-449):
-//   - The tool-CALL part behavior — an errored execution parking at
-//     "input-complete" with the error riding in `output` — is an UNDOCUMENTED
-//     internal of @tanstack/ai (no error-terminal ToolCallState exists).
+//   - The tool-CALL part behavior — an errored execution reaches `state: "error"`
+//     with the error ALSO riding in `output`. (Up to 0.28 there was no error
+//     terminal and the part parked at "input-complete"; 0.38 added the `error`
+//     state — see the WHY block below.) The rail still reads the error off
+//     `output`, not the state, so it is robust across either behavior.
 //   - The tool-RESULT part shape (`state: "error"` + `error?: string`) MATCHES
 //     the PUBLIC `ToolResultPart` export of @tanstack/ai-client — a documented
 //     contract, not an internal. (`MessageLike` below still reads it through a
@@ -22,25 +24,23 @@
 // already projects into the parts this module reads, so consuming them
 // directly adds NO authority — it only trades render-derived state for an
 // event-driven parallel store (against the derive-during-render convention).
-// The root gap is UPSTREAM: ToolCallState has no error terminal, so the same
-// inference is required at either layer — filed as
-// https://github.com/TanStack/ai/issues/718 (contract test as the repro).
-// Until that lands, this mapping + the contract test are the floor.
+// The original upstream gap (ToolCallState had no error terminal —
+// https://github.com/TanStack/ai/issues/718) is closed as of 0.38; the mapping
+// still earns its place for the orphan/interrupted-drain cases below, where a
+// part is dead with no terminal state at all.
 //
-// WHY THIS EXISTS — the SDK's tool-call part state machine has NO error-terminal
-// state (verified against the installed @tanstack/ai — bun.lock owns the
-// version — by driving the real server chat() loop + client StreamProcessor
-// end-to-end):
+// WHY THIS EXISTS — `state === "complete"` is NOT a sufficient done-condition
+// (verified against the installed @tanstack/ai — bun.lock owns the version — by
+// driving the real server chat() loop + client StreamProcessor end-to-end):
 //
-//   - An ERRORED tool execution comes back as `state: "input-complete"` with
-//     the error riding in `output` and a sibling `tool-result` part
-//     `state: "error"` (processor.js handleToolCallEndEvent/
-//     handleToolCallResultEvent map `output-error` → "input-complete";
-//     message-updaters.js updateToolCallWithOutput defaults errored calls to
-//     "input-complete"). `state === "complete"` therefore NEVER matches — the
-//     old done-condition spun the Loader forever (the live stuck
-//     workflow_status chips). The output carries one of TWO error shapes —
-//     see `outputError`.
+//   - An ERRORED tool execution comes back as `state: "error"` with the error
+//     riding in `output` and a sibling `tool-result` part `state: "error"`. (Up
+//     to 0.28 the call part instead parked at "input-complete" — processor.js
+//     mapped `output-error` → "input-complete" — so `state === "complete"`
+//     NEVER matched and the old done-condition spun the Loader forever; 0.38
+//     added the error terminal.) The rail keys off `output` either way, so it
+//     stays correct across the change. The output carries one of TWO error
+//     shapes — see `outputError`.
 //   - The client resolves the turn at the FIRST per-iteration RUN_FINISHED (the
 //     Anthropic adapter emits one per model call) and back-fills later results
 //     via a background drain. Anything that severs that drain — stop(), a new
@@ -142,10 +142,10 @@ export function toolChipStatus(
 		streamIdle?: boolean;
 	} = {},
 ): ToolChipStatus {
-	// Errored execution: the SDK parks the part at "input-complete" and carries
-	// the error in the output / the correlated tool-result part — there is no
-	// error STATE to test. Check before "complete" so an error-shaped output is
-	// never read as success.
+	// Errored execution: the error rides in `output` / the correlated tool-result
+	// part. Key off that, not the part's state — it works whether the part reaches
+	// the 0.38 `error` terminal or (≤0.28) parked at "input-complete". Check before
+	// "complete" so an error-shaped output is never read as success.
 	const err = opts.resultError ?? outputError(part.output);
 	if (err !== null) {
 		return { kind: "error", message: err };

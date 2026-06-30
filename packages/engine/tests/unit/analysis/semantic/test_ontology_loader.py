@@ -172,9 +172,7 @@ class TestConventions:
         )
         assert loader.format_conventions_for_prompt(ont, "validation") == ""
         assert loader.format_conventions_for_prompt(ont, "validation", qualifier="other") == ""
-        assert loader.format_conventions_for_prompt(
-            ont, "validation", qualifier="sign_conventions"
-        )
+        assert loader.format_conventions_for_prompt(ont, "validation", qualifier="sign_conventions")
 
     def test_broad_target_matches_even_with_qualifier(self) -> None:
         """A BROAD `validation` target reaches every spec — the qualifier doesn't

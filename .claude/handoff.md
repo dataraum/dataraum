@@ -5,6 +5,51 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-617 (P1) — engine validation verdicts computed on demand (calibration-neutral)
+
+**Branch:** `feat/dat-617-validation-on-demand-p1`. **No calibration action required for P1.**
+
+### What changed (read-path behavior, NOT a detector or stored shape)
+The validation pass/fail VERDICT is no longer read from the stored
+`validation_results` row by the engine consumers — it is recomputed by re-running
+the row's run-versioned `sql_used` against current data. Rationale: a stored
+verdict goes stale the moment data is re-imported; the SQL doesn't.
+- New `analysis/validation/evaluate.py`: `evaluate_result` (the per-`check_type`
+  judgement, **moved verbatim** from `ValidationAgent._evaluate_result` — same
+  `details` shapes: `magnitude`/`difference`/`violation_rate`/`total_rows`/…) +
+  `evaluate_validation(conn, sql_used, spec)` (re-run, then judge).
+  `agent.execute_validation` (the WRITE path) just delegates to `evaluate_result`
+  — byte-identical output.
+- `analysis/cycles/health.py` and `graphs/context.py` recompute the verdict on
+  demand instead of reading stored `passed`/`status`.
+
+### Why eval should not see a diff (P1)
+- **`_persist_results` and the `validation_results` schema are UNCHANGED** — the
+  verdict columns are still written exactly as before.
+- The `cross_table_consistency` **entropy detector is UNCHANGED** — it still reads
+  the stored `status`/`severity`/`details` (incl. `details["magnitude"]`). It runs
+  in-run on same-run rows (never stale), so its scores are identical.
+- In-run consumers read same-run data, so the recomputed verdict == the stored
+  one. The only intended behavioral delta is the **post-promote query path**: if
+  data was re-imported under the promoted run, the engine's cycle-health pass rate
+  and the GraphAgent's validation context now reflect CURRENT data, not the stale
+  stored verdict. That is the fix.
+
+### Heads-up for P2 (not P1, but eval should know)
+The `details["magnitude"]` coupling the `cross_table_consistency` scorer depends on
+lives in **that detector** (`entropy/detectors/computational/cross_table_consistency.py`),
+not in `graphs/context.py`. P2 drops the stored verdict columns — at which point the
+detector MUST migrate to `evaluate_validation`, and `details` will come from the
+re-run rather than the stored row. The `magnitude` field is produced identically by
+the moved `evaluate_result`, so the scorer contract is preserved across the move; the
+recalibration to watch is whether re-run-derived `details` ever differ from the
+write-time `details` for the same run (they should not).
+
+### Thresholds / new fields
+None. No schema change, no threshold change, no new stored field in P1.
+
+---
+
 ## DAT-651 — validation phase parallelized (latency only)
 
 **Branch:** `feat/dat-651-parallel-validation`. **No calibration action required.**

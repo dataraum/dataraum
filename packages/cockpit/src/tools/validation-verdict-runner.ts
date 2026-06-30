@@ -7,7 +7,7 @@
 // that use it (`look_validation`, `why_validation`) lazy-import it inside their
 // server handler, keeping their module graph node-free for the client bundle.
 
-import { withLakeConnection } from "../duckdb/lake";
+import { LAKE_ALIAS, withLakeConnection } from "../duckdb/lake";
 import { readShippedValidations } from "./teach-validation";
 import {
 	DEFAULT_TOLERANCE,
@@ -64,6 +64,10 @@ export async function runValidationVerdicts(
 	if (runnable.length === 0) return verdicts;
 
 	await withLakeConnection(async (conn) => {
+		// The engine authors `sql_used` with BARE table names (it runs under
+		// `USE lake.typed`); set the same default schema so they resolve here too
+		// — otherwise a bare `journal_lines` reads as a missing top-level catalog.
+		await conn.run(`USE ${LAKE_ALIAS}.typed`);
 		for (const item of runnable) {
 			try {
 				const reader = await conn.runAndReadAll(item.sqlUsed as string);

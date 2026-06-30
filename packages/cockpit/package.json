@@ -33,7 +33,7 @@
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.43.1",
     "@dagrejs/dagre": "^3.0.0",
-    "@duckdb/node-api": "^1.5.3-r.3",
+    "@duckdb/node-api": "^1.5.4-r.1",
     "@mantine/core": "^9.3.0",
     "@mantine/hooks": "^9.3.0",
     "@polyglot-sql/sdk": "^0.5.1",

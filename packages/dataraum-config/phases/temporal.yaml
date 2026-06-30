@@ -32,8 +32,6 @@ gaps:
   # Severity thresholds (multipliers on median gap)
   severity_severe_multiplier: 10.0
   severity_moderate_multiplier: 5.0
-  # Maximum gaps to report
-  max_gaps: 10
 
 # Update frequency and staleness
 staleness:

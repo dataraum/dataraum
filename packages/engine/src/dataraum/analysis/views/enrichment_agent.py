@@ -206,9 +206,7 @@ class EnrichmentAgent(LLMFeature):
             view_name = view.get("view_name", "?")
             fact_table = view.get("fact_table", "?")
             dimensions = view.get("dimension_columns", [])
-            dim_str = ", ".join(dimensions[:5])
-            if len(dimensions) > 5:
-                dim_str += f" ... (+{len(dimensions) - 5} more)"
+            dim_str = ", ".join(dimensions)
 
             lines.append(f"- {view_name}: {fact_table} enriched with [{dim_str}]")
 

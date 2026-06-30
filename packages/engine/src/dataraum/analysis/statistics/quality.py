@@ -198,7 +198,10 @@ def detect_outliers_iqr(
         outlier_count = int(outlier_row[0]) if outlier_row else 0
         outlier_ratio = outlier_count / total_count if total_count > 0 else 0.0
 
-        # Step 3: Get sample outliers
+        # Step 3: Get sample outliers. Bounded (DAT-649): these are stored
+        # illustrative samples, NOT LLM grounding context — the full
+        # iqr_outlier_count is persisted separately — so a storage cap is correct
+        # (uncapped would bloat the row, not fail loud). 200 = the value-set margin.
         sample_query = f"""
             SELECT TRY_CAST("{col_name}" AS DOUBLE) as val
             FROM {table_name}
@@ -206,7 +209,7 @@ def detect_outliers_iqr(
             AND (TRY_CAST("{col_name}" AS DOUBLE) < {lower_fence}
                  OR TRY_CAST("{col_name}" AS DOUBLE) > {upper_fence})
             ORDER BY ABS(TRY_CAST("{col_name}" AS DOUBLE) - {(lower_fence + upper_fence) / 2.0}) DESC
-            LIMIT 10
+            LIMIT 200
         """
 
         outlier_samples = [
@@ -295,7 +298,9 @@ def detect_outliers_zscore(
 
         outlier_ratio = outlier_count / total_count if total_count > 0 else 0.0
 
-        # Get sample outliers
+        # Get sample outliers. Bounded (DAT-649): stored illustrative samples, NOT
+        # LLM grounding context — the full outlier_count is persisted separately — so
+        # a storage cap is correct (uncapped would bloat the row). 200 = value-set margin.
         sample_query = f"""
             WITH base AS (
                 SELECT TRY_CAST("{col_name}" AS DOUBLE) AS val
@@ -306,7 +311,7 @@ def detect_outliers_zscore(
             FROM base
             WHERE ABS(0.6745 * (val - {median_val}) / {mad_val}) > {threshold}
             ORDER BY zscore DESC
-            LIMIT 10
+            LIMIT 200
         """
 
         outlier_samples = [

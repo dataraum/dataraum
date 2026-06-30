@@ -3,7 +3,7 @@
 //
 // What this guards: the found discriminant is the DECLARED artifact (NOT the
 // cross-session-durable snippets), the per-step evidence labels + digest-
-// sanitized SQL, grounded_against rendering, and the MAX_STEPS bound (rule 15).
+// sanitized SQL, grounded_against rendering, and full (uncapped) step serving.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -188,14 +188,14 @@ describe("projectWhyMetric (DAT-466)", () => {
 		);
 	});
 
-	it("bounds the steps rendered to MAX_STEPS (rule 15)", () => {
+	it("renders ALL steps (no cap) — a large metric DAG is served whole (DAT-649)", () => {
 		const many: MetricSnippetRow[] = Array.from({ length: 60 }, (_, i) => ({
 			...extractSnippet,
 			standardField: `field_${i}`,
 		}));
 		const projected = projectWhyMetric("big", executedArtifact, many, 0);
-		// Capped at 40 rendered, but the true count is reported.
-		expect(projected.steps).toHaveLength(40);
+		// Every persisted step is served — no truncation — and the count matches.
+		expect(projected.steps).toHaveLength(60);
 		expect(projected.snippet_count).toBe(60);
 	});
 });

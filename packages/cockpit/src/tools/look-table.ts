@@ -170,10 +170,6 @@ const LookTableResult = z.object({
 });
 export type LookTableResult = z.infer<typeof LookTableResult>;
 
-// How many of a column's top drivers to surface in the overview (why_column
-// shows the full ranked list).
-const TOP_DRIVERS_SHOWN = 3;
-
 /** One joined (columns ⟕ entropy_readiness ⟕ semantic_annotations) row, as
  * Drizzle returns it. The semantic fields are left-join-nullable — a column with
  * no promoted annotation reads them all null and projects `semantic: null`. */
@@ -250,7 +246,7 @@ export function projectColumnReadiness(row: ReadinessRow): ColumnReadiness {
 				}))
 			: [],
 		top_drivers: drivers.success
-			? drivers.data.slice(0, TOP_DRIVERS_SHOWN).map((d) => ({
+			? drivers.data.map((d) => ({
 					label: d.label,
 					state: d.state,
 					impact_delta: d.impact_delta,
@@ -272,7 +268,7 @@ export interface TableBandRow {
  * Project the table-grain readiness row to the overview shape. Pure (no DB), the
  * table analog of {@link projectColumnReadiness} minus the column identity: the
  * per-intent overview keeps band + risk (drivers are why_table's drill-down), and
- * the top drivers are capped + self-describing. A malformed JSONB blob degrades to
+ * the surfaced drivers are self-describing. A malformed JSONB blob degrades to
  * empty rather than throwing.
  */
 export function projectTableBand(row: TableBandRow): TableReadiness {
@@ -289,7 +285,7 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
 				}))
 			: [],
 		top_drivers: drivers.success
-			? drivers.data.slice(0, TOP_DRIVERS_SHOWN).map((d) => ({
+			? drivers.data.map((d) => ({
 					label: d.label,
 					state: d.state,
 					impact_delta: d.impact_delta,

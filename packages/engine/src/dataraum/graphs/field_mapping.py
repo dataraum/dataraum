@@ -162,12 +162,10 @@ def format_mappings_for_prompt(field_mappings: FieldMappings) -> str:
             )
         else:
             lines.append(f"- **{concept}** (multiple candidates):")
-            for c in candidates[:3]:  # Show top 3
+            for c in candidates:
                 lines.append(
                     f"  - `{c.table_name}.{c.column_name}` (confidence: {c.confidence:.2f})"
                 )
-            if len(candidates) > 3:
-                lines.append(f"  - ... and {len(candidates) - 3} more")
 
     lines.append("")
     lines.append(

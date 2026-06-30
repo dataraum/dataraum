@@ -40,7 +40,6 @@ if TYPE_CHECKING:
 DEFAULT_N_PERM = 500
 DEFAULT_ALPHA = 0.05
 DEFAULT_MAX_DEPTH = 2
-DEFAULT_TOP_K_SLICES = 5
 # A child subset must clear this multiple of min_support to be re-gated — too few
 # rows and the per-node null is meaningless (the spike's 4× rule).
 _RECURSE_SUPPORT_MULTIPLE = 4
@@ -102,9 +101,12 @@ def _slices(
     coded: _Coded,
     *,
     min_support: int,
-    top_k: int,
 ) -> tuple[DriverSlice, ...]:
-    """The supported slice values whose target deviates most from the node baseline."""
+    """The supported slice values whose target deviates most from the node baseline.
+
+    The FDR/permutation gate already drops non-significant slices, so every
+    surviving slice is served — no top-k cap (DAT-649).
+    """
     codes, n_codes = coded
     labels = _code_labels(phys, dim_labels, codes, n_codes)
     out = [
@@ -112,7 +114,7 @@ def _slices(
         for code, effect, support in target.group_effects(codes, n_codes, min_support=min_support)
     ]
     out.sort(key=lambda s: abs(s.effect), reverse=True)
-    return tuple(out[:top_k])
+    return tuple(out)
 
 
 def _build_node(
@@ -127,7 +129,6 @@ def _build_node(
     min_support: int,
     missingness_gate: float,
     n_perm: int,
-    top_k: int,
     rng: np.random.Generator,
 ) -> tuple[DriverNode | None, dict[str, float], dict[str, float]]:
     """Build the best split for this subset; recurse into its slice values.
@@ -161,7 +162,6 @@ def _build_node(
         target,
         coded[best],
         min_support=min_support,
-        top_k=top_k,
     )
 
     children: list[tuple[str, DriverNode]] = []
@@ -184,7 +184,6 @@ def _build_node(
                 min_support=min_support,
                 missingness_gate=missingness_gate,
                 n_perm=n_perm,
-                top_k=top_k,
                 rng=rng,
             )
             if child is not None:
@@ -224,7 +223,6 @@ def discover_tree(
     min_support: int = DEFAULT_MIN_SUPPORT,
     missingness_gate: float = DEFAULT_MISSINGNESS_GATE,
     n_perm: int = DEFAULT_N_PERM,
-    top_k_slices: int = DEFAULT_TOP_K_SLICES,
 ) -> DriverRanking:
     """Rank ``dims`` by their permutation-gated gain on ``target`` and build the tree.
 
@@ -244,7 +242,6 @@ def discover_tree(
         min_support=min_support,
         missingness_gate=missingness_gate,
         n_perm=n_perm,
-        top_k=top_k_slices,
         rng=rng,
     )
     ranked = sorted(

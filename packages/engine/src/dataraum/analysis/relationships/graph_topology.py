@@ -408,7 +408,7 @@ def format_graph_structure_for_context(structure: GraphStructure) -> str:
     if structure.schema_cycles:
         lines.append("")
         lines.append(f"Schema cycles detected: {len(structure.schema_cycles)}")
-        for i, cycle in enumerate(structure.schema_cycles[:5], 1):  # Limit to 5
+        for i, cycle in enumerate(structure.schema_cycles, 1):
             lines.append(f"  {i}. {' → '.join(cycle.tables)} → {cycle.tables[0]}")
 
     lines.append("")

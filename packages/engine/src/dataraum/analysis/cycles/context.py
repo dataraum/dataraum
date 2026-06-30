@@ -387,7 +387,7 @@ def _get_value_counts_for_column(
             "count": tv.get("count", 0),
             "percentage": round(tv.get("percentage", 0), 1),
         }
-        for tv in top_values[:10]
+        for tv in top_values
     ]
 
 
@@ -500,13 +500,8 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             dims = ", ".join(ev["dimension_tables"]) if ev["dimension_tables"] else "none"
             lines.append(f"- {ev['view_name']}: {ev['fact_table']} + [{dims}]")
             if ev.get("dimension_columns"):
-                cols = ", ".join(ev["dimension_columns"][:8])
-                extra = (
-                    f" (+{len(ev['dimension_columns']) - 8} more)"
-                    if len(ev["dimension_columns"]) > 8
-                    else ""
-                )
-                lines.append(f"  Added columns: {cols}{extra}")
+                cols = ", ".join(ev["dimension_columns"])
+                lines.append(f"  Added columns: {cols}")
         lines.append("")
 
     # Relationships

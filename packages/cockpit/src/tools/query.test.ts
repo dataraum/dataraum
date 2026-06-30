@@ -46,7 +46,7 @@ import {
 	classifyComponents,
 	componentsToSave,
 	exhaustionDiagnostic,
-	isMissingStructuredResult,
+	noResultNarrative,
 	persistLearnedSnippets,
 	type QueryDraft,
 	readDataQuality,
@@ -360,27 +360,6 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 
 // --- Exhaustion handling (DAT-608) -----------------------------------------------
 
-describe("isMissingStructuredResult", () => {
-	it("is true for chat()'s finalization error code", () => {
-		const err = Object.assign(new Error("missing structured result"), {
-			code: "structured-output-missing-result",
-		});
-		expect(isMissingStructuredResult(err)).toBe(true);
-		// A bare object carrying the code also matches (defensive).
-		expect(
-			isMissingStructuredResult({ code: "structured-output-missing-result" }),
-		).toBe(true);
-	});
-
-	it("is false for infra errors, aborts, and non-errors (they must propagate)", () => {
-		expect(isMissingStructuredResult(new Error("ECONNREFUSED"))).toBe(false);
-		expect(isMissingStructuredResult({ code: "something-else" })).toBe(false);
-		expect(isMissingStructuredResult(null)).toBe(false);
-		expect(isMissingStructuredResult(undefined)).toBe(false);
-		expect(isMissingStructuredResult("missing structured result")).toBe(false);
-	});
-});
-
 describe("salvageDraft (validated-but-unfinalized run)", () => {
 	it("turns the last validated run into a draft: concepts from components, no guessed tables", () => {
 		const components: Component[] = [
@@ -433,5 +412,27 @@ describe("exhaustionDiagnostic (no query ever validated)", () => {
 		expect(msg.length).toBeGreaterThan(0);
 		expect(msg).not.toContain("undefined");
 		expect(msg).not.toContain("null");
+	});
+});
+
+describe("noResultNarrative (finalized-but-unvalidated run)", () => {
+	it("tells the real story from the last validation failure when a query was tried", () => {
+		const msg = noResultNarrative({
+			message: 'Binder Error: column "amount" not found',
+			sql: "SELECT amount FROM lake.typed.invoices",
+			steps: ["revenue"],
+		});
+		expect(msg).toContain('Binder Error: column "amount" not found');
+		expect(msg).toContain("SELECT amount FROM lake.typed.invoices");
+	});
+
+	it("states plainly that no SQL was run when nothing was attempted (NOT a model placeholder)", () => {
+		// The model's `answer` field is deliberately ignored here — it's often a mid-
+		// compose placeholder ("Let me now compose…") that would mislead the reader and
+		// feed the orchestrator a non-fact. State the honest fact instead.
+		const msg = noResultNarrative(null);
+		expect(msg.length).toBeGreaterThan(0);
+		expect(msg).toContain("stopped before");
+		expect(msg).not.toContain("undefined");
 	});
 });

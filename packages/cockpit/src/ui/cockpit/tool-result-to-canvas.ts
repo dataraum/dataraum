@@ -282,17 +282,22 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// (DAT-500) — band, grounded ratio, reuse, assumptions.
 	answer: (result) => {
 		if (isAgentError(result)) return null;
-		const r = result as Record<string, unknown> | null;
+		// A non-object result (null / drifted) carries nothing to show — leave the
+		// canvas unchanged. Any real `answer` tool result IS an object (the AnswerSchema
+		// shape), so this only excludes genuinely malformed output.
+		if (result === null || typeof result !== "object") return null;
+		const r = result as Record<string, unknown>;
 		// The narrative `answer` field, read defensively (cockpit boundary rule): a
 		// drifted result with a non-string answer yields "" rather than throwing.
-		const summary = typeof r?.answer === "string" ? r.answer : "";
-		const grid = (r?.grid ?? null) as { sql?: unknown } | null;
+		const summary = typeof r.answer === "string" ? r.answer : "";
+		const grid = (r.grid ?? null) as { sql?: unknown } | null;
 		if (!grid || typeof grid.sql !== "string" || grid.sql.length === 0) {
-			// No runnable query: show the no-result state when there's a narrative to
-			// explain it; a fully-empty result (no grid, no narrative) maps to nothing.
-			return summary
-				? { kind: "answer-result", sql: null, summary, confidence: null }
-				: null;
+			// No runnable query — a legitimate no-result. ALWAYS surface it as an explicit
+			// no-result card (clicking the answer chip's "view" must show SOMETHING, not a
+			// stale/blank canvas). The narrative is often empty here (the sub-agent gives
+			// up without writing one — the orchestrator explains it in chat instead), so
+			// the widget falls back to a default "couldn't compute that" message.
+			return { kind: "answer-result", sql: null, summary, confidence: null };
 		}
 		return {
 			kind: "answer-result",

@@ -68,3 +68,24 @@ export function draftToConfig(draft: ChartDraft): ChartConfig | null {
 		...(title ? { title } : {}),
 	};
 }
+
+/**
+ * A compact, human readout of a draft's mapping for the collapsed editor — e.g.
+ * `bar · X: month · Y: revenue (sum) · color: region`. Only set channels appear
+ * (an aggregate shows as `(agg)`); a fully unmapped draft is just its mark. This
+ * is what "show the generated config" surfaces before the user opens the editor.
+ */
+export function summarizeDraft(draft: ChartDraft): string {
+	const channel = (label: string, e: EncodingDraft): string | null =>
+		e.field
+			? `${label}: ${e.field}${e.aggregate ? ` (${e.aggregate})` : ""}`
+			: null;
+	return [
+		draft.mark,
+		channel("X", draft.x),
+		channel("Y", draft.y),
+		channel("color", draft.color),
+	]
+		.filter(Boolean)
+		.join(" · ");
+}

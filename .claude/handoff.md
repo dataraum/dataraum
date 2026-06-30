@@ -20,9 +20,11 @@ re-import, the SQL doesn't). Two coupled moves:
    (`analysis/validation/evaluate.py::_judge`). The old per-`check_type` result
    shapes (`difference`/`equation_holds`/`orphan_rate`/`total_rows`/… + the
    column-name string-matching) are **deleted**.
-2. **`validation_results` slimmed.** Dropped: the data-derived verdict
-   (`status`, `passed`, `message`, `details`). Kept: `sql_used` + the declared
-   judgement params `severity`, `tolerance`.
+2. **`validation_results` is a pure SQL store.** Dropped: the data-derived verdict
+   (`status`, `passed`, `message`, `details`) AND the declared params (`severity`,
+   `tolerance`). Kept: `sql_used` + `columns_used` + ids. The detector reads the
+   run's vertical from a validation `lifecycle_artifacts` `teaches` row (its shared
+   session) and loads the spec for `severity`/`tolerance`.
 
 ### Why eval cares (RE-VERIFY, not recalibrate)
 - **The `cross_table_consistency` detector changed inputs.** It now re-runs
@@ -51,8 +53,9 @@ re-import, the SQL doesn't). Two coupled moves:
   rewire is the remaining cross-package step (docker-gated, not in this branch yet).
 
 ### Thresholds / new fields
-No score threshold changed. `validation_results`: `-status,-passed,-message,-details`,
-`+tolerance`. The verdict is never stored.
+No score threshold changed. `validation_results` is now a pure SQL store:
+`-status,-passed,-message,-details,-severity`. The verdict + declared params are
+never stored — recomputed / read from config on demand.
 
 ---
 

@@ -287,7 +287,7 @@ class ValidationPhase(BasePhase):
             started_at=started_at,
             results=results,
         )
-        _persist_results(ctx.session, run_result, specs)
+        _persist_results(ctx.session, run_result)
 
         # Two distinct axes in the outputs below: the LIFECYCLE counts
         # (declared/executed/stuck_* — where each artifact landed; stuck_declared
@@ -328,18 +328,13 @@ class ValidationPhase(BasePhase):
         )
 
 
-def _persist_results(
-    session: Session,
-    run_result: ValidationRunResult,
-    specs: dict[str, ValidationSpec],
-) -> None:
-    """Persist one run-stamped ``ValidationResultRecord`` per result.
+def _persist_results(session: Session, run_result: ValidationRunResult) -> None:
+    """Persist one run-stamped ``ValidationResultRecord`` per result — a pure SQL store.
 
-    The pass/fail VERDICT is NOT persisted (ADR-0017): a stored verdict goes
-    stale on re-import, the ``sql_used`` does not. Each row holds the grounded
-    SQL plus the declared judgement params (``severity``, ``tolerance`` from the
-    spec) the in-run detector needs without a config read; the verdict is
-    recomputed on demand by re-running ``sql_used``.
+    The pass/fail VERDICT and the declared params (severity/tolerance) are NOT
+    persisted (ADR-0017): a stored verdict goes stale on re-import, the params
+    live in config. Each row holds only the grounded ``sql_used`` (+ the columns
+    it touched); the verdict is recomputed on demand by re-running it.
 
     Form-(a) upsert on ``uq_validation_result_run`` (DAT-502): a Temporal
     success-redelivery re-runs the whole phase under the same ``run_id`` and
@@ -348,15 +343,11 @@ def _persist_results(
     """
     rows: dict[tuple[str, str], dict[str, Any]] = {}
     for result in run_result.results:
-        spec = specs.get(result.validation_id)
-        tolerance = spec.parameters.get("tolerance") if spec else None
         rows[(result.validation_id, run_result.run_id)] = {
             "run_id": run_result.run_id,
             "validation_id": result.validation_id,
             "table_ids": result.table_ids,
             "columns_used": result.columns_used,
-            "severity": result.severity.value,
-            "tolerance": tolerance,
             "sql_used": result.sql_used,
             "executed_at": result.executed_at,
         }

@@ -295,15 +295,13 @@ class TestBuilderRecomputesValidationVerdict:
 
         source_id, table_id, column_id = _insert_source_table_column(session)
 
-        # The slimmed record: grounded SQL + declared params, no verdict.
+        # The slimmed record: a pure SQL store (no verdict, no declared params).
         session.add(
             ValidationResultRecord(
                 result_id=_id(),
                 run_id="run-om",
                 validation_id="balance_check",
                 table_ids=[table_id],
-                severity="critical",
-                tolerance=0.01,
                 sql_used="SELECT 42.5 AS deviation, 100 AS magnitude",
             )
         )

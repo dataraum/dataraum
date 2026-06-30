@@ -84,6 +84,39 @@ def _score(verdict: ValidationVerdict, severity: str) -> float:
     return min(1.0, deviation / magnitude)
 
 
+def _load_run_specs(context: DetectorContext) -> dict[str, Any]:
+    """Load this run's validation specs (severity + tolerance) from config.
+
+    The verdict's tolerance and the critical-rule severity are declared config,
+    not stored on the record (ADR-0017). The run's vertical is read from a
+    validation lifecycle artifact via the shared session — the entropy/detect
+    layer is otherwise vertical-free. Returns ``{}`` (graceful, never raises) when
+    the run/session/vertical can't be resolved; consumers fall back to defaults.
+    """
+    if context.session is None or context.run_id is None:
+        return {}
+
+    from sqlalchemy import select
+
+    from dataraum.analysis.validation.config import load_all_validation_specs
+    from dataraum.lifecycle.db_models import LifecycleArtifact
+
+    artifact = (
+        context.session.execute(
+            select(LifecycleArtifact)
+            .where(
+                LifecycleArtifact.artifact_type == "validation",
+                LifecycleArtifact.run_id == context.run_id,
+            )
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    vertical = (artifact.teaches or {}).get("vertical") if artifact else None
+    return load_all_validation_specs(vertical) if vertical else {}
+
+
 class CrossTableConsistencyDetector(EntropyDetector):
     """Detect entropy from cross-table validation failures.
 
@@ -138,24 +171,31 @@ class CrossTableConsistencyDetector(EntropyDetector):
                 )
             ]
 
+        # The verdict's tolerance + the critical-rule severity are declared config
+        # (ADR-0017), read from the spec — never stored on the record. The run's
+        # vertical comes from a validation lifecycle artifact via the shared session.
+        specs = _load_run_specs(context)
+
         scores: list[float] = []
         evidence: list[dict[str, Any]] = []
         # Worst failed-check score + entries per column the failing SQL touched.
         per_column: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
         for result in results:
+            spec = specs.get(result.validation_id)
+            tolerance = (
+                float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE))
+                if spec is not None
+                else DEFAULT_TOLERANCE
+            )
+            severity = spec.severity.value if spec is not None else "info"
+
             # Recompute the verdict on demand (ADR-0017): re-run the run-versioned
             # ``sql_used`` against current data rather than read a stored pass/fail
-            # that goes stale on re-import. The declared ``tolerance`` rides on the
-            # record (the detect layer carries no vertical to read config).
-            verdict = verdict_from_sql(
-                context.duckdb_conn,
-                result.sql_used,
-                tolerance=result.tolerance if result.tolerance is not None else DEFAULT_TOLERANCE,
-                # check_type isn't stored on the record (ADR-0017) — the evidence
-                # message uses a generic label; the score is unaffected.
-            )
-            score = _score(verdict, result.severity)
+            # that goes stale on re-import. check_type isn't needed (the score is
+            # uniform deviation/magnitude); the message uses a generic label.
+            verdict = verdict_from_sql(context.duckdb_conn, result.sql_used, tolerance=tolerance)
+            score = _score(verdict, severity)
             if verdict.status == ValidationStatus.ERROR:
                 logger.warning(
                     "validation_unassessed",
@@ -166,7 +206,7 @@ class CrossTableConsistencyDetector(EntropyDetector):
             entry = {
                 "validation_id": result.validation_id,
                 "status": verdict.status.value,
-                "severity": result.severity,
+                "severity": severity,
                 "passed": verdict.passed,
                 "score": score,
                 "message": verdict.message,

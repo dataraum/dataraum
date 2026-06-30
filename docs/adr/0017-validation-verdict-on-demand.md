@@ -31,17 +31,15 @@ Two further problems surfaced while grounding the cut:
 **The validation verdict is computed on demand, never stored — and the judgement reads a
 contracted output column instead of guessing it.**
 
-1. **`validation_results` drops the data-derived verdict** (`status, passed, message, details`)
-   and becomes a run-versioned SQL store: `validation_id, run_id, table_ids, columns_used,
-   sql_used, executed_at`. It **keeps the declared judgement params the in-run engine detector
-   needs** — `severity` and `tolerance` (both non-stale config scalars). This is a deliberate
-   denormalization: the entropy/detect layer carries **no vertical**, so the
-   `cross_table_consistency` detector cannot read config the way the cockpit can, and threading
-   the vertical down through `take_snapshot` → the detector is a disproportionate,
-   calibration-blind cross-cutting change. The cockpit reads its params from the spec reader
-   (config base ⊕ overlay) it already has; lifecycle state + reason stay in `lifecycle_artifacts`.
-   (The "pure SQL store, all params from config" form remains the north star — a follow-up if
-   the vertical is ever threaded into the detect layer.)
+1. **`validation_results` is a pure run-versioned SQL store:** `validation_id, run_id,
+   table_ids, columns_used, sql_used, executed_at`. The data-derived verdict (`status, passed,
+   message, details`) is dropped, and so are the declared judgement params — `severity` and
+   `tolerance` live in the vertical config, read via the spec reader at **every** consumer.
+   The in-run `cross_table_consistency` detector (the entropy/detect layer is otherwise
+   vertical-free) resolves the run's vertical from a **validation `lifecycle_artifacts` row's
+   `teaches["vertical"]` via its shared session** — no framework threading — then loads the
+   spec for `severity`/`tolerance`. The cockpit reads the same params from its own spec reader
+   (config base ⊕ overlay); lifecycle state + reason stay in `lifecycle_artifacts`.
 
 2. **The validation SQL output is contracted, killing the string-match.** The generated SQL
    aliases its verdict-bearing measure to a fixed name — `deviation` (and `magnitude` where a
@@ -76,6 +74,13 @@ contracted output column instead of guessing it.**
 
 ## Alternatives rejected
 
+- **Keep `severity`/`tolerance` on the record** (denormalized config) so the detector reads them
+  locally. Rejected — config has one home; the detector reads the run's vertical from the
+  `lifecycle_artifacts` `teaches` via its session and loads the spec, so the record stays a pure
+  SQL store.
+- **Thread the vertical through the entropy framework** (`run_detectors` → `take_snapshot` →
+  `DetectorContext`). Rejected — five new signatures for a value the shared session already
+  reaches via the validation lifecycle artifact.
 - **Mirror the column-name string-matching into TS.** Copies the rot into a second language;
   the heuristic should be deleted, not propagated.
 - **Store the verdict but refresh it.** Any stored verdict is stale between refreshes — the

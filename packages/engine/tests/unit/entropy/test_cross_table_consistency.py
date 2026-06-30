@@ -1,9 +1,11 @@
 """Tests for cross_table_consistency entropy detector (ADR-0017).
 
 The verdict is recomputed on demand: ``detect`` re-runs each record's
-``sql_used`` via ``verdict_from_sql``. The unit tests patch that re-run with a
-chosen verdict (keyed by the record's ``sql_used``) so the SCORING + fan-out
-logic is tested in isolation; ``_score`` is tested directly against verdicts.
+``sql_used`` via ``verdict_from_sql``, and reads the declared ``tolerance`` +
+``severity`` from the spec (loaded via ``_load_run_specs``, not the record). The
+unit tests patch BOTH — the verdict (keyed by ``sql_used``) and the spec map
+(keyed by ``validation_id``) — so the scoring + fan-out logic is tested in
+isolation; ``_score`` is tested directly against verdicts.
 """
 
 from __future__ import annotations
@@ -38,17 +40,22 @@ def _verdict(
     )
 
 
+def _spec(severity: str = "critical", tolerance: float = 0.01) -> MagicMock:
+    spec = MagicMock()
+    spec.severity = MagicMock()
+    spec.severity.value = severity
+    spec.parameters = {"tolerance": tolerance}
+    return spec
+
+
 def _make_result(
     *,
-    severity: str = "critical",
     sql_used: str = "SELECT 0 AS deviation, 1 AS magnitude",
     validation_id: str = "v1",
     columns_used: list[str] | None = None,
 ) -> MagicMock:
     r = MagicMock()
-    r.severity = severity
     r.sql_used = sql_used
-    r.tolerance = 0.01
     r.validation_id = validation_id
     r.columns_used = columns_used or []
     return r
@@ -57,6 +64,11 @@ def _make_result(
 def _install_verdicts(monkeypatch, mapping: dict[str, ValidationVerdict]) -> None:
     """Patch the on-demand re-run: sql_used → chosen verdict."""
     monkeypatch.setattr(ctc, "verdict_from_sql", lambda _conn, sql, **_kw: mapping[sql])
+
+
+def _install_specs(monkeypatch, mapping: dict[str, MagicMock]) -> None:
+    """Patch the spec load: validation_id → spec (severity + tolerance)."""
+    monkeypatch.setattr(ctc, "_load_run_specs", lambda _ctx: mapping)
 
 
 def _make_context(
@@ -119,8 +131,9 @@ class TestDetectFailures:
     def test_single_critical_failure(
         self, detector: CrossTableConsistencyDetector, monkeypatch
     ) -> None:
+        _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
-        ctx = _make_context(validations=[_make_result(sql_used="s1")])
+        ctx = _make_context(validations=[_make_result(sql_used="s1", validation_id="v1")])
         objects = detector.detect(ctx)
         assert len(objects) == 1
         assert objects[0].score == 1.0
@@ -129,6 +142,7 @@ class TestDetectFailures:
         self, detector: CrossTableConsistencyDetector, monkeypatch
     ) -> None:
         """Worst failure drives the score (honest rate, no boost)."""
+        _install_specs(monkeypatch, {"v1": _spec("critical"), "v2": _spec("high")})
         _install_verdicts(
             monkeypatch,
             {
@@ -139,7 +153,7 @@ class TestDetectFailures:
         ctx = _make_context(
             validations=[
                 _make_result(sql_used="pass", validation_id="v1"),
-                _make_result(sql_used="rate", severity="high", validation_id="v2"),
+                _make_result(sql_used="rate", validation_id="v2"),
             ]
         )
         objects = detector.detect(ctx)
@@ -148,6 +162,7 @@ class TestDetectFailures:
     def test_evidence_per_check(
         self, detector: CrossTableConsistencyDetector, monkeypatch
     ) -> None:
+        _install_specs(monkeypatch, {"v1": _spec("critical"), "v2": _spec("high")})
         _install_verdicts(
             monkeypatch,
             {
@@ -158,7 +173,7 @@ class TestDetectFailures:
         ctx = _make_context(
             validations=[
                 _make_result(sql_used="pass", validation_id="v1"),
-                _make_result(sql_used="fail", severity="high", validation_id="v2"),
+                _make_result(sql_used="fail", validation_id="v2"),
             ]
         )
         evidence = detector.detect(ctx)[0].evidence
@@ -214,12 +229,13 @@ class TestColumnFanOut:
         """Own-table columns matched by exact narrow name; foreign tables ignored;
         hallucinated columns dropped; column_id rides in evidence."""
         _, ids = self._seed(session)
+        _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=0.1)})
         ctx = self._context(
             session,
             [
                 _make_result(
-                    severity="critical",
+                    validation_id="v1",
                     sql_used="s1",
                     columns_used=[
                         "journal_lines.credit",  # ours
@@ -244,10 +260,11 @@ class TestColumnFanOut:
         self, detector: CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
         self._seed(session)
+        _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"sp": _verdict(ValidationStatus.PASSED)})
         ctx = self._context(
             session,
-            [_make_result(sql_used="sp", columns_used=["journal_lines.credit"])],
+            [_make_result(validation_id="v1", sql_used="sp", columns_used=["journal_lines.credit"])],
         )
         objects = detector.detect(ctx)
         assert len(objects) == 1  # the table object only
@@ -259,6 +276,7 @@ class TestColumnFanOut:
         """Two failing checks touching the same column → one object, worst score,
         both checks in evidence."""
         _, ids = self._seed(session)
+        _install_specs(monkeypatch, {"v_rate": _spec("high"), "v_critical": _spec("critical")})
         _install_verdicts(
             monkeypatch,
             {
@@ -271,13 +289,11 @@ class TestColumnFanOut:
             [
                 _make_result(
                     validation_id="v_rate",
-                    severity="high",
                     sql_used="rate",
                     columns_used=["journal_lines.credit"],
                 ),
                 _make_result(
                     validation_id="v_critical",
-                    severity="critical",
                     sql_used="crit",
                     columns_used=["journal_lines.credit"],
                 ),

@@ -252,7 +252,7 @@ class ValidationContext:
     severity: str  # info, warning, error, critical
     passed: bool
     message: str
-    details: dict[str, Any] | None = None  # From ValidationResultRecord.details
+    details: dict[str, Any] | None = None  # recomputed verdict: deviation/magnitude/tolerance
 
 
 @dataclass

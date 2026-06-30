@@ -124,8 +124,6 @@ CREATE TABLE validation_results (
 	validation_id VARCHAR NOT NULL, 
 	table_ids JSON NOT NULL, 
 	columns_used JSON NOT NULL, 
-	severity VARCHAR NOT NULL, 
-	tolerance FLOAT, 
 	sql_used TEXT, 
 	executed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_validation_results PRIMARY KEY (result_id), 

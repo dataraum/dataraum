@@ -1,9 +1,11 @@
-// Unit tests for the why_validation projection (DAT-440). Pure — no DB; the
-// live read path is covered by the operating_model integration smoke.
+// Unit tests for the why_validation projection (DAT-440 / ADR-0017). Pure — no
+// DB; the live read + on-demand verdict path is covered by the operating_model
+// integration smoke.
 //
 // What this guards: the found discriminant, the verbatim (digest-sanitized)
-// reason/message/sql pass-through, and unknown-shape JSON (grounded_against /
-// details) rendering through the shared evidence sanitizer — never assumed.
+// reason/sql pass-through, the RECOMPUTED verdict (status/passed/message) folded
+// over the artifact, and unknown-shape JSON (grounded_against) rendered through
+// the shared evidence sanitizer — never assumed, never a stored verdict.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -13,6 +15,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
+import type { Verdict } from "./validation-verdict";
+import type { ValidationParams } from "./validation-verdict-runner";
 import {
 	projectWhyValidation,
 	type WhyValidationArtifactRow,
@@ -27,22 +31,29 @@ const executedArtifact: WhyValidationArtifactRow = {
 };
 
 const executedResult: WhyValidationResultRow = {
-	status: "executed",
-	severity: "error",
-	passed: false,
-	message: "12 invoices have no matching payment",
-	sqlUsed: "SELECT i.id FROM invoices i LEFT JOIN payments p ON …",
+	sqlUsed: "SELECT 12 AS deviation, 100 AS magnitude",
 	executedAt: new Date("2026-06-07T12:00:00Z"),
-	details: { failing_rows: 12 },
 	columnsUsed: ["invoices.id", "payments.invoice_id"],
 };
 
-describe("projectWhyValidation (DAT-440)", () => {
-	it("assembles the executed drill-down: state + result + grounded detail", () => {
+const failedVerdict: Verdict = {
+	status: "failed",
+	passed: false,
+	deviation: 12,
+	magnitude: 100,
+	message: "validation: deviation 12 (tolerance 0.01)",
+};
+
+const errorParams: ValidationParams = { tolerance: 0.01, severity: "error" };
+
+describe("projectWhyValidation (DAT-440 / ADR-0017)", () => {
+	it("assembles the executed drill-down: state + recomputed verdict + grounded detail", () => {
 		const projected = projectWhyValidation(
 			"gl_invoice_match",
 			executedArtifact,
 			executedResult,
+			failedVerdict,
+			errorParams,
 			2,
 		);
 
@@ -53,20 +64,31 @@ describe("projectWhyValidation (DAT-440)", () => {
 			state_reason: null,
 			strictness: 0.8,
 			grounded_against: JSON.stringify({ tables: ["invoices", "payments"] }),
-			status: "executed",
+			status: "failed",
 			severity: "error",
 			passed: false,
-			message: "12 invoices have no matching payment",
-			sql_used: "SELECT i.id FROM invoices i LEFT JOIN payments p ON …",
+			message: "validation: deviation 12 (tolerance 0.01)",
+			sql_used: "SELECT 12 AS deviation, 100 AS magnitude",
 			executed_at: "2026-06-07T12:00:00.000Z",
-			details: JSON.stringify({ failing_rows: 12 }),
+			details: JSON.stringify({
+				deviation: 12,
+				magnitude: 100,
+				tolerance: 0.01,
+			}),
 			columns_used: ["invoices.id", "payments.invoice_id"],
 			pending_teaches: 2,
 		});
 	});
 
 	it("found=false for an unknown validation — all fields null/empty, nothing invented", () => {
-		const projected = projectWhyValidation("nope", null, null, 0);
+		const projected = projectWhyValidation(
+			"nope",
+			null,
+			null,
+			undefined,
+			undefined,
+			0,
+		);
 
 		expect(projected.found).toBe(false);
 		expect(projected.state).toBeNull();
@@ -89,6 +111,8 @@ describe("projectWhyValidation (DAT-440)", () => {
 				groundedAgainst: null,
 			},
 			null,
+			undefined,
+			undefined,
 			0,
 		);
 
@@ -97,12 +121,12 @@ describe("projectWhyValidation (DAT-440)", () => {
 		expect(projected.state_reason).toBe(
 			"Missing required tables: journal_entries",
 		);
-		// Never grounded → empty grounding render; no result fields invented.
+		// Never grounded → empty grounding render; no verdict fields invented.
 		expect(projected.grounded_against).toBe("");
 		expect(projected.status).toBeNull();
 	});
 
-	it("renders narrow names in reason, message, and SQL; stays digest-free (DAT-639)", () => {
+	it("renders narrow names in reason and SQL; stays digest-free (DAT-639)", () => {
 		const projected = projectWhyValidation(
 			"balance_check",
 			{
@@ -113,21 +137,26 @@ describe("projectWhyValidation (DAT-440)", () => {
 				groundedAgainst: { _table_name: `orders`, table: "orders" },
 			},
 			{
-				status: "executed",
-				severity: null,
-				passed: true,
-				message: `orders is balanced`,
-				sqlUsed: `SELECT count(*) FROM lake.typed.orders`,
+				sqlUsed: `SELECT 0 AS deviation, 1 AS magnitude FROM lake.typed.orders`,
 				executedAt: null,
-				details: { table: `orders` },
 				columnsUsed: [`orders.amount`],
 			},
+			{
+				status: "passed",
+				passed: true,
+				deviation: 0,
+				magnitude: 1,
+				message: "validation: deviation 0 (tolerance 0.01)",
+			},
+			{ tolerance: 0.01, severity: null },
 			0,
 		);
 
 		expect(JSON.stringify(projected)).not.toMatch(/src_[0-9a-f]{40}/);
-		expect(projected.message).toBe("orders is balanced");
-		expect(projected.sql_used).toBe("SELECT count(*) FROM lake.typed.orders");
+		expect(projected.passed).toBe(true);
+		expect(projected.sql_used).toBe(
+			"SELECT 0 AS deviation, 1 AS magnitude FROM lake.typed.orders",
+		);
 		expect(projected.grounded_against).toBe(
 			JSON.stringify({ table: "orders" }),
 		);

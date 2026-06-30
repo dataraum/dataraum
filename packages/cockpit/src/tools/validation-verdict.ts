@@ -73,7 +73,8 @@ export function verdictFromRows(
 	const deviation = Math.abs(rawDeviation);
 	// magnitude falls back so a downstream relative score never divides by zero:
 	// a 0/absent magnitude falls to the deviation itself, then to 1.
-	const magnitude = Math.abs(asFiniteNumber(row.magnitude) ?? 0) || deviation || 1;
+	const magnitude =
+		Math.abs(asFiniteNumber(row.magnitude) ?? 0) || deviation || 1;
 	const passed = deviation <= tolerance;
 
 	return {

@@ -28,6 +28,8 @@ import { getPendingOverlays } from "../db/metadata/pending-overlays";
 import { currentValidationResults } from "../db/metadata/schema";
 import { renderEvidenceDetail, stripSrcDigests } from "../lib/display-names";
 import { columnsUsedStrings } from "./look-validation";
+import { DEFAULT_TOLERANCE, type Verdict } from "./validation-verdict";
+import type { ValidationParams } from "./validation-verdict-runner";
 
 // --- Tool output (mirrors the why_* found/anatomy conventions, keyed on the
 // validation id).
@@ -70,15 +72,10 @@ export type WhyValidationResult = z.infer<typeof WhyValidationResult>;
  * shared lifecycle-detail shape, aliased here for the projection's callers. */
 export type WhyValidationArtifactRow = LifecycleArtifactDetail;
 
-/** The validation's result row (null = not executed / no row). */
+/** The validation's result row — a pure SQL store (ADR-0017; null = no row). */
 export interface WhyValidationResultRow {
-	status: string | null;
-	severity: string | null;
-	passed: boolean | null;
-	message: string | null;
 	sqlUsed: string | null;
 	executedAt: Date | null;
-	details: unknown;
 	// JSON column — unknown at the boundary, narrowed by columnsUsedStrings.
 	columnsUsed: unknown;
 }
@@ -96,6 +93,8 @@ export function projectWhyValidation(
 	validationId: string,
 	artifact: WhyValidationArtifactRow | null,
 	result: WhyValidationResultRow | null,
+	verdict: Verdict | undefined,
+	params: ValidationParams | undefined,
 	pendingTeaches: number,
 ): WhyValidationResult {
 	return {
@@ -108,13 +107,21 @@ export function projectWhyValidation(
 				: stripSrcDigests(artifact.stateReason),
 		strictness: artifact?.strictness ?? null,
 		grounded_against: renderEvidenceDetail(artifact?.groundedAgainst),
-		status: result?.status ?? null,
-		severity: result?.severity ?? null,
-		passed: result?.passed ?? null,
-		message: result?.message == null ? null : stripSrcDigests(result.message),
+		// The verdict is recomputed on demand (ADR-0017), not read; `severity` is
+		// the declared spec param; `details` renders the recomputed measurement.
+		status: verdict?.status ?? null,
+		severity: params?.severity ?? null,
+		passed: verdict?.passed ?? null,
+		message: verdict?.message == null ? null : stripSrcDigests(verdict.message),
 		sql_used: result?.sqlUsed == null ? null : stripSrcDigests(result.sqlUsed),
 		executed_at: result?.executedAt?.toISOString() ?? null,
-		details: renderEvidenceDetail(result?.details),
+		details: verdict
+			? renderEvidenceDetail({
+					deviation: verdict.deviation,
+					magnitude: verdict.magnitude,
+					tolerance: params?.tolerance,
+				})
+			: "",
 		columns_used: columnsUsedStrings(result?.columnsUsed),
 		pending_teaches: pendingTeaches,
 	};
@@ -140,13 +147,8 @@ export async function whyValidation(
 
 	const [resultRow] = await metadataDb
 		.select({
-			status: currentValidationResults.status,
-			severity: currentValidationResults.severity,
-			passed: currentValidationResults.passed,
-			message: currentValidationResults.message,
 			sqlUsed: currentValidationResults.sqlUsed,
 			executedAt: currentValidationResults.executedAt,
-			details: currentValidationResults.details,
 			columnsUsed: currentValidationResults.columnsUsed,
 		})
 		.from(currentValidationResults)
@@ -155,10 +157,31 @@ export async function whyValidation(
 
 	const pending = await getPendingOverlays();
 
+	// Verdict computed ON DEMAND (ADR-0017): re-run sql_used + judge with the
+	// declared tolerance from the vertical's specs. Server-only runner, lazy.
+	const { resolveActiveWorkspaceRow } = await import("../db/cockpit/registry");
+	const { vertical } = await resolveActiveWorkspaceRow();
+	const { loadValidationParams, runValidationVerdicts } = await import(
+		"./validation-verdict-runner"
+	);
+	const params = await loadValidationParams(vertical);
+	const param = params.get(input.validation_id);
+	const verdicts = resultRow
+		? await runValidationVerdicts([
+				{
+					validationId: input.validation_id,
+					sqlUsed: resultRow.sqlUsed,
+					tolerance: param?.tolerance ?? DEFAULT_TOLERANCE,
+				},
+			])
+		: new Map<string, Verdict>();
+
 	return projectWhyValidation(
 		input.validation_id,
 		artifactRow ?? null,
 		resultRow ?? null,
+		verdicts.get(input.validation_id),
+		param,
 		pending.length,
 	);
 }

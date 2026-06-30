@@ -26,6 +26,7 @@ import {
 	Group,
 	Loader,
 	Modal,
+	Paper,
 	Select,
 	Stack,
 	Text,
@@ -334,27 +335,35 @@ function ChartModalContent({
 				)}
 			</Stack>
 
-			{/* Live preview / empty state. A chart shows only once both axes resolve to
-			    a valid config; otherwise prompt the user toward either path. */}
-			{validConfig ? (
-				<ClientOnly>
-					<ChartView
-						config={validConfig}
-						rows={data.rows}
-						testId="chart-preview"
-					/>
-				</ClientOnly>
-			) : (
-				<Center h={200} data-testid="chart-modal-empty">
-					<Text c="dimmed" size="sm" ta="center" maw={420}>
-						{candidate
-							? validation && !validation.ok
-								? validation.error
-								: "Adjust the mapping to preview a chart."
-							: "Describe the chart above, or map the columns yourself."}
-					</Text>
-				</Center>
-			)}
+			{/* Live preview / empty state, set apart on a tinted, rounded panel so the
+			    chart reads as a distinct surface from the controls. A chart shows only
+			    once both axes resolve to a valid config; otherwise prompt the user. */}
+			<Paper
+				bg="white"
+				radius="md"
+				p="md"
+				style={{ border: "1px dotted var(--mantine-color-gray-4)" }}
+			>
+				{validConfig ? (
+					<ClientOnly>
+						<ChartView
+							config={validConfig}
+							rows={data.rows}
+							testId="chart-preview"
+						/>
+					</ClientOnly>
+				) : (
+					<Center h={200} data-testid="chart-modal-empty">
+						<Text c="dimmed" size="sm" ta="center" maw={420}>
+							{candidate
+								? validation && !validation.ok
+									? validation.error
+									: "Adjust the mapping to preview a chart."
+								: "Describe the chart above, or map the columns yourself."}
+						</Text>
+					</Center>
+				)}
+			</Paper>
 
 			{/* The encoding controls — secondary, collapsed behind a one-line readout
 			    of the current mapping. A generated config seeds this; opening lets the

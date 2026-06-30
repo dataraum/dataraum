@@ -106,3 +106,46 @@ def test_layer_prefixed_table_resolves() -> None:
     kept, rejections = verify_cycles([cycle], _context())
     assert len(kept) == 1
     assert rejections == []
+
+
+def test_rejects_improvised_stage_indicator_column() -> None:
+    """A stage indicator column not in the workspace is dropped."""
+    cycle = _cycle(
+        status_table="journal",
+        status_column="status",
+        stages=[CycleStage(stage_name="Posted", stage_order=1, indicator_column="ghost_col")],
+    )
+    kept, rejections = verify_cycles([cycle], _context())
+    assert kept == []
+    assert "ghost_col" in rejections[0]
+
+
+def test_rejects_improvised_stage_indicator_value() -> None:
+    """A stage indicator value absent from a served value-set is dropped."""
+    cycle = _cycle(
+        status_table="journal",
+        status_column="status",
+        stages=[
+            CycleStage(
+                stage_name="Posted",
+                stage_order=1,
+                indicator_column="status",
+                indicator_values=["nonexistent"],
+            )
+        ],
+    )
+    kept, rejections = verify_cycles([cycle], _context())
+    assert kept == []
+    assert "nonexistent" in rejections[0]
+
+
+def test_rejects_improvised_entity_flow_column() -> None:
+    """An entity-flow column not in the workspace is dropped."""
+    cycle = _cycle(
+        entity_flows=[
+            EntityFlow(entity_type="account", entity_column="ghost_id", entity_table="accounts")
+        ],
+    )
+    kept, rejections = verify_cycles([cycle], _context())
+    assert kept == []
+    assert "ghost_id" in rejections[0]

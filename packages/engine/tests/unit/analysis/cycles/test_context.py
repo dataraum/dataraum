@@ -21,6 +21,8 @@ from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.cycles.context import build_cycle_detection_context
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import TableEntity
+from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.lifecycle import BaseRunMap
 from dataraum.storage import Column, Source, Table
 
@@ -236,3 +238,81 @@ def test_derived_relationships_fail_closed_when_unpinned(session, ledger_with_de
     """No pinned run ⇒ no derived relationships — never a cross-run read."""
     ctx = _build(session, ledger_with_derivations, base_runs=BaseRunMap())
     assert ctx["derived_relationships"] == []
+
+
+@pytest.fixture
+def sliced_status_column(session):
+    """A status column with a slice (under the catalogue run) + a typed profile
+    (under the generation run). Returns ``(table_id, catalogue_run, gen_run)``."""
+    source = Source(name="status_source", source_type="csv")
+    session.add(source)
+    session.flush()
+
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="invoices",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_invoices",
+    )
+    session.add(tbl)
+    session.flush()
+
+    col = Column(table_id=tbl.table_id, column_name="status", column_position=0, raw_type="VARCHAR")
+    session.add(col)
+    session.flush()
+
+    session.add(
+        SliceDefinition(
+            run_id="cat",
+            table_id=tbl.table_id,
+            column_id=col.column_id,
+            column_name="status",
+            slice_priority=1,
+            distinct_values=["paid", "open"],
+        )
+    )
+    session.add(
+        StatisticalProfile(
+            column_id=col.column_id,
+            run_id="gen",
+            layer="typed",
+            total_count=100,
+            null_count=0,
+            profile_data={
+                "top_values": [
+                    {"value": "paid", "count": 80, "percentage": 80.0},
+                    {"value": "open", "count": 20, "percentage": 20.0},
+                ]
+            },
+        )
+    )
+    session.commit()
+    return tbl.table_id, "cat", "gen"
+
+
+def test_value_counts_scoped_to_generation_run(session, sliced_status_column) -> None:
+    """Value counts read at the table's pinned generation head, not an arbitrary run."""
+    table_id, cat, gen = sliced_status_column
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={table_id: gen}),
+    )
+    slices = ctx["slice_definitions"]
+    assert len(slices) == 1
+    values = {vc["value"] for vc in slices[0]["value_counts"]}
+    assert values == {"paid", "open"}
+
+
+def test_value_counts_fail_closed_without_generation_pin(session, sliced_status_column) -> None:
+    """No pinned generation run for the table ⇒ no value counts (never an arbitrary run)."""
+    table_id, cat, _ = sliced_status_column
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={}),
+    )
+    slices = ctx["slice_definitions"]
+    assert len(slices) == 1
+    assert slices[0]["value_counts"] == []

@@ -246,8 +246,15 @@ def build_cycle_detection_context(
 
     slice_list = []
     for sd in slices:
-        # Get value counts from statistical profile if available
-        value_counts = _get_value_counts_for_column(session, sd.column_id)
+        # Value counts from the statistical profile, scoped to the table's
+        # add_source generation head (``semantic_runs``) — the same per-table pin
+        # the annotations use, and the run the typed profile was written under.
+        # The verify floor (DAT-630) builds its membership set from these values,
+        # so an unscoped read would leak a stale run's values; fail-closed to []
+        # when the table has no pinned generation run.
+        value_counts = _get_value_counts_for_column(
+            session, sd.column_id, run_id=base_runs.semantic_runs.get(sd.table_id)
+        )
 
         slice_list.append(
             {
@@ -422,18 +429,29 @@ def _load_pinned_annotations(
 def _get_value_counts_for_column(
     session: Session,
     column_id: str,
+    *,
+    run_id: str | None,
 ) -> list[dict[str, Any]]:
-    """Get value counts from statistical profile for a column.
+    """Get value counts from the typed statistical profile for a column.
+
+    Run-scoped (DAT-413/630): the profile is read at ``run_id`` — the table's
+    add_source generation head. ``None`` reads EMPTY (fail-closed), never an
+    arbitrary coexisting run's profile, since the verify floor trusts these
+    values as the workspace's value-set.
 
     Args:
-        session: SQLAlchemy session
-        column_id: Column to look up
+        session: SQLAlchemy session.
+        column_id: Column to look up.
+        run_id: The table's pinned generation run; ``None`` ⇒ empty.
 
     Returns:
         List of {value, count, percentage} dicts, or empty list.
     """
+    if run_id is None:
+        return []
     profile_stmt = select(StatisticalProfile).where(
         StatisticalProfile.column_id == column_id,
+        StatisticalProfile.run_id == run_id,
         StatisticalProfile.layer == "typed",
     )
     profile = session.execute(profile_stmt).scalars().first()
@@ -457,13 +475,14 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
 
     Organizes metadata into sections that support cycle detection:
     1. Domain vocabulary (reference framework)
-    2. Dataset summary
-    3. Pre-identified categorical dimensions (= cycle indicators)
-    4. Enriched views (pre-joined tables)
-    5. Relationships
-    6. Temporal patterns
-    7. Quality signals
-    8. Column semantics by table
+    2. Dataset summary + table classifications
+    3. Pre-identified categorical dimensions (= status-completion indicators)
+    4. Derived numeric relationships (= numeric-completion signals)
+    5. Semantic field mappings (concept → column)
+    6. Enriched views (pre-joined tables)
+    7. Relationships + graph topology
+    8. Temporal patterns
+    9. Column semantics by table
 
     Args:
         context: Context dictionary from build_cycle_detection_context
@@ -495,6 +514,9 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     lines.append(f"- Dimension tables: {summary.get('dimension_tables', 0)}")
     lines.append(
         f"- Categorical dimensions (status/type columns): {summary.get('slice_dimensions_found', 0)}"
+    )
+    lines.append(
+        f"- Derived numeric relationships: {summary.get('derived_relationships_found', 0)}"
     )
     lines.append(f"- Temporal columns: {summary.get('temporal_columns', 0)}")
     lines.append(f"- Graph pattern: {summary.get('graph_pattern', 'unknown')}")

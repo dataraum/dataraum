@@ -37,6 +37,15 @@ re-import, the SQL doesn't). Two coupled moves:
   validation SQL string/shape will diverge; update to the `deviation`/`magnitude`
   contract. A check whose authored SQL doesn't return `deviation` now reads
   **inconclusive** (ERROR), never FAILED.
+- **Migration edge — re-run before calibrating:** `sql_used` rows authored under
+  the **v1.0.0** prompt return the OLD per-check_type shape (no `deviation`
+  column), so on-demand re-evaluation scores them **inconclusive (0.0)** until the
+  validation phase re-runs under v2.0.0. A calibration harness seeded from a
+  pre-change DB must re-run the operating_model validation phase first, or it will
+  see every validation score 0.0.
+- **`graphs/context` severity now comes from the spec** (not the dropped column),
+  and a validation whose spec was removed from config since the run is silently
+  omitted from the metric-agent context (it is no longer a current validation).
 - **Schema:** `validation_results` dropped 4 columns + added `tolerance` →
   `schema.sql` re-dumped; the cockpit drizzle mirror re-pull + the `look-validation`
   rewire is the remaining cross-package step (docker-gated, not in this branch yet).

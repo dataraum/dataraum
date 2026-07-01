@@ -1,5 +1,5 @@
 name: "graph_sql_generation"
-version: "5.0"
+version: "5.1"
 description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt."
 temperature: 0.0
 
@@ -123,6 +123,21 @@ system_prompt: |
   untrustworthy because the source data failed a foundational validation. Do not assume which
   constraints exist — read them from the Validation Results.)
   </data_trust>
+
+  <column_reliability>
+  A column annotated `⛔ blocked` in <dataset_context> was flagged by the readiness stage as
+  unreliable for analysis (e.g. heavy nulls, mixed/ambiguous semantics). It is NOT forbidden —
+  sometimes the blocked column is the only measure that expresses the concept, and you may still
+  aggregate it. But a value summed from a blocked column carries a reliability risk that MUST
+  propagate: if you ground a concept on a `⛔ blocked` column, record an "inferred" assumption
+  naming the column and why it is blocked, AND set that assumption's `confidence` LOW (≤ 0.4).
+
+  Read `confidence` here the same way as in <data_trust>: it is TRUST IN THE RESULTING METRIC
+  VALUE, lowered because a foundational input is flagged unreliable — NOT your certainty that the
+  column is blocked. Weigh it in context: a column blocked for one intent may still be the right
+  measure for this metric, so this is a caveat to surface, not a hard refusal — lower the
+  confidence so the metric is flagged rather than rendered confidently green.
+  </column_reliability>
 
   <aggregation_types>
   The graph step specifies an aggregation that determines HOW to extract the value:

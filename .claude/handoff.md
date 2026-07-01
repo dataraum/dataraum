@@ -5,6 +5,18 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-631 — metric grounding: teach the agent to down-rank blocked columns
+
+**Branch:** `feat/dat-631-grounding-quality`. **Re-verify metric grounding confidence; no schema/field change.**
+
+Prompt-only (`graph_sql_generation` → v5.1). A new `<column_reliability>` block: when the agent grounds a concept on a `⛔ blocked` column (readiness flagged it unreliable), it now MUST record an inferred assumption + set confidence LOW (≤0.4) — mirroring the existing `<data_trust>` pattern. Previously the agent saw the `⛔` marker but had no instruction, so it summed blocked columns at ~0.5 and the metric read confidently green. The LOW confidence feeds the existing DAT-631 gate (`metrics_phase._low_confidence_reason`, floor 0.5) → the metric flags low-confidence-executed instead.
+
+**Why eval cares (RE-VERIFY):** grounding confidence shifts — metrics resting on blocked columns now flag low-confidence rather than plain executed. Expect MORE low-confidence flags (intended honesty, not a regression). No detector surface, no new fields; it's grounding quality. It's informative/interpretable (a blocked column may still be the right measure), so the agent may still ground on it — just at lower confidence.
+
+_(The double-count half of DAT-631 Problem 2 — a concept-boundary prompt + a deterministic overlap flag — was explored and DROPPED: value-set overlap is a symptom needing interpretation, not a deterministic per-metric signal; the real fix is interpretive-at-compose or a global vocabulary invariant, deferred under DAT-652.)_
+
+---
+
 ## DAT-617 — validation verdict on demand from a contracted SQL output (ADR-0017)
 
 **Branch:** `feat/dat-617-validation-on-demand-p1`. **Re-verify `cross_table_consistency`; do NOT recalibrate blind.**

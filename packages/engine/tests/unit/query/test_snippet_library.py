@@ -446,3 +446,119 @@ class TestSnippetLibraryRecordUsage:
         # provided_not_used should NOT increment execution_count
         session.refresh(snippet)
         assert snippet.execution_count == 0
+
+
+class TestSnippetLibraryFailedRetention:
+    """DAT-543: an authored-but-unusable extract SQL is RETAINED (flagged), not dropped."""
+
+    def test_failed_retained_flagged_and_excluded_from_reuse(self, session):
+        """A failed save is stored with failure_count=1 → out of reuse, in retained_failure."""
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
+        library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(debit_balance - credit_balance) AS value FROM x",
+            description="current assets attempt",
+            schema_mapping_id="s1",
+            source="graph:current_ratio",
+            standard_field="current_assets",
+            statement="balance_sheet",
+            aggregation="end_of_period",
+            provenance={
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "Current assets cannot be negative (value=-70907.31)",
+            },
+            failed=True,
+        )
+        session.flush()
+
+        # Excluded from reuse (find_by_key filters failure_count == 0).
+        assert (
+            library.find_by_key(
+                snippet_type="extract",
+                schema_mapping_id="s1",
+                standard_field="current_assets",
+                statement="balance_sheet",
+                aggregation="end_of_period",
+            )
+            is None
+        )
+        # But retrievable as a retained failure carrying its SQL + reason.
+        rec = library.retained_failure(
+            snippet_type="extract",
+            schema_mapping_id="s1",
+            standard_field="current_assets",
+            statement="balance_sheet",
+            aggregation="end_of_period",
+        )
+        assert rec is not None
+        assert rec.failure_count == 1
+        assert rec.provenance["failure_mode"] == "verifier_rejected"
+        assert "-70907.31" in rec.provenance["failure_reason"]
+
+    def test_failed_save_never_clobbers_healthy(self, session):
+        """A later FAILED save for the same key must not overwrite working SQL."""
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
+        healthy_sql = "SELECT SUM(amount) AS value FROM typed_orders"
+        library.save_snippet(
+            snippet_type="extract",
+            sql=healthy_sql,
+            description="good",
+            schema_mapping_id="s2",
+            source="graph:m",
+            standard_field="revenue",
+        )
+        session.flush()
+        library.save_snippet(
+            snippet_type="extract",
+            sql="BROKEN",
+            description="bad",
+            schema_mapping_id="s2",
+            source="graph:m",
+            standard_field="revenue",
+            provenance={"failure_mode": "execution_failed", "failure_reason": "boom"},
+            failed=True,
+        )
+        session.flush()
+
+        match = library.find_by_key(
+            snippet_type="extract", schema_mapping_id="s2", standard_field="revenue"
+        )
+        assert match is not None
+        assert match.snippet.sql == healthy_sql  # unchanged, still reusable
+        assert match.snippet.failure_count == 0
+        assert (
+            library.retained_failure(
+                snippet_type="extract", schema_mapping_id="s2", standard_field="revenue"
+            )
+            is None
+        )
+
+    def test_success_heals_a_prior_failure(self, session):
+        """A clean success on a previously-failed key clears the flag → reusable again."""
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
+        common = dict(
+            snippet_type="extract",
+            schema_mapping_id="s3",
+            standard_field="accounts_payable",
+            statement="balance_sheet",
+            aggregation="end_of_period",
+        )
+        library.save_snippet(
+            sql="BAD",
+            description="x",
+            source="graph:dpo",
+            provenance={"failure_mode": "verifier_rejected", "failure_reason": "neg"},
+            failed=True,
+            **common,
+        )
+        session.flush()
+        assert library.retained_failure(**common) is not None
+
+        library.save_snippet(sql="GOOD", description="x", source="graph:dpo", **common)
+        session.flush()
+
+        assert library.retained_failure(**common) is None
+        healed = library.find_by_key(**common)
+        assert healed is not None
+        assert healed.snippet.sql == "GOOD"
+        assert healed.snippet.failure_count == 0

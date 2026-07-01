@@ -323,19 +323,40 @@ class GraphAgent(LLMFeature):
             # THIS node's failure poisons shared extracts (a broken formula would mark
             # `revenue` failed → every metric using it can no longer find it, and
             # honest metrics like dso silently break). DAT-636 (Bug B).
-            return Result.fail(exec_result.error or "SQL execution failed")
+            reason = exec_result.error or "SQL execution failed"
+            self._save_failed_snippet(
+                session,
+                graph,
+                generated_code,
+                schema_mapping_id,
+                workspace_id=workspace_id,
+                mode="execution_failed",
+                reason=reason,
+            )
+            return Result.fail(reason)
 
         execution = exec_result.value
 
         # Verifier gate (DAT-616): execution-pass is NOT validation. A node whose SQL
         # ran cleanly is still inconclusive if it had no support (empty filter -> NULL),
         # the value is degenerate (NULL), or a catalogue-declared condition is violated.
-        # Such a node stays ungroundable with the reason — never executed-green — and its
-        # SQL is NOT cached (we return before _save_snippets). As above, the cached deps
-        # are NOT blamed for this node's verdict.
+        # Such a node stays ungroundable with the reason — never executed-green. The SQL
+        # is NOT reusable (excluded below), but it IS retained flagged (DAT-543): a
+        # verifier_rejected extract is VALID SQL whose value the data made untrustworthy,
+        # so keeping it feeds prior_context + the cockpit's ungroundable-node detail.
         verdict = verify_execution(graph, execution)
         if not verdict.success:
-            return Result.fail(verdict.error or "metric verification failed")
+            reason = verdict.error or "metric verification failed"
+            self._save_failed_snippet(
+                session,
+                graph,
+                generated_code,
+                schema_mapping_id,
+                workspace_id=workspace_id,
+                mode="verifier_rejected",
+                reason=reason,
+            )
+            return Result.fail(reason)
 
         # Save snippets AFTER successful execution AND verification — includes
         # repair info and only saves SQL that actually works AND is trustworthy.
@@ -586,7 +607,9 @@ class GraphAgent(LLMFeature):
             "field_mappings": format_mappings_for_prompt(context.rich_context.field_mappings),
             # DAT-616: feed back what prior runs learned for this concept — the
             # honest-fail reason + prior value→concept filter decisions.
-            "prior_context": self._build_prior_context(session, graph, cached_snippets),
+            "prior_context": self._build_prior_context(
+                session, graph, cached_snippets, context.schema_mapping_id or "default"
+            ),
             # DAT-645: the vertical's conventions (e.g. the sign/natural-balance
             # rule), piped verbatim — the engine does not interpret them.
             "vertical_conventions": context.rich_context.conventions,
@@ -1219,6 +1242,60 @@ class GraphAgent(LLMFeature):
 
         logger.debug("saved_snippets", graph_id=graph.graph_id)
 
+    def _save_failed_snippet(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        generated_code: GeneratedCode,
+        schema_mapping_id: str,
+        *,
+        workspace_id: str,
+        mode: str,
+        reason: str,
+    ) -> None:
+        """Retain an authored-but-unusable EXTRACT SQL, flagged (DAT-543).
+
+        A first-authoring failure is NOT dropped. Either the SQL failed to run
+        (``mode="execution_failed"``) or it ran clean and the verifier rejected the
+        VALUE (``mode="verifier_rejected"`` — e.g. negative against ``value >= 0``, or
+        NULL "no support"); the latter is VALID SQL whose result the data made
+        untrustworthy. We persist THIS node's own generated extract SQL with
+        ``failed=True`` (``failure_count=1`` → ``find_by_key`` keeps it OUT of reuse)
+        plus ``{failure_mode, failure_reason}`` in provenance, so
+        ``_build_prior_context`` can feed the exact prior SQL + reason to the next
+        authoring, and the cockpit can surface it on the ungroundable node. Only
+        freshly-GENERATED extract leaves are saved — cached dependency snippets are
+        never blamed for this node's verdict (DAT-636).
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        library = SnippetLibrary(session, workspace_id=workspace_id)
+        source = f"graph:{graph.graph_id}"
+        generated_steps = {
+            s.get("step_id", ""): s for s in generated_code.steps if s.get("step_id")
+        }
+        provenance = {"failure_mode": mode, "failure_reason": reason}
+        for step_id, graph_step in graph.steps.items():
+            if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
+                continue
+            gen_step = generated_steps.get(step_id)
+            if not gen_step:
+                continue
+            library.save_snippet(
+                snippet_type="extract",
+                sql=gen_step.get("sql", ""),
+                description=gen_step.get("description", "") or reason,
+                schema_mapping_id=schema_mapping_id,
+                source=source,
+                standard_field=graph_step.source.standard_field,
+                statement=graph_step.source.statement,
+                aggregation=graph_step.aggregation,
+                llm_model=generated_code.llm_model,
+                provenance=provenance,
+                failed=True,
+            )
+        logger.debug("saved_failed_snippet", graph_id=graph.graph_id, mode=mode)
+
     def _save_composed_snippets(
         self,
         session: Session,
@@ -1394,6 +1471,7 @@ class GraphAgent(LLMFeature):
         session: Session,
         graph: TransformationGraph,
         cached_snippets: dict[str, dict[str, Any]] | None,
+        schema_mapping_id: str,
     ) -> str:
         """Assemble what prior runs learned for this metric (DAT-616 feedback loops).
 
@@ -1440,5 +1518,35 @@ class GraphAgent(LLMFeature):
                 "Prior value→concept groundings (reuse the same columns/filters unless wrong):\n"
                 + "\n".join(groundings)
             )
+
+        # Retained failed attempts for THIS metric's own extracts (DAT-543): the exact
+        # prior SQL + why it was rejected, at extract grain (the metric-level state_reason
+        # above is coarser). Lets the next authoring revise the specific SQL instead of
+        # re-deriving blind — the payoff of retaining, not dropping, a failed extract.
+        try:
+            from dataraum.query.snippet_library import SnippetLibrary
+
+            lib = SnippetLibrary(session)
+            for _step_id, gstep in graph.steps.items():
+                if gstep.step_type != StepType.EXTRACT or not gstep.source:
+                    continue
+                rec = lib.retained_failure(
+                    snippet_type="extract",
+                    schema_mapping_id=schema_mapping_id,
+                    standard_field=gstep.source.standard_field,
+                    statement=gstep.source.statement,
+                    aggregation=gstep.aggregation,
+                )
+                if rec and rec.sql:
+                    prov = rec.provenance or {}
+                    mode = prov.get("failure_mode", "failed")
+                    why = prov.get("failure_reason", "(no reason recorded)")
+                    parts.append(
+                        f"Your prior attempt to ground this extract was {mode}: {why}\n"
+                        f"Prior SQL (do NOT re-emit unchanged):\n{rec.sql}\n"
+                        "Revise to address the reason, or abstain (low-confidence)."
+                    )
+        except Exception as e:  # pragma: no cover - feedback is best-effort
+            logger.debug("prior_failed_sql_lookup_failed", graph_id=graph.graph_id, error=str(e))
 
         return "\n\n".join(parts)

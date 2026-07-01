@@ -65,6 +65,7 @@ x-engine-worker-env: &engine-worker-env
   # or a foreign bucket. The per-workspace DUCKLAKE_DATA_PATH is built from it.
   S3_BUCKET: ${S3_BUCKET}
   DATARAUM_CONFIG_PATH: /opt/dataraum/config
+  PROMPT_DUMP_DIR: ${PROMPT_DUMP_DIR:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
   TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}

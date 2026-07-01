@@ -317,3 +317,40 @@ conventions:
         - inventory
         - current_assets
         - cash
+
+    # Balance-sheet concepts are NOT single columns — they are account FAMILIES
+    # drawn from the chart of accounts. account_type (asset/liability/…) is too
+    # coarse (it mixes current and non-current), and the abstract concept
+    # indicators (e.g. "current_assets", "liquid_assets") match no real account
+    # name, so the extraction agent has nothing to latch onto and abstains or
+    # coarse-guesses. This convention gives it the classification RULE to apply to
+    # the served account_id__name value-set — a rule, not hardcoded names, so it
+    # generalises across charts.
+  - id: balance_sheet_composition
+    targets: [extraction, qa]
+    statement: >
+      Balance-sheet concepts are NOT any single column — they are drawn from the
+      chart of accounts by account family. Ground each by joining journal lines to
+      the account dimension and selecting the matching account_id__name values from
+      the served complete value-set — never a raw ledger column, and never a coarse
+      account_type-only filter (account_type mixes current and non-current). By
+      family: accounts_receivable = asset accounts recording money owed BY customers
+      (trade and other receivable accounts); accounts_payable = liability accounts
+      recording money owed TO suppliers (trade and other payable and accrued-expense
+      accounts); current_assets = asset accounts convertible to cash within one year
+      (cash and bank, receivables, inventory, prepaid expenses), EXCLUDING
+      non-current assets (property, equipment, vehicles, furniture, fixed assets,
+      accumulated depreciation); current_liabilities = liability accounts due within
+      one year (payables, accrued expenses, taxes payable, short-term and current
+      debt), EXCLUDING long-term debt. Select the specific account_id__name values
+      that match a family from the complete value-set; if none match, ABSTAIN rather
+      than approximate.
+    concept_groups:
+      current_asset_family:
+        - current_assets
+        - cash
+        - accounts_receivable
+        - inventory
+      current_liability_family:
+        - current_liabilities
+        - accounts_payable

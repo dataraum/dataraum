@@ -974,14 +974,16 @@ def build_execution_context(
             numeric_stats = profile_data.get("numeric_stats") or {}
             numeric_min = numeric_stats.get("min_value")
             numeric_max = numeric_stats.get("max_value")
+            # Raw outlier ratio is still surfaced as a neutral stat on the column
+            # context; it is NOT turned into a flag/caveat (DAT-543 — see below).
             outlier_ratio = None
             if quality:
                 outlier_ratio = quality.iqr_outlier_ratio or quality.zscore_outlier_ratio
 
-            # Generate column flags
+            # Generate column flags (no outlier flag — DAT-543: outliers are not a
+            # defect signal; heavy-tailed money columns naturally carry a high ratio).
             flags = _generate_column_flags(
                 null_ratio=null_ratio,
-                outlier_ratio=outlier_ratio,
                 benford_compliant=quality.benford_compliant if quality else None,
                 is_stale=temp_profile.is_stale if temp_profile else None,
                 cardinality_ratio=cardinality_ratio,
@@ -1126,23 +1128,27 @@ def build_execution_context(
 
 def _generate_column_flags(
     null_ratio: float | None,
-    outlier_ratio: float | None,
     benford_compliant: bool | None,
     is_stale: bool | None,
     cardinality_ratio: float | None,
 ) -> list[str]:
-    """Generate actionable flags from column metrics."""
+    """Generate actionable flags from column metrics.
+
+    NOTE (DAT-543): there is deliberately NO ``high_outliers`` flag. A raw IQR/
+    z-score outlier RATIO assumes an ~normal distribution; monetary and other
+    heavy-tailed columns (log-normal-ish — a few large invoices/journal lines)
+    naturally carry a high outlier ratio, so the old ``ratio > 0.1`` rule flagged
+    every money column as unreliable and fed the grounding agent a spurious
+    "blocked" caveat. Outliers are legitimate data, not a defect — never gate on
+    them here. (The entropy detectors still MEASURE outliers for their own
+    calibrated signals; this is only the agent-facing flag.)
+    """
     flags = []
 
     if null_ratio is not None and null_ratio > 0.5:
         flags.append("high_nulls")
     elif null_ratio is not None and null_ratio > 0.1:
         flags.append("moderate_nulls")
-
-    if outlier_ratio is not None and outlier_ratio > 0.1:
-        flags.append("high_outliers")
-    elif outlier_ratio is not None and outlier_ratio > 0.05:
-        flags.append("moderate_outliers")
 
     if benford_compliant is False:
         flags.append("benford_violation")

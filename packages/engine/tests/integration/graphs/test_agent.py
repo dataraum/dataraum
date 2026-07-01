@@ -318,14 +318,17 @@ def _agent_with_sql(steps: list[dict[str, str]], final_sql: str) -> GraphAgent:
 class TestGraphAgentVerifier:
     """The post-execution verifier converts silently-wrong metrics into honest fails (DAT-616)."""
 
-    def test_empty_support_extract_fails_grounded_and_caches_nothing(
+    def test_empty_support_extract_fails_grounded_and_retains_failure(
         self, session: Session, duckdb_with_data, sample_graph
     ):
         """An extract whose filter matches no rows is inconclusive, not executed-green.
 
         Reproduces the long-format finance bug: a SUM over an empty filter (no
         COALESCE mask) yields NULL → the metric stays grounded with a 'no support'
-        reason and its SQL is NOT promoted into the reuse cache.
+        reason. Flag-not-drop (DAT-543): the failed SQL is RETAINED as a decayed
+        snippet (``failure_count > 0``, provenance failure_mode) so the next run can
+        feed the agent the prior attempt + reason — but ``find_by_key`` still excludes
+        it from reuse, so it never gets promoted as a working snippet.
         """
         from sqlalchemy import select
 
@@ -347,9 +350,12 @@ class TestGraphAgentVerifier:
 
         assert not result.success
         assert "no support" in result.error
-        # The bad SQL must NOT enter the shared snippet cache (the verifier gates it).
+        # The bad SQL is retained as a DECAYED failure, never a reusable snippet.
         snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
-        assert snippets == []
+        assert len(snippets) == 1
+        retained = snippets[0]
+        assert retained.failure_count > 0
+        assert retained.provenance.get("failure_mode") == "verifier_rejected"
 
     def test_genuine_zero_metric_executes(self, session: Session, duckdb_with_data, sample_graph):
         """A metric that genuinely computes 0 (rows matched, summing to 0) passes.
@@ -1106,7 +1112,7 @@ class TestPriorContextFeedback:
                 },
             }
         }
-        out = self._agent()._build_prior_context(session, graph, cached)
+        out = self._agent()._build_prior_context(session, graph, cached, "default")
         assert "Prior value→concept groundings" in out
         assert "account_type" in out
 
@@ -1122,7 +1128,7 @@ class TestPriorContextFeedback:
         )
         graph = MagicMock()
         graph.graph_id = "some_metric"
-        out = self._agent()._build_prior_context(session, graph, None)
+        out = self._agent()._build_prior_context(session, graph, None, "default")
         assert "Last run this metric was flagged" in out
         assert "SENTINEL_PRIOR_REASON" in out
         assert "abstain" in out
@@ -1134,4 +1140,4 @@ class TestPriorContextFeedback:
         )
         graph = MagicMock()
         graph.graph_id = "g"
-        assert self._agent()._build_prior_context(session, graph, None) == ""
+        assert self._agent()._build_prior_context(session, graph, None, "default") == ""

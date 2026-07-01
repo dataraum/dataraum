@@ -172,6 +172,33 @@ class SnippetLibrary:
             match_strategy="exact_key",
         )
 
+    def retained_failure(
+        self,
+        snippet_type: str,
+        schema_mapping_id: str,
+        *,
+        standard_field: str | None = None,
+        statement: str | None = None,
+        aggregation: str | None = None,
+        parameter_value: str | None = None,
+    ) -> SQLSnippetRecord | None:
+        """The retained FAILED snippet for this semantic key (DAT-543), or None.
+
+        Mirrors ``find_by_key`` but returns the row ONLY when it is flagged failed
+        (``failure_count > 0``). The reuse read (``find_by_key``) excludes such rows;
+        ``_build_prior_context`` uses this to feed the exact prior SQL + reason back
+        to the next authoring (and the cockpit surfaces it on the ungroundable node).
+        """
+        rec = self._find_by_key_any(
+            snippet_type=snippet_type,
+            schema_mapping_id=schema_mapping_id,
+            standard_field=standard_field,
+            statement=statement,
+            aggregation=aggregation,
+            parameter_value=parameter_value,
+        )
+        return rec if (rec and rec.failure_count > 0) else None
+
     def _find_by_key_any(
         self,
         snippet_type: str,
@@ -230,11 +257,19 @@ class SnippetLibrary:
         llm_model: str | None = None,
         column_hash: str | None = None,
         provenance: dict[str, Any] | None = None,
+        failed: bool = False,
     ) -> SQLSnippetRecord:
         """Save a new snippet or update an existing one.
 
         Uses upsert semantics: if a snippet with the same semantic key exists,
         updates it. Otherwise creates a new one.
+
+        ``failed=True`` retains an authored-but-unusable extract SQL (DAT-543):
+        stored with ``failure_count=1`` so ``find_by_key`` (``failure_count == 0``)
+        keeps it OUT of reuse, while ``_build_prior_context`` can read it back —
+        the exact SQL + its ``provenance`` reason — so the next authoring revises
+        precisely instead of re-deriving blind. A failed save NEVER clobbers a
+        healthy existing snippet (first-writer-wins below still holds).
 
         Args:
             snippet_type: "extract", "constant", "formula", or "query"
@@ -290,7 +325,9 @@ class SnippetLibrary:
             existing = self.session.execute(stmt).scalars().first()
 
         if existing and existing.failure_count > 0:
-            # Replace failed snippet with fresh generation
+            # Refresh the existing failed row with this attempt. A clean success
+            # heals it (failure_count → 0, reusable); another failure keeps it
+            # flagged (→ 1) but records the latest SQL + reason for prior_context.
             existing.sql = sql
             existing.description = description
             existing.source = source
@@ -298,11 +335,12 @@ class SnippetLibrary:
             existing.column_mappings = column_mappings or {}
             existing.column_hash = column_hash
             existing.provenance = provenance
-            existing.failure_count = 0
+            existing.failure_count = 1 if failed else 0
             existing.updated_at = datetime.now(UTC)
             record = existing
         elif existing:
-            # Healthy snippet — keep the original (first writer wins)
+            # Healthy snippet — keep the original (first writer wins). A new FAILURE
+            # never clobbers working SQL: we return the healthy row untouched.
             record = existing
         else:
             # Create new snippet
@@ -325,7 +363,7 @@ class SnippetLibrary:
                 column_hash=column_hash,
                 provenance=provenance,
                 execution_count=0,
-                failure_count=0,
+                failure_count=1 if failed else 0,
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )

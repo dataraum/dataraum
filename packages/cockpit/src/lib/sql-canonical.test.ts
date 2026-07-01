@@ -1,67 +1,40 @@
-// canonicalKey golden + behavior test (DAT-485, DAT-492, DAT-654). Locks the TS
-// canonical form: DuckDB `json_serialize_sql` parse → tree normalize (query_location
-// strip + commutative-operand sort + identifier case-fold + lake-qualifier strip) →
-// stable JSON key. Drives the REAL DuckDB parser through a bare in-memory instance
-// (no lake ATTACH, no Postgres — `json_serialize_sql` is pure parsing), then feeds
-// the tree to `canonicalKey` — the exact key the runtime `sqlEquivalent` computes.
-// Self-contained — there is no cross-engine byte-agreement contract (DAT-492 refine).
+// canonicalKey golden + behavior test (DAT-485, DAT-492, DAT-654). Drives the REAL
+// exported `sqlEquivalent` — the exact runtime path (`json_serialize_sql` through the
+// private in-memory parser → tree normalize → stable JSON key) — so the serialize +
+// parser wiring is covered, not just the pure `canonicalKey`. No lake, no DB mock:
+// `json_serialize_sql` is pure parsing on a bare `:memory:` instance. Self-contained
+// — there is no cross-engine byte-agreement contract (DAT-492 refine).
 
-import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
-import { canonicalKey } from "./sql-canonical";
+import { closeSqlParser, sqlEquivalent } from "./sql-canonical";
 
-let instance: DuckDBInstance;
-let conn: DuckDBConnection;
+// Release the memoized in-memory parser so the run exits cleanly.
+afterAll(() => closeSqlParser());
 
-beforeAll(async () => {
-	instance = await DuckDBInstance.create(":memory:");
-	conn = await instance.connect();
-});
-
-afterAll(() => {
-	conn?.closeSync();
-	instance?.closeSync();
-});
-
-/** Canonical key for one SQL string, via the real DuckDB parser + `canonicalKey`. */
-async function key(sql: string): Promise<string> {
-	const reader = await conn.runAndReadAll(
-		"SELECT json_serialize_sql($1::VARCHAR) AS tree",
-		[sql],
-	);
-	const raw = reader.getRowObjectsJson()[0]?.tree;
-	const tree = typeof raw === "string" ? JSON.parse(raw) : null;
-	return canonicalKey(tree, sql);
-}
-
-/** Snippet equivalence under canonicalization — mirrors runtime `sqlEquivalent`. */
-async function equiv(a: string, b: string): Promise<boolean> {
-	return (await key(a)) === (await key(b));
-}
-
-describe("canonicalKey", () => {
-	it("collapses case / whitespace / keyword-casing / quotes / identifier-case to one key", async () => {
+describe("sqlEquivalent", () => {
+	it("collapses case / whitespace / keyword-casing / quotes / identifier-case to one form", async () => {
 		// DAT-492: redundant identifier quotes drop + identifier names case-fold
 		// (`"Amount"` → `amount`); the `'Sale'` string literal keeps its case.
 		const golden =
 			"SELECT SUM(amount) AS value FROM enriched_transactions WHERE type ILIKE 'Sale'";
-		const g = await key(golden);
 		expect(
-			await key(
+			await sqlEquivalent(
 				'SELECT SUM("Amount") as value FROM enriched_transactions WHERE "Type" ILIKE \'Sale\'',
+				golden,
 			),
-		).toBe(g);
+		).toBe(true);
 		expect(
-			await key(
+			await sqlEquivalent(
 				'select  sum("Amount")  AS value\nFROM enriched_transactions where "Type" ilike \'Sale\'',
+				golden,
 			),
-		).toBe(g);
+		).toBe(true);
 	});
 
 	it("strips the lake.<layer>. qualifier so qualified matches the bare stored form", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				'SELECT SUM("Amount") AS value FROM lake.typed.enriched_transactions WHERE "Type" ILIKE \'Sale\'',
 				'SELECT SUM("Amount") AS value FROM enriched_transactions WHERE "Type" ILIKE \'Sale\'',
 			),
@@ -70,7 +43,7 @@ describe("canonicalKey", () => {
 
 	it("does NOT merge genuinely different snippets", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				'SELECT SUM("Amount") AS value FROM enriched_transactions',
 				'SELECT SUM("Balance") AS value FROM enriched_trial_balance',
 			),
@@ -79,18 +52,27 @@ describe("canonicalKey", () => {
 
 	it("treats a different output alias as different (the prompt steers AS value)", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				'SELECT SUM("Amount") AS value FROM t',
 				'SELECT SUM("Amount") AS revenue FROM t',
 			),
 		).toBe(false);
 	});
 
+	it("case-folds the output alias (DuckDB aliases are case-insensitive)", async () => {
+		expect(
+			await sqlEquivalent(
+				'SELECT SUM("Amount") AS "Value" FROM t',
+				"SELECT SUM(amount) AS value FROM t",
+			),
+		).toBe(true);
+	});
+
 	// --- DAT-492: identifier-quote normalization -------------------------------
 
 	it("collapses a redundantly-quoted identifier onto its bare form (exact_reuse tail)", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				'SELECT SUM("credit") AS value FROM j',
 				"SELECT SUM(credit) AS value FROM j",
 			),
@@ -99,7 +81,7 @@ describe("canonicalKey", () => {
 
 	it("collapses the live-smoke shape (quoted journal-line filter ≡ bare)", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				'SELECT SUM("credit" - "debit") AS value FROM journal_lines WHERE "account_id" BETWEEN 4000 AND 4999',
 				"SELECT SUM(credit - debit) AS value FROM journal_lines WHERE account_id BETWEEN 4000 AND 4999",
 			),
@@ -108,7 +90,7 @@ describe("canonicalKey", () => {
 
 	it("case-folds identifier names (DuckDB is case-insensitive)", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				'SELECT SUM("Credit") AS value FROM Journal',
 				"SELECT SUM(credit) AS value FROM journal",
 			),
@@ -118,7 +100,7 @@ describe("canonicalKey", () => {
 	it("preserves string-literal case (does NOT fold literals)", async () => {
 		// The folding touches identifiers only — `'Sale'` and `'sale'` stay distinct.
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT * FROM t WHERE x = 'Sale'",
 				"SELECT * FROM t WHERE x = 'sale'",
 			),
@@ -130,10 +112,16 @@ describe("canonicalKey", () => {
 		// no quote metadata, so case-folding `column_names` alone collapses case variance
 		// while keeping structurally different names apart.
 		expect(
-			await equiv('SELECT "Weird Name" FROM t', 'SELECT "weird name" FROM t'),
+			await sqlEquivalent(
+				'SELECT "Weird Name" FROM t',
+				'SELECT "weird name" FROM t',
+			),
 		).toBe(true);
 		expect(
-			await equiv('SELECT "Weird Name" FROM t', 'SELECT "Other Name" FROM t'),
+			await sqlEquivalent(
+				'SELECT "Weird Name" FROM t',
+				'SELECT "Other Name" FROM t',
+			),
 		).toBe(false);
 	});
 
@@ -141,16 +129,16 @@ describe("canonicalKey", () => {
 
 	it("sorts commutative AND operands to a canonical order", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT * FROM t WHERE b = 2 AND a = 1",
 				"SELECT * FROM t WHERE a = 1 AND b = 2",
 			),
 		).toBe(true);
 	});
 
-	it("canonicalizes a 3-operand commutative chain regardless of order", async () => {
+	it("canonicalizes a 3-operand commutative AND chain regardless of order", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT * FROM t WHERE c AND a AND b",
 				"SELECT * FROM t WHERE b AND c AND a",
 			),
@@ -159,57 +147,89 @@ describe("canonicalKey", () => {
 
 	it("sorts commutative OR operands to a canonical order", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT * FROM t WHERE b = 2 OR a = 1",
 				"SELECT * FROM t WHERE a = 1 OR b = 2",
 			),
 		).toBe(true);
 	});
 
-	it("sorts commutative arithmetic (+ and *) operands", async () => {
+	it("sorts 2-operand commutative arithmetic (+ and *)", async () => {
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT (revenue + cost) AS v FROM t",
 				"SELECT (cost + revenue) AS v FROM t",
 			),
 		).toBe(true);
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT (qty * price) AS v FROM t",
 				"SELECT (price * qty) AS v FROM t",
 			),
 		).toBe(true);
 	});
 
+	it("flattens 3+-operand arithmetic chains (DuckDB nests +/* as binary)", async () => {
+		// `a+b+c` parses as `(a+b)+c`; without flattening, a reorder would not collapse.
+		expect(
+			await sqlEquivalent(
+				"SELECT a + b + c AS v FROM t",
+				"SELECT c + b + a AS v FROM t",
+			),
+		).toBe(true);
+		expect(
+			await sqlEquivalent(
+				"SELECT a * b * c AS v FROM t",
+				"SELECT c * b * a AS v FROM t",
+			),
+		).toBe(true);
+	});
+
+	it("is associativity-insensitive for a commutative chain", async () => {
+		expect(
+			await sqlEquivalent(
+				"SELECT (a + b) + c AS v FROM t",
+				"SELECT a + (b + c) AS v FROM t",
+			),
+		).toBe(true);
+	});
+
 	it("does NOT reorder NON-commutative operators (- and /)", async () => {
 		expect(
-			await equiv("SELECT (a - b) AS v FROM t", "SELECT (b - a) AS v FROM t"),
+			await sqlEquivalent(
+				"SELECT (a - b) AS v FROM t",
+				"SELECT (b - a) AS v FROM t",
+			),
 		).toBe(false);
 		expect(
-			await equiv("SELECT (a / b) AS v FROM t", "SELECT (b / a) AS v FROM t"),
+			await sqlEquivalent(
+				"SELECT (a / b) AS v FROM t",
+				"SELECT (b / a) AS v FROM t",
+			),
 		).toBe(false);
 	});
 
 	it("preserves inner non-commutative order even under a commutative parent (live-smoke shape)", async () => {
 		// The `+` operands reorder, but each `-` operand order is preserved.
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT (a - b) + (c - d) AS v FROM t",
 				"SELECT (c - d) + (a - b) AS v FROM t",
 			),
 		).toBe(true);
 		expect(
-			await equiv(
+			await sqlEquivalent(
 				"SELECT (a - b) + (c - d) AS v FROM t",
 				"SELECT (a - b) + (d - c) AS v FROM t",
 			),
 		).toBe(false);
 	});
 
-	it("is fail-soft on unparseable SQL (no throw, degrades to the string form)", async () => {
-		// Garbage DuckDB can't parse → `error:true` → falls back, does not throw.
-		const out = await key("this is not <<< valid sql ;;;");
-		expect(typeof out).toBe("string");
-		expect(out.length).toBeGreaterThan(0);
+	it("is fail-soft on unparseable SQL (no throw; self-equal via the string form)", async () => {
+		// Garbage DuckDB can't parse → `error:true` → both sides fall back to the string
+		// normalizer; identical inputs stay equal, a parseable side stays distinct.
+		const garbage = "this is not <<< valid sql ;;;";
+		expect(await sqlEquivalent(garbage, garbage)).toBe(true);
+		expect(await sqlEquivalent(garbage, "SELECT 1 AS v")).toBe(false);
 	});
 });

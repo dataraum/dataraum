@@ -82,42 +82,42 @@ class TestScore:
     """The uniform deviation/magnitude scoring (ADR-0017)."""
 
     def test_passed_returns_zero(self) -> None:
-        assert _score(_verdict(ValidationStatus.PASSED), "critical") == 0.0
+        assert ctc._score(_verdict(ValidationStatus.PASSED), "critical") == 0.0
 
     def test_inconclusive_returns_zero(self) -> None:
         # Execution error / unbound / non-conforming output = ignorance, never a
         # risk measurement (the old 0.5 banded clean tables, DAT-439).
-        assert _score(_verdict(ValidationStatus.ERROR), "critical") == 0.0
+        assert ctc._score(_verdict(ValidationStatus.ERROR), "critical") == 0.0
 
     def test_failed_critical_is_categorical(self) -> None:
         # A CRITICAL identity failing beyond tolerance scores 1.0 regardless of
         # the relative magnitude (L7): a 10% TB↔GL break scored as a rate was
         # invisible below the band while every GL deliverable was provably wrong.
         v = _verdict(ValidationStatus.FAILED, deviation=50_000, magnitude=50_000_000)
-        assert _score(v, "critical") == 1.0
+        assert ctc._score(v, "critical") == 1.0
 
     def test_failed_noncritical_is_relative_discrepancy(self) -> None:
         # $50k on $50M → honest 0.001 (no boost, DAT-442).
         v = _verdict(ValidationStatus.FAILED, deviation=50_000, magnitude=50_000_000)
-        assert _score(v, "high") == pytest.approx(0.001, abs=1e-4)
+        assert ctc._score(v, "high") == pytest.approx(0.001, abs=1e-4)
 
     def test_rate_scores_as_itself(self) -> None:
         # aggregate: deviation = rate, magnitude = 1 → 0.05.
         v = _verdict(ValidationStatus.FAILED, deviation=0.05, magnitude=1.0)
-        assert _score(v, "high") == pytest.approx(0.05, abs=1e-6)
+        assert ctc._score(v, "high") == pytest.approx(0.05, abs=1e-6)
 
     def test_zero_magnitude_falls_back(self) -> None:
         v = _verdict(ValidationStatus.FAILED, deviation=100, magnitude=0)
-        assert _score(v, "high") == 1.0
+        assert ctc._score(v, "high") == 1.0
 
 
 class TestDetectNoResults:
-    def test_no_validations_returns_zero(self, detector: CrossTableConsistencyDetector) -> None:
+    def test_no_validations_returns_zero(self, detector: ctc.CrossTableConsistencyDetector) -> None:
         objects = detector.detect(_make_context(validations=[]))
         assert len(objects) == 1
         assert objects[0].score == 0.0
 
-    def test_no_data_loaded(self, detector: CrossTableConsistencyDetector) -> None:
+    def test_no_data_loaded(self, detector: ctc.CrossTableConsistencyDetector) -> None:
         objects = detector.detect(_make_context())
         assert len(objects) == 1
         assert objects[0].score == 0.0
@@ -125,7 +125,7 @@ class TestDetectNoResults:
 
 class TestDetectFailures:
     def test_single_critical_failure(
-        self, detector: CrossTableConsistencyDetector, monkeypatch
+        self, detector: ctc.CrossTableConsistencyDetector, monkeypatch
     ) -> None:
         _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
@@ -135,7 +135,7 @@ class TestDetectFailures:
         assert objects[0].score == 1.0
 
     def test_max_aggregation(
-        self, detector: CrossTableConsistencyDetector, monkeypatch
+        self, detector: ctc.CrossTableConsistencyDetector, monkeypatch
     ) -> None:
         """Worst failure drives the score (honest rate, no boost)."""
         _install_specs(monkeypatch, {"v1": _spec("critical"), "v2": _spec("high")})
@@ -156,7 +156,7 @@ class TestDetectFailures:
         assert objects[0].score == pytest.approx(0.05, abs=1e-6)
 
     def test_evidence_per_check(
-        self, detector: CrossTableConsistencyDetector, monkeypatch
+        self, detector: ctc.CrossTableConsistencyDetector, monkeypatch
     ) -> None:
         _install_specs(monkeypatch, {"v1": _spec("critical"), "v2": _spec("high")})
         _install_verdicts(
@@ -220,7 +220,7 @@ class TestColumnFanOut:
         return ctx
 
     def test_failed_check_bands_its_columns(
-        self, detector: CrossTableConsistencyDetector, session, monkeypatch
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
         """Own-table columns matched by exact narrow name; foreign tables ignored;
         hallucinated columns dropped; column_id rides in evidence."""
@@ -253,21 +253,25 @@ class TestColumnFanOut:
         assert credit.evidence[0]["column_id"] == ids["credit"]
 
     def test_passed_checks_band_nothing(
-        self, detector: CrossTableConsistencyDetector, session, monkeypatch
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
         self._seed(session)
         _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"sp": _verdict(ValidationStatus.PASSED)})
         ctx = self._context(
             session,
-            [_make_result(validation_id="v1", sql_used="sp", columns_used=["journal_lines.credit"])],
+            [
+                _make_result(
+                    validation_id="v1", sql_used="sp", columns_used=["journal_lines.credit"]
+                )
+            ],
         )
         objects = detector.detect(ctx)
         assert len(objects) == 1  # the table object only
         assert objects[0].score == 0.0
 
     def test_worst_score_wins_per_column(
-        self, detector: CrossTableConsistencyDetector, session, monkeypatch
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
         """Two failing checks touching the same column → one object, worst score,
         both checks in evidence."""
@@ -303,14 +307,14 @@ class TestColumnFanOut:
 
 
 class TestDetectorProperties:
-    def test_detector_id(self, detector: CrossTableConsistencyDetector) -> None:
+    def test_detector_id(self, detector: ctc.CrossTableConsistencyDetector) -> None:
         assert detector.detector_id == "cross_table_consistency"
 
-    def test_scope(self, detector: CrossTableConsistencyDetector) -> None:
+    def test_scope(self, detector: ctc.CrossTableConsistencyDetector) -> None:
         assert detector.scope == "table"
 
-    def test_layer(self, detector: CrossTableConsistencyDetector) -> None:
+    def test_layer(self, detector: ctc.CrossTableConsistencyDetector) -> None:
         assert str(detector.layer) == "computational"
 
-    def test_required_analyses(self, detector: CrossTableConsistencyDetector) -> None:
+    def test_required_analyses(self, detector: ctc.CrossTableConsistencyDetector) -> None:
         assert str(detector.required_analyses[0]) == "validation"

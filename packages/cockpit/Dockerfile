@@ -28,7 +28,7 @@ RUN bun install --frozen-lockfile
 # the worker's runtime dependency tree (worker + core-bridge + common + proto +
 # nexus-rpc + grpc + protobufjs + …). That tree is too tangled to hand-pick, so
 # install the whole prod set here (`--production` drops devDependencies). This
-# also provides @duckdb + @polyglot-sql, so the runner needs no per-package COPY.
+# also provides @duckdb, so the runner needs no per-package COPY.
 FROM oven/bun:1 AS deps-prod
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -63,8 +63,8 @@ RUN apt-get update && apt-get install -y wget libgssapi-krb5-2 \
 COPY --from=build /app/.output ./.output
 
 # The prod-only node_modules: carries every dependency externalized from the
-# bundle and resolved at runtime — @duckdb/node-bindings-* (native `.node`),
-# @polyglot-sql/sdk (sibling `.wasm`), and the @temporalio worker tree (native
+# bundle and resolved at runtime — @duckdb/node-bindings-* (native `.node`)
+# and the @temporalio worker tree (native
 # core-bridge + its transitive runtime deps). The workflow code is pre-bundled at
 # build time (scripts/build-workflow-bundle.ts) into the server bundle, so the
 # webpack/swc workflow bundler is never invoked at runtime even though it ships

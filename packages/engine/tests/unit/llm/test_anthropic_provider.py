@@ -165,6 +165,64 @@ def _ok_response(
     )
 
 
+class TestConverseRequestShape:
+    """converse shapes the request per the model's sampling/thinking contract.
+
+    Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default ``temperature`` (400)
+    and default adaptive thinking ON; the engine's forced-tool extraction tier
+    wants neither. Older models keep the temperature passthrough and no thinking
+    param. These assert the exact kwargs handed to ``messages.create`` — the gap
+    that let the Sonnet 5 swap ship a request that 400s against the live API.
+    """
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch, model: str) -> dict[str, object]:
+        provider = _provider()
+        captured: dict[str, object] = {}
+
+        def capture(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return _ok_response()
+
+        monkeypatch.setattr(provider.client.messages, "create", capture)
+        provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")], temperature=0.0, model=model
+            )
+        ).unwrap()
+        return captured
+
+    def test_sonnet_5_omits_temperature_and_disables_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kwargs = self._capture(monkeypatch, "claude-sonnet-5")
+        assert "temperature" not in kwargs
+        assert kwargs["thinking"] == {"type": "disabled"}
+
+    def test_opus_4_8_omits_temperature_and_disables_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kwargs = self._capture(monkeypatch, "claude-opus-4-8")
+        assert "temperature" not in kwargs
+        assert kwargs["thinking"] == {"type": "disabled"}
+
+    def test_fable_5_omits_temperature_but_leaves_thinking_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fable 5 rejects a non-default temperature AND rejects an explicit
+        # thinking:disabled (always-on) — so we omit both and let it default.
+        kwargs = self._capture(monkeypatch, "claude-fable-5")
+        assert "temperature" not in kwargs
+        assert "thinking" not in kwargs
+
+    def test_older_model_keeps_temperature_and_no_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Haiku 4.5 / Sonnet 4.6 accept temperature and default thinking off.
+        kwargs = self._capture(monkeypatch, "claude-haiku-4-5")
+        assert kwargs["temperature"] == 0.0
+        assert "thinking" not in kwargs
+
+
 class TestConverseTelemetry:
     """converse emits per-call latency + token telemetry (DAT-600) and surfaces
     the cache-usage fields on the response."""

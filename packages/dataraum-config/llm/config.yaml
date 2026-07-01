@@ -62,7 +62,12 @@ features:
 
 # Cost controls
 limits:
-  max_output_tokens_per_request: 16000
+  # Bumped 16000 -> 24000 with the Sonnet 5 swap: its tokenizer emits ~30% more
+  # tokens for the same text, so a response that fit under 16000 on Sonnet 4.6
+  # can now clip. 24000 restores the old margin. (Thinking is disabled on the
+  # engine's forced-tool calls, so this budget is response-only, not shared with
+  # a thinking trace.)
+  max_output_tokens_per_request: 24000
 
 # Privacy settings for data sent to LLM
 privacy:

@@ -34,6 +34,55 @@ class AnthropicConfig(BaseModel):
 logger = get_logger(__name__)
 
 
+# --- Model request-shape capabilities (Claude 4.7+ / Sonnet 5 / Fable 5) ---
+#
+# The engine is the structured-extraction tier (ADR-0004): every call forces a
+# tool for typed output and wants determinism, not agentic reasoning. Two
+# request-shape changes landed with this model generation that the tier must
+# honour, or Sonnet 5 rejects the call outright:
+#
+#   * Non-default sampling params (``temperature``/``top_p``/``top_k``) return a
+#     400. Our prompt templates ask for temperature 0.0-0.1 for determinism, so
+#     on these models we OMIT ``temperature`` and rely on the forced tool +
+#     prompt for stable output (temperature 0 never guaranteed identical output
+#     anyway).
+#   * Adaptive thinking is ON by default when ``thinking`` is omitted. A
+#     forced-tool extractor never wants it: it burns output budget the
+#     small-cap calls (validation caps at 2000) can't spare, and it diverges
+#     from the prior Sonnet 4.6 behaviour where thinking was off. So we DISABLE
+#     it explicitly.
+#
+# Older models (Haiku 4.5, Sonnet 4.6) accept temperature and default thinking
+# off, so their request shape is unchanged. Prefix match covers the undated
+# aliases and any dated snapshot.
+_TEMPERATURE_REJECTING_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+# Subset that additionally defaults adaptive thinking ON *and* accepts an
+# explicit disable. Fable 5 / Mythos 5 are always-on (they reject an explicit
+# ``thinking: disabled``), so they are intentionally excluded — the engine's
+# forced-tool tier does not target them.
+_THINKING_DEFAULT_ON_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+)
+
+
+def _rejects_temperature(model: str) -> bool:
+    """True when the model 400s on a non-default sampling param."""
+    return model.startswith(_TEMPERATURE_REJECTING_PREFIXES)
+
+
+def _thinking_defaults_on(model: str) -> bool:
+    """True when the model runs adaptive thinking unless explicitly disabled."""
+    return model.startswith(_THINKING_DEFAULT_ON_PREFIXES)
+
+
 # 4xx codes the user must fix — credentials, schema, request shape.
 # 429 (rate limit) and 408/409 are retryable so they are NOT in this set.
 _PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 413, 422})
@@ -162,9 +211,20 @@ class AnthropicProvider(LLMProvider):
             kwargs: dict[str, Any] = {
                 "model": model,
                 "max_tokens": request.max_tokens,
-                "temperature": request.temperature,
                 "messages": messages,
             }
+
+            # Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default temperature
+            # (400) and default adaptive thinking ON; a forced-tool extractor
+            # wants neither. Omit temperature on those; pass it through on the
+            # older models that still honour it. Explicitly disable thinking
+            # where the model defaults it on (parity with Sonnet 4.6). See the
+            # capability notes above.
+            if _rejects_temperature(model):
+                if _thinking_defaults_on(model):
+                    kwargs["thinking"] = {"type": "disabled"}
+            else:
+                kwargs["temperature"] = request.temperature
 
             if request.system:
                 kwargs["system"] = request.system

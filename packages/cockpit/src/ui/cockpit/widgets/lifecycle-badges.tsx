@@ -78,12 +78,17 @@ export function GroundingConfidenceBadge({
 		return null;
 	}
 	return (
+		// `maw` = max-width (a long reason wraps within 320px), not a fixed width.
 		<Tooltip label={stateReason} multiline maw={320} withArrow>
 			<Badge
 				color="orange"
 				variant="light"
 				size="sm"
 				tt="none"
+				// A Badge renders a non-interactive span; make it focusable so the
+				// reason tooltip is keyboard-reachable, not mouse-only (the full reason
+				// is also always visible in the list's Detail column + the why Alert).
+				tabIndex={0}
 				data-testid="grounding-confidence-badge"
 				styles={{ label: { overflow: "visible" } }}
 			>

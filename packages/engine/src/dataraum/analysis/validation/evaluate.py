@@ -174,7 +174,7 @@ def _judge(
         # magnitude falls back so the scorer's deviation/magnitude never divides
         # by zero: a 0/absent magnitude falls to the deviation itself, then 1.0.
         magnitude = abs(float(row.get("magnitude") or 0)) or deviation or 1.0
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return (
             ValidationStatus.ERROR,
             f"{check_type or 'validation'} check inconclusive: non-numeric deviation "

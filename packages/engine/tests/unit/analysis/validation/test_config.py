@@ -197,7 +197,6 @@ class TestGetValidationSpec:
 
 # IDs of universal specs (relevant_cycles = [])
 UNIVERSAL_IDS = {
-    "fiscal_period_integrity",
     "stage_date_ordering",
     # tb_gl_reconciliation is universal by design (L7): no GL cycle exists in
     # the finance cycles vocabulary, and the TB-GL identity holds regardless of

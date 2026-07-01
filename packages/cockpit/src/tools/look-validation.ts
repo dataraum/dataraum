@@ -30,6 +30,8 @@ import {
 import { getPendingOverlays } from "../db/metadata/pending-overlays";
 import { currentValidationResults } from "../db/metadata/schema";
 import { stripSrcDigests } from "../lib/display-names";
+import { DEFAULT_TOLERANCE, type Verdict } from "./validation-verdict";
+import type { ValidationParams } from "./validation-verdict-runner";
 
 // Re-exported for the projection's callers/tests — the row shape now lives in
 // the shared lifecycle-artifacts substrate (one definition across families).
@@ -83,26 +85,26 @@ export function columnsUsedStrings(value: unknown): string[] {
 		.map((entry) => stripSrcDigests(entry));
 }
 
-/** One current_validation_results row, keyed by its validation_id. */
+/** One current_validation_results row — a pure SQL store (ADR-0017). */
 export interface ValidationResultRow {
-	status: string | null;
-	severity: string | null;
-	passed: boolean | null;
-	message: string | null;
+	sqlUsed: string | null;
 	// JSON column — unknown at the boundary, narrowed in the projector.
 	columnsUsed: unknown;
 }
 
 /**
- * Project one lifecycle artifact (+ its joined result row, when present) to the
- * tool's shape. Pure (no DB) so the join + sanitization is unit-testable.
- * `state_reason` / `message` are engine-built free text that can embed raw
- * `src_<digest>__` physical names — pass them through the digest backstop
- * before they reach the agent (the workflow_status failure.message precedent).
+ * Project one lifecycle artifact (+ its on-demand verdict + declared params) to
+ * the tool's shape. Pure (no DB) so the join + sanitization is unit-testable.
+ * The verdict is NOT read from a stored column (ADR-0017): it is recomputed by
+ * re-running `sql_used` (see `runValidationVerdicts`); `severity` is the declared
+ * spec param. `state_reason` / `message` are engine-built free text that can
+ * embed raw `src_<digest>__` physical names — digest-backstopped here.
  */
 export function projectValidationOverview(
 	artifact: LifecycleArtifactRow,
 	result: ValidationResultRow | undefined,
+	verdict: Verdict | undefined,
+	params: ValidationParams | undefined,
 ): ValidationOverview {
 	return {
 		validation_id: artifact.artifactKey,
@@ -111,10 +113,10 @@ export function projectValidationOverview(
 			artifact.stateReason === null
 				? null
 				: stripSrcDigests(artifact.stateReason),
-		severity: result?.severity ?? null,
-		status: result?.status ?? null,
-		passed: result?.passed ?? null,
-		message: result?.message == null ? null : stripSrcDigests(result.message),
+		severity: params?.severity ?? null,
+		status: verdict?.status ?? null,
+		passed: verdict?.passed ?? null,
+		message: verdict?.message == null ? null : stripSrcDigests(verdict.message),
 		columns_used: columnsUsedStrings(result?.columnsUsed),
 	};
 }
@@ -144,28 +146,43 @@ export async function lookValidation(): Promise<LookValidationResult> {
 	const rawResults = await metadataDb
 		.select({
 			validationId: currentValidationResults.validationId,
-			status: currentValidationResults.status,
-			severity: currentValidationResults.severity,
-			passed: currentValidationResults.passed,
-			message: currentValidationResults.message,
+			sqlUsed: currentValidationResults.sqlUsed,
 			columnsUsed: currentValidationResults.columnsUsed,
 		})
 		.from(currentValidationResults);
 	const resultByKey = new Map<string, ValidationResultRow>(
 		rawResults.map((r) => [
 			r.validationId ?? "",
-			{
-				status: r.status,
-				severity: r.severity,
-				passed: r.passed,
-				message: r.message,
-				columnsUsed: r.columnsUsed,
-			},
+			{ sqlUsed: r.sqlUsed, columnsUsed: r.columnsUsed },
 		]),
 	);
 
+	// The verdict is computed ON DEMAND (ADR-0017): re-run each grounded
+	// `sql_used` on the lake and judge it with the declared tolerance from the
+	// vertical's specs (the engine stores neither the verdict nor the params).
+	// The runner is server-only (lake/node bindings) — lazy-imported so this
+	// module's graph stays node-free for any client that imports its types.
+	const { resolveActiveWorkspaceRow } = await import("../db/cockpit/registry");
+	const { vertical } = await resolveActiveWorkspaceRow();
+	const { loadValidationParams, runValidationVerdicts } = await import(
+		"./validation-verdict-runner"
+	);
+	const params = await loadValidationParams(vertical);
+	const verdicts = await runValidationVerdicts(
+		[...resultByKey.entries()].map(([validationId, row]) => ({
+			validationId,
+			sqlUsed: row.sqlUsed,
+			tolerance: params.get(validationId)?.tolerance ?? DEFAULT_TOLERANCE,
+		})),
+	);
+
 	const validations = artifacts.map((a) =>
-		projectValidationOverview(a, resultByKey.get(a.artifactKey)),
+		projectValidationOverview(
+			a,
+			resultByKey.get(a.artifactKey),
+			verdicts.get(a.artifactKey),
+			params.get(a.artifactKey),
+		),
 	);
 
 	const pending = await getPendingOverlays();

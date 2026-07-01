@@ -5,6 +5,60 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-617 — validation verdict on demand from a contracted SQL output (ADR-0017)
+
+**Branch:** `feat/dat-617-validation-on-demand-p1`. **Re-verify `cross_table_consistency`; do NOT recalibrate blind.**
+
+### What changed
+The validation pass/fail VERDICT is no longer stored — it is recomputed on demand
+by re-running the run-versioned `sql_used` (a stored verdict goes stale on
+re-import, the SQL doesn't). Two coupled moves:
+
+1. **Contracted SQL output (prompt `validation_sql` → v2.0.0).** Every check now
+   returns ONE row with a non-negative `deviation` (0 = clean) + `magnitude`. The
+   judgement collapses to the uniform `deviation <= tolerance`
+   (`analysis/validation/evaluate.py::_judge`). The old per-`check_type` result
+   shapes (`difference`/`equation_holds`/`orphan_rate`/`total_rows`/… + the
+   column-name string-matching) are **deleted**.
+2. **`validation_results` is a pure SQL store.** Dropped: the data-derived verdict
+   (`status`, `passed`, `message`, `details`) AND the declared params (`severity`,
+   `tolerance`). Kept: `sql_used` + `columns_used` + ids. The detector reads the
+   run's vertical from a validation `lifecycle_artifacts` `teaches` row (its shared
+   session) and loads the spec for `severity`/`tolerance`.
+
+### Why eval cares (RE-VERIFY, not recalibrate)
+- **The `cross_table_consistency` detector changed inputs.** It now re-runs
+  `sql_used` and reads `verdict.details` `deviation`/`magnitude` (uniform), not the
+  old per-check_type `details` keys. The SCORE math is unchanged — non-critical =
+  `min(1, deviation/magnitude)`, critical-failed = categorical 1.0, passed/inconclusive
+  = 0.0. If the LLM's contracted SQL computes the same numbers the old free-form SQL
+  did, the detector's recall/precision is **unchanged** → confirm with the
+  `cross_table_consistency` calibration; the thing to watch is whether the new
+  `deviation` differs numerically from the old `difference`/rate.
+- **The `validation_sql` prompt changed** → any eval fixture asserting a fixed
+  validation SQL string/shape will diverge; update to the `deviation`/`magnitude`
+  contract. A check whose authored SQL doesn't return `deviation` now reads
+  **inconclusive** (ERROR), never FAILED.
+- **Migration edge — re-run before calibrating:** `sql_used` rows authored under
+  the **v1.0.0** prompt return the OLD per-check_type shape (no `deviation`
+  column), so on-demand re-evaluation scores them **inconclusive (0.0)** until the
+  validation phase re-runs under v2.0.0. A calibration harness seeded from a
+  pre-change DB must re-run the operating_model validation phase first, or it will
+  see every validation score 0.0.
+- **`graphs/context` severity now comes from the spec** (not the dropped column),
+  and a validation whose spec was removed from config since the run is silently
+  omitted from the metric-agent context (it is no longer a current validation).
+- **Schema:** `validation_results` dropped 4 columns + added `tolerance` →
+  `schema.sql` re-dumped; the cockpit drizzle mirror re-pull + the `look-validation`
+  rewire is the remaining cross-package step (docker-gated, not in this branch yet).
+
+### Thresholds / new fields
+No score threshold changed. `validation_results` is now a pure SQL store:
+`-status,-passed,-message,-details,-severity`. The verdict + declared params are
+never stored — recomputed / read from config on demand.
+
+---
+
 ## DAT-651 — validation phase parallelized (latency only)
 
 **Branch:** `feat/dat-651-parallel-validation`. **No calibration action required.**

@@ -491,16 +491,11 @@ export const currentValidationResults = metadataSchema
 		validationId: varchar("validation_id"),
 		tableIds: json("table_ids"),
 		columnsUsed: json("columns_used"),
-		status: varchar(),
-		severity: varchar(),
-		passed: boolean(),
-		message: text(),
-		executedAt: timestamp("executed_at"),
 		sqlUsed: text("sql_used"),
-		details: json(),
+		executedAt: timestamp("executed_at"),
 	})
 	.as(
-		sql`SELECT result_id, run_id, validation_id, table_ids, columns_used, status, severity, passed, message, executed_at, sql_used, details FROM ws_00000000_0000_0000_0000_000000000001.validation_results r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT result_id, run_id, validation_id, table_ids, columns_used, sql_used, executed_at FROM ws_00000000_0000_0000_0000_000000000001.validation_results r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const fixLedger = metadataSchema

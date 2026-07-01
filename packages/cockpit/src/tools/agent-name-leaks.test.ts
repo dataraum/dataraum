@@ -239,12 +239,17 @@ describe("agent name-leak property (DAT-433)", () => {
 				stateReason: `Missing required tables: ${ORDERS} and ${CUSTOMERS}`,
 			},
 			{
-				status: "executed",
-				severity: "error",
-				passed: false,
-				message: `12 rows in ${ORDERS} have no match`,
+				sqlUsed: `SELECT count(*) FROM ${ORDERS}`,
 				columnsUsed: [`${ORDERS}.customer_id`],
 			},
+			{
+				status: "failed",
+				passed: false,
+				deviation: 12,
+				magnitude: 100,
+				message: `12 rows in ${ORDERS} have no match`,
+			},
+			{ tolerance: 0.01, severity: "error" },
 		);
 		expect(JSON.stringify(out)).not.toMatch(LEAK);
 		expect(out.state_reason).toBe(
@@ -267,15 +272,18 @@ describe("agent name-leak property (DAT-433)", () => {
 				},
 			},
 			{
-				status: "executed",
-				severity: "error",
-				passed: false,
-				message: `12 rows in ${ORDERS} have no match`,
 				sqlUsed: `SELECT count(*) FROM lake.typed.${ORDERS} o LEFT JOIN lake.typed.${CUSTOMERS} c ON o.customer_id = c.id`,
 				executedAt: new Date("2026-06-07T12:00:00Z"),
-				details: { table: ORDERS, failing_rows: 12 },
 				columnsUsed: [`${ORDERS}.customer_id`],
 			},
+			{
+				status: "failed",
+				passed: false,
+				deviation: 12,
+				magnitude: 100,
+				message: `12 rows in ${ORDERS} have no match`,
+			},
+			{ tolerance: 0.01, severity: "error" },
 			0,
 		);
 		expect(JSON.stringify(out)).not.toMatch(LEAK);

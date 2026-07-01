@@ -235,13 +235,13 @@ async function main(): Promise<void> {
 			);
 		}
 
+		// ADR-0017: validation_results is a pure SQL store — no stored verdict.
+		// The pass/fail is recomputed on demand by look_validation (run sql_used +
+		// judge); here we just confirm each declared check grounded its SQL.
 		const results = await metadataDb.select().from(currentValidationResults);
 		console.log(`\ncurrent_validation_results (${results.length}):`);
 		for (const r of results) {
-			console.log(
-				`  ${r.validationId}: status=${r.status} passed=${r.passed}` +
-					(r.message ? `  ${r.message.slice(0, 90)}` : ""),
-			);
+			console.log(`  ${r.validationId}: grounded=${r.sqlUsed != null}`);
 		}
 		// current_lifecycle_artifacts now holds all three families (validation +
 		// cycle + metric); the result-parity contract is validation-only — cycles

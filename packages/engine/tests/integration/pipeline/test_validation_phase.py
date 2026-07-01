@@ -223,10 +223,12 @@ class TestValidationLifecycleFlow:
         assert artifacts["three_way_match"].state_reason == "no PO table"
         assert artifacts["three_way_match"].teaches["vertical"] == "finance"
 
+        # The verdict is NOT persisted (ADR-0017) — the lifecycle state above is
+        # the durable outcome; the record holds the grounded SQL + declared params.
         records = session.execute(select(ValidationResultRecord)).scalars().all()
-        assert {(r.validation_id, r.status, r.run_id) for r in records} == {
-            ("double_entry", "passed", "run-om-1"),
-            ("three_way_match", "skipped", "run-om-1"),
+        assert {(r.validation_id, r.run_id) for r in records} == {
+            ("double_entry", "run-om-1"),
+            ("three_way_match", "run-om-1"),
         }
         assert result.outputs["executed"] == 1
         assert result.outputs["stuck_declared"] == 1
@@ -291,8 +293,10 @@ class TestValidationLifecycleFlow:
         assert artifact.state == ArtifactState.GROUNDED.value
         assert "inconclusive" in (artifact.state_reason or "")
 
+        # The inconclusive outcome is the artifact state + reason above; the
+        # persisted record carries no verdict (ADR-0017), only the SQL/params.
         records = session.execute(select(ValidationResultRecord)).scalars().all()
-        assert [(r.validation_id, r.status) for r in records] == [("three_way_match", "error")]
+        assert [r.validation_id for r in records] == ["three_way_match"]
         assert result.outputs["failed_checks"] == 0
         assert result.outputs["error_checks"] == 1
 
@@ -368,9 +372,8 @@ class TestValidationLifecycleFlow:
             ("double_entry", "run-1", "executed")
         ]
         records = session.execute(select(ValidationResultRecord)).scalars().all()
-        assert [(r.validation_id, r.run_id, r.status) for r in records] == [
-            ("double_entry", "run-1", "passed")
-        ]
+        assert [(r.validation_id, r.run_id) for r in records] == [("double_entry", "run-1")]
+        assert records[0].sql_used is not None  # the grounded SQL is the durable artifact
 
 
 class TestValidationParallelism:
@@ -420,10 +423,10 @@ class TestValidationParallelism:
         # One lake-scoped cursor taken per spec — proof the parallel dispatch ran.
         assert ctx.manager.duckdb_cursor.call_count == 3
         records = session.execute(select(ValidationResultRecord)).scalars().all()
-        assert {(r.validation_id, r.status) for r in records} == {
-            ("double_entry", "passed"),
-            ("trial_balance", "passed"),
-            ("sign_conventions", "passed"),
+        assert {r.validation_id for r in records} == {
+            "double_entry",
+            "trial_balance",
+            "sign_conventions",
         }
 
     @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")

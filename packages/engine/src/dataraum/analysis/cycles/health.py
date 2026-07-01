@@ -14,9 +14,12 @@ from sqlalchemy import select
 from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 from dataraum.analysis.validation.config import get_validation_specs_for_cycles
 from dataraum.analysis.validation.db_models import ValidationResultRecord
+from dataraum.analysis.validation.evaluate import ValidationVerdict, evaluate_validation
+from dataraum.analysis.validation.models import ValidationSpec, ValidationStatus
 from dataraum.storage import Table
 
 if TYPE_CHECKING:
+    import duckdb
     from sqlalchemy.orm import Session
 
 
@@ -42,14 +45,26 @@ class HealthReport:
     overall_health: float | None = None
 
 
-def compute_cycle_health(session: Session, *, vertical: str, run_id: str | None) -> HealthReport:
+def compute_cycle_health(
+    session: Session,
+    *,
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+    vertical: str,
+    run_id: str | None,
+) -> HealthReport:
     """Compute health scores for all detected cycles in a session run (DAT-455).
 
     Combines cycle completion rates (from LLM detection) with validation
-    pass rates (from validation results) into a weighted composite score.
+    pass rates into a weighted composite score. The pass rate is computed ON
+    DEMAND (DAT-617): each matched check's run-versioned ``sql_used`` is
+    re-run against current data and judged fresh, never read from a stored
+    verdict that goes stale on re-import.
 
     Args:
         session: SQLAlchemy session
+        duckdb_conn: Connection scoped to the current typed lake — re-runs the
+            validation SQL for the pass rate. ``None`` ⇒ no recompute; the
+            pass rate stays absent and health falls back to completion alone.
         vertical: Vertical name (e.g. 'finance')
         run_id: The promoted operating_model run to read BOTH the detected
             cycles AND the validation results at. Both are run-versioned
@@ -108,9 +123,11 @@ def compute_cycle_health(session: Session, *, vertical: str, run_id: str | None)
         # For known types, matches type-specific + universal validations.
         # For LLM-detected types not in vocabulary, matches universal validations only.
         relevant_spec_ids: set[str] = set()
+        spec_by_id: dict[str, ValidationSpec] = {}
         if canonical:
             relevant_specs = get_validation_specs_for_cycles([canonical], vertical)
             relevant_spec_ids = {s.validation_id for s in relevant_specs}
+            spec_by_id = {s.validation_id: s for s in relevant_specs}
 
         # Match validation results: must share a table with the cycle (compared
         # in NAME space via the id→name map) AND be a relevant spec.
@@ -121,14 +138,26 @@ def compute_cycle_health(session: Session, *, vertical: str, run_id: str | None)
             and _result_table_names(vr, id_to_name) & cycle_table_names
         ]
 
-        # Pass rate counts JUDGED measurements only (DAT-439): error =
-        # inconclusive evaluation and skipped = never executed — neither is an
-        # assessment of the data, so both stay out of numerator AND
-        # denominator. Counting them (passed=False) would silently deflate
-        # cycle health for runs the system merely failed to judge.
-        assessed = [vr for vr in matched_results if vr.status not in ("error", "skipped")]
+        # Pass rate is recomputed ON DEMAND (DAT-617): a stored verdict goes
+        # stale on re-import, so re-run each matched check's run-versioned
+        # ``sql_used`` against current data and judge it fresh. Counts JUDGED
+        # measurements only (DAT-439): an unbound check (no ``sql_used`` —
+        # skipped/generation-error) or an inconclusive re-run is ignorance, not
+        # an assessment, so it stays out of numerator AND denominator (counting
+        # it as passed=False would silently deflate cycle health). No
+        # connection ⇒ no recompute; the pass rate stays absent.
+        assessed: list[ValidationVerdict] = []
+        if duckdb_conn is not None:
+            for vr in matched_results:
+                spec = spec_by_id.get(vr.validation_id)
+                if spec is None or not vr.sql_used:
+                    continue
+                verdict = evaluate_validation(duckdb_conn, vr.sql_used, spec)
+                if verdict.status == ValidationStatus.ERROR:
+                    continue
+                assessed.append(verdict)
         validations_run = len(assessed)
-        validations_passed = sum(1 for vr in assessed if vr.passed)
+        validations_passed = sum(1 for v in assessed if v.passed)
 
         validation_pass_rate: float | None = None
         if validations_run > 0:

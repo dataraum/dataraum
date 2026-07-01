@@ -124,13 +124,8 @@ CREATE TABLE validation_results (
 	validation_id VARCHAR NOT NULL, 
 	table_ids JSON NOT NULL, 
 	columns_used JSON NOT NULL, 
-	status VARCHAR NOT NULL, 
-	severity VARCHAR NOT NULL, 
-	passed BOOLEAN NOT NULL, 
-	message TEXT, 
-	executed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	sql_used TEXT, 
-	details JSON, 
+	executed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_validation_results PRIMARY KEY (result_id), 
 	CONSTRAINT uq_validation_result_run UNIQUE (validation_id, run_id)
 );

@@ -1,8 +1,10 @@
 """Cross-table consistency entropy detector.
 
-Consumes ValidationResultRecord from the validation phase.
-The validation phase generates and executes SQL checks — this detector
-only scores the results.
+Consumes ValidationResultRecord (the grounded ``sql_used`` + declared params).
+The verdict is **recomputed on demand** (ADR-0017): this detector re-runs each
+check's run-versioned ``sql_used`` against current data and scores the fresh
+verdict — it never reads a stored pass/fail (a stored verdict goes stale on
+re-import, the SQL does not).
 
 Scope: table-level, with COLUMN-grain objects fanned out for failed checks
 (DAT-432/L7): a failed reconciliation bands the columns its SQL actually
@@ -16,12 +18,12 @@ Score semantics (DAT-442 honesty + the L7 scoreboard finding):
   the diagnostic. (Honest rates put the injected 10% TB↔GL break at risk
   0.8×0.10 = 0.08 — invisible below the 0.3 band — while every GL-derived
   deliverable number was measurably wrong: 0 prevented / 8 wrong-delivered.)
-- Non-critical failures keep the honest rates per check type:
-  balance |difference|/magnitude · comparison proportional/binary ·
-  aggregate violation_rate · constraint count/total.
-- ERROR/inconclusive scores 0.0 + a ``validation_unassessed`` warning: an
-  unassessed check is ignorance, not measured risk — the old 0.5 turned LLM
-  SQL-generation nondeterminism into clean-table false alarms.
+- Non-critical failures score the honest relative discrepancy ``deviation /
+  magnitude`` (no boost, DAT-442) — uniform across check types now that the SQL
+  output is contracted (ADR-0017), no per-check_type rate matching.
+- ERROR/inconclusive (or unbound) scores 0.0 + a ``validation_unassessed``
+  warning: an unassessed check is ignorance, not measured risk — the old 0.5
+  turned LLM SQL-generation nondeterminism into clean-table false alarms.
 
 Aggregation: max() — worst validation failure drives the table's score.
 """
@@ -32,6 +34,12 @@ from typing import Any
 
 from sqlalchemy import select
 
+from dataraum.analysis.validation.evaluate import (
+    DEFAULT_TOLERANCE,
+    ValidationVerdict,
+    verdict_from_sql,
+)
+from dataraum.analysis.validation.models import ValidationStatus
 from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
@@ -40,87 +48,73 @@ from dataraum.entropy.models import EntropyObject
 logger = get_logger(__name__)
 
 
-def _score_validation_result(result: Any) -> float:
-    """Convert a ValidationResultRecord to an entropy score.
+def _score(verdict: ValidationVerdict, severity: str) -> float:
+    """Score a recomputed validation verdict (ADR-0017).
+
+    The verdict is recomputed on demand from the contracted SQL output, so its
+    ``details`` carry a uniform ``deviation``/``magnitude`` — no per-check_type
+    branching, no column-name guessing.
 
     Args:
-        result: ValidationResultRecord with status, severity, details.
+        verdict: The freshly recomputed verdict (deviation/magnitude in details).
+        severity: The declared severity (from the result record).
 
     Returns:
-        Score between 0.0 (passed) and 1.0 (critical failure).
+        Score between 0.0 (passed / unassessed) and 1.0 (critical failure).
     """
-    # PASSED is the ONLY ``passed=True`` state — SKIPPED and ERROR both carry
-    # ``passed=False`` and so fall through to the explicit status branches
-    # below (which is why there is no ``status == "passed"`` branch).
-    if result.passed:
+    if verdict.passed:
         return 0.0
 
-    if result.status == "skipped":
-        # Bind-time skip: the LLM declared the validation inapplicable to
-        # this workspace. Not a data measurement — it must not contribute
-        # entropy. Without this branch a skipped row that carries table_ids
-        # falls into the check-type scoring below and can score 1.0
-        # (comparison's binary branch) — a mislabel (DAT-439).
+    if verdict.status != ValidationStatus.FAILED:
+        # INCONCLUSIVE (the SQL ran but didn't honor the contract) or UNBOUND
+        # (no sql_used) — ignorance, never a risk measurement. The old 0.5
+        # banded CLEAN tables on nondeterministic SQL failures (DAT-439); the
+        # caller logs the unassessed check.
         return 0.0
 
-    if result.status == "error":
-        # Execution error or inconclusive evaluation (DAT-439) — the check
-        # could not assess the data. Ignorance, never a risk measurement:
-        # the old 0.5 banded CLEAN tables whenever the LLM's generated SQL
-        # failed to run (nondeterministic false alarms). The caller logs it.
-        return 0.0
-
-    if result.severity == "critical":
-        # Categorical (L7): a CRITICAL identity failed beyond its own declared
+    if severity == "critical":
+        # Categorical (L7): a CRITICAL identity failed beyond its declared
         # tolerance — the books don't reconcile. The relative magnitude stays
         # in evidence; scoring it as a rate hid provably-wrong deliverables.
         return 1.0
 
-    details = result.details or {}
-    check_type = details.get("check_type", "")
+    # Honest relative discrepancy (no boost, DAT-442): deviation / magnitude.
+    deviation = abs(float(verdict.details.get("deviation", 0) or 0))
+    magnitude = abs(float(verdict.details.get("magnitude", 1) or 0)) or 1.0
+    return min(1.0, deviation / magnitude)
 
-    if check_type == "balance":
-        difference = abs(float(details.get("difference", 0)))
-        magnitude = abs(float(details.get("magnitude", 1)))
-        if magnitude == 0:
-            return 1.0
-        # Honest relative discrepancy (no boost, DAT-442).
-        return min(1.0, difference / magnitude)
 
-    if check_type == "comparison":
-        # If the comparison has numeric difference, score proportionally
-        # like a balance check (e.g., trial_balance equation mismatch).
-        comp_difference = details.get("difference")
-        if comp_difference is not None:
-            diff = abs(float(comp_difference))
-            if diff == 0:
-                # passed=False but difference=0 is inconsistent — treat as failure
-                return 1.0
-            # Use left_side as magnitude reference
-            magnitude = abs(float(details.get("left_side", details.get("magnitude", 1))))
-            if magnitude == 0:
-                return 1.0
-            return min(1.0, diff / magnitude)
-        # Binary: critical checks either hold or don't
-        return 1.0
+def _load_run_specs(context: DetectorContext) -> dict[str, Any]:
+    """Load this run's validation specs (severity + tolerance) from config.
 
-    if check_type == "aggregate":
-        rate = float(details.get("violation_rate", details.get("orphan_rate", 0)))
-        return min(1.0, rate) if rate > 0 else 0.0
+    The verdict's tolerance and the critical-rule severity are declared config,
+    not stored on the record (ADR-0017). The run's vertical is read from a
+    validation lifecycle artifact via the shared session — the entropy/detect
+    layer is otherwise vertical-free. Returns ``{}`` (graceful, never raises) when
+    the run/session/vertical can't be resolved; consumers fall back to defaults.
+    """
+    if context.session is None or context.run_id is None:
+        return {}
 
-    if check_type == "constraint":
-        count = float(details.get("violation_count", 0))
-        total = float(details.get("total_rows", 0))
-        if total > 0:
-            # Honest violation rate (no boost, DAT-442).
-            return min(1.0, count / total)
-        # No total_rows available — rough magnitude proxy on raw count
-        # (no boost): 1 violation ~ 0.01, 10 ~ 0.1, 100+ ~ 1.0.
-        return min(1.0, count / 100.0)
+    from sqlalchemy import select
 
-    # Unknown check type — use severity as fallback
-    severity_scores = {"critical": 1.0, "high": 0.7, "medium": 0.4, "low": 0.1}
-    return severity_scores.get(result.severity, 0.5)
+    from dataraum.analysis.validation.config import load_all_validation_specs
+    from dataraum.lifecycle.db_models import LifecycleArtifact
+
+    artifact = (
+        context.session.execute(
+            select(LifecycleArtifact)
+            .where(
+                LifecycleArtifact.artifact_type == "validation",
+                LifecycleArtifact.run_id == context.run_id,
+            )
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    vertical = (artifact.teaches or {}).get("vertical") if artifact else None
+    return load_all_validation_specs(vertical) if vertical else {}
 
 
 class CrossTableConsistencyDetector(EntropyDetector):
@@ -177,14 +171,32 @@ class CrossTableConsistencyDetector(EntropyDetector):
                 )
             ]
 
+        # The verdict's tolerance + the critical-rule severity are declared config
+        # (ADR-0017), read from the spec — never stored on the record. The run's
+        # vertical comes from a validation lifecycle artifact via the shared session.
+        specs = _load_run_specs(context)
+
         scores: list[float] = []
         evidence: list[dict[str, Any]] = []
         # Worst failed-check score + entries per column the failing SQL touched.
         per_column: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
         for result in results:
-            score = _score_validation_result(result)
-            if result.status == "error":
+            spec = specs.get(result.validation_id)
+            tolerance = (
+                float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE))
+                if spec is not None
+                else DEFAULT_TOLERANCE
+            )
+            severity = spec.severity.value if spec is not None else "info"
+
+            # Recompute the verdict on demand (ADR-0017): re-run the run-versioned
+            # ``sql_used`` against current data rather than read a stored pass/fail
+            # that goes stale on re-import. check_type isn't needed (the score is
+            # uniform deviation/magnitude); the message uses a generic label.
+            verdict = verdict_from_sql(context.duckdb_conn, result.sql_used, tolerance=tolerance)
+            score = _score(verdict, severity)
+            if verdict.status == ValidationStatus.ERROR:
                 logger.warning(
                     "validation_unassessed",
                     validation_id=result.validation_id,
@@ -193,11 +205,11 @@ class CrossTableConsistencyDetector(EntropyDetector):
             scores.append(score)
             entry = {
                 "validation_id": result.validation_id,
-                "status": result.status,
-                "severity": result.severity,
-                "passed": result.passed,
+                "status": verdict.status.value,
+                "severity": severity,
+                "passed": verdict.passed,
                 "score": score,
-                "message": result.message,
+                "message": verdict.message,
             }
             evidence.append(entry)
             if score > 0.0:

@@ -51,7 +51,10 @@ const MetricOverview = z.object({
 	// always paired with `state_reason` (the fail-loud contract).
 	state: z.string(),
 	// WHY the metric stopped short of executed (e.g. "ungroundable: required
-	// field mappings missing") — the engine's reason verbatim; null once executed.
+	// field mappings missing") — the engine's reason verbatim. Also non-null on an
+	// EXECUTED metric when the grounding confidence fell below the engine floor
+	// (the low-confidence caveat, DAT-631) — so on an executed metric a present
+	// reason is the low-confidence flag (GroundingConfidenceBadge).
 	state_reason: z.string().nullable(),
 	// How many persisted SQL snippets back this metric (the per-step fragments the
 	// graph agent saved). 0 when it never composed; >0 once it did — a soft signal

@@ -16,7 +16,10 @@ import { humanizeIdentifier } from "#/lib/display-names";
 import type { MetricStep } from "#/tools/why-metric";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
-import { LifecycleStateBadge } from "#/ui/cockpit/widgets/lifecycle-badges";
+import {
+	GroundingConfidenceBadge,
+	LifecycleStateBadge,
+} from "#/ui/cockpit/widgets/lifecycle-badges";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
 
@@ -82,11 +85,19 @@ export function MetricWhyWidget({
 				<Text size="sm" fw={600}>
 					{label}
 				</Text>
-				<LifecycleStateBadge state={why.state} />
+				<Group gap="xs" wrap="nowrap">
+					<LifecycleStateBadge state={why.state} />
+					<GroundingConfidenceBadge
+						state={why.state}
+						stateReason={why.state_reason}
+					/>
+				</Group>
 			</Group>
 
-			{/* The "visibly impossible" surface: WHY the metric stopped short of
-			    executed — the engine's reason verbatim, first-class, never a hover. */}
+			{/* First-class reason surface, never a hover: WHY the metric stopped
+			    short of executed, OR — on an executed metric — the low-confidence
+			    grounding caveat the badge flags (DAT-631). The engine's text
+			    verbatim. */}
 			{why.state_reason && (
 				<Alert color="orange" data-testid="canvas-metric-why-reason">
 					{why.state_reason}

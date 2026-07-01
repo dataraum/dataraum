@@ -8,7 +8,7 @@
 //
 // The value is the engine's persisted state string — never recomputed here.
 
-import { Badge, Text } from "@mantine/core";
+import { Badge, Text, Tooltip } from "@mantine/core";
 
 // Lifecycle state → Mantine color. A non-executed state in a promoted run always
 // carries a state_reason (the fail-loud contract), so anything short of executed
@@ -49,5 +49,46 @@ export function LifecycleStateBadge({
 		>
 			{state.charAt(0).toUpperCase() + state.slice(1)}
 		</Badge>
+	);
+}
+
+// Grounding-confidence caveat badge (DAT-631) — a metric's quality badge, the
+// analog of the validation pass/fail verdict (the state badge owns PROGRESS,
+// never good/bad; quality rides a separate badge — see validation-badges.tsx).
+//
+// A metric whose SQL composes + verifies still reaches `executed`, but the graph
+// agent records the WEAKEST per-concept grounding confidence and, when it falls
+// below the engine's floor, stamps a caveat onto the EXECUTED artifact's
+// `state_reason` (engine metrics_phase `_low_confidence_reason`). That is the
+// only writer of a reason on an executed metric, so on an executed artifact a
+// present `state_reason` IS the low-confidence flag — no string parsing, an
+// executed metric is silent unless flagged. This surfaces the honesty the engine
+// already produces so a 0.35-confidence proxy stops reading identically to a
+// confidently-grounded metric (the DAT-631 headline). Renders nothing when the
+// metric is confident (executed, no reason) or not yet executed (the state badge
+// carries the why-not) — a dash would be noise next to the state badge.
+export function GroundingConfidenceBadge({
+	state,
+	stateReason,
+}: {
+	state: string | null | undefined;
+	stateReason: string | null | undefined;
+}) {
+	if (state !== "executed" || !stateReason) {
+		return null;
+	}
+	return (
+		<Tooltip label={stateReason} multiline maw={320} withArrow>
+			<Badge
+				color="orange"
+				variant="light"
+				size="sm"
+				tt="none"
+				data-testid="grounding-confidence-badge"
+				styles={{ label: { overflow: "visible" } }}
+			>
+				Low confidence
+			</Badge>
+		</Tooltip>
 	);
 }

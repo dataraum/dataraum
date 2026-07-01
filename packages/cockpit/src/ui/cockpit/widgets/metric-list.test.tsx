@@ -45,6 +45,16 @@ const UNGROUNDABLE = {
 	snippet_count: 0,
 };
 
+// Executed, but the graph agent's weakest per-concept confidence fell below the
+// engine floor → the caveat rides on the executed artifact's state_reason (DAT-631).
+const LOW_CONFIDENCE = {
+	graph_id: "gross_margin",
+	state: "executed",
+	state_reason:
+		"low-confidence grounding (0.35 < 0.50): COGS proxy may overstate",
+	snippet_count: 4,
+};
+
 const analyzed: LookMetricResult = {
 	analyzed: true,
 	pending_teaches: 0,
@@ -75,6 +85,20 @@ describe("MetricListWidget (DAT-466)", () => {
 		expect(
 			screen.getByText(/ungroundable: required field mappings missing/),
 		).toBeTruthy();
+	});
+
+	it("flags a low-confidence executed metric amber, but not a confident one (DAT-631)", () => {
+		renderWidget({ ...analyzed, metrics: [EXECUTED, LOW_CONFIDENCE] });
+		// The confident EBITDA row and the low-confidence gross-margin row both read
+		// `executed`; only the low-confidence one carries the caveat badge.
+		const badges = screen.getAllByTestId("grounding-confidence-badge");
+		expect(badges).toHaveLength(1);
+		expect(badges[0].textContent).toBe("Low confidence");
+	});
+
+	it("shows no confidence badge when every executed metric is confident (DAT-631)", () => {
+		renderWidget({ ...analyzed, metrics: [EXECUTED] });
+		expect(screen.queryByTestId("grounding-confidence-badge")).toBeNull();
 	});
 
 	it("renders the not-run state pointing at the operating-model stage", () => {

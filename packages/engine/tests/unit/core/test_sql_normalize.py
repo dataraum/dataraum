@@ -1,4 +1,9 @@
-"""Unit tests for SQL canonicalization used by view-recipe version gating (DAT-415)."""
+"""Unit tests for SQL canonicalization used by view-recipe version gating (DAT-415).
+
+Backed by DuckDB's ``json_serialize_sql`` (DAT-654): equality is structural
+(parse-tree modulo ``query_location``), so whitespace/case noise collapses while
+identifiers and clause order do not.
+"""
 
 from __future__ import annotations
 
@@ -23,8 +28,9 @@ class TestSqlEquivalent:
 
     def test_three_part_fqn_view_ddl_round_trips(self) -> None:
         # The real recipe DDL is a three-part ``catalog.schema."quoted"`` FQN — pin
-        # that sqlglot canonicalizes it stably (case/whitespace noise → equal, a real
-        # join change → not equal), so the gate never spuriously re-versions.
+        # that json_serialize_sql canonicalizes it stably (case/whitespace noise →
+        # equal, a real join change → not equal), so the gate never spuriously
+        # re-versions.
         a = (
             'CREATE OR REPLACE VIEW lake.typed."enriched_csv__orders" AS '
             'SELECT f.* FROM lake.typed."csv__orders" AS f '
@@ -39,6 +45,21 @@ class TestSqlEquivalent:
         # A different joined dimension is a genuine change → a new version.
         c = a.replace("csv__customers", "csv__suppliers")
         assert not sql_equivalent(a, c)
+
+    def test_create_view_wrapper_is_stripped_to_the_inner_select(self) -> None:
+        # json_serialize_sql serializes SELECT only; the machine-generated
+        # ``CREATE … VIEW … AS`` envelope is stripped, so a view DDL and its inner
+        # SELECT share one canonical key — the wrapper carries no identity.
+        inner = 'SELECT f.* FROM lake.typed."orders" AS f'
+        view = f'CREATE OR REPLACE VIEW lake.typed."enriched_orders" AS {inner}'
+        assert canonical_sql(view) == canonical_sql(inner)
+
+    def test_reordered_select_list_is_not_equal(self) -> None:
+        # SELECT-list order is part of the view's identity (output column order);
+        # canonicalization preserves it — a re-ordered projection is a real change.
+        a = 'SELECT f."a", f."b" FROM "orders" AS f'
+        b = 'SELECT f."b", f."a" FROM "orders" AS f'
+        assert not sql_equivalent(a, b)
 
     def test_arbitrary_input_does_not_raise_and_is_reflexive(self) -> None:
         # Unparseable input must fall back to byte-comparison, not raise.

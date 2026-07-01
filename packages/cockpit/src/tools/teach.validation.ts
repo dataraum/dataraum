@@ -327,15 +327,16 @@ export type TeachType = keyof typeof TYPE_SCHEMAS;
 
 export const TEACH_TYPES = Object.keys(TYPE_SCHEMAS) as readonly TeachType[];
 
-// What the generic `teach` TOOL advertises to the agent: ONLY the grounding-layer
-// corrections (applied by `replay`). validation/cycle/metric are deliberately
-// excluded — a second, loose agent path alongside the typed teach_* tools would
-// let the model write an unvalidated payload the operating_model grounder can't
-// consume. One way to teach each thing.
+// What STAGE's generic `teach` TOOL advertises to the agent (narrowed DAT-647):
+// the CATALOGUE-grain corrections a begin_session re-run realizes — column MEANING
+// (concept / concept_property / rebind) + topology (relationship / hierarchy). The
+// MECHANICAL, typing-grain teaches (type_pattern / null_value / unit) live on
+// CONNECT (CONNECT_TEACH_TYPES), whose add_source `replay` is what realizes them —
+// STAGE's begin_session does not re-run typing, so advertising them here would
+// invite teaches this chat cannot re-ground (the same grain mismatch DAT-647 fixed
+// on the detector side). validation/cycle/metric stay excluded — the typed teach_*
+// tools own those. One way to teach each thing; one surface per grain.
 export const AGENT_TEACH_TYPES = [
-	"type_pattern",
-	"null_value",
-	"unit",
 	"concept",
 	"concept_property",
 	"rebind",

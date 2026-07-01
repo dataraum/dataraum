@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AGENT_AUTOAPPLY_TEACH_TYPES,
 	AGENT_TEACH_TYPES,
+	CONNECT_TEACH_TYPES,
 	TEACH_TYPES,
 	TeachValidationError,
 	validateTeach,
@@ -445,22 +446,19 @@ describe("validateTeach", () => {
 			);
 		});
 
-		it("AGENT_TEACH_TYPES advertises only the grounding-layer corrections", () => {
-			// The agent-facing teach surface excludes the operating-model
-			// declarations (validation/cycle/metric — owned by the typed teach_*
-			// tools) and the removed `explanation` stub. One way to teach each thing.
+		it("AGENT_TEACH_TYPES advertises only STAGE's catalogue-grain corrections", () => {
+			// STAGE (begin_session) teaches column MEANING + topology. The mechanical
+			// typing-grain teaches (type_pattern/null_value/unit) moved to CONNECT
+			// (add_source replay realizes them, DAT-647); the operating-model
+			// declarations (validation/cycle/metric) are owned by the typed teach_*
+			// tools. One way to teach each thing; one surface per grain.
 			expect(new Set(AGENT_TEACH_TYPES)).toEqual(
-				new Set([
-					"type_pattern",
-					"null_value",
-					"unit",
-					"concept",
-					"concept_property",
-					"rebind",
-					"relationship",
-					"hierarchy",
-				]),
+				new Set(["concept", "concept_property", "rebind", "relationship", "hierarchy"]),
 			);
+			// Mechanical typing teaches are CONNECT's, not STAGE's (DAT-647).
+			for (const t of ["type_pattern", "null_value", "unit"]) {
+				expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(t);
+			}
 			for (const t of ["validation", "cycle", "metric", "explanation"]) {
 				expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(t);
 			}
@@ -473,9 +471,11 @@ describe("validateTeach", () => {
 			expect(new Set(AGENT_AUTOAPPLY_TEACH_TYPES)).toEqual(
 				new Set(["type_pattern", "null_value", "unit"]),
 			);
-			// It is a strict subset of what the teach tool advertises.
+			// The auto-apply loop is the add_source grounding loop, so its mechanical
+			// set is exactly what the CONNECT chat teaches (DAT-647) — not STAGE's
+			// catalogue-grain surface.
 			for (const t of AGENT_AUTOAPPLY_TEACH_TYPES) {
-				expect(AGENT_TEACH_TYPES as readonly string[]).toContain(t);
+				expect(CONNECT_TEACH_TYPES as readonly string[]).toContain(t);
 			}
 			// Judgement-family types are NEVER auto-appliable.
 			for (const t of [

@@ -179,12 +179,24 @@ describe("tool registry (DAT-353)", () => {
 		expect(CONNECT_TEACH_TYPES).not.toContain("rebind");
 		expect(CONNECT_TEACH_TYPES).not.toContain("relationship");
 		expect(CONNECT_TEACH_TYPES).not.toContain("hierarchy");
-		// Stage owns the catalogue-grain meaning teaches + topology.
-		expect(AGENT_TEACH_TYPES).toContain("concept");
-		expect(AGENT_TEACH_TYPES).toContain("rebind");
-		// Stage keeps both topology families.
-		expect(AGENT_TEACH_TYPES).toContain("relationship");
-		expect(AGENT_TEACH_TYPES).toContain("hierarchy");
+		// Stage owns the catalogue-grain meaning teaches + topology, and NONE of the
+		// mechanical typing-grain teaches (those are CONNECT's — begin_session can't
+		// re-run typing to realize them, DAT-647). No overlap between the two chats.
+		expect([...AGENT_TEACH_TYPES]).toEqual([
+			"concept",
+			"concept_property",
+			"rebind",
+			"relationship",
+			"hierarchy",
+		]);
+		for (const mechanical of ["type_pattern", "null_value", "unit"]) {
+			expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(mechanical);
+		}
+		// The two chats' teach surfaces are now disjoint — one surface per teach family.
+		const overlap = [...CONNECT_TEACH_TYPES].filter((t) =>
+			(AGENT_TEACH_TYPES as readonly string[]).includes(t),
+		);
+		expect(overlap).toEqual([]);
 	});
 
 	it("declares NO approval gate on any tool — every tool runs directly", () => {

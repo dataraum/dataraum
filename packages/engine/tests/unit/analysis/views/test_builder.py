@@ -1,5 +1,7 @@
 """Tests for enriched view SQL builder."""
 
+import duckdb
+
 from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
 
 
@@ -145,3 +147,24 @@ class TestBuildEnrichedViewSql:
         assert "kontonummer_des_kontos__zusfkt" in dim_cols
         # SQL aliases for the two joins must also be distinct
         assert sql.count("LEFT JOIN") == 2
+
+    def test_reserved_word_table_alias_builds_executable_sql(self):
+        """A dim table whose initials form a SQL reserved word (``accounts_source``
+        → ``as``) must still build a view DuckDB can *execute* — the alias is
+        quoted, so the join parses instead of failing at ``as``."""
+        joins = [
+            DimensionJoin(
+                dim_table_name="accounts_source",  # initials -> "as", a keyword
+                dim_duckdb_path="dim",
+                fact_fk_column="account_id",
+                dim_pk_column="id",
+                include_columns=["label"],
+            )
+        ]
+        sql, _ = build_enriched_view_sql(view_fqn="v", fact_fqn="fact", dimension_joins=joins)
+        assert 'AS "as"' in sql  # the reserved-word alias is quoted
+
+        con = duckdb.connect(":memory:")
+        con.execute("CREATE TABLE fact (account_id INTEGER)")
+        con.execute("CREATE TABLE dim (id INTEGER, label VARCHAR)")
+        con.execute(sql)  # must not raise a parser error on the bare `as`

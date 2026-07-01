@@ -95,7 +95,7 @@ def build_enriched_view_sql(
         col_prefix = join.fact_fk_column
         for col in join.include_columns:
             qualified_name = get_unique_column_name(f"{col_prefix}__{col}")
-            select_parts.append(f'{alias}."{col}" AS "{qualified_name}"')
+            select_parts.append(f'"{alias}"."{col}" AS "{qualified_name}"')
             dimension_column_names.append(qualified_name)
 
     select_clause = ",\n    ".join(select_parts)
@@ -104,8 +104,8 @@ def build_enriched_view_sql(
     join_clauses = []
     for join, alias in zip(dimension_joins, join_aliases, strict=True):
         join_clauses.append(
-            f"LEFT JOIN {join.dim_duckdb_path} AS {alias} "
-            f'ON f."{join.fact_fk_column}" = {alias}."{join.dim_pk_column}"'
+            f'LEFT JOIN {join.dim_duckdb_path} AS "{alias}" '
+            f'ON f."{join.fact_fk_column}" = "{alias}"."{join.dim_pk_column}"'
         )
 
     joins_sql = "\n".join(join_clauses)
@@ -121,7 +121,13 @@ def build_enriched_view_sql(
 
 
 def _table_alias(table_name: str) -> str:
-    """Generate a short alias for a dimension table."""
+    """Generate a short alias for a dimension table.
+
+    The initials form can collide with a SQL reserved word (e.g.
+    ``accounts_source`` → ``as``); every use site quotes the alias (``AS
+    "{alias}"``) so DuckDB accepts it as an identifier rather than failing to
+    parse the join.
+    """
     # Use first letter of each word, or first 3 chars
     parts = table_name.split("_")
     if len(parts) > 1:

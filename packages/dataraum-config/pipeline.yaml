@@ -53,7 +53,12 @@ phases:
     # focal pair's rows (candidate value-overlap stats, llm confirmation, manual/
     # keeper teaches) into {genuine, spurious} — runs at the terminal session
     # detect, after the catalog (llm + materialized overlays) is complete.
-    detectors: [join_path_determinism, relationship_entropy, relationship_discovery]
+    # unit_source (DAT-647): the SEMANTIC half of unit detection — reads
+    # ColumnConcept.unit_source_column, authored by THIS agent under the
+    # begin_session run, so it must run at the session detect where the catalogue
+    # grain exists. The value-carried half (unit_entropy) stays on
+    # semantic_per_column (add_source, typing grain).
+    detectors: [join_path_determinism, relationship_entropy, relationship_discovery, unit_source]
 
   # =========================================================================
   # Zone 2: Enrichment

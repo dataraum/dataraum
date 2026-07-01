@@ -157,7 +157,19 @@ measurements:
     aggregation_intent: { score: 0.4 }
     reporting_intent: { score: 0.4 }
   unit_entropy:
-    # Undeclared/ambiguous units are worst for aggregation (summing mixed units) + reports.
+    # Value-carried unit (DAT-647 split): a low-confidence / ambiguous unit token in
+    # the VALUES (typing grain, detected_unit) is worst for aggregation (summing mixed
+    # units) + reports. Absence of a value-token is NOT scored here (→ 0); the
+    # "is the unit determinable at all" question is unit_source's, below.
+    aggregation_intent: { score: 0.8 }
+    reporting_intent: { score: 0.6 }
+
+  unit_source:
+    # Semantic-grain unit source (DAT-647 split): a MEASURE whose unit cannot be
+    # determined from the catalogue (no dimension column like `currency`, not
+    # dimensionless) is unsafe to aggregate (you'd sum unknown units) + report. This
+    # is the aggregation-safety block; it is 0 once the unit is resolved. Teach:
+    # unit_from_concept / rebind (teach-as-witness), never a deterministic override.
     aggregation_intent: { score: 0.8 }
     reporting_intent: { score: 0.6 }
   business_meaning:

@@ -21,6 +21,7 @@ from dataraum.entropy.detectors import (
     TemporalEntropyDetector,
     TypeFidelityDetector,
     UnitEntropyDetector,
+    UnitSourceEntropyDetector,
     get_default_registry,
     register_builtin_detectors,
 )
@@ -45,6 +46,7 @@ class TestBuiltinDetectors:
             # Semantic (column-scoped)
             BusinessMeaningDetector,
             UnitEntropyDetector,
+            UnitSourceEntropyDetector,
             TemporalEntropyDetector,
             # Semantic (table-scoped)
             DimensionalEntropyDetector,
@@ -150,10 +152,11 @@ class TestBuiltinDetectors:
         semantic_detectors = [
             d for d in registry.get_all_detectors() if d.layer.value == "semantic"
         ]
-        assert len(semantic_detectors) == 6
+        assert len(semantic_detectors) == 7
         detector_ids = [d.detector_id for d in semantic_detectors]
         assert "business_meaning" in detector_ids
         assert "unit_entropy" in detector_ids
+        assert "unit_source" in detector_ids
         assert "temporal_entropy" in detector_ids
         assert "temporal_behavior" in detector_ids
         assert "dimensional_entropy" in detector_ids

@@ -1,16 +1,15 @@
-"""Unit declaration entropy detector.
+"""Value-carried unit entropy detector (typing grain).
 
-Measures uncertainty in unit declarations for numeric columns.
-Columns with undeclared or low-confidence units in measure roles
-have higher entropy when used in calculations.
+The TYPING half of unit detection (DAT-647 split): does a measure column carry a
+unit IN ITS VALUES (a token like '€'/'kg'/'%' that the typing phase parses out
+to cast the column, → ``detected_unit``)? Score = ``1 - unit_confidence``
+(stats.confidence_entropy): a confidently-detected value-unit → ~0, an ambiguous
+one → high. When there is NO value-carried unit token, this detector abstains
+(→ 0) — absence of a value-unit is the norm, not entropy, and whether the unit is
+determinable from the CATALOGUE (a dimension column, dimensionless) is the
+separate ``unit_source`` detector's question (semantic grain, ColumnConcept).
 
-The score is 1 - unit_confidence (stats.confidence_entropy): a confidently-detected
-unit → ~0, an undeclared unit → 1.0. Cross-column inference: when a dimension column
-(e.g. 'currency') defines the unit, or the measure is inherently dimensionless, the
-unit is resolved → entropy 0.
-
-Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role,
-        semantic.unit_source_column
+Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role.
 """
 
 from dataraum.entropy import stats
@@ -20,14 +19,12 @@ from dataraum.entropy.models import EntropyObject
 
 
 class UnitEntropyDetector(EntropyDetector):
-    """Detector for unit declaration uncertainty.
+    """Detector for value-carried unit uncertainty (typing grain).
 
-    Measures whether numeric columns (measures) have declared units.
-    Undeclared units on measure columns create high entropy when
-    those columns are used in aggregations or calculations.
-
-    Score = 1 - unit_confidence (no 0.8/0.5/0.1 buckets); a unit resolved by
-    cross-column inference (a 'currency' dimension, or a dimensionless measure) → 0.
+    Measures whether a measure column's VALUE-CARRIED unit is confidently
+    declared. Score = 1 - unit_confidence when a value-unit token is present;
+    0 (abstain) when there is none — the catalogue-grain "is the unit
+    determinable" question belongs to :class:`UnitSourceEntropyDetector`.
 
     Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role
     """
@@ -88,40 +85,26 @@ class UnitEntropyDetector(EntropyDetector):
             detected_unit = typing.get("detected_unit")
             unit_confidence = typing.get("unit_confidence", 0.0) or 0.0
 
-        # Check for cross-column unit inference (unit_source_column from semantic analysis)
-        if hasattr(semantic, "unit_source_column"):
-            unit_source_column = semantic.unit_source_column
-        else:
-            unit_source_column = semantic.get("unit_source_column")
-
-        # A measure's unit-declaration entropy. The unit is KNOWN (→ 0) when it is
-        # inherently dimensionless or inferred from a dimension column (cross-column
-        # resolution). Otherwise the entropy is the model's uncertainty about the unit
-        # = 1 - unit_confidence (stats.confidence_entropy): a confidently-detected unit
-        # → ~0, an undeclared unit (unit_confidence 0) → 1.0. No 0.8/0.5/0.1 buckets
-        # (DAT-442 two-table). Teach: declare the unit.
+        # Value-carried unit entropy (DAT-647 split): only the unit token in the
+        # VALUES is this detector's concern. A confidently-detected value-unit → ~0
+        # (score = 1 - unit_confidence, stats.confidence_entropy); an ambiguous one →
+        # high. NO value-unit token → abstain (0): absence is the norm, and whether
+        # the unit is determinable from the catalogue is unit_source's question.
+        # Teach: declare the value-carried unit (the `unit` teach → detected_unit).
         if detected_unit:
-            # A directly-declared unit takes precedence over cross-column inference.
             score = stats.confidence_entropy(unit_confidence)
             unit_status = "declared" if unit_confidence >= 0.5 else "low_confidence"
-        elif unit_source_column == "dimensionless":
-            score, unit_status = 0.0, "dimensionless"
-        elif unit_source_column:
-            score, unit_status = 0.0, "inferred_from_dimension"
         else:
-            score, unit_status = 1.0, "missing"
+            score, unit_status = 0.0, "no_value_unit"
 
-        # Build evidence
-        evidence_dict = {
-            "detected_unit": detected_unit,
-            "unit_confidence": unit_confidence,
-            "semantic_role": semantic_role,
-            "unit_status": unit_status,
-        }
-        if unit_source_column:
-            evidence_dict["unit_source_column"] = unit_source_column
-
-        evidence = [evidence_dict]
+        evidence = [
+            {
+                "detected_unit": detected_unit,
+                "unit_confidence": unit_confidence,
+                "semantic_role": semantic_role,
+                "unit_status": unit_status,
+            }
+        ]
 
         return [
             self.create_entropy_object(

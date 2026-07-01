@@ -82,6 +82,14 @@ system_prompt: |
   if it conflicts with the concept you mapped. Set temporal_behavior_claim_confidence
   to how clearly name + role communicate it (high for 'balance'/'payment',
   low when guessing); use 'unsure' with low confidence rather than guessing.
+
+  Report this stock/flow determination ONLY here, via temporal_behavior_claim.
+  Do NOT restate it in the column `description` — the description carries business
+  meaning, never a "stock"/"flow" label or a "should (not) be summed" directive.
+  The summable-or-not verdict has a single home (temporal_behavior_claim), and it
+  is reconciled downstream against the data by a data-grounded witness that can
+  overturn this name-based read; a stock/flow claim baked into the prose becomes a
+  stale directive the SQL agents follow even after that reconciliation flips it.
   </temporal_behavior_classification>
 
   <derived_formula_hypothesis>

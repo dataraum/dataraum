@@ -31,9 +31,10 @@ The divergence case is the whole point: the LLM confidently expects
 found ``subtotal * tax_rate`` → conflict ``C`` rises on the hypothesis slot →
 ``investigate``. The collinear case stays quiet: a hypothesis that ALSO holds in
 the data agrees with its grading. Formulas are compared as canonical structures
-(sqlglot-parsed, commutative operands sorted), never raw strings.
+(parsed via the shared ``json_serialize_sql`` parser, commutative operands
+sorted), never raw strings.
 
-Pure module: no DB, no LLM, no config, no tunable numbers — witness leans are
+No persistence, no LLM, no config, no tunable numbers — witness leans are
 ``0.5 + 0.5·confidence`` / the measured match rate itself. Reliabilities are
 documented placeholder priors (artifact: dataraum-config/entropy/
 reliabilities.yaml), calibrated later by the eval rig — not tuned to a metric.
@@ -45,10 +46,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import sqlglot
-from sqlglot import expressions as exp
-from sqlglot.errors import SqlglotError
-
+from dataraum.core.sql_normalize import serialize_sql
 from dataraum.entropy.pooling import PoolResult, Witness, pool
 
 # The canonical claim space. Order fixes the tuple layout passed to the pool.
@@ -68,12 +66,9 @@ OPERATION_SYMBOL: dict[str, str] = {
     "ratio": "/",
 }
 _COMMUTATIVE = frozenset({"sum", "product"})
-_NODE_OPERATION: dict[type[exp.Expr], str] = {
-    exp.Add: "sum",
-    exp.Sub: "difference",
-    exp.Mul: "product",
-    exp.Div: "ratio",
-}
+# The DuckDB operator token → derivation-type name, for reading a parsed formula
+# back into the claim language (the inverse of ``OPERATION_SYMBOL``).
+_SYMBOL_OPERATION: dict[str, str] = {symbol: op for op, symbol in OPERATION_SYMBOL.items()}
 
 # Neutral uncalibrated FALLBACK — used only when no reliabilities are threaded in
 # (direct/test callers). The SHIPPED values live in the artifact
@@ -124,49 +119,62 @@ def parse_formula(formula: str | None) -> CanonicalFormula | None:
     functions, literals, more than two operands, unparseable text — returns
     ``None``: the formula cannot be mapped into the claim space, so a witness
     holding it must abstain rather than manufacture an ungrounded claim.
+
+    Parses via the shared ``json_serialize_sql`` parser (DAT-654): the formula
+    is wrapped as a ``SELECT`` expression and its parse tree walked — DuckDB
+    already folds parentheses, so only the top-level ``=`` needs unwrapping.
     """
     if not formula or not formula.strip():
         return None
+    tree = serialize_sql(f"SELECT {formula} AS __formula__")
+    if tree is None:
+        return None
     try:
-        node = sqlglot.parse_one(formula, dialect="duckdb")
-    except SqlglotError:
+        node = tree["statements"][0]["node"]["select_list"][0]
+    except KeyError, IndexError, TypeError:
         return None
-    if node is None:
+    node = _formula_expression(node)
+    if node is None or node.get("type") != "FUNCTION" or not node.get("is_operator"):
         return None
-    node = _unwrap(node)
-    operation = _NODE_OPERATION.get(type(node))
+    operation = _SYMBOL_OPERATION.get(node.get("function_name", ""))
     if operation is None:
         return None
-    raw_left = node.args.get("this")
-    raw_right = node.args.get("expression")
-    if not isinstance(raw_left, exp.Expression) or not isinstance(raw_right, exp.Expression):
+    children = node.get("children") or []
+    if len(children) != 2:
         return None
-    left = _unwrap(raw_left)
-    right = _unwrap(raw_right)
-    if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
+    left = _column_name(children[0])
+    right = _column_name(children[1])
+    if left is None or right is None:
         return None
-    if not left.name or not right.name:
-        return None
-    return _canonical(operation, left.name, right.name)
+    return _canonical(operation, left, right)
 
 
-def _unwrap(node: exp.Expr) -> exp.Expr:
-    """Strip syntax that carries no formula structure (parens, aliases, ``=``)."""
-    while True:
-        if isinstance(node, exp.Paren | exp.Alias):
-            node = node.this
-        elif isinstance(node, exp.EQ):
-            # "target = a + b": the equation side that is not a bare column is
-            # the formula; a bare ``col = col`` carries no derivation.
-            left, right = node.this, node.expression
-            if isinstance(left, exp.Column) and not isinstance(right, exp.Column):
-                node = right
-            elif isinstance(right, exp.Column) and not isinstance(left, exp.Column):
-                node = left
-            else:
-                return node
-        else:
-            return node
+def _formula_expression(node: dict[str, Any]) -> dict[str, Any] | None:
+    """Unwrap a top-level ``target = expr`` equation to its expression side.
+
+    DuckDB folds parentheses in the parse tree, so only the equality needs
+    handling: the side that is not a bare column is the formula. A bare
+    ``col = col`` (or ``expr = expr``) carries no single derivation → ``None``.
+    Any non-equation node passes through unchanged.
+    """
+    if node.get("class") != "COMPARISON" or node.get("type") != "COMPARE_EQUAL":
+        return node
+    left, right = node.get("left") or {}, node.get("right") or {}
+    left_is_col = left.get("type") == "COLUMN_REF"
+    right_is_col = right.get("type") == "COLUMN_REF"
+    if left_is_col and not right_is_col:
+        return right
+    if right_is_col and not left_is_col:
+        return left
+    return None
+
+
+def _column_name(node: dict[str, Any]) -> str | None:
+    """The bare column name of a ``COLUMN_REF`` node (drops any table qualifier)."""
+    if node.get("type") != "COLUMN_REF":
+        return None
+    names = node.get("column_names") or []
+    return names[-1] if names else None
 
 
 def canonicalize_discovered(entry: Mapping[str, Any]) -> CanonicalFormula | None:

@@ -38,8 +38,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "networkx>=3.6",
     "anthropic>=0.76.0",
-    # SQL parsing
-    "sqlglot>=26.0.0",
     "temporalio>=1.27",
     "polars>=1.41.2",
     "pyarrow>=24.0.0",
@@ -164,7 +162,6 @@ module = [
     "anthropic.*",
     "scipy.*",
     "networkx.*",
-    "sqlglot.*",
 ]
 ignore_missing_imports = true
 

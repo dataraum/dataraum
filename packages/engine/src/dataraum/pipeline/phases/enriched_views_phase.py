@@ -383,7 +383,7 @@ class EnrichedViewsPhase(BasePhase):
             )
 
             # Version the view DDL on the DAT-414 recipe substrate (emit → store →
-            # execute; the view was executed above), sqlglot-gated (DAT-415):
+            # execute; the view was executed above), canonical-SQL-gated (DAT-415):
             # only stamp a NEW run-versioned recipe when the canonical SQL differs
             # from the fact's latest stored enriched recipe — an unchanged re-run
             # (temp-0 LLM → same joins) adds no redundant version, and a

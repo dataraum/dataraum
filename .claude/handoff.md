@@ -5,6 +5,23 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-654 — SQL canonicalization on DuckDB `json_serialize_sql` (retire sqlglot)
+
+**Branch:** `feat/dat-654-engine-json-serialize`. **No calibration action required.**
+
+Pure refactor of the two engine SQL consumers off `sqlglot` onto DuckDB's own
+`json_serialize_sql` parser (matching the cockpit, PR #416): `core/sql_normalize.py`
+(the enriched-view recipe-version gate) and `entropy/measurements/derived_value.py::parse_formula`
+(the `derived_value` detector's formula → `CanonicalFormula` witness). Output is
+proven **byte-identical** to the old sqlglot logic by the pre-existing, **unchanged**
+`test_measurement_derived_value.py` suite (every `identity`/`operation`/`operands`
+case still passes) plus the enriched-view integration gate. No detector inputs,
+scores, thresholds, or response shapes change → **recall/precision unaffected; do
+not recalibrate.** The only watch item is nil: `parse_formula` returns the same
+`CanonicalFormula` on every supported/unsupported shape.
+
+---
+
 ## DAT-631 — metric grounding: teach the agent to down-rank blocked columns
 
 **Branch:** `feat/dat-631-grounding-quality`. **Re-verify metric grounding confidence; no schema/field change.**

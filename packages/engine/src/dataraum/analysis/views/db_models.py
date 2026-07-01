@@ -32,7 +32,7 @@ class EnrichedView(Base):
     last materialized it), NOT a version axis. The version history + reset live in
     the :class:`~dataraum.analysis.typing.db_models.MaterializationRecipe`
     (``layer="enriched"``) — the view's ``CREATE VIEW`` DDL is stored there
-    (sqlglot-gated, the single rebuild source), never here. ``view_sql`` was
+    (canonical-SQL-gated, the single rebuild source), never here. ``view_sql`` was
     removed (it was write-only).
 
     The latest-only "one row per ``fact_table_id``" invariant the reconcile and

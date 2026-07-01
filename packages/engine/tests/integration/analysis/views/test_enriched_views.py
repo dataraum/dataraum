@@ -466,7 +466,7 @@ class TestEnrichedViewsPhaseDuckLake:
         assert len(views) == 1, "EnrichedView is latest-only — one row per fact"
         assert views[0].run_id == "run-2", "the latest run stamps the (reconciled) definition"
         assert {r.run_id for r in enriched_recipes()} == {"run-1"}, (
-            "unchanged canonical SQL adds no new recipe version (sqlglot-gated)"
+            "unchanged canonical SQL adds no new recipe version (canonical-SQL-gated)"
         )
         assert calls["n"] == 1, "run 2 inherits the shape — the LLM is not consulted again"
         # The inherited shape still exposes BOTH columns (name + country).

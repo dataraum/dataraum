@@ -252,12 +252,13 @@ export async function classifyComponents(
 			});
 			continue;
 		}
-		// AST-canonical comparison (polyglot round-trip; DAT-485): exact_reuse when
-		// the model reproduced the validated snippet modulo cosmetic variance, else
-		// adapted. Self-consistent — polyglot canonicalizes BOTH sides — so it does
-		// NOT assume cross-language agreement with the engine's sqlglot (the stress-
-		// test found they diverge; one canonicalizer in both is DAT-492). The model's
-		// executable SQL is always KEPT (classify, don't substitute).
+		// AST-canonical comparison (DuckDB `json_serialize_sql` parse tree; DAT-485,
+		// DAT-654): exact_reuse when the model reproduced the validated snippet modulo
+		// cosmetic variance, else adapted. Self-consistent — it canonicalizes BOTH
+		// sides — so it does NOT assume cross-language agreement with the engine's
+		// canonicalizer (the stress-test found native engines diverge byte-for-byte;
+		// nothing requires them to agree). The model's executable SQL is always KEPT
+		// (classify, don't substitute).
 		const usage = (await sqlEquivalent(step.sql, record.sql))
 			? "exact_reuse"
 			: "adapted";

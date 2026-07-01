@@ -1,101 +1,70 @@
-// Canonical SQL for snippet identity (DAT-485 comparison fix; DAT-492 tail).
+// Canonical SQL for snippet identity (DAT-485 comparison fix; DAT-492 tail;
+// DAT-654 engine swap).
 //
 // Snippet sameness can't be decided by string normalization — an LLM writes the
 // same computation slightly differently each time (alias, spacing, keyword case,
-// operand order, identifier quoting, table qualifier). The robust key is an AST
-// round-trip: parse the SQL, normalize the tree, and re-render it canonically, so
-// cosmetic variance collapses while real structural/identifier differences survive.
+// operand order, identifier quoting, table qualifier). The robust key is the parse
+// tree: parse the SQL, normalize the tree, and compare a stable serialization of it,
+// so cosmetic variance collapses while real structural/identifier differences survive.
 //
-// We use polyglot (@polyglot-sql/sdk — a Rust SQL parser via WASM, DuckDB dialect)
-// for the TS side. Every comparison canonicalizes BOTH sides with polyglot, so
-// reuse classification is self-consistent regardless of how a snippet was produced.
+// We parse with DuckDB's OWN parser via `json_serialize_sql` (DAT-654, retiring the
+// former `@polyglot-sql/sdk` WASM parser) — the exact parser that runs the SQL, so
+// there is no dialect drift and no extra dependency (`grain-note.ts` uses the same
+// call). The serialized AST is a stable, versioned representation of DuckDB's parse;
+// the canonical KEY is the normalized tree itself (a stable JSON serialization), NOT
+// re-rendered SQL — we never deserialize back, so the key never depends on a
+// generator's formatting.
 //
-// SELF-CONTAINED — no cross-engine key. The engine's sqlglot canonical
-// (`core/sql_normalize`) is used only for view DDL and the future snippet de-dup
-// pass (DAT-493); it re-canonicalizes stored SQL in-situ with its own single
-// engine, so polyglot (here) and sqlglot (there) never need to byte-agree. (The
-// DAT-485 stress-test proved two native engines do NOT share a byte-for-byte key;
-// the DAT-492 refine settled that nothing requires them to.)
+// SELF-CONTAINED — no cross-engine key. The engine's canonical (`core/sql_normalize`)
+// re-canonicalizes stored SQL in-situ with its own parser, so the two sides never
+// need to byte-agree. (DAT-485 proved two native engines do NOT share a byte-for-byte
+// key; DAT-492 settled that nothing requires them to. DAT-654 moves both sides onto
+// `json_serialize_sql`, but the independence still holds.)
 //
-// The AST normalization beyond a bare round-trip (DAT-492):
-//   1. Commutative-operand sort — `WHERE b AND a` ≡ `WHERE a AND b` (and OR / + / *
-//      chains). The parse tree preserves operand order; we flatten each commutative
-//      chain, sort the operands by a stable key, and rebuild, so order stops
-//      fragmenting identity. NON-commutative operators (-, /, comparisons) are left
-//      untouched — `a - b` must NOT equal `b - a`.
-//   2. Identifier normalization — `"Credit"` ≡ `credit`. DuckDB folds identifier
-//      case, so we lowercase identifier names, and polyglot preserves quote style,
-//      so we also drop the quote when the folded spelling is unambiguous (bare-
-//      identifier charset). Genuinely quote-requiring names (spaces, etc.) keep their
-//      quotes (still case-folded), and the generator re-quotes reserved words on its
-//      own, so the key never goes invalid. Only identifier nodes are touched — string
-//      literals keep their case (`'Sale'` ≠ `'sale'`).
-//
-// `lake.<layer>.` qualifier strip rides on top: the cockpit addresses
-// `lake.typed.<name>` while stored snippets are bare, and the generated SQL
-// preserves the qualifier, so we strip it for the comparison only (never the SQL
-// that runs). Layered over the engine-byte-compat primitives in snippet-normalize.
+// The normalization beyond a bare parse:
+//   1. Strip `query_location` — the serialized tree carries a byte offset on every
+//      node; two spellings of the same query differ only there until it is dropped.
+//   2. Commutative-operand sort — `WHERE b AND a` ≡ `WHERE a AND b` (and OR, plus the
+//      `+`/`*` operators). DuckDB flattens AND/OR into one n-ary `children` array; the
+//      `+`/`*` operators are binary FUNCTIONs whose two `children` we sort in place.
+//      NON-commutative operators (`-`, `/`, comparisons) are left untouched —
+//      `a - b` must NOT equal `b - a`.
+//   3. Identifier case-fold — `"Credit"` ≡ `credit`. DuckDB folds identifier case, and
+//      `json_serialize_sql` emits the resolved identifier text in `column_names` /
+//      `table_name` WITHOUT quote metadata, so lowercasing those collapses quote-and-
+//      case variance in one step (a genuinely quote-requiring name like `"Weird Name"`
+//      simply case-folds to `weird name` — still distinct from any other identifier).
+//      String literals live in CONSTANT `value` nodes, untouched — `'Sale'` ≠ `'sale'`.
+//   4. `lake.<layer>.` qualifier strip — the cockpit addresses `lake.typed.<name>`
+//      while stored snippets are bare; a BASE_TABLE whose `catalog_name` is `lake` has
+//      its catalog + schema cleared, so a qualified reference matches the bare stored
+//      form. Applied to the comparison KEY only, never to the SQL that runs.
 
-import * as Polyglot from "@polyglot-sql/sdk";
+import type { DuckDBConnection } from "@duckdb/node-api";
 
+import { readerToResult } from "../duckdb/query-result";
 import { canonicalizeForReuse, normalizeSql } from "./snippet-normalize";
 
-// polyglot is WASM — `init()` must resolve once before parse/generate. Memoize it
-// so a burst of canonicalSql() calls shares one initialization; a failed init clears
-// the memo so a later call can retry (and the catch below degrades gracefully).
-let initPromise: Promise<unknown> | null = null;
-function ensureInit(): Promise<unknown> {
-	if (!initPromise) {
-		initPromise = Promise.resolve(Polyglot.init()).catch((err) => {
-			initPromise = null;
-			throw err;
-		});
-	}
-	return initPromise;
-}
-
-// --- AST normalization (DAT-492) -------------------------------------------------
+// --- tree normalization ----------------------------------------------------------
 //
-// The polyglot AST is plain tagged-union JSON: every expression is `{ <tag>: data }`
-// (one key), e.g. `{ and: { left, right, ... } }`, and identifiers are bare structs
-// `{ name, quoted, ... }`. We normalize that JSON directly — `Polyglot.generate`
-// accepts the same shape — rather than via the `ast.*` helpers (which expect a
-// different wrapper). Everything below is typed against `unknown` and narrowed.
+// A `json_serialize_sql` node is a plain object with a `class` discriminator
+// (COLUMN_REF, FUNCTION, CONJUNCTION, CONSTANT, …) plus class-specific fields; the
+// top-level result carries `error` (false on a clean parse). Everything below is
+// typed against `unknown` and narrowed — the tree is a boundary value.
 
-/**
- * Binary operators whose operands may be reordered without changing meaning.
- * `sub`/`div`/`mod`, the comparisons, and `concat` (the polyglot tag for `||`)
- * are deliberately absent — none is commutative.
- */
-const COMMUTATIVE_TAGS = new Set(["and", "or", "add", "mul"]);
-/** Identifier spelling that means the same thing bare or double-quoted. */
-const BARE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Operator FUNCTIONs (`is_operator`) whose two operands may be reordered. */
+const COMMUTATIVE_OPERATORS = new Set(["+", "*"]);
+/** CONJUNCTION `type`s whose n-ary operands may be reordered. */
+const COMMUTATIVE_CONJUNCTIONS = new Set(["CONJUNCTION_AND", "CONJUNCTION_OR"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** A parsed identifier struct: has a string `name` and a boolean `quoted` flag. */
-function isIdentifierNode(
-	value: unknown,
-): value is Record<string, unknown> & { name: string; quoted: boolean } {
-	return (
-		isRecord(value) &&
-		typeof value.name === "string" &&
-		typeof value.quoted === "boolean"
-	);
-}
-
-/** The single tag of a tagged-union expression node, or null if not one. */
-function soleTag(value: Record<string, unknown>): string | null {
-	const keys = Object.keys(value);
-	return keys.length === 1 ? keys[0] : null;
-}
-
 /**
- * Deterministic serialization for operand ordering: object keys are sorted, so two
- * structurally-equal (already-normalized) operands serialize identically regardless
- * of key order. Used only as a sort key, never rendered.
+ * Deterministic serialization: object keys are sorted, so two structurally-equal
+ * (already-normalized) nodes serialize identically regardless of key order. Used
+ * both as the commutative sort key and as the final canonical key.
  */
 function stableKey(value: unknown): string {
 	return JSON.stringify(value, (_key, val) =>
@@ -109,119 +78,133 @@ function stableKey(value: unknown): string {
 	);
 }
 
-/** Collect the operands of a same-tag commutative chain, each normalized. */
-function flattenCommutative(
-	node: Record<string, unknown>,
-	tag: string,
-	out: unknown[],
-): unknown[] {
-	const data = node[tag];
-	if (isRecord(data)) {
-		for (const side of [data.left, data.right]) {
-			if (isRecord(side) && soleTag(side) === tag) {
-				flattenCommutative(side, tag, out);
-			} else {
-				out.push(normalizeNode(side));
-			}
-		}
+/** Lowercase each string in an identifier-name array; anything else passes through. */
+function lowerNames(value: unknown): unknown {
+	return Array.isArray(value)
+		? value.map((v) => (typeof v === "string" ? v.toLowerCase() : v))
+		: value;
+}
+
+/** True for a commutative node whose `children` array may be sorted. */
+function isCommutative(node: Record<string, unknown>): boolean {
+	if (node.class === "FUNCTION") {
+		return (
+			node.is_operator === true &&
+			typeof node.function_name === "string" &&
+			COMMUTATIVE_OPERATORS.has(node.function_name)
+		);
 	}
-	return out;
+	return (
+		node.class === "CONJUNCTION" &&
+		typeof node.type === "string" &&
+		COMMUTATIVE_CONJUNCTIONS.has(node.type)
+	);
 }
 
 /**
- * Rebuild a commutative chain as a left-nested tree of the given operands. Only the
- * structural + comment fields are emitted; any other binary-op data is intentionally
- * dropped (it is cosmetic for our key, and a generate failure would fail soft anyway).
+ * Recursively canonicalize a serialized node: drop `query_location`, case-fold
+ * identifiers (`column_names` / `table_name`), strip the `lake.<layer>.` qualifier,
+ * then sort the operands of any commutative node.
  */
-function rebuildLeftNested(tag: string, operands: unknown[]): unknown {
-	let acc = operands[0];
-	for (let i = 1; i < operands.length; i++) {
-		acc = {
-			[tag]: {
-				left: acc,
-				right: operands[i],
-				left_comments: [],
-				operator_comments: [],
-				trailing_comments: [],
-			},
-		};
-	}
-	return acc;
-}
-
-/** Recursively canonicalize a polyglot AST node (commutative sort + quote drop). */
 function normalizeNode(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(normalizeNode);
 	if (!isRecord(value)) return value;
 
-	if (isIdentifierNode(value)) {
-		// DuckDB folds identifier case, so lowercase the name (`"Credit"` ≡ `credit`);
-		// drop the quote when the folded spelling is a bare identifier. Only identifier
-		// structs are touched — string literals are NOT identifier nodes, so literal
-		// case is preserved (`'Sale'` stays `'Sale'`).
-		const name = value.name.toLowerCase();
-		return {
-			...value,
-			name,
-			quoted: BARE_IDENTIFIER.test(name) ? false : value.quoted,
-		};
+	const out: Record<string, unknown> = {};
+	for (const [key, child] of Object.entries(value)) {
+		if (key === "query_location") continue; // byte offset — pure cosmetics
+		out[key] = normalizeNode(child);
 	}
 
-	const tag = soleTag(value);
-	if (tag !== null && COMMUTATIVE_TAGS.has(tag)) {
-		const operands = flattenCommutative(value, tag, []);
-		if (operands.length >= 2) {
-			operands.sort((a, b) => {
-				const ka = stableKey(a);
-				const kb = stableKey(b);
-				return ka < kb ? -1 : ka > kb ? 1 : 0;
-			});
-			return rebuildLeftNested(tag, operands);
+	if (out.class === "COLUMN_REF") {
+		out.column_names = lowerNames(out.column_names);
+	}
+	if (out.type === "BASE_TABLE") {
+		if (typeof out.table_name === "string") {
+			out.table_name = out.table_name.toLowerCase();
+		}
+		// `lake.<layer>.` addresses the same table as the bare stored form.
+		if (String(out.catalog_name ?? "").toLowerCase() === "lake") {
+			out.catalog_name = "";
+			out.schema_name = "";
+		} else if (typeof out.schema_name === "string") {
+			out.schema_name = out.schema_name.toLowerCase();
 		}
 	}
 
-	const out: Record<string, unknown> = {};
-	for (const [key, child] of Object.entries(value)) {
-		out[key] = normalizeNode(child);
+	if (
+		isCommutative(out) &&
+		Array.isArray(out.children) &&
+		out.children.length >= 2
+	) {
+		out.children = [...out.children].sort((a, b) => {
+			const ka = stableKey(a);
+			const kb = stableKey(b);
+			return ka < kb ? -1 : ka > kb ? 1 : 0;
+		});
 	}
 	return out;
 }
 
 /**
- * Canonical SQL for snippet-identity comparison: polyglot parse → AST normalize
- * (commutative-operand sort + identifier-quote drop, DAT-492) → render, then the
- * `lake.<layer>.` qualifier strip.
+ * The canonical comparison key for a parsed statement. A clean parse
+ * (`tree.error === false`) yields the stable serialization of the normalized tree;
+ * anything else FAILS SOFT to the string normalizer (`normalizeSql ∘
+ * canonicalizeForReuse`) — a query DuckDB can't parse only weakens the reuse signal
+ * (it matches only if the other side also fell back to the same string form), never
+ * throws. Both sides of a comparison run through this same function, so the decision
+ * is self-consistent regardless of how a snippet was produced.
  *
- * FAIL-SOFT: on any polyglot init/parse/generate failure it falls back to the
- * string normalizer (`normalizeSql ∘ canonicalizeForReuse`). A query polyglot can't
- * parse then only weakens the reuse TAG (it won't match unless the other side also
- * fell back to the same string form) — it never throws, so a weird query never
- * breaks the answer. Comparison is self-consistent because both sides of a compare
- * run through this same function.
+ * Exported for the unit test, which parses real SQL through a bare in-memory DuckDB
+ * and feeds the tree here — the exact key the runtime path computes.
  */
-export async function canonicalSql(sql: string): Promise<string> {
-	try {
-		await ensureInit();
-		const duckdb = Polyglot.Dialect.DuckDB;
-		const parsed = Polyglot.parse(sql, duckdb);
-		if (parsed.success && Array.isArray(parsed.ast)) {
-			const normalized = (parsed.ast as unknown[]).map(normalizeNode);
-			const generated = Polyglot.generate(normalized, duckdb);
-			if (generated.success && generated.sql != null) {
-				const rendered = Array.isArray(generated.sql)
-					? generated.sql.join(" ")
-					: generated.sql;
-				return canonicalizeForReuse(rendered);
-			}
-		}
-	} catch {
-		// fall through to the string fallback
+export function canonicalKey(tree: unknown, sql: string): string {
+	if (isRecord(tree) && tree.error === false) {
+		return stableKey(normalizeNode(tree));
 	}
 	return normalizeSql(canonicalizeForReuse(sql));
 }
 
+/**
+ * Serialize one SQL string to its parse tree via DuckDB's own parser. `$1::VARCHAR`
+ * — `json_serialize_sql` requires a VARCHAR arg and rejects an untyped bind param.
+ * Returns the parsed JSON (which itself carries `error` on a parse failure), or null
+ * if the call/JSON is unusable; `canonicalKey` fails soft on either.
+ */
+async function serialize(
+	conn: DuckDBConnection,
+	sql: string,
+): Promise<unknown> {
+	const reader = await conn.runAndReadAll(
+		"SELECT json_serialize_sql($1::VARCHAR) AS tree",
+		[sql],
+	);
+	const raw = readerToResult(reader).rows[0]?.tree;
+	if (typeof raw !== "string") return null;
+	try {
+		return JSON.parse(raw);
+	} catch {
+		return null;
+	}
+}
+
 /** True when two SQL fragments are the same snippet under canonicalization. */
 export async function sqlEquivalent(a: string, b: string): Promise<boolean> {
-	const [ca, cb] = await Promise.all([canonicalSql(a), canonicalSql(b)]);
-	return ca === cb;
+	let treeA: unknown = null;
+	let treeB: unknown = null;
+	try {
+		// Lazy import: `lake` pulls the node DuckDB binding + `#/config` (a server-only
+		// boundary that validates env at load). Importing it dynamically here keeps the
+		// pure `canonicalKey` path — and its unit test — free of that taint.
+		const { withLakeConnection } = await import("../duckdb/lake");
+		// One connection parses both — `json_serialize_sql` is pure parsing (touches
+		// no tables), so the read-only lake connection is just a parser handle.
+		[treeA, treeB] = await withLakeConnection(async (conn) => [
+			await serialize(conn, a),
+			await serialize(conn, b),
+		]);
+	} catch {
+		// leave both null → both sides fall back to the string form below
+	}
+	return canonicalKey(treeA, a) === canonicalKey(treeB, b);
 }

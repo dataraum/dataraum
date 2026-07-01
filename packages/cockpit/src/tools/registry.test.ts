@@ -173,7 +173,11 @@ describe("tool registry (DAT-353)", () => {
 		// meaning teaches (concept/concept_property/rebind) author ColumnConcept at
 		// begin_session, so they moved to STAGE; topology (relationship/hierarchy)
 		// was already stage-only.
-		expect([...CONNECT_TEACH_TYPES]).toEqual(["type_pattern", "null_value", "unit"]);
+		expect([...CONNECT_TEACH_TYPES]).toEqual([
+			"type_pattern",
+			"null_value",
+			"unit",
+		]);
 		expect(CONNECT_TEACH_TYPES).not.toContain("concept");
 		expect(CONNECT_TEACH_TYPES).not.toContain("concept_property");
 		expect(CONNECT_TEACH_TYPES).not.toContain("rebind");

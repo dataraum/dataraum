@@ -453,7 +453,13 @@ describe("validateTeach", () => {
 			// declarations (validation/cycle/metric) are owned by the typed teach_*
 			// tools. One way to teach each thing; one surface per grain.
 			expect(new Set(AGENT_TEACH_TYPES)).toEqual(
-				new Set(["concept", "concept_property", "rebind", "relationship", "hierarchy"]),
+				new Set([
+					"concept",
+					"concept_property",
+					"rebind",
+					"relationship",
+					"hierarchy",
+				]),
 			);
 			// Mechanical typing teaches are CONNECT's, not STAGE's (DAT-647).
 			for (const t of ["type_pattern", "null_value", "unit"]) {

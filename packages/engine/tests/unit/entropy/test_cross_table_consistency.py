@@ -18,15 +18,11 @@ import dataraum.entropy.detectors.computational.cross_table_consistency as ctc
 from dataraum.analysis.validation.evaluate import ValidationVerdict
 from dataraum.analysis.validation.models import ValidationStatus
 from dataraum.entropy.detectors.base import DetectorContext
-from dataraum.entropy.detectors.computational.cross_table_consistency import (
-    CrossTableConsistencyDetector,
-    _score,
-)
 
 
 @pytest.fixture
-def detector() -> CrossTableConsistencyDetector:
-    return CrossTableConsistencyDetector()
+def detector() -> ctc.CrossTableConsistencyDetector:
+    return ctc.CrossTableConsistencyDetector()
 
 
 def _verdict(

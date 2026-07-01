@@ -7,7 +7,7 @@
 # Pydantic tool (TableSynthesisOutput).
 
 name: semantic_per_table
-version: "1.0.0"
+version: "2.0.0"
 description: Per-table entity classification + relationship confirmation
 
 temperature: 0.0
@@ -61,8 +61,17 @@ system_prompt: |
     in this catalogue (e.g. revenue is SUM of an amount filtered by an
     account-class value, not any single column), leave business_concept null — it
     grounds via value-sets, honestly. A wrong binding is worse than none.
-  - unit_source_column: the column defining a measure's unit — same-table name, or
-    'table.column' reachable via a CONFIRMED relationship, or 'dimensionless'.
+  - unit_source_column: the column defining a measure's unit. Set it for EVERY
+    measure (leave null only when genuinely undeterminable) — a measure with no
+    unit source is flagged as unsafe to aggregate. Resolve in this order:
+    (1) if the measure carries its OWN unit in its values (shown as
+    `value_unit=<unit>` in the annotations below), set it to the measure's own
+    column name — the unit is self-contained;
+    (2) else a sibling dimension column supplies it — a same-table name (e.g. a
+    `currency` column), or 'table.column' reachable via a CONFIRMED relationship.
+    An ontology concept marked "Unit from concept: <name>" (e.g. currency) tells
+    you which sibling to bind;
+    (3) 'dimensionless' if the measure is a pure ratio/count/rate with no unit.
   - derived_formula_hypothesis: if a column reads as computed, the arithmetic it
     should obey (two column names joined by + - * /). Operands MAY live in a JOINED
     table reachable via a confirmed relationship (use 'table.column') — the

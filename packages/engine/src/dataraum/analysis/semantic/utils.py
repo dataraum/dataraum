@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
+from dataraum.analysis.typing.db_models import TypeCandidate
 from dataraum.storage import Column, Table
 
 
@@ -94,13 +95,17 @@ def load_persisted_annotations(
         table_ids: Table IDs whose columns' annotations to load.
 
     Returns:
-        List of ``{table_name, column_name, semantic_role, entity_type,
-        confidence, temporal_behavior_claim}`` dicts, ordered by table then column.
+        List of ``{table_name, column_name, column_id, semantic_role, entity_type,
+        confidence, temporal_behavior_claim, detected_unit}`` dicts, ordered by
+        table then column. ``detected_unit`` is the value-carried unit the typing
+        phase parsed from the column's VALUES (DAT-647) — fed so the table agent
+        can record a measure's unit resolution instead of treating it as unknown.
     """
     stmt = (
         select(
             Table.table_name,
             Column.column_name,
+            Column.column_id,
             SemanticAnnotation.semantic_role,
             SemanticAnnotation.entity_type,
             SemanticAnnotation.confidence,
@@ -112,14 +117,31 @@ def load_persisted_annotations(
         .order_by(Table.table_name, Column.column_position)
     )
     rows = session.execute(stmt).all()
+
+    # Value-carried unit per column (DAT-647): the winning type candidate's
+    # detected_unit — highest confidence, most recent (so a unit teach, which
+    # sets unit_confidence=1.0, wins). Bulk-loaded once, merged by column_id.
+    column_ids = [row.column_id for row in rows]
+    detected_units: dict[str, str | None] = {}
+    if column_ids:
+        unit_rows = session.execute(
+            select(TypeCandidate.column_id, TypeCandidate.detected_unit)
+            .where(TypeCandidate.column_id.in_(column_ids))
+            .order_by(TypeCandidate.confidence.desc(), TypeCandidate.detected_at.desc())
+        ).all()
+        for column_id, detected_unit in unit_rows:
+            detected_units.setdefault(column_id, detected_unit)
+
     return [
         {
-            "table_name": table_name,
-            "column_name": column_name,
-            "semantic_role": semantic_role,
-            "entity_type": entity_type,
-            "confidence": confidence,
-            "temporal_behavior_claim": temporal_behavior_claim,
+            "table_name": row.table_name,
+            "column_name": row.column_name,
+            "column_id": row.column_id,
+            "semantic_role": row.semantic_role,
+            "entity_type": row.entity_type,
+            "confidence": row.confidence,
+            "temporal_behavior_claim": row.temporal_behavior_claim,
+            "detected_unit": detected_units.get(row.column_id),
         }
-        for table_name, column_name, semantic_role, entity_type, confidence, temporal_behavior_claim in rows
+        for row in rows
     ]

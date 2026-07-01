@@ -63,6 +63,19 @@ class TestOntologyLoader:
         assert "revenue" in formatted.lower()
         assert "No specific ontology" not in formatted
 
+    def test_format_concepts_includes_unit_from_concept(self):
+        """unit_from_concept is fed to the agent (DAT-647) — the concept-level unit teach.
+
+        Finance measures declare `unit_from_concept: currency`; the formatter must
+        surface it so the agent grounds unit_source_column on the currency column.
+        """
+        loader = OntologyLoader()
+        ontology = loader.load("finance")
+
+        formatted = loader.format_concepts_for_prompt(ontology)
+
+        assert "Unit from concept: currency" in formatted
+
     def test_format_concepts_for_prompt_none(self):
         """Test formatting when ontology is None."""
         loader = OntologyLoader()

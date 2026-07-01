@@ -227,9 +227,14 @@ class SemanticAgent(LLMFeature):
                 role = col.get("semantic_role") or "(unknown)"
                 conf = col.get("confidence")
                 conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
+                # Value-carried unit the typing phase parsed from the values (DAT-647):
+                # surfaced so the agent records a measure's unit resolution rather than
+                # leaving it "not detected" (which would block it downstream).
+                unit = col.get("detected_unit")
+                unit_str = f", value_unit={unit}" if unit else ""
                 lines.append(
                     f"  - {col['column_name']}: role={role}, concept={concept}, "
-                    f"confidence={conf_str}"
+                    f"confidence={conf_str}{unit_str}"
                 )
         return "\n".join(lines)
 

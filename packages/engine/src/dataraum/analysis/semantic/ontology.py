@@ -182,6 +182,11 @@ class OntologyLoader:
                 lines.append(f"- {concept.name}: {indicators_str}")
             else:
                 lines.append(f"- {concept.name}")
+            # Unit-from-concept (DAT-647): the concept declares that a sibling
+            # concept (e.g. `currency`) supplies its measures' unit. Fed so the
+            # agent grounds unit_source_column on it — the concept-level unit teach.
+            if concept.unit_from_concept:
+                lines.append(f"  Unit from concept: {concept.unit_from_concept}")
 
         return "\n".join(lines)
 

@@ -75,6 +75,7 @@ class SubDimension(_StrValueMixin):
     FORMULA_MATCH = "formula_match"
     NAMING_CLARITY = "naming_clarity"
     UNIT_DECLARATION = "unit_declaration"
+    UNIT_SOURCE = "unit_source"
     TIME_ROLE = "time_role"
     CROSS_COLUMN_PATTERNS = "cross_column_patterns"
     DIMENSION_COVERAGE = "dimension_coverage"

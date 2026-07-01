@@ -168,21 +168,39 @@ describe("tool registry (DAT-353)", () => {
 		expect(toolsByKind.stage).toContain(teachTool);
 		expect(toolsByKind.stage).not.toContain(connectTeachTool);
 
-		// CONNECT_TEACH_TYPES = the add_source grounding layer (AGENT_TEACH_TYPES
-		// minus the stage-owned relationship/hierarchy). No overlap.
+		// CONNECT_TEACH_TYPES = the MECHANICAL add_source grounding layer only —
+		// the teaches an add_source replay can realize (DAT-647). The catalogue-grain
+		// meaning teaches (concept/concept_property/rebind) author ColumnConcept at
+		// begin_session, so they moved to STAGE; topology (relationship/hierarchy)
+		// was already stage-only.
 		expect([...CONNECT_TEACH_TYPES]).toEqual([
 			"type_pattern",
 			"null_value",
 			"unit",
+		]);
+		expect(CONNECT_TEACH_TYPES).not.toContain("concept");
+		expect(CONNECT_TEACH_TYPES).not.toContain("concept_property");
+		expect(CONNECT_TEACH_TYPES).not.toContain("rebind");
+		expect(CONNECT_TEACH_TYPES).not.toContain("relationship");
+		expect(CONNECT_TEACH_TYPES).not.toContain("hierarchy");
+		// Stage owns the catalogue-grain meaning teaches + topology, and NONE of the
+		// mechanical typing-grain teaches (those are CONNECT's — begin_session can't
+		// re-run typing to realize them, DAT-647). No overlap between the two chats.
+		expect([...AGENT_TEACH_TYPES]).toEqual([
 			"concept",
 			"concept_property",
 			"rebind",
+			"relationship",
+			"hierarchy",
 		]);
-		expect(CONNECT_TEACH_TYPES).not.toContain("relationship");
-		expect(CONNECT_TEACH_TYPES).not.toContain("hierarchy");
-		// Stage keeps both topology families.
-		expect(AGENT_TEACH_TYPES).toContain("relationship");
-		expect(AGENT_TEACH_TYPES).toContain("hierarchy");
+		for (const mechanical of ["type_pattern", "null_value", "unit"]) {
+			expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(mechanical);
+		}
+		// The two chats' teach surfaces are now disjoint — one surface per teach family.
+		const overlap = [...CONNECT_TEACH_TYPES].filter((t) =>
+			(AGENT_TEACH_TYPES as readonly string[]).includes(t),
+		);
+		expect(overlap).toEqual([]);
 	});
 
 	it("declares NO approval gate on any tool — every tool runs directly", () => {

@@ -22,6 +22,9 @@ from dataraum.entropy.detectors.semantic.temporal_entropy import (
 from dataraum.entropy.detectors.semantic.unit_entropy import (
     UnitEntropyDetector,
 )
+from dataraum.entropy.detectors.semantic.unit_source_entropy import (
+    UnitSourceEntropyDetector,
+)
 
 __all__ = [
     "BusinessMeaningDetector",
@@ -29,4 +32,5 @@ __all__ = [
     "DimensionCoverageDetector",
     "TemporalEntropyDetector",
     "UnitEntropyDetector",
+    "UnitSourceEntropyDetector",
 ]

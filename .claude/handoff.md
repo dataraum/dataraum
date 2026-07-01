@@ -34,6 +34,67 @@ _(The double-count half of DAT-631 Problem 2 — a concept-boundary prompt + a d
 
 ---
 
+## DAT-647 — unit detection split into two grain-strict detectors
+
+**Branch:** `fix/dat-647-split-unit-detectors`. **Re-calibrate unit recall + confirm the currency-measure false-block is gone.**
+
+### What changed (detector split — the DAT-637 unit migration, finished)
+`unit_entropy` conflated two unit questions at the add_source grain, so every
+currency measure (unit defined by a sibling `currency` column, catalogue grain)
+read `missing → 1.0 → 0.8 agg → blocked`, capping metric-grounding confidence.
+Now split by grain:
+- **`unit_entropy`** (unchanged phase: `semantic_per_column`, add_source) — scores the
+  **value-carried** unit only (`typing.detected_unit`): `1 − unit_confidence` when a
+  unit token is in the VALUES, **abstain `0.0` (`no_value_unit`)** when there is none.
+  It no longer reads `unit_source_column` and no longer emits `missing=1.0`.
+- **`unit_source`** (NEW, `semantic_per_table`, **session detect only**) — reads
+  `ColumnConcept.unit_source_column`: `0.0` when resolved (`resolved_from_dimension` /
+  `dimensionless`), `1.0` (`unresolved`) when a MEASURE has no determinable unit
+  source. This is the aggregation-safety block. `loss.yaml` row: agg 0.8 / reporting
+  0.6 (inherits the old block); `unit_entropy` keeps agg 0.8 / reporting 0.6 for
+  value-carried ambiguity. Readiness MAX-combines the two per column.
+- **Context feed:** `semantic_per_table` now gets `detected_unit` (rendered
+  `value_unit=<u>`) + `unit_from_concept` (was dropped by `format_concepts_for_prompt`).
+  Prompt `semantic_per_table` → **v2.0.0**: author `unit_source_column` for every
+  measure (self when value-carried, sibling `currency` via `unit_from_concept`, else
+  `dimensionless`).
+
+### Why eval cares (calibration to run)
+- **Currency-measure false-block is fixed** — VERIFIED on a fresh clean run
+  (2026-07-01): `journal_lines.debit/credit/net_amount` go `blocked(0.8) → ready`,
+  both unit detectors score `0.0`, and no metric carries the unit/⛔ low-confidence
+  reason. Re-confirm on the finance-clean corpus.
+- **`unit_source` recall:** a measure with a genuinely undeterminable unit (no value
+  token, no currency/dimension source, not dimensionless) should still band
+  `blocked` for aggregation. A measure with a `currency` sibling should band `ready`.
+- **Teach-closure:** the value-carried unit teach (`unit` → `detected_unit`) still
+  closes `unit_entropy`; the concept-level teach (`unit_from_concept` / `rebind`)
+  steers `unit_source` via the re-wired context. The eval harness reads
+  `entropy_objects` directly, so recall calibration sees `unit_source` regardless of
+  the readiness-view grain.
+
+### New fields / thresholds
+- New detector id `unit_source`; new `SubDimension.UNIT_SOURCE`
+  (`semantic.units.unit_source`). `unit_entropy` evidence `unit_status` values are now
+  `declared` / `low_confidence` / `no_value_unit` (dropped `missing` /
+  `inferred_from_dimension` / `dimensionless`). No score-threshold change.
+
+### Known follow-ups (NOT in this branch)
+- **Cockpit read-grain (deferred lane):** `unit_source` writes at the catalogue grain,
+  but the automated grounding-teach loop reads add_source-grain readiness
+  (`grounding-readiness.ts` `viaTableHead`). Until moved to include the catalogue
+  head, the loop won't see `unit_source` (teach-closure via the loop; inspect tools
+  already show it via catalogue-supersedes). Product-surface only.
+- **Value-carried-unit determinism gap:** a measure carrying its OWN unit token with
+  NO currency column relies on the LLM setting `unit_source_column=self` (prompt
+  v2.0.0). Deterministic on the finance corpus (currency-sourced); the LLM-gated edge
+  is flagged for a follow-up decision (make `unit_source` read `detected_unit`
+  deterministically vs. keep the strict grain split).
+- Separate, pre-existing: a `fiscal_period_integrity` validation WARNING caps journal
+  metric confidence at 0.25 on clean — unrelated to units.
+
+---
+
 ## DAT-617 — validation verdict on demand from a contracted SQL output (ADR-0017)
 
 **Branch:** `feat/dat-617-validation-on-demand-p1`. **Re-verify `cross_table_consistency`; do NOT recalibrate blind.**

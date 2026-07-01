@@ -44,9 +44,9 @@ const GROUNDING_INSTRUCTIONS = `You are the grounding-teach agent. After a data 
 You are given the readiness of each column (band + worst-intent risk + the top drivers behind the risk). For each NON-ready target, decide if it is a MECHANICAL grounding gap you can fix, and if so apply ONE teach via the ground_teach tool:
 - driver about TYPE / type_fidelity (e.g. a date or number read as text) → type_pattern: a regex matching the values + the inferred_type.
 - driver about NULLS / null_semantics (an unrecognized null token like "N/A", "-", "TBD") → null_value: the token + its category.
-- driver about UNITS / unit_entropy (a measure with a missing/ambiguous unit) → unit: {table, column, unit}, identifying the column by NAME (parse it from the target "column:<table>.<col>").
+- driver about UNITS / unit_entropy (a measure whose VALUE-CARRIED unit — a unit token in the values, e.g. "€100", "5kg" — is ambiguous or low-confidence) → unit: {table, column, unit}, identifying the column by NAME (parse it from the target "column:<table>.<col>").
 
-You MUST NOT attempt anything else. Concept meaning (business_meaning), relationships (join_path_determinism), hierarchies, and validations are HUMAN JUDGEMENT — you cannot teach them and the tool will not let you. If a remaining gap is one of those, do NOT apply a teach for it; instead set needs_judgement=true and describe it briefly in judgement_note for the human.
+You MUST NOT attempt anything else. Concept meaning (business_meaning), relationships (join_path_determinism), hierarchies, validations, and a measure's unit SOURCE (unit_source — whose unit is defined by a sibling dimension column like currency, not carried in its own values) are HUMAN JUDGEMENT — you cannot teach them and the tool will not let you. (unit_source is a catalogue-grain signal and does not appear in this add_source loop; its teach — unit_from_concept / rebind — is handled elsewhere.) If a remaining gap is one of those, do NOT apply a teach for it; instead set needs_judgement=true and describe it briefly in judgement_note for the human.
 
 Do NOT replay or re-measure — the system re-runs the import and re-measures after your teaches; you only apply teaches this round. When done, emit your verdict: needs_judgement (is there a non-mechanical gap a human must address?) and judgement_note (one sentence naming it, or null).`;
 

@@ -343,19 +343,18 @@ export const AGENT_TEACH_TYPES = [
 	"hierarchy",
 ] as const satisfies readonly TeachType[];
 
-// What CONNECT advertises (DAT-597): the add_source grounding layer ONLY —
-// AGENT_TEACH_TYPES minus the stage-owned `relationship`/`hierarchy`. Connect
-// teaches what add_source grounds (mechanical type_pattern/null_value/unit + the
-// judgement concept/concept_property/rebind the grounding loop PARKS for a human);
-// Stage owns topology + the operating model. Non-overlapping — one surface per
-// teach family, so a teach is never offered on two chats.
+// What CONNECT advertises (DAT-597; narrowed DAT-647): the add_source grounding
+// layer ONLY — the teaches whose effect an add_source `replay` can actually
+// realize. That is the MECHANICAL, typing-grain set: type_pattern, null_value,
+// and the value-carried `unit` (all land at the typing phase). The CATALOGUE-grain
+// teaches (concept / concept_property / rebind) author `ColumnConcept` at
+// begin_session, so an add_source replay cannot re-ground them — they live on
+// STAGE (which runs begin_session → operating_model), the same grain-mismatch
+// DAT-647 fixed on the detector side. Column MEANING is taught in STAGE, not here.
 export const CONNECT_TEACH_TYPES = [
 	"type_pattern",
 	"null_value",
 	"unit",
-	"concept",
-	"concept_property",
-	"rebind",
 ] as const satisfies readonly TeachType[];
 
 // The teach types an AGENT may AUTO-APPLY unattended (DAT-551 P3c — the grounding

@@ -126,17 +126,19 @@ export const teachTool = makeTeachTool(
 		"instead: teach_validation, teach_cycle, teach_metric.",
 );
 
-/** CONNECT's teach (DAT-597): the add_source grounding layer ONLY — typing
- * pattern, null token, column unit, the ontology concept/property a column means,
- * or rebinding a column to a different concept. Topology (relationship/hierarchy)
- * and the operating model are taught in the Stage chat — no overlap. */
+/** CONNECT's teach (DAT-597; narrowed DAT-647): the add_source grounding layer
+ * ONLY — the MECHANICAL, typing-grain teaches an add_source `replay` can realize:
+ * a typing pattern, a null token, or a value-carried column unit. Column MEANING
+ * (concept/concept_property/rebind) is catalogue-grain — it authors ColumnConcept
+ * at begin_session, which this chat's add_source replay does not run — so it is
+ * taught in the Stage chat, along with topology and the operating model. */
 export const connectTeachTool = makeTeachTool(
 	CONNECT_TEACH_TYPES,
-	"Record an add_source grounding correction the import got wrong — a typing " +
-		"pattern, null token, column unit, or the ontology concept/property a " +
-		"column means (or rebind a column to a different concept). Writes a " +
-		"config_overlay row; follow with `replay` to re-ground the source. " +
-		"Relationships, hierarchies, and validations are taught in the Stage chat.",
+	"Record a MECHANICAL add_source grounding correction the import got wrong — a " +
+		"typing pattern, a null token, or a value-carried column unit. Writes a " +
+		"config_overlay row; follow with `replay` to re-ground the source. Column " +
+		"MEANING (which concept a column binds to), relationships, hierarchies, and " +
+		"validations are taught in the Stage chat.",
 );
 
 /**

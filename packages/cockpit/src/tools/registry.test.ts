@@ -168,18 +168,20 @@ describe("tool registry (DAT-353)", () => {
 		expect(toolsByKind.stage).toContain(teachTool);
 		expect(toolsByKind.stage).not.toContain(connectTeachTool);
 
-		// CONNECT_TEACH_TYPES = the add_source grounding layer (AGENT_TEACH_TYPES
-		// minus the stage-owned relationship/hierarchy). No overlap.
-		expect([...CONNECT_TEACH_TYPES]).toEqual([
-			"type_pattern",
-			"null_value",
-			"unit",
-			"concept",
-			"concept_property",
-			"rebind",
-		]);
+		// CONNECT_TEACH_TYPES = the MECHANICAL add_source grounding layer only —
+		// the teaches an add_source replay can realize (DAT-647). The catalogue-grain
+		// meaning teaches (concept/concept_property/rebind) author ColumnConcept at
+		// begin_session, so they moved to STAGE; topology (relationship/hierarchy)
+		// was already stage-only.
+		expect([...CONNECT_TEACH_TYPES]).toEqual(["type_pattern", "null_value", "unit"]);
+		expect(CONNECT_TEACH_TYPES).not.toContain("concept");
+		expect(CONNECT_TEACH_TYPES).not.toContain("concept_property");
+		expect(CONNECT_TEACH_TYPES).not.toContain("rebind");
 		expect(CONNECT_TEACH_TYPES).not.toContain("relationship");
 		expect(CONNECT_TEACH_TYPES).not.toContain("hierarchy");
+		// Stage owns the catalogue-grain meaning teaches + topology.
+		expect(AGENT_TEACH_TYPES).toContain("concept");
+		expect(AGENT_TEACH_TYPES).toContain("rebind");
 		// Stage keeps both topology families.
 		expect(AGENT_TEACH_TYPES).toContain("relationship");
 		expect(AGENT_TEACH_TYPES).toContain("hierarchy");

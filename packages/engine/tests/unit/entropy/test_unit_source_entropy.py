@@ -1,6 +1,6 @@
 """Tests for UnitSourceEntropyDetector — the semantic-grain unit-source half (DAT-647).
 
-The value-carried half lives in test_unit_entropy_inferred.py. This detector reads
+The value-carried half lives in test_unit_entropy.py. This detector reads
 ONLY ColumnConcept.unit_source_column (catalogue grain); it does not read typing.
 """
 

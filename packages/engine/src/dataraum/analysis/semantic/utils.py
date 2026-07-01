@@ -118,16 +118,20 @@ def load_persisted_annotations(
     )
     rows = session.execute(stmt).all()
 
-    # Value-carried unit per column (DAT-647): the winning type candidate's
-    # detected_unit — highest confidence, most recent (so a unit teach, which
-    # sets unit_confidence=1.0, wins). Bulk-loaded once, merged by column_id.
+    # Value-carried unit per column (DAT-647): the CURRENT type candidate's
+    # detected_unit. TypeCandidate accumulates across runs (a re-type / teach
+    # re-run leaves prior runs' rows in place), so we take the MOST RECENT run's
+    # best candidate — mirroring load_typing's run_id=None "most recent" semantics
+    # (the promoted re-run after a teach cycle). Ordering by detected_at first
+    # avoids a stale prior run's higher-confidence candidate leaking a stale unit.
+    # Bulk-loaded once, merged by column_id.
     column_ids = [row.column_id for row in rows]
     detected_units: dict[str, str | None] = {}
     if column_ids:
         unit_rows = session.execute(
             select(TypeCandidate.column_id, TypeCandidate.detected_unit)
             .where(TypeCandidate.column_id.in_(column_ids))
-            .order_by(TypeCandidate.confidence.desc(), TypeCandidate.detected_at.desc())
+            .order_by(TypeCandidate.detected_at.desc(), TypeCandidate.confidence.desc())
         ).all()
         for column_id, detected_unit in unit_rows:
             detected_units.setdefault(column_id, detected_unit)

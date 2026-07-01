@@ -30,10 +30,22 @@ def test_value_phase_order_is_the_agreed_chain() -> None:
         # reconciles the per-period sums — no slice-materialization phases precede it.
         "aggregation_lineage",
         "correlations",
-        # DAT-546: per-measure driver rankings, run-versioned. Last in the chain —
-        # needs slicing's catalog + dimension_hierarchies + the enriched views.
-        "driver_rankings",
     )
+
+
+def test_driver_rankings_is_not_in_the_value_chain() -> None:
+    """driver_rankings runs AFTER session_detect, not in the value layer (DAT-543).
+
+    It reads the pool-RESOLVED ``temporal_behavior`` (session_detect overturns the
+    table-agent stock claim via the structural witness) to pick its target function
+    and persist ``target_type``. Leaving it in the value chain — before detect — made
+    it rank a pool-flipped balance against the wrong target and persist a stale
+    ``stock`` the graph/answer agents then trusted. It is executed by an explicit
+    post-detect activity in ``beginSessionWorkflow``, so it must NOT sit here.
+    """
+    assert "driver_rankings" not in _SESSION_VALUE_PHASE_ORDER
+    # still a registered, runnable phase — just dispatched later in the spine.
+    assert get_phase_class("driver_rankings") is not None
 
 
 def test_every_value_phase_resolves_in_the_registry() -> None:

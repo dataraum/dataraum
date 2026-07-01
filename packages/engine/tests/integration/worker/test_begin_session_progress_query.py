@@ -52,8 +52,8 @@ _WORKSPACE_ID = "test"
 
 # The sequential session chain in execution order — must match the workflow
 # body (workflows.py: select, _SESSION_PHASE_ORDER, the overlay/views stages,
-# _SESSION_VALUE_PHASE_ORDER, then the detect/keepers/promote tail). The
-# ordering assertion below walks exactly this list.
+# _SESSION_VALUE_PHASE_ORDER, session_detect, then driver_rankings (post-detect,
+# DAT-543) and the keepers/promote tail). The ordering assertion walks this list.
 _PHASE_ORDER = [
     "begin_session_select",
     "relationships",
@@ -64,8 +64,10 @@ _PHASE_ORDER = [
     "dimension_hierarchies",
     "aggregation_lineage",
     "correlations",
-    "driver_rankings",
+    # driver_rankings runs AFTER session_detect (DAT-543) — it reads the pool-resolved
+    # temporal_behavior to pick its target function + persist target_type.
     "session_detect",
+    "driver_rankings",
     "session_write_keepers",
     "session_promote_to_latest",
 ]

@@ -479,11 +479,9 @@ _SESSION_VALUE_PHASE_ORDER = (
     # and reconciles the per-period sums across facts sharing a catalog dimension.
     "aggregation_lineage",
     "correlations",
-    # DAT-546: rank each measure-role column's drivers over the enriched view and
-    # persist run-versioned (read by the answer agent via look_drivers). Last in the
-    # value layer — needs slicing's catalog, dimension_hierarchies, and the enriched
-    # views all present this run. Deterministic, no LLM.
-    "driver_rankings",
+    # NOTE: driver_rankings is NOT here — it runs AFTER session_detect (below) so it
+    # reads the POOL-RESOLVED temporal_behavior, not the pre-pool table-agent claim.
+    # See the explicit call in the workflow body for why (DAT-543).
 )
 
 
@@ -647,6 +645,27 @@ class BeginSessionWorkflow:
         await workflow.execute_activity(
             "session_detect",
             run,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # Driver rankings AFTER detect (DAT-543): session_detect resolves the pooled
+        # stock/flow verdict onto ColumnConcept.temporal_behavior (the structural
+        # witness reconciling event lineage can overturn the table-agent's name-based
+        # stock claim). Driver discovery reads that behaviour to pick its target
+        # FUNCTION (flow → SUM residual, stock → end-of-period) AND persists the
+        # target_type the graph/answer agents read. Run it here so both the ranking
+        # STATISTICS and the persisted target_type reflect the resolved verdict, not
+        # the pre-pool claim — otherwise a pool-flipped balance ranks against the wrong
+        # target and the agent is told "stock, latest-period only" for an additive
+        # column. Still pre-promote, so current_driver_rankings sees it. Needs slicing +
+        # dimension_hierarchies + enriched_views (all above); declares no detectors, so
+        # sitting past the terminal detect orphans nothing.
+        self._progress.phase = "driver_rankings"
+        await workflow.execute_activity(
+            "driver_rankings",
+            scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,

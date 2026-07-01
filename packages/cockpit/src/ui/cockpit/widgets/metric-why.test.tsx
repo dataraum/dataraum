@@ -63,6 +63,14 @@ const UNGROUNDABLE: WhyMetricResult = {
 	steps: [],
 };
 
+// Executed, but the weakest per-concept grounding confidence fell below the
+// engine floor → the caveat rides on the executed artifact's state_reason (DAT-631).
+const LOW_CONFIDENCE: WhyMetricResult = {
+	...EXECUTED,
+	state_reason:
+		"low-confidence grounding (0.35 < 0.50): COGS proxy may overstate",
+};
+
 afterEach(cleanup);
 
 describe("MetricWhyWidget (DAT-466)", () => {
@@ -96,8 +104,23 @@ describe("MetricWhyWidget (DAT-466)", () => {
 		expect(
 			screen.getByText(/SELECT sum\(amount\) FROM lake\.typed\.income/),
 		).toBeTruthy();
-		// No reason alert when the metric executed.
+		// No reason alert, and no low-confidence badge, when the metric executed
+		// confidently (state_reason null — the gate wrote no caveat).
 		expect(screen.queryByTestId("canvas-metric-why-reason")).toBeNull();
+		expect(screen.queryByTestId("grounding-confidence-badge")).toBeNull();
+	});
+
+	it("flags a low-confidence executed metric: badge + first-class reason alert (DAT-631)", () => {
+		renderWidget(LOW_CONFIDENCE);
+		// Still executed — the state badge reads Executed…
+		expect(screen.getByText("Executed")).toBeTruthy();
+		// …but the quality badge flags it, and the caveat is first-class, not a hover.
+		expect(screen.getByTestId("grounding-confidence-badge").textContent).toBe(
+			"Low confidence",
+		);
+		expect(
+			screen.getByTestId("canvas-metric-why-reason").textContent,
+		).toContain("0.35 < 0.50");
 	});
 
 	it("surfaces the pending-teach note", () => {

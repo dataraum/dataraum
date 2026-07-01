@@ -10,12 +10,15 @@
 // computed on demand by running the metric, never stored). State / reason /
 // step-count are the engine's persisted values verbatim — never recomputed here.
 
-import { Alert, Anchor, Stack, Table, Text } from "@mantine/core";
+import { Alert, Anchor, Group, Stack, Table, Text } from "@mantine/core";
 import { humanizeIdentifier } from "#/lib/display-names";
 import type { MetricOverview } from "#/tools/look-metric";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
-import { LifecycleStateBadge } from "#/ui/cockpit/widgets/lifecycle-badges";
+import {
+	GroundingConfidenceBadge,
+	LifecycleStateBadge,
+} from "#/ui/cockpit/widgets/lifecycle-badges";
 import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
 
 // Cap the rows rendered into the DOM (rule 15). A vertical ships a few dozen
@@ -116,7 +119,17 @@ export function MetricListWidget({
 									</Anchor>
 								</Table.Td>
 								<Table.Td>
-									<LifecycleStateBadge state={m.state} />
+									{/* Progress (state) + quality (grounding confidence) are two
+									    distinct badges — a low-confidence metric is still
+									    `executed` but flags amber rather than reading identical
+									    to a confident one (DAT-631). */}
+									<Group gap="xs" wrap="nowrap">
+										<LifecycleStateBadge state={m.state} />
+										<GroundingConfidenceBadge
+											state={m.state}
+											stateReason={m.state_reason}
+										/>
+									</Group>
 								</Table.Td>
 								<Table.Td>
 									{m.snippet_count > 0 ? (

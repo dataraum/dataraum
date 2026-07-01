@@ -8,10 +8,10 @@ version: "1.0.0"
 # Provider configurations
 providers:
   anthropic:
-    default_model: claude-sonnet-4-6
+    default_model: claude-sonnet-5
     models:
       fast: claude-haiku-4-5
-      balanced: claude-sonnet-4-6
+      balanced: claude-sonnet-5
 
 # Active provider
 active_provider: anthropic

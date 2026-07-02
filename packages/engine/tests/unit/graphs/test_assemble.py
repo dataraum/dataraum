@@ -111,13 +111,13 @@ def test_assemble_fails_when_grounded_but_absent_from_cache() -> None:
     provider.converse.assert_not_called()
 
 
-class TestSaveSnippetsStepIdRebind:
-    """_save_snippets must tolerate the model renaming its single step
-    (Sonnet 5 echoes `revenue` back as `revenue_extract` — 2026-07-02): the
-    authoring path grounds exactly ONE extract leaf (DAT-646), so an
-    unambiguous one-leaf/one-step pair binds positionally. Without the rebind
-    the snippet silently never persists, assembly finds an empty cache, and
-    every metric composed from the leaf dies 'absent from the snippet cache'."""
+class TestSaveSnippetsCallerAssignedIds:
+    """Step ids in GeneratedCode are assigned by OUR code since DAT-603 —
+    authoring binds the graph's leaf id, compose copies graph ids — so
+    _save_snippets' name-keyed lookup always hits. (The DAT-664 positional
+    rebind for model-paraphrased ids was deleted with the single-extract output
+    model; the model no longer names steps at all.) A mismatch can now only
+    mean an internal regression, which must skip LOUD, never silently."""
 
     def _generated(self, step_id: str) -> MagicMock:
         code = MagicMock()
@@ -143,28 +143,15 @@ class TestSaveSnippetsStepIdRebind:
             )
             return lib_cls.return_value
 
-    def test_renamed_single_step_is_rebound_and_saved(self) -> None:
-        rev = _extract("revenue", "revenue")
-        graph = _graph("revenue_only", {"revenue": rev})
-        library = self._save(graph, self._generated("revenue_extract"))
-        library.save_snippet.assert_called_once()
-        assert library.save_snippet.call_args.kwargs["standard_field"] == "revenue"
-
-    def test_exact_echo_still_saves(self) -> None:
+    def test_leaf_id_saves(self) -> None:
         rev = _extract("revenue", "revenue")
         graph = _graph("revenue_only", {"revenue": rev})
         library = self._save(graph, self._generated("revenue"))
         library.save_snippet.assert_called_once()
+        assert library.save_snippet.call_args.kwargs["standard_field"] == "revenue"
 
-    def test_ambiguous_multi_step_drift_skips_loud(self) -> None:
-        # Two generated steps for one leaf: no unambiguous positional bind —
-        # nothing saved (the loud warning path), never a wrong-SQL snippet.
+    def test_mismatched_id_skips_loud_never_saves_wrong_sql(self) -> None:
         rev = _extract("revenue", "revenue")
         graph = _graph("revenue_only", {"revenue": rev})
-        code = self._generated("revenue_extract")
-        code.steps = [
-            {"step_id": "a", "sql": "SELECT 1", "description": ""},
-            {"step_id": "b", "sql": "SELECT 2", "description": ""},
-        ]
-        library = self._save(graph, code)
+        library = self._save(graph, self._generated("someone_elses_id"))
         library.save_snippet.assert_not_called()

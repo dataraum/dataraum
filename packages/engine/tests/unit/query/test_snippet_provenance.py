@@ -55,7 +55,6 @@ class TestSnippetProvenance:
             "column_mappings_basis": {
                 "revenue": {"column": "t.amount", "resolution": "inferred_from_enriched_view"}
             },
-            "llm_reasoning": "Mapped via account type filtering",
         }
 
         record = library.save_snippet(

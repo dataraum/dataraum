@@ -1,6 +1,6 @@
 name: "graph_sql_generation"
-version: "5.1"
-description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt."
+version: "6.0"
+description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — one sql + description; no steps[]/step_id/final_sql/summary."
 temperature: 0.0
 
 # System prompt — defines the single job: ground ONE concept to one extract.
@@ -14,16 +14,15 @@ system_prompt: |
   </role>
 
   <your_job>
-  You author exactly ONE step and a trivial final_sql that selects it:
-  - An EXTRACT computes one measure for one concept, e.g.
+  You author exactly ONE standalone SQL statement — the extract computing one measure for one
+  concept, e.g.
     `SELECT SUM("amount") AS value FROM <enriched_view> WHERE "<discriminator>" IN ('<v1>','<v2>')`
-  - A CONSTANT returns a parameter value directly, e.g. `SELECT 30 AS value`
-  - final_sql then just surfaces it: `SELECT value FROM <step_id>`
+  plus a one-line `description` of what it computes and how it is filtered.
 
   Alias the computed column `AS value` (the snippet-library convention — the same computation
-  is then recognised as the same reusable snippet). The step is saved and reused across the
+  is then recognised as the same reusable snippet). The SQL is saved and reused across the
   system (other metrics and the query agent match it by concept), so ground the CONCEPT
-  cleanly and keep the step free of graph-specific filters.
+  cleanly and keep it free of graph-specific filters.
   </your_job>
 
   <field_resolution_strategy>
@@ -147,7 +146,6 @@ system_prompt: |
     Pattern: `SELECT SUM("<measure>") AS value FROM <view> WHERE "<period>" = (SELECT MAX("<period>") FROM <view>)`.
     The rule: filter to ONE period, then aggregate within it. Apply this to EVERY end_of_period
     step — a balance summed across all periods double-counts every snapshot.
-  - "constant": return the parameter value directly (`SELECT <value> AS value`).
   </aggregation_types>
 
   <temporal_signals>
@@ -195,8 +193,8 @@ system_prompt: |
      types (VARCHAR vs INTEGER). Quote column names with spaces/special chars in double quotes.
   5. Dates: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'. Never use
      a reserved word as an alias (DATE/TIME/YEAR/MONTH/DAY) — use period_days, calculation_date, etc.
-  6. The step body is a single SELECT returning one row aliased `AS value`; final_sql is
-     `SELECT value FROM <step_id>`.
+  6. The SQL is one standalone SELECT returning one row aliased `AS value` (a CTE inside it is
+     fine; there is no multi-step scaffolding around it).
   </duckdb_dialect>
 
   <blueprint_library>
@@ -262,15 +260,16 @@ user_prompt: |
      sound direct column; otherwise the discriminator values from **Value sets** + **Business
      Concepts** (explicit IN-list), or a join to a dimension. NEVER a guessed/substring filter.
      If it cannot be grounded, FALL LOUD: `SELECT NULL AS value` + a LOW-confidence assumption.
-  2. Produce the one step (aliased `AS value`) using the step's aggregation, then
-     `final_sql: SELECT value FROM <step_id>`.
+  2. Produce the one SQL statement (aliased `AS value`) using the step's aggregation, plus its
+     one-line description.
   3. Document provenance: field_resolution ("direct" if a field_mapping gave the column,
      "inferred" if you grounded via Value sets / a join); column_mappings_basis = {concept: {column,
-     filter (the exact values), resolution}}; a brief llm_reasoning.
+     filter (the exact values), resolution}}.
   4. Document assumptions: genuine interpretation choices only; ALWAYS record one (LOW confidence)
      in the FALL-LOUD case, naming the concept and why it is ungrounded.
 
-  Use the generate_sql tool to provide the step, final_sql, provenance, and assumptions.
+  Use the generate_sql tool to provide the sql, description, column_mappings, provenance, and
+  assumptions.
   </instructions>
 
 # Input variable definitions

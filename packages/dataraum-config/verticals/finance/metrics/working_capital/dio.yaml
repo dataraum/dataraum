@@ -1,0 +1,88 @@
+graph_id: dio
+version: '1.0'
+metadata:
+  name: Days Inventory Outstanding
+  description: Average days inventory is held before being sold
+  category: working_capital
+  source: system
+  tags:
+  - inventory
+  - working-capital
+  - efficiency
+output:
+  type: scalar
+  metric_id: dio
+  unit: days
+  decimal_places: 1
+parameters:
+  days_in_period:
+    type: integer
+    default: 30
+    options:
+    - 30
+    - 90
+    - 365
+    description: Analysis period length
+dependencies:
+  inventory:
+    level: 1
+    type: extract
+    source:
+      standard_field: inventory
+      statement: balance_sheet
+    aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
+    validation:
+    - condition: value >= 0
+      severity: error
+      message: Inventory cannot be negative
+  cost_of_goods_sold:
+    level: 1
+    type: extract
+    source:
+      standard_field: cost_of_goods_sold
+      statement: income_statement
+    aggregation: sum
+    validation:
+    - condition: value > 0
+      severity: error
+      message: COGS must be positive for DIO
+  days_in_period:
+    level: 1
+    type: constant
+    parameter: days_in_period
+    default: 30
+  dio:
+    level: 2
+    type: formula
+    expression: (inventory / cost_of_goods_sold) * days_in_period
+    depends_on:
+    - inventory
+    - cost_of_goods_sold
+    - days_in_period
+    output_step: true
+    validation:
+    - condition: 0 <= value <= 365
+      severity: warning
+      message: DIO outside typical range
+interpretation:
+  ranges:
+  - min: 0
+    max: 30
+    label: EXCELLENT
+    description: Fast inventory turnover - lean operations
+  - min: 31
+    max: 60
+    label: GOOD
+    description: Healthy inventory turnover
+  - min: 61
+    max: 90
+    label: MODERATE
+    description: Inventory turning at an average pace
+  - min: 91
+    max: 120
+    label: EXTENDED
+    description: Slow turnover - capital tied up in stock
+  - min: 121
+    max: 999
+    label: CRITICAL
+    description: Excess or obsolete inventory risk

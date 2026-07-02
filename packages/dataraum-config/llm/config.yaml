@@ -63,6 +63,14 @@ features:
     model_tier: fast
     max_repair_attempts: 2
 
+  # DAT-603: metric grounding (graph_sql_generation) — the pipeline's most
+  # central agent. `effort` is deliberately UNSET (= API default, high) until
+  # the A/B against the DAT-602 eval baseline settles a lower value; flip it
+  # here (bind-mounted data, no rebuild) once the eval says coverage holds.
+  graph_sql_generation:
+    enabled: true
+    model_tier: balanced
+
 # Cost controls
 limits:
   # Bumped 16000 -> 24000 with the Sonnet 5 swap: its tokenizer emits ~30% more

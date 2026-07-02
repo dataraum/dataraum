@@ -405,7 +405,6 @@ class ValidationAgent(LLMFeature):
         generated = GeneratedSQL(
             validation_id=spec.validation_id,
             sql_query=output.sql or "",
-            explanation=output.explanation,
             columns_used=output.columns_used,
             generated_at=datetime.now(UTC),
             model_used=model,

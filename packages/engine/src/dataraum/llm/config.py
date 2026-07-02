@@ -38,7 +38,16 @@ class FeatureConfig(BaseModel):
 
 
 class LLMFeatures(BaseModel):
-    """All LLM features configuration."""
+    """All LLM features configuration.
+
+    Every feature key in ``llm/config.yaml`` MUST be declared here. Extras are
+    FORBIDDEN because the silent alternative already bit us (DAT-603): pydantic's
+    default drops unknown keys, so a YAML-only feature (``sql_repair`` for months)
+    parses cleanly, ``config.features.<name>`` comes back None, and the feature is
+    disabled without a trace. A typo'd or unregistered key now fails loud at boot.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     # Active features with implementations
     semantic_analysis: FeatureConfig
@@ -49,6 +58,12 @@ class LLMFeatures(BaseModel):
     entropy_query_interpretation: FeatureConfig | None = None
     enrichment_analysis: FeatureConfig | None = None
     why_analysis: FeatureConfig | None = None
+    # Metric grounding (GraphAgent._generate_sql) — tier + effort for the
+    # pipeline's most central agent (DAT-603). None keeps the built-in defaults
+    # (balanced tier, API-default effort).
+    graph_sql_generation: FeatureConfig | None = None
+    # LLM repair of failed step SQL (GraphAgent._repair_sql).
+    sql_repair: FeatureConfig | None = None
 
 
 class LLMLimits(BaseModel):

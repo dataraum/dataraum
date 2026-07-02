@@ -85,9 +85,16 @@ The learnable surface is the set of things the system can be taught about a spec
 | **concept_property** | A patch to a column's semantic annotation (role, concept, unit) |
 | **explanation** | Domain context attached to an entropy observation, an artifact, or a validation result, optionally with evidence SQL. Explanations annotate; they do not adjudicate — they cannot suppress observations, alter scores, or affect groundedness. |
 
+!!! note "How this maps to the live set"
+    The **implemented** vocabulary is documented in
+    [the learnable surface](../concepts/learnable-surface.md), and it differs from this
+    target list in both directions: `validation_exception` and `explanation` are **not
+    built yet**, while three types that exist today — `unit`, `rebind`,
+    `expected_dependency` — postdate this list.
+
 The set is closed *for the agent in the loop*. An agent cannot invent a new kind of thing to teach; it can only fill in the types that exist. A user reviewing the agent's proposals sees the same types. The system, the agent, and the user share one vocabulary. This is the **Goodhart firewall**: the agent can only optimize against signals the closed set was designed to surface.
 
-Adding a teach type is a deliberate architectural act, not an in-loop action. The current ten types are well-shaped for finance and operations; other domains may require first-class types that do not fit, and adding them is handled at the architecture level.
+Adding a teach type is a deliberate architectural act, not an in-loop action. These types are well-shaped for finance and operations; other domains may require first-class types that do not fit, and adding them is handled at the architecture level.
 
 ### The artifact lifecycle
 

@@ -1,4 +1,4 @@
-# ADR-0009 — Entropy measurements ship as the 7-piece measurement pack; all numbers live in config
+# ADR-0011 — Entropy measurements ship as the 7-piece measurement pack; all numbers live in config
 
 - **Status:** Accepted
 - **Date:** 2026-06-10

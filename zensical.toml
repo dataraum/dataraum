@@ -1,6 +1,6 @@
 [project]
 site_name = "DataRaum"
-site_description = "The understanding layer that grounds a business's operating model in its own data"
+site_description = "The understanding layer that grounds an organization's operating model in its own data"
 site_url = "https://dataraum.github.io/dataraum"
 docs_dir = "docs"
 

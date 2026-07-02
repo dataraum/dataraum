@@ -1,10 +1,10 @@
 # cockpit
 
-The DataRaum cockpit — TanStack Start app that hosts the chat surface and renders the agentic UI. One of three packages in the [dataraum](https://github.com/dataraum/dataraum) monorepo (`engine`, `cockpit`, `infra`).
+The DataRaum cockpit — the TanStack Start web app you actually use. One of four packages in the [dataraum](https://github.com/dataraum/dataraum) monorepo (`engine`, `cockpit`, `dataraum-config`, `infra`).
 
-## Status
+## What it is
 
-Read surfaces (sources, tables, snippets) land in Phase 1 of the [DAT-339 pivot](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/23363586) — wired via Drizzle direct against the engine's metadata schema. The chat surface (`/api/chat`) streams via the Anthropic SDK; tool wiring lands alongside the read surfaces in Phase 1+.
+The cockpit is the product surface: typed chats (**Connect** / **Stage** / **Analyse**) with an agent canvas, plus the standing views — the operating-**Model** graph, **Governance**, **Runs**, and minted **Reports**. It hosts the chat agent (streaming via the Anthropic SDK), reads engine metadata straight from Postgres, and drives the engine's durable analysis by starting Temporal workflows. It also runs its own co-located TS **orchestration worker** for control-plane workflows (grounding loop, session cascade) — analysis itself stays in the Python engine.
 
 ## Stack
 
@@ -18,26 +18,28 @@ Read surfaces (sources, tables, snippets) land in Phase 1 of the [DAT-339 pivot]
 - **Vitest** — tests
 - **TypeScript** only, strict
 
-The full ecosystem pick (TanStack AI, xyflow, ECharts, CodeMirror, sql-formatter, marked, Arrow JS, etc.) lands as the corresponding widgets get built. See [Web UI: Tech Stack](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/18153474).
+Also in the stack: **TanStack AI** (the agent loop + tool streaming), **xyflow / React Flow** (the operating-model canvas), **Vega-Lite** (agent-authored charts, [ADR-0015](../../docs/adr/0015-charting-library-vega-lite.md)), **CodeMirror** (SQL editing), **marked** (chat markdown).
 
 ## Architecture
 
 ```
-Browser  ──── /api/chat (SSE) ────→  TanStack Start (this app)
-                                       ├── Anthropic streaming
-                                       ├── Tool registry (TS fns calling kernel verbs + metadata Drizzle)
-                                       └── cockpit_db (Drizzle → shared Postgres)
+Browser ── /api/chat + /api/chat-stream (SSE) ──→ TanStack Start (this app)
+                                                    ├── Anthropic streaming (TanStack AI agent loop)
+                                                    ├── Tool registry (TS fns over Drizzle metadata + Temporal)
+                                                    ├── cockpit_db (Drizzle → chat, reports, control plane)
+                                                    └── co-located TS orchestration worker (@temporalio/worker)
 
-TanStack Start ──── metadata reads ───────→  engine's ws_<id> schema  (Drizzle, src/db/metadata/)
-               ──── /measure SSE, /query Arrow, /probe SQL ───→  Starlette kernel (engine REST)
+TanStack Start ── metadata reads ──→ engine's ws_<id> schema (Drizzle, src/db/metadata/)
+               ── workflow starts ──→ Temporal ──→ engine worker (Python, the analysis)
 ```
 
-The engine exposes three verbs (`/measure`, `/query`, `/probe`) plus `/health` over a Starlette shell. Metadata is consumed directly via Drizzle introspection — no OpenAPI, no codegen anymore (retired in the DAT-339 pivot).
+The engine has **no HTTP surface** ([ADR-0002](../../docs/adr/0002-engine-no-http-transport.md)): the seam is Postgres + Temporal, nothing else. Metadata is consumed via a generated Drizzle mirror — no OpenAPI, no codegen.
 
 ## Sibling packages
 
-- `../engine` — Python engine + Starlette kernel shell at `src/dataraum/server/`
-- `../infra` — docker-compose orchestrating engine + cockpit + postgres
+- `../engine` — Python analysis engine, a Temporal activity worker (no HTTP)
+- `../dataraum-config` — YAML data (entropy config, LLM prompts, verticals); bind-mounted, never imported
+- `../infra` — docker-compose orchestrating postgres + object store + Temporal + engine + cockpit
 
 ## Develop
 
@@ -82,4 +84,4 @@ Two clients in one package:
 - `src/db/cockpit/{schema,client,registry,runs}.ts` — hand-written cockpit_db (generate/migrate target); committed migrations in `drizzle/cockpit/`
 - `src/db/metadata/{schema,relations,client}.ts` — generated from the engine substrate by `bun run db:pull:metadata`; the cockpit reads, never pushes
 
-cockpit_db is the cockpit's control plane (DAT-461): `workspaces` / `sessions` / `session_runs` / `actors` — additive to the engine's `investigation_sessions` run anchor. Migrations apply on the compose stack via the `cockpit-migrate` one-shot service; registry/actor rows seed lazily on first resolve. More tables land as needed (conversations + conversation_messages are the next addition, DAT-462).
+cockpit_db is the cockpit's own persistence: the control plane (`workspaces` / `sessions` / `session_runs` / `actors`) plus the chat transcript (`conversations` / `conversation_messages`) and reports — additive to the engine's `investigation_sessions` run anchor. Migrations apply on the compose stack via the `cockpit-migrate` one-shot service; registry/actor rows seed lazily on first resolve.

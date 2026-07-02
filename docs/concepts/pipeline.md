@@ -6,8 +6,9 @@ after each, the relevant [detectors](measurement.md) update the entropy scores. 
 the map of those phases.
 
 The phases are grouped into the three engine analysis stages. How they are *scheduled* (as
-Temporal workflows and activities) is [orchestration](../platform/orchestration.md); here we
-care about what each one does.
+Temporal workflows and activities) is the
+[platform architecture](../platform/architecture.md)'s concern; here we care about what
+each one does.
 
 ## Two ground rules
 
@@ -20,8 +21,7 @@ the run. This is what lets messy real-world sources in without a brittle import 
 overwriting. A terminal **promote** step flips a per-stage pointer to the new run only once
 the run has succeeded, so a failed or partial run never becomes visible. "The current state"
 is always a clean, complete run. (The mechanics — heads, promoted read views, idempotent
-writers — are [substrate](../platform/substrate.md), per
-[ADR-0008](../adr/0008-promoted-read-views.md) and
+writers — are in [ADR-0008](../adr/0008-promoted-read-views.md) and
 [ADR-0010](../adr/0010-failure-contract-idempotent-writers.md).)
 
 ## add_source — raw sources to typed, annotated data

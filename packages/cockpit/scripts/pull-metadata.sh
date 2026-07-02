@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.." # packages/cockpit
 
 WORKSPACE_ID="${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}"
 SCHEMA_NAME="ws_${WORKSPACE_ID//-/_}"
-PG_IMAGE="postgres:17" # keep in lockstep with packages/infra/docker-compose.yml
+PG_IMAGE="postgres:18" # keep in lockstep with packages/infra/docker-compose.yml
 # Unique per run (parallel lanes regen concurrently); port is docker-assigned.
 CONTAINER="dataraum-schema-scratch-$$"
 

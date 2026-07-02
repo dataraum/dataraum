@@ -2,8 +2,10 @@
 
 The learnable surface is the set of things DataRaum can be taught about an organization: a
 small, **typed, closed** vocabulary that agents and users fill in but cannot extend. This
-is the closed-vocabulary half of the **Goodhart firewall** (the measurement half is in
-[measurement & detectors](measurement.md)).
+is one of the **Goodhart firewall**'s three enforcement points; the others are the
+measurement pooling ([measurement & detectors](measurement.md)) and the stage
+authorization of lifecycle operations
+([the operating model](operating-model.md#the-lifecycle)).
 
 ## Closed for use
 

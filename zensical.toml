@@ -18,6 +18,7 @@ nav = [
     "concepts/frame-ground-teach.md",
     "concepts/learnable-surface.md",
     "concepts/measurement.md",
+    "concepts/relationships-and-aggregation.md",
   ] },
   { "Under the hood" = [
     "platform/architecture.md",

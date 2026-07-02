@@ -121,8 +121,10 @@ See the [Overview](getting-started/overview.md) for the whole arc, and
   [operating model](concepts/operating-model.md) (the deliverable itself),
   [frame, ground, teach](concepts/frame-ground-teach.md) (how knowledge enters and
   improves), the [learnable surface](concepts/learnable-surface.md) (the closed
-  vocabulary), and [measurement & detectors](concepts/measurement.md) (entropy,
-  witnesses, calibration).
+  vocabulary), [measurement & detectors](concepts/measurement.md) (entropy, witnesses,
+  calibration), and
+  [relationships & aggregation](concepts/relationships-and-aggregation.md) (joins,
+  stock vs. flow).
 - **Using it** — [Overview](getting-started/overview.md) and
   [Running the stack](getting-started/running-the-stack.md).
 - **Under the hood** — the [platform architecture](platform/architecture.md), the

@@ -12,7 +12,6 @@
 import { and, eq, isNotNull, like } from "drizzle-orm";
 
 import { config } from "../config";
-import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { metadataDb } from "../db/metadata/client";
 import {
 	columns as columnsView,
@@ -32,7 +31,6 @@ import {
 	type ConceptColumnInput,
 	type CycleInput,
 	type DriverInput,
-	extractConceptsFromDag,
 	type MetricConceptInput,
 	type MetricInput,
 	type OperatingModelGraph,
@@ -40,7 +38,6 @@ import {
 	type TableInput,
 	type ValidationInput,
 } from "./operating-model-graph";
-import { readShippedMetrics } from "./teach-metric";
 
 export interface LoadOperatingModelResult {
 	/** False until the operating_model stage has a promoted run (page shows "not run"). */
@@ -56,14 +53,9 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 	// anchor the model — the page shows "run the operating model first".
 	if (!metricResult.analyzed) return { analyzed: false, graph: EMPTY_GRAPH };
 
-	// The metric→concept edges come from the metrics' computation DAGs (their extract
-	// leaves), read off the workspace vertical's shipped specs (DAT-591) — reliable,
-	// unlike snippet provenance. The DAG lives in config YAML, not Postgres.
-	const workspace = await resolveActiveWorkspaceRow();
-	const [cycleResult, validationResult, shippedMetrics] = await Promise.all([
+	const [cycleResult, validationResult] = await Promise.all([
 		lookCycle(),
 		lookValidation(),
-		readShippedMetrics(workspace.vertical),
 	]);
 
 	const [
@@ -146,30 +138,17 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 		const idx = source.indexOf(":");
 		return idx === -1 ? source : source.slice(idx + 1);
 	};
-	// Per-metric SQL bodies still come from the snippets (every step's validated body);
-	// the SQL DISPLAY is refined per node-type in Phase 2. Only the metric→concept EDGES
-	// move to the DAG below.
+	const metricConcepts: MetricConceptInput[] = [];
 	const sqlByMetric = new Map<string, string[]>();
 	for (const r of conceptSnippetRows) {
-		if (!r.source || !r.sql) continue;
+		if (!r.source) continue;
 		const graphId = graphIdOf(r.source);
-		const steps = sqlByMetric.get(graphId) ?? [];
-		steps.push(r.sql);
-		sqlByMetric.set(graphId, steps);
-	}
-
-	// metric→concept edges from each metric's DAG extract leaves (DAT-591) — complete
-	// even for metrics that reused shared extract snippets (the gross_margin→revenue/cogs
-	// gap the snippet-provenance derivation missed). `dependencies` is untrusted (rule 11).
-	const dagByGraphId = new Map(
-		shippedMetrics.map((m) => [m.graph_id, m.dependencies]),
-	);
-	const metricConcepts: MetricConceptInput[] = [];
-	for (const m of metricResult.metrics) {
-		for (const concept of extractConceptsFromDag(
-			dagByGraphId.get(m.graph_id),
-		)) {
-			metricConcepts.push({ graphId: m.graph_id, concept });
+		if (r.standardField)
+			metricConcepts.push({ graphId, concept: r.standardField });
+		if (r.sql) {
+			const steps = sqlByMetric.get(graphId) ?? [];
+			steps.push(r.sql);
+			sqlByMetric.set(graphId, steps);
 		}
 	}
 

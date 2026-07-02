@@ -227,33 +227,6 @@ function topDimensionNames(rankedDimensions: unknown): string[] {
 }
 
 /**
- * The concepts a metric CONSUMES — the `standard_field` of every EXTRACT leaf in its
- * computation DAG (`dependencies`, untrusted YAML shape → rule-11 narrowed here). This
- * is the RELIABLE metric→concept linkage (DAT-591): the prior derivation keyed on
- * `sql_snippets` PROVENANCE (`source=graph:<id>`), but extract snippets are shared and
- * attributed to whichever metric first minted them — so a metric that reused a cached
- * extract (e.g. `gross_margin` reusing `revenue`/`cost_of_goods_sold`) got NO edge. The
- * DAG is authoritative + complete: every metric links to all its extract concepts.
- * Pure → unit-tested.
- */
-export function extractConceptsFromDag(dependencies: unknown): string[] {
-	if (!dependencies || typeof dependencies !== "object") return [];
-	const out: string[] = [];
-	for (const step of Object.values(dependencies as Record<string, unknown>)) {
-		if (!step || typeof step !== "object") continue;
-		const s = step as Record<string, unknown>;
-		if (s.type !== "extract") continue;
-		const source =
-			s.source && typeof s.source === "object"
-				? (s.source as Record<string, unknown>)
-				: {};
-		if (typeof source.standard_field === "string" && source.standard_field)
-			out.push(source.standard_field);
-	}
-	return out;
-}
-
-/**
  * Assemble the concept-spine DAG from already-fetched rows. Pure: no DB, no IO —
  * the whole node/edge derivation is unit-testable. Contracts:
  *  - Concepts are the union of metric `standard_field`s and grounded `business_concept`s.

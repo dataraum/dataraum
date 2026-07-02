@@ -6,7 +6,6 @@ import {
 	buildOperatingModelGraph,
 	computeVisibleGraph,
 	type DriverInput,
-	extractConceptsFromDag,
 	filterGraph,
 	OM_PRESET_KINDS,
 	type OMNodeKind,
@@ -81,58 +80,6 @@ const ids = (g: { nodes: { id: string }[] }) =>
 const edgeKinds = (g: {
 	edges: { source: string; target: string; kind: string }[];
 }) => new Set(g.edges.map((e) => `${e.source}->${e.target}:${e.kind}`));
-
-describe("extractConceptsFromDag", () => {
-	// gross_margin: two extract leaves (revenue, cost_of_goods_sold) + two formula
-	// steps. The reliable metric→concept linkage is the extract leaves — the formulas
-	// carry no standard_field. This is exactly the gap the snippet-provenance derivation
-	// missed (gross_margin reused shared revenue/cogs snippets → no edge).
-	const grossMarginDag = {
-		revenue: {
-			type: "extract",
-			source: { standard_field: "revenue", statement: "income_statement" },
-			aggregation: "sum",
-		},
-		cost_of_goods_sold: {
-			type: "extract",
-			source: {
-				standard_field: "cost_of_goods_sold",
-				statement: "income_statement",
-			},
-			aggregation: "sum",
-		},
-		gross_profit: {
-			type: "formula",
-			expression: "revenue - cost_of_goods_sold",
-			depends_on: ["revenue", "cost_of_goods_sold"],
-		},
-		gross_margin: {
-			type: "formula",
-			expression: "gross_profit / revenue",
-			depends_on: ["gross_profit", "revenue"],
-			output_step: true,
-		},
-	};
-
-	it("returns the standard_fields of the extract leaves only", () => {
-		expect(extractConceptsFromDag(grossMarginDag).sort()).toEqual([
-			"cost_of_goods_sold",
-			"revenue",
-		]);
-	});
-
-	it("ignores formula/constant steps and tolerates malformed input", () => {
-		expect(extractConceptsFromDag(null)).toEqual([]);
-		expect(extractConceptsFromDag("nope")).toEqual([]);
-		expect(
-			extractConceptsFromDag({
-				k: { type: "constant", value: 30 },
-				f: { type: "formula", expression: "a/b", depends_on: ["a", "b"] },
-				bad: { type: "extract" }, // no source → skipped, no throw
-			}),
-		).toEqual([]);
-	});
-});
 
 describe("buildOperatingModelGraph", () => {
 	it("wires the concept-spine: artifact → concept → column, driver and FK", () => {

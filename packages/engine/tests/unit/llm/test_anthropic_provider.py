@@ -25,6 +25,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
     PermanentProviderError,
+    ToolDefinition,
     TransientProviderError,
 )
 
@@ -82,6 +83,34 @@ class TestErrorClassification:
         assert "ANTHROPIC_API_KEY" in str(err)
 
 
+class _FakeStream:
+    """Stand-in for the SDK ``MessageStreamManager``: a context manager whose
+    body yields an object with ``get_final_message()``. ``converse`` streams
+    (the SDK refuses large-``max_tokens`` non-streaming requests), so tests
+    patch ``messages.stream`` — the fake calls through to ``fn`` on entry, so
+    a raising ``fn`` surfaces exactly where the SDK would raise."""
+
+    def __init__(self, fn: object, kwargs: dict[str, object]) -> None:
+        self._fn = fn
+        self._kwargs = kwargs
+
+    def __enter__(self) -> SimpleNamespace:
+        response = self._fn(**self._kwargs)  # type: ignore[operator]
+        return SimpleNamespace(get_final_message=lambda: response)
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def _patch_stream(monkeypatch: pytest.MonkeyPatch, provider: object, fn: object) -> None:
+    """Route ``provider.client.messages.stream(**kw)`` through ``fn``."""
+    monkeypatch.setattr(
+        provider.client.messages,  # type: ignore[attr-defined]
+        "stream",
+        lambda **kw: _FakeStream(fn, kw),
+    )
+
+
 class TestConverseRaisesTypedError:
     """converse raises the typed exception so callers don't inspect the SDK
     exception — and so a transient failure stays retryable end-to-end."""
@@ -92,7 +121,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise _status_error(401)
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(PermanentProviderError) as ei:
             provider.converse(_request())
@@ -104,7 +133,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise _status_error(529)
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(TransientProviderError):
             provider.converse(_request())
@@ -117,7 +146,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise ValueError("malformed kwargs")
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(PermanentProviderError) as ei:
             provider.converse(_request())
@@ -132,7 +161,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise original
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(TransientProviderError) as ei:
             provider.converse(_request())
@@ -146,7 +175,7 @@ def _ok_response(
     cache_read: int | None = 0,
     cache_creation: int | None = 0,
 ) -> SimpleNamespace:
-    """A minimal stand-in for the SDK Message a successful create() returns.
+    """A minimal stand-in for the final SDK Message a successful stream yields.
 
     ``cache_read``/``cache_creation`` default to 0 but accept ``None`` to mirror
     the SDK, which leaves those Usage fields unset when no ``cache_control`` is
@@ -165,15 +194,73 @@ def _ok_response(
     )
 
 
+class TestConverseRequestShape:
+    """converse shapes the request per the model's sampling/thinking contract.
+
+    Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default ``temperature`` (400)
+    and default adaptive thinking ON; the engine's forced-tool extraction tier
+    wants neither. Older models keep the temperature passthrough and no thinking
+    param. These assert the exact kwargs handed to ``messages.create`` — the gap
+    that let the Sonnet 5 swap ship a request that 400s against the live API.
+    """
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch, model: str) -> dict[str, object]:
+        provider = _provider()
+        captured: dict[str, object] = {}
+
+        def capture(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return _ok_response()
+
+        _patch_stream(monkeypatch, provider, capture)
+        provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")], temperature=0.0, model=model
+            )
+        ).unwrap()
+        return captured
+
+    def test_sonnet_5_omits_temperature_and_disables_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kwargs = self._capture(monkeypatch, "claude-sonnet-5")
+        assert "temperature" not in kwargs
+        assert kwargs["thinking"] == {"type": "disabled"}
+
+    def test_opus_4_8_omits_temperature_and_disables_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kwargs = self._capture(monkeypatch, "claude-opus-4-8")
+        assert "temperature" not in kwargs
+        assert kwargs["thinking"] == {"type": "disabled"}
+
+    def test_fable_5_omits_temperature_but_leaves_thinking_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fable 5 rejects a non-default temperature AND rejects an explicit
+        # thinking:disabled (always-on) — so we omit both and let it default.
+        kwargs = self._capture(monkeypatch, "claude-fable-5")
+        assert "temperature" not in kwargs
+        assert "thinking" not in kwargs
+
+    def test_older_model_keeps_temperature_and_no_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Haiku 4.5 / Sonnet 4.6 accept temperature and default thinking off.
+        kwargs = self._capture(monkeypatch, "claude-haiku-4-5")
+        assert kwargs["temperature"] == 0.0
+        assert "thinking" not in kwargs
+
+
 class TestConverseTelemetry:
     """converse emits per-call latency + token telemetry (DAT-600) and surfaces
     the cache-usage fields on the response."""
 
     def test_logs_label_and_all_token_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         provider = _provider()
-        monkeypatch.setattr(
-            provider.client.messages,
-            "create",
+        _patch_stream(
+            monkeypatch,
+            provider,
             lambda **_: _ok_response(
                 input_tokens=512, output_tokens=64, cache_read=480, cache_creation=32
             ),
@@ -199,9 +286,9 @@ class TestConverseTelemetry:
 
     def test_response_carries_cache_usage(self, monkeypatch: pytest.MonkeyPatch) -> None:
         provider = _provider()
-        monkeypatch.setattr(
-            provider.client.messages,
-            "create",
+        _patch_stream(
+            monkeypatch,
+            provider,
             lambda **_: _ok_response(cache_read=480, cache_creation=32),
         )
 
@@ -214,9 +301,9 @@ class TestConverseTelemetry:
         # No cache_control today → SDK leaves the Usage cache fields as None;
         # telemetry must stay numeric, not propagate None.
         provider = _provider()
-        monkeypatch.setattr(
-            provider.client.messages,
-            "create",
+        _patch_stream(
+            monkeypatch,
+            provider,
             lambda **_: _ok_response(cache_read=None, cache_creation=None),
         )
         log = MagicMock()
@@ -228,3 +315,143 @@ class TestConverseTelemetry:
         assert resp.cache_creation_input_tokens == 0
         assert log.info.call_args.kwargs["cache_read_input_tokens"] == 0
         assert log.info.call_args.kwargs["cache_creation_input_tokens"] == 0
+
+
+class TestStrictTools:
+    """Forced tools ship strict:true with a normalized schema (DAT-661): the
+    API then guarantees the arguments validate — killing the malformed-args
+    class (Sonnet 5 stringified a whole payload into one field, 2026-07-02
+    smoke). Open-map / oversized schemas opt out via ``strict=False``."""
+
+    def _captured_tool(
+        self, monkeypatch: pytest.MonkeyPatch, tool: ToolDefinition
+    ) -> dict[str, object]:
+        provider = _provider()
+        captured: dict[str, object] = {}
+
+        def capture(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return _ok_response()
+
+        _patch_stream(monkeypatch, provider, capture)
+        provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                tools=[tool],
+            )
+        ).unwrap()
+        return captured["tools"][0]  # type: ignore[index,no-any-return]
+
+    def test_strict_tool_normalizes_schema_and_sets_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "nested": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string", "maxLength": 5}},
+                },
+            },
+            "required": ["confidence"],
+        }
+        sent = self._captured_tool(
+            monkeypatch,
+            ToolDefinition(name="t", description="d", input_schema=schema, strict=True),
+        )
+        assert sent["strict"] is True
+        sent_schema = sent["input_schema"]
+        assert sent_schema["additionalProperties"] is False
+        assert "minimum" not in sent_schema["properties"]["confidence"]
+        assert "maximum" not in sent_schema["properties"]["confidence"]
+        nested = sent_schema["properties"]["nested"]
+        assert nested["additionalProperties"] is False
+        assert "maxLength" not in nested["properties"]["name"]
+
+    def test_non_strict_tool_passes_schema_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Open-map schema (additionalProperties: <schema>) — must go through
+        # untouched, with no strict flag.
+        schema = {
+            "type": "object",
+            "properties": {"steps": {"type": "object", "additionalProperties": {"type": "string"}}},
+        }
+        sent = self._captured_tool(
+            monkeypatch,
+            ToolDefinition(name="t", description="d", input_schema=schema),
+        )
+        assert "strict" not in sent
+        assert sent["input_schema"] == schema
+
+
+class TestStringifiedArgCoercion:
+    """The provider repairs JSON-stringified container arguments against the
+    declared schema (Sonnet 5 stringified a whole payload into one field —
+    2026-07-02 smoke) and leaves everything else untouched."""
+
+    def _converse_with_tool_use(
+        self, monkeypatch: pytest.MonkeyPatch, tool_input: dict[str, object]
+    ) -> dict[str, object]:
+        provider = _provider()
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="tool_use", id="t1", name="emit", input=tool_input)
+            ],
+            stop_reason="tool_use",
+            model="claude-x",
+            usage=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=1,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        )
+        _patch_stream(monkeypatch, provider, lambda **_: response)
+        result = provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                tools=[
+                    ToolDefinition(
+                        name="emit",
+                        description="d",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "tables": {"type": "array"},
+                                "note": {"type": "string"},
+                            },
+                        },
+                    )
+                ],
+            )
+        ).unwrap()
+        return result.tool_calls[0].input
+
+    def test_stringified_array_is_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        coerced = self._converse_with_tool_use(
+            monkeypatch, {"tables": '[{"table_name": "t"}]', "note": "ok"}
+        )
+        assert coerced["tables"] == [{"table_name": "t"}]
+        assert coerced["note"] == "ok"
+
+    def test_plain_string_field_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A string field that happens to contain JSON must NOT be parsed —
+        # only schema-declared containers are coerced.
+        coerced = self._converse_with_tool_use(monkeypatch, {"note": '["not a list field"]'})
+        assert coerced["note"] == '["not a list field"]'
+
+    def test_unparseable_string_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        coerced = self._converse_with_tool_use(monkeypatch, {"tables": "not json"})
+        assert coerced["tables"] == "not json"
+
+    def test_whole_payload_stringified_into_field(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Smoke #6: the model serialized the ENTIRE input object into the
+        # container field — the parsed dict's keys match the tool's own
+        # properties, so it is adopted as the whole input.
+        coerced = self._converse_with_tool_use(
+            monkeypatch,
+            {"tables": '{"tables": [{"table_name": "t"}], "note": "n"}'},
+        )
+        assert coerced == {"tables": [{"table_name": "t"}], "note": "n"}

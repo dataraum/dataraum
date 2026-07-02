@@ -49,7 +49,6 @@ class ValidationAgent(LLMFeature):
     when validations require data from multiple tables.
     """
 
-    MAX_TOKENS = 2000
     MAX_STORED_ROWS = 10
 
     def validate_context(self, schema: dict[str, Any]) -> list[str]:
@@ -343,6 +342,11 @@ class ValidationAgent(LLMFeature):
                 "Analyze the schema to identify relevant columns and tables."
             ),
             input_schema=ValidationSQLOutput.model_json_schema(),
+            # Strict-compatible AND behaviorally safe here (smoke-verified
+            # 2026-07-02: 8/9 validations executed under strict) — a small
+            # fixed-shape output, unlike the batched extractors where strict
+            # grammar made the model under-produce.
+            strict=True,
         )
 
         model = self.provider.get_model_for_tier(feature_config.model_tier)
@@ -354,7 +358,7 @@ class ValidationAgent(LLMFeature):
             tools=[tool],
             tool_choice={"type": "tool", "name": "generate_validation_sql"},
             label="validation_sql",
-            max_tokens=self.MAX_TOKENS,
+            max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
         )

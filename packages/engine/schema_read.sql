@@ -193,10 +193,6 @@ WHERE EXISTS (
   )
 ;
 
-DROP VIEW IF EXISTS __READ__.fix_ledger;
-CREATE VIEW __READ__.fix_ledger AS
-SELECT * FROM __WS__.fix_ledger;
-
 DROP VIEW IF EXISTS __READ__.current_lifecycle_artifacts;
 CREATE VIEW __READ__.current_lifecycle_artifacts AS
 SELECT r.* FROM __WS__.lifecycle_artifacts r

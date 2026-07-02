@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, cast
 
@@ -32,6 +33,147 @@ class AnthropicConfig(BaseModel):
 
 
 logger = get_logger(__name__)
+
+
+# --- Model request-shape capabilities (Claude 4.7+ / Sonnet 5 / Fable 5) ---
+#
+# The engine is the structured-extraction tier (ADR-0004): every call forces a
+# tool for typed output and wants determinism, not agentic reasoning. Two
+# request-shape changes landed with this model generation that the tier must
+# honour, or Sonnet 5 rejects the call outright:
+#
+#   * Non-default sampling params (``temperature``/``top_p``/``top_k``) return a
+#     400. Our prompt templates ask for temperature 0.0-0.1 for determinism, so
+#     on these models we OMIT ``temperature`` and rely on the forced tool +
+#     prompt for stable output (temperature 0 never guaranteed identical output
+#     anyway).
+#   * Adaptive thinking is ON by default when ``thinking`` is omitted. A
+#     forced-tool extractor never wants it: it burns output budget the
+#     small-cap calls (validation caps at 2000) can't spare, and it diverges
+#     from the prior Sonnet 4.6 behaviour where thinking was off. So we DISABLE
+#     it explicitly.
+#
+# Older models (Haiku 4.5, Sonnet 4.6) accept temperature and default thinking
+# off, so their request shape is unchanged. Prefix match covers the undated
+# aliases and any dated snapshot.
+_TEMPERATURE_REJECTING_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+# Subset that additionally defaults adaptive thinking ON *and* accepts an
+# explicit disable. Fable 5 / Mythos 5 are always-on (they reject an explicit
+# ``thinking: disabled``), so they are intentionally excluded — the engine's
+# forced-tool tier does not target them.
+_THINKING_DEFAULT_ON_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+)
+
+
+def _rejects_temperature(model: str) -> bool:
+    """True when the model 400s on a non-default sampling param."""
+    return model.startswith(_TEMPERATURE_REJECTING_PREFIXES)
+
+
+def _thinking_defaults_on(model: str) -> bool:
+    """True when the model runs adaptive thinking unless explicitly disabled."""
+    return model.startswith(_THINKING_DEFAULT_ON_PREFIXES)
+
+
+# JSON-Schema keywords strict grammar compilation rejects. Stripping them is
+# lossless for correctness: Pydantic re-validates the parsed arguments client-
+# side, so range/length constraints are still enforced — strict guarantees the
+# SHAPE (no stringified payloads, no missing/extra keys), Pydantic the values.
+_STRICT_UNSUPPORTED_KEYS = frozenset(
+    {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+    }
+)
+
+
+def _strict_tool_schema(node: Any) -> Any:
+    """Normalize a Pydantic JSON schema for ``strict: true`` tool use.
+
+    Recursively sets ``additionalProperties: false`` on every object node
+    (strict requires it explicitly; Pydantic never emits it) and strips the
+    constraint keywords strict rejects (see ``_STRICT_UNSUPPORTED_KEYS``).
+    """
+    if isinstance(node, dict):
+        out = {
+            k: _strict_tool_schema(v) for k, v in node.items() if k not in _STRICT_UNSUPPORTED_KEYS
+        }
+        if out.get("type") == "object" or "properties" in out:
+            out.setdefault("additionalProperties", False)
+        return out
+    if isinstance(node, list):
+        return [_strict_tool_schema(v) for v in node]
+    return node
+
+
+def _coerce_stringified_args(
+    tool_input: dict[str, Any], schema: dict[str, Any], *, label: str | None
+) -> dict[str, Any]:
+    """Parse tool arguments the model JSON-stringified against the schema.
+
+    Sonnet 5 occasionally serializes a whole array/object argument into a JSON
+    string (`{"tables": "[{…}]"}` — 2026-07-02 smoke, semantic_per_table died
+    on Pydantic list_type). The declared ``input_schema`` says which top-level
+    properties must be containers, so this boundary repairs exactly those:
+    a ``str`` value where the schema expects ``array``/``object`` is parsed;
+    everything else passes through untouched. Coercions are logged so the
+    frequency stays observable (the strict alternative is opt-in per tool —
+    see ``ToolDefinition.strict``).
+    """
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return tool_input
+    out = dict(tool_input)
+    for key, value in tool_input.items():
+        expected = properties.get(key)
+        if not isinstance(expected, dict) or not isinstance(value, str):
+            continue
+        if expected.get("type") not in ("array", "object"):
+            continue
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            continue
+        # Whole-payload variant (observed in smoke #6): the model serialized
+        # the ENTIRE input object into one field — {"tables": '{"tables": […]}'}.
+        # If the parsed dict's keys are the tool's own top-level properties,
+        # it IS the input; adopt it wholesale.
+        if (
+            isinstance(parsed, dict)
+            and parsed.keys() <= properties.keys()
+            and expected.get("type") != "object"
+        ):
+            logger.warning(
+                "stringified_tool_payload_coerced",
+                label=label,
+                argument=key,
+            )
+            return parsed
+        if isinstance(parsed, (list, dict)):
+            out[key] = parsed
+            logger.warning(
+                "stringified_tool_arg_coerced",
+                label=label,
+                argument=key,
+                expected_type=expected.get("type"),
+            )
+    return out
 
 
 # 4xx codes the user must fix — credentials, schema, request shape.
@@ -152,7 +294,10 @@ class AnthropicProvider(LLMProvider):
                         {
                             "name": t.name,
                             "description": t.description,
-                            "input_schema": t.input_schema,
+                            "input_schema": _strict_tool_schema(t.input_schema)
+                            if t.strict
+                            else t.input_schema,
+                            **({"strict": True} if t.strict else {}),
                         },
                     )
                     for t in request.tools
@@ -162,9 +307,20 @@ class AnthropicProvider(LLMProvider):
             kwargs: dict[str, Any] = {
                 "model": model,
                 "max_tokens": request.max_tokens,
-                "temperature": request.temperature,
                 "messages": messages,
             }
+
+            # Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default temperature
+            # (400) and default adaptive thinking ON; a forced-tool extractor
+            # wants neither. Omit temperature on those; pass it through on the
+            # older models that still honour it. Explicitly disable thinking
+            # where the model defaults it on (parity with Sonnet 4.6). See the
+            # capability notes above.
+            if _rejects_temperature(model):
+                if _thinking_defaults_on(model):
+                    kwargs["thinking"] = {"type": "disabled"}
+            else:
+                kwargs["temperature"] = request.temperature
 
             if request.system:
                 kwargs["system"] = request.system
@@ -175,23 +331,37 @@ class AnthropicProvider(LLMProvider):
             if request.tool_choice:
                 kwargs["tool_choice"] = request.tool_choice
 
+            # Stream + accumulate instead of a one-shot create: the SDK refuses
+            # a non-streaming request whose max_tokens it estimates could exceed
+            # ~10 minutes (ValueError "Streaming is required…"), and the Sonnet 5
+            # output budget (24000) trips that guard — every pipeline call died
+            # on it in the 2026-07-02 smoke. Streaming lifts the ceiling; callers
+            # still receive one final Message via get_final_message().
             start = time.perf_counter()
-            response = self.client.messages.create(**kwargs)
+            with self.client.messages.stream(**kwargs) as stream:
+                response = stream.get_final_message()
             elapsed_ms = round((time.perf_counter() - start) * 1000)
 
             # Extract content and tool calls from response
             text_content = ""
             tool_calls: list[ToolCall] = []
 
+            schemas_by_name = {t.name: t.input_schema for t in request.tools}
             for block in response.content:
                 if block.type == "text":
                     text_content += block.text
                 elif block.type == "tool_use":
+                    raw_input = dict(block.input) if block.input else {}
+                    tool_schema = schemas_by_name.get(block.name)
+                    if tool_schema is not None:
+                        raw_input = _coerce_stringified_args(
+                            raw_input, tool_schema, label=request.label
+                        )
                     tool_calls.append(
                         ToolCall(
                             id=block.id,
                             name=block.name,
-                            input=dict(block.input) if block.input else {},
+                            input=raw_input,
                         )
                     )
 

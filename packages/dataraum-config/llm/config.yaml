@@ -8,10 +8,10 @@ version: "1.0.0"
 # Provider configurations
 providers:
   anthropic:
-    default_model: claude-sonnet-4-6
+    default_model: claude-sonnet-5
     models:
       fast: claude-haiku-4-5
-      balanced: claude-sonnet-4-6
+      balanced: claude-sonnet-5
 
 # Active provider
 active_provider: anthropic
@@ -62,7 +62,12 @@ features:
 
 # Cost controls
 limits:
-  max_output_tokens_per_request: 16000
+  # Bumped 16000 -> 24000 with the Sonnet 5 swap: its tokenizer emits ~30% more
+  # tokens for the same text, so a response that fit under 16000 on Sonnet 4.6
+  # can now clip. 24000 restores the old margin. (Thinking is disabled on the
+  # engine's forced-tool calls, so this budget is response-only, not shared with
+  # a thinking trace.)
+  max_output_tokens_per_request: 24000
 
 # Privacy settings for data sent to LLM
 privacy:

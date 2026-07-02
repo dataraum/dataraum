@@ -110,6 +110,10 @@ const emitOnce: EmitFn = async (systemPrompts, messages, signal) => {
 		modelOptions: {
 			max_tokens: MAX_OUTPUT_TOKENS,
 			tool_choice: { type: "tool", name: "emit_chart" },
+			// Disable thinking: one-shot structured extraction (forced tool), not
+			// reasoning. Sonnet 5 defaults adaptive thinking ON, which bills a trace
+			// before the forced emit for no quality gain (see frame-family.ts).
+			thinking: { type: "disabled" },
 		},
 		systemPrompts,
 		messages,

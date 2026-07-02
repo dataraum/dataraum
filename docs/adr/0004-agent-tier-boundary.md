@@ -15,13 +15,12 @@ durable pipeline in the agent tier loses reproducibility.
 ## Decision
 
 Draw the tier boundary: **agentic / streaming LLM lives in the cockpit (the TS agent
-tier)**; the **engine is durable pipeline + grounding only**. Concept *induction* relocates
-to TS (the engine's `induce_adhoc_concepts` retires); agent prompts are TS-owned. The agent
-tier is built on the **TanStack AI SDK** and the DuckDB **neo driver** (`@duckdb/node-api`,
-not the deprecated `duckdb`).
+tier)**; the **engine is durable pipeline + grounding only**. Concept *induction*
+relocates to the cockpit (the engine's induction path retires); agent prompts are
+cockpit-owned.
 
 ## Consequences
 
-- Engine activities stay deterministic and replayable; the chatty/uncertain LLM work lives where streaming and tool-calling are natural.
-- Induction moving to TS is a clean cut, not a shim — the engine loses that responsibility entirely.
-- DuckDB neo driver constraints apply in the cockpit: no `arrowIPCStream` (use materialized row JSON); READ_ONLY ATTACH sees only the last CHECKPOINTed snapshot; native bindings must be externalized from the Nitro build.
+- Engine activities stay deterministic and replayable; the streaming, tool-calling LLM work lives where streaming and tool-calling are natural.
+- Induction moving to the cockpit is a clean cut — the engine loses that responsibility entirely.
+- Implementation notes: the agent tier is built on the TanStack AI SDK; the cockpit reads the lake through the DuckDB neo driver (`@duckdb/node-api`), whose constraints apply — no `arrowIPCStream` (materialized row JSON instead), READ_ONLY ATTACH sees only the last CHECKPOINTed snapshot, native bindings externalized from the Nitro build.

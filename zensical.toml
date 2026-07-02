@@ -23,6 +23,7 @@ nav = [
   { "Under the hood" = [
     "platform/architecture.md",
     "concepts/pipeline.md",
+    "adr/README.md",
   ] },
   { "Operations" = [
     "operations/deployment.md",

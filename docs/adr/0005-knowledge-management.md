@@ -5,6 +5,9 @@
 - **Ticket:** —
 - **Design doc:** —
 
+> **Internal process record** — how this repository is developed, not product
+> architecture. Not part of the documented product decision set.
+
 ## Context
 
 Project knowledge had drifted across overlapping homes: a host-side harness memory store

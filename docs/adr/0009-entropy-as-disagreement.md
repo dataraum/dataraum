@@ -11,10 +11,13 @@ Calibration kept "fixing" wrong LLM judgments with deterministic patches: an
 exact-indicator override, a naming-quality floor, network edge weights moved
 until bands flipped, per-detector boost curves fitted until scores crossed
 0.3. Each patch made a metric pass without making the system understand more —
-Goodhart's law eating the calibration loop. Root defect: a single LLM
-judgment treated as truth, overruled by code when wrong. Rejected outright
-(Philipp, 2026-06-07): "it is 2026; LLMs are here; this is a multi-agent
-system."
+Goodhart's law consuming the calibration loop. The root defect: a single LLM
+judgment treated as truth and overruled by code when wrong. Overriding a
+probabilistic judgment with a deterministic patch does not remove the error;
+it hides the disagreement that signalled it, and each patch is a new rule that
+must itself be maintained and calibrated. The alternative adopted here keeps
+every judgment as one fallible vote among several and measures the
+disagreement instead.
 
 ## Decision
 

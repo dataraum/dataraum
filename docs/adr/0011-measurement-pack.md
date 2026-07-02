@@ -12,9 +12,9 @@ entropy measures **disagreement between witnesses over a canonical claim**, spli
 conflict (witnesses contradict) and ignorance (nobody qualified weighed in); severity
 lives in per-intent loss tables, never in the score; teaches enter as witnesses, never
 as overrides. Two measurements shipped this way end-to-end (null_semantics,
-temporal_behavior) and the backlog now scales to many more, implemented in parallel by
-independent lanes and **calibrated from data afterwards**. That only works if every
-measurement has the same anatomy and zero tuned numbers in code.
+temporal_behavior) and the backlog now scales to many more, implemented in parallel and
+**calibrated from data afterwards**. That only works if every measurement has the same
+anatomy and zero tuned numbers in code.
 
 ## Decision
 
@@ -50,15 +50,15 @@ separate activities on separate artifacts. Implementation ships with placeholder
 calibration flips them with measured values and provenance; nobody edits a constant to
 make a test pass.
 
-Shared engine code is off-limits to lanes: `pooling/` (the generic C/U engine),
-`detectors/base.py`, `engine.py`, `resolve.py`'s frame, `core/overlay.py`'s frame,
-`models.py`. A lane that needs a shared-code change routes it through the integrator.
+Shared engine code — the generic pooling engine, the detector base, the resolve and
+overlay frames, the shared models — changes only as a coordinated edit, never as part of
+an individual measurement's implementation.
 
 ## Consequences
 
 - New measurements become mechanical: ~350–400 lines (measurement + shell) against this
-  checklist, implementable in parallel worktrees with no cross-lane coupling except the
-  two config files and the registry (integrator-merged).
+  checklist, implementable in parallel with no coupling except the two config files and
+  the registry.
 - Calibration is uniform: one batch run feeds every measurement's rig, and the
   outcomes scoreboard (eval `calibration/outcomes.py`) is the target loss weights are
   fit against — bands must predict wrong answers, not injections.
@@ -68,4 +68,4 @@ Shared engine code is off-limits to lanes: `pooling/` (the generic C/U engine),
   deterministic semantic overrides (the firewall stands); pooling without a
   data-grounded witness (name-correlated witnesses fail together — measured).
 - The eval's coverage lock extends to this pack: a registered detector without all
-  seven pieces is an incomplete lane, visible as unfilled coverage cells.
+  seven pieces is incomplete, visible as unfilled coverage cells.

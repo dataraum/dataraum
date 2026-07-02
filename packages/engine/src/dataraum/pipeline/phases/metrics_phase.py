@@ -62,6 +62,7 @@ from dataraum.graphs.loader import GraphLoadError
 from dataraum.lifecycle import BaseRunMap, declare_artifact, transition
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.phases._warm_first import submit_warm_first
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 
@@ -504,21 +505,25 @@ def _warm_generations_parallel(
         for generation in generations:
             # Only leaf EXTRACTs warm now (DAT-646) — they have no dependencies, so
             # there is no dep-gate: each is authored once, concept-keyed.
-            futures: dict[Future[NodeDecision], NodeKey] = {}
-            for key in generation:
-                futures[
-                    pool.submit(
-                        _warm_isolated,
-                        nodes[key],
-                        manager,
-                        agent,
-                        schema_mapping_id,
-                        table_ids,
-                        vertical,
-                        om_run_id,
-                        catalogue_run_id,
-                    )
-                ] = key
+            # Warm-first (DAT-601): the generation's first node runs alone so its
+            # completed call commits the shared prompt-cache prefix; the rest then
+            # read it instead of re-writing it cap-wide.
+            def _submit(key: NodeKey) -> Future[NodeDecision]:
+                return pool.submit(
+                    _warm_isolated,
+                    nodes[key],
+                    manager,
+                    agent,
+                    schema_mapping_id,
+                    table_ids,
+                    vertical,
+                    om_run_id,
+                    catalogue_run_id,
+                )
+
+            futures: dict[Future[NodeDecision], NodeKey] = submit_warm_first(
+                _submit, list(generation)
+            )
             for future in as_completed(futures):
                 key = futures[future]
                 try:

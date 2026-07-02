@@ -1323,7 +1323,6 @@ class GraphAgent(LLMFeature):
             s.get("step_id", ""): s for s in generated_code.steps if s.get("step_id")
         }
         provenance = {"failure_mode": mode, "failure_reason": reason}
-        saved_count = 0
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
                 continue
@@ -1483,7 +1482,6 @@ class GraphAgent(LLMFeature):
 
         cached_steps: dict[str, dict[str, Any]] = {}
 
-        saved_count = 0
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
                 continue

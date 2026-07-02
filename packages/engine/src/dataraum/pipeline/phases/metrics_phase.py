@@ -71,7 +71,7 @@ _log = get_logger(__name__)
 # metric.declare/compose/execute for this stage only.
 _STAGE = "operating_model"
 
-# Cap concurrent metric LLM calls. Sonnet 4.6 tier-3+ workspaces handle
+# Cap concurrent metric LLM calls. Sonnet 5 tier-3+ workspaces handle
 # 4000 RPM (~67 RPS) comfortably; with ~30-60s LLM latencies, 10 concurrent
 # is ~10 RPS at peak — well under the limit. The warming pre-pass (DAT-629) and
 # the execute wave run sequentially, each peaking at this many isolated sessions
@@ -218,6 +218,10 @@ class MetricsPhase(BasePhase):
                     "category": (defn.get("metadata") or {}).get("category"),
                 },
             )
+            # Persist the effective (shipped ⊕ overlay) DAG this row was assembled from
+            # (DAT-591) — the cockpit reads the exact rendered structure from this one
+            # Postgres source, so it never re-reads config or re-merges the overlay.
+            artifacts[graph_id].graph_definition = defn
 
         # Parse declared definitions into graphs. A definition that won't parse
         # stays declared with the parse error recorded — visibly impossible.

@@ -1022,6 +1022,7 @@ class GraphAgent(LLMFeature):
             temperature=temperature,
             model=self.provider.get_model_for_tier(model_tier),
             label="sql_repair",
+            effort=getattr(feature_config, "effort", None),
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —

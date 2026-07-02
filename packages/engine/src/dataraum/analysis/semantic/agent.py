@@ -191,6 +191,7 @@ class SemanticAgent(LLMFeature):
             tools=[tool],
             tool_choice={"type": "tool", "name": "analyze_tables"},
             label="semantic_per_table",
+            effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,

@@ -22,6 +22,9 @@ def mock_llm_config():
     config.features.validation = MagicMock()
     config.features.validation.enabled = True
     config.features.validation.model_tier = "fast"
+    # A real value, not a Mock attribute: the agent forwards effort into
+    # ConversationRequest, which validates it as str | None.
+    config.features.validation.effort = "low"
     return config
 
 

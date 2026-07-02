@@ -59,11 +59,24 @@ class PermanentProviderError(ProviderError):
 
 
 class ToolDefinition(BaseModel):
-    """Definition of a tool the LLM can use."""
+    """Definition of a tool the LLM can use.
+
+    ``strict=True`` asks the API to guarantee the tool's arguments validate
+    against ``input_schema`` — killing the malformed-args class (Sonnet 5
+    stringifying a whole payload into one field, 2026-07-02 smoke). It is
+    OPT-IN per tool, not the default: on the large batched extractions the
+    strict grammar made Sonnet 5 legally under-produce (column_annotation
+    emitted 1 of 8 tables, 642 output tokens vs 6060 — same smoke), so only
+    small fixed-shape outputs (validation_sql) enable it. The stringified-
+    payload hazard for non-strict tools is handled at the parse boundary
+    instead (the provider coerces a stringified array/object argument by
+    parsing it against the declared schema).
+    """
 
     name: str
     description: str
     input_schema: dict[str, Any]  # JSON Schema for tool parameters
+    strict: bool = False
 
 
 class ToolCall(BaseModel):
@@ -100,6 +113,10 @@ class ConversationRequest(BaseModel):
     max_tokens: int = 4096
     temperature: float = 0.0
     model: str | None = None  # Override default model
+    # Per-feature output effort (DAT-603): "low" | "medium" | "high" | "xhigh"
+    # | "max". None = the API default. The provider only sends it to models
+    # that support the parameter.
+    effort: str | None = None
     # Greppable agent/phase tag for per-call telemetry (DAT-600). The provider
     # has no phase context of its own, so each call site stamps the prompt
     # template / feature name it is invoking (e.g. "graph_sql_generation").

@@ -218,9 +218,7 @@ class TestComputeCycleHealth:
         cycle = _make_cycle(completion_rate=None)
         judged = _make_validation_result("double_entry_balance", ["tid-invoices"])
         inconclusive = _make_validation_result("three_way_match", ["tid-invoices"])
-        never_ran = _make_validation_result(
-            "sign_conventions", ["tid-invoices"], sql_used=None
-        )
+        never_ran = _make_validation_result("sign_conventions", ["tid-invoices"], sql_used=None)
 
         session = MagicMock()
         session.scalars.side_effect = [

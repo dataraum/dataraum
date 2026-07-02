@@ -12,14 +12,14 @@
 // NOTE: modelOptions is the ONLY channel — chat()'s options have no top-level
 // maxTokens field, and a stray one type-checks through inferred returns while
 // doing nothing (the DAT-436 1024-token orchestrator bug). 24576 is well under
-// Sonnet 4.6's output ceiling and generous enough that a normal turn never
+// Sonnet 5's output ceiling and generous enough that a normal turn never
 // re-truncates; a silent cut-off is worse than a few extra tokens of headroom.
 
-export const MODEL = "claude-sonnet-4-6";
+export const MODEL = "claude-sonnet-5";
 
 // The landing nav-agent's model (DAT-534) — a cheap Haiku one-shot that classifies
 // the opening message into a chat kind. Undated alias, mirroring MODEL's
-// `claude-sonnet-4-6` (auto-resolves to the latest 4.5 snapshot); fall back to the
+// `claude-sonnet-5` (auto-resolves to the latest snapshot); fall back to the
 // dated `claude-haiku-4-5-20251001` only if the alias ever fails to resolve.
 export const NAV_MODEL = "claude-haiku-4-5";
 

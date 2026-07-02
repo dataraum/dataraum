@@ -22,7 +22,7 @@ in FK-safe order:
 1. column-keyed children via :func:`delete_column_dependents` (the 14 children
    of ``columns``),
 2. the table-keyed children that reference ``tables`` directly,
-3. the source-keyed children (``fix_ledger``, ``column_eligibility``),
+3. the source-keyed children (``column_eligibility``),
 4. the per-table ``metadata_snapshot_head`` rows (``table:{id}`` /
    ``GENERATION_STAGE``) so no head dangles at a deleted target,
 5. the ``tables`` rows (DB-cascades their ``columns``),
@@ -124,8 +124,8 @@ def _delete_table_dependents(ctx: PhaseContext, table_ids: list[str], source_id:
     Covers each child of ``tables`` that does NOT ``ON DELETE CASCADE`` (only
     ``columns`` does). Reached by whichever FK column points at ``tables`` —
     single ``table_id``, the fact/view pair, the measure/event pair, or the
-    relationship from/to endpoints. ``fix_ledger`` and ``column_eligibility``
-    are removed by ``source_id`` (they carry it directly).
+    relationship from/to endpoints. ``column_eligibility`` is removed by
+    ``source_id`` (it carries it directly).
 
     Run BEFORE deleting the ``tables`` rows so the FK constraints hold.
     """
@@ -139,7 +139,6 @@ def _delete_table_dependents(ctx: PhaseContext, table_ids: list[str], source_id:
     from dataraum.analysis.slicing.db_models import SliceDefinition
     from dataraum.analysis.typing.db_models import MaterializationRecipe
     from dataraum.analysis.views.db_models import EnrichedView
-    from dataraum.documentation.db_models import FixLedgerEntry
     from dataraum.entropy.db_models import (
         ClaimWitnessRecord,
         EntropyObjectRecord,
@@ -195,7 +194,6 @@ def _delete_table_dependents(ctx: PhaseContext, table_ids: list[str], source_id:
     )
 
     # Source-keyed children.
-    ctx.session.execute(delete(FixLedgerEntry).where(FixLedgerEntry.source_id == source_id))
     ctx.session.execute(
         delete(ColumnEligibilityRecord).where(ColumnEligibilityRecord.source_id == source_id)
     )

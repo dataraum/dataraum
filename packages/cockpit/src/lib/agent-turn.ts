@@ -58,11 +58,12 @@ type ChatStream = ReturnType<
  *
  * `workspaceContext` (the workspace's vertical + imported tables — workspace-
  * awareness for replay / teach / look) is a SECOND system block placed AFTER the
- * orchestrator. The cache breakpoint is ON the orchestrator, so the cached prefix is
- * exactly the orchestrator; this dynamic block sits past the breakpoint and is never
- * cached — a small fresh suffix each turn. So the orchestrator keeps hitting even as
- * the imported tables change; the two don't thrash. The caller computes the block (a
- * DB read) and passes it; `buildChatOptions` stays pure for the unit wiring test.
+ * orchestrator, with its OWN cache breakpoint (DAT-606): it is stable within a
+ * session, so it reads from cache from turn 2 on. Because prefix caching
+ * invalidates only from the changed block onward, an import that changes this
+ * block leaves the orchestrator block's cache intact — the two don't thrash.
+ * The caller computes the block (a DB read) and passes it; `buildChatOptions`
+ * stays pure for the unit wiring test.
  *
  * `abortController` (when given) is threaded into the agentic loop so a cancelled
  * stream — the client calling useChat's `stop()`, or simply disconnecting —
@@ -84,9 +85,16 @@ export function buildChatOptions(
 			metadata: { cache_control: { type: "ephemeral" } },
 		},
 	];
-	// A second, UNCACHED block past the cache breakpoint (see above).
+	// A second CACHED block (DAT-606): the workspace context (vertical + imported
+	// tables) is stable within a session, so its own breakpoint makes it a cache
+	// read from turn 2 on — while leaving the orchestrator block's cache untouched
+	// when an import DOES change it (prefix caching invalidates only from the
+	// changed block onward).
 	if (workspaceContext != null) {
-		systemPrompts.push({ content: workspaceContext });
+		systemPrompts.push({
+			content: workspaceContext,
+			metadata: { cache_control: { type: "ephemeral" } },
+		});
 	}
 	return {
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),

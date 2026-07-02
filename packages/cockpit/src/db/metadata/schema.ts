@@ -263,11 +263,12 @@ export const currentLifecycleArtifacts = metadataSchema
 		strictness: doublePrecision(),
 		groundedAgainst: json("grounded_against"),
 		teaches: json(),
+		graphDefinition: json("graph_definition"),
 		createdAt: timestamp("created_at"),
 		stateChangedAt: timestamp("state_changed_at"),
 	})
 	.as(
-		sql`SELECT artifact_id, artifact_type, artifact_key, run_id, state, state_reason, stage, strictness, grounded_against, teaches, created_at, state_changed_at FROM ws_00000000_0000_0000_0000_000000000001.lifecycle_artifacts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT artifact_id, artifact_type, artifact_key, run_id, state, state_reason, stage, strictness, grounded_against, teaches, graph_definition, created_at, state_changed_at FROM ws_00000000_0000_0000_0000_000000000001.lifecycle_artifacts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentMaterializationRecipes = metadataSchema
@@ -496,24 +497,6 @@ export const currentValidationResults = metadataSchema
 	})
 	.as(
 		sql`SELECT result_id, run_id, validation_id, table_ids, columns_used, sql_used, executed_at FROM ws_00000000_0000_0000_0000_000000000001.validation_results r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
-	);
-
-export const fixLedger = metadataSchema
-	.view("fix_ledger", {
-		fixId: varchar("fix_id"),
-		sourceId: varchar("source_id"),
-		actionName: varchar("action_name"),
-		tableName: varchar("table_name"),
-		columnName: varchar("column_name"),
-		userInput: varchar("user_input"),
-		interpretation: varchar(),
-		status: varchar(),
-		createdAt: timestamp("created_at"),
-		supersededAt: timestamp("superseded_at"),
-		supersededBy: varchar("superseded_by"),
-	})
-	.as(
-		sql`SELECT fix_id, source_id, action_name, table_name, column_name, user_input, interpretation, status, created_at, superseded_at, superseded_by FROM ws_00000000_0000_0000_0000_000000000001.fix_ledger`,
 	);
 
 export const metadataSnapshotHead = metadataSchema

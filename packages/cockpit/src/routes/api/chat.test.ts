@@ -79,19 +79,22 @@ describe("chat route wiring (DAT-353, DAT-532)", () => {
 		expect((sys?.content ?? "").length).toBeGreaterThan(0);
 	});
 
-	it("appends the workspace context as a SECOND, uncached system block (session-awareness)", () => {
+	it("appends the workspace context as a SECOND, cached system block (DAT-606)", () => {
 		const ctx = "WORKSPACE CONTEXT — session abc";
 		const opts = buildChatOptions("connect", MSG, undefined, ctx);
 		const prompts = systemPromptObjects(opts);
 		expect(prompts).toHaveLength(2);
-		// The instructions stay the cached FIRST block (the cache breakpoint)…
+		// The instructions stay the cached FIRST block…
 		expect(prompts[0]?.metadata?.cache_control).toEqual({
 			type: "ephemeral",
 		});
-		// …the session context is the SECOND block, past the breakpoint → no
-		// cache_control, so it's never cached (a fresh suffix each turn).
+		// …and the session-stable workspace context carries its OWN breakpoint,
+		// so it reads from cache from turn 2 on; an import that changes it
+		// invalidates only this block, never the orchestrator prefix.
 		expect(prompts[1]?.content).toBe(ctx);
-		expect(prompts[1]?.metadata).toBeUndefined();
+		expect(prompts[1]?.metadata?.cache_control).toEqual({
+			type: "ephemeral",
+		});
 	});
 
 	it("omits the second block when there is no current session", () => {

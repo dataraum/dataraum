@@ -81,6 +81,12 @@ export async function induceStructured<R>(opts: {
 			// this field, the model may answer in prose with no tool call and we fall
 			// through to the `captured === undefined` throw rather than silently looping.
 			tool_choice: { type: "tool", name: "emit_result" },
+			// Disable thinking: this is one-shot structured extraction (forced tool),
+			// not agentic reasoning. Sonnet 5 defaults adaptive thinking ON, which would
+			// bill a thinking trace before every forced emit (×4 per frame) with no
+			// quality gain — and forcing a specific tool while thinking is on is a
+			// fragile combination. The agentic loops (agent-turn, query) keep thinking.
+			thinking: { type: "disabled" },
 		},
 		systemPrompts: [opts.instructions],
 		messages: [{ role: "user", content: opts.userMessage }],

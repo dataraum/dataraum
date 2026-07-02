@@ -49,6 +49,7 @@ CREATE TABLE lifecycle_artifacts (
 	strictness FLOAT, 
 	grounded_against JSON, 
 	teaches JSON, 
+	graph_definition JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	state_changed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_lifecycle_artifacts PRIMARY KEY (artifact_id), 
@@ -131,27 +132,6 @@ CREATE TABLE validation_results (
 );
 
 CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
-
-CREATE TABLE fix_ledger (
-	fix_id VARCHAR NOT NULL, 
-	source_id VARCHAR NOT NULL, 
-	action_name VARCHAR NOT NULL, 
-	table_name VARCHAR NOT NULL, 
-	column_name VARCHAR, 
-	user_input VARCHAR NOT NULL, 
-	interpretation VARCHAR NOT NULL, 
-	status VARCHAR NOT NULL, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
-	superseded_by VARCHAR, 
-	CONSTRAINT pk_fix_ledger PRIMARY KEY (fix_id), 
-	CONSTRAINT fk_fix_ledger_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id), 
-	CONSTRAINT fk_fix_ledger_superseded_by_fix_ledger FOREIGN KEY(superseded_by) REFERENCES fix_ledger (fix_id)
-);
-
-CREATE INDEX idx_fix_ledger_scope ON fix_ledger (source_id, action_name, table_name, column_name);
-
-CREATE INDEX idx_fix_ledger_source ON fix_ledger (source_id);
 
 CREATE TABLE snippet_usage (
 	usage_id VARCHAR NOT NULL, 

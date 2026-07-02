@@ -63,8 +63,6 @@ class BusinessCycleAgent(LLMFeature):
     quality signals.
     """
 
-    MAX_TOKENS = 4096
-
     def ground_cycles(
         self,
         session: Session,
@@ -136,7 +134,8 @@ class BusinessCycleAgent(LLMFeature):
             tools=[tool],
             tool_choice={"type": "tool", "name": "submit_analysis"},
             label="business_cycles",
-            max_tokens=self.MAX_TOKENS,
+            effort=feature_config.effort,
+            max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
         )

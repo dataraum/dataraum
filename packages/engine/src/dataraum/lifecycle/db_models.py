@@ -56,6 +56,12 @@ class LifecycleArtifact(Base):
         strictness: the journey's strictness parameter at build time; nullable.
         grounded_against: the pinned base-run map the bind read from (JSON).
         teaches: what declared/produced it — spec id, vertical, spec version (JSON).
+        graph_definition: METRIC artifacts only — the effective (shipped ⊕ overlay)
+            metric-graph the phase assembled from (the DAG dict from
+            ``get_metric_definitions``). Persisted so the cockpit reads the EXACT
+            structure it rendered (steps / formulas / extracts / constants) from one
+            Postgres source, overlay-inclusive, zero divergence (DAT-591). Null for
+            validation/cycle rows.
         created_at / state_changed_at: row birth / last in-run state advance.
     """
 
@@ -82,6 +88,9 @@ class LifecycleArtifact(Base):
     strictness: Mapped[float | None] = mapped_column(Float)
     grounded_against: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     teaches: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # METRIC rows only: the effective (shipped ⊕ overlay) DAG the phase assembled from
+    # (DAT-591). One Postgres source for the cockpit's step rendering; null otherwise.
+    graph_definition: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)

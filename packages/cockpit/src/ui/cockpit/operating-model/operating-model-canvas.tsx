@@ -65,7 +65,10 @@ export function OperatingModelCanvas({
 	graph: OperatingModelGraph;
 }) {
 	const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-	const [selected, setSelected] = useState<OMNode | null>(null);
+	// Store the selected id, not the node — the node is DERIVED from the visible set
+	// (React idiom rule 1), so the detail panel never goes stale and auto-closes when a
+	// filter/collapse removes the node.
+	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [enabledKinds, setEnabledKinds] = useState<ReadonlySet<OMNodeKind>>(
 		() => new Set(OM_NODE_KINDS),
 	);
@@ -83,6 +86,11 @@ export function OperatingModelCanvas({
 		() => filterGraph(visible, { kinds: enabledKinds, hideOrphans }),
 		[visible, enabledKinds, hideOrphans],
 	);
+	// Derived, not mirrored: null when the selection is filtered/collapsed out of view.
+	const selected =
+		selectedId != null
+			? (filtered.nodes.find((n) => n.id === selectedId) ?? null)
+			: null;
 
 	const { nodes, edges } = useMemo(() => {
 		const rfNodes: Node<OMRfData>[] = filtered.nodes.map((om) => ({
@@ -115,7 +123,7 @@ export function OperatingModelCanvas({
 		}
 		// Base tables are leaf grounding nodes — nothing to detail; ignore the click.
 		if (om.kind === "table") return;
-		setSelected(om);
+		setSelectedId(om.id);
 	}, []);
 
 	return (
@@ -125,7 +133,7 @@ export function OperatingModelCanvas({
 				edges={edges}
 				nodeTypes={omNodeTypes}
 				onNodeClick={onNodeClick}
-				onPaneClick={() => setSelected(null)}
+				onPaneClick={() => setSelectedId(null)}
 				nodesDraggable={false}
 				nodesConnectable={false}
 				edgesFocusable={false}
@@ -158,7 +166,7 @@ export function OperatingModelCanvas({
 				</Center>
 			) : null}
 			{selected ? (
-				<NodeDetail node={selected} onClose={() => setSelected(null)} />
+				<NodeDetail node={selected} onClose={() => setSelectedId(null)} />
 			) : null}
 		</Box>
 	);
@@ -309,12 +317,17 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 					{d.aggregation ? (
 						<Field label="Aggregation" value={d.aggregation} />
 					) : null}
-					<Field label="Grounded" value={d.grounded ? "yes" : "no"} />
+					{!d.grounded ? (
+						<Text size="sm" c="orange" fw={500}>
+							Not accepted — the extract composed SQL below, but it returned no
+							rows (no support), so no metric using it can execute.
+						</Text>
+					) : null}
 					{d.sql ? (
 						<SqlBlock sql={d.sql} maxHeight={320} />
 					) : (
 						<Text size="sm" c="dimmed">
-							Ungrounded — this measure resolved to no table.
+							No SQL composed.
 						</Text>
 					)}
 				</Stack>

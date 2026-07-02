@@ -8,11 +8,12 @@
 // ONE Postgres source for structure: each metric's `graph_definition` (the effective
 // DAG). Composition is the naming convention (a step name that IS a metric graph_id).
 // Execution SQL: the metric's `formula` snippet + each measure's `extract` snippet.
-// Grounding measure→table is STRUCTURED — column_mappings names the enriched view
-// (substring-matched against known view names, no SQL-expression parsing), and
-// `current_enriched_views` maps it to its base fact/dim tables.
+// Grounding is resolved by the pure `resolveGrounding`: a measure is grounded iff its
+// extract's `failure_count == 0` (the engine's accept signal — column_mappings is only
+// a hint), and its enriched view is read from the SQL's `FROM <view>` (a hard contract),
+// mapped to base fact/dim tables via `current_enriched_views`.
 
-import { and, eq, like } from "drizzle-orm";
+import { and, desc, eq, like } from "drizzle-orm";
 
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
@@ -26,10 +27,11 @@ import {
 import { stripSrcDigests } from "../lib/display-names";
 import {
 	buildOperatingModelGraph,
-	type GroundedTable,
-	type MeasureGroundingInput,
+	type EnrichedViewInput,
+	type ExtractSnippetInput,
 	type MetricInput,
 	type OperatingModelGraph,
+	resolveGrounding,
 } from "./operating-model-graph";
 
 export interface LoadOperatingModelResult {
@@ -63,8 +65,10 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			})
 			.from(currentLifecycleArtifacts)
 			.where(eq(currentLifecycleArtifacts.artifactType, "metric")),
-		// Every graph snippet: the metric's flattened SQL (formula) + each measure's
-		// grounded SQL + column_mappings (extract). Workspace-durable, keyed by graph:<id>.
+		// Graph snippets: the metric's flattened SQL (formula) + each measure's grounded
+		// SQL, column_mappings, and failure_count (extract). Newest-first, so the
+		// first-write-wins dedup below takes the LATEST row when at-least-once redelivery
+		// left duplicates (the engine treats any row as fine; the cockpit displays it).
 		metadataDb
 			.select({
 				source: sqlSnippets.source,
@@ -72,6 +76,7 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 				standardField: sqlSnippets.standardField,
 				sql: sqlSnippets.sql,
 				columnMappings: sqlSnippets.columnMappings,
+				failureCount: sqlSnippets.failureCount,
 			})
 			.from(sqlSnippets)
 			.where(
@@ -79,7 +84,8 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 					eq(sqlSnippets.schemaMappingId, config.dataraumWorkspaceId),
 					like(sqlSnippets.source, "graph:%"),
 				),
-			),
+			)
+			.orderBy(desc(sqlSnippets.updatedAt)),
 		// Enriched views → the base fact + dimension tables they derive from.
 		metadataDb
 			.select({
@@ -95,8 +101,8 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			.from(tablesView),
 	]);
 
-	// The metric's flattened runnable SQL = its `formula` snippet (one per composed
-	// metric; ungroundable metrics have none → null).
+	// The metric's flattened runnable SQL = its `formula` snippet (newest wins;
+	// ungroundable metrics have none → null).
 	const sqlByMetric = new Map<string, string>();
 	for (const r of snippetRows) {
 		if (r.snippetType !== "formula" || !r.source || !r.sql) continue;
@@ -104,66 +110,55 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 		if (!sqlByMetric.has(g)) sqlByMetric.set(g, r.sql);
 	}
 
-	const tableNameById = new Map<string, string>();
+	const tableNames = new Map<string, string>();
 	for (const t of tableRows) {
-		if (t.tableId && t.tableName) tableNameById.set(t.tableId, t.tableName);
+		if (t.tableId && t.tableName) tableNames.set(t.tableId, t.tableName);
 	}
-	const enrichedByName = new Map<
-		string,
-		{ viewTableId: string; viewName: string; baseTableIds: string[] }
-	>();
-	for (const v of enrichedRows) {
-		if (!v.viewName || !v.viewTableId) continue;
-		const dims = Array.isArray(v.dimensionTableIds)
-			? v.dimensionTableIds.filter((d): d is string => typeof d === "string")
-			: [];
-		enrichedByName.set(v.viewName, {
-			viewTableId: v.viewTableId,
+	const views: EnrichedViewInput[] = enrichedRows
+		.filter((v): v is typeof v & { viewName: string; viewTableId: string } =>
+			Boolean(v.viewName && v.viewTableId),
+		)
+		.map((v) => ({
 			viewName: v.viewName,
-			baseTableIds: [v.factTableId, ...dims].filter(
-				(id): id is string => typeof id === "string",
-			),
-		});
-	}
-	const enrichedNames = [...enrichedByName.keys()];
+			viewTableId: v.viewTableId,
+			baseTableIds: [
+				v.factTableId,
+				...(Array.isArray(v.dimensionTableIds)
+					? v.dimensionTableIds.filter(
+							(d): d is string => typeof d === "string",
+						)
+					: []),
+			].filter((id): id is string => typeof id === "string"),
+		}));
 
-	// Per measure concept (standard_field), its grounding — resolved from the extract
-	// snippet's column_mappings (which enriched view it reads) + current_enriched_views.
-	const groundingByField = new Map<string, MeasureGroundingInput>();
-	for (const r of snippetRows) {
-		if (r.snippetType !== "extract" || !r.standardField) continue;
-		if (groundingByField.has(r.standardField)) continue; // deduped concept
-
-		const mapText = r.columnMappings ? JSON.stringify(r.columnMappings) : "";
-		const viewName = enrichedNames.find((n) => mapText.includes(n)) ?? null;
-		const view = viewName ? enrichedByName.get(viewName) : undefined;
-		let enrichedView: GroundedTable | null = null;
-		let baseTables: GroundedTable[] = [];
-		if (view) {
-			enrichedView = { tableId: view.viewTableId, tableName: view.viewName };
-			baseTables = view.baseTableIds
-				.filter((id) => tableNameById.has(id))
-				.map((id) => ({ tableId: id, tableName: tableNameById.get(id) ?? id }));
-		}
-		groundingByField.set(r.standardField, {
+	// Extract snippets (newest-first) → the pure grounding resolver (failure_count
+	// decides grounded; the view name is read from the SQL, not the optional mappings).
+	const extracts: ExtractSnippetInput[] = snippetRows
+		.filter(
+			(r): r is typeof r & { standardField: string } =>
+				r.snippetType === "extract" && Boolean(r.standardField),
+		)
+		.map((r) => ({
 			standardField: r.standardField,
 			sql: r.sql ?? null,
-			enrichedView,
-			baseTables,
-		});
-	}
+			columnMappingsText: r.columnMappings
+				? JSON.stringify(r.columnMappings)
+				: "",
+			failureCount: r.failureCount ?? 0,
+		}));
+	const grounding = resolveGrounding(extracts, views, tableNames);
 
-	const metrics: MetricInput[] = metricRows.map((r) => ({
-		graphId: r.graphId ?? "",
-		state: r.state ?? "",
-		stateReason: r.stateReason === null ? null : stripSrcDigests(r.stateReason),
-		dag: r.dag ?? null,
-		sql: sqlByMetric.get(r.graphId ?? "") ?? null,
-	}));
+	const metrics: MetricInput[] = metricRows
+		.filter((r): r is typeof r & { graphId: string } => Boolean(r.graphId))
+		.map((r) => ({
+			graphId: r.graphId,
+			state: r.state ?? "",
+			stateReason:
+				r.stateReason === null ? null : stripSrcDigests(r.stateReason),
+			dag: r.dag ?? null,
+			sql: sqlByMetric.get(r.graphId) ?? null,
+		}));
 
-	const graph = buildOperatingModelGraph({
-		metrics,
-		grounding: [...groundingByField.values()],
-	});
+	const graph = buildOperatingModelGraph({ metrics, grounding });
 	return { analyzed: true, graph };
 }

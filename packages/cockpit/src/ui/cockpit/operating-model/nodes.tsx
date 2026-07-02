@@ -44,16 +44,17 @@ function statusBadge(om: OMNode): React.ReactNode {
 				</Badge>
 			);
 		case "measure":
-			// Aggregation (sum / avg / …); dimmed grey when the measure is ungrounded.
-			return om.data.aggregation ? (
+			// Aggregation (sum / avg / …), cyan when grounded; ORANGE when the extract
+			// was not accepted (no support) — a clear flag, not a silent grey.
+			return (
 				<Badge
 					size="xs"
 					variant="light"
-					color={om.data.grounded ? "cyan" : "gray"}
+					color={om.data.grounded ? "cyan" : "orange"}
 				>
-					{om.data.aggregation}
+					{om.data.grounded ? (om.data.aggregation ?? "measure") : "no support"}
 				</Badge>
-			) : null;
+			);
 		case "constant":
 			return om.data.value !== null ? (
 				<Badge size="xs" variant="light" color="yellow">
@@ -122,6 +123,9 @@ function OperatingModelNodeImpl({ data, selected }: NodeProps<OMRfNode>) {
 	);
 }
 
+// memo (rule 6): React Flow re-renders the whole node set on every pan/zoom/viewport
+// change; memoizing the per-node component keeps that to nodes whose data actually
+// changed — the xyflow-recommended pattern for custom nodes.
 export const OperatingModelNode = memo(OperatingModelNodeImpl);
 
 /** Single node type — the component switches on `data.om.kind` internally. */

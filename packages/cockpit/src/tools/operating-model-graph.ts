@@ -60,9 +60,12 @@ interface MeasureData {
 	/** Which statement the measure is drawn from (income_statement / balance_sheet). */
 	statement: string | null;
 	aggregation: string | null;
-	/** Whether the measure resolved to a table — false ⇒ visibly ungrounded (no table edge). */
+	/** Whether the engine ACCEPTED the extract (composed SQL with support). False ⇒ the
+	 *  extract failed (e.g. its filter matched no rows) — flagged, no table edge, but its
+	 *  attempted SQL is still shown. */
 	grounded: boolean;
-	/** The extract's flattened SQL (execution layer); null when ungrounded. */
+	/** The extract's flattened SQL (execution layer) — present even when NOT grounded, so
+	 *  the failed-but-attempted query is visible; null only when no snippet exists. */
 	sql: string | null;
 }
 interface ConstantData {
@@ -81,8 +84,10 @@ export interface OMNode {
 	id: string;
 	kind: OMNodeKind;
 	label: string;
-	/** Base tables carry their enriched-view node id — the UI collapses them under it. */
-	parent?: string;
+	/** Base tables carry the enriched-view node id(s) they derive from — the UI collapses
+	 *  them under those views. A shared dimension table (e.g. chart_of_accounts) can derive
+	 *  from several views, so this is a set, not a single parent. */
+	parents?: string[];
 	data: OMNodeData;
 }
 
@@ -119,9 +124,12 @@ export interface GroundedTable {
 /** One measure concept's grounding, resolved server-side (keyed by standard_field). */
 export interface MeasureGroundingInput {
 	standardField: string;
-	/** The extract's flattened SQL, or null when ungrounded. */
+	/** Whether the engine accepted the extract (failure_count == 0) — the reliable
+	 *  grounding signal, independent of whether the view name could be parsed out. */
+	grounded: boolean;
+	/** The extract's flattened SQL (present even when NOT grounded), or null when no snippet. */
 	sql: string | null;
-	/** The enriched view the measure's SQL reads, or null when ungrounded. */
+	/** The enriched view the measure's SQL reads, or null when ungrounded/unresolved. */
 	enrichedView: GroundedTable | null;
 	/** The base fact/dim tables the enriched view derives from. */
 	baseTables: GroundedTable[];
@@ -234,6 +242,71 @@ const measureNodeId = (standardField: string) => `measure:${standardField}`;
 const constantNodeId = (parameter: string) => `constant:${parameter}`;
 const tableNodeId = (tableId: string) => `table:${tableId}`;
 
+// --- Grounding resolution (measure → enriched view → base tables) -----------
+
+/** One extract snippet's fields the resolver needs (the loader stringifies the
+ *  column_mappings json; failure_count comes straight from the snippet row). */
+export interface ExtractSnippetInput {
+	standardField: string;
+	sql: string | null;
+	columnMappingsText: string;
+	failureCount: number;
+}
+/** One enriched view + the base fact/dim table ids it derives from. */
+export interface EnrichedViewInput {
+	viewName: string;
+	viewTableId: string;
+	baseTableIds: string[];
+}
+
+/**
+ * Resolve each measure concept's grounding from its extract snippet. Pure → unit-tested.
+ *  - `grounded` = the engine accepted the extract (`failure_count == 0`) — the reliable
+ *    signal. `column_mappings` is only an OPTIONAL engine hint (graphs/agent.py), so it
+ *    is NOT used to decide grounding: an accepted extract can carry an empty map, and a
+ *    failed one (e.g. inventory — filter matched no rows) can still name a view in SQL.
+ *  - The enriched VIEW is read from the SQL's `FROM <view>` (a hard prompt contract) or
+ *    the column_mappings text, by LONGEST known-view-name match (so `enriched_invoices`
+ *    isn't shadowed by a shorter `enriched_inv`). Resolved only for grounded measures.
+ *  - `sql` is always carried through, so a failed extract still shows its attempted query.
+ * First snippet per standard_field wins (the loader passes rows newest-first).
+ */
+export function resolveGrounding(
+	extracts: ExtractSnippetInput[],
+	views: EnrichedViewInput[],
+	tableNames: ReadonlyMap<string, string>,
+): MeasureGroundingInput[] {
+	const viewByName = new Map(views.map((v) => [v.viewName, v]));
+	const viewNames = [...viewByName.keys()].sort((a, b) => b.length - a.length);
+
+	const byField = new Map<string, MeasureGroundingInput>();
+	for (const ex of extracts) {
+		if (byField.has(ex.standardField)) continue;
+		const grounded = ex.failureCount === 0;
+		let enrichedView: GroundedTable | null = null;
+		let baseTables: GroundedTable[] = [];
+		if (grounded) {
+			const hay = `${ex.sql ?? ""} ${ex.columnMappingsText}`;
+			const viewName = viewNames.find((n) => hay.includes(n)) ?? null;
+			const view = viewName ? viewByName.get(viewName) : undefined;
+			if (view) {
+				enrichedView = { tableId: view.viewTableId, tableName: view.viewName };
+				baseTables = view.baseTableIds
+					.filter((id) => tableNames.has(id))
+					.map((id) => ({ tableId: id, tableName: tableNames.get(id) ?? id }));
+			}
+		}
+		byField.set(ex.standardField, {
+			standardField: ex.standardField,
+			grounded,
+			sql: ex.sql,
+			enrichedView,
+			baseTables,
+		});
+	}
+	return [...byField.values()];
+}
+
 /**
  * Assemble the metric dependency graph from already-fetched rows. Pure: no DB, no IO.
  * Contracts:
@@ -264,34 +337,35 @@ export function buildOperatingModelGraph(
 		if (!edges.has(id)) edges.set(id, { id, source, target, kind });
 	};
 
-	/** Ground a measure to its enriched view + the base tables it derives from. */
+	/** Ground a measure to its enriched view + the base tables it derives from. A base
+	 *  table shared by several views accrues each as a parent (first-write-wins on the
+	 *  node, but parents are merged) so the collapse UI can't lock it under one view. */
 	const groundMeasure = (standardField: string): void => {
 		const g = groundingByField.get(standardField);
 		if (!g?.enrichedView) return;
+		const viewId = tableNodeId(g.enrichedView.tableId);
 		addNode({
-			id: tableNodeId(g.enrichedView.tableId),
+			id: viewId,
 			kind: "table",
 			label: g.enrichedView.tableName,
 			data: { kind: "table", layer: "enriched" },
 		});
-		addEdge(
-			measureNodeId(standardField),
-			tableNodeId(g.enrichedView.tableId),
-			"grounds",
-		);
+		addEdge(measureNodeId(standardField), viewId, "grounds");
 		for (const base of g.baseTables) {
-			addNode({
-				id: tableNodeId(base.tableId),
-				kind: "table",
-				label: base.tableName,
-				parent: tableNodeId(g.enrichedView.tableId),
-				data: { kind: "table", layer: "base" },
-			});
-			addEdge(
-				tableNodeId(g.enrichedView.tableId),
-				tableNodeId(base.tableId),
-				"derives",
-			);
+			const baseId = tableNodeId(base.tableId);
+			const existing = nodes.get(baseId);
+			if (existing?.parents) {
+				if (!existing.parents.includes(viewId)) existing.parents.push(viewId);
+			} else {
+				addNode({
+					id: baseId,
+					kind: "table",
+					label: base.tableName,
+					parents: [viewId],
+					data: { kind: "table", layer: "base" },
+				});
+			}
+			addEdge(viewId, baseId, "derives");
 		}
 	};
 
@@ -339,7 +413,7 @@ export function buildOperatingModelGraph(
 							kind: "measure",
 							statement: step.statement,
 							aggregation: step.aggregation,
-							grounded: Boolean(g?.enrichedView),
+							grounded: g?.grounded ?? false,
 							sql: g?.sql ?? null,
 						},
 					});
@@ -374,41 +448,31 @@ export function buildOperatingModelGraph(
 // --- Progressive disclosure: collapse base tables under their enriched view ---
 
 /**
- * Collapse base fact/dim tables under their enriched view unless it is expanded. A
- * hidden base table's edges re-point to the enriched view; self-loops drop, edges
- * dedupe. Pure → unit-tested. `expandedTableIds` holds enriched-view NODE ids
- * (`table:<id>`), matching a base table's `parent`.
+ * Collapse base fact/dim tables under their enriched view(s) unless one is expanded. A
+ * base table is hidden while NONE of its parent views is expanded; hiding it drops the
+ * table and its `derives` edges (which only ever come from a parent view — collapsing
+ * into the view). No edge re-pointing: base tables have no other edges, so a shared
+ * dimension under two views can't fabricate a view→view edge. Pure → unit-tested.
+ * `expandedTableIds` holds enriched-view NODE ids (`table:<id>`), matching a base
+ * table's `parents`.
  */
 export function computeVisibleGraph(
 	graph: OperatingModelGraph,
 	expandedTableIds: ReadonlySet<string>,
 ): OperatingModelGraph {
-	const parentOf = new Map<string, string | undefined>();
+	const hidden = new Set<string>();
 	for (const n of graph.nodes) {
-		if (n.kind === "table" && (n.data as TableData).layer === "base") {
-			parentOf.set(n.id, n.parent);
+		if (n.kind !== "table" || (n.data as TableData).layer !== "base") continue;
+		const parents = n.parents ?? [];
+		if (parents.length > 0 && !parents.some((p) => expandedTableIds.has(p))) {
+			hidden.add(n.id);
 		}
 	}
-	const isHidden = (id: string): boolean => {
-		if (!parentOf.has(id)) return false;
-		const parent = parentOf.get(id);
-		return parent !== undefined && !expandedTableIds.has(parent);
-	};
-	const remap = (id: string): string | null => {
-		if (!isHidden(id)) return id;
-		return parentOf.get(id) ?? null;
-	};
-
-	const nodes = graph.nodes.filter((n) => !isHidden(n.id));
-	const edges = new Map<string, OMEdge>();
-	for (const e of graph.edges) {
-		const source = remap(e.source);
-		const target = remap(e.target);
-		if (source === null || target === null || source === target) continue;
-		const id = `${source}->${target}:${e.kind}`;
-		if (!edges.has(id)) edges.set(id, { id, source, target, kind: e.kind });
-	}
-	return { nodes, edges: [...edges.values()] };
+	const nodes = graph.nodes.filter((n) => !hidden.has(n.id));
+	const edges = graph.edges.filter(
+		(e) => !hidden.has(e.source) && !hidden.has(e.target),
+	);
+	return { nodes, edges };
 }
 
 // --- Filtering: node-kind toggles + hide-unconnected --------------------------

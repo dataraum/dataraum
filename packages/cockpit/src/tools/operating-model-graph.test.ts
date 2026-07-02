@@ -11,6 +11,7 @@ import {
 	type OMNodeKind,
 	type OperatingModelGraphInput,
 	parseMetricDag,
+	resolveGrounding,
 } from "./operating-model-graph";
 
 // --- DAG fixture builders (mirror the persisted graph_definition shape) --------
@@ -133,6 +134,7 @@ const CCC = metric("cash_conversion_cycle", "Cash Conversion Cycle", "days", {
 const ev = { tableId: "ev1", tableName: "enriched_journal_lines" };
 const grounded = (field: string): MeasureGroundingInput => ({
 	standardField: field,
+	grounded: true,
 	sql: `-- extract sql for ${field}`,
 	enrichedView: ev,
 	baseTables: [
@@ -140,9 +142,11 @@ const grounded = (field: string): MeasureGroundingInput => ({
 		{ tableId: "t2", tableName: "chart_of_accounts" },
 	],
 });
+// A failed extract: NOT grounded, no table — but its attempted SQL is still carried.
 const ungrounded = (field: string): MeasureGroundingInput => ({
 	standardField: field,
-	sql: null,
+	grounded: false,
+	sql: `-- attempted (no support) sql for ${field}`,
 	enrichedView: null,
 	baseTables: [],
 });
@@ -263,20 +267,24 @@ describe("buildOperatingModelGraph", () => {
 			kind: "table",
 			layer: "enriched",
 		});
-		expect(g.nodes.find((n) => n.id === "table:t1")?.parent).toBe("table:ev1");
+		expect(g.nodes.find((n) => n.id === "table:t1")?.parents).toEqual([
+			"table:ev1",
+		]);
 	});
 
-	it("leaves an ungrounded measure as a leaf with no table edge", () => {
+	it("flags an ungrounded measure as a leaf but still carries its attempted SQL", () => {
 		const g = buildOperatingModelGraph(base());
 		expect(ids(g)).toContain("measure:inventory");
 		expect(
 			[...edgeKeys(g)].some((k) => k.startsWith("measure:inventory->")),
 		).toBe(false);
+		// grounded=false, but the failed extract's SQL is still shown (not dropped).
 		expect(
 			g.nodes.find((n) => n.id === "measure:inventory")?.data,
 		).toMatchObject({
 			kind: "measure",
 			grounded: false,
+			sql: "-- attempted (no support) sql for inventory",
 		});
 	});
 
@@ -312,16 +320,14 @@ describe("buildOperatingModelGraph", () => {
 });
 
 describe("computeVisibleGraph (collapse base tables under the enriched view)", () => {
-	it("hides base tables and re-points their edges to the enriched view", () => {
+	it("hides base tables and drops their derives edges (no fabricated re-point)", () => {
 		const full = buildOperatingModelGraph(base());
 		const v = computeVisibleGraph(full, new Set());
 		expect(ids(v)).not.toContain("table:t1");
 		expect(ids(v)).not.toContain("table:t2");
 		expect(ids(v)).toContain("table:ev1");
-		// the derives edge (enriched→its own hidden base) self-loops → dropped.
-		expect(
-			[...edgeKeys(v)].some((k) => k === "table:ev1->table:ev1:derives"),
-		).toBe(false);
+		// derives edges into a hidden base are dropped — never a self-loop or view→view.
+		expect([...edgeKeys(v)].some((k) => k.includes(":derives"))).toBe(false);
 		// measure→enriched still stands.
 		expect(edgeKeys(v)).toContain("measure:revenue->table:ev1:grounds");
 	});
@@ -331,6 +337,148 @@ describe("computeVisibleGraph (collapse base tables under the enriched view)", (
 		const v = computeVisibleGraph(full, new Set(["table:ev1"]));
 		expect(ids(v)).toContain("table:t1");
 		expect(edgeKeys(v)).toContain("table:ev1->table:t1:derives");
+	});
+
+	it("handles a base table shared by two enriched views without fabricating edges", () => {
+		const shared = { tableId: "coa", tableName: "chart_of_accounts" };
+		const gv = (
+			field: string,
+			viewId: string,
+			viewName: string,
+			ownBase: { tableId: string; tableName: string },
+		): MeasureGroundingInput => ({
+			standardField: field,
+			grounded: true,
+			sql: null,
+			enrichedView: { tableId: viewId, tableName: viewName },
+			baseTables: [ownBase, shared],
+		});
+		const one = metric("m_rev", "Rev", "currency", {
+			revenue: extract("revenue", "income_statement"),
+			m_rev: formula("revenue", ["revenue"], true),
+		});
+		const two = metric("m_cash", "Cash", "currency", {
+			cash: extract("cash", "balance_sheet"),
+			m_cash: formula("cash", ["cash"], true),
+		});
+		const g = buildOperatingModelGraph({
+			metrics: [one, two],
+			grounding: [
+				gv("revenue", "ev1", "enriched_journal_lines", {
+					tableId: "jl",
+					tableName: "journal_lines",
+				}),
+				gv("cash", "ev2", "enriched_bank_transactions", {
+					tableId: "bt",
+					tableName: "bank_transactions",
+				}),
+			],
+		});
+		// The shared table records BOTH views as parents.
+		expect(g.nodes.find((n) => n.id === "table:coa")?.parents).toEqual([
+			"table:ev1",
+			"table:ev2",
+		]);
+		// Collapsed: shared hidden, and NO fabricated view→view edge appears.
+		const collapsed = computeVisibleGraph(g, new Set());
+		expect(ids(collapsed)).not.toContain("table:coa");
+		expect(
+			[...edgeKeys(collapsed)].some((k) => /table:ev\d->table:ev\d/.test(k)),
+		).toBe(false);
+		// Expanding EITHER owning view reveals the shared table (multi-parent).
+		expect(ids(computeVisibleGraph(g, new Set(["table:ev2"])))).toContain(
+			"table:coa",
+		);
+	});
+});
+
+describe("resolveGrounding", () => {
+	const views = [
+		{
+			viewName: "enriched_journal_lines",
+			viewTableId: "ev1",
+			baseTableIds: ["t1", "t2"],
+		},
+	];
+	const names = new Map([
+		["t1", "journal_lines"],
+		["t2", "chart_of_accounts"],
+	]);
+	const ex = (
+		standardField: string,
+		sql: string | null,
+		failureCount: number,
+		columnMappingsText = "{}",
+	) => ({ standardField, sql, columnMappingsText, failureCount });
+
+	it("grounds an accepted extract via its SQL FROM clause (not column_mappings)", () => {
+		const [g] = resolveGrounding(
+			[ex("revenue", "SELECT sum(x) FROM enriched_journal_lines jl", 0)],
+			views,
+			names,
+		);
+		expect(g).toMatchObject({ standardField: "revenue", grounded: true });
+		expect(g.enrichedView).toEqual({
+			tableId: "ev1",
+			tableName: "enriched_journal_lines",
+		});
+		expect(g.baseTables).toEqual([
+			{ tableId: "t1", tableName: "journal_lines" },
+			{ tableId: "t2", tableName: "chart_of_accounts" },
+		]);
+	});
+
+	it("marks a FAILED extract ungrounded (no table) but keeps its SQL", () => {
+		const [g] = resolveGrounding(
+			[ex("inventory", "SELECT sum(x) FROM enriched_journal_lines WHERE …", 1)],
+			views,
+			names,
+		);
+		expect(g).toMatchObject({ standardField: "inventory", grounded: false });
+		expect(g.enrichedView).toBeNull();
+		expect(g.sql).toContain("enriched_journal_lines"); // still carried through
+	});
+
+	it("resolves the view from column_mappings when the SQL lacks it", () => {
+		const [g] = resolveGrounding(
+			[ex("revenue", null, 0, '{"revenue":"enriched_journal_lines.x"}')],
+			views,
+			names,
+		);
+		expect(g.enrichedView?.tableName).toBe("enriched_journal_lines");
+	});
+
+	it("prefers the longest matching view name (no shorter-name shadowing)", () => {
+		const [g] = resolveGrounding(
+			[ex("x", "FROM enriched_journal_lines_detail", 0)],
+			[
+				{
+					viewName: "enriched_journal_lines",
+					viewTableId: "a",
+					baseTableIds: [],
+				},
+				{
+					viewName: "enriched_journal_lines_detail",
+					viewTableId: "b",
+					baseTableIds: [],
+				},
+			],
+			new Map(),
+		);
+		expect(g.enrichedView?.tableName).toBe("enriched_journal_lines_detail");
+	});
+
+	it("dedupes by standard_field (first/newest row wins)", () => {
+		const g = resolveGrounding(
+			[
+				ex("revenue", "FROM enriched_journal_lines", 0),
+				ex("revenue", "FROM other", 1),
+			],
+			views,
+			names,
+		);
+		expect(g).toHaveLength(1);
+		expect(g[0].grounded).toBe(true);
 	});
 });
 

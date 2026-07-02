@@ -1,7 +1,9 @@
-// The Model section (DAT-591) — a standing page rendering the workspace's
-// concept-spine operating-model DAG. Data is read server-side (the metadata
-// Drizzle client never reaches the client bundle); the xyflow canvas is rendered
-// client-only (React Flow measures the DOM, so it must not run during SSR).
+// The Model section (DAT-591) — a standing page rendering the workspace's metric
+// composition graph (metric → metric → measure → table). Data is read server-side
+// (the metadata Drizzle client never reaches the client bundle); the xyflow canvas is
+// rendered client-only (React Flow measures the DOM, so it must not run during SSR).
+// (Validation/cycle/driver get their own graphs in a follow-up — this page is
+// metrics-only.)
 
 import { Box, Center, Code, ScrollArea, Stack, Text } from "@mantine/core";
 import {
@@ -30,9 +32,8 @@ function ModelError({ error }: ErrorComponentProps) {
 				<ModelIcon size={32} color="var(--mantine-color-red-6)" />
 				<Text fw={600}>Couldn't load the operating model</Text>
 				<Text size="sm" c="dimmed" ta="center">
-					The concept-spine data failed to load. This is usually a metadata read
-					error — check the run, or that the cockpit build matches the engine
-					schema.
+					The metric graph failed to load. This is usually a metadata read error
+					— check the run, or that the cockpit build matches the engine schema.
 				</Text>
 				<ScrollArea.Autosize mah={200} w="100%">
 					<Code block>{error.message}</Code>
@@ -63,7 +64,7 @@ function ModelSection() {
 		return (
 			<EmptyState
 				title="No operating model yet"
-				detail="Run the operating model over a framed session to populate the concept-spine canvas — metrics, cycles, validations and their drivers."
+				detail="Run the operating model over a framed session to populate the metric graph — every metric, the measures it reads, and how the metrics compose."
 			/>
 		);
 	}

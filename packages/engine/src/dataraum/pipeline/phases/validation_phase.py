@@ -25,7 +25,7 @@ with an explicit ``no_declared_validations`` outcome.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -46,6 +46,7 @@ from dataraum.core.logging import get_logger
 from dataraum.lifecycle import BaseRunMap, declare_artifact, transition
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.phases._warm_first import submit_warm_first
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage.upsert import upsert
@@ -247,10 +248,12 @@ class ValidationPhase(BasePhase):
             with ThreadPoolExecutor(
                 max_workers=_MAX_CONCURRENT_VALIDATIONS, thread_name_prefix="validation"
             ) as pool:
-                futures = {
-                    pool.submit(_isolated, validation_id, spec): validation_id
-                    for validation_id, spec in specs.items()
-                }
+                # Warm-first (DAT-601): the first spec runs alone to commit the
+                # shared prompt-cache prefix; the remaining specs then read it.
+                def _submit(validation_id: str) -> Future[_WorkOutcome]:
+                    return pool.submit(_isolated, validation_id, specs[validation_id])
+
+                futures = submit_warm_first(_submit, list(specs))
                 for future in as_completed(futures):
                     collected[futures[future]] = future.result()
         else:

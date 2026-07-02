@@ -1197,6 +1197,34 @@ class GraphAgent(LLMFeature):
             if step_id:
                 generated_steps[step_id] = step_dict
 
+        # Sonnet 5 paraphrases step ids instead of echoing them (`revenue` comes
+        # back as `revenue_extract`, `accounts_receivable` as `ar_extract` —
+        # 2026-07-02), so a name-keyed lookup misses and the snippet silently
+        # never persists: the leaf grounds, assembly then finds an empty cache,
+        # and every metric composed from it dies "absent from the snippet
+        # cache". The authoring path grounds exactly ONE extract leaf per call
+        # (DAT-646), so when the shapes are unambiguous — one EXTRACT step in
+        # the graph, one generated step — bind them positionally regardless of
+        # the model's self-chosen id.
+        extract_steps = [
+            (sid, st)
+            for sid, st in graph.steps.items()
+            if st.step_type == StepType.EXTRACT and st.source
+        ]
+        if (
+            len(extract_steps) == 1
+            and len(generated_code.steps) == 1
+            and extract_steps[0][0] not in generated_steps
+        ):
+            model_id = generated_code.steps[0].get("step_id", "")
+            logger.info(
+                "snippet_step_id_rebound",
+                graph_id=graph.graph_id,
+                step_id=extract_steps[0][0],
+                model_step_id=model_id,
+            )
+            generated_steps = {extract_steps[0][0]: generated_code.steps[0]}
+
         repair_by_step: dict[str, StepResult] = {}
         if step_results:
             for sr in step_results:
@@ -1207,11 +1235,21 @@ class GraphAgent(LLMFeature):
             generated_code, repaired=bool(repair_by_step)
         )
 
+        saved_count = 0
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
                 continue
             gen_step = generated_steps.get(step_id)
             if not gen_step:
+                # Ambiguous drift (multi-step output or multi-leaf graph) — a
+                # grounded leaf whose snippet fails to save starves every metric
+                # composed from it, so this must be LOUD, never silent.
+                logger.warning(
+                    "snippet_save_skipped",
+                    graph_id=graph.graph_id,
+                    step_id=step_id,
+                    generated_step_ids=sorted(generated_steps),
+                )
                 continue
 
             repaired = repair_by_step.get(step_id)
@@ -1240,8 +1278,9 @@ class GraphAgent(LLMFeature):
                 llm_model=generated_code.llm_model,
                 provenance=provenance_dict,
             )
+            saved_count += 1
 
-        logger.debug("saved_snippets", graph_id=graph.graph_id)
+        logger.info("saved_snippets", graph_id=graph.graph_id, count=saved_count)
 
     def _save_failed_snippet(
         self,
@@ -1289,6 +1328,15 @@ class GraphAgent(LLMFeature):
                 continue
             gen_step = generated_steps.get(step_id)
             if not gen_step:
+                # Ambiguous drift (multi-step output or multi-leaf graph) — a
+                # grounded leaf whose snippet fails to save starves every metric
+                # composed from it, so this must be LOUD, never silent.
+                logger.warning(
+                    "snippet_save_skipped",
+                    graph_id=graph.graph_id,
+                    step_id=step_id,
+                    generated_step_ids=sorted(generated_steps),
+                )
                 continue
             library.save_snippet(
                 snippet_type="extract",

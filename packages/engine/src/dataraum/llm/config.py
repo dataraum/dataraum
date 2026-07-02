@@ -32,6 +32,9 @@ class FeatureConfig(BaseModel):
 
     enabled: bool = True
     model_tier: str = "balanced"
+    # Output effort for this feature's calls (DAT-603). "low" suits mechanical
+    # extraction (shorter output, lower latency); None = API default (high).
+    effort: str | None = None
 
 
 class LLMFeatures(BaseModel):

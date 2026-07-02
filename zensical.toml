@@ -9,6 +9,7 @@ nav = [
   "index.md",
   { "Getting Started" = [
     "getting-started/overview.md",
+    "getting-started/running-the-stack.md",
   ] },
   { "Concepts" = [
     "concepts/approach.md",

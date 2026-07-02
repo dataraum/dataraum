@@ -1,19 +1,18 @@
-// The operating-model canvas (DAT-591 Phase 1) — renders the workspace's
-// concept-spine DAG with React Flow + dagre. Client-only (the route wraps this in
+// The operating-model METRIC canvas (DAT-591) — renders the workspace's metric
+// dependency graph with React Flow + dagre. Client-only (the route wraps this in
 // <ClientOnly>): React Flow measures the DOM, so it must not render on the server.
 //
-// Progressive disclosure: columns are collapsed under their table by default
-// (computeVisibleGraph re-points their edges to the table); clicking a table node
-// toggles its columns. Clicking any other node opens a read-only detail panel
-// (metric/validation SQL, driver dimensions, cycle completion). Pure render of
-// engine-persisted values — no analysis happens here.
+// STRUCTURE the graph shows: metric → metric (composition) → measure → table, plus
+// metric → constant. EXECUTION detail: clicking a metric/measure opens a read-only
+// panel with its flattened SQL. Progressive disclosure: base fact/dim tables are
+// collapsed under their enriched view (computeVisibleGraph re-points their edges);
+// clicking an enriched-view node toggles them. Pure render of engine-persisted values.
 
 import "@xyflow/react/dist/style.css";
 
 import {
 	Badge,
 	Box,
-	Button,
 	Center,
 	Chip,
 	Group,
@@ -41,10 +40,8 @@ import {
 	computeVisibleGraph,
 	filterGraph,
 	OM_NODE_KINDS,
-	OM_PRESET_KINDS,
 	type OMNode,
 	type OMNodeKind,
-	type OMPreset,
 	type OperatingModelGraph,
 } from "#/tools/operating-model-graph";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
@@ -53,11 +50,14 @@ import { type OMRfData, omNodeTypes } from "./nodes";
 
 const EDGE_COLOR = "var(--mantine-color-gray-5)";
 
-// Land at a READABLE zoom, not fit-everything-tiny. The concept-spine fans ~40
-// artifacts into a few hubs — fitting the whole width would zoom to an illegible
-// strip (≈0.13). Cap the fit zoom so nodes stay readable on entry; the minimap +
-// pan carry navigation across the rest. padding keeps the entry off the edge.
+// Land at a READABLE zoom, not fit-everything-tiny. Cap the fit zoom so nodes stay
+// legible on entry; the minimap + pan carry navigation across the rest.
 const FIT_VIEW_OPTIONS = { maxZoom: 0.85, padding: 0.15 } as const;
+
+/** True for an enriched-view table node (the expandable ones — base tables are leaves). */
+function isEnrichedView(om: OMNode): boolean {
+	return om.data.kind === "table" && om.data.layer === "enriched";
+}
 
 export function OperatingModelCanvas({
 	graph,
@@ -66,17 +66,15 @@ export function OperatingModelCanvas({
 }) {
 	const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 	const [selected, setSelected] = useState<OMNode | null>(null);
-	// Filter state: which kinds show + whether to drop unconnected nodes. Hiding
-	// orphans is ON by default — it clears the finance vertical's ~8 declared-but-
-	// not-detected cycles (degree-0 floaters) on first paint.
 	const [enabledKinds, setEnabledKinds] = useState<ReadonlySet<OMNodeKind>>(
 		() => new Set(OM_NODE_KINDS),
 	);
+	// Hiding orphans is ON by default — it clears any ungrounded-measure floaters and
+	// declared-but-uncomposed metrics from first paint.
 	const [hideOrphans, setHideOrphans] = useState(true);
 
-	// Pipeline: collapse columns under tables (progressive disclosure) → filter by
-	// kind + orphan → dagre layout. Orphan degree is measured post-collapse so a
-	// table's collapsed column edges count toward keeping it.
+	// Pipeline: collapse base tables under their enriched view → filter by kind + orphan
+	// → dagre layout. Orphan degree is measured post-collapse.
 	const visible = useMemo(
 		() => computeVisibleGraph(graph, expanded),
 		[graph, expanded],
@@ -104,10 +102,9 @@ export function OperatingModelCanvas({
 	}, [filtered, expanded]);
 
 	const onNodeClick = useCallback<NodeMouseHandler>((_event, node) => {
-		const data = node.data as OMRfData;
-		const om = data.om;
-		if (om.kind === "table") {
-			// Toggle this table's columns (progressive disclosure).
+		const om = (node.data as OMRfData).om;
+		if (isEnrichedView(om)) {
+			// Toggle this enriched view's base tables (progressive disclosure).
 			setExpanded((prev) => {
 				const next = new Set(prev);
 				if (next.has(om.id)) next.delete(om.id);
@@ -116,8 +113,8 @@ export function OperatingModelCanvas({
 			});
 			return;
 		}
-		// Columns are leaf grounding nodes — nothing to detail; ignore the click.
-		if (om.kind === "column") return;
+		// Base tables are leaf grounding nodes — nothing to detail; ignore the click.
+		if (om.kind === "table") return;
 		setSelected(om);
 	}, []);
 
@@ -141,9 +138,8 @@ export function OperatingModelCanvas({
 				<Background />
 				<Controls showInteractive={false} />
 				<MiniMap pannable zoomable />
-				{/* Re-fit when a table expand/collapse re-lays-out the graph (the
-				    fitView prop only fires on mount). Must be a ReactFlow child to
-				    reach useReactFlow(). */}
+				{/* Re-fit when an expand/collapse re-lays-out the graph (fitView only fires
+				    on mount). Must be a ReactFlow child to reach useReactFlow(). */}
 				<FitOnLayout layout={nodes} />
 			</ReactFlow>
 			<FilterBar
@@ -154,11 +150,7 @@ export function OperatingModelCanvas({
 			/>
 			{nodes.length === 0 ? (
 				<Center
-					style={{
-						position: "absolute",
-						inset: 0,
-						pointerEvents: "none",
-					}}
+					style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
 				>
 					<Text size="sm" c="dimmed">
 						No nodes match the current filters.
@@ -182,34 +174,7 @@ function FitOnLayout({ layout }: { layout: Node[] }) {
 	return null;
 }
 
-// The kinds exposed as individual toggles. `column` is omitted — its visibility is
-// governed by table expansion (progressive disclosure), not a top-level toggle, so
-// it always rides in the effective filter set.
-const TOGGLE_KINDS: readonly OMNodeKind[] = [
-	"metric",
-	"formula",
-	"extract",
-	"constant",
-	"validation",
-	"cycle",
-	"driver",
-	"concept",
-	"table",
-];
-
-const PRESETS: readonly { key: OMPreset; label: string }[] = [
-	{ key: "full", label: "Full" },
-	{ key: "metrics", label: "Metrics" },
-	{ key: "validations", label: "Validations" },
-	{ key: "cycles", label: "Cycles" },
-];
-
-const sameKinds = (
-	a: ReadonlySet<OMNodeKind>,
-	b: readonly OMNodeKind[],
-): boolean => a.size === b.length && b.every((k) => a.has(k));
-
-/** Overlay filter control: preset lenses + per-kind toggles + hide-unconnected. */
+/** Overlay filter control: per-kind toggles + hide-unconnected. */
 function FilterBar({
 	enabledKinds,
 	onKindsChange,
@@ -221,9 +186,6 @@ function FilterBar({
 	hideOrphans: boolean;
 	onHideOrphansChange: (value: boolean) => void;
 }) {
-	const activePreset = PRESETS.find((p) =>
-		sameKinds(enabledKinds, OM_PRESET_KINDS[p.key]),
-	)?.key;
 	return (
 		<Paper
 			shadow="sm"
@@ -235,36 +197,17 @@ function FilterBar({
 				top: 8,
 				right: 8,
 				zIndex: 5,
-				maxWidth: 360,
+				maxWidth: 320,
 			}}
 		>
 			<Stack gap={8}>
-				<Group gap={6} wrap="nowrap">
-					<Text size="xs" c="dimmed" fw={600} tt="uppercase">
-						Lens
-					</Text>
-					<Button.Group>
-						{PRESETS.map((p) => (
-							<Button
-								key={p.key}
-								size="compact-xs"
-								variant={activePreset === p.key ? "filled" : "default"}
-								onClick={() => onKindsChange(new Set(OM_PRESET_KINDS[p.key]))}
-							>
-								{p.label}
-							</Button>
-						))}
-					</Button.Group>
-				</Group>
 				<Chip.Group
 					multiple
-					value={[...enabledKinds].filter((k) => k !== "column")}
-					onChange={(vals) =>
-						onKindsChange(new Set([...(vals as OMNodeKind[]), "column"]))
-					}
+					value={[...enabledKinds]}
+					onChange={(vals) => onKindsChange(new Set(vals as OMNodeKind[]))}
 				>
 					<Group gap={4}>
-						{TOGGLE_KINDS.map((k) => (
+						{OM_NODE_KINDS.map((k) => (
 							<Chip key={k} value={k} size="xs" variant="light">
 								{k}
 							</Chip>
@@ -291,7 +234,7 @@ function NodeDetail({ node, onClose }: { node: OMNode; onClose: () => void }) {
 				top: 8,
 				right: 8,
 				bottom: 8,
-				width: 360,
+				width: 380,
 				zIndex: 5,
 			}}
 		>
@@ -345,108 +288,33 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 			return (
 				<Stack gap="xs">
 					<Field label="State" value={d.state} />
+					{d.unit ? <Field label="Unit" value={d.unit} /> : null}
 					{d.stateReason ? (
 						<Field label="Reason" value={d.stateReason} />
 					) : null}
-					<Field label="SQL steps" value={String(d.snippetCount)} />
+					{d.formula ? <Field label="Formula" value={d.formula} /> : null}
 					{d.sql ? (
-						<SqlBlock sql={d.sql} maxHeight={300} />
+						<SqlBlock sql={d.sql} maxHeight={320} />
 					) : (
 						<Text size="sm" c="dimmed">
-							No grounded SQL yet.
+							No composed SQL — the metric did not ground.
 						</Text>
 					)}
 				</Stack>
 			);
-		case "validation":
+		case "measure":
 			return (
 				<Stack gap="xs">
-					<Field
-						label="Result"
-						value={
-							d.passed === true
-								? "passed"
-								: d.passed === false
-									? "failed"
-									: (d.status ?? d.state)
-						}
-					/>
-					{d.severity ? <Field label="Severity" value={d.severity} /> : null}
-					{d.sqlUsed ? (
-						<SqlBlock sql={d.sqlUsed} maxHeight={300} />
-					) : (
-						<Text size="sm" c="dimmed">
-							No executed SQL.
-						</Text>
-					)}
-				</Stack>
-			);
-		case "cycle":
-			return (
-				<Stack gap="xs">
-					<Field label="State" value={d.state} />
-					{d.completionRate !== null ? (
-						<Field
-							label="Completion"
-							value={`${Math.round(d.completionRate * 100)}%`}
-						/>
-					) : null}
-					{d.completedCycles !== null && d.totalRecords !== null ? (
-						<Field
-							label="Completed"
-							value={`${d.completedCycles} / ${d.totalRecords}`}
-						/>
-					) : null}
-				</Stack>
-			);
-		case "driver":
-			return (
-				<Stack gap="xs">
-					<Field label="Target" value={d.targetType} />
-					<Field label="Grain" value={d.grain} />
-					<Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-						Top dimensions
-					</Text>
-					{d.topDimensions.length ? (
-						<Group gap="xs">
-							{d.topDimensions.map((dim) => (
-								<Badge key={dim} variant="light" color="orange">
-									{dim}
-								</Badge>
-							))}
-						</Group>
-					) : (
-						<Text size="sm" c="dimmed">
-							No significant dimensions.
-						</Text>
-					)}
-				</Stack>
-			);
-		case "extract":
-			return (
-				<Stack gap="xs">
-					{d.standardField ? (
-						<Field label="Concept" value={d.standardField} />
-					) : null}
 					{d.statement ? <Field label="Statement" value={d.statement} /> : null}
 					{d.aggregation ? (
 						<Field label="Aggregation" value={d.aggregation} />
 					) : null}
-					<Text size="sm" c="dimmed">
-						An extract pulls one concept from the data; it is grounded when the
-						concept resolves to a column below it, ungrounded when it doesn't.
-					</Text>
-				</Stack>
-			);
-		case "formula":
-			return (
-				<Stack gap="xs">
-					{d.outputStep ? <Field label="Role" value="metric result" /> : null}
-					{d.expression ? (
-						<Field label="Expression" value={d.expression} />
+					<Field label="Grounded" value={d.grounded ? "yes" : "no"} />
+					{d.sql ? (
+						<SqlBlock sql={d.sql} maxHeight={320} />
 					) : (
 						<Text size="sm" c="dimmed">
-							No expression.
+							Ungrounded — this measure resolved to no table.
 						</Text>
 					)}
 				</Stack>
@@ -454,23 +322,28 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 		case "constant":
 			return (
 				<Stack gap="xs">
-					{d.parameter ? <Field label="Parameter" value={d.parameter} /> : null}
 					<Field label="Value" value={d.value ?? "—"} />
+					<Text size="sm" c="dimmed">
+						A declared parameter used by the metrics that reference it.
+					</Text>
 				</Stack>
 			);
-		case "concept":
+		case "table":
 			return (
-				<Text size="sm" c="dimmed">
-					A vocabulary concept — the hub linking the metric extracts, cycles and
-					validations that reference it to the columns it grounds to.
-				</Text>
+				<Stack gap="xs">
+					<Field
+						label="Kind"
+						value={d.layer === "enriched" ? "enriched view" : "base table"}
+					/>
+					<Text size="sm" c="dimmed">
+						{d.layer === "enriched"
+							? "The enriched view a measure reads — click the node to reveal the base fact/dim tables it derives from."
+							: "A base fact/dimension table an enriched view is built from."}
+					</Text>
+				</Stack>
 			);
 		default:
-			return (
-				<Text size="sm" c="dimmed">
-					{node.kind} node.
-				</Text>
-			);
+			return null;
 	}
 }
 

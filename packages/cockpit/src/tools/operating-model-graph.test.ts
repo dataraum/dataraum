@@ -1,345 +1,336 @@
 import { describe, expect, it } from "vitest";
 
-// The module under test is now PURE (no DB/config imports) — the IO loader lives in
+// The module under test is PURE (no DB/config imports) — the IO loader lives in
 // operating-model-load.ts — so no mocks are needed to import it.
 import {
 	buildOperatingModelGraph,
 	computeVisibleGraph,
-	type DriverInput,
 	filterGraph,
-	OM_PRESET_KINDS,
+	type MeasureGroundingInput,
+	type MetricInput,
 	type OMNodeKind,
 	type OperatingModelGraphInput,
 	parseMetricDag,
 } from "./operating-model-graph";
 
-const driver = (measureColumnId: string, label: string): DriverInput => ({
-	measureColumnId,
-	ranking: {
-		measureLabel: label,
-		targetType: "flow",
-		grain: "row",
-		entity: null,
-		nRows: 100,
-		rankedDimensions: [{ dimension: "region", gain: 0.4 }],
-		driverPaths: [["region"]],
-		interestingSlices: [],
-		secondaryDimensions: [],
-	},
+// --- DAG fixture builders (mirror the persisted graph_definition shape) --------
+const extract = (field: string, statement: string) => ({
+	type: "extract",
+	level: 1,
+	source: { standard_field: field, statement },
+	aggregation: "sum",
+});
+const constant = (parameter: string, value: number) => ({
+	type: "constant",
+	level: 1,
+	parameter,
+	default: value,
+});
+const formula = (expression: string, dependsOn: string[], output = false) => ({
+	type: "formula",
+	level: 2,
+	expression,
+	depends_on: dependsOn,
+	...(output ? { output_step: true } : {}),
+});
+const dag = (
+	graphId: string,
+	name: string,
+	unit: string,
+	deps: Record<string, unknown>,
+) => ({
+	graph_id: graphId,
+	output: { unit },
+	metadata: { name, category: "test" },
+	dependencies: deps,
 });
 
-// gross_margin's effective DAG: two extracts (revenue, cost_of_goods_sold) feed one
-// output formula. The shape the engine persists onto the metric lifecycle row
-// (graph_definition) — the cockpit's one source for the metric's step structure.
-const grossMarginDag = () => ({
-	graph_id: "gross_margin",
-	output: { type: "scalar", unit: "percentage", decimal_places: 1 },
-	dependencies: {
-		revenue: {
-			level: 1,
-			type: "extract",
-			source: { standard_field: "revenue", statement: "income_statement" },
-			aggregation: "sum",
-		},
-		cost_of_goods_sold: {
-			level: 1,
-			type: "extract",
-			source: {
-				standard_field: "cost_of_goods_sold",
-				statement: "income_statement",
-			},
-			aggregation: "sum",
-		},
-		gross_margin: {
-			level: 2,
-			type: "formula",
-			expression: "(revenue - cost_of_goods_sold) / revenue * 100",
-			depends_on: ["revenue", "cost_of_goods_sold"],
-			output_step: true,
-		},
-	},
+const metric = (
+	graphId: string,
+	name: string,
+	unit: string,
+	deps: Record<string, unknown>,
+): MetricInput => ({
+	graphId,
+	state: "grounded",
+	stateReason: null,
+	dag: dag(graphId, name, unit, deps),
+	sql: `-- flattened sql for ${graphId}`,
+});
+
+const DSO = metric("dso", "Days Sales Outstanding", "days", {
+	accounts_receivable: extract("accounts_receivable", "balance_sheet"),
+	revenue: extract("revenue", "income_statement"),
+	days_in_period: constant("days_in_period", 30),
+	dso: formula(
+		"(accounts_receivable / revenue) * days_in_period",
+		["accounts_receivable", "revenue", "days_in_period"],
+		true,
+	),
+});
+const DIO = metric("dio", "Days Inventory Outstanding", "days", {
+	inventory: extract("inventory", "balance_sheet"),
+	cost_of_goods_sold: extract("cost_of_goods_sold", "income_statement"),
+	days_in_period: constant("days_in_period", 30),
+	dio: formula(
+		"(inventory / cost_of_goods_sold) * days_in_period",
+		["inventory", "cost_of_goods_sold", "days_in_period"],
+		true,
+	),
+});
+const DPO = metric("dpo", "Days Payable Outstanding", "days", {
+	accounts_payable: extract("accounts_payable", "balance_sheet"),
+	cost_of_goods_sold: extract("cost_of_goods_sold", "income_statement"),
+	days_in_period: constant("days_in_period", 30),
+	dpo: formula(
+		"(accounts_payable / cost_of_goods_sold) * days_in_period",
+		["accounts_payable", "cost_of_goods_sold", "days_in_period"],
+		true,
+	),
+});
+const GROSS_PROFIT = metric("gross_profit", "Gross Profit", "currency", {
+	revenue: extract("revenue", "income_statement"),
+	cost_of_goods_sold: extract("cost_of_goods_sold", "income_statement"),
+	gross_profit: formula(
+		"revenue - cost_of_goods_sold",
+		["revenue", "cost_of_goods_sold"],
+		true,
+	),
+});
+// Self-contained: inlines dso/dio/dpo as formula steps (DAT-646). Its output composes
+// them by name — the cockpit follows the standalone metrics, not the inlined copies.
+const CCC = metric("cash_conversion_cycle", "Cash Conversion Cycle", "days", {
+	accounts_receivable: extract("accounts_receivable", "balance_sheet"),
+	revenue: extract("revenue", "income_statement"),
+	inventory: extract("inventory", "balance_sheet"),
+	cost_of_goods_sold: extract("cost_of_goods_sold", "income_statement"),
+	accounts_payable: extract("accounts_payable", "balance_sheet"),
+	days_in_period: constant("days_in_period", 30),
+	dso: formula("(accounts_receivable / revenue) * days_in_period", [
+		"accounts_receivable",
+		"revenue",
+		"days_in_period",
+	]),
+	dio: formula("(inventory / cost_of_goods_sold) * days_in_period", [
+		"inventory",
+		"cost_of_goods_sold",
+		"days_in_period",
+	]),
+	dpo: formula("(accounts_payable / cost_of_goods_sold) * days_in_period", [
+		"accounts_payable",
+		"cost_of_goods_sold",
+		"days_in_period",
+	]),
+	cash_conversion_cycle: formula(
+		"dso + dio - dpo",
+		["dso", "dio", "dpo"],
+		true,
+	),
+});
+
+// Grounding: enriched_journal_lines (ev1) ← {journal_lines(t1), chart_of_accounts(t2)}.
+// inventory is UNGROUNDED (no enriched view) — the visible "not grounded" case.
+const ev = { tableId: "ev1", tableName: "enriched_journal_lines" };
+const grounded = (field: string): MeasureGroundingInput => ({
+	standardField: field,
+	sql: `-- extract sql for ${field}`,
+	enrichedView: ev,
+	baseTables: [
+		{ tableId: "t1", tableName: "journal_lines" },
+		{ tableId: "t2", tableName: "chart_of_accounts" },
+	],
+});
+const ungrounded = (field: string): MeasureGroundingInput => ({
+	standardField: field,
+	sql: null,
+	enrichedView: null,
+	baseTables: [],
 });
 
 const base = (): OperatingModelGraphInput => ({
-	metrics: [
-		{
-			graphId: "gross_margin",
-			state: "executed",
-			stateReason: null,
-			snippetCount: 3,
-			sql: "SELECT sum(amount) FROM sales",
-			dag: grossMarginDag(),
-		},
-	],
-	cycles: [
-		{
-			canonicalType: "revenue",
-			cycleName: "Revenue cycle",
-			state: "executed",
-			completionRate: 0.8,
-			completedCycles: 8,
-			totalRecords: 10,
-		},
-	],
-	validations: [
-		{
-			validationId: "margin_positive",
-			state: "executed",
-			passed: true,
-			severity: "error",
-			status: "passed",
-			sqlUsed: "SELECT 1",
-			columnsUsed: ["sales.amount"],
-		},
-	],
-	drivers: [driver("c1", "net revenue")],
-	conceptColumns: [{ concept: "revenue", columnId: "c1" }],
-	relationships: [{ fromColumnId: "c1", toColumnId: "c2" }],
-	columns: [
-		{ columnId: "c1", tableId: "t1", columnName: "amount" },
-		{ columnId: "c2", tableId: "t2", columnName: "customer_id" },
-		{ columnId: "c3", tableId: "t1", columnName: "unused" },
-	],
-	tables: [
-		// Content-keyed physical name: the validation→column match must resolve via the
-		// DISPLAY name ("sales"), since columns_used arrives digest-stripped.
-		{ tableId: "t1", tableName: "sales" },
-		{ tableId: "t2", tableName: "customers" },
+	metrics: [GROSS_PROFIT, DSO, DIO, DPO, CCC],
+	grounding: [
+		grounded("revenue"),
+		grounded("cost_of_goods_sold"),
+		grounded("accounts_receivable"),
+		grounded("accounts_payable"),
+		ungrounded("inventory"),
 	],
 });
 
 const ids = (g: { nodes: { id: string }[] }) =>
 	new Set(g.nodes.map((n) => n.id));
-const edgeKinds = (g: {
+const edgeKeys = (g: {
 	edges: { source: string; target: string; kind: string }[];
 }) => new Set(g.edges.map((e) => `${e.source}->${e.target}:${e.kind}`));
 
 describe("parseMetricDag", () => {
-	it("narrows the persisted json into typed steps + output metadata", () => {
-		const dag = parseMetricDag(grossMarginDag());
-		expect(dag?.unit).toBe("percentage");
-		expect(dag?.decimalPlaces).toBe(1);
-		const byId = new Map(dag?.steps.map((s) => [s.stepId, s]));
+	it("narrows the persisted json into typed steps + display metadata", () => {
+		const d = parseMetricDag(
+			dag("dso", "Days Sales Outstanding", "days", DSO_DEPS()),
+		);
+		expect(d?.name).toBe("Days Sales Outstanding");
+		expect(d?.unit).toBe("days");
+		const byId = new Map(d?.steps.map((s) => [s.stepId, s]));
 		expect(byId.get("revenue")).toMatchObject({
 			kind: "extract",
 			standardField: "revenue",
 			statement: "income_statement",
-			aggregation: "sum",
 		});
-		expect(byId.get("gross_margin")).toMatchObject({
+		expect(byId.get("days_in_period")).toMatchObject({
+			kind: "constant",
+			value: "30",
+		});
+		expect(byId.get("dso")).toMatchObject({
 			kind: "formula",
-			expression: "(revenue - cost_of_goods_sold) / revenue * 100",
-			dependsOn: ["revenue", "cost_of_goods_sold"],
 			outputStep: true,
 		});
 	});
 
-	it("returns null on a non-object, a missing dependencies, or an empty DAG", () => {
+	it("returns null on non-object / missing dependencies / empty DAG", () => {
 		expect(parseMetricDag(null)).toBeNull();
-		expect(parseMetricDag("nope")).toBeNull();
+		expect(parseMetricDag("x")).toBeNull();
 		expect(parseMetricDag({ output: {} })).toBeNull();
 		expect(parseMetricDag({ dependencies: {} })).toBeNull();
 	});
-
-	it("stringifies a constant's numeric default (value ?? default)", () => {
-		const dag = parseMetricDag({
-			dependencies: {
-				n: { type: "constant", parameter: "days_in_period", default: 30 },
-			},
-		});
-		expect(dag?.steps[0]).toMatchObject({
-			kind: "constant",
-			parameter: "days_in_period",
-			value: "30",
-		});
-	});
 });
+function DSO_DEPS() {
+	return {
+		accounts_receivable: extract("accounts_receivable", "balance_sheet"),
+		revenue: extract("revenue", "income_statement"),
+		days_in_period: constant("days_in_period", 30),
+		dso: formula(
+			"(accounts_receivable / revenue) * days_in_period",
+			["accounts_receivable", "revenue", "days_in_period"],
+			true,
+		),
+	};
+}
 
 describe("buildOperatingModelGraph", () => {
-	it("unfolds the metric DAG: metric → formula → extract → concept → column", () => {
-		const g = buildOperatingModelGraph(base());
-		const nodeIds = ids(g);
-		expect(nodeIds).toContain("metric:gross_margin");
-		expect(nodeIds).toContain("formula:gross_margin:gross_margin");
-		expect(nodeIds).toContain("extract:gross_margin:revenue");
-		expect(nodeIds).toContain("extract:gross_margin:cost_of_goods_sold");
-		expect(nodeIds).toContain("concept:revenue");
-		expect(nodeIds).toContain("column:c1");
-		expect(nodeIds).toContain("table:t1");
-		expect(nodeIds).toContain("driver:c1");
-		expect(nodeIds).toContain("validation:margin_positive");
-		expect(nodeIds).toContain("cycle:revenue");
-
-		const edges = edgeKinds(g);
-		// The metric roots at its output formula (nothing depends on it).
-		expect(edges).toContain(
-			"metric:gross_margin->formula:gross_margin:gross_margin:computes",
-		);
-		// The formula computes from each input extract.
-		expect(edges).toContain(
-			"formula:gross_margin:gross_margin->extract:gross_margin:revenue:computes",
-		);
-		expect(edges).toContain(
-			"formula:gross_margin:gross_margin->extract:gross_margin:cost_of_goods_sold:computes",
-		);
-		// The extract references its concept; the concept grounds to the column.
-		expect(edges).toContain(
-			"extract:gross_margin:revenue->concept:revenue:references",
-		);
-		expect(edges).toContain("concept:revenue->column:c1:grounds");
-		expect(edges).toContain("driver:c1->column:c1:drives");
-		expect(edges).toContain("column:c1->column:c2:relates");
-		expect(edges).toContain("table:t1->column:c1:contains");
-		expect(edges).toContain("validation:margin_positive->column:c1:checks");
-		// cycle canonical_type matches a known concept → cycle → concept edge.
-		expect(edges).toContain("cycle:revenue->concept:revenue:references");
-		// No shortcut metric→concept edge — the path runs through the steps now.
-		expect(edges).not.toContain(
-			"metric:gross_margin->concept:revenue:references",
-		);
-	});
-
-	it("roots a metric at its output formula and leaves a constant a leaf", () => {
-		const input = base();
-		input.metrics = [
-			{
-				graphId: "dso",
-				state: "executed",
-				stateReason: null,
-				snippetCount: 4,
-				sql: null,
-				dag: {
-					output: { unit: "days", decimal_places: 1 },
-					dependencies: {
-						accounts_receivable: {
-							type: "extract",
-							source: {
-								standard_field: "accounts_receivable",
-								statement: "balance_sheet",
-							},
-							aggregation: "sum",
-						},
-						revenue: {
-							type: "extract",
-							source: {
-								standard_field: "revenue",
-								statement: "income_statement",
-							},
-							aggregation: "sum",
-						},
-						days_in_period: {
-							type: "constant",
-							parameter: "days_in_period",
-							default: 30,
-						},
-						dso: {
-							type: "formula",
-							expression: "(accounts_receivable / revenue) * days_in_period",
-							depends_on: ["accounts_receivable", "revenue", "days_in_period"],
-							output_step: true,
-						},
-					},
-				},
-			},
-		];
-		const g = buildOperatingModelGraph(input);
-		const nodeIds = ids(g);
-		expect(nodeIds).toContain("extract:dso:accounts_receivable");
-		expect(nodeIds).toContain("constant:dso:days_in_period");
-		expect(nodeIds).toContain("formula:dso:dso");
-
-		const edges = edgeKinds(g);
-		expect(edges).toContain("metric:dso->formula:dso:dso:computes");
-		expect(edges).toContain(
-			"formula:dso:dso->constant:dso:days_in_period:computes",
-		);
-		expect(edges).toContain(
-			"formula:dso:dso->extract:dso:accounts_receivable:computes",
-		);
-		// A constant is a leaf — nothing flows out of it.
-		expect(
-			[...edges].some((e) => e.startsWith("constant:dso:days_in_period->")),
-		).toBe(false);
-		const c = g.nodes.find((n) => n.id === "constant:dso:days_in_period");
-		expect(c?.data).toMatchObject({ kind: "constant", value: "30" });
-	});
-
-	it("emits only columns that participate in an edge (c3 is unused → absent)", () => {
-		const g = buildOperatingModelGraph(base());
-		expect(ids(g)).not.toContain("column:c3");
-	});
-
-	it("drops a dangling edge when its column is unknown, without throwing", () => {
-		const input = base();
-		input.conceptColumns = [{ concept: "revenue", columnId: "ghost" }];
-		input.relationships = [];
-		input.drivers = [];
-		input.validations = [];
-		const g = buildOperatingModelGraph(input);
-		expect(ids(g)).not.toContain("column:ghost");
-		expect([...edgeKinds(g)].some((e) => e.includes("ghost"))).toBe(false);
-		// The concept node still exists (the extract references it) — only the bad
-		// grounding edge is dropped.
-		expect(ids(g)).toContain("concept:revenue");
-	});
-
-	it("keeps a metric with no persisted DAG as a bare node (no step edges)", () => {
-		const input = base();
-		input.metrics.push({
-			graphId: "lonely",
-			state: "declared",
-			stateReason: "no fields mapped",
-			snippetCount: 0,
-			sql: null,
-			dag: null,
+	it("builds metric → measure/constant with the output formula on the metric node", () => {
+		const g = buildOperatingModelGraph({
+			metrics: [DSO],
+			grounding: base().grounding,
 		});
-		const g = buildOperatingModelGraph(input);
-		expect(ids(g)).toContain("metric:lonely");
-		expect([...edgeKinds(g)].some((e) => e.startsWith("metric:lonely->"))).toBe(
+		expect(ids(g)).toContain("metric:dso");
+		const m = g.nodes.find((n) => n.id === "metric:dso");
+		expect(m?.label).toBe("Days Sales Outstanding");
+		expect(m?.data).toMatchObject({
+			kind: "metric",
+			formula: "(accounts_receivable / revenue) * days_in_period",
+			unit: "days",
+			sql: "-- flattened sql for dso",
+		});
+		const e = edgeKeys(g);
+		expect(e).toContain("metric:dso->measure:accounts_receivable:reads");
+		expect(e).toContain("metric:dso->measure:revenue:reads");
+		expect(e).toContain("metric:dso->constant:days_in_period:uses");
+	});
+
+	it("composes metric→metric by name, NOT inlining the self-contained copies", () => {
+		const g = buildOperatingModelGraph(base());
+		const e = edgeKeys(g);
+		// ccc composes the three metrics...
+		expect(e).toContain("metric:cash_conversion_cycle->metric:dso:composes");
+		expect(e).toContain("metric:cash_conversion_cycle->metric:dio:composes");
+		expect(e).toContain("metric:cash_conversion_cycle->metric:dpo:composes");
+		// ...and does NOT read ccc's inlined leaves directly (dso owns those).
+		expect(e).not.toContain(
+			"metric:cash_conversion_cycle->measure:revenue:reads",
+		);
+		// dio (a real metric here) owns its own leaves.
+		expect(e).toContain("metric:dio->measure:inventory:reads");
+	});
+
+	it("dedupes a measure/constant shared across many metrics into one node", () => {
+		const g = buildOperatingModelGraph(base());
+		// revenue is read by dso, gross_profit, (ccc's dso inline — but that's composed) →
+		// still ONE measure node.
+		expect(g.nodes.filter((n) => n.id === "measure:revenue")).toHaveLength(1);
+		expect(
+			g.nodes.filter((n) => n.id === "constant:days_in_period"),
+		).toHaveLength(1);
+	});
+
+	it("grounds a measure to its enriched view → base tables", () => {
+		const g = buildOperatingModelGraph(base());
+		const e = edgeKeys(g);
+		expect(e).toContain("measure:revenue->table:ev1:grounds");
+		expect(e).toContain("table:ev1->table:t1:derives");
+		expect(e).toContain("table:ev1->table:t2:derives");
+		expect(g.nodes.find((n) => n.id === "table:ev1")?.data).toMatchObject({
+			kind: "table",
+			layer: "enriched",
+		});
+		expect(g.nodes.find((n) => n.id === "table:t1")?.parent).toBe("table:ev1");
+	});
+
+	it("leaves an ungrounded measure as a leaf with no table edge", () => {
+		const g = buildOperatingModelGraph(base());
+		expect(ids(g)).toContain("measure:inventory");
+		expect(
+			[...edgeKeys(g)].some((k) => k.startsWith("measure:inventory->")),
+		).toBe(false);
+		expect(
+			g.nodes.find((n) => n.id === "measure:inventory")?.data,
+		).toMatchObject({
+			kind: "measure",
+			grounded: false,
+		});
+	});
+
+	it("inlines a non-metric formula dependency (dio missing from the metric set)", () => {
+		// dio is NOT a standalone metric here → ccc must inline its formula to reach leaves.
+		const g = buildOperatingModelGraph({
+			metrics: [GROSS_PROFIT, DSO, DPO, CCC],
+			grounding: base().grounding,
+		});
+		const e = edgeKeys(g);
+		expect(e).toContain("metric:cash_conversion_cycle->metric:dso:composes");
+		expect(e).toContain("metric:cash_conversion_cycle->metric:dpo:composes");
+		// dio has no metric node → its leaves fold onto ccc directly.
+		expect(ids(g)).not.toContain("metric:dio");
+		expect(e).toContain(
+			"metric:cash_conversion_cycle->measure:inventory:reads",
+		);
+		expect(e).toContain(
+			"metric:cash_conversion_cycle->constant:days_in_period:uses",
+		);
+	});
+
+	it("keeps a metric with no persisted DAG as a bare node", () => {
+		const g = buildOperatingModelGraph({
+			metrics: [{ ...DSO, dag: null }],
+			grounding: [],
+		});
+		expect(ids(g)).toContain("metric:dso");
+		expect([...edgeKeys(g)].some((k) => k.startsWith("metric:dso->"))).toBe(
 			false,
 		);
-	});
-
-	it("dedupes a concept shared by an extract reference and a grounding", () => {
-		const g = buildOperatingModelGraph(base());
-		// concept:revenue is both referenced by the extract AND grounded by
-		// conceptColumns — it must be a single node.
-		expect(g.nodes.filter((n) => n.id === "concept:revenue")).toHaveLength(1);
 	});
 });
 
-describe("computeVisibleGraph (progressive disclosure)", () => {
-	it("hides columns under collapsed tables and re-points their edges to the table", () => {
+describe("computeVisibleGraph (collapse base tables under the enriched view)", () => {
+	it("hides base tables and re-points their edges to the enriched view", () => {
 		const full = buildOperatingModelGraph(base());
-		const visible = computeVisibleGraph(full, new Set());
-		const nodeIds = ids(visible);
-		// No column nodes when nothing is expanded; tables remain.
-		expect(nodeIds).not.toContain("column:c1");
-		expect(nodeIds).not.toContain("column:c2");
-		expect(nodeIds).toContain("table:t1");
-		expect(nodeIds).toContain("table:t2");
-		const edges = edgeKinds(visible);
-		// concept→column collapses to concept→table; FK c1→c2 becomes table t1→t2.
-		expect(edges).toContain("concept:revenue->table:t1:grounds");
-		expect(edges).toContain("driver:c1->table:t1:drives");
-		expect(edges).toContain("table:t1->table:t2:relates");
-		// The contains edge (table→its own hidden column) self-loops → dropped.
-		expect([...edges].some((e) => e === "table:t1->table:t1:contains")).toBe(
-			false,
-		);
+		const v = computeVisibleGraph(full, new Set());
+		expect(ids(v)).not.toContain("table:t1");
+		expect(ids(v)).not.toContain("table:t2");
+		expect(ids(v)).toContain("table:ev1");
+		// the derives edge (enriched→its own hidden base) self-loops → dropped.
+		expect(
+			[...edgeKeys(v)].some((k) => k === "table:ev1->table:ev1:derives"),
+		).toBe(false);
+		// measure→enriched still stands.
+		expect(edgeKeys(v)).toContain("measure:revenue->table:ev1:grounds");
 	});
 
-	it("reveals a table's columns and precise edges when it is expanded", () => {
+	it("reveals base tables when the enriched view is expanded", () => {
 		const full = buildOperatingModelGraph(base());
-		const visible = computeVisibleGraph(full, new Set(["table:t1"]));
-		const nodeIds = ids(visible);
-		expect(nodeIds).toContain("column:c1"); // t1 expanded
-		expect(nodeIds).not.toContain("column:c2"); // t2 still collapsed
-		const edges = edgeKinds(visible);
-		expect(edges).toContain("concept:revenue->column:c1:grounds");
-		expect(edges).toContain("table:t1->column:c1:contains");
-		// c1→c2: c1 visible, c2 collapsed → c1 relates to table t2.
-		expect(edges).toContain("column:c1->table:t2:relates");
+		const v = computeVisibleGraph(full, new Set(["table:ev1"]));
+		expect(ids(v)).toContain("table:t1");
+		expect(edgeKeys(v)).toContain("table:ev1->table:t1:derives");
 	});
 });
 
@@ -349,65 +340,28 @@ describe("filterGraph (kind toggles + hide-orphans)", () => {
 	it("keeps only enabled kinds and prunes edges to dropped kinds", () => {
 		const full = buildOperatingModelGraph(base());
 		const g = filterGraph(full, {
-			kinds: kinds("extract", "concept"),
+			kinds: kinds("metric"),
 			hideOrphans: false,
 		});
-		// Both extracts + both concepts survive; the extract→concept edges are kept.
-		expect(ids(g)).toEqual(
-			new Set([
-				"extract:gross_margin:revenue",
-				"extract:gross_margin:cost_of_goods_sold",
-				"concept:revenue",
-				"concept:cost_of_goods_sold",
-			]),
+		// only metric nodes; metric→metric composition edges survive, metric→measure gone.
+		expect([...ids(g)].every((id) => id.startsWith("metric:"))).toBe(true);
+		expect(edgeKeys(g)).toContain(
+			"metric:cash_conversion_cycle->metric:dso:composes",
 		);
-		// formula→extract (formula dropped) and concept→column (column dropped) are pruned.
-		expect(edgeKinds(g)).toEqual(
-			new Set([
-				"extract:gross_margin:revenue->concept:revenue:references",
-				"extract:gross_margin:cost_of_goods_sold->concept:cost_of_goods_sold:references",
-			]),
-		);
+		expect([...edgeKeys(g)].some((k) => k.includes("measure:"))).toBe(false);
 	});
 
 	it("hideOrphans drops nodes left with zero edges", () => {
 		const full = buildOperatingModelGraph(base());
-		// metric links only to its formula, cycle only to concept — both orphan when
-		// those kinds are filtered out.
-		const opts = { kinds: kinds("metric", "cycle") };
-		expect(ids(filterGraph(full, { ...opts, hideOrphans: false }))).toEqual(
-			new Set(["metric:gross_margin", "cycle:revenue"]),
-		);
-		expect(
-			filterGraph(full, { ...opts, hideOrphans: true }).nodes,
-		).toHaveLength(0);
-	});
-
-	it("the metrics preset carries the metric's step spine (formula/extract/constant)", () => {
-		const full = buildOperatingModelGraph(base());
+		// keep only tables → base tables connect to enriched (derives), but with metrics
+		// gone the measures/metrics vanish; enriched view orphans (its only inbound was a
+		// measure). Its base tables keep it connected via derives.
 		const g = filterGraph(full, {
-			kinds: new Set(OM_PRESET_KINDS.metrics),
+			kinds: kinds("table"),
 			hideOrphans: true,
 		});
-		const nodeIds = ids(g);
-		expect(nodeIds).toContain("metric:gross_margin");
-		expect(nodeIds).toContain("formula:gross_margin:gross_margin");
-		expect(nodeIds).toContain("extract:gross_margin:revenue");
-		expect(nodeIds).not.toContain("validation:margin_positive");
-	});
-
-	it("the cycles preset isolates the cycle spine (no metric/validation/driver)", () => {
-		const full = buildOperatingModelGraph(base());
-		const g = filterGraph(full, {
-			kinds: new Set(OM_PRESET_KINDS.cycles),
-			hideOrphans: true,
-		});
-		const nodeIds = ids(g);
-		expect(nodeIds).toContain("cycle:revenue");
-		expect(nodeIds).toContain("concept:revenue");
-		expect(nodeIds).not.toContain("metric:gross_margin");
-		expect(nodeIds).not.toContain("validation:margin_positive");
-		expect(nodeIds).not.toContain("driver:c1");
-		expect(edgeKinds(g)).toContain("cycle:revenue->concept:revenue:references");
+		// ev1 ↔ t1/t2 derives edges keep all three tables connected.
+		expect(ids(g)).toContain("table:ev1");
+		expect(ids(g)).toContain("table:t1");
 	});
 });

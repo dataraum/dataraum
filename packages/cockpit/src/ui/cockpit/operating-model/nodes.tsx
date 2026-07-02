@@ -1,31 +1,26 @@
-// Custom node renderers for the operating-model canvas (DAT-591). One component
-// switches on the node kind (concept / metric / validation / cycle / table /
-// column / driver) — a pure display of engine-persisted values (React idiom rule
-// 12: widgets color/format, never recompute). Click handling lives on the canvas
-// (onNodeClick), so these stay render-only.
+// Custom node renderers for the operating-model METRIC canvas (DAT-591). One
+// component switches on the node kind (metric / measure / constant / table) — a pure
+// display of engine-persisted values (React idiom 12: widgets color/format, never
+// recompute). Click handling lives on the canvas (onNodeClick), so these stay
+// render-only. A metric shows its output formula as a subtitle; a measure its
+// aggregation; a constant its value; an enriched-view table a collapse caret.
 
 import { Badge, Group, Paper, Stack, Text } from "@mantine/core";
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react";
 import {
-	Columns3,
 	Database,
-	FunctionSquare,
 	Gauge,
 	Hash,
-	Lightbulb,
 	type LucideIcon,
 	Network,
-	RefreshCw,
-	ShieldCheck,
 	Table2,
-	TrendingUp,
 } from "lucide-react";
 import { memo } from "react";
 
 import type { OMNode, OMNodeKind } from "#/tools/operating-model-graph";
 import { OM_NODE_WIDTH } from "./layout";
 
-/** RF node payload — the engine node plus the table-expanded flag (display only). */
+/** RF node payload — the engine node plus the expanded flag (display only). */
 export interface OMRfData extends Record<string, unknown> {
 	om: OMNode;
 	expanded: boolean;
@@ -33,18 +28,10 @@ export interface OMRfData extends Record<string, unknown> {
 export type OMRfNode = Node<OMRfData, "om">;
 
 const KIND_STYLE: Record<OMNodeKind, { color: string; Icon: LucideIcon }> = {
-	concept: { color: "grape", Icon: Lightbulb },
 	metric: { color: "blue", Icon: Gauge },
-	// The metric's DAG guts: a formula computes, an extract pulls from the data, a
-	// constant is a fixed value — each visually distinct so the structure reads.
-	formula: { color: "violet", Icon: FunctionSquare },
-	extract: { color: "cyan", Icon: Database },
+	measure: { color: "cyan", Icon: Database },
 	constant: { color: "yellow", Icon: Hash },
-	validation: { color: "teal", Icon: ShieldCheck },
-	cycle: { color: "indigo", Icon: RefreshCw },
 	table: { color: "gray", Icon: Table2 },
-	column: { color: "gray", Icon: Columns3 },
-	driver: { color: "orange", Icon: TrendingUp },
 };
 
 /** A short status chip per kind — the at-a-glance signal on the node face. */
@@ -56,37 +43,14 @@ function statusBadge(om: OMNode): React.ReactNode {
 					{om.data.state}
 				</Badge>
 			);
-		case "validation":
-			return (
+		case "measure":
+			// Aggregation (sum / avg / …); dimmed grey when the measure is ungrounded.
+			return om.data.aggregation ? (
 				<Badge
 					size="xs"
 					variant="light"
-					color={
-						om.data.passed === true
-							? "teal"
-							: om.data.passed === false
-								? "red"
-								: "gray"
-					}
+					color={om.data.grounded ? "cyan" : "gray"}
 				>
-					{om.data.passed === true
-						? "pass"
-						: om.data.passed === false
-							? "fail"
-							: (om.data.state ?? "—")}
-				</Badge>
-			);
-		case "cycle":
-			return om.data.completionRate !== null ? (
-				<Badge size="xs" variant="light" color="indigo">
-					{Math.round(om.data.completionRate * 100)}%
-				</Badge>
-			) : null;
-		// Extract shows its aggregation (sum / avg / …); constant shows its value —
-		// the at-a-glance signal that differentiates the step at a distance.
-		case "extract":
-			return om.data.aggregation ? (
-				<Badge size="xs" variant="light" color="cyan">
 					{om.data.aggregation}
 				</Badge>
 			) : null;
@@ -96,21 +60,23 @@ function statusBadge(om: OMNode): React.ReactNode {
 					{om.data.value}
 				</Badge>
 			) : null;
-		case "driver":
-			return (
-				<Badge size="xs" variant="light" color="orange">
-					{om.data.grain}
-				</Badge>
-			);
 		default:
 			return null;
 	}
 }
 
+/** The metric's output formula, shown as a subtitle under its name (its computation). */
+function subtitle(om: OMNode): string | null {
+	return om.data.kind === "metric" ? om.data.formula : null;
+}
+
 function OperatingModelNodeImpl({ data, selected }: NodeProps<OMRfNode>) {
 	const { om, expanded } = data;
-	const { color, Icon } = KIND_STYLE[om.kind] ?? KIND_STYLE.concept;
-	const isTable = om.kind === "table";
+	const { color, Icon } = KIND_STYLE[om.kind] ?? KIND_STYLE.metric;
+	// Only enriched-view tables collapse (they own base tables); base tables are leaves.
+	const isEnrichedView =
+		om.data.kind === "table" && om.data.layer === "enriched";
+	const sub = subtitle(om);
 	return (
 		<>
 			{/* Hidden handles: edges attach, but the dots don't clutter the DAG. */}
@@ -137,11 +103,16 @@ function OperatingModelNodeImpl({ data, selected }: NodeProps<OMRfNode>) {
 					<Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
 						<Text size="xs" c="dimmed" tt="uppercase" fw={600}>
 							{om.kind}
-							{isTable ? (expanded ? " ▾" : " ▸") : ""}
+							{isEnrichedView ? (expanded ? " ▾" : " ▸") : ""}
 						</Text>
 						<Text size="sm" fw={500} truncate title={om.label}>
 							{om.label}
 						</Text>
+						{sub ? (
+							<Text size="xs" c="dimmed" truncate title={sub}>
+								{sub}
+							</Text>
+						) : null}
 					</Stack>
 					{statusBadge(om)}
 				</Group>

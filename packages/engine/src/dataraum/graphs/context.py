@@ -1313,12 +1313,16 @@ def format_metadata_document(
         type_label = f" ({table_type})" if table_type else ""
         lines.append(f"\n### {display_name}{type_label}")
 
-        # Entity description
-        if table.entity_type:
-            desc = f"**Entity**: {table.entity_type}"
+        # Entity + description — independent fields; a table can carry a description
+        # without an entity_type (don't nest one under the other, or the description
+        # is dropped whenever entity_type is absent).
+        if table.entity_type or table.table_description:
+            desc_parts = []
+            if table.entity_type:
+                desc_parts.append(f"**Entity**: {table.entity_type}")
             if table.table_description:
-                desc += f" — {table.table_description}"
-            lines.append(desc)
+                desc_parts.append(table.table_description)
+            lines.append(" — ".join(desc_parts))
 
         # Grain, rows, time column
         meta_parts = []
@@ -1382,12 +1386,6 @@ def format_metadata_document(
             lines.append("")
             lines.append("**Value sets** (categorical columns — `value (count)`):")
             lines.extend(value_sets)
-
-        # Quality section (per-table)
-        _append_table_quality(lines, table)
-
-        # Data quality notes (entropy interpretations for non-ready columns)
-        _append_data_quality_notes(lines, table)
 
     # --- Drivers (DAT-616) ---
     _append_drivers(lines, context)
@@ -1651,16 +1649,34 @@ def _build_value_sets(table: TableContext) -> list[str]:
 
 
 def _build_column_description(col: ColumnContext) -> str:
-    """Build column description from business metadata."""
-    parts = []
+    """Build the column-description cell: label + description + concept + stock/flow.
+
+    Label, ``business_concept``, and ``temporal_behavior`` are INDEPENDENT fields — a
+    named measure still has a concept and a reconciled stock/flow verdict. The old
+    ``if business_name / elif business_concept`` made them mutually exclusive, so every
+    column that had a ``business_name`` (i.e. every grounded measure) silently lost BOTH
+    its concept and its ``temporal_behavior``. ``temporal_behavior`` is ALSO shown in the
+    Drivers section as ``target_type``; surfacing it here too is intentional — one
+    reconciled fact, rendered where the agent reads columns AND where it reads
+    aggregation guidance.
+    """
+    parts: list[str] = []
+    # Primary label: the business name, else the concept name.
     if col.business_name:
         parts.append(col.business_name)
         if col.business_description:
             parts.append(f": {col.business_description}")
     elif col.business_concept:
         parts.append(col.business_concept)
-        if col.temporal_behavior:
-            parts.append(f" ({col.temporal_behavior})")
+
+    # Concept (when it isn't already the label) + stock/flow verdict — always surfaced.
+    tags: list[str] = []
+    if col.business_concept and col.business_name:
+        tags.append(f"concept: {col.business_concept}")
+    if col.temporal_behavior:
+        tags.append(col.temporal_behavior)
+    if tags:
+        parts.append(f" ({', '.join(tags)})")
     return "".join(parts)
 
 
@@ -1694,14 +1710,6 @@ def _build_column_notes(col: ColumnContext) -> str:
         notes.append(f"Flags: {', '.join(col.flags)}.")
 
     return " ".join(notes)
-
-
-def _append_table_quality(lines: list[str], table: TableContext) -> None:
-    """Append quality section for a table (placeholder for BBN readiness in v0.2)."""
-
-
-def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:
-    """Append data quality notes (placeholder for BBN readiness in v0.2)."""
 
 
 def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:

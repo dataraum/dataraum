@@ -32,6 +32,17 @@ export type OMNodeKind =
 	| "column"
 	| "driver";
 
+/** Every node kind, in a stable order — the source of truth for filter UIs. */
+export const OM_NODE_KINDS: readonly OMNodeKind[] = [
+	"metric",
+	"validation",
+	"cycle",
+	"driver",
+	"concept",
+	"table",
+	"column",
+] as const;
+
 export type OMEdgeKind =
 	| "references" // metric → concept, cycle → concept
 	| "grounds" // concept → column
@@ -447,3 +458,52 @@ export function computeVisibleGraph(
 	}
 	return { nodes, edges: [...edges.values()] };
 }
+
+// --- Filtering: node-kind toggles + hide-unconnected --------------------------
+
+export interface GraphFilter {
+	/** Node kinds to keep. A node of any other kind (and its edges) is dropped. */
+	kinds: ReadonlySet<OMNodeKind>;
+	/** Drop nodes left with zero edges (the finance vertical's ~8 declared-but-not-
+	 *  detected cycles are degree-0 floaters — this clears them without special-casing
+	 *  their state). Orphans have no edges by definition, so removal never re-orphans
+	 *  another node: a single pass is correct. */
+	hideOrphans: boolean;
+}
+
+/**
+ * Filter the (already column-collapsed) graph by node kind, then optionally drop
+ * unconnected nodes. Pure → unit-tested. Runs AFTER `computeVisibleGraph` so orphan
+ * degree is measured on what's actually on screen (collapsed columns re-pointed to
+ * their table). Edges survive only when BOTH endpoints survive the kind filter.
+ */
+export function filterGraph(
+	graph: OperatingModelGraph,
+	filter: GraphFilter,
+): OperatingModelGraph {
+	const nodes = graph.nodes.filter((n) => filter.kinds.has(n.kind));
+	const present = new Set(nodes.map((n) => n.id));
+	const edges = graph.edges.filter(
+		(e) => present.has(e.source) && present.has(e.target),
+	);
+	if (!filter.hideOrphans) return { nodes, edges };
+
+	const connected = new Set<string>();
+	for (const e of edges) {
+		connected.add(e.source);
+		connected.add(e.target);
+	}
+	return { nodes: nodes.filter((n) => connected.has(n.id)), edges };
+}
+
+/** Named lenses for the filter bar — a preset sets the enabled node kinds. The
+ *  connective kinds (concept / table / column) ride along in every non-empty lens
+ *  so the spine stays intact; `column` is gated further by table expansion. */
+export type OMPreset = "full" | "metrics" | "validations" | "cycles";
+
+export const OM_PRESET_KINDS: Record<OMPreset, readonly OMNodeKind[]> = {
+	full: OM_NODE_KINDS,
+	metrics: ["metric", "driver", "concept", "table", "column"],
+	validations: ["validation", "concept", "table", "column"],
+	cycles: ["cycle", "concept", "table", "column"],
+};

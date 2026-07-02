@@ -117,9 +117,15 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 				columnName: columnsView.columnName,
 			})
 			.from(columnsView),
+		// Scope to the TYPED layer — the analysis grain. Each logical table exists as
+		// several physical layers (quarantine/raw/typed/…) sharing a table_name, and
+		// `tables`/`columns` are NOT layer-scoped (no current_* variant exists, unlike
+		// relationships/drivers/concepts). Every current_* artifact grounds to `typed`
+		// columns, so without this filter each table triplicates on the canvas.
 		metadataDb
 			.select({ tableId: tablesView.tableId, tableName: tablesView.tableName })
-			.from(tablesView),
+			.from(tablesView)
+			.where(eq(tablesView.layer, "typed")),
 		metadataDb
 			.select({
 				validationId: currentValidationResults.validationId,
@@ -177,22 +183,28 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 		)
 		.map((r) => ({ fromColumnId: r.fromColumnId, toColumnId: r.toColumnId }));
 
+	const tables: TableInput[] = tableRows
+		.filter((r): r is { tableId: string; tableName: string } =>
+			Boolean(r.tableId && r.tableName),
+		)
+		.map((r) => ({ tableId: r.tableId, tableName: r.tableName }));
+
+	// Keep only columns of the typed tables — `columns` has no `layer`, so gate on
+	// the typed table ids fetched above (mirrors the tables scoping; drops the
+	// raw/quarantine column twins that would otherwise triplicate every table node).
+	const typedTableIds = new Set(tables.map((t) => t.tableId));
 	const columns: ColumnInput[] = columnRows
 		.filter(
 			(r): r is { columnId: string; tableId: string; columnName: string } =>
-				Boolean(r.columnId && r.tableId && r.columnName),
+				Boolean(r.columnId && r.columnName) &&
+				r.tableId != null &&
+				typedTableIds.has(r.tableId),
 		)
 		.map((r) => ({
 			columnId: r.columnId,
 			tableId: r.tableId,
 			columnName: r.columnName,
 		}));
-
-	const tables: TableInput[] = tableRows
-		.filter((r): r is { tableId: string; tableName: string } =>
-			Boolean(r.tableId && r.tableName),
-		)
-		.map((r) => ({ tableId: r.tableId, tableName: r.tableName }));
 
 	const sqlByValidation = new Map<string, string | null>();
 	for (const r of validationSqlRows) {

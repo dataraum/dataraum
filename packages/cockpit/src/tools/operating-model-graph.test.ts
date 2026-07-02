@@ -6,6 +6,9 @@ import {
 	buildOperatingModelGraph,
 	computeVisibleGraph,
 	type DriverInput,
+	filterGraph,
+	OM_PRESET_KINDS,
+	type OMNodeKind,
 	type OperatingModelGraphInput,
 } from "./operating-model-graph";
 
@@ -179,5 +182,50 @@ describe("computeVisibleGraph (progressive disclosure)", () => {
 		expect(edges).toContain("table:t1->column:c1:contains");
 		// c1→c2: c1 visible, c2 collapsed → c1 relates to table t2.
 		expect(edges).toContain("column:c1->table:t2:relates");
+	});
+});
+
+describe("filterGraph (kind toggles + hide-orphans)", () => {
+	const kinds = (...ks: OMNodeKind[]): Set<OMNodeKind> => new Set(ks);
+
+	it("keeps only enabled kinds and prunes edges to dropped kinds", () => {
+		const full = buildOperatingModelGraph(base());
+		const g = filterGraph(full, {
+			kinds: kinds("metric", "concept"),
+			hideOrphans: false,
+		});
+		expect(ids(g)).toEqual(new Set(["metric:gross_margin", "concept:revenue"]));
+		// The metric→concept edge survives (both endpoints kept); concept→column is
+		// pruned because the column kind is filtered out.
+		expect(edgeKinds(g)).toEqual(
+			new Set(["metric:gross_margin->concept:revenue:references"]),
+		);
+	});
+
+	it("hideOrphans drops nodes left with zero edges", () => {
+		const full = buildOperatingModelGraph(base());
+		// metric + cycle both linked ONLY to concept — remove concept and they orphan.
+		const opts = { kinds: kinds("metric", "cycle") };
+		expect(ids(filterGraph(full, { ...opts, hideOrphans: false }))).toEqual(
+			new Set(["metric:gross_margin", "cycle:revenue"]),
+		);
+		expect(
+			filterGraph(full, { ...opts, hideOrphans: true }).nodes,
+		).toHaveLength(0);
+	});
+
+	it("the cycles preset isolates the cycle spine (no metric/validation/driver)", () => {
+		const full = buildOperatingModelGraph(base());
+		const g = filterGraph(full, {
+			kinds: new Set(OM_PRESET_KINDS.cycles),
+			hideOrphans: true,
+		});
+		const nodeIds = ids(g);
+		expect(nodeIds).toContain("cycle:revenue");
+		expect(nodeIds).toContain("concept:revenue");
+		expect(nodeIds).not.toContain("metric:gross_margin");
+		expect(nodeIds).not.toContain("validation:margin_positive");
+		expect(nodeIds).not.toContain("driver:c1");
+		expect(edgeKinds(g)).toContain("cycle:revenue->concept:revenue:references");
 	});
 });

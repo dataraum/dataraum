@@ -10,7 +10,19 @@
 
 import "@xyflow/react/dist/style.css";
 
-import { Badge, Box, Group, ScrollArea, Stack, Text } from "@mantine/core";
+import {
+	Badge,
+	Box,
+	Button,
+	Center,
+	Chip,
+	Group,
+	Paper,
+	ScrollArea,
+	Stack,
+	Switch,
+	Text,
+} from "@mantine/core";
 import {
 	Background,
 	Controls,
@@ -27,7 +39,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
 	computeVisibleGraph,
+	filterGraph,
+	OM_NODE_KINDS,
+	OM_PRESET_KINDS,
 	type OMNode,
+	type OMNodeKind,
+	type OMPreset,
 	type OperatingModelGraph,
 } from "#/tools/operating-model-graph";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
@@ -36,6 +53,12 @@ import { type OMRfData, omNodeTypes } from "./nodes";
 
 const EDGE_COLOR = "var(--mantine-color-gray-5)";
 
+// Land at a READABLE zoom, not fit-everything-tiny. The concept-spine fans ~40
+// artifacts into a few hubs — fitting the whole width would zoom to an illegible
+// strip (≈0.13). Cap the fit zoom so nodes stay readable on entry; the minimap +
+// pan carry navigation across the rest. padding keeps the entry off the edge.
+const FIT_VIEW_OPTIONS = { maxZoom: 0.85, padding: 0.15 } as const;
+
 export function OperatingModelCanvas({
 	graph,
 }: {
@@ -43,20 +66,34 @@ export function OperatingModelCanvas({
 }) {
 	const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 	const [selected, setSelected] = useState<OMNode | null>(null);
+	// Filter state: which kinds show + whether to drop unconnected nodes. Hiding
+	// orphans is ON by default — it clears the finance vertical's ~8 declared-but-
+	// not-detected cycles (degree-0 floaters) on first paint.
+	const [enabledKinds, setEnabledKinds] = useState<ReadonlySet<OMNodeKind>>(
+		() => new Set(OM_NODE_KINDS),
+	);
+	const [hideOrphans, setHideOrphans] = useState(true);
 
+	// Pipeline: collapse columns under tables (progressive disclosure) → filter by
+	// kind + orphan → dagre layout. Orphan degree is measured post-collapse so a
+	// table's collapsed column edges count toward keeping it.
 	const visible = useMemo(
 		() => computeVisibleGraph(graph, expanded),
 		[graph, expanded],
 	);
+	const filtered = useMemo(
+		() => filterGraph(visible, { kinds: enabledKinds, hideOrphans }),
+		[visible, enabledKinds, hideOrphans],
+	);
 
 	const { nodes, edges } = useMemo(() => {
-		const rfNodes: Node<OMRfData>[] = visible.nodes.map((om) => ({
+		const rfNodes: Node<OMRfData>[] = filtered.nodes.map((om) => ({
 			id: om.id,
 			type: "om",
 			position: { x: 0, y: 0 },
 			data: { om, expanded: expanded.has(om.id) },
 		}));
-		const rfEdges: Edge[] = visible.edges.map((e) => ({
+		const rfEdges: Edge[] = filtered.edges.map((e) => ({
 			id: e.id,
 			source: e.source,
 			target: e.target,
@@ -64,7 +101,7 @@ export function OperatingModelCanvas({
 			style: { stroke: EDGE_COLOR },
 		}));
 		return { nodes: layoutGraph(rfNodes, rfEdges), edges: rfEdges };
-	}, [visible, expanded]);
+	}, [filtered, expanded]);
 
 	const onNodeClick = useCallback<NodeMouseHandler>((_event, node) => {
 		const data = node.data as OMRfData;
@@ -96,6 +133,7 @@ export function OperatingModelCanvas({
 				nodesConnectable={false}
 				edgesFocusable={false}
 				fitView
+				fitViewOptions={FIT_VIEW_OPTIONS}
 				minZoom={0.1}
 				onlyRenderVisibleElements
 				proOptions={{ hideAttribution: false }}
@@ -108,6 +146,25 @@ export function OperatingModelCanvas({
 				    reach useReactFlow(). */}
 				<FitOnLayout layout={nodes} />
 			</ReactFlow>
+			<FilterBar
+				enabledKinds={enabledKinds}
+				onKindsChange={setEnabledKinds}
+				hideOrphans={hideOrphans}
+				onHideOrphansChange={setHideOrphans}
+			/>
+			{nodes.length === 0 ? (
+				<Center
+					style={{
+						position: "absolute",
+						inset: 0,
+						pointerEvents: "none",
+					}}
+				>
+					<Text size="sm" c="dimmed">
+						No nodes match the current filters.
+					</Text>
+				</Center>
+			) : null}
 			{selected ? (
 				<NodeDetail node={selected} onClose={() => setSelected(null)} />
 			) : null}
@@ -120,9 +177,106 @@ function FitOnLayout({ layout }: { layout: Node[] }) {
 	const { fitView } = useReactFlow();
 	useEffect(() => {
 		if (layout.length === 0) return;
-		void fitView({ duration: 200 });
+		void fitView({ duration: 200, ...FIT_VIEW_OPTIONS });
 	}, [layout, fitView]);
 	return null;
+}
+
+// The kinds exposed as individual toggles. `column` is omitted — its visibility is
+// governed by table expansion (progressive disclosure), not a top-level toggle, so
+// it always rides in the effective filter set.
+const TOGGLE_KINDS: readonly OMNodeKind[] = [
+	"metric",
+	"validation",
+	"cycle",
+	"driver",
+	"concept",
+	"table",
+];
+
+const PRESETS: readonly { key: OMPreset; label: string }[] = [
+	{ key: "full", label: "Full" },
+	{ key: "metrics", label: "Metrics" },
+	{ key: "validations", label: "Validations" },
+	{ key: "cycles", label: "Cycles" },
+];
+
+const sameKinds = (
+	a: ReadonlySet<OMNodeKind>,
+	b: readonly OMNodeKind[],
+): boolean => a.size === b.length && b.every((k) => a.has(k));
+
+/** Overlay filter control: preset lenses + per-kind toggles + hide-unconnected. */
+function FilterBar({
+	enabledKinds,
+	onKindsChange,
+	hideOrphans,
+	onHideOrphansChange,
+}: {
+	enabledKinds: ReadonlySet<OMNodeKind>;
+	onKindsChange: (kinds: ReadonlySet<OMNodeKind>) => void;
+	hideOrphans: boolean;
+	onHideOrphansChange: (value: boolean) => void;
+}) {
+	const activePreset = PRESETS.find((p) =>
+		sameKinds(enabledKinds, OM_PRESET_KINDS[p.key]),
+	)?.key;
+	return (
+		<Paper
+			shadow="sm"
+			p="xs"
+			radius="md"
+			withBorder
+			style={{
+				position: "absolute",
+				top: 8,
+				left: 8,
+				zIndex: 5,
+				maxWidth: 360,
+			}}
+		>
+			<Stack gap={8}>
+				<Group gap={6} wrap="nowrap">
+					<Text size="xs" c="dimmed" fw={600} tt="uppercase">
+						Lens
+					</Text>
+					<Button.Group>
+						{PRESETS.map((p) => (
+							<Button
+								key={p.key}
+								size="compact-xs"
+								variant={activePreset === p.key ? "filled" : "default"}
+								onClick={() => onKindsChange(new Set(OM_PRESET_KINDS[p.key]))}
+							>
+								{p.label}
+							</Button>
+						))}
+					</Button.Group>
+				</Group>
+				<Chip.Group
+					multiple
+					value={[...enabledKinds].filter((k) => k !== "column")}
+					onChange={(vals) =>
+						onKindsChange(new Set([...(vals as OMNodeKind[]), "column"]))
+					}
+				>
+					<Group gap={4}>
+						{TOGGLE_KINDS.map((k) => (
+							<Chip key={k} value={k} size="xs" variant="light">
+								{k}
+							</Chip>
+						))}
+					</Group>
+				</Chip.Group>
+				<Switch
+					size="xs"
+					label="Hide unconnected"
+					checked={hideOrphans}
+					onChange={(e) => onHideOrphansChange(e.currentTarget.checked)}
+				/>
+			</Stack>
+		</Paper>
+	);
 }
 
 /** Read-only detail for the selected node — the "expand to read the SQL" surface. */

@@ -443,3 +443,15 @@ class TestStringifiedArgCoercion:
     def test_unparseable_string_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coerced = self._converse_with_tool_use(monkeypatch, {"tables": "not json"})
         assert coerced["tables"] == "not json"
+
+    def test_whole_payload_stringified_into_field(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Smoke #6: the model serialized the ENTIRE input object into the
+        # container field — the parsed dict's keys match the tool's own
+        # properties, so it is adopted as the whole input.
+        coerced = self._converse_with_tool_use(
+            monkeypatch,
+            {"tables": '{"tables": [{"table_name": "t"}], "note": "n"}'},
+        )
+        assert coerced == {"tables": [{"table_name": "t"}], "note": "n"}

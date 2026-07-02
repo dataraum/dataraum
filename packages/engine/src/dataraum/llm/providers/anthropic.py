@@ -150,6 +150,21 @@ def _coerce_stringified_args(
             parsed = json.loads(value)
         except ValueError:
             continue
+        # Whole-payload variant (observed in smoke #6): the model serialized
+        # the ENTIRE input object into one field — {"tables": '{"tables": […]}'}.
+        # If the parsed dict's keys are the tool's own top-level properties,
+        # it IS the input; adopt it wholesale.
+        if (
+            isinstance(parsed, dict)
+            and parsed.keys() <= properties.keys()
+            and expected.get("type") != "object"
+        ):
+            logger.warning(
+                "stringified_tool_payload_coerced",
+                label=label,
+                argument=key,
+            )
+            return parsed
         if isinstance(parsed, (list, dict)):
             out[key] = parsed
             logger.warning(

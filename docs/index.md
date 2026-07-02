@@ -3,9 +3,8 @@
 **Ground your organization's operating model in its own data.** Every organization runs on
 an operating model — the entities it deals in, the processes it runs, the rules that must
 hold, the measures it watches. That model usually lives scattered across tools, documents,
-and people, disconnected from the data underneath it. DataRaum brings the two together: it
-turns the structured data an organization already has into an **executable operating
-model**, with an LLM held to a closed vocabulary and to measurements it cannot fake.
+and people, disconnected from the data underneath it. DataRaum turns the structured data an
+organization already has into an **executable operating model**.
 
 A semantic layer tells BI tools what columns are *called*. DataRaum learns what they *mean*
 — the concepts, relationships, rules, and measures of the organization — and grounds each
@@ -25,33 +24,25 @@ durable artifact at the end: the concepts, processes, rules, and measures that u
 in scattered tools and tribal knowledge, now expressed as something you can run, measure,
 and ask questions against.
 
-The deliverable is not a cleaned table or a dashboard. It is that model **plus a measured
-account of how well the system comprehends each part of your data** — solid here, shaky
-there — carried alongside it, so you always know how far to trust it. That is *data
-understanding* in a literal sense, and it is why we call DataRaum an **understanding
-layer**: the layer between your data and an LLM that holds what the system understands —
-and how well.
+The deliverable is the model plus a measured account of how well each part of it is
+grounded in the data, carried alongside it. This is why we call DataRaum an
+**understanding layer**: it sits between the data and an LLM, and holds what the system
+understands about the data — and how well.
 
-## Why you can trust the LLM here
+## Constraints on the LLM
 
-An LLM is what makes grounding an organization this way possible — and an LLM left to its own
-devices is exactly what you can't put in charge of decisions that matter. Two mechanisms keep
-it honest:
+An LLM supplies the one thing only language understanding can: what fields and tables mean
+in business terms. Two constraints bound its role:
 
-- **A closed vocabulary it can't escape.** The LLM can't invent new *kinds* of claim. It
-  works against a small, typed surface — concepts, measures, rules, processes, and a handful
-  of *teaches* — and can only fill those in. Even a correction enters as *evidence to be
-  weighed*, never as a direct edit to a result: it cannot make a problem disappear by
-  describing it. (This is the **Goodhart firewall** — see
-  [the learnable surface](concepts/learnable-surface.md).)
-- **Measurement it can't game.** The system continuously measures its own uncertainty — as
-  **entropy**, the disagreement between independent witnesses — and reports it as a plain
-  readiness signal: *ready*, *investigate*, *blocked*. Those numbers aren't vibes; the
-  detectors behind them are **calibrated against known ground truth**, so a low score really
-  does track usable data and a high one really does mean *look here*. See
-  [measurement & detectors](concepts/measurement.md).
-
-The effect is a system that can't make false progress by hiding what it doesn't know.
+- **A fixed vocabulary.** The LLM fills in a typed set of claims — concepts, measures,
+  rules, processes, and a fixed set of *teaches* — and cannot add new kinds. Corrections
+  enter the next analysis run as evidence, weighed with the rest; they do not edit
+  results. (See [the learnable surface](concepts/learnable-surface.md).)
+- **Independent measurement.** The system measures its own uncertainty as **entropy** —
+  disagreement between independent witnesses, at least one of which reads the data itself —
+  and reports it as a readiness signal: *ready*, *investigate*, *blocked*. Detector
+  reliabilities are calibrated against datasets with known, injected issues. (See
+  [measurement & detectors](concepts/measurement.md).)
 
 ## How it gets there
 
@@ -63,9 +54,9 @@ blends three kinds of evidence:
 - **Statistical** — what the shape of the data reveals: distributions, outliers, drift.
 - **LLM** — meaning: what a field *is*, which concept it grounds, how a measure is composed.
 
-No single method is trusted on its own. Where they **disagree** — the field's name claims
-one thing, the data shows another — that disagreement is the signal the **detectors**
-measure, and it's what turns into the readiness you can act on.
+No single method is trusted on its own. Where they disagree — the field's name claims one
+thing, the data shows another — the **detectors** measure the disagreement, and readiness
+is computed from it.
 
 ```mermaid
 flowchart TB
@@ -101,26 +92,24 @@ picture, not over one source at a time.
 
 ## How you use it
 
-You work in a **workspace** through the web cockpit. Nothing about your domain is baked in:
-you describe what you care about in plain language, and DataRaum builds the model with you.
-The work happens in three kinds of chat, each pairing an agent with a working canvas:
+You work in a **workspace** through the web cockpit. Nothing about your domain is
+pre-configured: you describe it in plain language. The work happens in three kinds of chat,
+each pairing an agent with a working canvas:
 
 - **Connect** — bring data in. Assemble an import set (upload files, probe a database),
-  **frame** your domain — declare the concepts you care about, or adopt a shipped vertical
-  as a head start — and import. An autonomous grounding loop types and re-grounds what it
-  can on its own, surfacing only the gaps that need you.
+  **frame** your domain — declare the concepts you care about, or adopt a shipped
+  vertical — and import. A grounding loop types and re-grounds what it can on its own,
+  surfacing the gaps that need you.
 - **Stage** — teach the model what things *mean*, then run an analytical session over the
   typed tables — relationships, dimensions, drivers — and build the operating model
   (validations, cycles, metrics) over the combined picture.
-- **Analyse** — ask questions in plain language. Answers come back grounded: the SQL that
-  produced them, the concepts they touched, and a confidence you can inspect — never a bare
-  number.
+- **Analyse** — ask questions in plain language. Answers return with the SQL that produced
+  them, the concepts they touched, and the grounding confidence.
 
 Around the chats sit the standing surfaces: the **Model** graph (the operating model as a
-navigable graph over your actual columns), **Governance** (the workspace's state of the
-union), **Runs** (everything in flight, and what needs you), and **Reports** (a frozen
-answer whose SQL re-runs live on every open — and which tells you when the data has moved
-under it).
+navigable graph over your columns), **Governance** (the workspace's overall state),
+**Runs** (work in flight, and what needs your input), and **Reports** (saved answers whose
+SQL re-runs on open, flagged when the data has changed since the summary was written).
 
 See the [Overview](getting-started/overview.md) for the whole arc, and
 [Running the stack](getting-started/running-the-stack.md) to bring it up.

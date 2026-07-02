@@ -17,10 +17,10 @@ know is how **yours** works: which fields carry which meaning, how your sources 
 a given value represents, which tables describe the same thing. That knowledge is latent in
 the data — it has to be recovered, then bound to the data, not assumed.
 
-The result is an **operating model** that is *executable*: your concepts, processes, rules,
-and measures, computed from your actual data with a measured confidence behind each one — and
-an LLM kept honest about all of it by a [closed vocabulary it can't escape](#the-approach)
-and [measurements it can't game](#how-understanding-is-measured).
+The result is an executable **operating model**: your concepts, processes, rules, and
+measures, computed from your data, each with a measured confidence. The LLM in the loop
+works against a [fixed vocabulary](#the-approach) and
+[measurements computed from independent evidence](#how-understanding-is-measured).
 
 ## The approach
 
@@ -28,8 +28,9 @@ DataRaum doesn't index schemas and it doesn't hand everything to the LLM. It run
 through a **pipeline of phases**, each using the right method for the job, and blends three
 kinds of evidence:
 
-- **Deterministic** — exact structure: type inference and casting (failed casts go to
-  quarantine, never a crash), key and relationship detection, join-path analysis.
+- **Deterministic** — exact structure: type inference and casting (failed casts go to a
+  quarantine table; the run continues), key and relationship detection, join-path
+  analysis.
 - **Statistical** — what the shape of the data reveals: profiles, distributions, outliers,
   Benford's law, correlations, temporal granularity and drift.
 - **LLM** — business meaning: what a column *is*, which concept it grounds, how to compose

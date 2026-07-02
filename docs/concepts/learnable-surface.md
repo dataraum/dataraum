@@ -1,29 +1,26 @@
 # The learnable surface
 
-The learnable surface is the set of things DataRaum can be taught about an organization. It
-is what lets the LLM contribute *and* keeps it from running off the rails: a small, **typed,
-closed** vocabulary that the agent — and you — can only **fill in**, never extend. This is
-the closed-vocabulary half of the **Goodhart firewall** (the measurement half is in
+The learnable surface is the set of things DataRaum can be taught about an organization: a
+small, **typed, closed** vocabulary that agents and users fill in but cannot extend. This
+is the closed-vocabulary half of the **Goodhart firewall** (the measurement half is in
 [measurement & detectors](measurement.md)).
 
-## Closed for use, the firewall
+## Closed for use
 
-An agent in the loop cannot invent a new *kind* of thing to assert. It can declare that a
-column grounds a concept, or that a token means *missing*, but it cannot create a new species
-of claim that escapes measurement. You, reviewing its proposals, see the same fixed set of
-types. The system, the agent, and the user share one vocabulary.
+An agent in the loop cannot invent a new *kind* of claim. It can declare that a column
+grounds a concept, or that a token means *missing*; it cannot create a claim type outside
+the registered set — a teach of an unregistered type fails. Users reviewing an agent's
+proposals see the same fixed set of types.
 
-This is the **firewall**: the agent can only optimize against signals the closed set was
-designed to surface, and — critically — **its words never move a score**. When an agent adds
-context to a high-uncertainty result ("this column is sparse because the field is only
-collected for a subset"), that context is recorded *alongside* the measurement; the
-uncertainty stays exactly as measured. Legitimate corrections happen by **teaching**, which
-re-enters analysis as evidence (a *witness*), not as an override. (This is the same
-disagreement model as [measurement](measurement.md); the principle is
+Free text does not move a score. When an agent attaches context to a high-uncertainty
+result ("this column is sparse because the field is only collected for a subset"), the
+context is recorded alongside the measurement; the measured value is unchanged.
+Corrections happen by **teaching**, which enters the next analysis run as a witness. (The
+disagreement model is in [measurement](measurement.md); the principle is
 [ADR-0009](../adr/0009-entropy-as-disagreement.md).)
 
-Adding a new teach *type* is a deliberate change to the platform, made out-of-band by the
-people building it — never an in-loop action.
+Adding a new teach *type* is a change to the platform, made by the people building it —
+not an in-loop action.
 
 ## The teach types
 
@@ -45,14 +42,13 @@ a witness. The live set:
 | | `metric` | A measure, expressed as a calculation graph |
 
 A teach is applied by writing one row to the workspace's overlay, after which the affected
-phase re-runs and the scores re-measure. You teach; the engine reapplies; the readiness
-moves — and your teach persists across every future run.
+phase re-runs and the scores are recomputed. Teaches persist across every future run.
 
 ## Verticals — reusable starting points
 
 A **vertical** is a bundle of concepts, rules, processes, and measures for a domain,
-expressed in the same teach types you'd produce by hand. It is a *head start*, not a
-configuration the platform depends on:
+expressed in the same teach types you'd produce by hand. It is a starting bundle; the
+platform does not depend on it:
 
 - You create one simply by [framing](the-journey.md#frame) your concepts — the concepts you
   declare *are* your workspace's vertical.

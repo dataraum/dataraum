@@ -10,6 +10,7 @@ import {
 	OM_PRESET_KINDS,
 	type OMNodeKind,
 	type OperatingModelGraphInput,
+	parseMetricDag,
 } from "./operating-model-graph";
 
 const driver = (measureColumnId: string, label: string): DriverInput => ({
@@ -27,6 +28,38 @@ const driver = (measureColumnId: string, label: string): DriverInput => ({
 	},
 });
 
+// gross_margin's effective DAG: two extracts (revenue, cost_of_goods_sold) feed one
+// output formula. The shape the engine persists onto the metric lifecycle row
+// (graph_definition) — the cockpit's one source for the metric's step structure.
+const grossMarginDag = () => ({
+	graph_id: "gross_margin",
+	output: { type: "scalar", unit: "percentage", decimal_places: 1 },
+	dependencies: {
+		revenue: {
+			level: 1,
+			type: "extract",
+			source: { standard_field: "revenue", statement: "income_statement" },
+			aggregation: "sum",
+		},
+		cost_of_goods_sold: {
+			level: 1,
+			type: "extract",
+			source: {
+				standard_field: "cost_of_goods_sold",
+				statement: "income_statement",
+			},
+			aggregation: "sum",
+		},
+		gross_margin: {
+			level: 2,
+			type: "formula",
+			expression: "(revenue - cost_of_goods_sold) / revenue * 100",
+			depends_on: ["revenue", "cost_of_goods_sold"],
+			output_step: true,
+		},
+	},
+});
+
 const base = (): OperatingModelGraphInput => ({
 	metrics: [
 		{
@@ -35,9 +68,9 @@ const base = (): OperatingModelGraphInput => ({
 			stateReason: null,
 			snippetCount: 3,
 			sql: "SELECT sum(amount) FROM sales",
+			dag: grossMarginDag(),
 		},
 	],
-	metricConcepts: [{ graphId: "gross_margin", concept: "revenue" }],
 	cycles: [
 		{
 			canonicalType: "revenue",
@@ -81,21 +114,78 @@ const edgeKinds = (g: {
 	edges: { source: string; target: string; kind: string }[];
 }) => new Set(g.edges.map((e) => `${e.source}->${e.target}:${e.kind}`));
 
+describe("parseMetricDag", () => {
+	it("narrows the persisted json into typed steps + output metadata", () => {
+		const dag = parseMetricDag(grossMarginDag());
+		expect(dag?.unit).toBe("percentage");
+		expect(dag?.decimalPlaces).toBe(1);
+		const byId = new Map(dag?.steps.map((s) => [s.stepId, s]));
+		expect(byId.get("revenue")).toMatchObject({
+			kind: "extract",
+			standardField: "revenue",
+			statement: "income_statement",
+			aggregation: "sum",
+		});
+		expect(byId.get("gross_margin")).toMatchObject({
+			kind: "formula",
+			expression: "(revenue - cost_of_goods_sold) / revenue * 100",
+			dependsOn: ["revenue", "cost_of_goods_sold"],
+			outputStep: true,
+		});
+	});
+
+	it("returns null on a non-object, a missing dependencies, or an empty DAG", () => {
+		expect(parseMetricDag(null)).toBeNull();
+		expect(parseMetricDag("nope")).toBeNull();
+		expect(parseMetricDag({ output: {} })).toBeNull();
+		expect(parseMetricDag({ dependencies: {} })).toBeNull();
+	});
+
+	it("stringifies a constant's numeric default (value ?? default)", () => {
+		const dag = parseMetricDag({
+			dependencies: {
+				n: { type: "constant", parameter: "days_in_period", default: 30 },
+			},
+		});
+		expect(dag?.steps[0]).toMatchObject({
+			kind: "constant",
+			parameter: "days_in_period",
+			value: "30",
+		});
+	});
+});
+
 describe("buildOperatingModelGraph", () => {
-	it("wires the concept-spine: artifact → concept → column, driver and FK", () => {
+	it("unfolds the metric DAG: metric → formula → extract → concept → column", () => {
 		const g = buildOperatingModelGraph(base());
 		const nodeIds = ids(g);
 		expect(nodeIds).toContain("metric:gross_margin");
+		expect(nodeIds).toContain("formula:gross_margin:gross_margin");
+		expect(nodeIds).toContain("extract:gross_margin:revenue");
+		expect(nodeIds).toContain("extract:gross_margin:cost_of_goods_sold");
 		expect(nodeIds).toContain("concept:revenue");
 		expect(nodeIds).toContain("column:c1");
-		expect(nodeIds).toContain("column:c2");
 		expect(nodeIds).toContain("table:t1");
 		expect(nodeIds).toContain("driver:c1");
 		expect(nodeIds).toContain("validation:margin_positive");
 		expect(nodeIds).toContain("cycle:revenue");
 
 		const edges = edgeKinds(g);
-		expect(edges).toContain("metric:gross_margin->concept:revenue:references");
+		// The metric roots at its output formula (nothing depends on it).
+		expect(edges).toContain(
+			"metric:gross_margin->formula:gross_margin:gross_margin:computes",
+		);
+		// The formula computes from each input extract.
+		expect(edges).toContain(
+			"formula:gross_margin:gross_margin->extract:gross_margin:revenue:computes",
+		);
+		expect(edges).toContain(
+			"formula:gross_margin:gross_margin->extract:gross_margin:cost_of_goods_sold:computes",
+		);
+		// The extract references its concept; the concept grounds to the column.
+		expect(edges).toContain(
+			"extract:gross_margin:revenue->concept:revenue:references",
+		);
 		expect(edges).toContain("concept:revenue->column:c1:grounds");
 		expect(edges).toContain("driver:c1->column:c1:drives");
 		expect(edges).toContain("column:c1->column:c2:relates");
@@ -103,6 +193,75 @@ describe("buildOperatingModelGraph", () => {
 		expect(edges).toContain("validation:margin_positive->column:c1:checks");
 		// cycle canonical_type matches a known concept → cycle → concept edge.
 		expect(edges).toContain("cycle:revenue->concept:revenue:references");
+		// No shortcut metric→concept edge — the path runs through the steps now.
+		expect(edges).not.toContain(
+			"metric:gross_margin->concept:revenue:references",
+		);
+	});
+
+	it("roots a metric at its output formula and leaves a constant a leaf", () => {
+		const input = base();
+		input.metrics = [
+			{
+				graphId: "dso",
+				state: "executed",
+				stateReason: null,
+				snippetCount: 4,
+				sql: null,
+				dag: {
+					output: { unit: "days", decimal_places: 1 },
+					dependencies: {
+						accounts_receivable: {
+							type: "extract",
+							source: {
+								standard_field: "accounts_receivable",
+								statement: "balance_sheet",
+							},
+							aggregation: "sum",
+						},
+						revenue: {
+							type: "extract",
+							source: {
+								standard_field: "revenue",
+								statement: "income_statement",
+							},
+							aggregation: "sum",
+						},
+						days_in_period: {
+							type: "constant",
+							parameter: "days_in_period",
+							default: 30,
+						},
+						dso: {
+							type: "formula",
+							expression: "(accounts_receivable / revenue) * days_in_period",
+							depends_on: ["accounts_receivable", "revenue", "days_in_period"],
+							output_step: true,
+						},
+					},
+				},
+			},
+		];
+		const g = buildOperatingModelGraph(input);
+		const nodeIds = ids(g);
+		expect(nodeIds).toContain("extract:dso:accounts_receivable");
+		expect(nodeIds).toContain("constant:dso:days_in_period");
+		expect(nodeIds).toContain("formula:dso:dso");
+
+		const edges = edgeKinds(g);
+		expect(edges).toContain("metric:dso->formula:dso:dso:computes");
+		expect(edges).toContain(
+			"formula:dso:dso->constant:dso:days_in_period:computes",
+		);
+		expect(edges).toContain(
+			"formula:dso:dso->extract:dso:accounts_receivable:computes",
+		);
+		// A constant is a leaf — nothing flows out of it.
+		expect(
+			[...edges].some((e) => e.startsWith("constant:dso:days_in_period->")),
+		).toBe(false);
+		const c = g.nodes.find((n) => n.id === "constant:dso:days_in_period");
+		expect(c?.data).toMatchObject({ kind: "constant", value: "30" });
 	});
 
 	it("emits only columns that participate in an edge (c3 is unused → absent)", () => {
@@ -119,11 +278,12 @@ describe("buildOperatingModelGraph", () => {
 		const g = buildOperatingModelGraph(input);
 		expect(ids(g)).not.toContain("column:ghost");
 		expect([...edgeKinds(g)].some((e) => e.includes("ghost"))).toBe(false);
-		// The metric/concept nodes still exist — only the bad edge is dropped.
+		// The concept node still exists (the extract references it) — only the bad
+		// grounding edge is dropped.
 		expect(ids(g)).toContain("concept:revenue");
 	});
 
-	it("keeps an ungrounded metric as a node with no concept edge", () => {
+	it("keeps a metric with no persisted DAG as a bare node (no step edges)", () => {
 		const input = base();
 		input.metrics.push({
 			graphId: "lonely",
@@ -131,6 +291,7 @@ describe("buildOperatingModelGraph", () => {
 			stateReason: "no fields mapped",
 			snippetCount: 0,
 			sql: null,
+			dag: null,
 		});
 		const g = buildOperatingModelGraph(input);
 		expect(ids(g)).toContain("metric:lonely");
@@ -139,14 +300,11 @@ describe("buildOperatingModelGraph", () => {
 		);
 	});
 
-	it("dedupes nodes and edges across repeated inputs", () => {
-		const input = base();
-		input.metricConcepts.push({ graphId: "gross_margin", concept: "revenue" });
-		const g = buildOperatingModelGraph(input);
-		const metricConceptEdges = g.edges.filter(
-			(e) => e.id === "metric:gross_margin->concept:revenue:references",
-		);
-		expect(metricConceptEdges).toHaveLength(1);
+	it("dedupes a concept shared by an extract reference and a grounding", () => {
+		const g = buildOperatingModelGraph(base());
+		// concept:revenue is both referenced by the extract AND grounded by
+		// conceptColumns — it must be a single node.
+		expect(g.nodes.filter((n) => n.id === "concept:revenue")).toHaveLength(1);
 	});
 });
 
@@ -191,20 +349,31 @@ describe("filterGraph (kind toggles + hide-orphans)", () => {
 	it("keeps only enabled kinds and prunes edges to dropped kinds", () => {
 		const full = buildOperatingModelGraph(base());
 		const g = filterGraph(full, {
-			kinds: kinds("metric", "concept"),
+			kinds: kinds("extract", "concept"),
 			hideOrphans: false,
 		});
-		expect(ids(g)).toEqual(new Set(["metric:gross_margin", "concept:revenue"]));
-		// The metric→concept edge survives (both endpoints kept); concept→column is
-		// pruned because the column kind is filtered out.
+		// Both extracts + both concepts survive; the extract→concept edges are kept.
+		expect(ids(g)).toEqual(
+			new Set([
+				"extract:gross_margin:revenue",
+				"extract:gross_margin:cost_of_goods_sold",
+				"concept:revenue",
+				"concept:cost_of_goods_sold",
+			]),
+		);
+		// formula→extract (formula dropped) and concept→column (column dropped) are pruned.
 		expect(edgeKinds(g)).toEqual(
-			new Set(["metric:gross_margin->concept:revenue:references"]),
+			new Set([
+				"extract:gross_margin:revenue->concept:revenue:references",
+				"extract:gross_margin:cost_of_goods_sold->concept:cost_of_goods_sold:references",
+			]),
 		);
 	});
 
 	it("hideOrphans drops nodes left with zero edges", () => {
 		const full = buildOperatingModelGraph(base());
-		// metric + cycle both linked ONLY to concept — remove concept and they orphan.
+		// metric links only to its formula, cycle only to concept — both orphan when
+		// those kinds are filtered out.
 		const opts = { kinds: kinds("metric", "cycle") };
 		expect(ids(filterGraph(full, { ...opts, hideOrphans: false }))).toEqual(
 			new Set(["metric:gross_margin", "cycle:revenue"]),
@@ -212,6 +381,19 @@ describe("filterGraph (kind toggles + hide-orphans)", () => {
 		expect(
 			filterGraph(full, { ...opts, hideOrphans: true }).nodes,
 		).toHaveLength(0);
+	});
+
+	it("the metrics preset carries the metric's step spine (formula/extract/constant)", () => {
+		const full = buildOperatingModelGraph(base());
+		const g = filterGraph(full, {
+			kinds: new Set(OM_PRESET_KINDS.metrics),
+			hideOrphans: true,
+		});
+		const nodeIds = ids(g);
+		expect(nodeIds).toContain("metric:gross_margin");
+		expect(nodeIds).toContain("formula:gross_margin:gross_margin");
+		expect(nodeIds).toContain("extract:gross_margin:revenue");
+		expect(nodeIds).not.toContain("validation:margin_positive");
 	});
 
 	it("the cycles preset isolates the cycle spine (no metric/validation/driver)", () => {

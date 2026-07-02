@@ -187,6 +187,9 @@ function FitOnLayout({ layout }: { layout: Node[] }) {
 // it always rides in the effective filter set.
 const TOGGLE_KINDS: readonly OMNodeKind[] = [
 	"metric",
+	"formula",
+	"extract",
+	"constant",
 	"validation",
 	"cycle",
 	"driver",
@@ -419,10 +422,46 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 					)}
 				</Stack>
 			);
+		case "extract":
+			return (
+				<Stack gap="xs">
+					{d.standardField ? (
+						<Field label="Concept" value={d.standardField} />
+					) : null}
+					{d.statement ? <Field label="Statement" value={d.statement} /> : null}
+					{d.aggregation ? (
+						<Field label="Aggregation" value={d.aggregation} />
+					) : null}
+					<Text size="sm" c="dimmed">
+						An extract pulls one concept from the data; it is grounded when the
+						concept resolves to a column below it, ungrounded when it doesn't.
+					</Text>
+				</Stack>
+			);
+		case "formula":
+			return (
+				<Stack gap="xs">
+					{d.outputStep ? <Field label="Role" value="metric result" /> : null}
+					{d.expression ? (
+						<Field label="Expression" value={d.expression} />
+					) : (
+						<Text size="sm" c="dimmed">
+							No expression.
+						</Text>
+					)}
+				</Stack>
+			);
+		case "constant":
+			return (
+				<Stack gap="xs">
+					{d.parameter ? <Field label="Parameter" value={d.parameter} /> : null}
+					<Field label="Value" value={d.value ?? "—"} />
+				</Stack>
+			);
 		case "concept":
 			return (
 				<Text size="sm" c="dimmed">
-					A vocabulary concept — the hub linking the metrics, cycles and
+					A vocabulary concept — the hub linking the metric extracts, cycles and
 					validations that reference it to the columns it grounds to.
 				</Text>
 			);

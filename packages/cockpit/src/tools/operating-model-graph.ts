@@ -8,7 +8,10 @@
 //
 // THE SHAPE: concepts are the hub. The real, queryable edges are artifact → concept
 // → column (NOT artifact → artifact, which doesn't exist in the data):
-//   - concept → metric  : `sql_snippets` (graph:<id> source) keyed by standard_field
+//   - metric  → step    : `lifecycle_artifacts.graph_definition` (the effective, overlay-
+//                          inclusive DAG) unfolds into formula / extract / constant step
+//                          nodes so the canvas shows HOW a metric is computed (DAT-591)
+//   - extract → concept : an extract step's `source.standard_field` (which concept it pulls)
 //   - concept → column  : `semantic_annotations.business_concept` (the GROUNDED column —
 //                          the actual column, not the pre-grounding YAML hint)
 //   - column  → column  : `current_relationships` (FK)
@@ -26,6 +29,9 @@ import { displayTableName, stripSrcDigests } from "../lib/display-names";
 export type OMNodeKind =
 	| "concept"
 	| "metric"
+	| "formula"
+	| "extract"
+	| "constant"
 	| "validation"
 	| "cycle"
 	| "table"
@@ -35,6 +41,9 @@ export type OMNodeKind =
 /** Every node kind, in a stable order — the source of truth for filter UIs. */
 export const OM_NODE_KINDS: readonly OMNodeKind[] = [
 	"metric",
+	"formula",
+	"extract",
+	"constant",
 	"validation",
 	"cycle",
 	"driver",
@@ -44,7 +53,8 @@ export const OM_NODE_KINDS: readonly OMNodeKind[] = [
 ] as const;
 
 export type OMEdgeKind =
-	| "references" // metric → concept, cycle → concept
+	| "references" // extract → concept, cycle → concept
+	| "computes" // metric → step, formula → input step (a metric's internal DAG)
 	| "grounds" // concept → column
 	| "relates" // column → column (FK)
 	| "drives" // driver → column
@@ -61,6 +71,35 @@ interface MetricData {
 	snippetCount: number;
 	/** The metric's validated snippet SQL bodies, joined as steps (null when none). */
 	sql: string | null;
+}
+/** One `extract` step of a metric's DAG — the SQL snippet that pulls a concept. */
+interface ExtractData {
+	kind: "extract";
+	graphId: string;
+	stepId: string;
+	/** The concept this extract pulls (source.standard_field); null when it reads a
+	 *  raw table.column instead — then it grounds to no concept node. */
+	standardField: string | null;
+	statement: string | null;
+	aggregation: string | null;
+}
+/** One `formula` step — an expression combining the steps it depends on. */
+interface FormulaData {
+	kind: "formula";
+	graphId: string;
+	stepId: string;
+	expression: string | null;
+	/** True on the metric's output formula (its result is the metric's value). */
+	outputStep: boolean;
+}
+/** One `constant` step — a fixed value / declared parameter default. */
+interface ConstantData {
+	kind: "constant";
+	graphId: string;
+	stepId: string;
+	parameter: string | null;
+	/** The resolved value/default, stringified for display (null when neither set). */
+	value: string | null;
 }
 interface ValidationData {
 	kind: "validation";
@@ -93,6 +132,9 @@ interface DriverData {
 export type OMNodeData =
 	| ConceptData
 	| MetricData
+	| ExtractData
+	| FormulaData
+	| ConstantData
 	| ValidationData
 	| CycleData
 	| TableData
@@ -129,11 +171,10 @@ export interface MetricInput {
 	snippetCount: number;
 	/** Joined snippet SQL bodies for the metric, or null when it has no snippets. */
 	sql: string | null;
-}
-/** One (metric, concept) pair from a `graph:<id>` snippet's `standard_field`. */
-export interface MetricConceptInput {
-	graphId: string;
-	concept: string;
+	/** The engine-persisted effective DAG (`graph_definition` json) — parsed into
+	 *  typed step nodes. `unknown` at the DB boundary; null when the metric row
+	 *  predates the column or carries no definition. */
+	dag: unknown;
 }
 export interface CycleInput {
 	canonicalType: string;
@@ -190,7 +231,6 @@ export interface TableInput {
 
 export interface OperatingModelGraphInput {
 	metrics: MetricInput[];
-	metricConcepts: MetricConceptInput[];
 	cycles: CycleInput[];
 	validations: ValidationInput[];
 	drivers: DriverInput[];
@@ -209,6 +249,145 @@ const cycleNodeId = (canonical: string) => `cycle:${canonical}`;
 const tableNodeId = (id: string) => `table:${id}`;
 const columnNodeId = (id: string) => `column:${id}`;
 const driverNodeId = (measureColumnId: string) => `driver:${measureColumnId}`;
+// Step nodes are namespaced by their owning metric — the same step name (e.g.
+// "revenue") is a distinct extract in every metric that pulls it, possibly with a
+// different aggregation, so it must not collapse to one shared node.
+const stepNodeId = (graphId: string, kind: MetricStepKind, stepId: string) =>
+	`${kind}:${graphId}:${stepId}`;
+
+// --- Metric DAG parsing (the engine-persisted effective graph) --------------
+
+export type MetricStepKind = "extract" | "formula" | "constant";
+
+/** One parsed step of a metric's effective DAG (a `dependencies` entry). */
+export interface MetricStep {
+	stepId: string;
+	kind: MetricStepKind;
+	/** extract: which concept it pulls (source.standard_field) + from where/how. */
+	standardField: string | null;
+	statement: string | null;
+	aggregation: string | null;
+	/** formula: the expression and the step ids it combines. */
+	expression: string | null;
+	dependsOn: string[];
+	/** constant: the parameter name and its resolved value/default (stringified). */
+	parameter: string | null;
+	value: string | null;
+	outputStep: boolean;
+}
+
+/** A metric's parsed effective DAG — from the persisted `graph_definition` json. */
+export interface MetricDag {
+	steps: MetricStep[];
+	unit: string | null;
+	decimalPlaces: number | null;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+	typeof v === "object" && v !== null && !Array.isArray(v);
+
+const asString = (v: unknown): string | null =>
+	typeof v === "string" ? v : null;
+
+const asStepKind = (v: unknown): MetricStepKind =>
+	v === "formula" || v === "constant" ? v : "extract";
+
+/**
+ * Parse the engine-persisted effective DAG (`current_lifecycle_artifacts.
+ * graph_definition`, a `metric`-row-only json) into the typed steps the canvas
+ * renders. The json is `unknown` at the DB boundary (React idiom 11) — every
+ * field is narrowed, an unparseable / step-less shape yields null (the metric
+ * then shows as a bare node, born-loud, never a throw). Mirrors the engine
+ * loader's step read (`graphs/loader.py::_parse_step`): type default extract,
+ * value falls back to default.
+ */
+export function parseMetricDag(raw: unknown): MetricDag | null {
+	if (!isRecord(raw)) return null;
+	const deps = raw.dependencies;
+	if (!isRecord(deps)) return null;
+
+	const steps: MetricStep[] = [];
+	for (const [stepId, stepRaw] of Object.entries(deps)) {
+		if (!isRecord(stepRaw)) continue;
+		const source = isRecord(stepRaw.source) ? stepRaw.source : null;
+		const rawValue = stepRaw.value ?? stepRaw.default;
+		steps.push({
+			stepId,
+			kind: asStepKind(stepRaw.type),
+			standardField: source ? asString(source.standard_field) : null,
+			statement: source ? asString(source.statement) : null,
+			aggregation: asString(stepRaw.aggregation),
+			expression: asString(stepRaw.expression),
+			dependsOn: Array.isArray(stepRaw.depends_on)
+				? stepRaw.depends_on.filter((d): d is string => typeof d === "string")
+				: [],
+			parameter: asString(stepRaw.parameter),
+			value:
+				typeof rawValue === "number"
+					? String(rawValue)
+					: typeof rawValue === "boolean"
+						? String(rawValue)
+						: asString(rawValue),
+			outputStep: stepRaw.output_step === true,
+		});
+	}
+	if (steps.length === 0) return null;
+
+	const output = isRecord(raw.output) ? raw.output : null;
+	const decimals = output?.decimal_places;
+	return {
+		steps,
+		unit: output ? asString(output.unit) : null,
+		decimalPlaces: typeof decimals === "number" ? decimals : null,
+	};
+}
+
+/** Build the typed canvas node for one metric step (label + kind-specific data). */
+function stepNode(graphId: string, s: MetricStep): OMNode {
+	const id = stepNodeId(graphId, s.kind, s.stepId);
+	switch (s.kind) {
+		case "extract":
+			return {
+				id,
+				kind: "extract",
+				label: s.standardField ?? s.stepId,
+				data: {
+					kind: "extract",
+					graphId,
+					stepId: s.stepId,
+					standardField: s.standardField,
+					statement: s.statement,
+					aggregation: s.aggregation,
+				},
+			};
+		case "formula":
+			return {
+				id,
+				kind: "formula",
+				label: s.expression ?? s.stepId,
+				data: {
+					kind: "formula",
+					graphId,
+					stepId: s.stepId,
+					expression: s.expression,
+					outputStep: s.outputStep,
+				},
+			};
+		case "constant":
+			return {
+				id,
+				kind: "constant",
+				label: s.parameter ?? s.stepId,
+				data: {
+					kind: "constant",
+					graphId,
+					stepId: s.stepId,
+					parameter: s.parameter,
+					value: s.value,
+				},
+			};
+	}
+}
 
 /** The strongest driver dimensions' names (digest-stripped), defensively narrowed. */
 function topDimensionNames(rankedDimensions: unknown): string[] {
@@ -270,7 +449,13 @@ export function buildOperatingModelGraph(
 		});
 	};
 
-	// Metrics (all of them — ungrounded metrics show their state, just no concept edges).
+	// Metrics + their effective DAG (DAT-591). Every metric is a node; its
+	// persisted graph_definition unfolds into typed step nodes — formula / extract
+	// / constant — so the canvas shows HOW a metric is computed and WHICH extracts
+	// reach a grounded concept, not an undifferentiated "concept" pile. The DAG is
+	// persisted at declare time (before grounding), so an ungroundable metric still
+	// shows its structure: an extract whose concept never grounds is visibly a leaf
+	// with no column beneath it.
 	for (const m of input.metrics) {
 		addNode({
 			id: metricNodeId(m.graphId),
@@ -284,13 +469,39 @@ export function buildOperatingModelGraph(
 				sql: m.sql,
 			},
 		});
-	}
 
-	// concept → metric (metric references the concept via standard_field).
-	for (const mc of input.metricConcepts) {
-		if (!nodes.has(metricNodeId(mc.graphId))) continue;
-		addConcept(mc.concept);
-		addEdge(metricNodeId(mc.graphId), conceptNodeId(mc.concept), "references");
+		const dag = parseMetricDag(m.dag);
+		if (!dag) continue;
+		const stepById = new Map(dag.steps.map((s) => [s.stepId, s]));
+		const nodeIdOf = (s: MetricStep) => stepNodeId(m.graphId, s.kind, s.stepId);
+
+		// One node per step; an extract step references its concept (standard_field)
+		// — the seam onto the shared concept → column grounding spine.
+		for (const s of dag.steps) {
+			addNode(stepNode(m.graphId, s));
+			if (s.kind === "extract" && s.standardField) {
+				addConcept(s.standardField);
+				addEdge(nodeIdOf(s), conceptNodeId(s.standardField), "references");
+			}
+		}
+
+		// Intra-metric computation edges: a formula computes FROM each input step.
+		for (const s of dag.steps) {
+			if (s.kind !== "formula") continue;
+			for (const dep of s.dependsOn) {
+				const depStep = stepById.get(dep);
+				if (depStep) addEdge(nodeIdOf(s), nodeIdOf(depStep), "computes");
+			}
+		}
+
+		// The metric computes from its root step(s) — those nothing else depends on
+		// (the output formula is a root; a stray disconnected step roots too, so it
+		// never floats free of the metric). Robust without trusting output_step.
+		const dependedOn = new Set(dag.steps.flatMap((s) => s.dependsOn));
+		for (const s of dag.steps) {
+			if (!dependedOn.has(s.stepId))
+				addEdge(metricNodeId(m.graphId), nodeIdOf(s), "computes");
+		}
 	}
 
 	// concept → column (the grounded, actual column).
@@ -503,7 +714,16 @@ export type OMPreset = "full" | "metrics" | "validations" | "cycles";
 
 export const OM_PRESET_KINDS: Record<OMPreset, readonly OMNodeKind[]> = {
 	full: OM_NODE_KINDS,
-	metrics: ["metric", "driver", "concept", "table", "column"],
+	metrics: [
+		"metric",
+		"formula",
+		"extract",
+		"constant",
+		"driver",
+		"concept",
+		"table",
+		"column",
+	],
 	validations: ["validation", "concept", "table", "column"],
 	cycles: ["cycle", "concept", "table", "column"],
 };

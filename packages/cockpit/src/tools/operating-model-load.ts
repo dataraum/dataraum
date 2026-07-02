@@ -7,7 +7,10 @@
 //
 // Reuses the look_* read contracts for metric/cycle/validation lifecycle state;
 // reads the views directly for the columns those projections drop (measure_column_id,
-// sql_used) and for the concept/grounding/relationship/column substrate.
+// sql_used, graph_definition) and for the concept/grounding/relationship/column
+// substrate. A metric's step structure comes from the ONE Postgres source — the
+// effective DAG the engine persists onto its lifecycle row (graph_definition,
+// DAT-591) — not from re-reading config or re-merging the overlay in the cockpit.
 
 import { and, eq, isNotNull, like } from "drizzle-orm";
 
@@ -17,6 +20,7 @@ import {
 	columns as columnsView,
 	currentColumnConcepts,
 	currentDriverRankings,
+	currentLifecycleArtifacts,
 	currentRelationships,
 	currentValidationResults,
 	sqlSnippets,
@@ -31,7 +35,6 @@ import {
 	type ConceptColumnInput,
 	type CycleInput,
 	type DriverInput,
-	type MetricConceptInput,
 	type MetricInput,
 	type OperatingModelGraph,
 	type RelationshipInput,
@@ -59,7 +62,8 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 	]);
 
 	const [
-		conceptSnippetRows,
+		metricSnippetRows,
+		metricDagRows,
 		conceptColumnRows,
 		driverRows,
 		relationshipRows,
@@ -67,13 +71,12 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 		tableRows,
 		validationSqlRows,
 	] = await Promise.all([
-		// All graph snippets (NOT filtered on standard_field) — the rows feed BOTH the
-		// concept edges (steps that carry a standard_field) and the per-metric SQL
-		// (every step's validated body, incl. compute steps with no standard_field).
+		// Every graph snippet's validated SQL body (keyed by metric via the graph:<id>
+		// source) — the per-metric assembled SQL shown in the metric detail panel. The
+		// metric's STRUCTURE (steps/kinds) comes from graph_definition below, not here.
 		metadataDb
 			.select({
 				source: sqlSnippets.source,
-				standardField: sqlSnippets.standardField,
 				sql: sqlSnippets.sql,
 			})
 			.from(sqlSnippets)
@@ -83,6 +86,16 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 					like(sqlSnippets.source, "graph:%"),
 				),
 			),
+		// The effective (shipped ⊕ overlay) DAG the metrics phase assembled from,
+		// persisted onto each metric's lifecycle row (DAT-591). The ONE Postgres
+		// source for the step nodes — overlay-inclusive, zero divergence.
+		metadataDb
+			.select({
+				graphId: currentLifecycleArtifacts.artifactKey,
+				graphDefinition: currentLifecycleArtifacts.graphDefinition,
+			})
+			.from(currentLifecycleArtifacts)
+			.where(eq(currentLifecycleArtifacts.artifactType, "metric")),
 		metadataDb
 			.select({
 				concept: currentColumnConcepts.businessConcept,
@@ -138,18 +151,20 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 		const idx = source.indexOf(":");
 		return idx === -1 ? source : source.slice(idx + 1);
 	};
-	const metricConcepts: MetricConceptInput[] = [];
 	const sqlByMetric = new Map<string, string[]>();
-	for (const r of conceptSnippetRows) {
-		if (!r.source) continue;
+	for (const r of metricSnippetRows) {
+		if (!r.source || !r.sql) continue;
 		const graphId = graphIdOf(r.source);
-		if (r.standardField)
-			metricConcepts.push({ graphId, concept: r.standardField });
-		if (r.sql) {
-			const steps = sqlByMetric.get(graphId) ?? [];
-			steps.push(r.sql);
-			sqlByMetric.set(graphId, steps);
-		}
+		const steps = sqlByMetric.get(graphId) ?? [];
+		steps.push(r.sql);
+		sqlByMetric.set(graphId, steps);
+	}
+
+	// The effective DAG per metric (graph_definition), keyed by graph_id. Left as
+	// `unknown` — parseMetricDag narrows it at the pure builder's boundary.
+	const dagByMetric = new Map<string, unknown>();
+	for (const r of metricDagRows) {
+		if (r.graphId) dagByMetric.set(r.graphId, r.graphDefinition ?? null);
 	}
 
 	const conceptColumns: ConceptColumnInput[] = conceptColumnRows
@@ -219,6 +234,7 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			stateReason: m.state_reason,
 			snippetCount: m.snippet_count,
 			sql: steps?.length ? steps.join("\n\n-- ── next step ──\n\n") : null,
+			dag: dagByMetric.get(m.graph_id) ?? null,
 		};
 	});
 
@@ -245,7 +261,6 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 
 	const graph = buildOperatingModelGraph({
 		metrics,
-		metricConcepts,
 		cycles,
 		validations,
 		drivers,

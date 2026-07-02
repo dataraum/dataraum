@@ -8,7 +8,10 @@ import { Badge, Group, Paper, Stack, Text } from "@mantine/core";
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react";
 import {
 	Columns3,
+	Database,
+	FunctionSquare,
 	Gauge,
+	Hash,
 	Lightbulb,
 	type LucideIcon,
 	Network,
@@ -32,6 +35,11 @@ export type OMRfNode = Node<OMRfData, "om">;
 const KIND_STYLE: Record<OMNodeKind, { color: string; Icon: LucideIcon }> = {
 	concept: { color: "grape", Icon: Lightbulb },
 	metric: { color: "blue", Icon: Gauge },
+	// The metric's DAG guts: a formula computes, an extract pulls from the data, a
+	// constant is a fixed value — each visually distinct so the structure reads.
+	formula: { color: "violet", Icon: FunctionSquare },
+	extract: { color: "cyan", Icon: Database },
+	constant: { color: "yellow", Icon: Hash },
 	validation: { color: "teal", Icon: ShieldCheck },
 	cycle: { color: "indigo", Icon: RefreshCw },
 	table: { color: "gray", Icon: Table2 },
@@ -72,6 +80,20 @@ function statusBadge(om: OMNode): React.ReactNode {
 			return om.data.completionRate !== null ? (
 				<Badge size="xs" variant="light" color="indigo">
 					{Math.round(om.data.completionRate * 100)}%
+				</Badge>
+			) : null;
+		// Extract shows its aggregation (sum / avg / …); constant shows its value —
+		// the at-a-glance signal that differentiates the step at a distance.
+		case "extract":
+			return om.data.aggregation ? (
+				<Badge size="xs" variant="light" color="cyan">
+					{om.data.aggregation}
+				</Badge>
+			) : null;
+		case "constant":
+			return om.data.value !== null ? (
+				<Badge size="xs" variant="light" color="yellow">
+					{om.data.value}
 				</Badge>
 			) : null;
 		case "driver":

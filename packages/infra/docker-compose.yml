@@ -1,5 +1,13 @@
 # DataRaum platform stack — Postgres + Temporal + engine activity worker (Python) + cockpit (TanStack Start).
 #
+# This file BUILDS the engine + cockpit images from this checkout — it is the
+# dev / CI / local-smoke face. To run the PUBLISHED release images instead (a
+# deploy host, no build toolchain), overlay docker-compose.release.yml, which
+# pins the app services to `image: ghcr.io/dataraum/...:$DATARAUM_VERSION`:
+#   DATARAUM_VERSION=1.2.3 docker compose \
+#     -f packages/infra/docker-compose.yml -f packages/infra/docker-compose.release.yml \
+#     up -d --wait --no-build
+#
 # Run from workspace root:
 #   docker compose -f packages/infra/docker-compose.yml --env-file packages/infra/.env up -d --wait
 # Or via the root Makefile:

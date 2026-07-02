@@ -263,11 +263,12 @@ export const currentLifecycleArtifacts = metadataSchema
 		strictness: doublePrecision(),
 		groundedAgainst: json("grounded_against"),
 		teaches: json(),
+		graphDefinition: json("graph_definition"),
 		createdAt: timestamp("created_at"),
 		stateChangedAt: timestamp("state_changed_at"),
 	})
 	.as(
-		sql`SELECT artifact_id, artifact_type, artifact_key, run_id, state, state_reason, stage, strictness, grounded_against, teaches, created_at, state_changed_at FROM ws_00000000_0000_0000_0000_000000000001.lifecycle_artifacts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT artifact_id, artifact_type, artifact_key, run_id, state, state_reason, stage, strictness, grounded_against, teaches, graph_definition, created_at, state_changed_at FROM ws_00000000_0000_0000_0000_000000000001.lifecycle_artifacts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentMaterializationRecipes = metadataSchema

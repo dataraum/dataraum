@@ -61,20 +61,22 @@ class PermanentProviderError(ProviderError):
 class ToolDefinition(BaseModel):
     """Definition of a tool the LLM can use.
 
-    ``strict=True`` (the default) asks the API to guarantee the tool's
-    arguments validate against ``input_schema`` — this kills the
-    malformed-args class outright (e.g. Sonnet 5 stringifying a whole
-    payload into one field, seen in the 2026-07-02 smoke). Opt OUT for
-    schemas strict grammar compilation cannot represent: open maps
-    (``dict[str, …]`` → ``additionalProperties: <schema>``) and schemas
-    too large to compile (business_cycles timed out repeatedly, probed
-    2026-07-02).
+    ``strict=True`` asks the API to guarantee the tool's arguments validate
+    against ``input_schema`` — killing the malformed-args class (Sonnet 5
+    stringifying a whole payload into one field, 2026-07-02 smoke). It is
+    OPT-IN per tool, not the default: on the large batched extractions the
+    strict grammar made Sonnet 5 legally under-produce (column_annotation
+    emitted 1 of 8 tables, 642 output tokens vs 6060 — same smoke), so only
+    small fixed-shape outputs (validation_sql) enable it. The stringified-
+    payload hazard for non-strict tools is handled at the parse boundary
+    instead (the provider coerces a stringified array/object argument by
+    parsing it against the declared schema).
     """
 
     name: str
     description: str
     input_schema: dict[str, Any]  # JSON Schema for tool parameters
-    strict: bool = True
+    strict: bool = False
 
 
 class ToolCall(BaseModel):

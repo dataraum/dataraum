@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, cast
 
@@ -119,6 +120,45 @@ def _strict_tool_schema(node: Any) -> Any:
     if isinstance(node, list):
         return [_strict_tool_schema(v) for v in node]
     return node
+
+
+def _coerce_stringified_args(
+    tool_input: dict[str, Any], schema: dict[str, Any], *, label: str | None
+) -> dict[str, Any]:
+    """Parse tool arguments the model JSON-stringified against the schema.
+
+    Sonnet 5 occasionally serializes a whole array/object argument into a JSON
+    string (`{"tables": "[{…}]"}` — 2026-07-02 smoke, semantic_per_table died
+    on Pydantic list_type). The declared ``input_schema`` says which top-level
+    properties must be containers, so this boundary repairs exactly those:
+    a ``str`` value where the schema expects ``array``/``object`` is parsed;
+    everything else passes through untouched. Coercions are logged so the
+    frequency stays observable (the strict alternative is opt-in per tool —
+    see ``ToolDefinition.strict``).
+    """
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return tool_input
+    out = dict(tool_input)
+    for key, value in tool_input.items():
+        expected = properties.get(key)
+        if not isinstance(expected, dict) or not isinstance(value, str):
+            continue
+        if expected.get("type") not in ("array", "object"):
+            continue
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            continue
+        if isinstance(parsed, (list, dict)):
+            out[key] = parsed
+            logger.warning(
+                "stringified_tool_arg_coerced",
+                label=label,
+                argument=key,
+                expected_type=expected.get("type"),
+            )
+    return out
 
 
 # 4xx codes the user must fix — credentials, schema, request shape.
@@ -291,15 +331,22 @@ class AnthropicProvider(LLMProvider):
             text_content = ""
             tool_calls: list[ToolCall] = []
 
+            schemas_by_name = {t.name: t.input_schema for t in request.tools}
             for block in response.content:
                 if block.type == "text":
                     text_content += block.text
                 elif block.type == "tool_use":
+                    raw_input = dict(block.input) if block.input else {}
+                    tool_schema = schemas_by_name.get(block.name)
+                    if tool_schema is not None:
+                        raw_input = _coerce_stringified_args(
+                            raw_input, tool_schema, label=request.label
+                        )
                     tool_calls.append(
                         ToolCall(
                             id=block.id,
                             name=block.name,
-                            input=dict(block.input) if block.input else {},
+                            input=raw_input,
                         )
                     )
 

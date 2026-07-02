@@ -342,6 +342,11 @@ class ValidationAgent(LLMFeature):
                 "Analyze the schema to identify relevant columns and tables."
             ),
             input_schema=ValidationSQLOutput.model_json_schema(),
+            # Strict-compatible AND behaviorally safe here (smoke-verified
+            # 2026-07-02: 8/9 validations executed under strict) — a small
+            # fixed-shape output, unlike the batched extractors where strict
+            # grammar made the model under-produce.
+            strict=True,
         )
 
         model = self.provider.get_model_for_tier(feature_config.model_tier)

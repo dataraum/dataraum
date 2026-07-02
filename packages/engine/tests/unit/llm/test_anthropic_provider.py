@@ -358,7 +358,7 @@ class TestStrictTools:
         }
         sent = self._captured_tool(
             monkeypatch,
-            ToolDefinition(name="t", description="d", input_schema=schema),
+            ToolDefinition(name="t", description="d", input_schema=schema, strict=True),
         )
         assert sent["strict"] is True
         sent_schema = sent["input_schema"]
@@ -378,7 +378,68 @@ class TestStrictTools:
         }
         sent = self._captured_tool(
             monkeypatch,
-            ToolDefinition(name="t", description="d", input_schema=schema, strict=False),
+            ToolDefinition(name="t", description="d", input_schema=schema),
         )
         assert "strict" not in sent
         assert sent["input_schema"] == schema
+
+
+class TestStringifiedArgCoercion:
+    """The provider repairs JSON-stringified container arguments against the
+    declared schema (Sonnet 5 stringified a whole payload into one field —
+    2026-07-02 smoke) and leaves everything else untouched."""
+
+    def _converse_with_tool_use(
+        self, monkeypatch: pytest.MonkeyPatch, tool_input: dict[str, object]
+    ) -> dict[str, object]:
+        provider = _provider()
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="tool_use", id="t1", name="emit", input=tool_input)
+            ],
+            stop_reason="tool_use",
+            model="claude-x",
+            usage=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=1,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+        )
+        _patch_stream(monkeypatch, provider, lambda **_: response)
+        result = provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                tools=[
+                    ToolDefinition(
+                        name="emit",
+                        description="d",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "tables": {"type": "array"},
+                                "note": {"type": "string"},
+                            },
+                        },
+                    )
+                ],
+            )
+        ).unwrap()
+        return result.tool_calls[0].input
+
+    def test_stringified_array_is_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        coerced = self._converse_with_tool_use(
+            monkeypatch, {"tables": '[{"table_name": "t"}]', "note": "ok"}
+        )
+        assert coerced["tables"] == [{"table_name": "t"}]
+        assert coerced["note"] == "ok"
+
+    def test_plain_string_field_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A string field that happens to contain JSON must NOT be parsed —
+        # only schema-declared containers are coerced.
+        coerced = self._converse_with_tool_use(monkeypatch, {"note": '["not a list field"]'})
+        assert coerced["note"] == '["not a list field"]'
+
+    def test_unparseable_string_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        coerced = self._converse_with_tool_use(monkeypatch, {"tables": "not json"})
+        assert coerced["tables"] == "not json"

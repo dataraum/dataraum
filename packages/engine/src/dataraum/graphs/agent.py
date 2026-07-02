@@ -1263,9 +1263,17 @@ class GraphAgent(LLMFeature):
         ``failed=True`` (``failure_count=1`` → ``find_by_key`` keeps it OUT of reuse)
         plus ``{failure_mode, failure_reason}`` in provenance, so
         ``_build_prior_context`` can feed the exact prior SQL + reason to the next
-        authoring, and the cockpit can surface it on the ungroundable node. Only
-        freshly-GENERATED extract leaves are saved — cached dependency snippets are
-        never blamed for this node's verdict (DAT-636).
+        authoring, and the cockpit can surface it on the ungroundable node.
+
+        This loops over EVERY extract leaf in the graph (execution/verifier failure is
+        graph-level — there is no per-leaf attribution), stamping each with the same
+        graph-level ``reason``. It does NOT poison a shared, already-working extract:
+        ``save_snippet(failed=True)`` hits the first-writer-wins guard and leaves any
+        pre-existing HEALTHY row untouched (DAT-636). The residue is only precision — a
+        genuinely-fine leaf of a metric that failed elsewhere (e.g. at the formula) gets
+        a retained-failure row carrying a misattributed reason, which can nudge a
+        needless rewrite on the next run; it never yields a wrong value, and a later
+        clean authoring heals it.
         """
         from dataraum.query.snippet_library import SnippetLibrary
 
@@ -1546,7 +1554,12 @@ class GraphAgent(LLMFeature):
                         f"Prior SQL (do NOT re-emit unchanged):\n{rec.sql}\n"
                         "Revise to address the reason, or abstain (low-confidence)."
                     )
-        except Exception as e:  # pragma: no cover - feedback is best-effort
-            logger.debug("prior_failed_sql_lookup_failed", graph_id=graph.graph_id, error=str(e))
+        except Exception as e:
+            # Feedback is best-effort — a lookup hiccup must not fail metric authoring
+            # (the metric can still ground without the hint). But log LOUD (warning, not
+            # debug): a silent miss here means the retain-don't-drop loop is inert, and
+            # the happy path is covered by test_retained_failure_fed_back so a real
+            # wiring break fails CI rather than hiding here.
+            logger.warning("prior_failed_sql_lookup_failed", graph_id=graph.graph_id, error=str(e))
 
         return "\n\n".join(parts)

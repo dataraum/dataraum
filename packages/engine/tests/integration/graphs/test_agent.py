@@ -1141,3 +1141,80 @@ class TestPriorContextFeedback:
         graph = MagicMock()
         graph.graph_id = "g"
         assert self._agent()._build_prior_context(session, graph, None, "default") == ""
+
+    def test_retained_failure_fed_back(self, session: Session, sample_graph) -> None:
+        """DAT-543: a retained FAILED extract's SQL + reason reach the next authoring.
+
+        The retain-don't-drop PAYOFF, end-to-end over a REAL graph (the MagicMock
+        graphs above yield no steps, so they never exercise this block). Save a failed
+        snippet under ``sample_graph``'s EXTRACT key, then assert ``_build_prior_context``
+        feeds the exact prior SQL + reason back with the revise/abstain steer. This is
+        the test that fails loudly if the save↔read key or scoping ever drifts.
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        # sample_graph's lone EXTRACT step: standard_field="test_field",
+        # statement="test_table", aggregation="sum". Save a matching failed snippet.
+        SnippetLibrary(session, workspace_id=baseline_run_id()).save_snippet(
+            snippet_type="extract",
+            sql='SELECT SUM(x) AS value FROM t WHERE "period" = (SELECT MAX("period") FROM t)',
+            description="prior attempt",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance={
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "SENTINEL_NO_SUPPORT",
+            },
+            failed=True,
+        )
+        session.flush()
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "verifier_rejected" in out
+        assert "SENTINEL_NO_SUPPORT" in out
+        assert "SELECT SUM(x)" in out
+        assert "do NOT re-emit unchanged" in out
+
+    def test_retained_failure_reuse_excluded_but_fed_back(
+        self, session: Session, sample_graph
+    ) -> None:
+        """A retained failure is fed to prior_context but NOT offered as a reusable snippet.
+
+        Guards the two halves of flag-not-drop staying consistent: ``find_by_key`` (reuse)
+        must skip a ``failure_count>0`` row while ``_build_prior_context`` still surfaces it.
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        lib = SnippetLibrary(session, workspace_id=baseline_run_id())
+        lib.save_snippet(
+            snippet_type="extract",
+            sql="SELECT 1 AS value",
+            description="bad",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance={"failure_mode": "execution_failed", "failure_reason": "boom"},
+            failed=True,
+        )
+        session.flush()
+
+        # Reuse must NOT return it.
+        assert (
+            lib.find_by_key(
+                snippet_type="extract",
+                schema_mapping_id="default",
+                standard_field="test_field",
+                statement="test_table",
+                aggregation="sum",
+            )
+            is None
+        )
+        # …but prior_context must.
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+        assert "boom" in out

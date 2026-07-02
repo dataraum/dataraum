@@ -53,7 +53,6 @@ class ColumnContext:
     # Statistical metrics
     null_ratio: float | None = None
     cardinality_ratio: float | None = None
-    outlier_ratio: float | None = None
 
     # Value enumeration (DAT-616): the freq-ordered value-set the SQL agent
     # grounds metric predicates in, instead of improvising an ILIKE filter.
@@ -974,11 +973,6 @@ def build_execution_context(
             numeric_stats = profile_data.get("numeric_stats") or {}
             numeric_min = numeric_stats.get("min_value")
             numeric_max = numeric_stats.get("max_value")
-            # Raw outlier ratio is still surfaced as a neutral stat on the column
-            # context; it is NOT turned into a flag/caveat (DAT-543 — see below).
-            outlier_ratio = None
-            if quality:
-                outlier_ratio = quality.iqr_outlier_ratio or quality.zscore_outlier_ratio
 
             # Generate column flags (no outlier flag — DAT-543: outliers are not a
             # defect signal; heavy-tailed money columns naturally carry a high ratio).
@@ -1023,7 +1017,6 @@ def build_execution_context(
                     unit_source_column=concept.unit_source_column if concept else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
-                    outlier_ratio=outlier_ratio,
                     distinct_count=distinct_count,
                     top_values=top_values,
                     numeric_min=numeric_min,

@@ -597,9 +597,18 @@ export async function querySubAgent(
 	// from that batch (cheap local file read, not worth threading into the parallel set).
 	const conventionsBlock = await buildConventionsBlock(workspace.vertical);
 
-	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${
+	// DAT-660: the workspace context is session-stable (all blocks read from the
+	// promoted surface; conventions from the vertical's on-disk YAML), so it rides
+	// as a CACHED second system block below — identical bytes across every answer
+	// in a session AND across this loop's own iterations. Only the question is
+	// volatile, and it rides alone in the user message, past the cache breakpoint.
+	// (The previous shape — question first, context after, all uncached in the
+	// user message — inverted the shared-prefix pattern: nothing ever cached.)
+	const stableContext = `${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${
 		conventionsBlock ? `\n\n${conventionsBlock}` : ""
 	}`;
+
+	const userMessage = `<question>\n${question}\n</question>`;
 
 	// Per-invocation capture cell — run_steps writes the last validation (+ last failure)
 	// and emit_result writes the model's final draft. Isolated across concurrent calls.
@@ -634,7 +643,16 @@ export async function querySubAgent(
 		abortController,
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
-		systemPrompts: [getQueryInstructions()],
+		systemPrompts: [
+			{
+				content: getQueryInstructions(),
+				metadata: { cache_control: { type: "ephemeral" } },
+			},
+			{
+				content: stableContext,
+				metadata: { cache_control: { type: "ephemeral" } },
+			},
+		],
 		messages: [{ role: "user", content: userMessage }],
 		tools: [
 			snippetSearchTool,

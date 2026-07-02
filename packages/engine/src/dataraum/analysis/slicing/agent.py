@@ -122,6 +122,7 @@ class SlicingAgent(LLMFeature):
             tools=[tool],
             tool_choice={"type": "tool", "name": "analyze_slicing"},
             label="slicing_analysis",
+            effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
         )

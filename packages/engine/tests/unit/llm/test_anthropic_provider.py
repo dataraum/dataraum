@@ -394,9 +394,7 @@ class TestStringifiedArgCoercion:
     ) -> dict[str, object]:
         provider = _provider()
         response = SimpleNamespace(
-            content=[
-                SimpleNamespace(type="tool_use", id="t1", name="emit", input=tool_input)
-            ],
+            content=[SimpleNamespace(type="tool_use", id="t1", name="emit", input=tool_input)],
             stop_reason="tool_use",
             model="claude-x",
             usage=SimpleNamespace(
@@ -444,9 +442,7 @@ class TestStringifiedArgCoercion:
         coerced = self._converse_with_tool_use(monkeypatch, {"tables": "not json"})
         assert coerced["tables"] == "not json"
 
-    def test_whole_payload_stringified_into_field(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_whole_payload_stringified_into_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Smoke #6: the model serialized the ENTIRE input object into the
         # container field — the parsed dict's keys match the tool's own
         # properties, so it is adopted as the whole input.
@@ -455,3 +451,66 @@ class TestStringifiedArgCoercion:
             {"tables": '{"tables": [{"table_name": "t"}], "note": "n"}'},
         )
         assert coerced == {"tables": [{"table_name": "t"}], "note": "n"}
+
+
+class TestPromptCaching:
+    """The system prompt ships as a cached block (DAT-601): tools render before
+    system, so the one breakpoint caches tools + system across a run's repeated
+    calls. Volatile content rides in the user message, past the breakpoint."""
+
+    def test_system_becomes_cached_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = _provider()
+        captured: dict[str, object] = {}
+
+        def capture(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return _ok_response()
+
+        _patch_stream(monkeypatch, provider, capture)
+        provider.converse(
+            ConversationRequest(messages=[Message(role="user", content="hi")], system="be terse")
+        ).unwrap()
+        assert captured["system"] == [
+            {
+                "type": "text",
+                "text": "be terse",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+
+class TestEffort:
+    """Per-feature effort (DAT-603) reaches the API as output_config.effort —
+    only on models that accept the parameter (Haiku 4.5 rejects it)."""
+
+    def _capture_kwargs(
+        self, monkeypatch: pytest.MonkeyPatch, model: str, effort: str | None
+    ) -> dict[str, object]:
+        provider = _provider()
+        captured: dict[str, object] = {}
+
+        def capture(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return _ok_response()
+
+        _patch_stream(monkeypatch, provider, capture)
+        provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                model=model,
+                effort=effort,
+            )
+        ).unwrap()
+        return captured
+
+    def test_effort_sent_on_supporting_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        kwargs = self._capture_kwargs(monkeypatch, "claude-sonnet-5", "low")
+        assert kwargs["output_config"] == {"effort": "low"}
+
+    def test_effort_dropped_on_haiku(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        kwargs = self._capture_kwargs(monkeypatch, "claude-haiku-4-5", "low")
+        assert "output_config" not in kwargs
+
+    def test_no_effort_no_output_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        kwargs = self._capture_kwargs(monkeypatch, "claude-sonnet-5", None)
+        assert "output_config" not in kwargs

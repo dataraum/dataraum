@@ -358,6 +358,7 @@ class ValidationAgent(LLMFeature):
             tools=[tool],
             tool_choice={"type": "tool", "name": "generate_validation_sql"},
             label="validation_sql",
+            effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,

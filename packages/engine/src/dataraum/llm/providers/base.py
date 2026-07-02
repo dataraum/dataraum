@@ -113,6 +113,10 @@ class ConversationRequest(BaseModel):
     max_tokens: int = 4096
     temperature: float = 0.0
     model: str | None = None  # Override default model
+    # Per-feature output effort (DAT-603): "low" | "medium" | "high" | "xhigh"
+    # | "max". None = the API default. The provider only sends it to models
+    # that support the parameter.
+    effort: str | None = None
     # Greppable agent/phase tag for per-call telemetry (DAT-600). The provider
     # has no phase context of its own, so each call site stamps the prompt
     # template / feature name it is invoking (e.g. "graph_sql_generation").

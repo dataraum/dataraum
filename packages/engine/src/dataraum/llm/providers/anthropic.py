@@ -122,6 +122,25 @@ def _strict_tool_schema(node: Any) -> Any:
     return node
 
 
+# Models that accept ``output_config.effort``. Haiku 4.5 (the ``fast`` tier)
+# rejects the parameter, so it is deliberately absent.
+_EFFORT_SUPPORTING_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+
+def _supports_effort(model: str) -> bool:
+    """True when the model accepts ``output_config.effort``."""
+    return model.startswith(_EFFORT_SUPPORTING_PREFIXES)
+
+
 def _coerce_stringified_args(
     tool_input: dict[str, Any], schema: dict[str, Any], *, label: str | None
 ) -> dict[str, Any]:
@@ -323,13 +342,34 @@ class AnthropicProvider(LLMProvider):
                 kwargs["temperature"] = request.temperature
 
             if request.system:
-                kwargs["system"] = request.system
+                # DAT-601: cache the stable prefix. Tools render before system,
+                # so this one breakpoint caches tools + system together across
+                # the run's repeated calls (identical template per phase; the
+                # metrics/validation fan-outs repeat it 10-wide). Prefixes under
+                # the model's minimum cacheable size silently don't cache — no
+                # error, just cache_creation_input_tokens=0 in the telemetry.
+                # Volatile per-call data rides in the user message (the
+                # render_split contract), never ahead of this breakpoint.
+                kwargs["system"] = [
+                    {
+                        "type": "text",
+                        "text": request.system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
 
             if tools:
                 kwargs["tools"] = tools
 
             if request.tool_choice:
                 kwargs["tool_choice"] = request.tool_choice
+
+            # DAT-603: per-feature effort. Extraction agents run thinking-off +
+            # effort:low (shorter output = lower serial-decode latency). Only
+            # sent where the model supports the parameter — Haiku 4.5 rejects
+            # it, so the fast tier drops it silently.
+            if request.effort and _supports_effort(model):
+                kwargs["output_config"] = {"effort": request.effort}
 
             # Stream + accumulate instead of a one-shot create: the SDK refuses
             # a non-streaming request whose max_tokens it estimates could exceed

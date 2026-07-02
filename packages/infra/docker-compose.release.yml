@@ -1,0 +1,43 @@
+# Release overlay — run the PUBLISHED engine + cockpit images instead of building
+# from this checkout. Layer it ON TOP of docker-compose.yml on a deploy host (no
+# build toolchain, no source needed beyond these two compose files + .env):
+#
+#   export DATARAUM_VERSION=1.2.3            # a tag the Release workflow pushed
+#   docker compose \
+#     -f packages/infra/docker-compose.yml \
+#     -f packages/infra/docker-compose.release.yml \
+#     --env-file packages/infra/.env \
+#     up -d --wait --no-build
+#
+# Each app service here pins `image: ghcr.io/dataraum/...:${DATARAUM_VERSION}`
+# and `pull_policy: always`, so `up` fetches the published tag every time. The
+# `--no-build` flag is what makes this pull-ONLY: the base file's `build:`
+# sections still merge in (a compose overlay can't reliably delete them), so
+# WITHOUT --no-build a failed pull could silently build from whatever source
+# happens to be on the host — the wrong code if it isn't checked out at this
+# tag. With --no-build a missing/unreachable tag fails loud instead. The base
+# compose alone (dev / CI / local smoke) is untouched and still builds from
+# source. The infra images (postgres/temporal/seaweedfs) are already pinned in
+# the base file and need no override.
+#
+# DATARAUM_VERSION has no default here on purpose: a deploy must name the tag it
+# runs. (The base file's .env.example documents the var.)
+
+services:
+  engine-worker:
+    image: ghcr.io/dataraum/dataraum:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
+    pull_policy: always
+
+  # Present only under the multi-workspace profile, but pin it too so a
+  # profile-enabled deploy runs the same published engine image.
+  engine-worker-2:
+    image: ghcr.io/dataraum/dataraum:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
+    pull_policy: always
+
+  cockpit-migrate:
+    image: ghcr.io/dataraum/dataraum-cockpit-migrate:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
+    pull_policy: always
+
+  cockpit:
+    image: ghcr.io/dataraum/dataraum-cockpit:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
+    pull_policy: always

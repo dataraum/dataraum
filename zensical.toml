@@ -9,6 +9,7 @@ nav = [
   "index.md",
   { "Getting Started" = [
     "getting-started/overview.md",
+    "getting-started/running-the-stack.md",
   ] },
   { "Concepts" = [
     "concepts/approach.md",
@@ -19,6 +20,9 @@ nav = [
   ] },
   { "Under the hood" = [
     "platform/architecture.md",
+  ] },
+  { "Operations" = [
+    "operations/deployment.md",
   ] },
   { "Vision" = [
     "vision/architecture-future.md",

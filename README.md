@@ -48,6 +48,23 @@ open http://localhost:3000
 
 For UI iteration, run the cockpit dev server outside docker for hot reload — see `packages/cockpit/README.md`.
 
+### Run a released version (published images)
+
+The quick start above **builds** the engine and cockpit from source. To run the
+published release images instead — a deploy host, no build toolchain — layer the release
+overlay and name the version:
+
+```bash
+export DATARAUM_VERSION=1.2.3          # any tag from a GitHub Release
+docker compose \
+  -f packages/infra/docker-compose.yml -f packages/infra/docker-compose.release.yml \
+  --env-file packages/infra/.env up -d --wait --no-build
+```
+
+This pulls `ghcr.io/dataraum/{dataraum, dataraum-cockpit, dataraum-cockpit-migrate}` at
+that tag. See [Deployment](docs/operations/deployment.md) for the images, schema/migration
+handling, and the per-workspace topology.
+
 ## Develop
 
 - **Engine (Python):** `cd packages/engine && uv sync --group dev && uv run pytest --testmon tests/unit -q`. See `packages/engine/README.md` and `packages/engine/CLAUDE.md`.

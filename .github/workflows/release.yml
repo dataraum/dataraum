@@ -1,69 +1,38 @@
 name: Release
 
+# Publishes the shippable container images to GHCR on a GitHub Release. The
+# engine is a Temporal activity worker and the cockpit is a TanStack Start
+# server — both consumed as images, never as a PyPI/npm package (the engine's
+# PyPI publish + its `dataraum-mcp` entrypoint died with the MCP surface:
+# DAT-325 retired the transport, DAT-487 deleted the code). The git tag is the
+# single source of version truth: every image is tagged `:{tag}` + `:latest`.
+
 on:
     release:
         types: [published]
 
 jobs:
     preflight:
-        name: Preflight (version match + doc counts)
+        name: Preflight (doc counts)
         runs-on: ubuntu-latest
-        defaults:
-            run:
-                working-directory: packages/engine
-        steps:
-            - uses: actions/checkout@v7
-
-            # server.json (the MCP registry manifest) died with the MCP surface —
-            # DAT-325 retired the transport, DAT-487 deleted the code.
-            - name: Check tag == pyproject version
-              run: |
-                  set -e
-                  TAG_VERSION="${GITHUB_REF_NAME#v}"
-                  PYPROJECT_VERSION=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "(.*)"/\1/')
-
-                  echo "tag=$TAG_VERSION  pyproject=$PYPROJECT_VERSION"
-
-                  if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
-                      echo "::error::version mismatch — refusing to publish"
-                      exit 1
-                  fi
-
-            - name: Check doc counts (phases / detectors)
-              run: python scripts/check_doc_counts.py
-
-    pypi:
-        name: Publish to PyPI
-        needs: preflight
-        runs-on: ubuntu-latest
-        environment: pypi
-        defaults:
-            run:
-                working-directory: packages/engine
         permissions:
-            id-token: write
             contents: read
+        defaults:
+            run:
+                working-directory: packages/engine
         steps:
             - uses: actions/checkout@v7
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@v7
 
             - name: Set up Python
               uses: actions/setup-python@v6
               with:
                   python-version: "3.x"
 
-            - name: Build package
-              run: uv build
+            - name: Check doc counts (phases / detectors)
+              run: python scripts/check_doc_counts.py
 
-            - name: Publish to PyPI
-              uses: pypa/gh-action-pypi-publish@release/v1
-              with:
-                  packages-dir: packages/engine/dist
-
-    docker:
-        name: Push to GHCR
+    engine:
+        name: Push engine to GHCR
         needs: preflight
         runs-on: ubuntu-latest
         permissions:
@@ -92,3 +61,50 @@ jobs:
                   tags: |
                       ghcr.io/dataraum/dataraum:${{ steps.version.outputs.version }}
                       ghcr.io/dataraum/dataraum:latest
+
+    cockpit:
+        name: Push cockpit to GHCR
+        needs: preflight
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+        steps:
+            - uses: actions/checkout@v7
+
+            - name: Log in to GHCR
+              uses: docker/login-action@v4
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Extract version from tag
+              id: version
+              run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+            # Two images from one Dockerfile: the slim runner serves the app; the
+            # `build` stage carries drizzle-kit + the checked-in cockpit_db
+            # migrations and ships as the one-shot migrate image. The deploy runs
+            # migrate (`bun run db:migrate:cockpit`) before the cockpit serves —
+            # mirroring the `cockpit-migrate` service in docker-compose.yml. The
+            # engine's ws_<id> schema needs no migrate step: the worker
+            # self-bootstraps it at boot.
+            - name: Build and push cockpit (runner)
+              uses: docker/build-push-action@v7
+              with:
+                  context: packages/cockpit
+                  push: true
+                  tags: |
+                      ghcr.io/dataraum/dataraum-cockpit:${{ steps.version.outputs.version }}
+                      ghcr.io/dataraum/dataraum-cockpit:latest
+
+            - name: Build and push cockpit-migrate (build stage)
+              uses: docker/build-push-action@v7
+              with:
+                  context: packages/cockpit
+                  target: build
+                  push: true
+                  tags: |
+                      ghcr.io/dataraum/dataraum-cockpit-migrate:${{ steps.version.outputs.version }}
+                      ghcr.io/dataraum/dataraum-cockpit-migrate:latest

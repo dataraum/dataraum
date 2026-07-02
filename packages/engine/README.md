@@ -1,11 +1,7 @@
 # DataRaum Context Engine
 
-[![PyPI version](https://img.shields.io/pypi/v/dataraum)](https://pypi.org/project/dataraum/)
-[![Python](https://img.shields.io/pypi/pyversions/dataraum)](https://pypi.org/project/dataraum/)
 [![License](https://img.shields.io/github/license/dataraum/dataraum)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/dataraum/dataraum/ci.yml?branch=main)](https://github.com/dataraum/dataraum/actions)
-
-<!-- mcp-name: io.github.dataraum/dataraum -->
 
 A rich metadata context engine for AI-driven data analytics.
 

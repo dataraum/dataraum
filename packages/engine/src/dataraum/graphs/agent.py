@@ -34,10 +34,10 @@ from dataraum.llm.providers.base import LLMProvider
 
 from .models import (
     AssumptionBasis,
+    ExtractGroundingOutput,
     GraphAssumptionOutput,
     GraphExecution,
     GraphProvenanceOutput,
-    GraphSQLGenerationOutput,
     GraphStep,
     QueryAssumption,
     StepResult,
@@ -569,6 +569,12 @@ class GraphAgent(LLMFeature):
         context + field mappings. ``cached_snippets`` feeds the DAT-616 prior context
         (a cached extract is ASSEMBLED upstream, never re-authored), so an extract is a
         leaf with no dependency steps to carry into the prompt.
+
+        The output schema is single-extract (``ExtractGroundingOutput``, DAT-603): the
+        model returns one SQL statement and THIS code binds it to the graph's own leaf
+        id — the model never names a step, so the DAT-664 id-paraphrase class cannot
+        occur. The graph must therefore BE a single-extract mini-graph
+        (``node_warming.build_mini_graph``); anything else fails loud here.
         """
         from dataraum.llm.providers.base import (
             ConversationRequest,
@@ -576,13 +582,31 @@ class GraphAgent(LLMFeature):
             ToolDefinition,
         )
 
+        extract_leaves = [
+            step
+            for step in graph.steps.values()
+            if step.step_type == StepType.EXTRACT and step.source
+        ]
+        if len(extract_leaves) != 1 or len(graph.steps) != 1:
+            return Result.fail(
+                f"graph '{graph.graph_id}' is not a single-extract mini-graph "
+                f"({len(graph.steps)} steps, {len(extract_leaves)} extract leaves) — "
+                "authoring grounds exactly one leaf (DAT-646); metrics are assembled "
+                "from the binding map, never authored whole"
+            )
+        leaf = extract_leaves[0]
+
         # Serialize graph to YAML for LLM context.
         graph_yaml = self._graph_to_yaml(graph)
 
         prompt_name = "graph_sql_generation"
-        # Tier = balanced/Sonnet. Extract grounding needs the dataset context + field
-        # mappings — fail loud if the semantic phase did not produce them.
-        tier = "balanced"
+        # Tier/effort from feature config (DAT-603) — absent entry keeps the
+        # defaults: balanced tier, API-default effort. `enabled` is deliberately
+        # not consulted: grounding IS the pipeline, not an optional feature.
+        feature_config = self.config.features.graph_sql_generation
+        tier = feature_config.model_tier if feature_config else "balanced"
+        # Extract grounding needs the dataset context + field mappings — fail loud
+        # if the semantic phase did not produce them.
         if context.rich_context is None:
             return Result.fail(
                 "Cannot generate SQL without dataset context. "
@@ -642,8 +666,8 @@ class GraphAgent(LLMFeature):
         # Define tool for structured output
         tool = ToolDefinition(
             name="generate_sql",
-            description="Provide generated SQL for the graph specification",
-            input_schema=GraphSQLGenerationOutput.model_json_schema(),
+            description="Provide the SQL grounding the one concept in the graph specification",
+            input_schema=ExtractGroundingOutput.model_json_schema(),
         )
 
         # Call LLM with tool use
@@ -653,6 +677,7 @@ class GraphAgent(LLMFeature):
             tools=[tool],
             tool_choice={"type": "tool", "name": "generate_sql"},
             label=prompt_name,
+            effort=feature_config.effort if feature_config else None,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
@@ -674,24 +699,25 @@ class GraphAgent(LLMFeature):
             return Result.fail(f"Unexpected tool call: {tool_call.name}")
 
         try:
-            output = GraphSQLGenerationOutput.model_validate(tool_call.input)
+            output = ExtractGroundingOutput.model_validate(tool_call.input)
         except Exception as e:
             return Result.fail(f"Failed to validate tool response: {e}")
 
-        # Create GeneratedCode from Pydantic output
+        # Bind the one generated SQL to the graph's own leaf id (the model never
+        # names a step — DAT-664's id-paraphrase class is gone by construction)
+        # and surface it through the same composed shape the cache path produces.
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
-            summary=output.summary,
+            summary=output.description,
             steps=[
                 {
-                    "step_id": step.step_id,
-                    "sql": step.sql,
-                    "description": step.description,
+                    "step_id": leaf.step_id,
+                    "sql": output.sql,
+                    "description": output.description,
                 }
-                for step in output.steps
             ],
-            final_sql=output.final_sql,
+            final_sql=f"SELECT * FROM {leaf.step_id}",
             column_mappings=output.column_mappings,
             provenance=output.provenance,
             assumptions=output.assumptions or [],
@@ -709,8 +735,8 @@ class GraphAgent(LLMFeature):
         basis = output.provenance.column_mappings_basis if output.provenance else {}
         response_body = json.dumps(
             {
-                "final_sql": output.final_sql,
-                "steps": [{"step_id": s.step_id, "sql": s.sql} for s in output.steps],
+                "step_id": leaf.step_id,
+                "sql": output.sql,
                 "field_resolution": output.provenance.field_resolution
                 if output.provenance
                 else None,
@@ -770,8 +796,9 @@ class GraphAgent(LLMFeature):
             )
         execution.assumptions = assumptions
 
-        # Get max repair attempts from config (default 2)
-        feature_config = getattr(self.config.features, "sql_repair", None)
+        # Get max repair attempts from config (default 2). max_repair_attempts is
+        # a YAML extra on FeatureConfig (extra="allow"), so getattr with default.
+        feature_config = self.config.features.sql_repair
         max_repair_attempts = (
             getattr(feature_config, "max_repair_attempts", 2) if feature_config else 2
         )
@@ -986,13 +1013,14 @@ class GraphAgent(LLMFeature):
         """
         from dataraum.llm.providers.base import ConversationRequest, Message
 
-        # Check if sql_repair feature is enabled
-        feature_config = getattr(self.config.features, "sql_repair", None)
-        if not feature_config or not getattr(feature_config, "enabled", True):
+        # Check if sql_repair feature is enabled. The field is DECLARED on
+        # LLMFeatures (DAT-603) — before that, the YAML entry was silently dropped
+        # by pydantic and this guard disabled repair on every call.
+        feature_config = self.config.features.sql_repair
+        if not feature_config or not feature_config.enabled:
             return Result.fail("SQL repair feature is disabled")
 
-        # Get model tier from config (default to fast)
-        model_tier = getattr(feature_config, "model_tier", "fast")
+        model_tier = feature_config.model_tier
 
         # Build multi-table schema for context
         schema_info = self._build_schema_info(context)
@@ -1022,7 +1050,7 @@ class GraphAgent(LLMFeature):
             temperature=temperature,
             model=self.provider.get_model_for_tier(model_tier),
             label="sql_repair",
-            effort=getattr(feature_config, "effort", None),
+            effort=feature_config.effort,
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —
@@ -1149,7 +1177,6 @@ class GraphAgent(LLMFeature):
                 "field_resolution": prov.field_resolution,
                 "was_repaired": repaired,
                 "column_mappings_basis": prov.column_mappings_basis,
-                "llm_reasoning": prov.llm_reasoning,
             }
         elif repaired:
             provenance = {"was_repaired": True}
@@ -1197,34 +1224,6 @@ class GraphAgent(LLMFeature):
             if step_id:
                 generated_steps[step_id] = step_dict
 
-        # Sonnet 5 paraphrases step ids instead of echoing them (`revenue` comes
-        # back as `revenue_extract`, `accounts_receivable` as `ar_extract` —
-        # 2026-07-02), so a name-keyed lookup misses and the snippet silently
-        # never persists: the leaf grounds, assembly then finds an empty cache,
-        # and every metric composed from it dies "absent from the snippet
-        # cache". The authoring path grounds exactly ONE extract leaf per call
-        # (DAT-646), so when the shapes are unambiguous — one EXTRACT step in
-        # the graph, one generated step — bind them positionally regardless of
-        # the model's self-chosen id.
-        extract_steps = [
-            (sid, st)
-            for sid, st in graph.steps.items()
-            if st.step_type == StepType.EXTRACT and st.source
-        ]
-        if (
-            len(extract_steps) == 1
-            and len(generated_code.steps) == 1
-            and extract_steps[0][0] not in generated_steps
-        ):
-            model_id = generated_code.steps[0].get("step_id", "")
-            logger.info(
-                "snippet_step_id_rebound",
-                graph_id=graph.graph_id,
-                step_id=extract_steps[0][0],
-                model_step_id=model_id,
-            )
-            generated_steps = {extract_steps[0][0]: generated_code.steps[0]}
-
         repair_by_step: dict[str, StepResult] = {}
         if step_results:
             for sr in step_results:
@@ -1241,9 +1240,11 @@ class GraphAgent(LLMFeature):
                 continue
             gen_step = generated_steps.get(step_id)
             if not gen_step:
-                # Ambiguous drift (multi-step output or multi-leaf graph) — a
-                # grounded leaf whose snippet fails to save starves every metric
-                # composed from it, so this must be LOUD, never silent.
+                # Structurally unreachable since DAT-603: step ids are assigned by
+                # THIS code (authoring binds the leaf id; compose copies graph ids) —
+                # the model can no longer drift them (DAT-664). Kept LOUD as a
+                # regression guard: a grounded leaf whose snippet fails to save
+                # starves every metric composed from it.
                 logger.warning(
                     "snippet_save_skipped",
                     graph_id=graph.graph_id,

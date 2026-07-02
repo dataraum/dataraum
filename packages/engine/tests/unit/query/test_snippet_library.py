@@ -536,13 +536,13 @@ class TestSnippetLibraryFailedRetention:
     def test_success_heals_a_prior_failure(self, session):
         """A clean success on a previously-failed key clears the flag → reusable again."""
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
-        common = dict(
-            snippet_type="extract",
-            schema_mapping_id="s3",
-            standard_field="accounts_payable",
-            statement="balance_sheet",
-            aggregation="end_of_period",
-        )
+        common = {
+            "snippet_type": "extract",
+            "schema_mapping_id": "s3",
+            "standard_field": "accounts_payable",
+            "statement": "balance_sheet",
+            "aggregation": "end_of_period",
+        }
         library.save_snippet(
             sql="BAD",
             description="x",

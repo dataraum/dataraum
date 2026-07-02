@@ -301,18 +301,6 @@ class GraphExecution:
 # =============================================================================
 
 
-class SQLStepOutput(BaseModel):
-    """Pydantic model for a SQL step in LLM tool output."""
-
-    step_id: str = Field(description="Identifier for this step")
-    sql: str = Field(
-        description="Standalone DuckDB SQL query for this step. "
-        "Executed as: CREATE TEMP VIEW {step_id} AS {this_sql}. "
-        "Should return a single scalar value or simple row."
-    )
-    description: str = Field(description="What this step does")
-
-
 class GraphAssumptionOutput(BaseModel):
     """An assumption made during graph SQL generation."""
 
@@ -338,31 +326,36 @@ class GraphProvenanceOutput(BaseModel):
         default_factory=dict,
         description="Per-concept grounding: {concept: {column, filter, resolution}}",
     )
-    llm_reasoning: str = Field(
-        default="",
-        description="Brief explanation of how business concepts were mapped to columns",
-    )
+    # No free-text reasoning field: the former `llm_reasoning` was written into the
+    # snippet provenance blob and read by nothing (DAT-603 consumer audit) — output
+    # tokens are serial-decode latency, so an unread sentence per call is pure cost.
 
 
-class GraphSQLGenerationOutput(BaseModel):
-    """Pydantic model for LLM tool output - graph SQL generation.
+class ExtractGroundingOutput(BaseModel):
+    """LLM tool output for grounding ONE extract leaf to SQL (DAT-603).
 
-    Used as a tool definition for structured LLM output via tool use API.
+    The authoring path grounds exactly one EXTRACT per call (DAT-646), so the
+    output is one SQL statement — not the retired full-graph shape (steps[] with
+    model-chosen step_ids + final_sql). The caller binds the SQL to the graph's
+    own leaf id, which structurally removes the step-id-paraphrase failure class
+    (DAT-664: Sonnet 5 echoing `revenue` back as `revenue_extract` silently
+    skipped snippet persistence).
+
+    Every field here has a named consumer (DAT-603 schema audit): `sql` executes
+    and persists as the snippet; `description` is the snippet's human line
+    (cockpit reuse KB, compose-path descriptions); `column_mappings` is the
+    graph-level hint the cockpit query agent reads; `assumptions` feed the
+    DAT-631 confidence gate + the answer UI; `provenance` feeds prior_context
+    (DAT-616) and the confidence gate. Add nothing without a consumer.
     """
 
-    summary: str = Field(
-        description="One sentence describing what this query calculates in plain English, "
-        "e.g., 'Calculates Days Sales Outstanding (DSO) by dividing accounts receivable "
-        "by average daily sales over the period.'"
+    sql: str = Field(
+        description="The single standalone DuckDB SQL statement computing the concept, "
+        "returning one row aliased AS value."
     )
-    steps: list[SQLStepOutput] = Field(
-        default_factory=list,
-        description="List of SQL steps, each with step_id, sql, and description",
-    )
-    final_sql: str = Field(
-        description="SQL that combines step results to produce the final output. "
-        "Steps are available as temp views — reference via: "
-        "SELECT (SELECT value FROM step_1) / (SELECT value FROM step_2)."
+    description: str = Field(
+        description="One short line: what this extract computes and how it is filtered, "
+        "e.g. 'Total revenue: SUM(amount) where account_type IN (Revenue)'."
     )
     column_mappings: dict[str, str] = Field(
         default_factory=dict,
@@ -374,5 +367,5 @@ class GraphSQLGenerationOutput(BaseModel):
     )
     provenance: GraphProvenanceOutput | None = Field(
         default=None,
-        description="How business concepts were grounded to concrete columns",
+        description="How the concept was grounded to concrete columns",
     )

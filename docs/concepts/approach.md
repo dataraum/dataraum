@@ -1,23 +1,22 @@
 # The approach
 
-DataRaum's job is to recover the meaning latent in an organization's data and bind it to
-that data — reliably enough that an LLM can reason over the result. Two design choices make
-that possible: it **blends three kinds of method** instead of betting on one, and it treats
-their **disagreement as the thing to measure** rather than something to paper over.
+DataRaum recovers the meaning latent in an organization's data and binds it to that data.
+Two design choices define the approach: it **blends three kinds of method**, and it treats
+their **disagreement as the quantity to measure**.
 
 ## Why a blend
 
-Each obvious shortcut fails on its own:
+Each method fails on its own:
 
-- **Schema-only** (read the column names, trust them) is fast and wrong. Names lie, are
-  abbreviated, or mean different things in different sources.
-- **LLM-only** (hand everything to the model) is fluent and ungrounded. The model will
-  happily assert what a field means with no way to check it against the data, and no way to
-  tell you how sure it is.
-- **Statistics-only** (mine the data for patterns) is grounded but mute. It can tell you two
-  columns correlate; it can't tell you one is a price and the other a discount.
+- **Schema-only** (read the column names, trust them): names are abbreviated, misleading,
+  or mean different things in different sources.
+- **LLM-only** (hand everything to the model): the model asserts what a field means with no
+  check against the data and no calibrated statement of how sure it is.
+- **Statistics-only** (mine the data for patterns): it can establish that two columns
+  correlate; it cannot establish that one is a price and the other a discount.
 
-So DataRaum uses all three, each where it is authoritative, and makes them check each other.
+DataRaum uses all three, each where it is authoritative, and checks them against each
+other.
 
 | Method | What it does | Authoritative for |
 |---|---|---|
@@ -26,24 +25,23 @@ So DataRaum uses all three, each where it is authoritative, and makes them check
 | **LLM** | Field meaning, concept grounding, composing measures / rules / processes | *Meaning* — what the structure and shape represent in the business |
 
 The deterministic and statistical layers are cheap, reproducible, and certain where the
-data is certain. The LLM layer is reserved for the one thing only language understanding
-can supply — meaning — and is kept on a short leash (the
-[closed teach surface](learnable-surface.md) and the [firewall](measurement.md#the-goodhart-firewall)).
+data is certain. The LLM layer supplies the one thing only language understanding can —
+meaning — under the constraints of the [closed teach surface](learnable-surface.md) and
+the [firewall](measurement.md#the-goodhart-firewall).
 
 ## Disagreement is the signal
 
-The blend's real power is what happens when the methods **disagree**. A field named
-`created` that never holds a parseable date; a column the model calls an identifier that the
-data shows is highly repeated; a join the structure proposes that the values don't support —
-each is a *disagreement between witnesses*, and disagreement is exactly where understanding
-is missing.
+A field named `created` that never holds a parseable date; a column the model calls an
+identifier that the data shows is highly repeated; a join the structure proposes that the
+values don't support — each is a disagreement between witnesses, and disagreement marks
+where understanding is missing.
 
-DataRaum makes this literal. For each question worth asking about the data ("is this a
-date?", "does this token mean *missing*?", "is this column a stock or a flow?"), several
-**witnesses** weigh in — one reading the field name, one reading the data, one reading what
-you've taught — and a detector measures how much they **conflict** and how much **ignorance**
-remains (nobody qualified weighed in). That combined uncertainty is **entropy**. It is the
-one measurement primitive; there is no separate "data quality" score beside it.
+For each question worth asking about the data ("is this a date?", "does this token mean
+*missing*?", "is this column a stock or a flow?"), several **witnesses** weigh in — one
+reading the field name, one reading the data, one reading what you've taught — and a
+detector measures how much they **conflict** and how much **ignorance** remains (nobody
+qualified weighed in). That combined uncertainty is **entropy**. It is the one measurement
+primitive; there is no separate "data quality" score beside it.
 
 This is why no method is trusted alone: a witness that only reads the column name and a
 witness that only reads the data can be wrong in the same direction, so at least one witness
@@ -71,20 +69,16 @@ flowchart LR
 The phases themselves are covered in [the pipeline](pipeline.md); the stages a *user* walks
 through (which group the phases into bigger steps) are [the journey](the-journey.md).
 
-## Why the LLM stays honest
+## Constraints on the LLM
 
-Two mechanisms make the blend trustworthy with an LLM in the loop:
+Two mechanisms bound the LLM's role in the blend:
 
-- **A closed, typed surface.** The LLM can only fill in a fixed vocabulary — concepts,
-  measures, rules, and a handful of *teaches* — never extend it, and its free text is
-  recorded *alongside* a measurement, never allowed to change it. A correction re-enters
-  analysis as one more **witness** to be weighed, not as an edit to the score: it cannot make
-  a problem disappear by describing it. This is the **Goodhart firewall** — see
-  [the learnable surface](learnable-surface.md).
-- **Calibration against ground truth.** A detector's reliability is *measured*, not asserted:
-  each is run against datasets with injected issues and a recorded answer key and must show
-  recall and precision before its signal counts. That is why the readiness numbers mean
-  something — see [measurement & detectors](measurement.md).
-
-Together they give the system the property everything else rests on: **it cannot make false
-progress by hiding what it doesn't understand.**
+- **A closed, typed surface.** The LLM fills in a fixed vocabulary — concepts, measures,
+  rules, and a fixed set of *teaches* — and cannot extend it. Its free text is recorded
+  alongside a measurement and does not enter the score computation. A correction re-enters
+  analysis as one more **witness**, weighed with the others. This is the **Goodhart
+  firewall** — see [the learnable surface](learnable-surface.md).
+- **Calibration against ground truth.** A detector's reliability is measured: each is run
+  against datasets with injected issues and a recorded answer key, and must show recall and
+  precision before its signal enters readiness — see
+  [measurement & detectors](measurement.md).

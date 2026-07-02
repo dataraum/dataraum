@@ -14,12 +14,14 @@ nav = [
   { "Concepts" = [
     "concepts/approach.md",
     "concepts/the-journey.md",
-    "concepts/pipeline.md",
+    "concepts/operating-model.md",
+    "concepts/frame-ground-teach.md",
     "concepts/learnable-surface.md",
     "concepts/measurement.md",
   ] },
   { "Under the hood" = [
     "platform/architecture.md",
+    "concepts/pipeline.md",
   ] },
   { "Operations" = [
     "operations/deployment.md",

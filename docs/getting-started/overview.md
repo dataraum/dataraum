@@ -17,10 +17,10 @@ know is how **yours** works: which fields carry which meaning, how your sources 
 a given value represents, which tables describe the same thing. That knowledge is latent in
 the data — it has to be recovered, then bound to the data, not assumed.
 
-The result is an **operating model** that is *executable*: your concepts, processes, rules,
-and measures, computed from your actual data with a measured confidence behind each one — and
-an LLM kept honest about all of it by a [closed vocabulary it can't escape](#the-approach)
-and [measurements it can't game](#how-understanding-is-measured).
+The result is an executable **operating model**: your concepts, processes, rules, and
+measures, computed from your data, each with a measured confidence. The LLM in the loop
+works against a [fixed vocabulary](#the-approach) and
+[measurements computed from independent evidence](#how-understanding-is-measured).
 
 ## The approach
 
@@ -28,8 +28,9 @@ DataRaum doesn't index schemas and it doesn't hand everything to the LLM. It run
 through a **pipeline of phases**, each using the right method for the job, and blends three
 kinds of evidence:
 
-- **Deterministic** — exact structure: type inference and casting (failed casts go to
-  quarantine, never a crash), key and relationship detection, join-path analysis.
+- **Deterministic** — exact structure: type inference and casting (failed casts go to a
+  quarantine table; the run continues), key and relationship detection, join-path
+  analysis.
 - **Statistical** — what the shape of the data reveals: profiles, distributions, outliers,
   Benford's law, correlations, temporal granularity and drift.
 - **LLM** — business meaning: what a column *is*, which concept it grounds, how to compose
@@ -41,43 +42,46 @@ below and [The approach](../concepts/approach.md) for the full treatment).
 
 ## The journey
 
-Your data moves through a sequence of stages. Each stage produces an artifact the next one
-builds on, and each is driven by an agent with a bounded job.
+You drive the journey from the cockpit in three kinds of chat; beneath them the system
+runs five stages, each producing an artifact the next one builds on.
 
 ```mermaid
 flowchart LR
-    F["<b>frame</b><br/>intent → concepts"]
-    A["<b>connect / add_source</b><br/>raw data → typed, profiled"]
-    B["<b>begin_session</b><br/>tables → analytical workspace"]
-    O["<b>operating_model</b><br/>workspace → validations,<br/>cycles, metrics"]
-    AN["<b>answer</b><br/>question → grounded answer"]
-
-    F --> B
-    A --> B
-    B --> O
-    O --> AN
-
+    subgraph C["<b>Connect</b> — bring data in"]
+        direction TB
+        F["frame"]
+        A["add_source"]
+        F --> A
+    end
+    subgraph S["<b>Stage</b> — build the model"]
+        direction TB
+        B["begin_session"]
+        O["operating_model"]
+        B --> O
+    end
+    subgraph AN["<b>Analyse</b> — ask"]
+        Q["answer"]
+    end
+    C --> S --> AN
     style F fill:#fafafa
     style A fill:#e8f5e9
     style B fill:#fff8e1
     style O fill:#e3f2fd
-    style AN fill:#f3e5f5
+    style Q fill:#f3e5f5
 ```
 
-- **frame** — you describe what you want to understand; the cockpit induces the *concepts*
-  that matter and records them as the grounding target.
-- **connect / add_source** — you bring in sources: a database, an API export, a
-  spreadsheet, a file. The engine loads everything as text, infers types (failed casts go
-  to quarantine, never a crash), profiles each column statistically, and annotates it
-  semantically with the LLM.
-- **begin_session** — the engine composes your typed tables into an analytical workspace:
-  it discovers relationships, builds enriched join views, identifies slice dimensions, and
-  ranks the drivers behind each measure.
-- **operating_model** — the engine reconciles the framed concepts with what the data can
-  actually support, producing **validations**, **business cycles**, and **metrics** that
-  are bound to your data and executed against it.
-- **answer** — you ask questions in plain language; the cockpit's agent composes SQL
-  grounded in the operating model and returns the answer with its provenance.
+- **Connect** — declare what the workspace is about, then bring data in. You describe
+  what you want to understand and the cockpit records the *concepts* that matter as the
+  grounding target (**frame**); then the engine loads your sources as text, infers types
+  (failed casts go to a quarantine table; the run continues), profiles each column, and
+  grounds it against the framed concepts (**add_source**).
+- **Stage** — teach meaning, then build the model. The engine composes your typed tables
+  into one analytical workspace — relationships, enriched join views, slice dimensions,
+  drivers (**begin_session**) — then reconciles the framed target with what the data
+  actually supports, producing **validations**, **business cycles**, and **metrics** bound
+  to your data and executed against it (**operating_model**).
+- **Analyse** — ask questions in plain language; the cockpit's agent composes SQL grounded
+  in the operating model and returns the answer with its provenance (**answer**).
 
 ## How understanding is measured
 

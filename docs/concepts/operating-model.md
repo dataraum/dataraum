@@ -89,6 +89,15 @@ Artifacts are versioned by run: a re-run writes a new version under a new run id
 new version becomes visible only when the run completes. A failed or partial run is not
 shown.
 
+Lifecycle operations are **stage-authorized**: each operation (declare, bind, compose,
+execute, endorse) is permitted only from specific journey stages, and an operation from
+any other stage is rejected. The check is fail-closed — a stage not explicitly authorized
+is denied. `endorse`, the transition to canonical, is authorized for no stage, so no
+artifact can reach canonical regardless of what an agent requests. This is the third
+enforcement point of the **Goodhart firewall**, alongside the
+[closed vocabulary](learnable-surface.md) and the
+[measurement pooling](measurement.md#the-goodhart-firewall).
+
 !!! note "canonical and endorsement are not built"
     The design adds a fourth state, **canonical** — an *organizational* state meaning
     "endorsed as the version we use" — reached through an endorsement workflow. Neither

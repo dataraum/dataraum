@@ -72,8 +72,8 @@ flowchart LR
 - **Connect** — declare what the workspace is about, then bring data in. You describe
   what you want to understand and the cockpit records the *concepts* that matter as the
   grounding target (**frame**); then the engine loads your sources as text, infers types
-  (failed casts go to quarantine, never a crash), profiles each column, and grounds it
-  against the framed concepts (**add_source**).
+  (failed casts go to a quarantine table; the run continues), profiles each column, and
+  grounds it against the framed concepts (**add_source**).
 - **Stage** — teach meaning, then build the model. The engine composes your typed tables
   into one analytical workspace — relationships, enriched join views, slice dimensions,
   drivers (**begin_session**) — then reconciles the framed target with what the data

@@ -1,107 +1,93 @@
 # The operating model
 
-The operating model is what DataRaum exists to produce: the concepts, relationships, rules,
-processes, and measures an organization runs on — recovered from its data, bound to that
-data, and executable against it. Everything else in these docs serves this artifact. This
-page is what it actually is: its parts, its shape, and the lifecycle every part moves
-through.
+The operating model is the artifact DataRaum produces: the workspace's concepts,
+relationships, validations, business cycles, metrics, and driver rankings, bound to the
+workspace's data and computed from it. This page describes its parts, its structure, and
+the lifecycle its artifacts move through.
 
-## Executable, not documented
+## Definitions are computable
 
-Most organizations have their operating model written down somewhere — a wiki, a metrics
-catalog, a diagram. Those documents *describe*; they don't *run*, and nothing tells you
-when they stop being true. DataRaum's operating model is executable knowledge: every part
-of it is either computed from your actual data or explicitly, visibly not.
+Each artifact is stored in a form the engine can execute against the data:
 
-Executable means something concrete for each part:
+- A **metric** is a dependency graph of extracts, constants, and formulas. It compiles to
+  SQL; the SQL is stored with the artifact and can be inspected.
+- A **validation** is a rule with executable SQL and a verdict — *passed* or *failed*.
+  The verdict is computed from the data at read time, not stored, so it reflects the data
+  as it is now.
+- A **cycle** is a business process as ordered stages; completion is counted over the
+  records that move through them.
 
-- a **metric** is not a definition in prose; it is a calculation that runs against your
-  sources, with the SQL there to inspect,
-- a **validation** is not a policy statement; it is a check with a verdict — *passed* or
-  *failed* — recomputed from the data when you look, never stored and left to rot,
-- a **cycle** is not a process diagram; it is a set of ordered stages whose completion is
-  measured in the records themselves.
+Each artifact also carries the confidence of its grounding. A metric that executes
+cleanly but has a weakly grounded input is flagged low-confidence, with the reason
+recorded. How confidence is measured is covered in
+[measurement & detectors](measurement.md).
 
-And each part carries its measured confidence with it. A metric is only as trustworthy as
-its weakest grounded input — and it says so, rather than presenting a clean number over a
-shaky binding. How that confidence is measured is
-[measurement & detectors](measurement.md); that it *cannot be gamed* is the
-[Goodhart firewall](learnable-surface.md).
+## Structure
 
-## The shape: concepts are the hub
+The operating model is a graph. Its central node type is the **concept**: a business term
+from the workspace's vocabulary, together with its binding to the columns that carry it.
+The term itself is a convention — what the model stores is the mapping and the evidence
+for it. The edge types:
 
-The operating model is a graph, and its hub is the **concept** — a business term made
-real. Everything meets at concepts:
-
-- metrics and cycles **reference** the concepts they are built from,
-- each concept **grounds** to the actual columns that carry it,
+- metrics and cycles **reference** the concepts they are defined over,
+- a concept **grounds** to columns,
 - columns **relate** to each other through confirmed joins,
-- validations **check** the columns they constrain,
-- **drivers** point at the measures whose variation they explain.
+- a validation **checks** the columns it constrains,
+- a **driver** points at the measure whose variation it explains.
 
-Artifacts never bind to raw columns directly — the path is always *artifact → concept →
-column*. That indirection is what makes the model durable: when the data moves, the
-grounding is re-earned per concept, and everything built on the concept follows.
+Artifacts do not bind to columns directly; the path is artifact → concept → column. When
+the data changes, grounding is re-established per concept, and the artifacts referencing
+that concept follow without being redefined.
 
-This graph is not an illustration; it is the model itself, and the cockpit's **Model**
-surface renders it exactly — concepts in the middle, your real tables and columns on one
-side, the declared artifacts on the other.
+The cockpit's **Model** page renders this graph.
 
 ## The parts
 
-**Concepts** — the vocabulary: what a *customer*, an *invoice*, *revenue* mean here, each
-grounded in the columns that carry it.
+**Concepts** — the vocabulary the workspace is described in (*customer*, *invoice*,
+*revenue*), each mapped to the columns that carry it.
 
-**Relationships** — how tables fit together: discovered from the data, confirmed
-semantically, correctable by [teaching](frame-ground-teach.md).
+**Relationships** — joins between tables: detected from value overlap and cardinality,
+confirmed semantically, correctable by [teaching](frame-ground-teach.md).
 
-**Validations** — rules the data must satisfy, each executed as a check with a verdict.
-The verdict (*passed* / *failed*) is distinct from the artifact's lifecycle state: a
-validation can be fully grounded and executing, and failing — that is the validation doing
-its job.
+**Validations** — rules the data must satisfy. The verdict is separate from the
+artifact's lifecycle state: a validation can be grounded, executing, and failing.
 
-**Business cycles** — the processes the organization runs (order-to-cash, procure-to-pay),
-as ordered stages with completion measured against the records that flow through them.
+**Business cycles** — processes such as order-to-cash, as ordered stages with completion
+measured against the records.
 
-**Metrics** — measures as small dependency graphs: extracts of grounded concepts,
-constants, and formulas over them, composed into runnable SQL. A metric's definition and
-its execution are the same thing.
+**Metrics** — measures as dependency graphs, compiled to SQL.
 
-**Drivers** — for each measure, the dimensions that actually explain its variation,
-ranked against the dataset's own noise floor. Unlike the families above, drivers are not
-declared — they are discovered during [ingestion](the-journey.md#begin_session) and ride
-along as the model's empirical layer.
+**Drivers** — per measure, the dimensions that explain its variation, ranked against a
+noise floor computed from the dataset itself. Drivers are not declared; they are computed
+during [ingestion](the-journey.md#begin_session).
 
 ## The lifecycle
 
-Model artifacts — validations, cycles, metrics — are not one-shot writes. Each moves
-through explicit states, recorded per run:
+Validations, cycles, and metrics move through explicit states, recorded per run:
 
 ```mermaid
 flowchart LR
-    D["<b>declared</b><br/>named, no data backing"]
+    D["<b>declared</b><br/>named, no data binding"]
     G["<b>grounded</b><br/>bound to concrete data"]
-    E["<b>executed</b><br/>has run successfully"]
+    E["<b>executed</b><br/>ran in a clean run"]
     D --> G --> E
     style D fill:#fafafa
     style G fill:#e8f5e9
     style E fill:#e3f2fd
 ```
 
-- **declared** — created from intent in [frame](the-journey.md#frame): a name and a target
-  shape, no data backing.
+- **declared** — created in [frame](the-journey.md#frame): a name and a target shape, no
+  data binding.
 - **grounded** — bound to concrete columns and views by
   [operating_model](the-journey.md#operating_model).
-- **executed** — has produced output at least once against the data, with the run
-  completing cleanly.
+- **executed** — produced output against the data in a cleanly completed run.
 
-The state an artifact *fails* to reach is as much a part of the model as the state it
-holds: an artifact the data cannot support stays **declared**, with the reason recorded —
-visibly unmet, never silently absent and never silently invented.
+An artifact the data cannot support stays **declared**, and the reason is recorded on the
+artifact. It remains visible in that state; it is not removed.
 
-The model is also **run-versioned**: a re-run writes a fresh version and becomes visible
-only when it completes cleanly, so what you see is always a whole, consistent model —
-never a half-updated one.
+Artifacts are versioned by run: a re-run writes a new version under a new run id, and the
+new version becomes visible only when the run completes. A failed or partial run is not
+shown.
 
 !!! note "canonical and endorsement are not built"
     The design adds a fourth state, **canonical** — an *organizational* state meaning
@@ -109,9 +95,8 @@ never a half-updated one.
     the state nor the workflow is implemented today; they live in the
     [vision](../vision/architecture-future.md) only.
 
-## Where you meet it
+## Where it appears
 
-The model is built by the [journey](the-journey.md) — framed, grounded, executed — and
-from then on it is the thing you work *with*: the **Model** surface renders the graph, and
-every answer the Analyse chat gives is grounded in it, carrying the model's confidence
-rather than a bare number.
+The **Model** page renders the graph. Answers in the Analyse chat resolve against the
+operating model and report which artifacts and concepts they used, with the grounding
+confidence.

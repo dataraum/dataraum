@@ -20,6 +20,9 @@ nav = [
   { "Under the hood" = [
     "platform/architecture.md",
   ] },
+  { "Operations" = [
+    "operations/deployment.md",
+  ] },
   { "Vision" = [
     "vision/architecture-future.md",
   ] },

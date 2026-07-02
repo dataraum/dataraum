@@ -26,6 +26,7 @@ import {
 	readGroundingReadiness,
 } from "#/db/metadata/grounding-readiness";
 import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { teach } from "#/tools/teach";
 import {
@@ -159,7 +160,10 @@ export async function assessAndGround(
 	const captured = { count: 0 };
 	const verdict = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		middleware: [llmTelemetryMiddleware("grounding")],
+		middleware: [
+			llmTelemetryMiddleware("grounding"),
+			toolArgsGuardMiddleware("grounding"),
+		],
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		agentLoopStrategy: maxIterations(GROUNDING_LOOP_MAX_ITERATIONS),
 		systemPrompts: [GROUNDING_INSTRUCTIONS],

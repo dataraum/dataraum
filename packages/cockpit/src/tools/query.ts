@@ -44,6 +44,7 @@ import {
 import { linkedAbortController } from "../lib/abort";
 import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
 import { sqlEquivalent } from "../lib/sql-canonical";
+import { toolArgsGuardMiddleware } from "../lib/tool-args-guard";
 import {
 	MAX_OUTPUT_TOKENS,
 	MODEL,
@@ -660,9 +661,13 @@ export async function querySubAgent(
 			makeRunStepsTool(captured, nearUniqueColumns),
 			emitResult,
 		],
-		// Per-turn LLM telemetry (DAT-600). Logs this nested sub-agent loop SEPARATELY
-		// from the orchestrator; `iterations` exposes its round-trip depth.
-		middleware: [llmTelemetryMiddleware("answer_subagent")],
+		// Per-turn LLM telemetry (DAT-600) + the tool-args guard (DAT-661 coercion/
+		// rejection counters). Logs this nested sub-agent loop SEPARATELY from the
+		// orchestrator; `iterations` exposes its round-trip depth.
+		middleware: [
+			llmTelemetryMiddleware("answer_subagent"),
+			toolArgsGuardMiddleware("answer_subagent"),
+		],
 	});
 
 	// Drain the agent-loop stream so the tools actually execute. Stop as soon as the

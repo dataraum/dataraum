@@ -270,6 +270,9 @@ class TestMetricLifecycleFlow:
         assert artifacts["m_exec"].state == ArtifactState.EXECUTED.value
         assert artifacts["m_exec"].grounded_against is not None
         assert artifacts["m_exec"].teaches["vertical"] == "finance"
+        # DAT-591: the effective (shipped ⊕ overlay) DAG this row assembled from is
+        # persisted verbatim — the cockpit's one Postgres source for the metric's steps.
+        assert artifacts["m_exec"].graph_definition == mock_defs.return_value["m_exec"]
         # Composed but unexecutable: the agent could not materialize runnable SQL,
         # so it stays grounded with the reason — born-loud at the agent.
         assert artifacts["m_unexec"].state == ArtifactState.GROUNDED.value

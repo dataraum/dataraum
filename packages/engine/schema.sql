@@ -49,6 +49,7 @@ CREATE TABLE lifecycle_artifacts (
 	strictness FLOAT, 
 	grounded_against JSON, 
 	teaches JSON, 
+	graph_definition JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	state_changed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_lifecycle_artifacts PRIMARY KEY (artifact_id), 

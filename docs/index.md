@@ -129,12 +129,15 @@ See the [Overview](getting-started/overview.md) for the whole arc, and
 
 - **The concept, in depth** — [The approach](concepts/approach.md) (how the methods
   combine), [the journey](concepts/the-journey.md), the
-  [pipeline & phases](concepts/pipeline.md), the
-  [learnable surface](concepts/learnable-surface.md) (the closed vocabulary), and
-  [measurement & detectors](concepts/measurement.md) (entropy, witnesses, calibration).
+  [operating model](concepts/operating-model.md) (the deliverable itself),
+  [frame, ground, teach](concepts/frame-ground-teach.md) (how knowledge enters and
+  improves), the [learnable surface](concepts/learnable-surface.md) (the closed
+  vocabulary), and [measurement & detectors](concepts/measurement.md) (entropy,
+  witnesses, calibration).
 - **Using it** — [Overview](getting-started/overview.md) and
   [Running the stack](getting-started/running-the-stack.md).
 - **Under the hood** — the [platform architecture](platform/architecture.md), the
+  [pipeline & phases](concepts/pipeline.md), the
   [decision records](adr/README.md), and [Deployment](operations/deployment.md) for
   running released images.
 - **The design intent** (north-star, not current state) —

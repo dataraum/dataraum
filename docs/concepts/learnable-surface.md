@@ -70,33 +70,10 @@ A declared **concept** becomes real when columns are bound to it. The catalogue-
 by a single phase (`semantic_per_table`, in begin_session) and recorded per run, so there is
 one authoritative place a concept's grounding lives, not copies drifting across stages.
 
-## The artifact lifecycle
+## From taught to executed
 
-Model artifacts — validations, cycles, metrics — are not one-shot writes. Each moves through
-explicit states, recorded per run:
-
-```mermaid
-flowchart LR
-    D["<b>declared</b><br/>named, no data backing"]
-    G["<b>grounded</b><br/>bound to concrete data"]
-    E["<b>executed</b><br/>has run successfully"]
-    D --> G --> E
-    style D fill:#fafafa
-    style G fill:#e8f5e9
-    style E fill:#e3f2fd
-```
-
-- **declared** — created from intent in [frame](the-journey.md#frame): a name and a target
-  shape, no data backing.
-- **grounded** — bound to concrete columns/tables by [operating_model](the-journey.md#operating_model).
-- **executed** — has produced output at least once against the data, with the pipeline
-  running cleanly.
-
-These three are **system states** — they describe what the system has done, and they are
-live today.
-
-!!! note "canonical and endorsement are not built"
-    The design adds a fourth, **canonical** — an *organizational* state meaning "endorsed as
-    the version we use" — reached through an endorsement workflow. Neither the state nor the
-    workflow is implemented today; a strictness parameter is recorded on artifacts but does
-    not yet gate anything. They live in the [vision](../vision/architecture-future.md) only.
+What you teach and frame doesn't stay declared: model artifacts move through an explicit
+lifecycle — **declared → grounded → executed**, recorded per run — as the engine binds
+them to real data. The lifecycle lives with
+[the operating model](operating-model.md#the-lifecycle); the loop that drives it —
+declare, ground, correct — is [frame, ground, teach](frame-ground-teach.md).

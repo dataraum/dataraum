@@ -5,6 +5,9 @@
 - **Ticket:** —
 - **Design doc:** supersedes the per-lane checkpoint model implied by `/take`
 
+> **Internal process record** — how this repository is developed, not product
+> architecture. Not part of the documented product decision set.
+
 ## Context
 
 The step-wise skills (`/ideate` → `/refine` → `/decompose` → `/implement` → `/smoke` →

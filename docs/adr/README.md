@@ -24,5 +24,12 @@ record). When code and an ADR disagree, the code wins and the ADR needs a supers
 - Decisions are immutable once `Accepted`. To change one, write a **new** ADR that
   supersedes it and flip the old one's status to `Superseded by ADR-NNNN`.
 - Link the long-form design (Confluence DD space) and the driving ticket (Jira DAT-*).
+  Ticket and design-doc references belong in the header, not as load-bearing prose — the
+  Context section must state the requirement so the record reads without them.
+- Structure: **Context** states the requirement and the forces; the **Decision** is what
+  was chosen, with the rejected options and why; **Consequences** are what follows. A
+  decision is driven by a requirement — it is not itself a requirement.
 - No hand-maintained index — the directory listing *is* the index (a previous hand list
   here drifted out of date). Keep titles descriptive.
+- Two records (0005, 0006) are **internal process records** — how the repository is
+  developed — and are marked as such; the rest document product architecture.

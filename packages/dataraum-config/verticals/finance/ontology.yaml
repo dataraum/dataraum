@@ -220,7 +220,7 @@ concepts:
   # shift is the data model there, not drift) and misgrounds query agents
   # (a periodic TB must not be summed across periods).
   - name: account_balance
-    description: Account balance as of a period end (trial balance, ledger balance)
+    description: The debit/credit balance of a ledger account (trial balance, general ledger)
     indicators:
       - account_balance
       - debit_balance

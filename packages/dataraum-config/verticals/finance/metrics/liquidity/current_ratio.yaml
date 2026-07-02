@@ -21,7 +21,7 @@ dependencies:
     source:
       standard_field: current_assets
       statement: balance_sheet
-    aggregation: end_of_period
+    aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
     validation:
     - condition: value >= 0
       severity: error
@@ -32,7 +32,7 @@ dependencies:
     source:
       standard_field: current_liabilities
       statement: balance_sheet
-    aggregation: end_of_period
+    aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
     validation:
     - condition: value > 0
       severity: error

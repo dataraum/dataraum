@@ -30,7 +30,7 @@ dependencies:
     source:
       standard_field: accounts_receivable
       statement: balance_sheet
-    aggregation: end_of_period
+    aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
   revenue:
     level: 1
     type: extract
@@ -44,7 +44,7 @@ dependencies:
     source:
       standard_field: inventory
       statement: balance_sheet
-    aggregation: end_of_period
+    aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
   cost_of_goods_sold:
     level: 1
     type: extract
@@ -58,7 +58,7 @@ dependencies:
     source:
       standard_field: accounts_payable
       statement: balance_sheet
-    aggregation: end_of_period
+    aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
   days_in_period:
     level: 1
     type: constant

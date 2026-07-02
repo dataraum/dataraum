@@ -51,7 +51,6 @@ class TestColumnContext:
             completeness_ratio=0.98,
             null_ratio=0.05,
             cardinality_ratio=0.95,
-            outlier_ratio=0.02,
             is_stale=False,
             detected_granularity="daily",
             flags=["high_cardinality"],
@@ -310,6 +309,34 @@ class TestFormatMetadataDocument:
         assert "qty * price" in result
         # DAT-566: a table with no identity_columns renders no identity clause.
         assert "Identity columns" not in result
+
+    def test_column_description_surfaces_concept_and_temporal_behavior(self) -> None:
+        """A named measure still surfaces its concept AND stock/flow verdict (DAT-543).
+
+        Regression guard: the old ``if business_name / elif business_concept`` made
+        label, business_concept, and temporal_behavior mutually exclusive, so every
+        measure WITH a business_name (i.e. every grounded one) silently dropped BOTH
+        its concept and its temporal_behavior. All four must render.
+        """
+        col = ColumnContext(
+            column_id="col-1",
+            column_name="credit_balance",
+            table_name="trial_balance",
+            data_type="DOUBLE",
+            semantic_role="measure",
+            business_name="Credit Balance",
+            business_description="Credit-side ledger balance",
+            business_concept="account_balance",
+            temporal_behavior="additive",
+        )
+        table = TableContext(table_id="tbl-1", table_name="trial_balance", columns=[col])
+        ctx = GraphExecutionContext(tables=[table], total_tables=1)
+        result = format_metadata_document(ctx)
+
+        assert "Credit Balance" in result  # business_name (label)
+        assert "Credit-side ledger balance" in result  # business_description
+        assert "account_balance" in result  # business_concept — was dropped when name set
+        assert "additive" in result  # temporal_behavior — was dropped when name set
 
     def test_entropy_scores_per_column(self) -> None:
         """Entropy scores shown per column in data quality notes."""

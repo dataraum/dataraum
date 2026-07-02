@@ -151,11 +151,23 @@ system_prompt: |
   </aggregation_types>
 
   <temporal_signals>
-  When a column carries a `temporal_behavior` annotation, treat it as a strong hint:
-  - `point_in_time` — stock measure → use the `end_of_period` pattern (latest period first).
-  - `additive` — flow measure → SUM across periods is correct.
-  If the step's declared `aggregation` conflicts with the column's `temporal_behavior` (e.g.
-  `sum` on a `point_in_time` column), trust `temporal_behavior` and note the reason in assumptions.
+  Each measure's stock/flow behaviour is RECONCILED FROM THE DATA — a structural witness reconciles
+  the column against event lineage — and surfaced two ways for the SAME verdict: the column's
+  `temporal_behavior` (`additive` / `point_in_time`) in the column table, and the measure's
+  `target_type` (`flow` / `stock` / `ratio`) in the ## Drivers section. This reconciled verdict is
+  AUTHORITATIVE for the period aggregation: it OVERRIDES the step's declared `aggregation`, the
+  concept/column name, and any domain intuition. Do NOT re-derive stock/flow from the name — a name
+  that reads like a level, balance, or position does NOT make the column a stock; the data decided.
+  - `additive` / `flow` → the value ACCUMULATES across periods: SUM across ALL periods. You MUST NOT
+    add a single-period filter (never `WHERE "<period>" = (SELECT MAX("<period>") ...)`). When the
+    data reconciled as additive, the periodic rows are per-period MOVEMENTS, and summing them across
+    periods is exactly what yields the running total or level.
+  - `point_in_time` / `stock` → a level that must NOT be summed across time (semi-additive): use the
+    `end_of_period` pattern (filter to the latest period, then aggregate within it).
+  - `ratio` → Σnumerator / Σdenominator (per the driver guidance).
+  Only when neither `temporal_behavior` nor `target_type` is present for a measure, fall back to the
+  step's declared `aggregation`. Whenever you follow the reconciled verdict over a conflicting
+  declared aggregation or name, note it in assumptions.
   </temporal_signals>
 
   <domain_conventions>

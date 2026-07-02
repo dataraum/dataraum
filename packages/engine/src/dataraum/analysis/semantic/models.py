@@ -67,8 +67,15 @@ class ColumnSemanticOutput(BaseModel):
 
     description: str = Field(
         description=(
-            "One sentence describing what this column contains and how it's used. "
-            "Be specific to the business context."
+            "One sentence describing what this column contains and how it's used, "
+            "in business terms. Be specific to the business context. Do NOT state "
+            "whether the column is a stock or a flow, nor whether it may/should be "
+            "summed across periods — that temporal verdict has ONE home, "
+            "temporal_behavior_claim, and is reconciled downstream against the data. "
+            "Asserting stock/flow or summability in this prose creates a stale "
+            "directive the SQL-authoring agents follow even after the data-grounded "
+            "reconciliation overturns it (e.g. 'a point-in-time stock that should not "
+            "be summed' on a column the structural witness proved is per-period)."
         )
     )
 

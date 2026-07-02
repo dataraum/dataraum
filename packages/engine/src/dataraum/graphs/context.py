@@ -53,7 +53,6 @@ class ColumnContext:
     # Statistical metrics
     null_ratio: float | None = None
     cardinality_ratio: float | None = None
-    outlier_ratio: float | None = None
 
     # Value enumeration (DAT-616): the freq-ordered value-set the SQL agent
     # grounds metric predicates in, instead of improvising an ILIKE filter.
@@ -974,14 +973,11 @@ def build_execution_context(
             numeric_stats = profile_data.get("numeric_stats") or {}
             numeric_min = numeric_stats.get("min_value")
             numeric_max = numeric_stats.get("max_value")
-            outlier_ratio = None
-            if quality:
-                outlier_ratio = quality.iqr_outlier_ratio or quality.zscore_outlier_ratio
 
-            # Generate column flags
+            # Generate column flags (no outlier flag — DAT-543: outliers are not a
+            # defect signal; heavy-tailed money columns naturally carry a high ratio).
             flags = _generate_column_flags(
                 null_ratio=null_ratio,
-                outlier_ratio=outlier_ratio,
                 benford_compliant=quality.benford_compliant if quality else None,
                 is_stale=temp_profile.is_stale if temp_profile else None,
                 cardinality_ratio=cardinality_ratio,
@@ -1021,7 +1017,6 @@ def build_execution_context(
                     unit_source_column=concept.unit_source_column if concept else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
-                    outlier_ratio=outlier_ratio,
                     distinct_count=distinct_count,
                     top_values=top_values,
                     numeric_min=numeric_min,
@@ -1126,23 +1121,27 @@ def build_execution_context(
 
 def _generate_column_flags(
     null_ratio: float | None,
-    outlier_ratio: float | None,
     benford_compliant: bool | None,
     is_stale: bool | None,
     cardinality_ratio: float | None,
 ) -> list[str]:
-    """Generate actionable flags from column metrics."""
+    """Generate actionable flags from column metrics.
+
+    NOTE (DAT-543): there is deliberately NO ``high_outliers`` flag. A raw IQR/
+    z-score outlier RATIO assumes an ~normal distribution; monetary and other
+    heavy-tailed columns (log-normal-ish — a few large invoices/journal lines)
+    naturally carry a high outlier ratio, so the old ``ratio > 0.1`` rule flagged
+    every money column as unreliable and fed the grounding agent a spurious
+    "blocked" caveat. Outliers are legitimate data, not a defect — never gate on
+    them here. (The entropy detectors still MEASURE outliers for their own
+    calibrated signals; this is only the agent-facing flag.)
+    """
     flags = []
 
     if null_ratio is not None and null_ratio > 0.5:
         flags.append("high_nulls")
     elif null_ratio is not None and null_ratio > 0.1:
         flags.append("moderate_nulls")
-
-    if outlier_ratio is not None and outlier_ratio > 0.1:
-        flags.append("high_outliers")
-    elif outlier_ratio is not None and outlier_ratio > 0.05:
-        flags.append("moderate_outliers")
 
     if benford_compliant is False:
         flags.append("benford_violation")
@@ -1307,12 +1306,16 @@ def format_metadata_document(
         type_label = f" ({table_type})" if table_type else ""
         lines.append(f"\n### {display_name}{type_label}")
 
-        # Entity description
-        if table.entity_type:
-            desc = f"**Entity**: {table.entity_type}"
+        # Entity + description — independent fields; a table can carry a description
+        # without an entity_type (don't nest one under the other, or the description
+        # is dropped whenever entity_type is absent).
+        if table.entity_type or table.table_description:
+            desc_parts = []
+            if table.entity_type:
+                desc_parts.append(f"**Entity**: {table.entity_type}")
             if table.table_description:
-                desc += f" — {table.table_description}"
-            lines.append(desc)
+                desc_parts.append(table.table_description)
+            lines.append(" — ".join(desc_parts))
 
         # Grain, rows, time column
         meta_parts = []
@@ -1376,12 +1379,6 @@ def format_metadata_document(
             lines.append("")
             lines.append("**Value sets** (categorical columns — `value (count)`):")
             lines.extend(value_sets)
-
-        # Quality section (per-table)
-        _append_table_quality(lines, table)
-
-        # Data quality notes (entropy interpretations for non-ready columns)
-        _append_data_quality_notes(lines, table)
 
     # --- Drivers (DAT-616) ---
     _append_drivers(lines, context)
@@ -1645,16 +1642,34 @@ def _build_value_sets(table: TableContext) -> list[str]:
 
 
 def _build_column_description(col: ColumnContext) -> str:
-    """Build column description from business metadata."""
-    parts = []
+    """Build the column-description cell: label + description + concept + stock/flow.
+
+    Label, ``business_concept``, and ``temporal_behavior`` are INDEPENDENT fields — a
+    named measure still has a concept and a reconciled stock/flow verdict. The old
+    ``if business_name / elif business_concept`` made them mutually exclusive, so every
+    column that had a ``business_name`` (i.e. every grounded measure) silently lost BOTH
+    its concept and its ``temporal_behavior``. ``temporal_behavior`` is ALSO shown in the
+    Drivers section as ``target_type``; surfacing it here too is intentional — one
+    reconciled fact, rendered where the agent reads columns AND where it reads
+    aggregation guidance.
+    """
+    parts: list[str] = []
+    # Primary label: the business name, else the concept name.
     if col.business_name:
         parts.append(col.business_name)
         if col.business_description:
             parts.append(f": {col.business_description}")
     elif col.business_concept:
         parts.append(col.business_concept)
-        if col.temporal_behavior:
-            parts.append(f" ({col.temporal_behavior})")
+
+    # Concept (when it isn't already the label) + stock/flow verdict — always surfaced.
+    tags: list[str] = []
+    if col.business_concept and col.business_name:
+        tags.append(f"concept: {col.business_concept}")
+    if col.temporal_behavior:
+        tags.append(col.temporal_behavior)
+    if tags:
+        parts.append(f" ({', '.join(tags)})")
     return "".join(parts)
 
 
@@ -1688,14 +1703,6 @@ def _build_column_notes(col: ColumnContext) -> str:
         notes.append(f"Flags: {', '.join(col.flags)}.")
 
     return " ".join(notes)
-
-
-def _append_table_quality(lines: list[str], table: TableContext) -> None:
-    """Append quality section for a table (placeholder for BBN readiness in v0.2)."""
-
-
-def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:
-    """Append data quality notes (placeholder for BBN readiness in v0.2)."""
 
 
 def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:

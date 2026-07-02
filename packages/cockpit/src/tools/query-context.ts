@@ -206,11 +206,15 @@ export function formatSchema(
 		"<schema>\n" +
 		`Address each table in SQL as ${LAKE_ALIAS}.<layer>.<name> exactly as shown ` +
 		"(quote column names with double quotes). Use a column's [concept: …] tag to " +
-		"map a question's business terms to the concrete column. A column marked " +
-		"(point_in_time) is a stock — never SUM it across periods (use the last or " +
-		"average value); (additive) is a flow and sums safely. A column tagged " +
-		"[stock/flow contested] has disagreeing evidence about which it is — state " +
-		"that caveat in your answer when aggregating over it.\n\n" +
+		"map a question's business terms to the concrete column. The (additive)/" +
+		"(point_in_time) marker is the stock/flow verdict RECONCILED FROM THE DATA — it is " +
+		"authoritative: it OVERRIDES the concept name and any domain intuition. A column " +
+		"named like a balance, level, or position is NOT a stock if it is marked (additive) " +
+		"— the data decided. (additive) is a flow: SUM it across ALL periods, never restrict " +
+		"to a single period. (point_in_time) is a stock: never SUM it across periods (take " +
+		"the latest period's value, or an average). A column tagged [stock/flow contested] " +
+		"has disagreeing evidence about which it is — state that caveat in your answer when " +
+		"aggregating over it.\n\n" +
 		`${tableBlocks.join("\n\n")}\n` +
 		"</schema>"
 	);

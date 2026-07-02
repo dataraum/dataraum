@@ -53,7 +53,7 @@ bun run test                         # vitest
 
 ## Stack
 
-TanStack **Start** (React 19) · **Router** / **Query** · **Mantine v9** + **Tailwind v4** · **Drizzle** + `postgres` · **Temporal** (`@temporalio/client` triggers the Python engine workflows; `@temporalio/worker` runs the co-located TS **orchestration** worker — DAT-529) · **Biome** · **Vitest** · strict TypeScript. The wider ecosystem (TanStack AI, xyflow, ECharts, CodeMirror, Arrow JS) lands as widgets need it — see the [Tech Stack](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/18153474) page.
+TanStack **Start** (React 19) · **Router** / **Query** · **Mantine v9** + **Tailwind v4** · **Drizzle** + `postgres` · **Temporal** (`@temporalio/client` triggers the Python engine workflows; `@temporalio/worker` runs the co-located TS **orchestration** worker — DAT-529) · **Biome** · **Vitest** · strict TypeScript. The wider ecosystem (TanStack AI, xyflow, Vega-Lite — charting per [ADR-0015](../../docs/adr/0015-charting-library-vega-lite.md), NOT ECharts — CodeMirror, Arrow JS) lands as widgets need it — see the [Tech Stack](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/18153474) page.
 
 ## How it fits together
 

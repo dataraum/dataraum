@@ -1,141 +1,101 @@
-# DataRaum Context Engine
+# DataRaum Engine
 
-[![License](https://img.shields.io/github/license/dataraum/dataraum)](LICENSE)
+[![License](https://img.shields.io/github/license/dataraum/dataraum)](../../LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/dataraum/dataraum/ci.yml?branch=main)](https://github.com/dataraum/dataraum/actions)
 
-A rich metadata context engine for AI-driven data analytics.
+The Python half of [DataRaum](../../README.md) — the durable analysis engine. It runs as a
+**Temporal activity worker** with no HTTP surface: the cockpit starts its workflows by name
+and reads the metadata it writes straight from Postgres. What DataRaum is and why it works
+this way is in the [platform docs](../../docs/index.md); this README is the package-level
+map.
 
-Traditional semantic layers tell BI tools "what things are called." DataRaum tells AI "what the data means, how it behaves, how it relates, and what you can compute from it."
+## What it does
 
-The core insight: AI agents don't need tools to discover metadata at runtime. They need **rich, pre-computed context** delivered in a format optimized for LLM consumption.
+The engine owns the three durable analysis stages of the journey, each a Temporal workflow:
 
-## Status — transitioning to v1
+- **`add_source`** — imports sources VARCHAR-first (failed casts go to quarantine tables,
+  never fail the run), infers types, profiles statistics, and grounds per-column meaning
+  with an LLM.
+- **`begin_session`** — works out how the tables relate (value overlap → referential-
+  integrity evaluation → LLM confirmation), builds enriched join views, finds sliceable
+  dimensions and hierarchies, reconciles measures across facts (stock vs. flow), and ranks
+  drivers.
+- **`operating_model`** — grounds and executes the declared model: validations, business
+  cycles, and metrics (LLM-authored SQL over deterministic grounding evidence,
+  [ADR-0016](../../docs/adr/0016-metric-sql-grounding-llm-authoring.md)).
 
-DataRaum is mid-pivot. v0.2.x exposed a 12-tool MCP server over HTTP for use from Claude Code / Claude Desktop. **That transport is gone.** This package is one of four in the monorepo:
+After each stage a terminal detector pass measures **entropy** — disagreement between
+independent witnesses — and rolls it up into per-intent readiness (*ready / investigate /
+blocked*). Every run is versioned: phases append run-stamped rows, and a promote step makes
+a run visible only once it has fully succeeded.
 
-- **engine** (this package) — Python pipeline + thin FastAPI REST shell
-- **`../cockpit`** — TanStack Start web UI that hosts the chat surface and renders the agentic widgets
-- **`../api`** — OpenAPI contract generated from the engine, consumed by the cockpit
-- **`../infra`** — docker-compose orchestration
+Concepts in depth: [pipeline & phases](../../docs/concepts/pipeline.md) ·
+[measurement & detectors](../../docs/concepts/measurement.md) ·
+[the journey](../../docs/concepts/the-journey.md) ·
+[platform architecture](../../docs/platform/architecture.md).
 
-Today the engine runs as a **Temporal activity worker** (no HTTP surface): it bootstraps the substrate, then serves the bundled `AddSourceWorkflow` + phase activities; the cockpit triggers workflows via the Temporal Client and reads metadata via Drizzle. **No end-user surface yet** — if you need v0.2.x MCP behavior, pin `dataraum==0.2.2`.
+## How it fits the monorepo
 
-## Quick Start (substrate + cockpit — v1 surface in development)
+One of four packages (see the [root README](../../README.md)):
 
-Run from the workspace root.
+- **engine** (this package) — Python pipeline, detectors, Temporal activity worker.
+- **`../cockpit`** — TanStack Start web app: the chat agent, the canvas, and a co-located
+  TS orchestration worker.
+- **`../dataraum-config`** — YAML data (entropy contracts, LLM prompts, verticals);
+  bind-mounted, never imported.
+- **`../infra`** — docker-compose orchestration.
+
+The engine↔cockpit seam is **Postgres + Temporal, nothing else** — no HTTP, no OpenAPI, no
+codegen ([ADR-0002](../../docs/adr/0002-engine-no-http-transport.md)). The engine owns the
+workspace's `ws_<id>` Postgres schema (SQLAlchemy); the cockpit reads it through a generated
+Drizzle mirror. `schema.sql` in this package is the generated offline DDL dump of all
+models — regenerate with `uv run python -m dataraum.storage.dump_ddl`, never hand-edit
+(CI fails on drift).
+
+## Run it
+
+From the workspace root — full walkthrough in
+[Running the stack](../../docs/getting-started/running-the-stack.md):
 
 ```bash
-# Set the LLM key (the engine needs it; the substrate boot does not)
-cp packages/infra/.env.example packages/infra/.env
-echo "ANTHROPIC_API_KEY=sk-ant-..." >> packages/infra/.env
-
-# Bring up Postgres + Temporal + engine worker + cockpit
 docker compose -f packages/infra/docker-compose.yml up -d --wait
-
-# Verify the engine worker — its health is the Temporal heartbeat (no HTTP):
+# Engine health = the Temporal worker heartbeat (there is no HTTP endpoint):
 docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
   --entrypoint temporal temporal-admin-tools \
-  worker list --namespace default --address temporal:7233
-# → Status: Running   (on the dataraum-pipeline task queue)
-
-# Open the cockpit
-open http://localhost:3000
+  worker list --namespace default --address temporal:7233   # → Status: Running
 ```
 
-For UI iteration, skip the cockpit container and run the dev server outside
-docker for hot reload (see `../cockpit/README.md`). The compose cockpit
-service is for end-to-end smoke and prod-like serving.
-
-The engine runs a 19-phase analysis pipeline. The 12 tools the v1 cockpit exposes (also the shape the engine REST will publish, route by route):
-
-| Tool | Description |
-|------|-------------|
-| `add_source` | Register a data source (CSV, Parquet, JSON, directory, or MSSQL recipe yaml) |
-| `list_sources` | List sources registered in the workspace |
-| `begin_session` | Start an investigation session bound to one registered source |
-| `resume_session` | List archived sessions; restore one and make it active again |
-| `look` | Explore data structure, relationships, and semantic metadata |
-| `measure` | Measure entropy scores, readiness, and data quality |
-| `why` | Explain elevated entropy and propose teach suggestions |
-| `teach` | Extend the operation model — sole write tool (concepts, metrics, validations, ...) |
-| `query` | Natural language query against the data |
-| `run_sql` | Execute SQL directly with export support |
-| `search_snippets` | Discover reusable SQL patterns from prior queries and graph execution |
-| `end_session` | Archive workspace and end the session |
-
-### Typical Workflow (the shape the v1 cockpit will surface)
-
-```
-add_source(name="accounting", path="/var/lib/dataraum/sources/accounting")
-  → begin_session(source="accounting",
-                  intent="explore data quality",
-                  contract="exploratory_analysis")
-  → look()                    # Understand the data
-  → measure()                 # Check quality scores and readiness
-  → query("total revenue?")   # Ask questions
-  → run_sql(sql="...", export_format="csv", export_name="report")
-  → end_session(outcome="delivered")
-```
-
-Each session is bound to **one** registered source. The engine logic that powered these tools in v0.2.x lives in `src/dataraum/mcp/server.py`; the v1 plan extracts it into FastAPI route handlers as the cockpit needs each route.
-
-## What It Produces
-
-DataRaum analyzes your data and generates:
-
-- **Statistical metadata** — distributions, cardinality, null rates, patterns
-- **Semantic metadata** — column roles, entity types, business terms (LLM-powered)
-- **Topological metadata** — relationships, join paths, hierarchies
-- **Temporal metadata** — granularity, gaps, seasonality, trends
-- **Quality metadata** — rules, scores, anomalies
-- **Entropy scores** — uncertainty quantification across all dimensions
-- **Ontological context** — domain-specific interpretation (financial, marketing, etc.)
-
-## LLM Configuration
-
-Semantic analysis requires an Anthropic API key. Set `ANTHROPIC_API_KEY` in your `.env` before `docker compose up`. The container reads it from the compose env.
-
-Configure the LLM provider in `config/llm/config.yaml`. See [Configuration](docs/configuration.md) for details.
+`ANTHROPIC_API_KEY` is a hard dependency of the analysis pipeline — set it in
+`packages/infra/.env` before bringing the stack up. LLM provider and prompt configuration
+live in `packages/dataraum-config/llm/`.
 
 ## Development
 
 Run from this package directory (`packages/engine/`).
 
 ```bash
-# Install with dev dependencies (using uv)
-uv sync --group dev
-
-# Run tests
-uv run pytest --testmon tests/unit -q
-
-# Type check
-uv run mypy src/
-
-# Lint
-uv run ruff check src/
+uv sync --group dev                     # install with dev dependencies
+uv run pytest --testmon tests/unit -q   # tests (testmon re-runs only what's affected)
+uv run mypy src/                        # type check
+uv run ruff check src/                  # lint
 uv run ruff format --check src/
+```
 
-# Run the engine activity worker locally (without docker; needs a reachable Temporal)
-export DUCKLAKE_CATALOG_URL=postgresql://...
-export DUCKLAKE_DATA_PATH=/var/lib/dataraum/lake
-export DATABASE_URL=postgresql://...
-export DATARAUM_HOME=/var/lib/dataraum/workspace
-export DATARAUM_WORKSPACE_ID=00000000-0000-0000-0000-000000000001
-export ANTHROPIC_API_KEY=sk-ant-...
-export TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default TEMPORAL_TASK_QUEUE=dataraum-pipeline
+To run the worker directly against an already-running substrate (Postgres, Temporal, object
+store), export the env the compose file wires for the `engine-worker` service —
+`packages/infra/docker-compose.yml` is the authoritative list (`DATABASE_URL`,
+`DUCKLAKE_*`, `DATARAUM_WORKSPACE_ID`, `TEMPORAL_*` with the workspace's task queue per
+[ADR-0012](../../docs/adr/0012-per-workspace-tenancy.md), `ANTHROPIC_API_KEY`) — then:
+
+```bash
 uv run python -m dataraum.worker.main
 ```
 
-## Documentation
-
-Platform docs live at the workspace root in [`docs/`](../../docs/index.md) (published via
-Zensical). The engine's pipeline, entropy/measurement model, and journey are covered there:
-
-- [Pipeline & phases](../../docs/concepts/pipeline.md)
-- [Measurement & detectors](../../docs/concepts/measurement.md)
-- [The journey](../../docs/concepts/the-journey.md)
-- [Platform architecture](../../docs/platform/architecture.md)
+Two things to know before testing: **e2e tests make real LLM calls** — don't run them
+casually; and detector correctness is proven by **calibration** against ground-truth data
+(recall on known injections, precision on clean data) in the separate `dataraum-eval`
+repo, not by unit tests alone.
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](../../LICENSE).

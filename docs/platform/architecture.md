@@ -73,8 +73,9 @@ flowchart LR
 **Object store (S3)** — the data lake lives here, not on a local disk. The engine writes
 typed/staged data as parquet under the workspace's lake prefix; file uploads land under an
 `uploads/` prefix in the same bucket. In dev this is a single-node **SeaweedFS** S3
-gateway; in production it is a real object store with real IAM. ([Substrate](substrate.md)
-covers DuckLake-on-S3 in detail.)
+gateway; in production it is a real object store with real IAM. (The per-workspace lake
+prefix and catalog layout are in
+[ADR-0012](../adr/0012-per-workspace-tenancy.md).)
 
 **Temporal** — the durable orchestration backbone. Both workers poll it; it guarantees
 long-running analysis survives restarts and is retried correctly.
@@ -89,8 +90,9 @@ Because there is no HTTP between them, the seam is two channels, and only two:
 The cockpit triggers analysis by starting **engine workflows** by name on the workspace's
 task queue. The engine worker bundles three analysis workflows
 (`add_source`, `begin_session`, `operating_model`) plus a per-table child workflow. The
-cockpit never runs analysis itself. See [orchestration](orchestration.md) for the full run
-flow.
+cockpit never runs analysis itself. The full orchestration model is in
+[ADR-0001](../adr/0001-temporal-orchestration-python.md) and
+[ADR-0014](../adr/0014-cockpit-orchestration-worker.md).
 
 ### 2. Metadata flows through promoted Postgres views
 
@@ -163,6 +165,6 @@ per-workspace template.
 
 ## Next
 
-- [Substrate](substrate.md) — Postgres, DuckLake-on-S3, and the run-versioning model.
-- [Orchestration](orchestration.md) — how a run actually flows through Temporal.
+- [Decision records](../adr/README.md) — the settled architecture decisions and the *why*
+  behind each one.
 - [How it works](../concepts/the-journey.md) — the journey and the model behind it.

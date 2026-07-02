@@ -34,7 +34,7 @@ Two things are worth holding onto before the details:
 - **Where each stage runs.** The interactive, agentic stages (**frame**, **answer**) run in
   the cockpit. The heavy analysis stages (**add_source**, **begin_session**,
   **operating_model**) run in the engine as durable Temporal workflows. This split is
-  deliberate — see [orchestration](../platform/orchestration.md).
+  deliberate — see the [platform architecture](../platform/architecture.md).
 - **What persists.** Typed sources, the workspace, and the operating model persist as named
   artifacts. So do your **teaches** — every correction you make survives a stage re-run.
   What does *not* persist is an agent's in-loop reasoning; agents are stateless across runs.
@@ -128,5 +128,5 @@ Re-entering an earlier stage cascades to the stages built on top of it — re-ty
 invalidates the workspace and operating model that were built from it. The cockpit shows the
 cost before you commit, and because **teaches persist**, a re-run reapplies everything you
 previously taught. Going back is a deliberate act with visible consequences, not a silent
-reset. How that cascade is actually executed is covered in
-[orchestration](../platform/orchestration.md).
+reset. How that cascade is actually executed is covered in the
+[platform architecture](../platform/architecture.md).

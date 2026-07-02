@@ -124,6 +124,9 @@ class BusinessCycleAgent(LLMFeature):
                 "Call this tool with your structured findings."
             ),
             input_schema=BusinessCycleAnalysisOutput.model_json_schema(),
+            # Strict grammar compilation times out on this schema (three probes,
+            # 2026-07-02) — too large/nested to compile. Pydantic validates.
+            strict=False,
         )
 
         model = self.provider.get_model_for_tier(feature_config.model_tier)

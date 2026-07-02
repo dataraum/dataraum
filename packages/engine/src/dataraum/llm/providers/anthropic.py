@@ -83,6 +83,44 @@ def _thinking_defaults_on(model: str) -> bool:
     return model.startswith(_THINKING_DEFAULT_ON_PREFIXES)
 
 
+# JSON-Schema keywords strict grammar compilation rejects. Stripping them is
+# lossless for correctness: Pydantic re-validates the parsed arguments client-
+# side, so range/length constraints are still enforced — strict guarantees the
+# SHAPE (no stringified payloads, no missing/extra keys), Pydantic the values.
+_STRICT_UNSUPPORTED_KEYS = frozenset(
+    {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+    }
+)
+
+
+def _strict_tool_schema(node: Any) -> Any:
+    """Normalize a Pydantic JSON schema for ``strict: true`` tool use.
+
+    Recursively sets ``additionalProperties: false`` on every object node
+    (strict requires it explicitly; Pydantic never emits it) and strips the
+    constraint keywords strict rejects (see ``_STRICT_UNSUPPORTED_KEYS``).
+    """
+    if isinstance(node, dict):
+        out = {
+            k: _strict_tool_schema(v) for k, v in node.items() if k not in _STRICT_UNSUPPORTED_KEYS
+        }
+        if out.get("type") == "object" or "properties" in out:
+            out.setdefault("additionalProperties", False)
+        return out
+    if isinstance(node, list):
+        return [_strict_tool_schema(v) for v in node]
+    return node
+
+
 # 4xx codes the user must fix — credentials, schema, request shape.
 # 429 (rate limit) and 408/409 are retryable so they are NOT in this set.
 _PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 413, 422})
@@ -201,7 +239,10 @@ class AnthropicProvider(LLMProvider):
                         {
                             "name": t.name,
                             "description": t.description,
-                            "input_schema": t.input_schema,
+                            "input_schema": _strict_tool_schema(t.input_schema)
+                            if t.strict
+                            else t.input_schema,
+                            **({"strict": True} if t.strict else {}),
                         },
                     )
                     for t in request.tools

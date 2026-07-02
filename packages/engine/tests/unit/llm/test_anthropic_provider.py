@@ -25,6 +25,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
     PermanentProviderError,
+    ToolDefinition,
     TransientProviderError,
 )
 
@@ -314,3 +315,70 @@ class TestConverseTelemetry:
         assert resp.cache_creation_input_tokens == 0
         assert log.info.call_args.kwargs["cache_read_input_tokens"] == 0
         assert log.info.call_args.kwargs["cache_creation_input_tokens"] == 0
+
+
+class TestStrictTools:
+    """Forced tools ship strict:true with a normalized schema (DAT-661): the
+    API then guarantees the arguments validate — killing the malformed-args
+    class (Sonnet 5 stringified a whole payload into one field, 2026-07-02
+    smoke). Open-map / oversized schemas opt out via ``strict=False``."""
+
+    def _captured_tool(
+        self, monkeypatch: pytest.MonkeyPatch, tool: ToolDefinition
+    ) -> dict[str, object]:
+        provider = _provider()
+        captured: dict[str, object] = {}
+
+        def capture(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return _ok_response()
+
+        _patch_stream(monkeypatch, provider, capture)
+        provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                tools=[tool],
+            )
+        ).unwrap()
+        return captured["tools"][0]  # type: ignore[index,no-any-return]
+
+    def test_strict_tool_normalizes_schema_and_sets_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        schema = {
+            "type": "object",
+            "properties": {
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "nested": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string", "maxLength": 5}},
+                },
+            },
+            "required": ["confidence"],
+        }
+        sent = self._captured_tool(
+            monkeypatch,
+            ToolDefinition(name="t", description="d", input_schema=schema),
+        )
+        assert sent["strict"] is True
+        sent_schema = sent["input_schema"]
+        assert sent_schema["additionalProperties"] is False
+        assert "minimum" not in sent_schema["properties"]["confidence"]
+        assert "maximum" not in sent_schema["properties"]["confidence"]
+        nested = sent_schema["properties"]["nested"]
+        assert nested["additionalProperties"] is False
+        assert "maxLength" not in nested["properties"]["name"]
+
+    def test_non_strict_tool_passes_schema_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Open-map schema (additionalProperties: <schema>) — must go through
+        # untouched, with no strict flag.
+        schema = {
+            "type": "object",
+            "properties": {"steps": {"type": "object", "additionalProperties": {"type": "string"}}},
+        }
+        sent = self._captured_tool(
+            monkeypatch,
+            ToolDefinition(name="t", description="d", input_schema=schema, strict=False),
+        )
+        assert "strict" not in sent
+        assert sent["input_schema"] == schema

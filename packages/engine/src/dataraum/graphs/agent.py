@@ -644,6 +644,10 @@ class GraphAgent(LLMFeature):
             name="generate_sql",
             description="Provide generated SQL for the graph specification",
             input_schema=GraphSQLGenerationOutput.model_json_schema(),
+            # Open map in the schema (dict[str, …] → additionalProperties:
+            # <schema>) — strict grammar compilation cannot represent it
+            # (probed 2026-07-02); Pydantic remains the sole validator here.
+            strict=False,
         )
 
         # Call LLM with tool use

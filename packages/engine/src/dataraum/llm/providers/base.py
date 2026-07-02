@@ -59,11 +59,22 @@ class PermanentProviderError(ProviderError):
 
 
 class ToolDefinition(BaseModel):
-    """Definition of a tool the LLM can use."""
+    """Definition of a tool the LLM can use.
+
+    ``strict=True`` (the default) asks the API to guarantee the tool's
+    arguments validate against ``input_schema`` — this kills the
+    malformed-args class outright (e.g. Sonnet 5 stringifying a whole
+    payload into one field, seen in the 2026-07-02 smoke). Opt OUT for
+    schemas strict grammar compilation cannot represent: open maps
+    (``dict[str, …]`` → ``additionalProperties: <schema>``) and schemas
+    too large to compile (business_cycles timed out repeatedly, probed
+    2026-07-02).
+    """
 
     name: str
     description: str
     input_schema: dict[str, Any]  # JSON Schema for tool parameters
+    strict: bool = True
 
 
 class ToolCall(BaseModel):

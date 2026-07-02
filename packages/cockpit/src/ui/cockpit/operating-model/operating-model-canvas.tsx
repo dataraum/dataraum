@@ -230,7 +230,7 @@ function FilterBar({
 			style={{
 				position: "absolute",
 				top: 8,
-				left: 8,
+				right: 8,
 				zIndex: 5,
 				maxWidth: 360,
 			}}

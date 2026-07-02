@@ -82,6 +82,34 @@ class TestErrorClassification:
         assert "ANTHROPIC_API_KEY" in str(err)
 
 
+class _FakeStream:
+    """Stand-in for the SDK ``MessageStreamManager``: a context manager whose
+    body yields an object with ``get_final_message()``. ``converse`` streams
+    (the SDK refuses large-``max_tokens`` non-streaming requests), so tests
+    patch ``messages.stream`` — the fake calls through to ``fn`` on entry, so
+    a raising ``fn`` surfaces exactly where the SDK would raise."""
+
+    def __init__(self, fn: object, kwargs: dict[str, object]) -> None:
+        self._fn = fn
+        self._kwargs = kwargs
+
+    def __enter__(self) -> SimpleNamespace:
+        response = self._fn(**self._kwargs)  # type: ignore[operator]
+        return SimpleNamespace(get_final_message=lambda: response)
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def _patch_stream(monkeypatch: pytest.MonkeyPatch, provider: object, fn: object) -> None:
+    """Route ``provider.client.messages.stream(**kw)`` through ``fn``."""
+    monkeypatch.setattr(
+        provider.client.messages,  # type: ignore[attr-defined]
+        "stream",
+        lambda **kw: _FakeStream(fn, kw),
+    )
+
+
 class TestConverseRaisesTypedError:
     """converse raises the typed exception so callers don't inspect the SDK
     exception — and so a transient failure stays retryable end-to-end."""
@@ -92,7 +120,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise _status_error(401)
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(PermanentProviderError) as ei:
             provider.converse(_request())
@@ -104,7 +132,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise _status_error(529)
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(TransientProviderError):
             provider.converse(_request())
@@ -117,7 +145,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise ValueError("malformed kwargs")
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(PermanentProviderError) as ei:
             provider.converse(_request())
@@ -132,7 +160,7 @@ class TestConverseRaisesTypedError:
         def boom(**_: object) -> object:
             raise original
 
-        monkeypatch.setattr(provider.client.messages, "create", boom)
+        _patch_stream(monkeypatch, provider, boom)
 
         with pytest.raises(TransientProviderError) as ei:
             provider.converse(_request())
@@ -146,7 +174,7 @@ def _ok_response(
     cache_read: int | None = 0,
     cache_creation: int | None = 0,
 ) -> SimpleNamespace:
-    """A minimal stand-in for the SDK Message a successful create() returns.
+    """A minimal stand-in for the final SDK Message a successful stream yields.
 
     ``cache_read``/``cache_creation`` default to 0 but accept ``None`` to mirror
     the SDK, which leaves those Usage fields unset when no ``cache_control`` is
@@ -183,7 +211,7 @@ class TestConverseRequestShape:
             captured.update(kwargs)
             return _ok_response()
 
-        monkeypatch.setattr(provider.client.messages, "create", capture)
+        _patch_stream(monkeypatch, provider, capture)
         provider.converse(
             ConversationRequest(
                 messages=[Message(role="user", content="hi")], temperature=0.0, model=model
@@ -229,9 +257,9 @@ class TestConverseTelemetry:
 
     def test_logs_label_and_all_token_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         provider = _provider()
-        monkeypatch.setattr(
-            provider.client.messages,
-            "create",
+        _patch_stream(
+            monkeypatch,
+            provider,
             lambda **_: _ok_response(
                 input_tokens=512, output_tokens=64, cache_read=480, cache_creation=32
             ),
@@ -257,9 +285,9 @@ class TestConverseTelemetry:
 
     def test_response_carries_cache_usage(self, monkeypatch: pytest.MonkeyPatch) -> None:
         provider = _provider()
-        monkeypatch.setattr(
-            provider.client.messages,
-            "create",
+        _patch_stream(
+            monkeypatch,
+            provider,
             lambda **_: _ok_response(cache_read=480, cache_creation=32),
         )
 
@@ -272,9 +300,9 @@ class TestConverseTelemetry:
         # No cache_control today → SDK leaves the Usage cache fields as None;
         # telemetry must stay numeric, not propagate None.
         provider = _provider()
-        monkeypatch.setattr(
-            provider.client.messages,
-            "create",
+        _patch_stream(
+            monkeypatch,
+            provider,
             lambda **_: _ok_response(cache_read=None, cache_creation=None),
         )
         log = MagicMock()

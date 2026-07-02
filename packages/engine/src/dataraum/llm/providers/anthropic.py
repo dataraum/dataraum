@@ -235,8 +235,15 @@ class AnthropicProvider(LLMProvider):
             if request.tool_choice:
                 kwargs["tool_choice"] = request.tool_choice
 
+            # Stream + accumulate instead of a one-shot create: the SDK refuses
+            # a non-streaming request whose max_tokens it estimates could exceed
+            # ~10 minutes (ValueError "Streaming is required…"), and the Sonnet 5
+            # output budget (24000) trips that guard — every pipeline call died
+            # on it in the 2026-07-02 smoke. Streaming lifts the ceiling; callers
+            # still receive one final Message via get_final_message().
             start = time.perf_counter()
-            response = self.client.messages.create(**kwargs)
+            with self.client.messages.stream(**kwargs) as stream:
+                response = stream.get_final_message()
             elapsed_ms = round((time.perf_counter() - start) * 1000)
 
             # Extract content and tool calls from response

@@ -26,17 +26,13 @@ import {
 	currentSliceDefinitions,
 	sqlSnippets,
 } from "#/db/metadata/schema";
-import type { DrillAxis } from "#/duckdb/drill";
+import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
 
 import {
 	type ExtractSnippetInput,
 	parseMetricDag,
 	resolveGrounding,
 } from "./operating-model-graph";
-
-export type DrillAxesRequest =
-	| { metricKey: string; standardField?: undefined }
-	| { standardField: string; metricKey?: undefined };
 
 /** The extract-step standard fields of a metric's persisted DAG (pure). */
 export function measureFieldsFromDag(dag: unknown): string[] {

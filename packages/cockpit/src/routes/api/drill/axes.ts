@@ -10,8 +10,8 @@ import { resolveDrillAxes } from "#/tools/drill-axes";
 
 const BodySchema = z
 	.object({
-		metricKey: z.string().min(1).optional(),
-		standardField: z.string().min(1).optional(),
+		metricKey: z.string().min(1).max(256).optional(),
+		standardField: z.string().min(1).max(256).optional(),
 	})
 	.refine(
 		(b) => (b.metricKey === undefined) !== (b.standardField === undefined),

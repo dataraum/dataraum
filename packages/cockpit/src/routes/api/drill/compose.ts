@@ -10,13 +10,23 @@ import { z } from "zod";
 import { composeDrill } from "#/duckdb/drill-sql";
 import { applyEngineScope, withLakeConnection } from "#/duckdb/lake";
 
-const PinValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+// Length bounds follow the grid-query convention (column names 256, values
+// 1024, arrays 64) so a validated field can't balloon the SQL handed to
+// DuckDB — injection is already impossible (identifiers are quoted/AST nodes,
+// values always bind); this bounds resource use.
+const PinValueSchema = z.union([
+	z.string().max(1024),
+	z.number(),
+	z.boolean(),
+	z.null(),
+]);
+const ColumnSchema = z.string().min(1).max(256);
 
 const StepSchema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("slice"), column: z.string().min(1) }),
+	z.object({ kind: z.literal("slice"), column: ColumnSchema }),
 	z.object({
 		kind: z.literal("pin"),
-		column: z.string().min(1),
+		column: ColumnSchema,
 		value: PinValueSchema,
 	}),
 ]);
@@ -24,7 +34,7 @@ const StepSchema = z.discriminatedUnion("kind", [
 const BodySchema = z.object({
 	sql: z.string().min(1),
 	params: z.array(PinValueSchema).default([]),
-	steps: z.array(StepSchema).min(1),
+	steps: z.array(StepSchema).min(1).max(64),
 });
 
 function badRequest(message: string): Response {

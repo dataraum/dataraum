@@ -26,18 +26,19 @@ import {
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Layers } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import type { ChartConfig } from "#/charts/chart-config";
-import type { DrillAxis, DrillPinValue, DrillStep } from "#/duckdb/drill";
+import type {
+	DrillAxesRequest,
+	DrillAxis,
+	DrillPinValue,
+	DrillStep,
+} from "#/duckdb/drill";
 import { ChartToolbarButton } from "#/ui/cockpit/widgets/chart-toolbar-button";
 import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 
 type SqlParams = (string | number | boolean | null)[];
-
-export type DrillAxesRequest =
-	| { metricKey: string }
-	| { standardField: string };
 
 type ComposeResponse =
 	| { ok: true; tier: "A" | "B"; sql: string; params: SqlParams }
@@ -79,11 +80,16 @@ function DrillChartAction({ sql, params }: { sql: string; params: SqlParams }) {
 const pinLabel = (value: DrillPinValue): string =>
 	value === null ? "∅" : String(value);
 
-/** A clicked grid cell, narrowed to a bindable pin value. */
-const toPinValue = (v: unknown): DrillPinValue =>
-	typeof v === "string" || typeof v === "number" || typeof v === "boolean"
+/** A clicked grid cell narrowed to a bindable pin value — `undefined` for a
+ *  non-scalar cell (nested json), which cannot be pinned and is skipped rather
+ *  than silently pinned as NULL. */
+const toPinValue = (v: unknown): DrillPinValue | undefined =>
+	v === null ||
+	typeof v === "string" ||
+	typeof v === "number" ||
+	typeof v === "boolean"
 		? v
-		: null;
+		: undefined;
 
 export function DrillableGrid({
 	sql,
@@ -114,18 +120,35 @@ export function DrillableGrid({
 	});
 	const axes = axesQuery.data?.axes ?? [];
 
+	// Monotonic apply generation, bumped in the EVENT HANDLER so it carries
+	// click order. TanStack Query neither serializes nor cancels overlapping
+	// `.mutate()` calls — their callbacks fire in network-resolution order — so
+	// without this guard two quick applies (row-pin then pill-remove, say)
+	// could commit the OLDER composition last and leave the grid on a state
+	// that doesn't match the user's latest action. Ref, not state: read/written
+	// only in handlers/callbacks (rule 8's render restriction doesn't apply).
+	const generationRef = useRef(0);
+
 	// Applying a step stack is a user event → a mutation (rule 4). A refusal is
 	// a DOMAIN result (HTTP 200): surface it and keep the last accepted drill.
 	const compose = useMutation({
-		mutationFn: async (candidate: DrillStep[]) => ({
+		mutationFn: async ({
 			candidate,
+			generation,
+		}: {
+			candidate: DrillStep[];
+			generation: number;
+		}) => ({
+			candidate,
+			generation,
 			result: await postJson<ComposeResponse>("/api/drill/compose", {
 				sql,
 				params: baseParams,
 				steps: candidate,
 			}),
 		}),
-		onSuccess: ({ candidate, result }) => {
+		onSuccess: ({ candidate, generation, result }) => {
+			if (generation !== generationRef.current) return; // superseded — drop
 			if (result.ok) {
 				setSteps(candidate);
 				setComposed({ sql: result.sql, params: result.params });
@@ -134,18 +157,23 @@ export function DrillableGrid({
 				setRefusal(result.reason);
 			}
 		},
-		onError: (err) =>
-			setRefusal(err instanceof Error ? err.message : String(err)),
+		onError: (err, { generation }) => {
+			if (generation !== generationRef.current) return; // superseded — drop
+			setRefusal(err instanceof Error ? err.message : String(err));
+		},
 	});
 
 	const apply = (candidate: DrillStep[]) => {
+		const generation = ++generationRef.current;
 		if (candidate.length === 0) {
+			// Clearing is synchronous — the bump above also invalidates any
+			// still-in-flight compose so it can't resurrect the cleared drill.
 			setSteps([]);
 			setComposed(null);
 			setRefusal(null);
 			return;
 		}
-		compose.mutate(candidate);
+		compose.mutate({ candidate, generation });
 	};
 
 	const effective =
@@ -164,23 +192,16 @@ export function DrillableGrid({
 	const onRowClick =
 		activeSlices.length > 0
 			? (row: Record<string, unknown>) => {
-					const pins = activeSlices
-						.filter(
-							(s) =>
-								!steps.some(
-									(p) =>
-										p.kind === "pin" &&
-										p.column === s.column &&
-										p.value === toPinValue(row[s.column]),
-								),
-						)
-						.map(
-							(s): DrillStep => ({
-								kind: "pin",
-								column: s.column,
-								value: toPinValue(row[s.column]),
-							}),
+					const pins: DrillStep[] = [];
+					for (const s of activeSlices) {
+						const value = toPinValue(row[s.column]);
+						if (value === undefined) continue; // non-scalar cell — not pinnable
+						const duplicate = steps.some(
+							(p) =>
+								p.kind === "pin" && p.column === s.column && p.value === value,
 						);
+						if (!duplicate) pins.push({ kind: "pin", column: s.column, value });
+					}
 					if (pins.length > 0) apply([...steps, ...pins]);
 				}
 			: undefined;

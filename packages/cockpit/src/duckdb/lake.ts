@@ -186,8 +186,13 @@ export async function withLakeConnection<T>(
 export async function applyEngineScope(conn: DuckDBConnection): Promise<void> {
 	try {
 		await conn.run(`USE ${LAKE_ALIAS}.typed`);
-	} catch {
+	} catch (err) {
 		// No typed schema in the lake yet (nothing ingested) — leave unscoped.
+		// Logged at debug so a REAL failure (connectivity blip) is traceable
+		// instead of surfacing later as a confusing downstream binder error.
+		console.debug(
+			`[lake] engine scope skipped: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 }
 

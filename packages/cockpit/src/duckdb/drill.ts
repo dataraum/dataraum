@@ -26,6 +26,13 @@ export type DrillStep =
 	| { kind: "slice"; column: string }
 	| { kind: "pin"; column: string; value: DrillPinValue };
 
+/** Axis-resolution request (`/api/drill/axes`, metric path in P1): exactly one
+ *  of the two keys. Shared client↔server so the wire contract can't silently
+ *  drift (this module is the neo-free home for drill types). */
+export type DrillAxesRequest =
+	| { metricKey: string; standardField?: undefined }
+	| { standardField: string; metricKey?: undefined };
+
 /** One sliceable dimension of a metric's fact catalog (`/api/drill/axes`). */
 export interface DrillAxis {
 	/** The `slice_definitions.column_name` — addressable verbatim in the

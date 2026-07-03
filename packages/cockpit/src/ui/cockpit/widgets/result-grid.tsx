@@ -478,7 +478,11 @@ export function ResultGridView({
 										key={row.id}
 										onClick={
 											onRowClick
-												? () =>
+												? () => {
+														// Selecting/copying cell text must not fire the
+														// row action — a click that ends a selection is
+														// a copy gesture, not a pin.
+														if (window.getSelection()?.toString()) return;
 														onRowClick(
 															Object.fromEntries(
 																store.columns.map((name, c) => [
@@ -486,7 +490,8 @@ export function ResultGridView({
 																	store.cell(c, vr.index),
 																]),
 															),
-														)
+														);
+													}
 												: undefined
 										}
 										style={onRowClick ? { cursor: "pointer" } : undefined}

@@ -17,11 +17,9 @@ import { Button, Group, Modal } from "@mantine/core";
 import { Play } from "lucide-react";
 import { useState } from "react";
 
+import type { DrillAxesRequest } from "#/duckdb/drill";
 import type { OMNode } from "#/tools/operating-model-graph";
-import {
-	type DrillAxesRequest,
-	DrillableGrid,
-} from "#/ui/cockpit/widgets/drillable-grid";
+import { DrillableGrid } from "#/ui/cockpit/widgets/drillable-grid";
 
 /** The node's runnable analysis target, or null when there is nothing to run. */
 export function analyseTarget(

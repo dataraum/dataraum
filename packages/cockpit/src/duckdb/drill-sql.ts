@@ -169,6 +169,9 @@ function injectSteps(
 
 	if (pins.length > 0) {
 		const pinParams: DrillPinValue[] = [];
+		// pinParams grows INSIDE the map: `$n` identifiers must be sequential in
+		// pin order, and only non-NULL pins consume a slot — the push/length
+		// pairing below is that ordering, don't lift it out of the loop.
 		const predicates = pins.map((p) => {
 			if (p.value === null) {
 				return {

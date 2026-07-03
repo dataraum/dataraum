@@ -79,19 +79,39 @@ describe("chat route wiring (DAT-353, DAT-532)", () => {
 		expect((sys?.content ?? "").length).toBeGreaterThan(0);
 	});
 
-	it("appends the workspace context as a SECOND, cached system block (DAT-606)", () => {
-		const ctx = "WORKSPACE CONTEXT — session abc";
+	it("appends the STABLE workspace context cached and the digest UNCACHED last (DAT-606)", () => {
+		const ctx = {
+			stable: "WORKSPACE CONTEXT — session abc",
+			digest: "READINESS — 3 columns blocked",
+		};
 		const opts = buildChatOptions("connect", MSG, undefined, ctx);
 		const prompts = systemPromptObjects(opts);
-		expect(prompts).toHaveLength(2);
+		expect(prompts).toHaveLength(3);
 		// The instructions stay the cached FIRST block…
 		expect(prompts[0]?.metadata?.cache_control).toEqual({
 			type: "ephemeral",
 		});
-		// …and the session-stable workspace context carries its OWN breakpoint,
-		// so it reads from cache from turn 2 on; an import that changes it
-		// invalidates only this block, never the orchestrator prefix.
-		expect(prompts[1]?.content).toBe(ctx);
+		// …the session-stable workspace context carries its OWN breakpoint, so it
+		// reads from cache from turn 2 on…
+		expect(prompts[1]?.content).toBe(ctx.stable);
+		expect(prompts[1]?.metadata?.cache_control).toEqual({
+			type: "ephemeral",
+		});
+		// …and the live readiness digest rides LAST with NO breakpoint — its
+		// counts change exactly when the agent acts (replay/teach), and a cached
+		// volatile block would defeat the breakpoint it sits in (PR #432 retro
+		// review finding).
+		expect(prompts[2]?.content).toBe(ctx.digest);
+		expect(prompts[2]?.metadata).toBeUndefined();
+	});
+
+	it("omits the digest block when the briefing read degraded to null", () => {
+		const opts = buildChatOptions("connect", MSG, undefined, {
+			stable: "WORKSPACE CONTEXT",
+			digest: null,
+		});
+		const prompts = systemPromptObjects(opts);
+		expect(prompts).toHaveLength(2);
 		expect(prompts[1]?.metadata?.cache_control).toEqual({
 			type: "ephemeral",
 		});

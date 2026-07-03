@@ -74,22 +74,34 @@ export function formatWorkspaceContext(
  * WORKSPACE's (DAT-506: a workspace property); the table set is the workspace-current
  * set (the generation heads).
  */
+export interface WorkspaceContext {
+	/** Session-stable block (vertical + imported tables) — cached (DAT-606). */
+	stable: string;
+	/** Live per-turn readiness digest (DAT-634) — VOLATILE; must ride uncached. */
+	digest: string | null;
+}
+
 export async function buildWorkspaceContext(
 	kind: ConversationKind,
-): Promise<string | null> {
+): Promise<WorkspaceContext | null> {
 	const workspace = await resolveActiveWorkspaceRow();
 	const tableNames = await workspaceTableNames();
 	if (tableNames.length === 0) return null;
 	const block = formatWorkspaceContext(workspace.vertical, tableNames);
+	if (block == null) return null;
 
-	// Append a compact, PROJECTED readiness digest (DAT-634) so the agent can speak
-	// to "what's blocked / what to do next" for this chat's kind without a tool
+	// A compact, PROJECTED readiness digest (DAT-634) so the agent can speak to
+	// "what's blocked / what to do next" for this chat's kind without a tool
 	// round-trip. Soft: a briefing read blip just drops the digest, keeping the base
-	// block. TODO(DAT-634): cache candidate — buildWorkspaceBriefing runs ~9 queries
+	// block. Returned SEPARATELY from the stable block (retro-review of PR #432):
+	// the digest's counts change exactly when the agent acts (replay/teach), so
+	// embedding it in the cached block made the DAT-606 breakpoint miss on the
+	// turns that matter — it must ride as its own uncached tail block.
+	// TODO(DAT-634): cache candidate — buildWorkspaceBriefing runs ~9 queries
 	// per turn here; a short-TTL / invalidate-on-promote cache would cut it.
 	// Intentionally UNCACHED for now (correctness first; DB cost is negligible beside
 	// the LLM call). Do NOT add a cache without measuring.
 	const briefing = await buildWorkspaceBriefing().catch(() => null);
 	const digest = briefing ? formatBriefingDigest(briefing, kind) : null;
-	return digest && block ? `${block}\n\n${digest}` : block;
+	return { stable: block, digest };
 }

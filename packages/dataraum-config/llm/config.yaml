@@ -77,9 +77,11 @@ features:
 limits:
   # Bumped 16000 -> 24000 with the Sonnet 5 swap: its tokenizer emits ~30% more
   # tokens for the same text, so a response that fit under 16000 on Sonnet 4.6
-  # can now clip. 24000 restores the old margin. (Thinking is disabled on the
-  # engine's forced-tool calls, so this budget is response-only, not shared with
-  # a thinking trace.)
+  # can now clip. 24000 restores the old margin. For the thinking-off extractors
+  # this budget is response-only; for graph_sql_generation (thinking: true,
+  # DAT-603) it is SHARED with the thinking trace — max_tokens caps both.
+  # Measured 2026-07-03: ~3.7k mean output tokens/call incl. thinking, ample
+  # headroom under 24000.
   max_output_tokens_per_request: 24000
 
 # Privacy settings for data sent to LLM

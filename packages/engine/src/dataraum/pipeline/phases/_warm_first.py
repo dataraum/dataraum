@@ -10,7 +10,15 @@ validation's first wave of 4 did the same at its cap.
 Letting the FIRST call run to completion commits the shared prefix; every call
 released after it reads the entry instead. Wall-clock cost is ~zero whenever
 the item count exceeds the pool cap (the wave count is unchanged) and one
-call-time otherwise.
+call-time otherwise. Waiting for FULL completion is deliberately conservative
+— the cache entry is committed once the prompt is processed (≈ first streamed
+token), so the theoretical optimum releases the rest on first-token. That
+would need a cross-layer signal out of the provider; not worth it while the
+tax is one call-time per phase. Know the price though: with adaptive thinking
+on graph_sql_generation (DAT-603) the first metrics call runs ~35s, and
+post-DAT-646 the warm DAG is a single generation of leaf extracts — when the
+unique-extract count fits inside the pool cap, that ~35s is a real one-time
+serial add to the metrics phase (retro-review of PR #433, 2026-07-03).
 
 This is deliberately the ONLY place the stagger lives: metrics warming and
 validation are the engine's only two concurrent LLM fan-outs (every other

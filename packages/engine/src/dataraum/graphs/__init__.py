@@ -1,24 +1,16 @@
 """Transformation graphs for metric computation.
 
 Graphs are SPECIFICATIONS, not executable code. They define WHAT to calculate
-with rich accounting context. The GraphAgent uses LLM to interpret graphs +
-data schemas and generate executable SQL.
+with rich accounting context. The GraphAgent grounds each EXTRACT leaf to SQL
+via the LLM and composes metrics deterministically from those groundings.
 
-Usage:
-    from dataraum.graphs import GraphLoader, GraphAgent, ExecutionContext
-    from dataraum.graphs.config import get_metric_definitions
-
-    loader = GraphLoader()
-    loader.graphs.update(loader.graphs_from_definitions(get_metric_definitions("finance")))
-    graph = loader.graphs["dso"]
-
-    agent = GraphAgent(config, provider, renderer)
-    context = ExecutionContext.with_rich_context(
-        session=session,
-        duckdb_conn=conn,
-        table_ids=table_ids,
-    )
-    result = agent.execute(session, graph, context, workspace_id=workspace_id)
+How a metric actually runs (DAT-646/DAT-603 — there is no whole-graph LLM
+authoring): the metrics phase warms each unique EXTRACT leaf once via
+``agent.execute`` on a single-extract mini-graph (``node_warming.build_mini_
+graph``), then assembles every metric from the recorded bindings with NO LLM
+(``agent.assemble``). ``execute`` fails loud on anything but a single-extract
+mini-graph. See ``pipeline/phases/metrics_phase.py`` for the driving loop —
+that is the usage example.
 """
 
 from .agent import ExecutionContext, GeneratedCode, GraphAgent

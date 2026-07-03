@@ -109,7 +109,9 @@ class ConversationRequest(BaseModel):
     messages: list[Message]
     system: str | None = None
     tools: list[ToolDefinition] = Field(default_factory=list)
-    tool_choice: dict[str, str] | None = None  # e.g. {"type": "tool", "name": "..."}
+    # e.g. {"type": "tool", "name": "..."} or
+    # {"type": "auto", "disable_parallel_tool_use": True} (bool values occur).
+    tool_choice: dict[str, Any] | None = None
     max_tokens: int = 4096
     temperature: float = 0.0
     model: str | None = None  # Override default model
@@ -120,8 +122,9 @@ class ConversationRequest(BaseModel):
     # Let the model THINK (DAT-603): on thinking-default-on models (Sonnet 5 …)
     # the provider normally disables adaptive thinking for the forced-tool
     # extraction tier; a reasoning-heavy feature (metric grounding) opts back
-    # in. Thinking is API-incompatible with a FORCED tool_choice ("tool"/"any")
-    # — a thinking request must use auto/none and mandate the call via prompt.
+    # in. A FORCED tool_choice ("tool"/"any") silently SUPPRESSES thinking on
+    # the first-party API (probed 2026-07-03) — a thinking request must use
+    # auto (+ disable_parallel_tool_use) and mandate the call via prompt.
     thinking: bool = False
     # Greppable agent/phase tag for per-call telemetry (DAT-600). The provider
     # has no phase context of its own, so each call site stamps the prompt

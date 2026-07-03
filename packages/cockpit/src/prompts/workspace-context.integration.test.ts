@@ -143,7 +143,8 @@ describe.skipIf(!STACK_AVAILABLE)(
 		});
 
 		it("buildWorkspaceContext surfaces the imported tables by filename + the workspace vertical", async () => {
-			const block: string = await buildWorkspaceContext();
+			const ctx: { stable: string } = await buildWorkspaceContext();
+			const block = ctx.stable;
 			expect(block).toContain("Imported tables");
 			expect(block).toContain("widgets"); // de-prefixed table name, not the raw __ name
 			expect(block).toContain("vertical finance"); // the WORKSPACE vertical

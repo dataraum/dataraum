@@ -183,7 +183,7 @@ def test_mint_end_to_end(session, lake) -> None:
         'LEFT JOIN lake.typed."coa" d ON f."_sk__account__business_id" = '
         'd."_sk__account_name__business_id"'
     ).fetchone()
-    assert row is not None and row[0] == 5  # no fan-out (account alone would give 9)
+    assert row is not None and row[0] == 5  # no fan-out (account alone would give 10)
 
     # Metadata: Column rows registered + profiled on the typed layer.
     sk_cols = (
@@ -329,6 +329,92 @@ def test_missing_typing_recipe_abstains(session, lake) -> None:
     assert any("no typing recipe" in w for w in result.warnings)
     assert _sk_columns(lake, "txn") == []
     assert session.execute(select(Relationship)).scalars().all() == []
+
+
+def test_semantic_to_mint_to_enriched_join_holds_grain(session, lake) -> None:
+    """The full handoff: LLM confirms → intent → mint → the UNTOUCHED single-column
+    builder joins on the surrogate and the view holds exact fact grain.
+
+    This is the DAT-277 payoff pinned end-to-end: ``account`` alone fans the
+    5-row fact out to 9; the surrogate join returns exactly 5.
+    """
+    from unittest.mock import MagicMock
+
+    from dataraum.analysis.semantic.models import (
+        Relationship as SemanticRelationship,
+    )
+    from dataraum.analysis.semantic.models import SemanticEnrichmentResult
+    from dataraum.analysis.semantic.processor import synthesize_and_store_tables
+    from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
+    from dataraum.core.models.base import RelationshipType, Result
+
+    seed = _seed(session)
+    agent = MagicMock()
+    agent.synthesize_tables = MagicMock(
+        return_value=Result.ok(
+            SemanticEnrichmentResult(
+                annotations=[],
+                entity_detections=[],
+                relationships=[
+                    SemanticRelationship(
+                        relationship_id="rel-1",
+                        from_table="txn",
+                        from_column="account",
+                        to_table="coa",
+                        to_column="account_name",
+                        key_columns=[("business_id", "business_id")],
+                        relationship_type=RelationshipType.FOREIGN_KEY,
+                        confidence=0.9,
+                        detection_method="llm_tool",
+                        evidence={"source": "table_synthesis", "reasoning": "composite"},
+                    )
+                ],
+            )
+        )
+    )
+    table_ids = [t.table_id for t in seed["tables"].values()]
+    assert synthesize_and_store_tables(
+        session, agent, table_ids, duckdb_conn=lake, run_id=_RUN_1
+    ).success
+    session.flush()
+
+    assert SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1)).status == (
+        PhaseStatus.COMPLETED
+    )
+    session.flush()
+
+    rel = session.execute(
+        select(Relationship).where(Relationship.detection_method == "llm")
+    ).scalar_one()
+    sql, dim_cols = build_enriched_view_sql(
+        'lake.typed."enriched_txn"',
+        'lake.typed."txn"',
+        [
+            DimensionJoin(
+                dim_table_name="coa",
+                dim_duckdb_path='lake.typed."coa"',
+                fact_fk_column="_sk__account__business_id",
+                dim_pk_column="_sk__account_name__business_id",
+                include_columns=["account_type"],
+                relationship_id=rel.relationship_id,
+            )
+        ],
+    )
+    lake.execute(sql)
+    grain = lake.execute('SELECT COUNT(*) FROM lake.typed."enriched_txn"').fetchone()
+    assert grain is not None and grain[0] == 5  # exact fact grain — the rescue
+    fanout = lake.execute(
+        'SELECT COUNT(*) FROM lake.typed."txn" f '
+        'LEFT JOIN lake.typed."coa" d ON f."account" = d."account_name"'
+    ).fetchone()
+    assert fanout is not None and fanout[0] == 10  # what the naive join would do
+    assert dim_cols == ["_sk__account__business_id__account_type"]
+    # The enriched view serves the correct discriminator, grain-safe.
+    typed = lake.execute(
+        'SELECT DISTINCT "_sk__account__business_id__account_type" '
+        "FROM lake.typed.\"enriched_txn\" WHERE \"account\" = 'COGS'"
+    ).fetchall()
+    assert typed == [("Expense",)]
 
 
 def test_vanished_component_abstains(session, lake) -> None:

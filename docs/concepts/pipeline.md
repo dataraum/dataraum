@@ -48,6 +48,7 @@ columns and a terminal step measures.
 | `session_materialize_overlays` | deterministic | Fold durable relationship teaches into the run |
 | `relationships` | deterministic | Value-overlap, cardinality, and join detection |
 | `semantic_per_table` | **LLM** | Classify tables (fact/dimension, grain), confirm relationships, author catalogue-grain column semantics |
+| `surrogate_mint` | deterministic | Fuse confirmed composite keys into hash key columns; record the single-column join |
 | `enriched_views` | **LLM** | Score and build grain-preserving join views |
 | `slicing` | **LLM** | Identify the categorical dimensions you can slice by |
 | `aggregation_lineage` | deterministic | Reconcile measures across facts (sum-consistency) |

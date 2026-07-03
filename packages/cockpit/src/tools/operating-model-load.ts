@@ -21,8 +21,8 @@ import { readOperatingModelHead } from "../db/metadata/lifecycle-artifacts";
 import {
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
+	currentTables,
 	sqlSnippets,
-	tables as tablesView,
 } from "../db/metadata/schema";
 import { stripSrcDigests } from "../lib/display-names";
 import {
@@ -96,9 +96,16 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			})
 			.from(currentEnrichedViews),
 		// table_id → table_name, for naming the fact/dim tables a view derives from.
+		// current_tables (DAT-655): the analyzed typed-layer representatives — the
+		// only ids an enriched view's fact/dim set can reference. The raw `tables`
+		// view would also return raw/quarantine layer rows (harmless for an
+		// id-keyed map, but the pre-scoped surface is the contract).
 		metadataDb
-			.select({ tableId: tablesView.tableId, tableName: tablesView.tableName })
-			.from(tablesView),
+			.select({
+				tableId: currentTables.tableId,
+				tableName: currentTables.tableName,
+			})
+			.from(currentTables),
 	]);
 
 	// The metric's flattened runnable SQL = its `formula` snippet (newest wins;

@@ -24,6 +24,7 @@ import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
 import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { getInstructions } from "#/prompts";
+import type { WorkspaceContext } from "#/prompts/workspace-context";
 import { toolsByKind } from "#/tools/registry";
 
 export type ChatMessages = Awaited<
@@ -57,14 +58,19 @@ type ChatStream = ReturnType<
  * prompt-cache hit for the chat's life (a chat's kind is immutable). It must stay
  * stateless — that's what is cached.
  *
- * `workspaceContext` (the workspace's vertical + imported tables — workspace-
- * awareness for replay / teach / look) is a SECOND system block placed AFTER the
- * orchestrator, with its OWN cache breakpoint (DAT-606): it is stable within a
- * session, so it reads from cache from turn 2 on. Because prefix caching
+ * `workspaceContext.stable` (the workspace's vertical + imported tables —
+ * workspace-awareness for replay / teach / look) is a SECOND system block placed
+ * AFTER the orchestrator, with its OWN cache breakpoint (DAT-606): it is stable
+ * within a session, so it reads from cache from turn 2 on. Because prefix caching
  * invalidates only from the changed block onward, an import that changes this
  * block leaves the orchestrator block's cache intact — the two don't thrash.
- * The caller computes the block (a DB read) and passes it; `buildChatOptions`
- * stays pure for the unit wiring test.
+ * `workspaceContext.digest` (the live readiness digest, DAT-634) is per-turn
+ * VOLATILE — its counts change exactly when the agent acts (replay/teach) — so it
+ * rides as a THIRD, UNCACHED block after the cached prefix: both breakpoints stay
+ * hot and only this tail is re-read fresh each turn (retro-review of PR #432; it
+ * previously lived INSIDE the cached block and defeated it). The caller computes
+ * the blocks (a DB read) and passes them; `buildChatOptions` stays pure for the
+ * unit wiring test.
  *
  * `abortController` (when given) is threaded into the agentic loop so a cancelled
  * stream — the client calling useChat's `stop()`, or simply disconnecting —
@@ -75,7 +81,7 @@ export function buildChatOptions(
 	kind: ConversationKind,
 	messages: ChatMessages,
 	abortController?: AbortController,
-	workspaceContext?: string | null,
+	workspaceContext?: WorkspaceContext | null,
 ): ChatOptions {
 	const systemPrompts: Array<{
 		content: string;
@@ -86,16 +92,21 @@ export function buildChatOptions(
 			metadata: { cache_control: { type: "ephemeral" } },
 		},
 	];
-	// A second CACHED block (DAT-606): the workspace context (vertical + imported
-	// tables) is stable within a session, so its own breakpoint makes it a cache
+	// A second CACHED block (DAT-606): the stable workspace context (vertical +
+	// imported tables) is session-stable, so its own breakpoint makes it a cache
 	// read from turn 2 on — while leaving the orchestrator block's cache untouched
 	// when an import DOES change it (prefix caching invalidates only from the
 	// changed block onward).
 	if (workspaceContext != null) {
 		systemPrompts.push({
-			content: workspaceContext,
+			content: workspaceContext.stable,
 			metadata: { cache_control: { type: "ephemeral" } },
 		});
+		// The readiness digest is live per-turn state — NO cache_control, placed
+		// LAST so the two cached breakpoints above stay hot every turn.
+		if (workspaceContext.digest != null) {
+			systemPrompts.push({ content: workspaceContext.digest });
+		}
 	}
 	return {
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
@@ -168,7 +179,7 @@ export async function streamAgentTurnToBus(
 		// The chat's kind (DAT-532) — selects the toolstack + prompt for this turn.
 		// Required: both producers resolve it from the conversation row.
 		kind: ConversationKind;
-		workspaceContext?: string | null;
+		workspaceContext?: WorkspaceContext | null;
 		abortController?: AbortController;
 		persist?: boolean;
 	},

@@ -11,7 +11,8 @@ data_sources/
 .mcpregistry_*
 
 # AI assistants
-.claude/agent-memory/
+**/.claude/agent-memory/
+.claude-agent-memory/
 .claude/worktrees/
 .claude/.mailbox/
 .claire/
@@ -35,8 +36,6 @@ build/
 
 # Typescript
 .pnpm-store/
-packages/cockpit/.claude/agent-memory/
-packages/engine/.claude/agent-memory/
 
 # Environments
 .env

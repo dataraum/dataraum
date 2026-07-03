@@ -6,6 +6,11 @@
 // tables. Here we group by (source, table_name) and keep the analyzed layer
 // (typed) as the representative, surfacing the quarantine layer only as a count.
 // Pure (no React/DB) so the grouping is unit-testable.
+//
+// Deliberately NOT replaced by the `current_tables` read view (DAT-655): the
+// inventory renders the layer axis as product UX — the quarantine row-count
+// badge and the per-layer detail modal need the multi-layer feed. Consumers
+// that want only the analyzed representative read `current_tables` instead.
 
 import type { InventoryTable } from "#/tools/list-tables";
 

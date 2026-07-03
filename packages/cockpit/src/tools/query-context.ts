@@ -26,18 +26,19 @@
 // + `preferEnriched` are unit-tested; the Drizzle reads + the DESCRIBE are
 // smoke/integration-covered.
 
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import { metadataDb } from "../db/metadata/client";
 import {
-	columns,
 	currentColumnConcepts,
+	currentColumns,
 	currentDimensionHierarchies,
+	currentEnrichedViews,
 	currentRelationships,
 	currentSliceDefinitions,
 	currentTableEntities,
+	currentTables,
 	sources,
-	tables,
 } from "../db/metadata/schema";
 import { LAKE_ALIAS, withLakeConnection } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
@@ -229,52 +230,65 @@ export function formatSchema(
  * from metadata, so typed columns keep their `[concept:]` tags.
  */
 export async function buildSchemaBlock(): Promise<string> {
-	const tableRows = await metadataDb
-		.select({
-			tableId: tables.tableId,
-			physicalName: tables.tableName,
-			layer: tables.layer,
-		})
-		.from(tables)
-		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.where(
-			and(
-				isNull(sources.archivedAt),
-				inArray(tables.layer, [TYPED_LAYER, ENRICHED_LAYER]),
-			),
-		)
-		.orderBy(asc(tables.tableName));
-
-	const mapped: SchemaTableRow[] = tableRows.map((t) => ({
-		tableId: t.tableId ?? "",
-		physicalName: t.physicalName ?? "",
-		layer: t.layer ?? TYPED_LAYER,
-	}));
+	// Head-scoped reads (DAT-677): enriched views from the promoted catalog head
+	// (current_enriched_views), typed tables from the analyzed-representative
+	// surface (current_tables) — never the raw `tables` view, whose typed row
+	// exists from the START of add_source's typing phase while the generation
+	// head is only promoted at the END, so a raw read can leak a not-yet-analyzed
+	// table into the sub-agent's context.
+	const [enrichedRows, typedRows] = await Promise.all([
+		metadataDb
+			.select({
+				tableId: currentEnrichedViews.viewTableId,
+				physicalName: currentEnrichedViews.viewName,
+			})
+			.from(currentEnrichedViews),
+		metadataDb
+			.select({
+				tableId: currentTables.tableId,
+				physicalName: currentTables.tableName,
+			})
+			.from(currentTables)
+			.innerJoin(sources, eq(sources.sourceId, currentTables.sourceId))
+			.where(isNull(sources.archivedAt))
+			.orderBy(asc(currentTables.tableName)),
+	]);
 
 	// Prefer-enriched (mirror graphs/agent.py _build_schema_info): when enriched
 	// views exist, surface ONLY those — columns from a live DESCRIBE (the view is
 	// `SELECT f.*, dims`; metadata registers dims only). Fall through to the typed
 	// tables if the lake read fails (views not yet checkpointed / unreachable).
-	const enrichedViews = mapped.filter((t) => t.layer === ENRICHED_LAYER);
+	const enrichedViews: SchemaTableRow[] = enrichedRows
+		.filter((v) => v.tableId && v.physicalName)
+		.map((v) => ({
+			tableId: v.tableId as string,
+			physicalName: v.physicalName as string,
+			layer: ENRICHED_LAYER,
+		}));
 	if (enrichedViews.length > 0) {
 		const enrichedColumns = await describeEnrichedViews(enrichedViews);
 		if (enrichedColumns)
 			return formatSchema(enrichedViews, enrichedColumns, []);
 	}
 
-	// Typed path: metadata columns + their semantic-concept tags.
-	const typedTables = mapped.filter((t) => t.layer === TYPED_LAYER);
+	// Typed path: metadata columns + their semantic-concept tags. current_columns
+	// is already scoped to current typed tables; the join adds the archived filter.
+	const typedTables: SchemaTableRow[] = typedRows.map((t) => ({
+		tableId: t.tableId ?? "",
+		physicalName: t.physicalName ?? "",
+		layer: TYPED_LAYER,
+	}));
 	const columnRows = await metadataDb
 		.select({
-			tableId: columns.tableId,
-			columnId: columns.columnId,
-			name: columns.columnName,
-			resolvedType: columns.resolvedType,
+			tableId: currentColumns.tableId,
+			columnId: currentColumns.columnId,
+			name: currentColumns.columnName,
+			resolvedType: currentColumns.resolvedType,
 		})
-		.from(columns)
-		.innerJoin(tables, eq(tables.tableId, columns.tableId))
-		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER)));
+		.from(currentColumns)
+		.innerJoin(currentTables, eq(currentTables.tableId, currentColumns.tableId))
+		.innerJoin(sources, eq(sources.sourceId, currentTables.sourceId))
+		.where(isNull(sources.archivedAt));
 
 	// Catalogue-grain concepts live on currentColumnConcepts (DAT-637), authored by
 	// the table agent and sealed under the catalogue head — no longer on the
@@ -454,15 +468,16 @@ export async function buildCatalogBlock(): Promise<string> {
 				canonicalLabel: currentDimensionHierarchies.canonicalLabel,
 			})
 			.from(currentDimensionHierarchies),
+		// current_tables (DAT-677): the catalog axes are head-scoped already; the
+		// address map resolves them against the same promoted surface.
 		metadataDb
 			.select({
-				tableId: tables.tableId,
-				physicalName: tables.tableName,
-				layer: tables.layer,
+				tableId: currentTables.tableId,
+				physicalName: currentTables.tableName,
 			})
-			.from(tables)
-			.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-			.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER))),
+			.from(currentTables)
+			.innerJoin(sources, eq(sources.sourceId, currentTables.sourceId))
+			.where(isNull(sources.archivedAt)),
 	]);
 
 	const tableAddressById = new Map<string, string>(
@@ -470,7 +485,7 @@ export async function buildCatalogBlock(): Promise<string> {
 			.filter((t) => t.tableId)
 			.map((t) => [
 				t.tableId as string,
-				`${LAKE_ALIAS}.${schemaForLayer(t.layer ?? TYPED_LAYER)}.${t.physicalName}`,
+				`${LAKE_ALIAS}.${schemaForLayer(TYPED_LAYER)}.${t.physicalName}`,
 			]),
 	);
 
@@ -603,19 +618,24 @@ export async function buildRelationshipsBlock(): Promise<string> {
 		columnIds.add(r.toColumnId as string);
 	}
 
+	// current_tables/current_columns (DAT-677): a relationship endpoint whose
+	// table is no longer under a promoted generation head resolves to nothing and
+	// the half-resolved-skip below drops the line — same behavior as a dropped id.
 	const [tableRows, columnRows] = await Promise.all([
 		metadataDb
 			.select({
-				tableId: tables.tableId,
-				physicalName: tables.tableName,
-				layer: tables.layer,
+				tableId: currentTables.tableId,
+				physicalName: currentTables.tableName,
 			})
-			.from(tables)
-			.where(inArray(tables.tableId, [...tableIds])),
+			.from(currentTables)
+			.where(inArray(currentTables.tableId, [...tableIds])),
 		metadataDb
-			.select({ columnId: columns.columnId, columnName: columns.columnName })
-			.from(columns)
-			.where(inArray(columns.columnId, [...columnIds])),
+			.select({
+				columnId: currentColumns.columnId,
+				columnName: currentColumns.columnName,
+			})
+			.from(currentColumns)
+			.where(inArray(currentColumns.columnId, [...columnIds])),
 	]);
 
 	const addressById = new Map<string, string>(
@@ -623,7 +643,7 @@ export async function buildRelationshipsBlock(): Promise<string> {
 			.filter((t) => t.tableId)
 			.map((t) => [
 				t.tableId as string,
-				`${LAKE_ALIAS}.${schemaForLayer(t.layer ?? TYPED_LAYER)}.${t.physicalName}`,
+				`${LAKE_ALIAS}.${schemaForLayer(TYPED_LAYER)}.${t.physicalName}`,
 			]),
 	);
 	const colNameById = new Map<string, string>(
@@ -752,11 +772,13 @@ export function formatEntities(rows: EntityBlockRow[]): string {
  * session-grain contract (DAT-474) requires for a multi-row read.
  */
 export async function buildEntitiesBlock(): Promise<string> {
+	// current_tables (DAT-677) replaces the raw join + manual layer filter: the
+	// address join is now the same promoted typed surface the entity rows are
+	// sealed against.
 	const rows = await metadataDb
 		.select({
 			tableId: currentTableEntities.tableId,
-			physicalName: tables.tableName,
-			layer: tables.layer,
+			physicalName: currentTables.tableName,
 			detectedEntityType: currentTableEntities.detectedEntityType,
 			isFactTable: currentTableEntities.isFactTable,
 			isDimensionTable: currentTableEntities.isDimensionTable,
@@ -766,9 +788,12 @@ export async function buildEntitiesBlock(): Promise<string> {
 			description: currentTableEntities.description,
 		})
 		.from(currentTableEntities)
-		.innerJoin(tables, eq(tables.tableId, currentTableEntities.tableId))
-		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER)))
+		.innerJoin(
+			currentTables,
+			eq(currentTables.tableId, currentTableEntities.tableId),
+		)
+		.innerJoin(sources, eq(sources.sourceId, currentTables.sourceId))
+		.where(isNull(sources.archivedAt))
 		.orderBy(desc(currentTableEntities.detectedAt));
 
 	const seen = new Set<string>();
@@ -778,7 +803,7 @@ export async function buildEntitiesBlock(): Promise<string> {
 		const physicalName = r.physicalName ?? "";
 		if (!tableId || !physicalName || seen.has(tableId)) continue;
 		seen.add(tableId);
-		const address = `${LAKE_ALIAS}.${schemaForLayer(r.layer ?? TYPED_LAYER)}.${physicalName}`;
+		const address = `${LAKE_ALIAS}.${schemaForLayer(TYPED_LAYER)}.${physicalName}`;
 		blockRows.push({
 			address,
 			entity: projectTableEntity({

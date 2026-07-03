@@ -228,5 +228,63 @@ def test_entropy_readiness_two_conflicting_bands_latest_promoted_wins() -> None:
     assert rows[0] == ("run_om", "investigate")
 
 
+def test_current_entity_views_shape() -> None:
+    """DAT-655: the analyzed-representative views for the un-versioned anchors
+    exist ALONGSIDE the plain pass-throughs (staging surfaces keep the raw
+    layer axis; head-resolved consumers read the pre-scoped pick)."""
+    statements = dict(read_view_statements())
+    for name in ("tables", "columns", "current_tables", "current_columns"):
+        assert name in statements, name
+    assert "t.layer = 'typed'" in statements["current_tables"]
+    assert "h.stage = 'generation'" in statements["current_tables"]
+    assert "'table:' || t.table_id" in statements["current_columns"]
+
+
+def test_current_tables_returns_promoted_typed_representative_only() -> None:
+    """DAT-655 semantics, executed live: one logical table across three layers
+    plus an unpromoted typed table → ``current_tables`` returns exactly the
+    promoted typed row, ``current_columns`` exactly its columns."""
+    import sqlite3
+
+    statements = dict(read_view_statements())
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE tables (table_id TEXT PRIMARY KEY, table_name TEXT, layer TEXT);"
+        "CREATE TABLE columns (column_id TEXT PRIMARY KEY, table_id TEXT, column_name TEXT);"
+        "CREATE TABLE metadata_snapshot_head ("
+        "  head_id TEXT PRIMARY KEY, target TEXT, stage TEXT, run_id TEXT"
+        ");"
+    )
+    conn.executemany(
+        "INSERT INTO tables VALUES (?, ?, ?)",
+        [
+            ("t_raw", "orders", "raw"),
+            ("t_typed", "orders", "typed"),
+            ("t_quar", "orders", "quarantine"),
+            ("t_unpromoted", "drafts", "typed"),  # registered, never promoted
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO columns VALUES (?, ?, ?)",
+        [
+            ("c_raw", "t_raw", "amount"),
+            ("c_typed", "t_typed", "amount"),
+            ("c_unpromoted", "t_unpromoted", "note"),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO metadata_snapshot_head VALUES ('h1', 'table:t_typed', 'generation', 'run1')"
+    )
+    for name in ("current_tables", "current_columns"):
+        conn.execute(statements[name].replace(f"{READ_TOKEN}.", "").replace(f"{WS_TOKEN}.", ""))
+
+    tables = conn.execute("SELECT table_id, layer FROM current_tables").fetchall()
+    columns = conn.execute("SELECT column_id FROM current_columns").fetchall()
+    conn.close()
+
+    assert tables == [("t_typed", "typed")]
+    assert columns == [("c_typed",)]
+
+
 def test_read_schema_name() -> None:
     assert read_schema_name_for("ws_abc") == "ws_abc_read"

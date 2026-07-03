@@ -103,6 +103,20 @@ export const currentColumnEligibility = metadataSchema
 		sql`SELECT eligibility_id, column_id, table_id, source_id, run_id, column_name, table_name, resolved_type, status, triggered_rule, reason, metrics_snapshot, config_version, evaluated_at FROM ws_00000000_0000_0000_0000_000000000001.column_eligibility r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('table:'::text || r.table_id::text) AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
+export const currentColumns = metadataSchema
+	.view("current_columns", {
+		columnId: varchar("column_id"),
+		tableId: varchar("table_id"),
+		columnName: varchar("column_name"),
+		originalName: varchar("original_name"),
+		columnPosition: integer("column_position"),
+		rawType: varchar("raw_type"),
+		resolvedType: varchar("resolved_type"),
+	})
+	.as(
+		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type FROM ws_00000000_0000_0000_0000_000000000001.columns c WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.tables t JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || t.table_id::text) AND h.stage::text = 'generation'::text WHERE t.table_id::text = c.table_id::text AND t.layer::text = 'typed'::text))`,
+	);
+
 export const currentDerivedColumns = metadataSchema
 	.view("current_derived_columns", {
 		derivedId: varchar("derived_id"),
@@ -429,6 +443,21 @@ export const currentTableEntities = metadataSchema
 	})
 	.as(
 		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, is_fact_table, is_dimension_table, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
+export const currentTables = metadataSchema
+	.view("current_tables", {
+		tableId: varchar("table_id"),
+		sourceId: varchar("source_id"),
+		tableName: varchar("table_name"),
+		layer: varchar(),
+		duckdbPath: varchar("duckdb_path"),
+		rowCount: integer("row_count"),
+		createdAt: timestamp("created_at"),
+		lastProfiledAt: timestamp("last_profiled_at"),
+	})
+	.as(
+		sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM ws_00000000_0000_0000_0000_000000000001.tables t WHERE layer::text = 'typed'::text AND (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('table:'::text || t.table_id::text) AND h.stage::text = 'generation'::text))`,
 	);
 
 export const currentTemporalColumnProfiles = metadataSchema

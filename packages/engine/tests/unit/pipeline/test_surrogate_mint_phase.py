@@ -224,6 +224,60 @@ def test_mint_end_to_end(session, lake) -> None:
     assert len(recipes) == 2
 
 
+def test_dim_to_fact_intent_persists_fk_side_first(session, lake) -> None:
+    """The LLM may confirm the composite dim→fact (one-to-many) — seen live on
+    BookSQL, where all four clean composites arrived in that orientation and
+    the enrichment grain-safe marker (which reads the STORED direction) then
+    refused every join. The mint must orient by measured cardinality: persist
+    fact→dim many-to-one with flipped provenance.
+    """
+    seed = _seed(session)
+    cols = seed["cols"]
+    session.add(
+        SurrogateKeyIntent(
+            run_id=_RUN_1,
+            intent_digest="digest-rev",
+            from_table_id=seed["tables"]["coa"].table_id,  # dim side as FROM
+            to_table_id=seed["tables"]["txn"].table_id,
+            column_pairs=[
+                [cols[("coa", "account_name")].column_id, cols[("txn", "account")].column_id],
+                [cols[("coa", "business_id")].column_id, cols[("txn", "business_id")].column_id],
+            ],
+            cardinality="one-to-many",
+            confidence=0.85,
+            reasoning="confirmed dim-first",
+        )
+    )
+    session.flush()
+
+    result = SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    rel = session.execute(
+        select(Relationship).where(Relationship.detection_method == "llm")
+    ).scalar_one()
+    names = {
+        c.column_id: (c.table_id, c.column_name)
+        for c in session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars()
+    }
+    # FK side first: fact table's surrogate is FROM, cardinality many-to-one.
+    assert names[rel.from_column_id] == (
+        seed["tables"]["txn"].table_id,
+        "_sk__account__business_id",
+    )
+    assert names[rel.to_column_id] == (
+        seed["tables"]["coa"].table_id,
+        "_sk__account_name__business_id",
+    )
+    assert rel.cardinality == "many-to-one"
+    assert rel.evidence["introduces_duplicates"] is False  # measured in the stored direction
+    assert rel.evidence["surrogate"]["natural_pairs"] == [
+        ["account", "account_name"],
+        ["business_id", "business_id"],
+    ]  # provenance flipped WITH the orientation
+
+
 def test_noop_without_intents(session, lake) -> None:
     seed = _seed(session)
 

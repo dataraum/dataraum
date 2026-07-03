@@ -202,6 +202,28 @@ def test_missing_run_id_builds_no_intent(session) -> None:
     assert intent is None
 
 
+def test_non_collapsing_composite_falls_back_to_single(session, lake) -> None:
+    """A confirmed composite the data REJECTS (still m2m — dup dim rows) must not
+    become an intent: fall back to the plain anchor with its honest fan-trap
+    flag. Seen live on BookSQL (duplicate (account, business) rows in the
+    chart of accounts)."""
+    lake.execute("INSERT INTO lake.typed.\"coa\" VALUES ('Sales','B1')")  # dup dim row
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    agent = _agent([_rel(key_columns=[("business_id", "business_id")])])
+
+    assert _store(session, agent, [txn, coa], conn=lake).success
+    session.flush()
+
+    assert session.execute(select(SurrogateKeyIntent)).scalars().all() == []
+    llm_rows = (
+        session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+        .scalars()
+        .all()
+    )
+    assert len(llm_rows) == 1  # the anchor persists, honestly flagged
+
+
 def test_intent_upsert_is_idempotent_for_retry(session, lake) -> None:
     """A Temporal at-least-once retry (same run_id) refreshes, never duplicates."""
     txn = _table_with_columns(session, "txn", ["account", "business_id"])

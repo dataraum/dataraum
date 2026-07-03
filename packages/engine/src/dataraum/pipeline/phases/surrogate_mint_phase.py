@@ -564,14 +564,40 @@ class SurrogateMintPhase(BasePhase):
         cardinality = compute_actual_cardinality(
             from_fqn, to_fqn, from_spec.column_name, to_spec.column_name, ctx.duckdb_conn
         )
+        if cardinality == "many-to-many":
+            # The intent's collapse proof didn't hold against the minted column
+            # (no-conn intent path, or data drifted between measure and mint).
+            # Never persist a surrogate relationship that is not a proven key —
+            # with no relationship referencing them, the columns reconcile away
+            # on the next run.
+            warnings.append(
+                f"surrogate intent {intent.intent_digest[:8]}: minted pair measures "
+                "many-to-many — not a key, relationship not persisted"
+            )
+            return
+        natural_pairs = self._natural_name_pairs(ctx, intent)
+        natural_ids = [list(pair) for pair in intent.column_pairs]
+        # The catalog's FK convention: `from` is the referencing (many) side.
+        # The LLM may confirm the composite in dim→fact order (seen live on
+        # BookSQL: all four clean composites arrived one-to-many), and the
+        # enrichment grain-safe marker reads the STORED direction — so orient
+        # deterministically by the measured cardinality, not by emission order.
+        if cardinality == "one-to-many":
+            from_table, to_table = to_table, from_table
+            from_spec, to_spec = to_spec, from_spec
+            from_col, to_col = to_col, from_col
+            from_fqn, to_fqn = to_fqn, from_fqn
+            cardinality = "many-to-one"
+            natural_pairs = [[t, f] for f, t in natural_pairs]
+            natural_ids = [[t, f] for f, t in natural_ids]
         evidence: dict[str, Any] = {
             "source": "surrogate_mint",
             "intent_digest": intent.intent_digest,
             "reasoning": intent.reasoning,
             "composite_cardinality": intent.cardinality,
             "surrogate": {
-                "natural_pairs": self._natural_name_pairs(ctx, intent),
-                "natural_column_ids": intent.column_pairs,
+                "natural_pairs": natural_pairs,
+                "natural_column_ids": natural_ids,
             },
         }
         try:
@@ -596,9 +622,9 @@ class SurrogateMintPhase(BasePhase):
             [
                 {
                     "run_id": ctx.require_run_id(),
-                    "from_table_id": intent.from_table_id,
+                    "from_table_id": from_table.table_id,
                     "from_column_id": from_col.column_id,
-                    "to_table_id": intent.to_table_id,
+                    "to_table_id": to_table.table_id,
                     "to_column_id": to_col.column_id,
                     "relationship_type": "foreign_key",
                     "cardinality": cardinality,

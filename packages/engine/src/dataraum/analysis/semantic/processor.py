@@ -484,6 +484,21 @@ def _build_surrogate_intent(
         cardinality = compute_composite_cardinality(
             _lake_path(rel.from_table), _lake_path(rel.to_table), name_pairs, duckdb_conn
         )
+        if cardinality == "many-to-many":
+            # The LLM confirmed a composite the data measurably REJECTS (the
+            # prompt's contract: only confirm when it resolves the fan-out).
+            # Seen live on BookSQL: chart_of_accounts carries duplicate
+            # (account, business) rows, so no name-based composite collapses.
+            # Fall back to the plain single-column anchor — it persists with
+            # its honest cardinality + fan-trap flag, exactly the pre-mint
+            # behavior. Never mint a surrogate that is not a proven key.
+            logger.warning(
+                "surrogate_intent_not_collapsing",
+                from_table=rel.from_table,
+                to_table=rel.to_table,
+                name_pairs=name_pairs,
+            )
+            return None
 
     digest = hashlib.sha1(
         "|".join(f"{a}:{b}" for a, b in components).encode(), usedforsecurity=False

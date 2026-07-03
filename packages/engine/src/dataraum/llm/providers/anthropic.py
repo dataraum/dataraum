@@ -298,6 +298,15 @@ class AnthropicProvider(LLMProvider):
         Returns:
             Result containing ConversationResponse or error message
         """
+        # Request-shape validation BEFORE the API error domain: thinking with a
+        # forced tool_choice is a call-site programming error (the API rejects
+        # the combination), not a provider failure to classify for retry.
+        if request.thinking and (request.tool_choice or {}).get("type") in ("tool", "any"):
+            raise ValueError(
+                "thinking=True is incompatible with a forced tool_choice "
+                f"({request.tool_choice}); use auto/none and mandate the "
+                "tool call in the prompt"
+            )
         try:
             model = request.model or self.config.default_model
 
@@ -330,13 +339,15 @@ class AnthropicProvider(LLMProvider):
             }
 
             # Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default temperature
-            # (400) and default adaptive thinking ON; a forced-tool extractor
-            # wants neither. Omit temperature on those; pass it through on the
-            # older models that still honour it. Explicitly disable thinking
-            # where the model defaults it on (parity with Sonnet 4.6). See the
-            # capability notes above.
+            # (400) and default adaptive thinking ON. Omit temperature on those;
+            # pass it through on the older models that still honour it. Thinking
+            # is per-REQUEST (DAT-603): the mechanical extractors run with it
+            # explicitly disabled (output budget + Sonnet 4.6 parity), while a
+            # reasoning-heavy feature (metric grounding) opts in by LEAVING the
+            # adaptive default on. (thinking + forced tool_choice is rejected at
+            # the top of converse — request-shape error, not an API failure.)
             if _rejects_temperature(model):
-                if _thinking_defaults_on(model):
+                if _thinking_defaults_on(model) and not request.thinking:
                     kwargs["thinking"] = {"type": "disabled"}
             else:
                 kwargs["temperature"] = request.temperature

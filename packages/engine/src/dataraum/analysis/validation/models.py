@@ -74,10 +74,10 @@ class ValidationSQLOutput(BaseModel):
     sql: str | None = Field(
         description="The DuckDB SQL query to execute. Null if validation cannot be performed."
     )
-    explanation: str | None = Field(
-        default=None,
-        description="Brief explanation of what this query validates and which tables/columns are used.",
-    )
+    # No free-text `explanation` field: it flowed into GeneratedSQL and was read by
+    # nothing (DAT-603 consumer audit) — an unread sentence per call is pure
+    # serial-decode latency. The judgeable context lives in columns_used +
+    # skip_reason; the spec itself already says what is being validated.
     columns_used: list[str] = Field(
         default_factory=list,
         description="List of columns used in the query, in 'table.column' format.",
@@ -96,7 +96,6 @@ class GeneratedSQL(BaseModel):
 
     validation_id: str
     sql_query: str
-    explanation: str | None = None
     columns_used: list[str] = Field(default_factory=list)  # Columns identified by LLM
 
     # Generation metadata

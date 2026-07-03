@@ -182,7 +182,6 @@ class TestValidationAgentGenerateSQL:
         # Mock LLM response with tool call
         tool_input = {
             "sql": "SELECT SUM(debit) as total_debits, SUM(credit) as total_credits FROM typed_transactions",
-            "explanation": "Sums debit and credit columns",
             "columns_used": ["debit", "credit"],
             "tables_used": ["typed_transactions"],
             "can_validate": True,
@@ -217,7 +216,6 @@ class TestValidationAgentGenerateSQL:
             _make_tool_response(
                 {
                     "sql": "SELECT 1 AS x",
-                    "explanation": "e",
                     "columns_used": [],
                     "tables_used": [],
                     "can_validate": True,
@@ -253,7 +251,6 @@ class TestValidationAgentGenerateSQL:
         # Mock LLM response indicating cannot validate
         tool_input = {
             "sql": None,
-            "explanation": "No debit/credit columns found",
             "columns_used": [],
             "tables_used": [],
             "can_validate": False,
@@ -343,7 +340,6 @@ class TestValidationAgentGenerateSQL:
 
         tool_input = {
             "sql": None,
-            "explanation": "confused response",
             "columns_used": [],
             "can_validate": True,
             "skip_reason": None,
@@ -391,7 +387,6 @@ class TestValidationAgentBindExecute:
         # balanced (debits == credits) so deviation = 0 → PASSED.
         tool_input = {
             "sql": "SELECT ABS(SUM(debit) - SUM(credit)) AS deviation, GREATEST(ABS(SUM(debit)), ABS(SUM(credit))) AS magnitude FROM typed_journal_entries",
-            "explanation": "Net debit/credit deviation and its scale",
             "columns_used": ["journal_entries.debit", "journal_entries.credit"],
             "tables_used": ["journal_entries"],
             "can_validate": True,
@@ -438,7 +433,6 @@ class TestValidationAgentBindExecute:
         # Mock LLM to indicate cannot validate
         tool_input = {
             "sql": None,
-            "explanation": "Required columns not found",
             "columns_used": [],
             "tables_used": [],
             "can_validate": False,
@@ -483,7 +477,6 @@ class TestValidationAgentBindExecute:
 
         tool_input = {
             "sql": "SELECT SUM(debit) AS total_debits FROM typed_table_not_in_lake",
-            "explanation": "Sums debits from a table that does not exist",
             "columns_used": ["debit"],
             "can_validate": True,
             "skip_reason": None,
@@ -523,7 +516,6 @@ class TestValidationAgentBindExecute:
 
         tool_input = {
             "sql": "SELECT 5 AS po_count, 3 AS invoice_count FROM typed_journal_entries LIMIT 1",
-            "explanation": "Counts without a judgeable comparison column",
             "columns_used": [],
             "can_validate": True,
             "skip_reason": None,

@@ -246,6 +246,9 @@ class TestGraphAgentIntegration:
         mock_config = MagicMock()
         mock_config.limits.max_output_tokens_per_request = 4000
         mock_config.limits.cache_ttl_seconds = 3600
+        # Real value, never a bare MagicMock — a mock would leak a mock `effort`
+        # into ConversationRequest (pydantic rejects it loudly).
+        mock_config.features.graph_sql_generation = None
 
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
@@ -256,19 +259,14 @@ class TestGraphAgentIntegration:
             prompt_renderer=mock_renderer,
         )
 
-        # Mock the LLM converse call with tool response
+        # Mock the LLM converse call with tool response (single-extract shape,
+        # DAT-603 — the step id is bound by the agent, not named by the model).
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"  # Set as attribute, not constructor kwarg
         mock_tool_call.input = {
-            "summary": "Calculates the sum of all amounts in the test data.",
-            "steps": [
-                {
-                    "step_id": "sum",
-                    "sql": "SELECT SUM(amount) FROM test_data",
-                    "description": "Sum amounts",
-                }
-            ],
-            "final_sql": "SELECT SUM(amount) AS total FROM test_data",
+            "grounding": "test grounding: served values verified",
+            "sql": "SELECT SUM(amount) AS value FROM test_data",
+            "description": "Sum amounts",
             "column_mappings": {"amount": "amount"},
         }
 
@@ -289,11 +287,12 @@ class TestGraphAgentIntegration:
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
 
 
-def _agent_with_sql(steps: list[dict[str, str]], final_sql: str) -> GraphAgent:
-    """A GraphAgent whose mocked LLM emits the given steps + final SQL."""
+def _agent_with_sql(sql: str, description: str = "test") -> GraphAgent:
+    """A GraphAgent whose mocked LLM emits the given extract SQL (DAT-603 shape)."""
     mock_config = MagicMock()
     mock_config.limits.max_output_tokens_per_request = 4000
     mock_config.limits.cache_ttl_seconds = 3600
+    mock_config.features.graph_sql_generation = None
     mock_renderer = MagicMock()
     mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
@@ -303,9 +302,9 @@ def _agent_with_sql(steps: list[dict[str, str]], final_sql: str) -> GraphAgent:
     tool_call = MagicMock()
     tool_call.name = "generate_sql"
     tool_call.input = {
-        "summary": "test",
-        "steps": steps,
-        "final_sql": final_sql,
+        "grounding": "test grounding: served values verified",
+        "sql": sql,
+        "description": description,
         "column_mappings": {"amount": "amount"},
     }
     response = MagicMock()
@@ -335,14 +334,8 @@ class TestGraphAgentVerifier:
         from dataraum.query.snippet_models import SQLSnippetRecord
 
         agent = _agent_with_sql(
-            steps=[
-                {
-                    "step_id": "value",
-                    "sql": "SELECT SUM(amount) AS value FROM test_data WHERE id = 999",
-                    "description": "empty filter",
-                }
-            ],
-            final_sql="SELECT * FROM value",
+            "SELECT SUM(amount) AS value FROM test_data WHERE id = 999",
+            description="empty filter",
         )
         context = _make_execution_context(duckdb_with_data)
 
@@ -363,14 +356,8 @@ class TestGraphAgentVerifier:
         `id = 1` matches a row; `amount * 0` sums to a real 0 — support exists, so
         the metric is executed with value 0, not rejected as degenerate."""
         agent = _agent_with_sql(
-            steps=[
-                {
-                    "step_id": "value",
-                    "sql": "SELECT SUM(amount * 0) AS value FROM test_data WHERE id = 1",
-                    "description": "genuine zero with support",
-                }
-            ],
-            final_sql="SELECT * FROM value",
+            "SELECT SUM(amount * 0) AS value FROM test_data WHERE id = 1",
+            description="genuine zero with support",
         )
         context = _make_execution_context(duckdb_with_data)
 
@@ -828,6 +815,7 @@ class TestGraphAgentSnippets:
         mock_config = MagicMock()
         mock_config.limits.max_output_tokens_per_request = 4000
         mock_config.limits.cache_ttl_seconds = 3600
+        mock_config.features.graph_sql_generation = None
 
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
@@ -838,19 +826,14 @@ class TestGraphAgentSnippets:
             prompt_renderer=mock_renderer,
         )
 
-        # Mock LLM response with step matching the graph's "value" extract step
+        # Mock LLM response (single-extract shape — the agent binds the SQL to
+        # the graph's "value" leaf itself, DAT-603).
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"
         mock_tool_call.input = {
-            "summary": "Extracts sum of amounts.",
-            "steps": [
-                {
-                    "step_id": "value",
-                    "sql": "SELECT SUM(amount) AS value FROM test_data",
-                    "description": "Sum amounts from test data",
-                }
-            ],
-            "final_sql": "SELECT * FROM value",
+            "grounding": "test grounding: served values verified",
+            "sql": "SELECT SUM(amount) AS value FROM test_data",
+            "description": "Sum amounts from test data",
             "column_mappings": {"amount": "amount"},
         }
 
@@ -1042,6 +1025,7 @@ class TestGraphAgentSnippets:
         mock_config = MagicMock()
         mock_config.limits.max_output_tokens_per_request = 4000
         mock_config.limits.cache_ttl_seconds = 3600
+        mock_config.features.graph_sql_generation = None
 
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
@@ -1052,19 +1036,13 @@ class TestGraphAgentSnippets:
             prompt_renderer=mock_renderer,
         )
 
-        # Mock LLM response
+        # Mock LLM response (single-extract shape, DAT-603)
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"
         mock_tool_call.input = {
-            "summary": "Extracts sum of amounts.",
-            "steps": [
-                {
-                    "step_id": "value",
-                    "sql": "SELECT SUM(amount) AS value FROM test_data",
-                    "description": "Sum amounts from test data",
-                }
-            ],
-            "final_sql": "SELECT * FROM value",
+            "grounding": "test grounding: served values verified",
+            "sql": "SELECT SUM(amount) AS value FROM test_data",
+            "description": "Sum amounts from test data",
             "column_mappings": {"amount": "amount"},
         }
 

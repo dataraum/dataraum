@@ -9,15 +9,16 @@
 
 The relationship model is a single column pair (`from_column_id → to_column_id`). Real
 datasets carry **composite** foreign keys — a referencing column plus one or more scoping
-columns present on both sides, canonically a tenant key: BookSQL's
-`master_txn.account → chart_of_accounts.account_name` is only meaningful together with
-`business_id`. A single-column model cannot express this, with three measured consequences:
+columns present on both sides, canonically a tenant key: a transaction's
+`account → chart_of_accounts.account_name` reference is only meaningful together with the
+tenant id. A single-column model cannot express this, with three measured consequences:
 
 - The best single-column join is **many-to-many** — aggregates over it silently
   over-count (the fan-trap).
 - The scoping column links every table to every table on its own, so its standalone
   candidates are degenerate and the LLM elevates them **inconsistently** across runs
-  (BookSQL: 20 `business_id ↔ business_id` pairs, a different survivor each run).
+  (measured on the validation dataset: 20 tenant-key pairs, a different survivor each
+  run).
 - The SQL agents learn to **avoid the join** and ground on weaker single-table
   discriminators.
 
@@ -81,12 +82,13 @@ No consumer ever sees a multi-column key.**
   defined relationship is a single column pair — now also holds for composite-keyed data.
 - `views/builder.py`, the enrichment agent, cycles, lineage, validation, and both SQL
   agents are unchanged: they consume the surrogate as an ordinary many-to-one FK.
-- Validated on BookSQL (7 tables, 810k-row fact): four `(name, business_id)` composites
-  mint stably every run, the enriched view joins them grain-verified, and
-  `gl_invoice_match` gained a join path. The chart-of-accounts composite is **refused**
-  — BookSQL's dual-role accounts (same name, both Income and Expenses within one
-  business) make a row-grain FK impossible by construction; the honest outcome is the
-  flagged fan-trap plus set-grain semi-joins at answer time.
+- Validated end-to-end on a seven-table multi-tenant bookkeeping dataset (810k-row
+  fact): four `(name, tenant)` composites mint stably every run, the enriched view joins
+  them grain-verified, and an invoice-matching validation gained a join path. The
+  chart-of-accounts composite is **refused** — that dataset's dual-role accounts (the
+  same account name carrying both an income and an expense account within one tenant)
+  make a row-grain FK impossible by construction; the honest outcome is the flagged
+  fan-trap plus set-grain semi-joins at answer time.
 - Deploying a workflow-chain change: an in-flight begin_session run fails Temporal replay
   determinism on the new code and needs a re-run (true of every phase addition).
 - Search-quality follow-up (the greedy finds local optima; misses are safe but real) is

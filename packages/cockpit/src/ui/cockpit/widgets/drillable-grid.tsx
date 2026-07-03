@@ -236,7 +236,13 @@ export function DrillableGrid({
 				)}
 				{steps.map((step, i) => (
 					<Pill
-						key={`${step.kind}:${step.column}:${i}`}
+						// Value-identity key: slices are unique per column (menu disables
+						// re-slicing) and pins per column+value (row-click dedupes).
+						key={
+							step.kind === "slice"
+								? `slice:${step.column}`
+								: `pin:${step.column}:${pinLabel(step.value)}`
+						}
 						withRemoveButton
 						onRemove={() => apply(steps.filter((_, j) => j !== i))}
 						data-testid={`drill-step-${step.kind}-${step.column}`}

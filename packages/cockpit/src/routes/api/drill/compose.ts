@@ -8,7 +8,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
 import { composeDrill } from "#/duckdb/drill-sql";
-import { useEngineScope, withLakeConnection } from "#/duckdb/lake";
+import { applyEngineScope, withLakeConnection } from "#/duckdb/lake";
 
 const PinValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
@@ -54,7 +54,7 @@ export const Route = createFileRoute("/api/drill/compose")({
 					const result = await withLakeConnection(async (conn) => {
 						// Engine scope, matching /api/run-sql: the base SQL is
 						// engine-authored (unqualified names) on the canvas path.
-						await useEngineScope(conn);
+						await applyEngineScope(conn);
 						return composeDrill(conn, parsed.data);
 					});
 					return Response.json(result);

@@ -183,7 +183,7 @@ export async function withLakeConnection<T>(
  * the current schema. A fresh lake with no `typed` schema yet cannot satisfy
  * the USE — swallowed, since unqualified SQL could not resolve there anyway.
  */
-export async function useEngineScope(conn: DuckDBConnection): Promise<void> {
+export async function applyEngineScope(conn: DuckDBConnection): Promise<void> {
 	try {
 		await conn.run(`USE ${LAKE_ALIAS}.typed`);
 	} catch {

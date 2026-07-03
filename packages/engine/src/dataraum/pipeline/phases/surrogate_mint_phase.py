@@ -33,6 +33,7 @@ from types import ModuleType
 from typing import Any
 from uuid import uuid4
 
+import duckdb
 from sqlalchemy import delete, select
 
 from dataraum.analysis.relationships.db_models import Relationship, SurrogateKeyIntent
@@ -120,11 +121,14 @@ class SurrogateMintPhase(BasePhase):
         # Keeper grace window (DAT-409): a surrogate the promoted / kept catalog
         # still references survives even when this run's LLM didn't re-confirm it
         # — dropping it would strand the keeper lift-up mid-flight.
-        for spec in self._kept_surrogate_specs(ctx, tables_by_id, columns, warnings):
+        kept_specs, frozen = self._kept_surrogate_specs(ctx, tables_by_id, columns, warnings)
+        for spec in kept_specs:
             desired.setdefault(spec.table_id, {}).setdefault(spec.column_name, spec)
 
         minted = 0
         for table in tables:
+            if table.table_id in frozen:
+                continue  # kept surrogate with unrecoverable provenance — do no harm
             specs = sorted(desired.get(table.table_id, {}).values(), key=lambda s: s.column_name)
             changed = self._reconcile_table(ctx, table, specs, columns, warnings)
             minted += changed
@@ -189,22 +193,37 @@ class SurrogateMintPhase(BasePhase):
         if intent.from_table_id not in tables_by_id or intent.to_table_id not in tables_by_id:
             warnings.append(f"surrogate intent {intent.intent_digest[:8]}: table out of scope")
             return None
-        names_by_id = {
-            c.column_id: c.column_name
+        cols_by_id = {
+            c.column_id: c
             for tid in (intent.from_table_id, intent.to_table_id)
             for c in columns.get(tid, [])
         }
         from_names: list[str] = []
         to_names: list[str] = []
         for from_id, to_id in intent.column_pairs:
-            from_name, to_name = names_by_id.get(from_id), names_by_id.get(to_id)
-            if from_name is None or to_name is None:
+            from_col, to_col = cols_by_id.get(from_id), cols_by_id.get(to_id)
+            if from_col is None or to_col is None:
                 warnings.append(
                     f"surrogate intent {intent.intent_digest[:8]}: component column vanished"
                 )
                 return None
-            from_names.append(from_name)
-            to_names.append(to_name)
+            # The rescue/intent cardinality was measured with NATIVE comparison
+            # (DuckDB coerces, so '007' = 7 matches); the hash compares each
+            # side's canonical VARCHAR rendering ('007' != '7'). For SAME
+            # resolved types the two are equivalent on non-NULL values — equal
+            # typed values render identically. For DIVERGENT types they are not:
+            # the minted join could silently orphan rows the measurement
+            # matched. Abstain rather than ship a join weaker than its proof.
+            if from_col.resolved_type != to_col.resolved_type:
+                warnings.append(
+                    f"surrogate intent {intent.intent_digest[:8]}: component type "
+                    f"mismatch {from_col.column_name}:{from_col.resolved_type} vs "
+                    f"{to_col.column_name}:{to_col.resolved_type} — hash join would "
+                    "not preserve the measured match semantics"
+                )
+                return None
+            from_names.append(from_col.column_name)
+            to_names.append(to_col.column_name)
         return (
             SurrogateSpec(
                 table_id=intent.from_table_id,
@@ -224,7 +243,7 @@ class SurrogateMintPhase(BasePhase):
         tables_by_id: dict[str, Table],
         columns: dict[str, list[Column]],
         warnings: list[str],
-    ) -> list[SurrogateSpec]:
+    ) -> tuple[list[SurrogateSpec], set[str]]:
         """Surrogate specs the kept/promoted catalog still references (DAT-409 grace).
 
         Sources: this run's already-materialized ``manual``/``keeper`` rows, plus
@@ -234,6 +253,14 @@ class SurrogateMintPhase(BasePhase):
         component names to re-mint from) comes from the row's own evidence or,
         for overlay-materialized rows (which don't copy evidence), the latest
         prior mint's row on the same pair.
+
+        Returns ``(specs, frozen_table_ids)``. A kept pair whose provenance is
+        UNRECOVERABLE (should not happen — the original mint's llm row is never
+        pruned while its columns exist) cannot be expressed as a spec, and
+        letting reconcile run without it would delete the still-referenced
+        column AND (via ``delete_column_dependents``) the keeper row itself.
+        Its endpoint tables are FROZEN instead: reconcile skips them wholesale
+        this run — physical and metadata stay exactly as found.
         """
         run_id = ctx.require_run_id()
         table_ids = list(tables_by_id)
@@ -244,7 +271,7 @@ class SurrogateMintPhase(BasePhase):
             if is_surrogate_column(c.column_name)
         }
         if not surrogate_ids:
-            return []
+            return [], set()
         col_by_id = {c.column_id: c for cols in columns.values() for c in cols}
         suppressed = load_suppressed_relationship_pairs(ctx.session)
 
@@ -265,6 +292,7 @@ class SurrogateMintPhase(BasePhase):
         )
 
         specs: list[SurrogateSpec] = []
+        frozen: set[str] = set()
         for row in rows:
             if (row.from_column_id, row.to_column_id) in suppressed:
                 continue
@@ -272,8 +300,9 @@ class SurrogateMintPhase(BasePhase):
             if provenance is None:
                 warnings.append(
                     f"kept surrogate pair {row.from_column_id[:8]}→{row.to_column_id[:8]}: "
-                    "no mint provenance recoverable — cannot re-mint if dropped"
+                    "no mint provenance recoverable — freezing both tables this run"
                 )
+                frozen.update((row.from_table_id, row.to_table_id))
                 continue
             natural_pairs: list[list[str]] = provenance["natural_pairs"]
             for table_id, col_id, names in (
@@ -290,7 +319,7 @@ class SurrogateMintPhase(BasePhase):
                         component_names=tuple(names),
                     )
                 )
-        return specs
+        return specs, frozen
 
     def _surrogate_provenance(self, ctx: PhaseContext, row: Relationship) -> dict[str, Any] | None:
         """The mint provenance for a surrogate relationship row.
@@ -386,6 +415,12 @@ class SurrogateMintPhase(BasePhase):
         try:
             amended = amend_typed_ddl(base.ddl, specs)
             ctx.duckdb_conn.execute(amended)
+        except duckdb.TransactionException:
+            # A DuckLake optimistic-commit conflict is TRANSIENT (DAT-641), not a
+            # reason to abstain: propagate so BasePhase folds the "Transaction
+            # conflict" text into the failure and the worker's
+            # _is_transient_commit_conflict classifier retries the activity.
+            raise
         except Exception as e:
             warnings.append(f"{table.table_name}: surrogate re-materialization failed ({e})")
             logger.warning("surrogate_mint_failed", table=table.table_name, error=str(e))

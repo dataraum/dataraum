@@ -75,6 +75,10 @@ def amend_typed_ddl(base_ddl: str, specs: list[SurrogateSpec]) -> str:
     the subquery, so they hash post-cast values, and re-amending always starts
     from the base DDL (the amended form is never a mint input).
 
+    The partition relies on the typing DDL never containing a second bare
+    ``AS SELECT``: if a future ``standardization_expr`` (typing.yaml) ever
+    embeds a subquery-shaped expression, revisit this boundary first.
+
     Args:
         base_ddl: the typing head's stored recipe DDL for the table.
         specs: the surrogate columns to project (empty returns the base DDL).

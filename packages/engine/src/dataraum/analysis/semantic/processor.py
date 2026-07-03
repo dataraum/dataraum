@@ -467,6 +467,16 @@ def _build_surrogate_intent(
     if len(components) < 2:
         return None  # anchor-only after dedup — effectively single-column
 
+    # Canonical component order: anchor first, then scope components sorted by
+    # from-side column name. The LLM's key_columns ordering is not stable across
+    # runs, and the digest, the surrogate column NAME, and the hash-input order
+    # all derive from this list — a canonical order keeps the minted column
+    # (and its (table_id, name)-upserted column_id) identical when the same key
+    # is re-confirmed with its components shuffled.
+    scope = sorted(zip(components[1:], name_pairs[1:], strict=True), key=lambda t: t[1][0])
+    components = [components[0], *(c for c, _n in scope)]
+    name_pairs = [name_pairs[0], *(n for _c, n in scope)]
+
     # The composite's measured cardinality (the collapse proof). Best-effort:
     # the mint recomputes on the minted surrogate column anyway.
     cardinality: str | None = None

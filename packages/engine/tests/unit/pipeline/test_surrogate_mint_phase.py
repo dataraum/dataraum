@@ -312,6 +312,105 @@ def test_promoted_surrogate_survives_the_grace_window(session, lake) -> None:
     )
 
 
+def test_divergent_component_types_abstain(session, lake) -> None:
+    """The rescue was measured with NATIVE comparison; the hash compares VARCHAR
+    renderings. Divergent resolved types ('007' vs 7) would make the minted join
+    weaker than its proof — abstain, never ship a silently-orphaning join.
+    """
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    seed["cols"][("coa", "business_id")].resolved_type = "BIGINT"
+    session.flush()
+
+    result = SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert any("type mismatch" in w for w in result.warnings)
+    assert _sk_columns(lake, "txn") == []
+    assert _sk_columns(lake, "coa") == []
+    assert session.execute(select(Relationship)).scalars().all() == []
+
+
+def test_keeper_row_recovers_provenance_from_the_prior_mint(session, lake) -> None:
+    """The steady-state silent-accept path: an overlay-materialized keeper row
+    carries NO surrogate evidence ({'source': 'config_overlay'}) — the mint must
+    recover the natural pairs from the ORIGINAL mint's llm row and keep the
+    columns intact.
+    """
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    phase = SurrogateMintPhase()
+    assert phase.run(_ctx(session, lake, seed, _RUN_1)).status == PhaseStatus.COMPLETED
+    session.flush()
+    minted = session.execute(
+        select(Relationship).where(Relationship.detection_method == "llm")
+    ).scalar_one()
+
+    # Run 3 shape (DAT-409): session_materialize_overlays already wrote the
+    # keeper for THIS run, evidence is the overlay stamp only. No intent, no
+    # promoted head — the keeper row is the only thing keeping the surrogate.
+    session.add(
+        Relationship(
+            run_id=_RUN_2,
+            from_table_id=minted.from_table_id,
+            from_column_id=minted.from_column_id,
+            to_table_id=minted.to_table_id,
+            to_column_id=minted.to_column_id,
+            relationship_type="foreign_key",
+            cardinality=minted.cardinality,
+            confidence=1.0,
+            detection_method="keeper",
+            evidence={"source": "config_overlay", "action": "keep"},
+        )
+    )
+    session.flush()
+
+    result = phase.run(_ctx(session, lake, seed, _RUN_2))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert result.warnings == []  # provenance recovered — no freeze, no drop
+    assert _sk_columns(lake, "txn") == ["_sk__account__business_id"]
+    assert _sk_columns(lake, "coa") == ["_sk__account_name__business_id"]
+    kept_cols = (
+        session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars().all()
+    )
+    assert {c.column_id for c in kept_cols} == {minted.from_column_id, minted.to_column_id}
+
+
+def test_transient_commit_conflict_fails_retryable_not_abstain(session, lake) -> None:
+    """A DuckLake commit race must surface as a FAILED phase carrying the
+    'Transaction conflict' text (the DAT-641 retry classifier's signal), never
+    be swallowed as an abstain — the run would silently lose its rescue.
+    """
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+
+    class _RacingConn:
+        """Delegates everything; the amended CREATE loses the commit race."""
+
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def execute(self, sql: str, *args: object) -> object:
+            if sql.startswith("CREATE OR REPLACE TABLE"):
+                raise duckdb.TransactionException(
+                    "Failed to commit DuckLake transaction: Transaction conflict!"
+                )
+            return self._inner.execute(sql, *args)  # type: ignore[attr-defined]
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+    ctx = _ctx(session, lake, seed, _RUN_1)
+    ctx.duckdb_conn = _RacingConn(lake)  # type: ignore[assignment]
+    result = SurrogateMintPhase().run(ctx)
+
+    assert result.status == PhaseStatus.FAILED
+    assert result.error is not None and "Transaction conflict" in result.error
+
+
 def test_missing_typing_recipe_abstains(session, lake) -> None:
     seed = _seed(session)
     _intent(session, seed, _RUN_1)

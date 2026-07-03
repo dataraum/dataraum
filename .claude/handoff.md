@@ -88,12 +88,17 @@ the 810k-row fact with 11 dim columns joined via the surrogates; the flaky
 went declared→executed (the surrogates gave it a join path); revenue grounds
 on `account_type='Income'` (the real classification, not transaction_type).
 Two BookSQL DATA truths the platform now states instead of absorbing:
-`chart_of_account_OB` carries duplicate `(account, business)` rows (2430 rows,
-2213 distinct pairs), so no name-based composite is a key there — the confirmed
-composite was REFUSED (non-collapsing gate) and the anchor persists m2m +
-fan-trap-flagged; and BookSQL has NO COGS account type, so `cost_of_goods_sold`
-is honestly inconclusive ("filter matched no rows"), never a transaction_type
-proxy. Eval should treat both as expected BookSQL baseline, not regressions.
+`chart_of_account_OB`'s `(account, business)` collisions are 82 exact duplicate
+rows PLUS 135 dual-role accounts (same name+full name, DIFFERENT account type —
+Installation as both Income and Expenses in one business), so no name-based
+composite is a key there and **dedup cannot fix it** (the true key would need
+`account_type`, which the fact doesn't carry) — the confirmed composite was
+REFUSED (non-collapsing gate), the anchor persists m2m + fan-trap-flagged, and
+the semi-join grounding pattern (`account IN (SELECT … WHERE account_type=…)`)
+is the correct end-state consumption. And BookSQL has NO COGS account type, so
+`cost_of_goods_sold` is honestly inconclusive ("filter matched no rows"), never
+a transaction_type proxy. Eval should treat both as expected BookSQL baseline,
+not regressions.
 
 ---
 

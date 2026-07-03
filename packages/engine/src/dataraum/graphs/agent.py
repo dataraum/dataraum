@@ -670,12 +670,19 @@ class GraphAgent(LLMFeature):
             input_schema=ExtractGroundingOutput.model_json_schema(),
         )
 
-        # Call LLM with tool use
+        # Thinking (DAT-603): grounding is the pipeline's hardest reasoning task
+        # and Sonnet 5-class models expose no sampling knobs — the model's own
+        # reflection is the quality lever. The API rejects thinking with a
+        # FORCED tool_choice, so a thinking run offers the tool on auto and the
+        # prompt mandates the call; no tool call remains a loud bind error
+        # (checked below), never a silent prose answer.
+        thinking = bool(feature_config and feature_config.thinking)
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
-            tool_choice={"type": "tool", "name": "generate_sql"},
+            tool_choice={"type": "auto"} if thinking else {"type": "tool", "name": "generate_sql"},
+            thinking=thinking,
             label=prompt_name,
             effort=feature_config.effort if feature_config else None,
             max_tokens=self.config.limits.max_output_tokens_per_request,
@@ -736,6 +743,7 @@ class GraphAgent(LLMFeature):
         response_body = json.dumps(
             {
                 "step_id": leaf.step_id,
+                "grounding": output.grounding,
                 "sql": output.sql,
                 "field_resolution": output.provenance.field_resolution
                 if output.provenance

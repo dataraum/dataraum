@@ -204,7 +204,9 @@ class TestConverseRequestShape:
     that let the Sonnet 5 swap ship a request that 400s against the live API.
     """
 
-    def _capture(self, monkeypatch: pytest.MonkeyPatch, model: str) -> dict[str, object]:
+    def _capture(
+        self, monkeypatch: pytest.MonkeyPatch, model: str, *, thinking: bool = False
+    ) -> dict[str, object]:
         provider = _provider()
         captured: dict[str, object] = {}
 
@@ -215,7 +217,10 @@ class TestConverseRequestShape:
         _patch_stream(monkeypatch, provider, capture)
         provider.converse(
             ConversationRequest(
-                messages=[Message(role="user", content="hi")], temperature=0.0, model=model
+                messages=[Message(role="user", content="hi")],
+                temperature=0.0,
+                model=model,
+                thinking=thinking,
             )
         ).unwrap()
         return captured
@@ -250,6 +255,33 @@ class TestConverseRequestShape:
         kwargs = self._capture(monkeypatch, "claude-haiku-4-5")
         assert kwargs["temperature"] == 0.0
         assert "thinking" not in kwargs
+
+    def test_thinking_request_leaves_adaptive_default_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # DAT-603: a thinking feature (metric grounding) opts back into the
+        # model's adaptive default — no explicit thinking key at all.
+        kwargs = self._capture(monkeypatch, "claude-sonnet-5", thinking=True)
+        assert "temperature" not in kwargs
+        assert "thinking" not in kwargs
+
+    def test_thinking_with_forced_tool_choice_fails_loud(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The API rejects thinking + forced tool_choice; that shape is a
+        # call-site programming error, surfaced as ValueError, never a 400
+        # dressed up as a transient provider failure.
+        provider = _provider()
+        _patch_stream(monkeypatch, provider, lambda **kwargs: _ok_response())
+        with pytest.raises(ValueError, match="forced tool_choice"):
+            provider.converse(
+                ConversationRequest(
+                    messages=[Message(role="user", content="hi")],
+                    model="claude-sonnet-5",
+                    thinking=True,
+                    tool_choice={"type": "tool", "name": "generate_sql"},
+                )
+            )
 
 
 class TestConverseTelemetry:

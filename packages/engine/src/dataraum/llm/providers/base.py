@@ -117,6 +117,12 @@ class ConversationRequest(BaseModel):
     # | "max". None = the API default. The provider only sends it to models
     # that support the parameter.
     effort: str | None = None
+    # Let the model THINK (DAT-603): on thinking-default-on models (Sonnet 5 …)
+    # the provider normally disables adaptive thinking for the forced-tool
+    # extraction tier; a reasoning-heavy feature (metric grounding) opts back
+    # in. Thinking is API-incompatible with a FORCED tool_choice ("tool"/"any")
+    # — a thinking request must use auto/none and mandate the call via prompt.
+    thinking: bool = False
     # Greppable agent/phase tag for per-call telemetry (DAT-600). The provider
     # has no phase context of its own, so each call site stamps the prompt
     # template / feature name it is invoking (e.g. "graph_sql_generation").

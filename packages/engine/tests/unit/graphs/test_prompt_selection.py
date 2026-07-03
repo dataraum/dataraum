@@ -130,6 +130,42 @@ def test_feature_config_sets_tier_and_effort(monkeypatch) -> None:
     provider.get_model_for_tier.assert_called_with("fast")
     request = provider.converse.call_args.args[0]
     assert request.effort == "low"
+    # thinking not set on the feature → forced tool_choice, thinking off.
+    assert request.thinking is False
+    assert request.tool_choice == {"type": "tool", "name": "generate_sql"}
+
+
+def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
+    """DAT-603: thinking is API-incompatible with a forced tool_choice — a
+    thinking feature offers the tool on auto and the prompt mandates the call."""
+    from dataraum.llm.config import FeatureConfig
+
+    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr(
+        "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"
+    )
+    ext = GraphStep(
+        step_id="revenue",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field="revenue", statement="income_statement"),
+        aggregation="sum",
+        output_step=True,
+    )
+    graph = _graph("revenue", {"revenue": ext})
+    renderer, provider = _mocks()
+    agent = _agent_with(renderer, provider, feature_config=FeatureConfig(thinking=True))
+    agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
+    agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
+    rich = MagicMock()
+    rich.field_mappings.mappings = {"revenue": object()}
+    rich.conventions = ""
+    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
+
+    agent._generate_sql(MagicMock(), graph, ctx, {})
+
+    request = provider.converse.call_args.args[0]
+    assert request.thinking is True
+    assert request.tool_choice == {"type": "auto"}
 
 
 def test_multi_step_graph_fails_loud_before_any_llm_call() -> None:
@@ -179,6 +215,7 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
     tool_call = MagicMock()
     tool_call.name = "generate_sql"
     tool_call.input = {
+        "grounding": "accounts_receivable via account_id__name IN ('Accounts Receivable')",
         "sql": "SELECT SUM(amount) AS value FROM enriched_gl",
         "description": "AR at latest period",
         "column_mappings": {"accounts_receivable": "enriched_gl.amount"},

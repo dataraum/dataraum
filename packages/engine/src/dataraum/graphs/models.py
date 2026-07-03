@@ -341,14 +341,26 @@ class ExtractGroundingOutput(BaseModel):
     (DAT-664: Sonnet 5 echoing `revenue` back as `revenue_extract` silently
     skipped snippet persistence).
 
-    Every field here has a named consumer (DAT-603 schema audit): `sql` executes
-    and persists as the snippet; `description` is the snippet's human line
-    (cockpit reuse KB, compose-path descriptions); `column_mappings` is the
-    graph-level hint the cockpit query agent reads; `assumptions` feed the
-    DAT-631 confidence gate + the answer UI; `provenance` feeds prior_context
-    (DAT-616) and the confidence gate. Add nothing without a consumer.
+    Every field here has a named consumer (DAT-603 schema audit), and the
+    consumer can be the MODEL ITSELF at generation time: `grounding` is emitted
+    FIRST, deliberately — it forces the model to commit to the served evidence
+    before writing SQL (field order is generation order). The original audit
+    cut the old `summary` field as "decorative" by counting only downstream
+    readers and missed this consumer class; don't repeat that. Downstream:
+    `sql` executes and persists as the snippet; `description` is the snippet's
+    human line (cockpit reuse KB, compose-path descriptions); `column_mappings`
+    is the graph-level hint the cockpit query agent reads; `assumptions` feed
+    the DAT-631 confidence gate + the answer UI; `provenance` feeds
+    prior_context (DAT-616) and the confidence gate.
     """
 
+    grounding: str = Field(
+        description="FIRST, commit to the evidence: which column grounds the concept, and "
+        "the EXACT served values you selected from its Value set (or the complete "
+        "discriminator you filter on) — e.g. \"revenue via account_type = 'revenue' "
+        '(complete 5-value set)". Name the value-set entries verbatim; if you cannot, '
+        "the concept is not grounded — fall loud instead of writing SQL around it."
+    )
     sql: str = Field(
         description="The single standalone DuckDB SQL statement computing the concept, "
         "returning one row aliased AS value."

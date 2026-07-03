@@ -264,6 +264,7 @@ class TestGraphAgentIntegration:
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"  # Set as attribute, not constructor kwarg
         mock_tool_call.input = {
+            "grounding": "test grounding: served values verified",
             "sql": "SELECT SUM(amount) AS value FROM test_data",
             "description": "Sum amounts",
             "column_mappings": {"amount": "amount"},
@@ -301,6 +302,7 @@ def _agent_with_sql(sql: str, description: str = "test") -> GraphAgent:
     tool_call = MagicMock()
     tool_call.name = "generate_sql"
     tool_call.input = {
+        "grounding": "test grounding: served values verified",
         "sql": sql,
         "description": description,
         "column_mappings": {"amount": "amount"},
@@ -829,6 +831,7 @@ class TestGraphAgentSnippets:
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"
         mock_tool_call.input = {
+            "grounding": "test grounding: served values verified",
             "sql": "SELECT SUM(amount) AS value FROM test_data",
             "description": "Sum amounts from test data",
             "column_mappings": {"amount": "amount"},
@@ -1037,6 +1040,7 @@ class TestGraphAgentSnippets:
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"
         mock_tool_call.input = {
+            "grounding": "test grounding: served values verified",
             "sql": "SELECT SUM(amount) AS value FROM test_data",
             "description": "Sum amounts from test data",
             "column_mappings": {"amount": "amount"},

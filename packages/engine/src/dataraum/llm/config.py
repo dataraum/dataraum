@@ -33,8 +33,15 @@ class FeatureConfig(BaseModel):
     enabled: bool = True
     model_tier: str = "balanced"
     # Output effort for this feature's calls (DAT-603). "low" suits mechanical
-    # extraction (shorter output, lower latency); None = API default (high).
+    # extraction (shorter output, lower latency); None = API default. On a
+    # thinking-enabled feature, effort also governs thinking depth.
     effort: str | None = None
+    # Adaptive thinking for this feature's calls (DAT-603). Default False: the
+    # mechanical extractors run thinking-off. A reasoning-heavy feature (metric
+    # grounding) sets true — the model reflects before committing, which is the
+    # quality lever now that Sonnet 5-class models expose no sampling knobs.
+    # Requires the call site to use a non-forced tool_choice (API constraint).
+    thinking: bool = False
 
 
 class LLMFeatures(BaseModel):

@@ -301,6 +301,16 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
+DROP VIEW IF EXISTS __READ__.current_surrogate_key_intents;
+CREATE VIEW __READ__.current_surrogate_key_intents AS
+SELECT r.* FROM __WS__.surrogate_key_intents r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_table_entities;
 CREATE VIEW __READ__.current_table_entities AS
 SELECT r.* FROM __WS__.table_entities r

@@ -424,6 +424,23 @@ export const currentStatisticalQualityMetrics = metadataSchema
 		sql`SELECT metric_id, column_id, run_id, computed_at, benford_compliant, has_outliers, iqr_outlier_ratio, zscore_outlier_ratio, quality_data FROM ws_00000000_0000_0000_0000_000000000001.statistical_quality_metrics r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
+export const currentSurrogateKeyIntents = metadataSchema
+	.view("current_surrogate_key_intents", {
+		intentId: varchar("intent_id"),
+		runId: varchar("run_id"),
+		intentDigest: varchar("intent_digest"),
+		fromTableId: varchar("from_table_id"),
+		toTableId: varchar("to_table_id"),
+		columnPairs: json("column_pairs"),
+		cardinality: varchar(),
+		confidence: doublePrecision(),
+		reasoning: varchar(),
+		detectedAt: timestamp("detected_at"),
+	})
+	.as(
+		sql`SELECT intent_id, run_id, intent_digest, from_table_id, to_table_id, column_pairs, cardinality, confidence, reasoning, detected_at FROM ws_00000000_0000_0000_0000_000000000001.surrogate_key_intents r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentTableEntities = metadataSchema
 	.view("current_table_entities", {
 		entityId: varchar("entity_id"),

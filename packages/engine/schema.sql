@@ -282,6 +282,25 @@ CREATE TABLE run_tables (
 
 CREATE INDEX idx_run_tables_table ON run_tables (table_id);
 
+CREATE TABLE surrogate_key_intents (
+	intent_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	intent_digest VARCHAR NOT NULL, 
+	from_table_id VARCHAR NOT NULL, 
+	to_table_id VARCHAR NOT NULL, 
+	column_pairs JSON NOT NULL, 
+	cardinality VARCHAR, 
+	confidence FLOAT NOT NULL, 
+	reasoning VARCHAR, 
+	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_surrogate_key_intents PRIMARY KEY (intent_id), 
+	CONSTRAINT uq_surrogate_intent_run_digest UNIQUE (run_id, intent_digest), 
+	CONSTRAINT fk_surrogate_key_intents_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_surrogate_key_intents_to_table_id_tables FOREIGN KEY(to_table_id) REFERENCES tables (table_id)
+);
+
+CREATE INDEX ix_surrogate_key_intents_run_id ON surrogate_key_intents (run_id);
+
 CREATE TABLE table_entities (
 	entity_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 

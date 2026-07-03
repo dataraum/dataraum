@@ -253,7 +253,6 @@ class SnippetLibrary:
         parameter_value: str | None = None,
         normalized_expression: str | None = None,
         input_fields: list[str] | None = None,
-        column_mappings: dict[str, str] | None = None,
         llm_model: str | None = None,
         column_hash: str | None = None,
         provenance: dict[str, Any] | None = None,
@@ -283,7 +282,6 @@ class SnippetLibrary:
             parameter_value: Parameter value (for constants)
             normalized_expression: Normalized expression (for formulas)
             input_fields: Input field names (for formulas)
-            column_mappings: Column mappings
             llm_model: LLM model used to generate
             column_hash: Hash for schema change invalidation
             provenance: Grounding decisions (field_resolution, column_mappings_basis, etc.)
@@ -332,7 +330,6 @@ class SnippetLibrary:
             existing.description = description
             existing.source = source
             existing.llm_model = llm_model
-            existing.column_mappings = column_mappings or {}
             existing.column_hash = column_hash
             existing.provenance = provenance
             existing.failure_count = 1 if failed else 0
@@ -357,7 +354,6 @@ class SnippetLibrary:
                 input_fields=input_fields,
                 sql=sql,
                 description=description,
-                column_mappings=column_mappings or {},
                 source=source,
                 llm_model=llm_model,
                 column_hash=column_hash,

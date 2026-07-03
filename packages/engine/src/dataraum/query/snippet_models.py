@@ -82,7 +82,6 @@ class SQLSnippetRecord(Base):
     # --- Content ---
     sql: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    column_mappings: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
 
     # --- Provenance ---
     source: Mapped[str] = mapped_column(

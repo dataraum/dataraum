@@ -30,7 +30,6 @@ def _add_snippet(
         schema_mapping_id=source_id,
         sql="SELECT SUM(amount) FROM t",
         description="Test snippet",
-        column_mappings={},
         source=source,
         provenance=provenance,
         execution_count=0,

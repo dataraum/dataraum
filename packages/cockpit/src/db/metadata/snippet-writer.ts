@@ -121,7 +121,6 @@ export async function saveQuerySnippet(
 		parameterValue: null,
 		sql: input.sql,
 		description: input.description,
-		columnMappings: {},
 		source: input.source,
 		llmModel: input.llmModel ?? null,
 		executionCount: 0,

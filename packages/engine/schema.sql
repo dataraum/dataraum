@@ -95,7 +95,6 @@ CREATE TABLE sql_snippets (
 	input_fields JSON, 
 	sql TEXT NOT NULL, 
 	description TEXT NOT NULL, 
-	column_mappings JSON NOT NULL, 
 	source VARCHAR NOT NULL, 
 	llm_model VARCHAR, 
 	provenance JSON, 

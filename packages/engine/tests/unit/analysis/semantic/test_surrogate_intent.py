@@ -55,9 +55,7 @@ def lake() -> Iterator[duckdb.DuckDBPyConnection]:
             'INSERT INTO lake.typed."txn" VALUES '
             "('Sales','B1'),('Sales','B1'),('COGS','B1'),('Sales','B2'),('COGS','B2')"
         )
-        c.execute(
-            'CREATE TABLE lake.typed."coa" (account_name VARCHAR, business_id VARCHAR)'
-        )
+        c.execute('CREATE TABLE lake.typed."coa" (account_name VARCHAR, business_id VARCHAR)')
         c.execute(
             'INSERT INTO lake.typed."coa" VALUES '
             "('Sales','B1'),('COGS','B1'),('Sales','B2'),('COGS','B2')"

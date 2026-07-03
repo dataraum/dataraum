@@ -76,9 +76,9 @@ def test_rescuable_fanout_gets_a_composite_hint(con) -> None:
 def test_clean_single_column_candidate_is_untouched(con) -> None:
     """A clean many-to-one anchor needs no rescue — the dict must not change."""
     con.execute('CREATE TABLE lake.typed."txn" (cust VARCHAR, region VARCHAR)')
-    con.execute('INSERT INTO lake.typed."txn" VALUES ' "('c1','EU'),('c1','EU'),('c2','US')")
+    con.execute("INSERT INTO lake.typed.\"txn\" VALUES ('c1','EU'),('c1','EU'),('c2','US')")
     con.execute('CREATE TABLE lake.typed."coa" (cust_id VARCHAR, region VARCHAR)')
-    con.execute('INSERT INTO lake.typed."coa" VALUES ' "('c1','EU'),('c2','US')")
+    con.execute("INSERT INTO lake.typed.\"coa\" VALUES ('c1','EU'),('c2','US')")
     cands = [_candidate([("cust", "cust_id", 0.9), ("region", "region", 0.4)])]
 
     _augment_candidates_with_composite_rescue(cands, con)

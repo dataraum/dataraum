@@ -11,10 +11,6 @@
 //   same matcher the Model loader uses) → that view's FACT table →
 //   `current_slice_definitions` rows on the fact, priority-ordered.
 //
-// (The persisted `column_mappings` hint is not consulted: the prompt never
-// teaches it, so it is empty in practice — the rich mapping lives in
-// `provenance.column_mappings_basis`; 2026-07-03 finding.)
-//
 // `slice_definitions.column_name` is addressable VERBATIM in the metric's SQL
 // scope: metric SQL reads the enriched view (the GraphAgent's prefer-enriched
 // contract) and the enriched view exposes exactly those FK-prefixed dimension

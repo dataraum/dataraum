@@ -62,7 +62,9 @@ def lake() -> Iterator[_LakeScopedConnection]:
         c.execute("CREATE SCHEMA lake.raw")
         c.execute("CREATE SCHEMA lake.typed")
         c.execute("USE lake.typed")
-        c.execute('CREATE TABLE lake.raw."txn" (account VARCHAR, business_id VARCHAR, amount VARCHAR)')
+        c.execute(
+            'CREATE TABLE lake.raw."txn" (account VARCHAR, business_id VARCHAR, amount VARCHAR)'
+        )
         c.execute(
             'INSERT INTO lake.raw."txn" VALUES '
             "('Sales','B1','10'),('Sales','B1','20'),('COGS','B1','5'),"
@@ -216,9 +218,7 @@ def test_mint_end_to_end(session, lake) -> None:
     ]
     # The amended DDL is stored on the recipe substrate under this run.
     recipes = (
-        session.execute(
-            select(MaterializationRecipe).where(MaterializationRecipe.run_id == _RUN_1)
-        )
+        session.execute(select(MaterializationRecipe).where(MaterializationRecipe.run_id == _RUN_1))
         .scalars()
         .all()
     )
@@ -359,9 +359,7 @@ def test_promoted_surrogate_survives_the_grace_window(session, lake) -> None:
     assert _sk_columns(lake, "coa") == ["_sk__account_name__business_id"]
     assert (
         len(
-            session.execute(select(Column).where(Column.column_name.like("_sk__%")))
-            .scalars()
-            .all()
+            session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars().all()
         )
         == 2
     )
@@ -543,9 +541,7 @@ def test_unrecoverable_keeper_provenance_freezes_the_tables(session, lake) -> No
     assert _sk_columns(lake, "coa") == ["_sk__account_name__business_id"]
     assert (
         len(
-            session.execute(select(Column).where(Column.column_name.like("_sk__%")))
-            .scalars()
-            .all()
+            session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars().all()
         )
         == 2
     )
@@ -689,7 +685,7 @@ def test_semantic_to_mint_to_enriched_join_holds_grain(session, lake) -> None:
     # The enriched view serves the correct discriminator, grain-safe.
     typed = lake.execute(
         'SELECT DISTINCT "_sk__account__business_id__account_type" '
-        "FROM lake.typed.\"enriched_txn\" WHERE \"account\" = 'COGS'"
+        'FROM lake.typed."enriched_txn" WHERE "account" = \'COGS\''
     ).fetchall()
     assert typed == [("Expense",)]
 

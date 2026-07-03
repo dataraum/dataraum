@@ -123,9 +123,9 @@ describe.skipIf(!STACK_AVAILABLE)("snippet-library reads (DAT-484)", () => {
 			`INSERT INTO "${SCHEMA}".sql_snippets
 			 (snippet_id, workspace_id, snippet_type, standard_field, statement,
 			  aggregation, schema_mapping_id, parameter_value, normalized_expression,
-			  sql, description, column_mappings, source, execution_count,
+			  sql, description, source, execution_count,
 			  failure_count, created_at, updated_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'{}'::json,$12,0,0,now(),now())`,
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,0,now(),now())`,
 			[
 				id,
 				TEST_WORKSPACE,

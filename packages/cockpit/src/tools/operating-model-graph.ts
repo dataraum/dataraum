@@ -264,9 +264,7 @@ export interface EnrichedViewInput {
 /**
  * Resolve each measure concept's grounding from its extract snippet. Pure → unit-tested.
  *  - `grounded` = the engine accepted the extract (`failure_count == 0`) — the reliable
- *    signal. The persisted `column_mappings` hint is NOT consulted: the prompt never
- *    teaches it, so it is empty in practice (2026-07-03 finding; the rich mapping lives
- *    in `provenance.column_mappings_basis`).
+ *    signal.
  *  - The enriched VIEW is the first of the extract's parsed `relations` (what the SQL
  *    ACTUALLY reads, per DuckDB's own parser — see `sqlRelations`) that names a known
  *    view. Exact names: a view name inside a string literal never matches, and a stale

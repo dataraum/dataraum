@@ -12,8 +12,7 @@
 // extract's `failure_count == 0` (the engine's accept signal), and its enriched view
 // is the first parsed RELATION of its SQL (`sqlRelations`, DuckDB's own parser — what
 // the statement actually reads) that names a promoted view, mapped to base fact/dim
-// tables via `current_enriched_views`. (The persisted `column_mappings` hint is never
-// consulted — the prompt doesn't teach it, so it is empty in practice; DAT-672.)
+// tables via `current_enriched_views`.
 
 import { and, desc, eq, like } from "drizzle-orm";
 
@@ -69,7 +68,7 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			.from(currentLifecycleArtifacts)
 			.where(eq(currentLifecycleArtifacts.artifactType, "metric")),
 		// Graph snippets: the metric's flattened SQL (formula) + each measure's grounded
-		// SQL, column_mappings, and failure_count (extract). Newest-first, so the
+		// SQL and failure_count (extract). Newest-first, so the
 		// first-write-wins dedup below takes the LATEST row when at-least-once redelivery
 		// left duplicates (the engine treats any row as fine; the cockpit displays it).
 		metadataDb

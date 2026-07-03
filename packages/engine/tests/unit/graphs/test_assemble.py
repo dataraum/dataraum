@@ -123,7 +123,6 @@ class TestSaveSnippetsCallerAssignedIds:
         code = MagicMock()
         code.steps = [{"step_id": step_id, "sql": "SELECT 1", "description": "d"}]
         code.summary = "s"
-        code.column_mappings = {}
         code.llm_model = "claude-test"
         code.provenance = None
         code.assumptions = []

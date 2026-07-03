@@ -1,6 +1,6 @@
 """Unit tests for deterministic formula composition (DAT-636).
 
-Covers every BookSQL finance formula shape, the NULLIF division guard, and the
+Covers every finance formula shape from the smoke corpus, the NULLIF division guard, and the
 born-loud failures (unknown operand, unsupported construct). The composed SQL is
 also executed against in-memory DuckDB CTEs to prove it is valid and evaluates to
 the arithmetic result — no LLM, no smoke.

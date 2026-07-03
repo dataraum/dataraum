@@ -55,7 +55,7 @@ now only ever sees single-column FKs.
 ### Calibration to run
 
 - **Relationship detection / FK confirmation** on composite-key datasets: the
-  fan-trap edge (e.g. BookSQL `master_txn.account ↔ chart_of_accounts`) should
+  fan-trap edge (a transactions↔chart-of-accounts pair scoped by tenant) should
   now surface as ONE stable many-to-one surrogate relationship instead of a
   flaky/degenerate many-to-many + 20 tenant-key candidates. Watch single-key
   datasets for regressions — with no composite hint the pipeline is
@@ -64,9 +64,9 @@ now only ever sees single-column FKs.
   previously fan-trapped dimension becomes joinable; metrics should ground on
   the real discriminator (`account_type`), not single-table proxies
   (`transaction_type` at 0.35). DAT-652's acceptance case (non-empty driver
-  rankings on BookSQL) is the headline check.
-- **BookSQL becomes a legitimate grounding oracle once this lands** — the
-  standing "don't use BookSQL as the acceptance oracle" caveat retires.
+  rankings on the bookkeeping smoke corpus) is the headline check.
+- **The bookkeeping smoke corpus becomes a legitimate grounding oracle once this lands** — the
+  standing "don't use it as the acceptance oracle" caveat retires.
 
 ### testdata hints
 
@@ -78,7 +78,7 @@ fan-trap). New assertable surface: the `_sk__*` columns themselves (both
 tables), the `surrogate_key_intents` row, and the surrogate relationship's
 `evidence.surrogate.natural_pairs`.
 
-### Validated live on BookSQL (2026-07-03, full 7-table set, real LLM)
+### Validated live on the bookkeeping smoke corpus (2026-07-03, full 7-table set, real LLM)
 
 Four composites minted (`(name, business_id)` for customer/vendor/
 payment_method/product_service), all persisted fact→dim many-to-one,
@@ -87,7 +87,7 @@ the 810k-row fact with 11 dim columns joined via the surrogates; the flaky
 20-candidate `business_id` degeneracy is gone. `gl_invoice_match` validation
 went declared→executed (the surrogates gave it a join path); revenue grounds
 on `account_type='Income'` (the real classification, not transaction_type).
-Two BookSQL DATA truths the platform now states instead of absorbing:
+Two smoke-corpus DATA truths the platform now states instead of absorbing:
 `chart_of_account_OB`'s `(account, business)` collisions are 82 exact duplicate
 rows PLUS 135 dual-role accounts (same name+full name, DIFFERENT account type —
 Installation as both Income and Expenses in one business), so no name-based
@@ -95,9 +95,9 @@ composite is a key there and **dedup cannot fix it** (the true key would need
 `account_type`, which the fact doesn't carry) — the confirmed composite was
 REFUSED (non-collapsing gate), the anchor persists m2m + fan-trap-flagged, and
 the semi-join grounding pattern (`account IN (SELECT … WHERE account_type=…)`)
-is the correct end-state consumption. And BookSQL has NO COGS account type, so
+is the correct end-state consumption. And the corpus has NO COGS account type, so
 `cost_of_goods_sold` is honestly inconclusive ("filter matched no rows"), never
-a transaction_type proxy. Eval should treat both as expected BookSQL baseline,
+a transaction_type proxy. Eval should treat both as expected corpus baseline,
 not regressions.
 
 ---
@@ -488,7 +488,7 @@ under a second name is the natural regression for the original duplication bug.
 - The `derived_value` / `temporal_behavior` detector inputs (`entropy/detectors/loaders.load_semantic`) now grain-split: object-grain fields from `SemanticAnnotation`, catalogue-grain from `ColumnConcept` at the run — so catalogue fields are present at `session_detect`, ABSENT at add_source `detect` (the intended grain boundary). `entropy/resolve.resolve_temporal_behavior` now writes `ColumnConcept`.
 
 ### Calibration to run
-- **BookSQL cold re-seed grounding** — the headline acceptance check: `revenue`/`accounts_payable`/`accounts_receivable` must NO LONGER trap-bind to near-constant flags (`sale`/`ap_paid`/`ar_paid`) — they bind to a genuine discriminator or stay null (value-set grounded). The 11 already-grounding metrics must NOT regress.
+- **Bookkeeping-corpus cold re-seed grounding** — the headline acceptance check: `revenue`/`accounts_payable`/`accounts_receivable` must NO LONGER trap-bind to near-constant flags (`sale`/`ap_paid`/`ar_paid`) — they bind to a genuine discriminator or stay null (value-set grounded). The 11 already-grounding metrics must NOT regress.
 - Driver-discovery `target_type` (reads `ColumnConcept.temporal_behavior` now) — confirm stock/flow target selection is unchanged on the calibration corpora.
 
 ### Thresholds / new fields

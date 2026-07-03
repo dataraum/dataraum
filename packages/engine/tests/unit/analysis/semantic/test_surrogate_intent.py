@@ -45,7 +45,7 @@ def _table_with_columns(session, name: str, columns: list[str]) -> Table:
 
 @pytest.fixture
 def lake() -> Iterator[duckdb.DuckDBPyConnection]:
-    """The BookSQL fan-out shape in a ``lake.typed`` schema (mirrors the worker attach)."""
+    """The tenant-scoped fan-out shape in a ``lake.typed`` schema (mirrors the worker attach)."""
     c = duckdb.connect()
     try:
         c.execute("ATTACH ':memory:' AS lake")
@@ -205,7 +205,7 @@ def test_missing_run_id_builds_no_intent(session) -> None:
 def test_non_collapsing_composite_falls_back_to_single(session, lake) -> None:
     """A confirmed composite the data REJECTS (still m2m — dup dim rows) must not
     become an intent: fall back to the plain anchor with its honest fan-trap
-    flag. Seen live on BookSQL (duplicate (account, business) rows in the
+    flag. Seen live on the bookkeeping smoke corpus (duplicate (account, business) rows in the
     chart of accounts)."""
     lake.execute("INSERT INTO lake.typed.\"coa\" VALUES ('Sales','B1')")  # dup dim row
     txn = _table_with_columns(session, "txn", ["account", "business_id"])

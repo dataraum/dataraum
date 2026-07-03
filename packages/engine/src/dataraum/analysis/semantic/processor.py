@@ -487,7 +487,7 @@ def _build_surrogate_intent(
         if cardinality == "many-to-many":
             # The LLM confirmed a composite the data measurably REJECTS (the
             # prompt's contract: only confirm when it resolves the fan-out).
-            # Seen live on BookSQL: chart_of_accounts carries duplicate
+            # Seen live on a multi-tenant bookkeeping smoke: the chart of accounts carries duplicate
             # (account, business) rows, so no name-based composite collapses.
             # Fall back to the plain single-column anchor — it persists with
             # its honest cardinality + fan-trap flag, exactly the pre-mint

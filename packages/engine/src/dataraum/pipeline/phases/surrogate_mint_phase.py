@@ -579,7 +579,7 @@ class SurrogateMintPhase(BasePhase):
         natural_ids = [list(pair) for pair in intent.column_pairs]
         # The catalog's FK convention: `from` is the referencing (many) side.
         # The LLM may confirm the composite in dim→fact order (seen live on
-        # BookSQL: all four clean composites arrived one-to-many), and the
+        # the live smoke: all four clean composites arrived one-to-many), and the
         # enrichment grain-safe marker reads the STORED direction — so orient
         # deterministically by the measured cardinality, not by emission order.
         if cardinality == "one-to-many":

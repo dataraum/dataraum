@@ -66,7 +66,7 @@ def test_empty_key_is_none(con) -> None:
 
 
 def test_spurious_m2m_rescued_by_one_scoping_col(con) -> None:
-    """The BookSQL shape: account recurs across tenants; (account, business_id) is the real key."""
+    """The multi-tenant bookkeeping shape: account recurs across tenants; (account, business_id) is the real key."""
     con.execute("CREATE TABLE txn (account VARCHAR, business_id VARCHAR, amount INT)")
     con.execute(
         "INSERT INTO txn VALUES "

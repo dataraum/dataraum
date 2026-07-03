@@ -1,6 +1,6 @@
 """The surrogate_mint phase (DAT-277) — mint, reconcile, and abstain semantics.
 
-Seeds the BookSQL fan-out shape (fact ``txn`` whose ``account`` recurs across
+Seeds the tenant-scoped fan-out shape (fact ``txn`` whose ``account`` recurs across
 ``business_id`` tenants, dim ``coa`` keyed on the composite) with real raw +
 typed DuckDB tables, generation-head recipes, and a confirmed intent — then
 drives the phase and asserts on the physical lake, the Column/profile rows,
@@ -85,7 +85,7 @@ def lake() -> Iterator[_LakeScopedConnection]:
 
 
 def _seed(session: Session) -> dict[str, Any]:
-    """Typed tables + columns + generation-head recipes for the BookSQL shape."""
+    """Typed tables + columns + generation-head recipes for the multi-tenant bookkeeping shape."""
     src = Source(name="s", source_type="csv")
     session.add(src)
     session.flush()
@@ -226,7 +226,7 @@ def test_mint_end_to_end(session, lake) -> None:
 
 def test_dim_to_fact_intent_persists_fk_side_first(session, lake) -> None:
     """The LLM may confirm the composite dim→fact (one-to-many) — seen live on
-    BookSQL, where all four clean composites arrived in that orientation and
+    the bookkeeping smoke corpus, where all four clean composites arrived in that orientation and
     the enrichment grain-safe marker (which reads the STORED direction) then
     refused every join. The mint must orient by measured cardinality: persist
     fact→dim many-to-one with flipped provenance.

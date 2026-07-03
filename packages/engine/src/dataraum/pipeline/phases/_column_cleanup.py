@@ -19,10 +19,12 @@ if TYPE_CHECKING:
 def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     """Delete every run-stamped row that FK-references the given columns (DAT-506).
 
-    Covers all 14 FK children of ``columns`` (verified against ``schema.sql``):
+    Covers all 15 FK children of ``columns`` (verified against ``schema.sql``):
     ``type_candidates``, ``type_decisions``, ``statistical_profiles``,
     ``statistical_quality_metrics``, ``temporal_column_profiles``,
-    ``semantic_annotations``, ``slice_definitions``, ``entropy_objects``,
+    ``semantic_annotations``, ``column_concepts`` (DAT-637 — a typed-table column
+    the table agent conceptualized can later be dropped, e.g. a reconciled
+    surrogate, DAT-277), ``slice_definitions``, ``entropy_objects``,
     ``entropy_readiness``, ``claim_witnesses`` (all ``column_id``-keyed), plus the
     differently-named ``derived_columns.derived_column_id``,
     ``measure_aggregation_lineage.measure_column_id``, and ``relationships``
@@ -38,7 +40,7 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
     from dataraum.analysis.relationships.db_models import Relationship
-    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+    from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
     from dataraum.analysis.slicing.db_models import SliceDefinition
     from dataraum.analysis.statistics.db_models import StatisticalProfile as _StatProfile
     from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
@@ -57,6 +59,7 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
         StatisticalQualityMetrics,
         TemporalColumnProfile,
         SemanticAnnotation,
+        ColumnConcept,
         SliceDefinition,
         EntropyObjectRecord,
         EntropyReadinessRecord,

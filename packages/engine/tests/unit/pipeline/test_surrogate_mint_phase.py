@@ -1,0 +1,346 @@
+"""The surrogate_mint phase (DAT-277) — mint, reconcile, and abstain semantics.
+
+Seeds the BookSQL fan-out shape (fact ``txn`` whose ``account`` recurs across
+``business_id`` tenants, dim ``coa`` keyed on the composite) with real raw +
+typed DuckDB tables, generation-head recipes, and a confirmed intent — then
+drives the phase and asserts on the physical lake, the Column/profile rows,
+and the persisted surrogate relationship. The worst-case contract is pinned
+throughout: every abstain path leaves the working single-column world
+untouched.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from typing import Any
+
+import duckdb
+import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from dataraum.analysis.relationships.db_models import Relationship, SurrogateKeyIntent
+from dataraum.analysis.statistics.db_models import StatisticalProfile
+from dataraum.analysis.typing.db_models import MaterializationRecipe
+from dataraum.core.connections import _LakeScopedConnection
+from dataraum.pipeline.base import PhaseContext, PhaseStatus
+from dataraum.pipeline.phases.surrogate_mint_phase import SurrogateMintPhase
+from dataraum.storage import Column, Source, Table
+from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
+
+_GEN_RUN = "gen-run-1"
+_RUN_1 = "session-run-1"
+_RUN_2 = "session-run-2"
+
+_TXN_DDL = (
+    'CREATE OR REPLACE TABLE lake.typed."txn" AS '
+    'SELECT TRY_CAST("account" AS VARCHAR) AS "account", '
+    'TRY_CAST("business_id" AS VARCHAR) AS "business_id", '
+    'TRY_CAST("amount" AS INTEGER) AS "amount" FROM lake.raw."txn"'
+)
+_COA_DDL = (
+    'CREATE OR REPLACE TABLE lake.typed."coa" AS '
+    'SELECT TRY_CAST("account_name" AS VARCHAR) AS "account_name", '
+    'TRY_CAST("business_id" AS VARCHAR) AS "business_id", '
+    'TRY_CAST("account_type" AS VARCHAR) AS "account_type" FROM lake.raw."coa"'
+)
+
+
+@pytest.fixture
+def lake() -> Iterator[_LakeScopedConnection]:
+    """The worker-connection shape: lake catalog + the cursor-USE reissue wrapper.
+
+    The profiler opens derived cursors, and DuckDB cursors do NOT inherit
+    ``USE`` — production scopes every cursor via ``_LakeScopedConnection``
+    (core/connections.py), so the fixture must too or bare typed-table names
+    resolve against the wrong catalog.
+    """
+    c = duckdb.connect()
+    try:
+        c.execute("ATTACH ':memory:' AS lake")
+        c.execute("CREATE SCHEMA lake.raw")
+        c.execute("CREATE SCHEMA lake.typed")
+        c.execute("USE lake.typed")
+        c.execute('CREATE TABLE lake.raw."txn" (account VARCHAR, business_id VARCHAR, amount VARCHAR)')
+        c.execute(
+            'INSERT INTO lake.raw."txn" VALUES '
+            "('Sales','B1','10'),('Sales','B1','20'),('COGS','B1','5'),"
+            "('Sales','B2','30'),('COGS','B2','7')"
+        )
+        c.execute(
+            'CREATE TABLE lake.raw."coa" '
+            "(account_name VARCHAR, business_id VARCHAR, account_type VARCHAR)"
+        )
+        c.execute(
+            'INSERT INTO lake.raw."coa" VALUES '
+            "('Sales','B1','Income'),('COGS','B1','Expense'),"
+            "('Sales','B2','Income'),('COGS','B2','Expense')"
+        )
+        c.execute(_TXN_DDL)
+        c.execute(_COA_DDL)
+        yield _LakeScopedConnection(c, "lake.typed")
+    finally:
+        c.close()
+
+
+def _seed(session: Session) -> dict[str, Any]:
+    """Typed tables + columns + generation-head recipes for the BookSQL shape."""
+    src = Source(name="s", source_type="csv")
+    session.add(src)
+    session.flush()
+
+    tables: dict[str, Table] = {}
+    cols: dict[tuple[str, str], Column] = {}
+    for name, ddl, col_names in (
+        ("txn", _TXN_DDL, ["account", "business_id", "amount"]),
+        ("coa", _COA_DDL, ["account_name", "business_id", "account_type"]),
+    ):
+        t = Table(
+            source_id=src.source_id, table_name=name, layer="typed", duckdb_path=name, row_count=5
+        )
+        session.add(t)
+        session.flush()
+        tables[name] = t
+        for pos, cn in enumerate(col_names):
+            c = Column(
+                table_id=t.table_id, column_name=cn, column_position=pos, resolved_type="VARCHAR"
+            )
+            session.add(c)
+            cols[(name, cn)] = c
+        session.flush()
+        session.add(
+            MaterializationRecipe(
+                table_id=t.table_id,
+                layer="typed",
+                run_id=_GEN_RUN,
+                target_fqn=f'lake.typed."{name}"',
+                ddl=ddl,
+                depends_on=[f'lake.raw."{name}"'],
+            )
+        )
+        session.add(
+            MetadataSnapshotHead(
+                target=f"table:{t.table_id}",
+                stage=GENERATION_STAGE,
+                run_id=_GEN_RUN,
+                promoted_at=datetime.now(UTC),
+            )
+        )
+    session.flush()
+    return {"tables": tables, "cols": cols}
+
+
+def _intent(session: Session, seed: dict[str, Any], run_id: str) -> SurrogateKeyIntent:
+    cols = seed["cols"]
+    intent = SurrogateKeyIntent(
+        run_id=run_id,
+        intent_digest="digest-1",
+        from_table_id=seed["tables"]["txn"].table_id,
+        to_table_id=seed["tables"]["coa"].table_id,
+        column_pairs=[
+            [cols[("txn", "account")].column_id, cols[("coa", "account_name")].column_id],
+            [cols[("txn", "business_id")].column_id, cols[("coa", "business_id")].column_id],
+        ],
+        cardinality="many-to-one",
+        confidence=0.9,
+        reasoning="account recurs per tenant",
+    )
+    session.add(intent)
+    session.flush()
+    return intent
+
+
+def _ctx(session: Session, lake: duckdb.DuckDBPyConnection, seed: dict[str, Any], run_id: str):
+    return PhaseContext(
+        session=session,
+        duckdb_conn=lake,
+        table_ids=[t.table_id for t in seed["tables"].values()],
+        run_id=run_id,
+    )
+
+
+def _sk_columns(lake: duckdb.DuckDBPyConnection, table: str) -> list[str]:
+    rows = lake.execute(f'DESCRIBE lake.typed."{table}"').fetchall()
+    return [r[0] for r in rows if r[0].startswith("_sk__")]
+
+
+def test_mint_end_to_end(session, lake) -> None:
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+
+    result = SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert result.warnings == []
+    # Physical: both sides carry the deterministic surrogate.
+    assert _sk_columns(lake, "txn") == ["_sk__account__business_id"]
+    assert _sk_columns(lake, "coa") == ["_sk__account_name__business_id"]
+    # The surrogate join holds grain: LEFT JOIN keeps exactly the fact rows.
+    row = lake.execute(
+        'SELECT COUNT(*) FROM lake.typed."txn" f '
+        'LEFT JOIN lake.typed."coa" d ON f."_sk__account__business_id" = '
+        'd."_sk__account_name__business_id"'
+    ).fetchone()
+    assert row is not None and row[0] == 5  # no fan-out (account alone would give 9)
+
+    # Metadata: Column rows registered + profiled on the typed layer.
+    sk_cols = (
+        session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars().all()
+    )
+    assert {c.column_name for c in sk_cols} == {
+        "_sk__account__business_id",
+        "_sk__account_name__business_id",
+    }
+    profiles = session.execute(select(StatisticalProfile)).scalars().all()
+    assert {p.column_id for p in profiles} == {c.column_id for c in sk_cols}
+
+    # Catalog: ONE ordinary single-column llm relationship on the surrogate pair.
+    rels = (
+        session.execute(select(Relationship).where(Relationship.detection_method == "llm"))
+        .scalars()
+        .all()
+    )
+    assert len(rels) == 1
+    rel = rels[0]
+    by_id = {c.column_id: c.column_name for c in sk_cols}
+    assert by_id[rel.from_column_id] == "_sk__account__business_id"
+    assert by_id[rel.to_column_id] == "_sk__account_name__business_id"
+    assert rel.cardinality == "many-to-one"
+    assert rel.evidence["introduces_duplicates"] is False
+    assert rel.evidence["surrogate"]["natural_pairs"] == [
+        ["account", "account_name"],
+        ["business_id", "business_id"],
+    ]
+    # The amended DDL is stored on the recipe substrate under this run.
+    recipes = (
+        session.execute(
+            select(MaterializationRecipe).where(MaterializationRecipe.run_id == _RUN_1)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(recipes) == 2
+
+
+def test_noop_without_intents(session, lake) -> None:
+    seed = _seed(session)
+
+    result = SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert _sk_columns(lake, "txn") == []
+    assert session.execute(select(Relationship)).scalars().all() == []
+
+
+def test_retry_is_idempotent(session, lake) -> None:
+    """A Temporal at-least-once retry (same run) re-derives the identical state."""
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+
+    phase = SurrogateMintPhase()
+    assert phase.run(_ctx(session, lake, seed, _RUN_1)).status == PhaseStatus.COMPLETED
+    session.flush()
+    first_ids = {
+        c.column_name: c.column_id
+        for c in session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars()
+    }
+    assert phase.run(_ctx(session, lake, seed, _RUN_1)).status == PhaseStatus.COMPLETED
+    session.flush()
+
+    second_ids = {
+        c.column_name: c.column_id
+        for c in session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars()
+    }
+    assert second_ids == first_ids  # stable column_id — overlays keyed on it survive
+    rels = session.execute(select(Relationship)).scalars().all()
+    assert len(rels) == 1
+
+
+def test_unconfirmed_unkept_surrogate_is_dropped(session, lake) -> None:
+    """No fresh intent, nothing promoted/kept → reconcile removes the surrogate."""
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    phase = SurrogateMintPhase()
+    assert phase.run(_ctx(session, lake, seed, _RUN_1)).status == PhaseStatus.COMPLETED
+    session.flush()
+    assert _sk_columns(lake, "txn") == ["_sk__account__business_id"]
+
+    # Next session run: the LLM did not re-confirm (no intent) and the catalog
+    # head was never promoted to run 1 — the grace window is empty.
+    assert phase.run(_ctx(session, lake, seed, _RUN_2)).status == PhaseStatus.COMPLETED
+    session.flush()
+
+    assert _sk_columns(lake, "txn") == []
+    assert _sk_columns(lake, "coa") == []
+    assert (
+        session.execute(select(Column).where(Column.column_name.like("_sk__%"))).scalars().all()
+        == []
+    )
+
+
+def test_promoted_surrogate_survives_the_grace_window(session, lake) -> None:
+    """A promoted-run surrogate is kept for the keeper lift-up (DAT-409)."""
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    phase = SurrogateMintPhase()
+    assert phase.run(_ctx(session, lake, seed, _RUN_1)).status == PhaseStatus.COMPLETED
+    session.flush()
+    session.add(
+        MetadataSnapshotHead(
+            target="catalog", stage="catalog", run_id=_RUN_1, promoted_at=datetime.now(UTC)
+        )
+    )
+    session.flush()
+
+    assert phase.run(_ctx(session, lake, seed, _RUN_2)).status == PhaseStatus.COMPLETED
+    session.flush()
+
+    # Physical + metadata survive; session_write_keepers can lift the promoted
+    # relationship into a keep overlay with its columns intact.
+    assert _sk_columns(lake, "txn") == ["_sk__account__business_id"]
+    assert _sk_columns(lake, "coa") == ["_sk__account_name__business_id"]
+    assert (
+        len(
+            session.execute(select(Column).where(Column.column_name.like("_sk__%")))
+            .scalars()
+            .all()
+        )
+        == 2
+    )
+
+
+def test_missing_typing_recipe_abstains(session, lake) -> None:
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    session.execute(
+        MetadataSnapshotHead.__table__.delete().where(
+            MetadataSnapshotHead.stage == GENERATION_STAGE
+        )
+    )
+    session.flush()
+
+    result = SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED  # abstain, never fail the spine
+    assert any("no typing recipe" in w for w in result.warnings)
+    assert _sk_columns(lake, "txn") == []
+    assert session.execute(select(Relationship)).scalars().all() == []
+
+
+def test_vanished_component_abstains(session, lake) -> None:
+    """A component column missing from the physical table abstains per-intent."""
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    lake.execute('ALTER TABLE lake.typed."txn" DROP COLUMN "business_id"')
+
+    result = SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert any("missing" in w for w in result.warnings)
+    assert _sk_columns(lake, "coa") == []  # the pair aborts as a unit: no half-mint
+    assert session.execute(select(Relationship)).scalars().all() == []

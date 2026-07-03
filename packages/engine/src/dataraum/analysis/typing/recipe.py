@@ -19,7 +19,6 @@ from sqlalchemy import select
 from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.core.logging import get_logger
 from dataraum.storage import Table
-from dataraum.storage.snapshot_head import head_run_id
 from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
@@ -180,11 +179,3 @@ def _quarantine_sibling_id(session: Session, typed_table_id: str) -> str | None:
         )
     ).scalar_one_or_none()
     return quarantine.table_id if quarantine is not None else None
-
-
-def current_typing_run(session: Session, table_id: str) -> str | None:
-    """The promoted typing ``run_id`` for ``table_id``, or ``None`` (DAT-413).
-
-    Convenience over ``head_run_id`` for the typing stage's head key.
-    """
-    return head_run_id(session, f"table:{table_id}", "typing")

@@ -332,6 +332,74 @@ def test_divergent_component_types_abstain(session, lake) -> None:
     assert session.execute(select(Relationship)).scalars().all() == []
 
 
+def test_float_typed_component_is_refused_even_when_types_match(session, lake) -> None:
+    """Same-type is not sufficient for floats: -0.0 = 0.0 natively but renders
+    '-0.0' vs '0.0' — a both-sides-DOUBLE component must abstain."""
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    seed["cols"][("txn", "business_id")].resolved_type = "DOUBLE"
+    seed["cols"][("coa", "business_id")].resolved_type = "DOUBLE"
+    session.flush()
+
+    result = SurrogateMintPhase().run(_ctx(session, lake, seed, _RUN_1))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert any("float-typed" in w for w in result.warnings)
+    assert _sk_columns(lake, "txn") == []
+    assert session.execute(select(Relationship)).scalars().all() == []
+
+
+def test_fresh_intent_on_a_frozen_table_defers_with_named_cause(session, lake) -> None:
+    """A mint job whose endpoint is frozen must defer (named warning), never
+    half-run against a table reconcile skipped."""
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    phase = SurrogateMintPhase()
+    assert phase.run(_ctx(session, lake, seed, _RUN_1)).status == PhaseStatus.COMPLETED
+    session.flush()
+    minted = session.execute(
+        select(Relationship).where(Relationship.detection_method == "llm")
+    ).scalar_one()
+    # Run 2 carries BOTH a keeper with unrecoverable provenance (→ freeze) and a
+    # fresh intent on the same tables.
+    session.add(
+        Relationship(
+            run_id=_RUN_2,
+            from_table_id=minted.from_table_id,
+            from_column_id=minted.from_column_id,
+            to_table_id=minted.to_table_id,
+            to_column_id=minted.to_column_id,
+            relationship_type="foreign_key",
+            cardinality=minted.cardinality,
+            confidence=1.0,
+            detection_method="keeper",
+            evidence={"source": "config_overlay", "action": "keep"},
+        )
+    )
+    session.delete(minted)
+    session.flush()
+    _intent(session, seed, _RUN_2)
+
+    result = phase.run(_ctx(session, lake, seed, _RUN_2))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert any("frozen this run" in w and "mint deferred" in w for w in result.warnings)
+    # No run-2 llm row was persisted; the frozen state survived untouched.
+    assert (
+        session.execute(
+            select(Relationship).where(
+                Relationship.run_id == _RUN_2, Relationship.detection_method == "llm"
+            )
+        )
+        .scalars()
+        .all()
+        == []
+    )
+    assert _sk_columns(lake, "txn") == ["_sk__account__business_id"]
+
+
 def test_keeper_row_recovers_provenance_from_the_prior_mint(session, lake) -> None:
     """The steady-state silent-accept path: an overlay-materialized keeper row
     carries NO surrogate evidence ({'source': 'config_overlay'}) — the mint must

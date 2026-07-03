@@ -169,6 +169,39 @@ def test_unresolvable_component_falls_back_to_single(session) -> None:
     assert len(llm_rows) == 1
 
 
+def test_missing_run_id_builds_no_intent(session) -> None:
+    """No run_id = nothing to version the intent under → the builder abstains.
+
+    Tested at the helper level: the workflow always stamps run_id, and the
+    public path with run_id=None cannot persist ANY relationship anyway
+    (``relationships.run_id`` is NOT NULL — pre-existing main behavior), so
+    the guard's job is just to never mint an unversioned intent row.
+    """
+    from dataraum.analysis.semantic.processor import _build_surrogate_intent
+
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    cols = {(c.table_id, c.column_name): c.column_id for t in (txn, coa) for c in t.columns}
+
+    intent = _build_surrogate_intent(
+        rel=_rel(key_columns=[("business_id", "business_id")]),
+        from_table_id=txn.table_id,
+        from_col_id=cols[(txn.table_id, "account")],
+        to_table_id=coa.table_id,
+        to_col_id=cols[(coa.table_id, "account_name")],
+        column_map={
+            ("txn", "account"): cols[(txn.table_id, "account")],
+            ("txn", "business_id"): cols[(txn.table_id, "business_id")],
+            ("coa", "account_name"): cols[(coa.table_id, "account_name")],
+            ("coa", "business_id"): cols[(coa.table_id, "business_id")],
+        },
+        run_id=None,
+        duckdb_conn=None,
+    )
+
+    assert intent is None
+
+
 def test_intent_upsert_is_idempotent_for_retry(session, lake) -> None:
     """A Temporal at-least-once retry (same run_id) refreshes, never duplicates."""
     txn = _table_with_columns(session, "txn", ["account", "business_id"])

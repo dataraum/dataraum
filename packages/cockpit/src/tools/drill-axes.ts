@@ -2,13 +2,18 @@
 // `/api/drill/axes`. Imports config + the metadata client, so it must never be
 // imported by a client component (canvas widgets fetch the API route).
 //
-// The canvas-first contract: a metric's drillable dimensions resolve entirely
-// from persisted metadata — no SQL parsing, no naming conventions:
+// The canvas-first contract: a metric's drillable dimensions resolve from what
+// its SQL ACTUALLY reads — no naming conventions, no substring matching:
 //
 //   metric → dag extract steps (standard fields) → newest extract snippet per
-//   field → enriched view (`resolveGrounding`, the same reviewed matcher the
-//   Model loader uses) → that view's FACT table → `current_slice_definitions`
-//   rows on the fact, priority-ordered.
+//   field → the extract SQL's parsed relations (`sqlRelations`, DuckDB's own
+//   parser) → the promoted enriched view among them (`resolveGrounding`, the
+//   same matcher the Model loader uses) → that view's FACT table →
+//   `current_slice_definitions` rows on the fact, priority-ordered.
+//
+// (The persisted `column_mappings` hint is not consulted: the prompt never
+// teaches it, so it is empty in practice — the rich mapping lives in
+// `provenance.column_mappings_basis`; 2026-07-03 finding.)
 //
 // `slice_definitions.column_name` is addressable VERBATIM in the metric's SQL
 // scope: metric SQL reads the enriched view (the GraphAgent's prefer-enriched
@@ -27,6 +32,7 @@ import {
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
+import { sqlRelations } from "#/lib/sql-canonical";
 
 import {
 	type ExtractSnippetInput,
@@ -112,7 +118,6 @@ export async function resolveDrillAxes(
 			.select({
 				standardField: sqlSnippets.standardField,
 				sql: sqlSnippets.sql,
-				columnMappings: sqlSnippets.columnMappings,
 				failureCount: sqlSnippets.failureCount,
 			})
 			.from(sqlSnippets)
@@ -134,19 +139,19 @@ export async function resolveDrillAxes(
 	]);
 
 	const wanted = new Set(fields);
-	const extracts: ExtractSnippetInput[] = snippetRows
-		.filter(
-			(r): r is typeof r & { standardField: string } =>
-				r.standardField !== null && wanted.has(r.standardField),
-		)
-		.map((r) => ({
-			standardField: r.standardField,
-			sql: r.sql ?? null,
-			columnMappingsText: r.columnMappings
-				? JSON.stringify(r.columnMappings)
-				: "",
-			failureCount: r.failureCount ?? 0,
-		}));
+	const extracts: ExtractSnippetInput[] = await Promise.all(
+		snippetRows
+			.filter(
+				(r): r is typeof r & { standardField: string } =>
+					r.standardField !== null && wanted.has(r.standardField),
+			)
+			.map(async (r) => ({
+				standardField: r.standardField,
+				sql: r.sql ?? null,
+				relations: r.sql ? ((await sqlRelations(r.sql)) ?? []) : [],
+				failureCount: r.failureCount ?? 0,
+			})),
+	);
 	const views = viewRows
 		.filter((v): v is typeof v & { viewName: string; viewTableId: string } =>
 			Boolean(v.viewName && v.viewTableId),

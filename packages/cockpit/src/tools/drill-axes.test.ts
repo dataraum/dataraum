@@ -152,21 +152,18 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 			{
 				standardField: "revenue",
 				sql: "SELECT SUM(amount) AS value FROM enriched_invoices",
-				columnMappings: null,
 				failureCount: 0,
 			},
 			// Failed extract → ungrounded → contributes no fact table.
 			{
 				standardField: "cogs",
 				sql: "SELECT SUM(cost) AS value FROM enriched_purchases",
-				columnMappings: null,
 				failureCount: 2,
 			},
 			// A field the metric does not reference → filtered out up front.
 			{
 				standardField: "cash",
 				sql: "SELECT 1 FROM enriched_bank",
-				columnMappings: null,
 				failureCount: 0,
 			},
 		]);

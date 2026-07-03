@@ -408,12 +408,16 @@ describe("resolveGrounding", () => {
 		standardField: string,
 		sql: string | null,
 		failureCount: number,
-		columnMappingsText = "{}",
-	) => ({ standardField, sql, columnMappingsText, failureCount });
+		relations: string[] = [],
+	) => ({ standardField, sql, relations, failureCount });
 
-	it("grounds an accepted extract via its SQL FROM clause (not column_mappings)", () => {
+	it("grounds an accepted extract via its parsed relations", () => {
 		const [g] = resolveGrounding(
-			[ex("revenue", "SELECT sum(x) FROM enriched_journal_lines jl", 0)],
+			[
+				ex("revenue", "SELECT sum(x) FROM enriched_journal_lines jl", 0, [
+					"enriched_journal_lines",
+				]),
+			],
 			views,
 			names,
 		);
@@ -430,7 +434,14 @@ describe("resolveGrounding", () => {
 
 	it("marks a FAILED extract ungrounded (no table) but keeps its SQL", () => {
 		const [g] = resolveGrounding(
-			[ex("inventory", "SELECT sum(x) FROM enriched_journal_lines WHERE …", 1)],
+			[
+				ex(
+					"inventory",
+					"SELECT sum(x) FROM enriched_journal_lines WHERE …",
+					1,
+					["enriched_journal_lines"],
+				),
+			],
 			views,
 			names,
 		);
@@ -439,18 +450,30 @@ describe("resolveGrounding", () => {
 		expect(g.sql).toContain("enriched_journal_lines"); // still carried through
 	});
 
-	it("resolves the view from column_mappings when the SQL lacks it", () => {
+	it("does not ground an extract whose relations name no promoted view (stale snippet)", () => {
+		// The cross-dataset case: an accepted extract reading another lineage's
+		// view resolves to NOTHING — exact relation names, never a substring hit.
 		const [g] = resolveGrounding(
-			[ex("revenue", null, 0, '{"revenue":"enriched_journal_lines.x"}')],
+			[
+				ex("revenue", "SELECT sum(x) FROM enriched_master_txn_table", 0, [
+					"enriched_master_txn_table",
+					"chart_of_account_ob",
+				]),
+			],
 			views,
 			names,
 		);
-		expect(g.enrichedView?.tableName).toBe("enriched_journal_lines");
+		expect(g.grounded).toBe(true); // the engine accepted it…
+		expect(g.enrichedView).toBeNull(); // …but it grounds to no current view
 	});
 
-	it("prefers the longest matching view name (no shorter-name shadowing)", () => {
+	it("matches relations exactly (no prefix/substring shadowing)", () => {
 		const [g] = resolveGrounding(
-			[ex("x", "FROM enriched_journal_lines_detail", 0)],
+			[
+				ex("x", "FROM enriched_journal_lines_detail", 0, [
+					"enriched_journal_lines_detail",
+				]),
+			],
 			[
 				{
 					viewName: "enriched_journal_lines",
@@ -471,8 +494,10 @@ describe("resolveGrounding", () => {
 	it("dedupes by standard_field (first/newest row wins)", () => {
 		const g = resolveGrounding(
 			[
-				ex("revenue", "FROM enriched_journal_lines", 0),
-				ex("revenue", "FROM other", 1),
+				ex("revenue", "FROM enriched_journal_lines", 0, [
+					"enriched_journal_lines",
+				]),
+				ex("revenue", "FROM other", 1, ["other"]),
 			],
 			views,
 			names,

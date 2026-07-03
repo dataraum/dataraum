@@ -174,6 +174,24 @@ export async function withLakeConnection<T>(
 }
 
 /**
+ * Scope a fresh connection the way the engine scopes its cursors — `USE
+ * lake.typed` (see engine `core/connections.py::_LakeScopedConnection`) — so
+ * ENGINE-AUTHORED SQL resolves: metric formula / measure extract snippets use
+ * unqualified table names that assume the engine's default scope. Enriched
+ * views live in `lake.typed` too (not a sibling schema — see query-context.ts).
+ * Cockpit-authored SQL is fully qualified (`lake.typed."…"`) and unaffected by
+ * the current schema. A fresh lake with no `typed` schema yet cannot satisfy
+ * the USE — swallowed, since unqualified SQL could not resolve there anyway.
+ */
+export async function useEngineScope(conn: DuckDBConnection): Promise<void> {
+	try {
+		await conn.run(`USE ${LAKE_ALIAS}.typed`);
+	} catch {
+		// No typed schema in the lake yet (nothing ingested) — leave unscoped.
+	}
+}
+
+/**
  * Close the lake instance and reset the memo. Idempotent. For graceful shutdown
  * and test teardown. Per-request connections are owned + closed by their callers;
  * this tears down the shared instance (which drops any still-open connections).

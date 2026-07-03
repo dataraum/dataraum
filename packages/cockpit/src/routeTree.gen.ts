@@ -22,6 +22,8 @@ import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as ApiReportsMintRouteImport } from './routes/api/reports/mint'
+import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
+import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
 import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
@@ -97,6 +99,16 @@ const appSettingsRoute = appSettingsRouteImport.update({
 const ApiReportsMintRoute = ApiReportsMintRouteImport.update({
   id: '/api/reports/mint',
   path: '/api/reports/mint',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDrillComposeRoute = ApiDrillComposeRouteImport.update({
+  id: '/api/drill/compose',
+  path: '/api/drill/compose',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDrillAxesRoute = ApiDrillAxesRouteImport.update({
+  id: '/api/drill/axes',
+  path: '/api/drill/axes',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiChartsAuthorRoute = ApiChartsAuthorRouteImport.update({
@@ -183,6 +195,8 @@ export interface FileRoutesByFullPath {
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/api/charts/author': typeof ApiChartsAuthorRoute
+  '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -209,6 +223,8 @@ export interface FileRoutesByTo {
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/api/charts/author': typeof ApiChartsAuthorRoute
+  '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
@@ -236,6 +252,8 @@ export interface FileRoutesById {
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/api/charts/author': typeof ApiChartsAuthorRoute
+  '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -264,6 +282,8 @@ export interface FileRouteTypes {
     | '/api/workflow-progress'
     | '/workspace/$wsId'
     | '/api/charts/author'
+    | '/api/drill/axes'
+    | '/api/drill/compose'
     | '/api/reports/mint'
     | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
@@ -290,6 +310,8 @@ export interface FileRouteTypes {
     | '/api/workflow-progress'
     | '/workspace/$wsId'
     | '/api/charts/author'
+    | '/api/drill/axes'
+    | '/api/drill/compose'
     | '/api/reports/mint'
     | '/workspace/$wsId/governance'
     | '/workspace/$wsId/library'
@@ -316,6 +338,8 @@ export interface FileRouteTypes {
     | '/api/workflow-progress'
     | '/(app)/workspace/$wsId'
     | '/api/charts/author'
+    | '/api/drill/axes'
+    | '/api/drill/compose'
     | '/api/reports/mint'
     | '/(app)/workspace/$wsId/cockpit'
     | '/(app)/workspace/$wsId/governance'
@@ -342,6 +366,8 @@ export interface RootRouteChildren {
   ApiUploadRoute: typeof ApiUploadRoute
   ApiWorkflowProgressRoute: typeof ApiWorkflowProgressRoute
   ApiChartsAuthorRoute: typeof ApiChartsAuthorRoute
+  ApiDrillAxesRoute: typeof ApiDrillAxesRoute
+  ApiDrillComposeRoute: typeof ApiDrillComposeRoute
   ApiReportsMintRoute: typeof ApiReportsMintRoute
 }
 
@@ -436,6 +462,20 @@ declare module '@tanstack/react-router' {
       path: '/api/reports/mint'
       fullPath: '/api/reports/mint'
       preLoaderRoute: typeof ApiReportsMintRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drill/compose': {
+      id: '/api/drill/compose'
+      path: '/api/drill/compose'
+      fullPath: '/api/drill/compose'
+      preLoaderRoute: typeof ApiDrillComposeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drill/axes': {
+      id: '/api/drill/axes'
+      path: '/api/drill/axes'
+      fullPath: '/api/drill/axes'
+      preLoaderRoute: typeof ApiDrillAxesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/charts/author': {
@@ -597,6 +637,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUploadRoute: ApiUploadRoute,
   ApiWorkflowProgressRoute: ApiWorkflowProgressRoute,
   ApiChartsAuthorRoute: ApiChartsAuthorRoute,
+  ApiDrillAxesRoute: ApiDrillAxesRoute,
+  ApiDrillComposeRoute: ApiDrillComposeRoute,
   ApiReportsMintRoute: ApiReportsMintRoute,
 }
 export const routeTree = rootRouteImport

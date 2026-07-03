@@ -78,6 +78,23 @@ fan-trap). New assertable surface: the `_sk__*` columns themselves (both
 tables), the `surrogate_key_intents` row, and the surrogate relationship's
 `evidence.surrogate.natural_pairs`.
 
+### Validated live on BookSQL (2026-07-03, full 7-table set, real LLM)
+
+Four composites minted (`(name, business_id)` for customer/vendor/
+payment_method/product_service), all persisted fact→dim many-to-one,
+`introduces_duplicates=false`; `enriched_master_txn_table` grain-verified over
+the 810k-row fact with 11 dim columns joined via the surrogates; the flaky
+20-candidate `business_id` degeneracy is gone. `gl_invoice_match` validation
+went declared→executed (the surrogates gave it a join path); revenue grounds
+on `account_type='Income'` (the real classification, not transaction_type).
+Two BookSQL DATA truths the platform now states instead of absorbing:
+`chart_of_account_OB` carries duplicate `(account, business)` rows (2430 rows,
+2213 distinct pairs), so no name-based composite is a key there — the confirmed
+composite was REFUSED (non-collapsing gate) and the anchor persists m2m +
+fan-trap-flagged; and BookSQL has NO COGS account type, so `cost_of_goods_sold`
+is honestly inconclusive ("filter matched no rows"), never a transaction_type
+proxy. Eval should treat both as expected BookSQL baseline, not regressions.
+
 ---
 
 ## DAT-654 — SQL canonicalization on DuckDB `json_serialize_sql` (retire sqlglot)

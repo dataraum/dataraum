@@ -23,6 +23,7 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { config } from "#/config";
 import { linkedAbortController } from "#/lib/abort";
 import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import {
 	type ChartConfig,
@@ -105,7 +106,10 @@ const emitOnce: EmitFn = async (systemPrompts, messages, signal) => {
 	const abortController = linkedAbortController(signal);
 	const stream = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		middleware: [llmTelemetryMiddleware("chart_author")],
+		middleware: [
+			llmTelemetryMiddleware("chart_author"),
+			toolArgsGuardMiddleware("chart_author"),
+		],
 		abortController,
 		modelOptions: {
 			max_tokens: MAX_OUTPUT_TOKENS,

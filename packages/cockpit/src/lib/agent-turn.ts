@@ -21,6 +21,7 @@ import {
 } from "#/db/cockpit/conversations";
 import { publish } from "#/lib/chat-bus";
 import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { getInstructions } from "#/prompts";
 import { toolsByKind } from "#/tools/registry";
@@ -111,9 +112,14 @@ export function buildChatOptions(
 		messages,
 		tools: [...toolsByKind[kind]],
 		abortController,
-		// Per-turn LLM telemetry (DAT-600). Observe-only; tags this orchestrator
-		// turn distinctly from the nested `answer` sub-agent (tools/query.ts).
-		middleware: [llmTelemetryMiddleware("orchestrator")],
+		// Per-turn LLM telemetry (DAT-600) + the tool-args guard (DAT-661
+		// coercion/rejection counters). Same label so the lines correlate; tags
+		// this orchestrator turn distinctly from the nested `answer` sub-agent
+		// (tools/query.ts).
+		middleware: [
+			llmTelemetryMiddleware("orchestrator"),
+			toolArgsGuardMiddleware("orchestrator"),
+		],
 	};
 }
 

@@ -63,6 +63,13 @@ phases:
   # =========================================================================
   # Zone 2: Enrichment
   # =========================================================================
+  surrogate_mint:
+    description: Mint surrogate-key columns for LLM-confirmed composite keys (DAT-277)
+    # Deterministic, no LLM — reads this run's surrogate_key_intents (written by
+    # semantic_per_table), re-materializes both typed tables with the hash column
+    # on the DAT-414 recipe substrate, and persists the single-column surrogate
+    # relationship the enriched views + SQL agents then consume.
+
   enriched_views:
     description: Create enriched views joining fact + dimension tables
     detectors: [dimension_coverage]

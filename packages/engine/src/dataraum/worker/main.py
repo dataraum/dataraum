@@ -86,6 +86,9 @@ def worker_activities(phase_activities: PhaseActivities) -> list[object]:
         # DAT-408/409 begin_session: materialize durable overlays →
         # terminal detect → silent-accept keepers → promote.
         phase_activities.run_session_materialize_overlays,
+        # DAT-277: mint surrogate keys for confirmed composites — after the
+        # overlays, before enriched_views consumes the catalog.
+        phase_activities.run_surrogate_mint,
         phase_activities.run_session_detect,
         phase_activities.run_session_write_keepers,
         phase_activities.run_session_promote_to_latest,

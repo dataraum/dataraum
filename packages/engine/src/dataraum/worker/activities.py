@@ -341,6 +341,21 @@ class PhaseActivities:
             "aggregation_lineage", payload.run, payload.table_ids, payload.vertical
         )
 
+    @activity.defn(name="surrogate_mint")
+    def run_surrogate_mint(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Surrogate-mint activity — cure confirmed composite keys at the source (DAT-277).
+
+        Source-free: reads this run's ``surrogate_key_intents`` (written by
+        ``semantic_per_table``), re-materializes both typed tables with the
+        deterministic NULL-propagating hash column on the DAT-414 recipe
+        substrate, and persists ONE single-column relationship per composite on
+        the surrogate pair. Deterministic, no LLM call; a run with no confirmed
+        composites is a fast no-op.
+        """
+        return self._run_session_or_raise(
+            "surrogate_mint", payload.run, payload.table_ids, payload.vertical
+        )
+
     @activity.defn(name="enriched_views")
     def run_enriched_views(self, payload: SessionScopedInput) -> PhaseOutcome:
         """Enriched-views activity — grain-preserving fact×dimension views (DAT-415).

@@ -8,8 +8,22 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.db_models import Relationship, SurrogateKeyIntent
 from dataraum.storage import Column, Table
+
+
+def load_surrogate_key_intents(session: Session, run_id: str) -> list[SurrogateKeyIntent]:
+    """This run's LLM-confirmed composite keys awaiting their mint (DAT-277).
+
+    Written by ``semantic_per_table`` (one row per confirmed composite), consumed
+    ONLY by the ``surrogate_mint`` phase. Run-scoped by construction — an intent
+    is an instruction to this run's mint, not durable catalog state.
+    """
+    return list(
+        session.execute(
+            select(SurrogateKeyIntent).where(SurrogateKeyIntent.run_id == run_id)
+        ).scalars()
+    )
 
 
 def load_defined_relationships(

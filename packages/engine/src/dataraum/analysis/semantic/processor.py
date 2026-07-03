@@ -5,6 +5,7 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -16,12 +17,16 @@ if TYPE_CHECKING:
     from dataraum.llm.prompts import PromptRenderer
     from dataraum.llm.providers.base import LLMProvider
 
+from dataraum.analysis.relationships.composite import rescue_fanout_to_composite
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
+from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
 from dataraum.analysis.relationships.evaluator import (
     compute_actual_cardinality,
+    compute_composite_cardinality,
     compute_introduces_duplicates,
     compute_ri_metrics,
 )
+from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
     ColumnConcept as ConceptModel,
@@ -349,6 +354,167 @@ def ground_columns(
     return Result.ok(count)
 
 
+def _lake_path(table_name: str) -> str:
+    """Collision-safe DuckLake FQN for a typed table (matches the RI/cardinality paths)."""
+    return f'lake.typed."{table_name}"'
+
+
+def _augment_candidates_with_composite_rescue(
+    relationship_candidates: list[dict[str, Any]],
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Surface composite-key rescues to the LLM judge (DAT-277), in place.
+
+    The structural detector emits each value-overlapping column pair separately;
+    when the best pair joins many-to-many it silently over-counts. For each such
+    candidate this runs the greedy rescue — does fusing co-present columns collapse
+    the fan-out? — and, when it does, attaches a ``composite_key`` hint to the
+    candidate dict. The LLM (the only judge, never bypassed) sees the hint and may
+    confirm it via ``RelationshipOutput.key_columns``. A miss attaches nothing.
+    """
+    for cand in relationship_candidates:
+        table1 = cand.get("table1")
+        table2 = cand.get("table2")
+        join_cols = cand.get("join_columns") or []
+        if not table1 or not table2 or len(join_cols) < 2:
+            continue
+
+        candidate = RelationshipCandidate(
+            table1=table1,
+            table2=table2,
+            join_candidates=[
+                JoinCandidate(
+                    column1=jc.get("column1", ""),
+                    column2=jc.get("column2", ""),
+                    # The DB candidate-dict wire format keys it ``confidence``
+                    # (load_relationship_candidates_for_semantic); tolerate both so
+                    # the anchor (highest-confidence pair) is picked correctly.
+                    join_confidence=jc.get("join_confidence", jc.get("confidence", 0.0)),
+                    cardinality=jc.get("cardinality", "unknown"),
+                )
+                for jc in join_cols
+                if jc.get("column1") and jc.get("column2")
+            ],
+        )
+        try:
+            key = rescue_fanout_to_composite(
+                candidate, _lake_path(table1), _lake_path(table2), duckdb_conn
+            )
+        except Exception as e:  # never let a rescue probe break synthesis
+            logger.warning("composite_rescue_failed", table1=table1, table2=table2, error=str(e))
+            continue
+
+        if key is not None:
+            cand["composite_key"] = {
+                "column_pairs": [list(pair) for pair in key.column_pairs],
+                "cardinality": key.cardinality,
+            }
+
+
+def _first_wins(rows: list[dict[str, Any]], key_fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Fold same-batch duplicate rows on the upsert key, keeping the first."""
+    folded: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        folded.setdefault(tuple(row[f] for f in key_fields), row)
+    return list(folded.values())
+
+
+def _build_surrogate_intent(
+    *,
+    rel: SemanticRelationship,
+    from_table_id: str,
+    from_col_id: str,
+    to_table_id: str,
+    to_col_id: str,
+    column_map: dict[tuple[str, str], str],
+    run_id: str | None,
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+) -> dict[str, Any] | None:
+    """One ``surrogate_key_intents`` row for an LLM-confirmed composite, or None.
+
+    ``None`` sends the caller down the ordinary single-column persist: when a
+    component column is unresolvable (LLM named a column that doesn't exist),
+    when de-duplication leaves only the anchor (the LLM echoed the anchor pair
+    in ``key_columns``), or when there is no ``run_id`` to version the intent
+    under. The anchor is still a real confirmed relationship in every fallback —
+    its empirical cardinality and fan-trap flag then say what joining it alone
+    does. Worst case is a missed mint, never a broken catalog.
+    """
+    if not rel.key_columns or run_id is None:
+        return None
+
+    # Ordered component id pairs, anchor first; skip an echoed anchor / dup pairs.
+    components: list[tuple[str, str]] = [(from_col_id, to_col_id)]
+    name_pairs: list[tuple[str, str]] = [(rel.from_column, rel.to_column)]
+    seen: set[tuple[str, str]] = {components[0]}
+    for from_name, to_name in rel.key_columns:
+        comp_from = column_map.get((rel.from_table, from_name))
+        comp_to = column_map.get((rel.to_table, to_name))
+        if not comp_from or not comp_to:
+            logger.warning(
+                "surrogate_intent_component_unresolved",
+                from_table=rel.from_table,
+                to_table=rel.to_table,
+                component=(from_name, to_name),
+            )
+            return None
+        if (comp_from, comp_to) in seen:
+            continue
+        seen.add((comp_from, comp_to))
+        components.append((comp_from, comp_to))
+        name_pairs.append((from_name, to_name))
+
+    if len(components) < 2:
+        return None  # anchor-only after dedup — effectively single-column
+
+    # Canonical component order: anchor first, then scope components sorted by
+    # from-side column name. The LLM's key_columns ordering is not stable across
+    # runs, and the digest, the surrogate column NAME, and the hash-input order
+    # all derive from this list — a canonical order keeps the minted column
+    # (and its (table_id, name)-upserted column_id) identical when the same key
+    # is re-confirmed with its components shuffled.
+    scope = sorted(zip(components[1:], name_pairs[1:], strict=True), key=lambda t: t[1][0])
+    components = [components[0], *(c for c, _n in scope)]
+    name_pairs = [name_pairs[0], *(n for _c, n in scope)]
+
+    # The composite's measured cardinality (the collapse proof). Best-effort:
+    # the mint recomputes on the minted surrogate column anyway.
+    cardinality: str | None = None
+    if duckdb_conn is not None:
+        cardinality = compute_composite_cardinality(
+            _lake_path(rel.from_table), _lake_path(rel.to_table), name_pairs, duckdb_conn
+        )
+        if cardinality == "many-to-many":
+            # The LLM confirmed a composite the data measurably REJECTS (the
+            # prompt's contract: only confirm when it resolves the fan-out).
+            # Seen live on BookSQL: chart_of_accounts carries duplicate
+            # (account, business) rows, so no name-based composite collapses.
+            # Fall back to the plain single-column anchor — it persists with
+            # its honest cardinality + fan-trap flag, exactly the pre-mint
+            # behavior. Never mint a surrogate that is not a proven key.
+            logger.warning(
+                "surrogate_intent_not_collapsing",
+                from_table=rel.from_table,
+                to_table=rel.to_table,
+                name_pairs=name_pairs,
+            )
+            return None
+
+    digest = hashlib.sha1(
+        "|".join(f"{a}:{b}" for a, b in components).encode(), usedforsecurity=False
+    ).hexdigest()
+    return {
+        "run_id": run_id,
+        "intent_digest": digest,
+        "from_table_id": from_table_id,
+        "to_table_id": to_table_id,
+        "column_pairs": [list(pair) for pair in components],
+        "cardinality": cardinality,
+        "confidence": rel.confidence,
+        "reasoning": (rel.evidence or {}).get("reasoning"),
+    }
+
+
 def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
@@ -370,6 +536,11 @@ def synthesize_and_store_tables(
     Returns:
         Result with the ``SemanticEnrichmentResult`` (entities + relationships).
     """
+    # Composite-key rescue (DAT-277): probe each fan-out candidate for a composite
+    # that collapses it and surface the hint to the LLM judge before it decides.
+    if relationship_candidates and duckdb_conn is not None:
+        _augment_candidates_with_composite_rescue(relationship_candidates, duckdb_conn)
+
     llm_result = agent.synthesize_tables(
         session=session,
         table_ids=table_ids,
@@ -415,6 +586,7 @@ def synthesize_and_store_tables(
     candidate_metrics = _build_candidate_metrics_lookup(relationship_candidates)
 
     rel_rows: list[dict[str, Any]] = []
+    intent_rows: list[dict[str, Any]] = []
     for rel in enrichment.relationships:
         from_col_id = column_map.get((rel.from_table, rel.from_column))
         to_col_id = column_map.get((rel.to_table, rel.to_column))
@@ -422,6 +594,26 @@ def synthesize_and_store_tables(
         to_table_id = table_map.get(rel.to_table)
         if not all([from_col_id, to_col_id, from_table_id, to_table_id]):
             continue
+        assert from_col_id and to_col_id and from_table_id and to_table_id  # narrow for mypy
+
+        # LLM-confirmed composite (DAT-277): persist as a surrogate-key INTENT for
+        # the mint phase, never as a plain llm row — the single-column anchor is a
+        # half-key and would fan out at every consumer. An unbuildable intent
+        # falls through to the ordinary single-column persist below.
+        if rel.key_columns:
+            intent = _build_surrogate_intent(
+                rel=rel,
+                from_table_id=from_table_id,
+                from_col_id=from_col_id,
+                to_table_id=to_table_id,
+                to_col_id=to_col_id,
+                column_map=column_map,
+                run_id=run_id,
+                duckdb_conn=duckdb_conn,
+            )
+            if intent is not None:
+                intent_rows.append(intent)
+                continue
 
         evidence = dict(rel.evidence) if rel.evidence else {}
         candidate_key = (rel.from_table, rel.from_column, rel.to_table, rel.to_column)
@@ -499,6 +691,12 @@ def synthesize_and_store_tables(
     # rather than duplicates. Silent acceptance — keeping an llm a later run didn't
     # re-find — is handled by materializing a ``keeper`` from a teach overlay
     # (DAT-409), not by mutating across runs here.
+    # Fold same-batch duplicates first (keep the first): the LLM occasionally emits
+    # one pair twice, and Postgres rejects an INSERT..ON CONFLICT batch that
+    # affects the same row twice ("cannot affect row a second time").
+    rel_rows = _first_wins(
+        rel_rows, ("run_id", "from_column_id", "to_column_id", "detection_method")
+    )
     upsert(
         session,
         RelationshipModel,
@@ -509,6 +707,16 @@ def synthesize_and_store_tables(
             "to_column_id",
             "detection_method",
         ],
+    )
+
+    # Surrogate-key intents (DAT-277): the confirmed composites, versioned under
+    # this run for the mint phase. Same fold-then-upsert discipline as above.
+    intent_rows = _first_wins(intent_rows, ("run_id", "intent_digest"))
+    upsert(
+        session,
+        SurrogateKeyIntent,
+        intent_rows,
+        index_elements=["run_id", "intent_digest"],
     )
 
     # Catalogue-grain per-column semantics (DAT-637): the table agent is the sole

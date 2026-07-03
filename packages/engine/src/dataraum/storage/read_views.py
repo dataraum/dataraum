@@ -75,6 +75,9 @@ _TABLE_GRAIN: tuple[str, ...] = (
 # stages — the two stages' runs coexist on one workspace catalog head.
 _CATALOG_GRAIN: dict[str, str] = {
     "relationships": "catalog",
+    # begin_session composite-key confirmations awaiting their surrogate mint
+    # (DAT-277) — same atomic catalogue run as the relationships they gate.
+    "surrogate_key_intents": "catalog",
     "table_entities": "catalog",
     # Catalogue-grain per-column semantics authored by the table agent (DAT-637):
     # carries column_id, but sealed under the begin_session (catalog, "catalog")

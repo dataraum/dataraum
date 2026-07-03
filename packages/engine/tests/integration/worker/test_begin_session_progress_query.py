@@ -59,6 +59,9 @@ _PHASE_ORDER = [
     "relationships",
     "semantic_per_table",
     "session_materialize_overlays",
+    # DAT-277: mint surrogate keys for confirmed composites BEFORE the enriched
+    # views consume the (now single-column) relationship catalog.
+    "surrogate_mint",
     "enriched_views",
     "slicing",
     "dimension_hierarchies",

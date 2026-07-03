@@ -119,6 +119,13 @@ class ColumnSemanticOutput(BaseModel):
     )
 
 
+class KeyColumnPair(BaseModel):
+    """One ADDITIONAL component of a composite key (DAT-277)."""
+
+    from_column: str = Field(description="Column in the source table.")
+    to_column: str = Field(description="Matching column in the target table.")
+
+
 class RelationshipOutput(BaseModel):
     """A detected relationship between two tables.
 
@@ -136,6 +143,19 @@ class RelationshipOutput(BaseModel):
 
     to_column: str = Field(
         description="Column in the target table being referenced (usually a key)."
+    )
+
+    key_columns: list[KeyColumnPair] = Field(
+        default_factory=list,
+        description=(
+            "ADDITIONAL key columns beyond (from_column, to_column), making the key "
+            "COMPOSITE. Leave EMPTY for a normal single-column relationship. Use this "
+            "for a fan-trap edge whose single-column join OVER-COUNTS but whose "
+            "multi-column key joins cleanly. The full key is (from_column, to_column) "
+            "plus these. Only confirm a composite when the candidate evidence shows it "
+            "RESOLVES the fan-out (composite cardinality many-to-one / one-to-one, "
+            "not many-to-many)."
+        ),
     )
 
     relationship_type: Literal["foreign_key", "hierarchy"] = Field(
@@ -408,6 +428,13 @@ class Relationship(BaseModel):
     from_column: str
     to_table: str
     to_column: str
+
+    # ADDITIONAL composite-key components beyond (from_column, to_column), the
+    # LLM's confirmed composite (DAT-277). Empty = single-column. When present,
+    # the full key is (from_column, to_column) plus these pairs; the processor
+    # persists the set as ONE surrogate-key intent for the mint phase — never
+    # as plain llm relationship rows.
+    key_columns: list[tuple[str, str]] = Field(default_factory=list)
 
     relationship_type: RelationshipType
     cardinality: str | None = None  # Using Cardinality from base

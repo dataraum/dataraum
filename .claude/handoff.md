@@ -17,6 +17,91 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-277 — composite keys cured by surrogate-key mint (supersedes the parked rescue)
+
+**Branch:** `worktree-dat-277-surrogate-keys`. Replaces the parked
+`refactor/dat-277-composite-key-rescue` design (multi-column ON) — the catalog
+now only ever sees single-column FKs.
+
+### What changed (pipeline shape + relationship catalog)
+
+- **New begin_session phase `surrogate_mint`** (between
+  `session_materialize_overlays` and `enriched_views`; deterministic, no LLM).
+  The session chain is now 14 phases.
+- **Detection**: the greedy composite rescue (`relationships/composite.py`,
+  ported from the parked branch, same 9-case math matrix) probes each
+  fan-out candidate; a hit attaches a `composite_key` hint to the
+  `semantic_per_table` candidate feed. **The LLM stays the sole judge** and
+  confirms via the new `RelationshipOutput.key_columns`.
+- **A confirmed composite NEVER persists as a plain llm relationship.** It
+  becomes one `surrogate_key_intents` row (new table, catalogue-grain,
+  `(run_id, intent_digest)` upsert); the mint phase then re-materializes BOTH
+  typed tables with a deterministic hash column
+  (`_sk__<components>`, `md5(a::VARCHAR || '|' || b …)` — **NULL-propagating**,
+  deliberately NOT dbt's coalesce placeholder: any NULL component → NULL
+  surrogate → LEFT JOIN misses, FK semantics) and persists ONE ordinary
+  single-column `llm` relationship on the surrogate pair (empirical
+  cardinality + `introduces_duplicates` + RI in evidence, plus
+  `evidence.surrogate.natural_pairs` provenance).
+- **Typed tables can now carry engine-minted `_sk__*` columns** — profiled
+  (`StatisticalProfile`, layer `typed`), stable `column_id` across runs
+  (upsert by `(table_id, column_name)`), reconciled by the mint (dropped when
+  no longer confirmed nor keeper-kept). Downstream consumers see them as
+  ordinary VARCHAR columns.
+- Enriched views / drivers / grounding / cycles / validation: **no code
+  change** — they consume the surrogate relationship through the existing
+  single-column machinery.
+
+### Calibration to run
+
+- **Relationship detection / FK confirmation** on composite-key datasets: the
+  fan-trap edge (e.g. BookSQL `master_txn.account ↔ chart_of_accounts`) should
+  now surface as ONE stable many-to-one surrogate relationship instead of a
+  flaky/degenerate many-to-many + 20 tenant-key candidates. Watch single-key
+  datasets for regressions — with no composite hint the pipeline is
+  byte-identical (worst case = no mint; abstain at detection, judge, and mint).
+- **Enriched-view grain + metric grounding behind the composite**: the
+  previously fan-trapped dimension becomes joinable; metrics should ground on
+  the real discriminator (`account_type`), not single-table proxies
+  (`transaction_type` at 0.35). DAT-652's acceptance case (non-empty driver
+  rankings on BookSQL) is the headline check.
+- **BookSQL becomes a legitimate grounding oracle once this lands** — the
+  standing "don't use BookSQL as the acceptance oracle" caveat retires.
+
+### testdata hints
+
+The canonical injection is unchanged from the parked branch's handoff: a fact
+whose FK recurs across a tenant/scope partition, dimension keyed on the
+composite; single-column join fans out, composite holds grain. The negative — a
+genuine bridge/junction m2m — must ABSTAIN (no intent, no mint, flagged
+fan-trap). New assertable surface: the `_sk__*` columns themselves (both
+tables), the `surrogate_key_intents` row, and the surrogate relationship's
+`evidence.surrogate.natural_pairs`.
+
+### Validated live on BookSQL (2026-07-03, full 7-table set, real LLM)
+
+Four composites minted (`(name, business_id)` for customer/vendor/
+payment_method/product_service), all persisted fact→dim many-to-one,
+`introduces_duplicates=false`; `enriched_master_txn_table` grain-verified over
+the 810k-row fact with 11 dim columns joined via the surrogates; the flaky
+20-candidate `business_id` degeneracy is gone. `gl_invoice_match` validation
+went declared→executed (the surrogates gave it a join path); revenue grounds
+on `account_type='Income'` (the real classification, not transaction_type).
+Two BookSQL DATA truths the platform now states instead of absorbing:
+`chart_of_account_OB`'s `(account, business)` collisions are 82 exact duplicate
+rows PLUS 135 dual-role accounts (same name+full name, DIFFERENT account type —
+Installation as both Income and Expenses in one business), so no name-based
+composite is a key there and **dedup cannot fix it** (the true key would need
+`account_type`, which the fact doesn't carry) — the confirmed composite was
+REFUSED (non-collapsing gate), the anchor persists m2m + fan-trap-flagged, and
+the semi-join grounding pattern (`account IN (SELECT … WHERE account_type=…)`)
+is the correct end-state consumption. And BookSQL has NO COGS account type, so
+`cost_of_goods_sold` is honestly inconclusive ("filter matched no rows"), never
+a transaction_type proxy. Eval should treat both as expected BookSQL baseline,
+not regressions.
+
+---
+
 ## DAT-654 — SQL canonicalization on DuckDB `json_serialize_sql` (retire sqlglot)
 
 **Branch:** `feat/dat-654-engine-json-serialize`. **No calibration action required.**

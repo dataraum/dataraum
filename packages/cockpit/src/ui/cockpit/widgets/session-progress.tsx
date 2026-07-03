@@ -2,7 +2,7 @@
 // run the `begin_session` tool started.
 //
 // A display config over the shared WorkflowProgressView core
-// (workflow-progress.tsx). begin_session is sequential (13 raw engine phases,
+// (workflow-progress.tsx). begin_session is sequential (14 raw engine phases,
 // no fan-out — the snapshot's table fields stay empty), so the pipeline GROUPS
 // the raw phases into six user-meaningful badges: not all phases are equally
 // informative, and 14 badges read as noise where 6 read as a journey. The live
@@ -17,7 +17,7 @@ import {
 	WorkflowProgressView,
 } from "#/ui/cockpit/widgets/workflow-progress";
 
-// The six display groups over the engine's 13-phase session chain
+// The six display groups over the engine's 14-phase session chain
 // (workflows.py: select → relationships/semantic/overlays → enriched_views →
 // the DAT-403 value layer → detect/keepers/promote → done). Cut lines: the
 // user's question per badge — "checking my selection", "how do my tables
@@ -29,12 +29,14 @@ const SESSION_GROUPS = [
 	{
 		key: "relationships",
 		label: "Relationships",
-		// The LLM confirm + the teach-overlay fold are mechanics of answering
-		// "how do my tables connect?" — one badge.
+		// The LLM confirm + the teach-overlay fold + the composite-key surrogate
+		// mint (DAT-277) are mechanics of answering "how do my tables connect?"
+		// — one badge.
 		phases: [
 			"relationships",
 			"semantic_per_table",
 			"session_materialize_overlays",
+			"surrogate_mint",
 		],
 	},
 	{
@@ -75,6 +77,7 @@ const SESSION_CAPTIONS: Record<string, string> = {
 	relationships: "Detecting relationship candidates…",
 	semantic_per_table: "Classifying tables and confirming relationships…",
 	session_materialize_overlays: "Applying your saved teachings…",
+	surrogate_mint: "Fusing composite keys into join columns…",
 	enriched_views: "Building combined views across related tables…",
 	slicing: "Identifying meaningful data slices…",
 	slicing_view: "Building slice views…",

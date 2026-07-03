@@ -71,6 +71,26 @@ class RelationshipCandidate(BaseModel):
     introduces_duplicates: bool | None = None
 
 
+class CompositeKey(BaseModel):
+    """A multi-column key that rescues a single-column many-to-many fan-out (DAT-277).
+
+    The structural detector finds every value-overlapping column pair between two
+    tables separately; when the best pair is many-to-many (the silent over-count),
+    its true key is often composite — a real FK plus one or more shared scoping
+    columns. Binding them as ONE key collapses the fan-out.
+
+    Attributes:
+        column_pairs: ordered ``(table1_column, table2_column)`` components; the
+            first is the anchor (highest-confidence) join, the rest are the scoping
+            columns added to collapse the fan-out.
+        cardinality: the composite join's cardinality — never ``"many-to-many"``
+            (a non-m2m result IS the rescue-success condition).
+    """
+
+    column_pairs: list[tuple[str, str]]
+    cardinality: str
+
+
 class RelationshipDetectionResult(BaseModel):
     """Result of relationship detection."""
 

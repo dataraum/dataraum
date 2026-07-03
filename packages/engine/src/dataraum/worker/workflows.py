@@ -609,6 +609,21 @@ class BeginSessionWorkflow:
             retry_policy=_RETRY,
         )
 
+        # Surrogate mint (DAT-277): AFTER the overlays (user teaches folded in),
+        # BEFORE enriched_views — cure each LLM-confirmed composite key at the
+        # source by re-materializing both typed tables with the deterministic hash
+        # column (DAT-414 recipe substrate) and persisting the ONE single-column
+        # surrogate relationship the downstream consumers read. Deterministic, no
+        # LLM. With no confirmed composites it is a fast no-op.
+        self._progress.phase = "surrogate_mint"
+        await workflow.execute_activity(
+            "surrogate_mint",
+            scoped,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
         # Enriched views (DAT-415): build grain-preserving fact×dimension views over
         # the now-complete defined relationship catalog (llm + the just-materialized
         # manual/keeper teaches), versioning each view's DDL on the recipe substrate.

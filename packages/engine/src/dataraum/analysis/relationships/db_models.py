@@ -120,4 +120,49 @@ Index(
 Index("idx_relationships_to_table_column", Relationship.to_table_id, Relationship.to_column_id)
 
 
-__all__ = ["Relationship"]
+class SurrogateKeyIntent(Base):
+    """An LLM-confirmed composite key awaiting its surrogate mint (DAT-277).
+
+    ``semantic_per_table`` confirms a composite via ``RelationshipOutput.key_columns``;
+    the confirmation is persisted HERE — never as plain llm relationship rows — so
+    no single-column consumer ever joins on a half-key. The ``surrogate_mint``
+    phase reads the run's intents, mints the NULL-propagating hash column on both
+    typed tables, and persists the ONE single-column relationship on the surrogate
+    pair (method 'llm', evidence carrying this provenance).
+
+    Run-versioned like the relationship catalog (DAT-408): rows coexist across
+    runs; the mint reads only its own run's intents. ``intent_digest`` is
+    deterministic in the ordered component column ids so a Temporal
+    at-least-once retry upserts the same row instead of duplicating it.
+    """
+
+    __tablename__ = "surrogate_key_intents"
+    __table_args__ = (
+        UniqueConstraint("run_id", "intent_digest", name="uq_surrogate_intent_run_digest"),
+    )
+
+    intent_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    intent_digest: Mapped[str] = mapped_column(String, nullable=False)
+
+    from_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+    to_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+
+    # Ordered component pairs, anchor FIRST: [[from_column_id, to_column_id], …].
+    # Column ids, not names — the id is the cross-phase-stable identity; the mint
+    # resolves physical names from the Column rows when composing the hash DDL.
+    column_pairs: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+
+    # The composite join's measured cardinality (the rescue's collapse proof;
+    # never 'many-to-many'). None when no DuckDB connection was available at
+    # confirmation time — the mint recomputes on the minted surrogate anyway.
+    cardinality: Mapped[str | None] = mapped_column(String)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    reasoning: Mapped[str | None] = mapped_column(String)
+
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+__all__ = ["Relationship", "SurrogateKeyIntent"]

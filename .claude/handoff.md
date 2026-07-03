@@ -5,6 +5,18 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-603 — graph agent: single-extract output schema + adaptive thinking (PRs #434, merged 2026-07-03)
+
+**Re-baseline `graph_sql_generation` before trusting comparisons against the DAT-602 eval baseline.** Three changes eval must know about:
+
+1. **Output schema replaced.** `GraphSQLGenerationOutput` (summary/steps[]/final_sql) is gone; the tool now takes `ExtractGroundingOutput`: `grounding` (evidence commitment, FIRST field), `sql`, `description`, `column_mappings`, `assumptions`, `provenance` (no more `llm_reasoning`). The agent binds the SQL to the graph's own leaf id — snippet `step_id`s always equal catalogue step ids now (the DAT-664 paraphrase class is structurally gone). `validation_sql`'s schema also lost its unread `explanation` field.
+2. **Adaptive thinking ON for this label** (`thinking: true` in `llm/config.yaml`), with `tool_choice: auto` + `disable_parallel_tool_use`. Latency/token profile shifted: measured 763 → ~3,726 mean output tokens/call (thinking billed as output), ~10s → ~35s/call, absorbed by the 10-wide fan-out. Any eval latency/cost assertions on this label need new baselines.
+3. **Prompt v6.1** (floors-not-scripts rewrite) — grounding QUALITY improved on the finance fresh-wipe smoke: revenue grounds via the complete `account_type` classification and matches `ground_truth.yaml` exactly (51,766,199.72); cogs+opex+depreciation match `total_expenses` to the cent; 22/34 executed (prior fresh runs: 21 and 19). Value-level GT comparison is now part of the grounding smoke — distribution parity alone masked a 48% revenue error in pre-rework sampling.
+
+**Testdata note:** `trial_balance.csv` carries trailing periods (2026-01/02) with only partial accounts (no AR rows) — an extract grounding AR at `period = MAX(period)` honestly NULLs. Consider whether the generator should emit complete trailing periods.
+
+---
+
 ## DAT-654 — SQL canonicalization on DuckDB `json_serialize_sql` (retire sqlglot)
 
 **Branch:** `feat/dat-654-engine-json-serialize`. **No calibration action required.**

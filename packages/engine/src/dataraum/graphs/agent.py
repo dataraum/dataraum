@@ -672,16 +672,24 @@ class GraphAgent(LLMFeature):
 
         # Thinking (DAT-603): grounding is the pipeline's hardest reasoning task
         # and Sonnet 5-class models expose no sampling knobs — the model's own
-        # reflection is the quality lever. The API rejects thinking with a
-        # FORCED tool_choice, so a thinking run offers the tool on auto and the
-        # prompt mandates the call; no tool call remains a loud bind error
-        # (checked below), never a silent prose answer.
+        # reflection is the quality lever. A FORCED tool_choice silently
+        # suppresses thinking on the live API (probed 2026-07-03: forced -> no
+        # thinking block, auto -> thinking block), so a thinking run offers the
+        # tool on auto and the prompt mandates the call; no tool call remains a
+        # loud bind error (checked below), never a silent prose answer.
         thinking = bool(feature_config and feature_config.thinking)
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
-            tool_choice={"type": "auto"} if thinking else {"type": "tool", "name": "generate_sql"},
+            # auto (not forced): a forced choice silently suppresses thinking on
+            # the live API (probed 2026-07-03). disable_parallel_tool_use restores
+            # the <=1-tool-call guarantee that forcing used to provide — under
+            # plain auto the model may emit MULTIPLE generate_sql calls in one
+            # turn and binding [0] could ground a superseded SQL.
+            tool_choice={"type": "auto", "disable_parallel_tool_use": True}
+            if thinking
+            else {"type": "tool", "name": "generate_sql"},
             thinking=thinking,
             label=prompt_name,
             effort=feature_config.effort if feature_config else None,
@@ -700,6 +708,13 @@ class GraphAgent(LLMFeature):
         # be composed stays grounded with the reason, it does not get a guessed SQL.
         if not response.tool_calls:
             return Result.fail("LLM did not call the generate_sql tool")
+        if len(response.tool_calls) > 1:
+            # disable_parallel_tool_use makes this unreachable; guard stays LOUD
+            # because binding [0] of several calls could ground a superseded SQL.
+            return Result.fail(
+                f"LLM emitted {len(response.tool_calls)} tool calls for a single "
+                "extract grounding — ambiguous, refusing to pick one"
+            )
 
         tool_call = response.tool_calls[0]
         if tool_call.name != "generate_sql":

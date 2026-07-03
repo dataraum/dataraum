@@ -165,7 +165,43 @@ def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
 
     request = provider.converse.call_args.args[0]
     assert request.thinking is True
-    assert request.tool_choice == {"type": "auto"}
+    # disable_parallel_tool_use restores the <=1-call guarantee forcing gave.
+    assert request.tool_choice == {"type": "auto", "disable_parallel_tool_use": True}
+
+
+def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
+    """Review fix: under auto tool_choice the model COULD emit several
+    generate_sql calls; binding [0] silently could ground a superseded SQL —
+    refuse instead (disable_parallel_tool_use makes this unreachable; the
+    guard is the tripwire)."""
+    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr(
+        "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"
+    )
+    ext = GraphStep(
+        step_id="revenue",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field="revenue", statement="income_statement"),
+        aggregation="sum",
+        output_step=True,
+    )
+    graph = _graph("revenue", {"revenue": ext})
+    renderer, provider = _mocks()
+    call_a, call_b = MagicMock(), MagicMock()
+    call_a.name = call_b.name = "generate_sql"
+    provider.converse.return_value.unwrap.return_value = MagicMock(tool_calls=[call_a, call_b])
+    agent = _agent_with(renderer, provider)
+    agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
+    agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
+    rich = MagicMock()
+    rich.field_mappings.mappings = {"revenue": object()}
+    rich.conventions = ""
+    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
+
+    result = agent._generate_sql(MagicMock(), graph, ctx, {})
+
+    assert result.success is False
+    assert "2 tool calls" in (result.error or "")
 
 
 def test_multi_step_graph_fails_loud_before_any_llm_call() -> None:

@@ -47,11 +47,13 @@ logger = get_logger(__name__)
 #     on these models we OMIT ``temperature`` and rely on the forced tool +
 #     prompt for stable output (temperature 0 never guaranteed identical output
 #     anyway).
-#   * Adaptive thinking is ON by default when ``thinking`` is omitted. A
-#     forced-tool extractor never wants it: it burns output budget the
-#     small-cap calls (validation caps at 2000) can't spare, and it diverges
-#     from the prior Sonnet 4.6 behaviour where thinking was off. So we DISABLE
-#     it explicitly.
+#   * Thinking defaults DIFFER across the family: Sonnet 5 runs adaptive
+#     thinking ON when ``thinking`` is omitted; Opus 4.7/4.8 default it OFF.
+#     A forced-tool extractor never wants it (it burns output budget the
+#     small-cap calls can't spare, and it diverges from the prior Sonnet 4.6
+#     behaviour), so the default path DISABLES it explicitly where a default-on
+#     model would otherwise think. A thinking feature (request.thinking) sends
+#     an EXPLICIT ``{"type": "adaptive"}`` instead of trusting any default.
 #
 # Older models (Haiku 4.5, Sonnet 4.6) accept temperature and default thinking
 # off, so their request shape is unchanged. Prefix match covers the undated
@@ -63,10 +65,11 @@ _TEMPERATURE_REJECTING_PREFIXES = (
     "claude-fable-5",
     "claude-mythos-5",
 )
-# Subset that additionally defaults adaptive thinking ON *and* accepts an
-# explicit disable. Fable 5 / Mythos 5 are always-on (they reject an explicit
-# ``thinking: disabled``), so they are intentionally excluded — the engine's
-# forced-tool tier does not target them.
+# Subset that accepts an explicit ``thinking: disabled`` — sent on the
+# non-thinking path so a default-on model (Sonnet 5) doesn't think; harmless
+# on Opus 4.7/4.8 (already default-off). Fable 5 / Mythos 5 are always-on and
+# REJECT an explicit disable, so they are intentionally excluded — the
+# engine's forced-tool tier does not target them.
 _THINKING_DEFAULT_ON_PREFIXES = (
     "claude-sonnet-5",
     "claude-opus-4-7",
@@ -80,7 +83,7 @@ def _rejects_temperature(model: str) -> bool:
 
 
 def _thinking_defaults_on(model: str) -> bool:
-    """True when the model runs adaptive thinking unless explicitly disabled."""
+    """True when the model accepts an explicit thinking disable (see above)."""
     return model.startswith(_THINKING_DEFAULT_ON_PREFIXES)
 
 
@@ -298,14 +301,20 @@ class AnthropicProvider(LLMProvider):
         Returns:
             Result containing ConversationResponse or error message
         """
-        # Request-shape validation BEFORE the API error domain: thinking with a
-        # forced tool_choice is a call-site programming error (the API rejects
-        # the combination), not a provider failure to classify for retry.
+        # Request-shape validation: thinking with a forced tool_choice is a
+        # call-site programming error. Probed live (2026-07-03): the first-party
+        # API does NOT 400 on the combination — it silently SUPPRESSES thinking
+        # (forced choice returned no thinking block; auto did) — worse than an
+        # error, the feature quietly stops working. Raise the TYPED permanent
+        # error (DAT-503) so the Temporal boundary fails loud on attempt 1: a
+        # bare ValueError would not be classified and the _LLM_RETRY policy
+        # would retry a deterministic misconfiguration 8x.
         if request.thinking and (request.tool_choice or {}).get("type") in ("tool", "any"):
-            raise ValueError(
-                "thinking=True is incompatible with a forced tool_choice "
-                f"({request.tool_choice}); use auto/none and mandate the "
-                "tool call in the prompt"
+            raise PermanentProviderError(
+                "thinking=True with a forced tool_choice "
+                f"({request.tool_choice}) silently suppresses thinking; use "
+                '{"type": "auto", "disable_parallel_tool_use": True} and '
+                "mandate the tool call in the prompt"
             )
         try:
             model = request.model or self.config.default_model
@@ -339,15 +348,21 @@ class AnthropicProvider(LLMProvider):
             }
 
             # Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default temperature
-            # (400) and default adaptive thinking ON. Omit temperature on those;
-            # pass it through on the older models that still honour it. Thinking
-            # is per-REQUEST (DAT-603): the mechanical extractors run with it
-            # explicitly disabled (output budget + Sonnet 4.6 parity), while a
-            # reasoning-heavy feature (metric grounding) opts in by LEAVING the
-            # adaptive default on. (thinking + forced tool_choice is rejected at
-            # the top of converse — request-shape error, not an API failure.)
+            # (400). Omit temperature on those; pass it through on the older
+            # models that still honour it. Thinking is per-REQUEST (DAT-603):
+            # the mechanical extractors run with it explicitly disabled (output
+            # budget + Sonnet 4.6 parity); a reasoning-heavy feature (metric
+            # grounding) opts in with an EXPLICIT {"type": "adaptive"} — never
+            # by relying on the model default, because the defaults DIFFER
+            # across the family (Sonnet 5 defaults thinking ON, Opus 4.7/4.8
+            # default OFF): an omitted key would silently run a thinking
+            # feature without thinking the moment a tier repoints to Opus.
+            # Explicit adaptive is accepted by the whole family, including the
+            # always-on Fable/Mythos.
             if _rejects_temperature(model):
-                if _thinking_defaults_on(model) and not request.thinking:
+                if request.thinking:
+                    kwargs["thinking"] = {"type": "adaptive"}
+                elif _thinking_defaults_on(model):
                     kwargs["thinking"] = {"type": "disabled"}
             else:
                 kwargs["temperature"] = request.temperature

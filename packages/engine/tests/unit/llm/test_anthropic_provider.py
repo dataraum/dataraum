@@ -256,24 +256,34 @@ class TestConverseRequestShape:
         assert kwargs["temperature"] == 0.0
         assert "thinking" not in kwargs
 
-    def test_thinking_request_leaves_adaptive_default_on(
+    def test_thinking_request_sends_explicit_adaptive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # DAT-603: a thinking feature (metric grounding) opts back into the
-        # model's adaptive default — no explicit thinking key at all.
+        # DAT-603 review fix: EXPLICIT adaptive, never the model default —
+        # defaults differ across the family (Sonnet 5 ON, Opus 4.7/4.8 OFF),
+        # so an omitted key would silently lose thinking on an Opus tier.
         kwargs = self._capture(monkeypatch, "claude-sonnet-5", thinking=True)
         assert "temperature" not in kwargs
-        assert "thinking" not in kwargs
+        assert kwargs["thinking"] == {"type": "adaptive"}
+
+    def test_thinking_request_explicit_adaptive_on_opus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Opus 4.7/4.8 default thinking OFF — relying on the default here would
+        # run a "thinking" feature without thinking, silently.
+        kwargs = self._capture(monkeypatch, "claude-opus-4-8", thinking=True)
+        assert kwargs["thinking"] == {"type": "adaptive"}
 
     def test_thinking_with_forced_tool_choice_fails_loud(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The API rejects thinking + forced tool_choice; that shape is a
-        # call-site programming error, surfaced as ValueError, never a 400
-        # dressed up as a transient provider failure.
+        # A forced tool_choice silently SUPPRESSES thinking on the live API
+        # (probed 2026-07-03) — a call-site programming error, surfaced as the
+        # TYPED permanent error so the Temporal retry policy fails it on
+        # attempt 1 (a bare ValueError would be retried 8x, DAT-503).
         provider = _provider()
         _patch_stream(monkeypatch, provider, lambda **kwargs: _ok_response())
-        with pytest.raises(ValueError, match="forced tool_choice"):
+        with pytest.raises(PermanentProviderError, match="suppresses thinking"):
             provider.converse(
                 ConversationRequest(
                     messages=[Message(role="user", content="hi")],

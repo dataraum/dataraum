@@ -379,6 +379,61 @@ def test_keeper_row_recovers_provenance_from_the_prior_mint(session, lake) -> No
     assert {c.column_id for c in kept_cols} == {minted.from_column_id, minted.to_column_id}
 
 
+def test_unrecoverable_keeper_provenance_freezes_the_tables(session, lake) -> None:
+    """The defensive tail: a kept surrogate whose provenance is gone must freeze
+    its tables — reconcile would otherwise delete the still-referenced column
+    AND (via the dependents cascade) the keeper row itself.
+    """
+    seed = _seed(session)
+    _intent(session, seed, _RUN_1)
+    phase = SurrogateMintPhase()
+    assert phase.run(_ctx(session, lake, seed, _RUN_1)).status == PhaseStatus.COMPLETED
+    session.flush()
+    minted = session.execute(
+        select(Relationship).where(Relationship.detection_method == "llm")
+    ).scalar_one()
+    keeper = Relationship(
+        run_id=_RUN_2,
+        from_table_id=minted.from_table_id,
+        from_column_id=minted.from_column_id,
+        to_table_id=minted.to_table_id,
+        to_column_id=minted.to_column_id,
+        relationship_type="foreign_key",
+        cardinality=minted.cardinality,
+        confidence=1.0,
+        detection_method="keeper",
+        evidence={"source": "config_overlay", "action": "keep"},
+    )
+    session.add(keeper)
+    # Erase the original mint's provenance (should never happen — pinned here so
+    # the do-no-harm branch is proven, not assumed).
+    session.delete(minted)
+    session.flush()
+
+    result = phase.run(_ctx(session, lake, seed, _RUN_2))
+    session.flush()
+
+    assert result.status == PhaseStatus.COMPLETED
+    assert any("freezing" in w for w in result.warnings)
+    # Physical, metadata, and the keeper row all survive untouched.
+    assert _sk_columns(lake, "txn") == ["_sk__account__business_id"]
+    assert _sk_columns(lake, "coa") == ["_sk__account_name__business_id"]
+    assert (
+        len(
+            session.execute(select(Column).where(Column.column_name.like("_sk__%")))
+            .scalars()
+            .all()
+        )
+        == 2
+    )
+    assert (
+        session.execute(
+            select(Relationship).where(Relationship.detection_method == "keeper")
+        ).scalar_one()
+        is not None
+    )
+
+
 def test_transient_commit_conflict_fails_retryable_not_abstain(session, lake) -> None:
     """A DuckLake commit race must surface as a FAILED phase carrying the
     'Transaction conflict' text (the DAT-641 retry classifier's signal), never

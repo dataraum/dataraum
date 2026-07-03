@@ -134,6 +134,13 @@ class SurrogateMintPhase(BasePhase):
             minted += changed
 
         for intent, from_spec, to_spec in mint_jobs:
+            if frozen & {intent.from_table_id, intent.to_table_id}:
+                warnings.append(
+                    f"surrogate intent {intent.intent_digest[:8]}: endpoint table "
+                    "frozen this run (unrecoverable kept-surrogate provenance) — "
+                    "mint deferred"
+                )
+                continue
             self._persist_surrogate_relationship(
                 ctx, intent, tables_by_id, from_spec, to_spec, warnings
             )
@@ -220,6 +227,18 @@ class SurrogateMintPhase(BasePhase):
                     f"mismatch {from_col.column_name}:{from_col.resolved_type} vs "
                     f"{to_col.column_name}:{to_col.resolved_type} — hash join would "
                     "not preserve the measured match semantics"
+                )
+                return None
+            # Same-type is NOT sufficient for floats: natively-equal DOUBLEs can
+            # render to distinct VARCHARs (-0.0 = 0.0 is TRUE but renders
+            # '-0.0' vs '0.0'), and float exact-equality is a fragile join key
+            # regardless. Every other resolved type renders equal values
+            # identically. Refuse float components outright.
+            if (from_col.resolved_type or "").upper() in {"DOUBLE", "FLOAT", "REAL"}:
+                warnings.append(
+                    f"surrogate intent {intent.intent_digest[:8]}: float-typed "
+                    f"component {from_col.column_name} — refused as an "
+                    "exact-equality surrogate input"
                 )
                 return None
             from_names.append(from_col.column_name)

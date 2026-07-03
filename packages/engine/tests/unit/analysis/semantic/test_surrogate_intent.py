@@ -216,6 +216,49 @@ def test_intent_upsert_is_idempotent_for_retry(session, lake) -> None:
     assert len(session.execute(select(SurrogateKeyIntent)).scalars().all()) == 1
 
 
+def test_scope_component_order_is_canonical(session) -> None:
+    """A shuffled key_columns order must produce the SAME digest and pair order —
+    the surrogate name (and its upserted column_id) derive from it, and the
+    LLM's ordering is not stable across runs.
+    """
+    from dataraum.analysis.semantic.processor import _build_surrogate_intent
+
+    txn = _table_with_columns(session, "txn", ["account", "business_id", "region"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id", "region"])
+    cols = {(c.table_id, c.column_name): c.column_id for t in (txn, coa) for c in t.columns}
+    column_map = {
+        ("txn", "account"): cols[(txn.table_id, "account")],
+        ("txn", "business_id"): cols[(txn.table_id, "business_id")],
+        ("txn", "region"): cols[(txn.table_id, "region")],
+        ("coa", "account_name"): cols[(coa.table_id, "account_name")],
+        ("coa", "business_id"): cols[(coa.table_id, "business_id")],
+        ("coa", "region"): cols[(coa.table_id, "region")],
+    }
+
+    def _build(key_columns: list[tuple[str, str]]):
+        return _build_surrogate_intent(
+            rel=_rel(key_columns=key_columns),
+            from_table_id=txn.table_id,
+            from_col_id=cols[(txn.table_id, "account")],
+            to_table_id=coa.table_id,
+            to_col_id=cols[(coa.table_id, "account_name")],
+            column_map=column_map,
+            run_id=baseline_run_id(),
+            duckdb_conn=None,
+        )
+
+    a = _build([("region", "region"), ("business_id", "business_id")])
+    b = _build([("business_id", "business_id"), ("region", "region")])
+
+    assert a is not None and b is not None
+    assert a["intent_digest"] == b["intent_digest"]
+    assert a["column_pairs"] == b["column_pairs"]
+    # Anchor first, scope sorted by from-side name.
+    assert a["column_pairs"][0][0] == cols[(txn.table_id, "account")]
+    assert a["column_pairs"][1][0] == cols[(txn.table_id, "business_id")]
+    assert a["column_pairs"][2][0] == cols[(txn.table_id, "region")]
+
+
 def test_duplicate_llm_relationships_fold_to_one_row(session) -> None:
     """The LLM emitting one pair twice must fold, not crash the ON CONFLICT batch."""
     txn = _table_with_columns(session, "txn", ["account", "business_id"])

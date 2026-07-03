@@ -16,12 +16,14 @@ if TYPE_CHECKING:
     from dataraum.llm.prompts import PromptRenderer
     from dataraum.llm.providers.base import LLMProvider
 
+from dataraum.analysis.relationships.composite import rescue_fanout_to_composite
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
 from dataraum.analysis.relationships.evaluator import (
     compute_actual_cardinality,
     compute_introduces_duplicates,
     compute_ri_metrics,
 )
+from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
     ColumnConcept as ConceptModel,
@@ -349,6 +351,63 @@ def ground_columns(
     return Result.ok(count)
 
 
+def _lake_path(table_name: str) -> str:
+    """Collision-safe DuckLake FQN for a typed table (matches the RI/cardinality paths)."""
+    return f'lake.typed."{table_name}"'
+
+
+def _augment_candidates_with_composite_rescue(
+    relationship_candidates: list[dict[str, Any]],
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Surface composite-key rescues to the LLM judge (DAT-277), in place.
+
+    The structural detector emits each value-overlapping column pair separately;
+    when the best pair joins many-to-many it silently over-counts. For each such
+    candidate this runs the greedy rescue — does fusing co-present columns collapse
+    the fan-out? — and, when it does, attaches a ``composite_key`` hint to the
+    candidate dict. The LLM (the only judge, never bypassed) sees the hint and may
+    confirm it via ``RelationshipOutput.key_columns``. A miss attaches nothing.
+    """
+    for cand in relationship_candidates:
+        table1 = cand.get("table1")
+        table2 = cand.get("table2")
+        join_cols = cand.get("join_columns") or []
+        if not table1 or not table2 or len(join_cols) < 2:
+            continue
+
+        candidate = RelationshipCandidate(
+            table1=table1,
+            table2=table2,
+            join_candidates=[
+                JoinCandidate(
+                    column1=jc.get("column1", ""),
+                    column2=jc.get("column2", ""),
+                    # The DB candidate-dict wire format keys it ``confidence``
+                    # (load_relationship_candidates_for_semantic); tolerate both so
+                    # the anchor (highest-confidence pair) is picked correctly.
+                    join_confidence=jc.get("join_confidence", jc.get("confidence", 0.0)),
+                    cardinality=jc.get("cardinality", "unknown"),
+                )
+                for jc in join_cols
+                if jc.get("column1") and jc.get("column2")
+            ],
+        )
+        try:
+            key = rescue_fanout_to_composite(
+                candidate, _lake_path(table1), _lake_path(table2), duckdb_conn
+            )
+        except Exception as e:  # never let a rescue probe break synthesis
+            logger.warning("composite_rescue_failed", table1=table1, table2=table2, error=str(e))
+            continue
+
+        if key is not None:
+            cand["composite_key"] = {
+                "column_pairs": [list(pair) for pair in key.column_pairs],
+                "cardinality": key.cardinality,
+            }
+
+
 def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
@@ -370,6 +429,11 @@ def synthesize_and_store_tables(
     Returns:
         Result with the ``SemanticEnrichmentResult`` (entities + relationships).
     """
+    # Composite-key rescue (DAT-277): probe each fan-out candidate for a composite
+    # that collapses it and surface the hint to the LLM judge before it decides.
+    if relationship_candidates and duckdb_conn is not None:
+        _augment_candidates_with_composite_rescue(relationship_candidates, duckdb_conn)
+
     llm_result = agent.synthesize_tables(
         session=session,
         table_ids=table_ids,

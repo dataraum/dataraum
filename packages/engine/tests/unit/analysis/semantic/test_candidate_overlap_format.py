@@ -47,3 +47,23 @@ def test_candidates_are_sorted_by_real_overlap() -> None:
     agent = SemanticAgent.__new__(SemanticAgent)
     out = agent._format_relationship_candidates(_candidates())
     assert out.index("customer_id <-> id") < out.index("region <-> region")
+
+
+def test_composite_rescue_hint_is_rendered() -> None:
+    """A candidate carrying a composite_key hint renders the rescue block (DAT-277)."""
+    agent = SemanticAgent.__new__(SemanticAgent)
+    cands = _candidates()
+    cands[0]["composite_key"] = {
+        "column_pairs": [["customer_id", "id"], ["region", "region"]],
+        "cardinality": "many-to-one",
+    }
+    out = agent._format_relationship_candidates(cands)
+    assert "COMPOSITE-KEY RESCUE" in out
+    assert "customer_id <-> id, region <-> region" in out
+    assert "many-to-one" in out
+
+
+def test_no_hint_renders_no_rescue_block() -> None:
+    agent = SemanticAgent.__new__(SemanticAgent)
+    out = agent._format_relationship_candidates(_candidates())
+    assert "COMPOSITE-KEY RESCUE" not in out

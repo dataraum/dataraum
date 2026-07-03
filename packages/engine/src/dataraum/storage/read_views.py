@@ -316,6 +316,53 @@ def _current_view_sql(table: str) -> str:
     raise AssertionError(f"unreachable: {table} not classified")
 
 
+def _current_entity_view_statements() -> list[tuple[str, str]]:
+    """Analyzed-representative views for the un-versioned entity anchors (DAT-655).
+
+    ``tables``/``columns`` carry no ``run_id`` — their identity is
+    ``(table_name, layer)`` — so the run-stamped machinery above cannot scope
+    them, and every logical table surfaces once per physical layer
+    (raw/typed/quarantine/…). Consumers kept re-deriving "the analyzed
+    representative" (typed-layer collapse) independently, a silent footgun.
+    These views write that pick once: the ``typed``-layer row whose table has a
+    PROMOTED generation run (``promote_run`` upserts the ``(table:{id},
+    generation)`` head as add_source's terminal step; source teardown deletes
+    it, retiring the table from this surface). The plain ``tables``/``columns``
+    pass-throughs remain for staging/quarantine surfaces — this is an
+    additional surface, not a replacement.
+    """
+    return [
+        (
+            "current_tables",
+            (
+                f"CREATE VIEW {READ_TOKEN}.current_tables AS\n"
+                f"SELECT t.* FROM {WS_TOKEN}.tables t\n"
+                f"WHERE t.layer = 'typed'\n"
+                f"  AND EXISTS (\n"
+                f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
+                f"    WHERE h.target = 'table:' || t.table_id\n"
+                f"      AND h.stage = '{GENERATION_STAGE}'\n"
+                f");"
+            ),
+        ),
+        (
+            "current_columns",
+            (
+                f"CREATE VIEW {READ_TOKEN}.current_columns AS\n"
+                f"SELECT c.* FROM {WS_TOKEN}.columns c\n"
+                f"WHERE EXISTS (\n"
+                f"  SELECT 1 FROM {WS_TOKEN}.tables t\n"
+                f"  JOIN {WS_TOKEN}.metadata_snapshot_head h\n"
+                f"    ON h.target = 'table:' || t.table_id\n"
+                f"   AND h.stage = '{GENERATION_STAGE}'\n"
+                f"  WHERE t.table_id = c.table_id\n"
+                f"    AND t.layer = 'typed'\n"
+                f");"
+            ),
+        ),
+    ]
+
+
 def read_view_statements() -> list[tuple[str, str]]:
     """Deterministic ``(view_name, tokenized DDL)`` list for the read schema.
 
@@ -358,6 +405,7 @@ def read_view_statements() -> list[tuple[str, str]]:
             f"read-view grain classification names tables without run_id (or "
             f"dropped tables): {sorted(stale)} — prune storage/read_views.py."
         )
+    statements.extend(_current_entity_view_statements())
     return statements
 
 

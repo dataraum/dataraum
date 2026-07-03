@@ -358,3 +358,25 @@ WHERE EXISTS (
     AND h.stage = 'operating_model'
     AND h.run_id = r.run_id
 );
+
+DROP VIEW IF EXISTS __READ__.current_tables;
+CREATE VIEW __READ__.current_tables AS
+SELECT t.* FROM __WS__.tables t
+WHERE t.layer = 'typed'
+  AND EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.target = 'table:' || t.table_id
+      AND h.stage = 'generation'
+);
+
+DROP VIEW IF EXISTS __READ__.current_columns;
+CREATE VIEW __READ__.current_columns AS
+SELECT c.* FROM __WS__.columns c
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.tables t
+  JOIN __WS__.metadata_snapshot_head h
+    ON h.target = 'table:' || t.table_id
+   AND h.stage = 'generation'
+  WHERE t.table_id = c.table_id
+    AND t.layer = 'typed'
+);

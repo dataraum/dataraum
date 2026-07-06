@@ -494,8 +494,7 @@ class SemanticAgent(LLMFeature):
                 coverage = composite.get("coverage")
                 coverage_table = composite.get("coverage_table") or "the referencing table"
                 coverage_note = (
-                    f" It matches {coverage:.1%} of {coverage_table}'s rows "
-                    "with a populated key."
+                    f" It matches {coverage:.1%} of {coverage_table}'s rows with a populated key."
                     if coverage is not None
                     else ""
                 )

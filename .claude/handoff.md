@@ -131,8 +131,7 @@ Four composites minted (`(name, business_id)` for customer/vendor/
 payment_method/product_service), all persisted fact→dim many-to-one,
 `introduces_duplicates=false`; `enriched_master_txn_table` grain-verified over
 the 810k-row fact with 11 dim columns joined via the surrogates; the flaky
-20-candidate `business_id` degeneracy is gone. `gl_invoice_match` validation
-went declared→executed (the surrogates gave it a join path); revenue grounds
+20-candidate `business_id` degeneracy is gone. revenue grounds
 on `account_type='Income'` (the real classification, not transaction_type).
 Two smoke-corpus DATA truths the platform now states instead of absorbing:
 `chart_of_account_OB`'s `(account, business)` collisions are 82 exact duplicate

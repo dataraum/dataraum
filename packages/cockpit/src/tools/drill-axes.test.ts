@@ -133,65 +133,65 @@ describe("axesFromSliceRows", () => {
 	});
 });
 
-describe("resolveDrillAxes (mocked metadata client)", () => {
-	const seed = () => {
-		rowsByTable.clear();
-		rowsByTable.set(currentLifecycleArtifacts, [
-			{
-				dag: {
-					dependencies: {
-						rev: { type: "extract", source: { standard_field: "revenue" } },
-						cogs: { type: "extract", source: { standard_field: "cogs" } },
-						margin: { type: "formula", expression: "rev - cogs" },
-					},
+const seed = () => {
+	rowsByTable.clear();
+	rowsByTable.set(currentLifecycleArtifacts, [
+		{
+			dag: {
+				dependencies: {
+					rev: { type: "extract", source: { standard_field: "revenue" } },
+					cogs: { type: "extract", source: { standard_field: "cogs" } },
+					margin: { type: "formula", expression: "rev - cogs" },
 				},
 			},
-		]);
-		rowsByTable.set(sqlSnippets, [
-			// Grounded: names its enriched view in the SQL (resolveGrounding match).
-			{
-				standardField: "revenue",
-				sql: "SELECT SUM(amount) AS value FROM enriched_invoices",
-				failureCount: 0,
-			},
-			// Failed extract → ungrounded → contributes no fact table.
-			{
-				standardField: "cogs",
-				sql: "SELECT SUM(cost) AS value FROM enriched_purchases",
-				failureCount: 2,
-			},
-			// A field the metric does not reference → filtered out up front.
-			{
-				standardField: "cash",
-				sql: "SELECT 1 FROM enriched_bank",
-				failureCount: 0,
-			},
-		]);
-		rowsByTable.set(currentEnrichedViews, [
-			{
-				viewName: "enriched_invoices",
-				viewTableId: "vt1",
-				factTableId: "fact1",
-			},
-			{
-				viewName: "enriched_purchases",
-				viewTableId: "vt2",
-				factTableId: "fact2",
-			},
-			{ viewName: "enriched_bank", viewTableId: "vt3", factTableId: "fact3" },
-		]);
-		rowsByTable.set(currentSliceDefinitions, [
-			{
-				columnName: "customer__region",
-				slicePriority: 1,
-				sliceType: "categorical",
-				distinctValues: ["EU", "US"],
-				valueCount: 2,
-				businessContext: null,
-			},
-		]);
-	};
+		},
+	]);
+	rowsByTable.set(sqlSnippets, [
+		// Grounded: names its enriched view in the SQL (resolveGrounding match).
+		{
+			standardField: "revenue",
+			sql: "SELECT SUM(amount) AS value FROM enriched_invoices",
+			failureCount: 0,
+		},
+		// Failed extract → ungrounded → contributes no fact table.
+		{
+			standardField: "cogs",
+			sql: "SELECT SUM(cost) AS value FROM enriched_purchases",
+			failureCount: 2,
+		},
+		// A field the metric does not reference → filtered out up front.
+		{
+			standardField: "cash",
+			sql: "SELECT 1 FROM enriched_bank",
+			failureCount: 0,
+		},
+	]);
+	rowsByTable.set(currentEnrichedViews, [
+		{
+			viewName: "enriched_invoices",
+			viewTableId: "vt1",
+			factTableId: "fact1",
+		},
+		{
+			viewName: "enriched_purchases",
+			viewTableId: "vt2",
+			factTableId: "fact2",
+		},
+		{ viewName: "enriched_bank", viewTableId: "vt3", factTableId: "fact3" },
+	]);
+	rowsByTable.set(currentSliceDefinitions, [
+		{
+			columnName: "customer__region",
+			slicePriority: 1,
+			sliceType: "categorical",
+			distinctValues: ["EU", "US"],
+			valueCount: 2,
+			businessContext: null,
+		},
+	]);
+};
 
+describe("resolveDrillAxes (mocked metadata client)", () => {
 	it("joins dag → grounded extracts → fact table → slice definitions", async () => {
 		seed();
 		const { axes } = await resolveDrillAxes({ metricKey: "gross_margin" });
@@ -222,5 +222,34 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect((await resolveDrillAxes({ standardField: "cogs" })).axes).toEqual(
 			[],
 		);
+	});
+});
+
+describe("resolveDrillAxes empty-result reasons", () => {
+	it("names WHY axes are empty for each class", async () => {
+		// Unknown metric → no extracts in its definition.
+		seed();
+		rowsByTable.set(currentLifecycleArtifacts, []);
+		const unknown = await resolveDrillAxes({ metricKey: "nope" });
+		expect(unknown.reason).toContain("names no measure extracts");
+
+		// Failed extract → nothing accepted to resolve from.
+		seed();
+		const failed = await resolveDrillAxes({ standardField: "cogs" });
+		expect(failed.reason).toContain("No accepted extract");
+
+		// Accepted extract reading a NON-current relation (cross-lineage /
+		// stale snippet) → the reason names exactly what it reads.
+		seed();
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				sql: "SELECT SUM(x) AS value FROM enriched_master_txn_table",
+				failureCount: 0,
+			},
+		]);
+		const stale = await resolveDrillAxes({ standardField: "revenue" });
+		expect(stale.axes).toEqual([]);
+		expect(stale.reason).toContain("enriched_master_txn_table");
 	});
 });

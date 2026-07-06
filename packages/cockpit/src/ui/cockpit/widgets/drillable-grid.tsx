@@ -115,7 +115,10 @@ export function DrillableGrid({
 	const axesQuery = useQuery({
 		queryKey: ["drill-axes", axesRequest],
 		queryFn: () =>
-			postJson<{ axes: DrillAxis[] }>("/api/drill/axes", axesRequest),
+			postJson<{ axes: DrillAxis[]; reason?: string }>(
+				"/api/drill/axes",
+				axesRequest,
+			),
 		staleTime: 60_000,
 	});
 	const axes = axesQuery.data?.axes ?? [];
@@ -249,7 +252,17 @@ export function DrillableGrid({
 					</Menu.Dropdown>
 				</Menu>
 				{axes.length === 0 && !axesQuery.isPending && (
-					<Tooltip label="No cataloged dimensions for this metric's facts">
+					// The resolver names WHY it came back empty (stale snippet, bare
+					// catalog, no extracts) — a dead-end badge with no reason reads
+					// as a bug (2026-07-06 review).
+					<Tooltip
+						label={
+							axesQuery.data?.reason ??
+							"No cataloged dimensions for this metric's facts"
+						}
+						maw={360}
+						multiline
+					>
 						<Badge color="gray" variant="light" size="sm">
 							no axes
 						</Badge>

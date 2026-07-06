@@ -101,11 +101,21 @@ async function targetFields(req: DrillAxesRequest): Promise<string[]> {
 	return measureFieldsFromDag(row?.dag ?? null);
 }
 
+/** Axes plus — when empty — the WHY, so the UI never shows a dead-end badge:
+ *  each empty case names the stage of the resolution chain that yielded
+ *  nothing (no extracts / stale relations / bare catalog). */
+export interface DrillAxesResult {
+	axes: DrillAxis[];
+	reason?: string;
+}
+
 export async function resolveDrillAxes(
 	req: DrillAxesRequest,
-): Promise<{ axes: DrillAxis[] }> {
+): Promise<DrillAxesResult> {
 	const fields = await targetFields(req);
-	if (fields.length === 0) return { axes: [] };
+	if (fields.length === 0) {
+		return { axes: [], reason: "The metric's definition names no measure extracts." };
+	}
 
 	// The same two reads the Model loader does: newest-first graph extracts
 	// (first-per-field wins in resolveGrounding) + the promoted enriched views.
@@ -173,7 +183,20 @@ export async function resolveDrillAxes(
 				.filter((id): id is string => Boolean(id)),
 		),
 	];
-	if (factIds.length === 0) return { axes: [] };
+	if (factIds.length === 0) {
+		// Distinguish "reads something, just not a promoted view" (a stale or
+		// cross-lineage snippet — the honest refusal) from "no usable extract".
+		const staleRelations = [
+			...new Set(extracts.flatMap((e) => (e.failureCount === 0 ? e.relations : []))),
+		];
+		return {
+			axes: [],
+			reason:
+				staleRelations.length > 0
+					? `The computation reads relations outside the current analysis (${staleRelations.join(", ")}) — likely a stale snippet from an earlier run.`
+					: "No accepted extract SQL to resolve dimensions from.",
+		};
+	}
 
 	const sliceRows = await metadataDb
 		.select({
@@ -188,5 +211,13 @@ export async function resolveDrillAxes(
 		.where(inArray(currentSliceDefinitions.tableId, factIds))
 		.orderBy(asc(currentSliceDefinitions.slicePriority));
 
-	return { axes: axesFromSliceRows(sliceRows) };
+	const axes = axesFromSliceRows(sliceRows);
+	if (axes.length === 0) {
+		return {
+			axes,
+			reason:
+				"No dimensions cataloged for this computation's fact table — the slicing phase found nothing grain-safe to offer.",
+		};
+	}
+	return { axes };
 }

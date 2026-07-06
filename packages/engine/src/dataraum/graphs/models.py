@@ -348,10 +348,12 @@ class ExtractGroundingOutput(BaseModel):
     cut the old `summary` field as "decorative" by counting only downstream
     readers and missed this consumer class; don't repeat that. Downstream:
     `sql` executes and persists as the snippet; `description` is the snippet's
-    human line (cockpit reuse KB, compose-path descriptions); `column_mappings`
-    is the graph-level hint the cockpit query agent reads; `assumptions` feed
-    the DAT-631 confidence gate + the answer UI; `provenance` feeds
-    prior_context (DAT-616) and the confidence gate.
+    human line (cockpit reuse KB, compose-path descriptions); `assumptions`
+    feed the DAT-631 confidence gate + the answer UI; `provenance` feeds
+    prior_context (DAT-616) and the confidence gate — its
+    `column_mappings_basis` is THE per-concept grounding record (a flat
+    `column_mappings` duplicate was removed 2026-07-03: the prompt stopped
+    teaching it in DAT-636 and it had been silently empty since).
     """
 
     grounding: str = Field(
@@ -368,10 +370,6 @@ class ExtractGroundingOutput(BaseModel):
     description: str = Field(
         description="One short line: what this extract computes and how it is filtered, "
         "e.g. 'Total revenue: SUM(amount) where account_type IN (Revenue)'."
-    )
-    column_mappings: dict[str, str] = Field(
-        default_factory=dict,
-        description="Mapping from abstract field names to concrete column names",
     )
     assumptions: list[GraphAssumptionOutput] = Field(
         default_factory=list,

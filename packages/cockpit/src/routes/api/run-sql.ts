@@ -23,7 +23,7 @@ import {
 	parseFilters,
 	parseSort,
 } from "../../duckdb/grid-query";
-import { getLakeConnection } from "../../duckdb/lake";
+import { applyEngineScope, getLakeConnection } from "../../duckdb/lake";
 import {
 	encodeFrame,
 	type StreamableResult,
@@ -144,6 +144,10 @@ export const Route = createFileRoute("/api/run-sql")({
 				let result: StreamableResult;
 				try {
 					conn = await getLakeConnection();
+					// Engine scope (`USE lake.typed`): metric/measure SQL authored by
+					// the engine uses unqualified names (DAT-672); qualified cockpit
+					// SQL is unaffected by the current schema.
+					await applyEngineScope(conn);
 					result = (await (params.length
 						? conn.stream(wrapped, params)
 						: conn.stream(wrapped))) as unknown as StreamableResult;

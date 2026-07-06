@@ -442,7 +442,6 @@ def _fake_generate(authored: list[str]):
                 summary="fake",
                 steps=steps,
                 final_sql=final,
-                column_mappings={},
                 llm_model="fake",
                 prompt_hash="x",
                 generated_at=datetime.now(UTC),

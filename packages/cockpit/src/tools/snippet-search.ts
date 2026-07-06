@@ -11,9 +11,9 @@
 // The tool returns the concept-key metadata PLUS the snippet's validated `sql`
 // body (DAT-494): snippet_id + the concept keys (standard_field / statement /
 // aggregation) + the validated `sql` (the canonical, execution-tested computation)
-// + the column expressions (column_mappings) + dependencies (input_fields). The
-// model REPRODUCES the validated `sql` faithfully rather than reconstructing from
-// the looser, graph-level column_mappings — that faithful reproduction is what
+// + the per-concept grounding record (column_mappings_basis, from provenance) +
+// dependencies (input_fields). The model REPRODUCES the validated `sql`
+// faithfully rather than reconstructing it — that faithful reproduction is what
 // lets the reuse classify as `exact_reuse` (snippet bodies are tiny single-SELECTs,
 // so this is cheap on context). The reuse is still CLASSIFIED, not SUBSTITUTED, by
 // `classifyComponents` (query.ts): the model declares reuse (sets snippet_id) and
@@ -41,10 +41,9 @@ import { withAgentError } from "./agent-error";
 
 // The per-snippet projection the model reuses from: the concept keys + the
 // validated `sql` (the AUTHORITATIVE computation to reproduce, DAT-494) + the
-// column expressions (column_mappings — a secondary, graph-level hint, NOT a
-// per-concept source of truth; the `sql` is the thing to reproduce) + formula
-// dependencies (input_fields). The producer-side `normalized_expression` stays
-// internal.
+// per-concept grounding record (column_mappings_basis; the `sql` is the thing
+// to reproduce) + formula dependencies (input_fields). The producer-side
+// `normalized_expression` stays internal.
 const SnippetMeta = z.object({
 	snippet_id: z.string(),
 	snippet_type: z.string(),
@@ -56,9 +55,8 @@ const SnippetMeta = z.object({
 	// NOT NULL in the store.
 	sql: z.string(),
 	description: z.string(),
-	// JSONB blobs — concrete column expressions + formula dependencies + the
-	// constant value. Passed through as-is (validated leniently by the model's use).
-	column_mappings: z.unknown(),
+	// JSONB blobs — formula dependencies + the constant value. Passed through
+	// as-is (validated leniently by the model's use).
 	input_fields: z.unknown(),
 	parameter_value: z.string().nullable(),
 	// DAT-616: the prior value→concept FILTER decisions ({concept:{column,filter,
@@ -95,7 +93,6 @@ function projectSnippet(s: SnippetRow): z.infer<typeof SnippetMeta> {
 		aggregation: s.aggregation,
 		sql: s.sql,
 		description: s.description,
-		column_mappings: s.columnMappings,
 		input_fields: s.inputFields,
 		parameter_value: s.parameterValue,
 		column_mappings_basis:
@@ -164,7 +161,7 @@ export const snippetSearchTool = toolDefinition({
 		"`statements` (e.g. 'income_statement'), and/or `graph_ids` (specific " +
 		"calculation graphs like 'dso'). Returns matching graphs with each snippet's " +
 		"concept keys, its validated `sql` (the canonical computation to reproduce), " +
-		"the column expressions (column_mappings), and dependencies. Match by the " +
+		"its grounding record (column_mappings_basis), and dependencies. Match by the " +
 		"concept keys, then reproduce the chosen snippet's validated SQL — set the " +
 		"step's snippet_id to declare reuse. Returns [] when nothing is curated for " +
 		"those keys yet.",

@@ -285,24 +285,6 @@ class TestSnippetLibrarySave:
         assert record.normalized_expression == "({A} / {B}) * {C}"
         assert record.input_fields == ["accounts_receivable", "days_in_period", "revenue"]
 
-    def test_save_with_column_mappings(self, session):
-        """Column mappings are persisted."""
-        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
-
-        record = library.save_snippet(
-            snippet_type="extract",
-            sql="SELECT 1",
-            description="test",
-            schema_mapping_id="schema_abc",
-            source="graph:test",
-            standard_field="revenue",
-            column_mappings={"revenue": "Betrag", "type": "Kontoart"},
-        )
-        session.flush()
-
-        fetched = session.get(SQLSnippetRecord, record.snippet_id)
-        assert fetched.column_mappings == {"revenue": "Betrag", "type": "Kontoart"}
-
 
 class TestSnippetLibraryFormulaPerMetric:
     """Formula snippets are identified PER-METRIC by source, not by shape (DAT-646)."""

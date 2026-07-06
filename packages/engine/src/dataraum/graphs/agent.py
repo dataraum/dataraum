@@ -104,7 +104,6 @@ class GeneratedCode:
     summary: str  # Plain English description of what the query calculates
     steps: list[dict[str, str]]  # List of {step_id, sql, description}
     final_sql: str
-    column_mappings: dict[str, str]  # abstract_field -> concrete_column
 
     # Generation metadata
     llm_model: str
@@ -493,7 +492,6 @@ class GraphAgent(LLMFeature):
         # Every step, deps-before-dependents, output last.
         ordered = _ordered_dep_steps(graph, output_step) + [output_step.step_id]
         steps: list[dict[str, str]] = []
-        column_mappings: dict[str, str] = {}
         # DAT-631: carry each EXTRACT snippet's authored grounding confidence forward, so
         # a cache-composed metric still surfaces its weakest input's confidence to the
         # phase gate instead of looking confidently green.
@@ -510,9 +508,6 @@ class GraphAgent(LLMFeature):
                         return None  # an extract leaf is missing → dep ungroundable
                     sql = snippet["sql"]
                     description = snippet.get("description") or step_id
-                    snippet_mappings = snippet.get("column_mappings")
-                    if isinstance(snippet_mappings, dict):
-                        column_mappings.update(snippet_mappings)
                     for a in snippet.get("assumptions") or []:
                         assumptions.append(
                             GraphAssumptionOutput(
@@ -546,7 +541,6 @@ class GraphAgent(LLMFeature):
             summary=f"Composed {graph.graph_id} from DAG ({len(steps)} steps)",
             steps=steps,
             final_sql=f"SELECT * FROM {output_step.step_id}",
-            column_mappings=column_mappings,
             llm_model="composed",
             prompt_hash="composed",
             generated_at=datetime.now(UTC),
@@ -740,7 +734,6 @@ class GraphAgent(LLMFeature):
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
-            column_mappings=output.column_mappings,
             provenance=output.provenance,
             assumptions=output.assumptions or [],
             llm_model=model,
@@ -1285,10 +1278,7 @@ class GraphAgent(LLMFeature):
             description = gen_step.get("description", "") or generated_code.summary
 
             # Extract snippet: keyed by standard_field + statement + aggregation.
-            # column_mappings is per-concept (DAT-495): execute grounds ONE leaf, so
-            # generated_code describes this single concept — a graph-level HINT for the
-            # cockpit query agent (authoritative per-concept grounding lives in
-            # provenance.column_mappings_basis).
+            # Per-concept grounding lives in provenance.column_mappings_basis.
             library.save_snippet(
                 snippet_type="extract",
                 sql=sql,
@@ -1298,7 +1288,6 @@ class GraphAgent(LLMFeature):
                 standard_field=graph_step.source.standard_field,
                 statement=graph_step.source.statement,
                 aggregation=graph_step.aggregation,
-                column_mappings=generated_code.column_mappings,
                 llm_model=generated_code.llm_model,
                 provenance=provenance_dict,
             )
@@ -1470,7 +1459,6 @@ class GraphAgent(LLMFeature):
                     source=source,
                     normalized_expression=normalized,
                     input_fields=input_fields,
-                    column_mappings=generated_code.column_mappings,
                     llm_model=generated_code.llm_model,
                     provenance=provenance_dict,
                 )
@@ -1523,7 +1511,6 @@ class GraphAgent(LLMFeature):
                     "sql": match.snippet.sql,
                     "description": match.snippet.description,
                     "snippet_id": match.snippet.snippet_id,
-                    "column_mappings": match.snippet.column_mappings or {},
                     # DAT-616: the prior value→concept FILTER decisions, fed back so
                     # grounding isn't re-invented (served, not just reused-as-SQL).
                     "column_mappings_basis": (match.snippet.provenance or {}).get(

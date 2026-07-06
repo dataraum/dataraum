@@ -45,6 +45,7 @@ import {
 	type OperatingModelGraph,
 } from "#/tools/operating-model-graph";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
+import { AnalyseAction } from "./analyse-overlay";
 import { layoutGraph } from "./layout";
 import { type OMRfData, omNodeTypes } from "./nodes";
 
@@ -295,6 +296,7 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 		case "metric":
 			return (
 				<Stack gap="xs">
+					<AnalyseAction node={node} />
 					<Field label="State" value={d.state} />
 					{d.unit ? <Field label="Unit" value={d.unit} /> : null}
 					{d.stateReason ? (
@@ -313,6 +315,7 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 		case "measure":
 			return (
 				<Stack gap="xs">
+					<AnalyseAction node={node} />
 					{d.statement ? <Field label="Statement" value={d.statement} /> : null}
 					{d.aggregation ? (
 						<Field label="Aggregation" value={d.aggregation} />

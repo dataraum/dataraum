@@ -254,7 +254,6 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
         "grounding": "accounts_receivable via account_id__name IN ('Accounts Receivable')",
         "sql": "SELECT SUM(amount) AS value FROM enriched_gl",
         "description": "AR at latest period",
-        "column_mappings": {"accounts_receivable": "enriched_gl.amount"},
         "assumptions": [],
         "provenance": None,
     }

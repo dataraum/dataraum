@@ -244,12 +244,14 @@ const tableNodeId = (tableId: string) => `table:${tableId}`;
 
 // --- Grounding resolution (measure → enriched view → base tables) -----------
 
-/** One extract snippet's fields the resolver needs (the loader stringifies the
- *  column_mappings json; failure_count comes straight from the snippet row). */
+/** One extract snippet's fields the resolver needs. `relations` = the base
+ *  relations the extract's SQL reads, pre-parsed by the caller via
+ *  `sqlRelations` (DuckDB's own parser); empty when the SQL is null or
+ *  unparseable. failure_count comes straight from the snippet row. */
 export interface ExtractSnippetInput {
 	standardField: string;
 	sql: string | null;
-	columnMappingsText: string;
+	relations: string[];
 	failureCount: number;
 }
 /** One enriched view + the base fact/dim table ids it derives from. */
@@ -262,12 +264,12 @@ export interface EnrichedViewInput {
 /**
  * Resolve each measure concept's grounding from its extract snippet. Pure → unit-tested.
  *  - `grounded` = the engine accepted the extract (`failure_count == 0`) — the reliable
- *    signal. `column_mappings` is only an OPTIONAL engine hint (graphs/agent.py), so it
- *    is NOT used to decide grounding: an accepted extract can carry an empty map, and a
- *    failed one (e.g. inventory — filter matched no rows) can still name a view in SQL.
- *  - The enriched VIEW is read from the SQL's `FROM <view>` (a hard prompt contract) or
- *    the column_mappings text, by LONGEST known-view-name match (so `enriched_invoices`
- *    isn't shadowed by a shorter `enriched_inv`). Resolved only for grounded measures.
+ *    signal.
+ *  - The enriched VIEW is the first of the extract's parsed `relations` (what the SQL
+ *    ACTUALLY reads, per DuckDB's own parser — see `sqlRelations`) that names a known
+ *    view. Exact names: a view name inside a string literal never matches, and a stale
+ *    extract reading a non-current view honestly resolves to nothing. Resolved only
+ *    for grounded measures.
  *  - `sql` is always carried through, so a failed extract still shows its attempted query.
  * First snippet per standard_field wins (the loader passes rows newest-first).
  */
@@ -277,7 +279,6 @@ export function resolveGrounding(
 	tableNames: ReadonlyMap<string, string>,
 ): MeasureGroundingInput[] {
 	const viewByName = new Map(views.map((v) => [v.viewName, v]));
-	const viewNames = [...viewByName.keys()].sort((a, b) => b.length - a.length);
 
 	const byField = new Map<string, MeasureGroundingInput>();
 	for (const ex of extracts) {
@@ -286,9 +287,9 @@ export function resolveGrounding(
 		let enrichedView: GroundedTable | null = null;
 		let baseTables: GroundedTable[] = [];
 		if (grounded) {
-			const hay = `${ex.sql ?? ""} ${ex.columnMappingsText}`;
-			const viewName = viewNames.find((n) => hay.includes(n)) ?? null;
-			const view = viewName ? viewByName.get(viewName) : undefined;
+			const view = ex.relations
+				.map((r) => viewByName.get(r))
+				.find((v) => v !== undefined);
 			if (view) {
 				enrichedView = { tableId: view.viewTableId, tableName: view.viewName };
 				baseTables = view.baseTableIds

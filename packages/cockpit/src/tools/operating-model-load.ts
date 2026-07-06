@@ -9,9 +9,10 @@
 // DAG). Composition is the naming convention (a step name that IS a metric graph_id).
 // Execution SQL: the metric's `formula` snippet + each measure's `extract` snippet.
 // Grounding is resolved by the pure `resolveGrounding`: a measure is grounded iff its
-// extract's `failure_count == 0` (the engine's accept signal — column_mappings is only
-// a hint), and its enriched view is read from the SQL's `FROM <view>` (a hard contract),
-// mapped to base fact/dim tables via `current_enriched_views`.
+// extract's `failure_count == 0` (the engine's accept signal), and its enriched view
+// is the first parsed RELATION of its SQL (`sqlRelations`, DuckDB's own parser — what
+// the statement actually reads) that names a promoted view, mapped to base fact/dim
+// tables via `current_enriched_views`.
 
 import { and, desc, eq, like } from "drizzle-orm";
 
@@ -25,6 +26,7 @@ import {
 	sqlSnippets,
 } from "../db/metadata/schema";
 import { stripSrcDigests } from "../lib/display-names";
+import { sqlRelations } from "../lib/sql-canonical";
 import {
 	buildOperatingModelGraph,
 	type EnrichedViewInput,
@@ -66,7 +68,7 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			.from(currentLifecycleArtifacts)
 			.where(eq(currentLifecycleArtifacts.artifactType, "metric")),
 		// Graph snippets: the metric's flattened SQL (formula) + each measure's grounded
-		// SQL, column_mappings, and failure_count (extract). Newest-first, so the
+		// SQL and failure_count (extract). Newest-first, so the
 		// first-write-wins dedup below takes the LATEST row when at-least-once redelivery
 		// left duplicates (the engine treats any row as fine; the cockpit displays it).
 		metadataDb
@@ -75,7 +77,6 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 				snippetType: sqlSnippets.snippetType,
 				standardField: sqlSnippets.standardField,
 				sql: sqlSnippets.sql,
-				columnMappings: sqlSnippets.columnMappings,
 				failureCount: sqlSnippets.failureCount,
 			})
 			.from(sqlSnippets)
@@ -138,21 +139,21 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			].filter((id): id is string => typeof id === "string"),
 		}));
 
-	// Extract snippets (newest-first) → the pure grounding resolver (failure_count
-	// decides grounded; the view name is read from the SQL, not the optional mappings).
-	const extracts: ExtractSnippetInput[] = snippetRows
-		.filter(
-			(r): r is typeof r & { standardField: string } =>
-				r.snippetType === "extract" && Boolean(r.standardField),
-		)
-		.map((r) => ({
-			standardField: r.standardField,
-			sql: r.sql ?? null,
-			columnMappingsText: r.columnMappings
-				? JSON.stringify(r.columnMappings)
-				: "",
-			failureCount: r.failureCount ?? 0,
-		}));
+	// Extract snippets (newest-first) → the pure grounding resolver: failure_count
+	// decides grounded; the view resolves from the SQL's parsed relations.
+	const extracts: ExtractSnippetInput[] = await Promise.all(
+		snippetRows
+			.filter(
+				(r): r is typeof r & { standardField: string } =>
+					r.snippetType === "extract" && Boolean(r.standardField),
+			)
+			.map(async (r) => ({
+				standardField: r.standardField,
+				sql: r.sql ?? null,
+				relations: r.sql ? ((await sqlRelations(r.sql)) ?? []) : [],
+				failureCount: r.failureCount ?? 0,
+			})),
+	);
 	const grounding = resolveGrounding(extracts, views, tableNames);
 
 	const metrics: MetricInput[] = metricRows

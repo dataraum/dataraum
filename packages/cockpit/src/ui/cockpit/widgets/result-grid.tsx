@@ -136,6 +136,7 @@ export function ResultGridView({
 	sql,
 	sqlParams,
 	toolbarActions,
+	onRowClick,
 }: {
 	store: GridView;
 	fatal?: string | null;
@@ -143,6 +144,9 @@ export function ResultGridView({
 	onToggleSort?: (column: string) => void;
 	onReachEnd?: () => void;
 	onFilterCommit?: (column: string, raw: string) => void;
+	/** Row-click action (DAT-672: the drill's row-pin). When set, body rows read
+	 * as clickable and deliver the row as a column→cell object. */
+	onRowClick?: (row: Record<string, Json | null>) => void;
 	/** How many push-down filters are currently active (drives the funnel toggle's
 	 * active state + count). Owner-tracked; the view only renders the row. */
 	activeFilterCount?: number;
@@ -470,7 +474,29 @@ export function ResultGridView({
 							{virtualRows.map((vr) => {
 								const row = rows[vr.index];
 								return (
-									<Table.Tr key={row.id}>
+									<Table.Tr
+										key={row.id}
+										onClick={
+											onRowClick
+												? () => {
+														// Selecting/copying cell text must not fire the
+														// row action — a click that ends a selection is
+														// a copy gesture, not a pin.
+														if (window.getSelection()?.toString()) return;
+														onRowClick(
+															Object.fromEntries(
+																store.columns.map((name, c) => [
+																	name,
+																	store.cell(c, vr.index),
+																]),
+															),
+														);
+													}
+												: undefined
+										}
+										style={onRowClick ? { cursor: "pointer" } : undefined}
+										title={onRowClick ? "Pin this row's values" : undefined}
+									>
 										{row.getVisibleCells().map((cell) => {
 											const type = cell.column.columnDef.meta?.duckdbType;
 											return (
@@ -581,6 +607,7 @@ export function WindowedGrid({
 	sql,
 	sqlParams,
 	toolbarActions,
+	onRowClick,
 }: {
 	endpoint: string;
 	/** The base request body (WITHOUT sort/filters/limit/offset — the grid appends those). */
@@ -590,6 +617,8 @@ export function WindowedGrid({
 	sqlParams?: (string | number | boolean | null)[];
 	/** Forwarded to the grid toolbar (left of "View SQL") — see ResultGridView. */
 	toolbarActions?: ReactNode;
+	/** Forwarded row-click action — see ResultGridView. */
+	onRowClick?: (row: Record<string, Json | null>) => void;
 }) {
 	const [sort, setSort] = useState<GridSort | null>(null);
 	const [filters, setFilters] = useState<GridFilter[]>([]);
@@ -713,6 +742,7 @@ export function WindowedGrid({
 			sql={sql}
 			sqlParams={sqlParams}
 			toolbarActions={toolbarActions}
+			onRowClick={onRowClick}
 		/>
 	);
 }

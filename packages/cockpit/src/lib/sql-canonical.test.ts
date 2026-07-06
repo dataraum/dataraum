@@ -7,7 +7,7 @@
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { closeSqlParser, sqlEquivalent } from "./sql-canonical";
+import { closeSqlParser, sqlEquivalent, sqlRelations } from "./sql-canonical";
 
 // Release the memoized in-memory parser so the run exits cleanly.
 afterAll(() => closeSqlParser());
@@ -231,5 +231,39 @@ describe("sqlEquivalent", () => {
 		const garbage = "this is not <<< valid sql ;;;";
 		expect(await sqlEquivalent(garbage, garbage)).toBe(true);
 		expect(await sqlEquivalent(garbage, "SELECT 1 AS v")).toBe(false);
+	});
+});
+
+describe("sqlRelations (DAT-672 relation extraction)", () => {
+	it("returns the base relations a statement reads", async () => {
+		expect(
+			await sqlRelations(
+				"SELECT a.x, b.y FROM enriched_invoices a JOIN payments b ON a.id = b.iid",
+			),
+		).toEqual(expect.arrayContaining(["enriched_invoices", "payments"]));
+	});
+
+	it("subtracts CTE names (a CTE reference parses as BASE_TABLE)", async () => {
+		const rels = await sqlRelations(
+			"WITH d AS (SELECT region, amount FROM enriched_journal_lines) SELECT SUM(amount) FROM d",
+		);
+		expect(rels).toEqual(["enriched_journal_lines"]);
+	});
+
+	it("ignores a view name inside a string literal (the substring-matcher trap)", async () => {
+		const rels = await sqlRelations(
+			"SELECT * FROM real_table WHERE note = 'see enriched_invoices for detail'",
+		);
+		expect(rels).toEqual(["real_table"]);
+	});
+
+	it("reports the bare table_name for qualified references", async () => {
+		expect(await sqlRelations("SELECT * FROM lake.typed.orders")).toEqual([
+			"orders",
+		]);
+	});
+
+	it("returns null for unparseable SQL", async () => {
+		expect(await sqlRelations("SELEC nope FRM")).toBeNull();
 	});
 });

@@ -137,7 +137,6 @@ class TestGeneratedCode:
             summary="Calculates Days Sales Outstanding (DSO) metric.",
             steps=[{"step_id": "ar", "sql": "SELECT 1", "description": "test"}],
             final_sql="SELECT 1",
-            column_mappings={"accounts_receivable": "ar_column"},
             llm_model="claude-3",
             prompt_hash="abc123",
             generated_at=datetime.now(UTC),
@@ -267,7 +266,6 @@ class TestGraphAgentIntegration:
             "grounding": "test grounding: served values verified",
             "sql": "SELECT SUM(amount) AS value FROM test_data",
             "description": "Sum amounts",
-            "column_mappings": {"amount": "amount"},
         }
 
         mock_tool_response = MagicMock()
@@ -305,7 +303,6 @@ def _agent_with_sql(sql: str, description: str = "test") -> GraphAgent:
         "grounding": "test grounding: served values verified",
         "sql": sql,
         "description": description,
-        "column_mappings": {"amount": "amount"},
     }
     response = MagicMock()
     response.tool_calls = [tool_call]
@@ -834,7 +831,6 @@ class TestGraphAgentSnippets:
             "grounding": "test grounding: served values verified",
             "sql": "SELECT SUM(amount) AS value FROM test_data",
             "description": "Sum amounts from test data",
-            "column_mappings": {"amount": "amount"},
         }
 
         mock_response = MagicMock()
@@ -962,52 +958,6 @@ class TestGraphAgentSnippets:
         assert exact_reuse.execution_type == "graph"
         assert exact_reuse.snippet_id == snippet.snippet_id
 
-    def test_snippet_column_mappings_preserved(
-        self,
-        session: Session,
-        duckdb_with_data,
-        sample_graph,
-    ):
-        """Test that column_mappings are preserved when assembling from snippets."""
-        from dataraum.query.snippet_library import SnippetLibrary
-
-        mock_provider = MagicMock()
-        mock_provider.get_model_for_tier.return_value = "test-model"
-
-        mock_config = MagicMock()
-        mock_config.limits.max_output_tokens_per_request = 4000
-        mock_config.limits.cache_ttl_seconds = 3600
-
-        mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
-
-        # Pre-populate snippet with column_mappings
-        library = SnippetLibrary(session, workspace_id=baseline_run_id())
-        library.save_snippet(
-            snippet_type="extract",
-            sql="SELECT SUM(amount) AS value FROM test_data",
-            description="Sum amounts",
-            schema_mapping_id="test-mapping",
-            source="graph:test_metric",
-            standard_field="test_field",
-            statement="test_table",
-            aggregation="sum",
-            column_mappings={"test_field": "amount"},
-        )
-        session.flush()
-
-        agent = GraphAgent(
-            config=mock_config,
-            provider=mock_provider,
-            prompt_renderer=mock_renderer,
-        )
-
-        # Access internal _lookup_snippets to verify column_mappings are returned
-        cached = agent._lookup_snippets(session, sample_graph, "test-mapping")
-
-        assert "value" in cached
-        assert cached["value"]["column_mappings"] == {"test_field": "amount"}
-
     def test_usage_tracked_without_cached_snippets(
         self,
         session: Session,
@@ -1043,7 +993,6 @@ class TestGraphAgentSnippets:
             "grounding": "test grounding: served values verified",
             "sql": "SELECT SUM(amount) AS value FROM test_data",
             "description": "Sum amounts from test data",
-            "column_mappings": {"amount": "amount"},
         }
 
         mock_response = MagicMock()

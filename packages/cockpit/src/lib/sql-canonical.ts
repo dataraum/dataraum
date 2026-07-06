@@ -266,6 +266,67 @@ async function serialize(
 	}
 }
 
+// --- relation extraction (DAT-672) -------------------------------------------
+
+const isTreeRecord = (v: unknown): v is Record<string, unknown> =>
+	typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Collect BASE_TABLE names and cte_map keys from a serialized parse tree. A
+ *  CTE reference also parses as BASE_TABLE (resolution happens at bind time),
+ *  so the caller subtracts the CTE names to get the REAL relations. */
+const collectRelations = (
+	node: unknown,
+	base: Set<string>,
+	ctes: Set<string>,
+): void => {
+	if (Array.isArray(node)) {
+		for (const v of node) collectRelations(v, base, ctes);
+		return;
+	}
+	if (!isTreeRecord(node)) return;
+	if (node.type === "BASE_TABLE" && typeof node.table_name === "string") {
+		base.add(node.table_name);
+	}
+	const cteMap = node.cte_map;
+	if (isTreeRecord(cteMap) && Array.isArray(cteMap.map)) {
+		for (const entry of cteMap.map) {
+			if (isTreeRecord(entry) && typeof entry.key === "string") {
+				ctes.add(entry.key);
+			}
+		}
+	}
+	for (const v of Object.values(node)) collectRelations(v, base, ctes);
+};
+
+/**
+ * The base relations a statement READS — BASE_TABLE nodes of DuckDB's own
+ * parse tree, minus CTE names. The ground truth for "which view/table does
+ * this snippet read" (DAT-672 axis resolution + the Model page's grounding
+ * edges): exact names, immune to a view name appearing inside a string
+ * literal, comment, or alias — the substring-matcher failure modes. Returns
+ * null when the SQL does not parse (or the parser is unavailable), which
+ * callers treat as "reads nothing recognizable".
+ */
+export async function sqlRelations(sql: string): Promise<string[] | null> {
+	let tree: unknown = null;
+	try {
+		const conn = await (await getParser()).connect();
+		try {
+			tree = await serialize(conn, sql);
+		} finally {
+			conn.closeSync();
+		}
+	} catch {
+		return null;
+	}
+	// Parse failures come back IN-BAND (`error: true`), not thrown.
+	if (!isTreeRecord(tree) || tree.error !== false) return null;
+	const base = new Set<string>();
+	const ctes = new Set<string>();
+	collectRelations(tree, base, ctes);
+	return [...base].filter((t) => !ctes.has(t));
+}
+
 /** True when two SQL fragments are the same snippet under canonicalization. */
 export async function sqlEquivalent(a: string, b: string): Promise<boolean> {
 	let treeA: unknown = null;

@@ -97,7 +97,6 @@ def test_compose_metric_from_dag_propagates_confidence() -> None:
             "sql": "SELECT SUM(amount) AS value FROM v WHERE x IN ('a')",
             "description": "COGS proxy",
             "snippet_id": "snip-1",
-            "column_mappings": {},
             "assumptions": [
                 {
                     "assumption": "COGS proxied via transaction_type",

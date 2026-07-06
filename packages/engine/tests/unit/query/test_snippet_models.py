@@ -148,24 +148,6 @@ class TestSQLSnippetRecord:
         )
         session.flush()  # Should not raise
 
-    def test_column_mappings_json(self, session):
-        """Column mappings are stored as JSON."""
-        record = SQLSnippetRecord(
-            workspace_id="ws_test",
-            snippet_type="extract",
-            standard_field="revenue",
-            schema_mapping_id="schema_abc",
-            sql="SELECT 1",
-            description="test",
-            source="graph:test",
-            column_mappings={"revenue": "Betrag", "type": "Kontoart"},
-        )
-        session.add(record)
-        session.flush()
-
-        fetched = session.get(SQLSnippetRecord, record.snippet_id)
-        assert fetched.column_mappings == {"revenue": "Betrag", "type": "Kontoart"}
-
 
 class TestSnippetUsageRecord:
     """Tests for SnippetUsageRecord model."""

@@ -19,7 +19,6 @@
 
 import {
 	integer,
-	json,
 	jsonb,
 	pgSchema,
 	text,
@@ -74,10 +73,9 @@ export const configOverlayWrite = rawSchema.table("config_overlay", {
  * Raw `sql_snippets` — SELECT (IS-NULL-aware dedup lookup) + INSERT a learned
  * `query:` snippet on a clean run (save-on-clean, DAT-486). Only the columns the
  * writer touches; the engine SQLAlchemy model owns the full shape. The NOT-NULL
- * columns with no DB default — `description`, `column_mappings`, `execution_count`,
+ * columns with no DB default — `description`, `execution_count`,
  * `failure_count`, `created_at`, `updated_at` — must be set on every insert
- * (the model's defaults are ORM-side, not server defaults). `column_mappings`
- * is `json` (not `jsonb`) to match the column type. Identity/quality columns the
+ * (the model's defaults are ORM-side, not server defaults). Identity/quality columns the
  * cockpit never writes (last_used_at, column_hash, provenance, input_fields,
  * normalized_expression) are omitted.
  */
@@ -92,7 +90,6 @@ export const sqlSnippetsWrite = rawSchema.table("sql_snippets", {
 	parameterValue: varchar("parameter_value"),
 	sql: text("sql").notNull(),
 	description: text("description").notNull(),
-	columnMappings: json("column_mappings").notNull(),
 	source: varchar("source").notNull(),
 	llmModel: varchar("llm_model"),
 	executionCount: integer("execution_count").notNull(),

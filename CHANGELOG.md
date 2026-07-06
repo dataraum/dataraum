@@ -5,22 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-07-06
 
-### Removed (BREAKING)
-- **HTTP MCP transport gone, bearer auth gone (PR 3a of v1 plan, 2026-05-19 pivot)**. The earlier DAT-325 cutover landed `/mcp/` as a Starlette sub-app mounted onto the FastAPI control plane, gated by `BearerAuthMiddleware` + `DATARAUM_MCP_TOKEN`. The [Cockpit + Engine REST v1 plan](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/22872066) drops MCP at the transport level entirely — the cockpit (TanStack Start) is the only client; v1 has no auth (single user). Removed: the `app.mount("/mcp", ...)` line, `_StreamableHTTPASGIApp`, `_build_mcp_subapp`, `BearerAuthMiddleware`, `_TOKEN_ENV_VAR`, the lifespan's `DATARAUM_MCP_TOKEN` refusal, the bearer-enforcement step in `compose-smoke.yml`, the `DATARAUM_MCP_TOKEN` env in `docker-compose.yml` and `.env.example`, `docs/mcp-setup.md`, `tests/platform/smoke_dat325.py`, and all bearer/MCP test classes in `tests/unit/server/test_app.py`. `src/dataraum/mcp/server.py` is **untouched** — its engine logic gets extracted into `src/dataraum/api/` route handlers in step 3b. The lifespan still refuses to start without `DUCKLAKE_CATALOG_URL` + `DUCKLAKE_DATA_PATH` (real substrate prereqs).
-- **stdio MCP transport gone (DAT-325)**. The `dataraum-mcp` script entry, the `--transport stdio` mode, the `run_server()` runner, and the standalone Starlette HTTP runner (`_build_http_app`, `run_http_server`) are all deleted. The control plane is now a single FastAPI app (`dataraum.server.app:app`); since PR 3a above, it no longer mounts an MCP transport at all. Run via `uvicorn dataraum.server.app:app` or `docker compose up`.
-- **`dataraum` CLI gone (DAT-325)**. The `dataraum run` and `dataraum dev` commands have been non-functional since DAT-321 made `setup_pipeline` require a `session_id` the CLI never provided. Removed: `src/dataraum/cli/` tree, `tests/unit/cli/` tree, `docs/cli.md`, `dataraum` script entry, `typer` dep. The MCP `measure` tool is the supported way to run the pipeline.
-- **`rich` rendering path in `core/logging.py` (DAT-325)**. The Rich console renderer was only ever activated by the deleted CLI's interactive run progress display. With the CLI gone, the path was dead-but-reachable: removed `_RichConsole`/`_RichText` imports, `LogBuffer`, `activate_console`/`deactivate_console`, `_build_text`, and the `rich>=13.0.0` dep. `_ProxyLogger.msg` now always routes through stderr (and optionally a file). Library consumers and JSON-renderer mode are unchanged.
+The platform release. DataRaum is now a multi-container platform — a web cockpit over a
+durable analysis engine — rather than a Python library with an MCP surface. Nearly every
+subsystem changed; this entry records the net result, the architecture lives in
+[`docs/adr/`](docs/adr/README.md) and the [platform docs](docs/index.md).
 
 ### Changed
-- **`/health` is now the substrate probe** (DuckLake catalog + workspace Postgres). The DAT-291 version-only `/health` shape is gone — the unified app's `/health` already returned the richer substrate result. Container orchestrators using `/health` for readiness see `{"status":"ok"|"degraded","ducklake":...,"postgres":...}`.
-- **`mcp/__init__.py` public surface**: drops `run_server` re-export. Only `create_server` remains for in-process callers that build their own transport.
+- **The engine is a Temporal activity worker with no HTTP surface** (ADR-0001/0002). The
+  three analysis stages — `add_source`, `begin_session`, `operating_model` — run as
+  durable, run-versioned workflows; a promote step makes a run visible only once it fully
+  succeeded (ADR-0008/0010), isolated per workspace (ADR-0012).
+- **The engine↔cockpit seam is Postgres + Temporal, nothing else**: the cockpit reads
+  workspace metadata through a generated Drizzle mirror (ADR-0003); data lives in a
+  DuckLake lake on S3.
+- **Releases ship as three container images on GHCR** (engine, cockpit, cockpit-migrate);
+  the git tag is the single version truth.
 
 ### Added
-- **Cockpit container service in `docker-compose.yml` (PR 5 of v1 plan, 2026-05-19)**. New `cockpit` service builds from `../dataraum-cockpit` (sibling clone required) with `VITE_ENGINE_API_URL=http://localhost:8000` baked into the bundle, then serves the TanStack Start production output on `127.0.0.1:3000`. Depends on `control-plane` being healthy. The cockpit-side Dockerfile (multi-stage deps/build/runner) lives in `dataraum-cockpit`. Cross-origin browser fetches to the engine are allowed by the engine's existing CORS middleware. For UI hot reload, skip the container and run `pnpm dev` in the cockpit repo directly.
-- **Engine REST surface at `/api/*` (PR 3b of v1 plan, 2026-05-19)**. New `src/dataraum/api/` package — `routes.py` (APIRouter), `services.py` (engine logic extracted from MCP handlers), `schemas.py` (Pydantic response models), `deps.py` (workspace session dependency, lazy-cached ConnectionManager). First route: `GET /api/sources` extracted from the MCP `_list_sources` handler — same data, Pydantic-shaped response (`list[Source]`), no MCP envelope. Mounted into the FastAPI control plane at `/api`. CORS middleware allows `http://localhost:3000` and `http://localhost:5173` (cockpit dev origins; tighten when the cockpit ships behind a real domain). OpenAPI 3.1 spec auto-generated at `/openapi.json`; `scripts/export_openapi.py` dumps it as YAML for publication to `dataraum-api` (CI publish-on-diff lands in PR 3c).
-- **`DATARAUM_MCP_TOKEN` is mandatory at startup**. The FastAPI lifespan raises if unset, so misconfigured deploys fail fast with a clear error instead of accepting unauthenticated requests. `docker-compose.yml` and `.env.example` now reference it.
+- **The cockpit** — the web product surface: chat-driven journeys over import →
+  relationships → operating model, the model canvas, reports with Vega-Lite charts
+  (ADR-0015), a streaming SQL grid, run monitoring, and the teach → replay loop.
+- **The operating model stage** — declared validations, business cycles, and metrics,
+  grounded in the data and executed as calculation graphs: deterministic composition with
+  LLM-authored leaf extracts (ADR-0016), verdicts computed on demand (ADR-0017), every
+  artifact tracked declared → grounded → executed.
+- **Relationship intelligence** — value-overlap detection with LLM confirmation, enriched
+  join views, slice and hierarchy catalogs, driver discovery, and composite keys fused
+  into surrogate join columns (ADR-0018).
+- **Entropy as disagreement** (ADR-0009) — independent witnesses pool per claim; conflict
+  surfaces as *investigate/blocked* readiness instead of silent guesses, teachable via
+  durable overlays.
+- **The documentation site** — `docs/` (Zensical), including the ADR series.
+
+### Removed (BREAKING)
+- **The entire MCP surface** (stdio + HTTP transports, the tool registry, the
+  `dataraum-mcp` entrypoint, PyPI packaging), **the FastAPI control plane** and its brief
+  post-0.2.2 REST/OpenAPI interim (never in a release), and **the `dataraum` CLI**. The
+  cockpit is the product surface; there is no API-first integration path in this release.
 
 ## [0.2.2] - 2026-05-14
 

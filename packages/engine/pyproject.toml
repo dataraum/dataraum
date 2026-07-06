@@ -1,6 +1,6 @@
 [project]
 name = "dataraum"
-version = "0.2.2"
+version = "0.3.0"
 description = "Rich metadata context engine for AI-driven data analytics"
 readme = "README.md"
 requires-python = ">=3.14"

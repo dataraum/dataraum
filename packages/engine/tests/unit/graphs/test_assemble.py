@@ -154,3 +154,89 @@ class TestSaveSnippetsCallerAssignedIds:
         graph = _graph("revenue_only", {"revenue": rev})
         library = self._save(graph, self._generated("someone_elses_id"))
         library.save_snippet.assert_not_called()
+
+
+def _leaf(step_id: str) -> GraphStep:
+    """A NON-output extract leaf — real metric graphs have exactly one output."""
+    return GraphStep(
+        step_id=step_id,
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field=step_id, statement="income_statement"),
+        aggregation="sum",
+    )
+
+
+def test_assemble_executes_the_groundable_subgraph_and_reports_per_step() -> None:
+    """DAT-699: an ungroundable dep no longer aborts the whole graph silently.
+    The groundable extracts EXECUTE (real values in the reason), the holes are
+    named with their reasons, and downstream formulas read as blocked — the
+    per-step story the drill-down renders. The metric itself still fails."""
+    import duckdb
+
+    revenue = _leaf("revenue")
+    cogs = _leaf("cost_of_goods_sold")
+    gross = GraphStep(
+        step_id="gross_profit",
+        step_type=StepType.FORMULA,
+        expression="revenue - cost_of_goods_sold",
+        depends_on=["revenue", "cost_of_goods_sold"],
+        output_step=True,
+    )
+    graph = _graph(
+        "gross_profit",
+        {"revenue": revenue, "cost_of_goods_sold": cogs, "gross_profit": gross},
+    )
+    bindings = {
+        node_key(revenue, graph): NodeDecision(grounded=True),
+        node_key(cogs, graph): NodeDecision(
+            grounded=False, reason="no support: it aggregated to NULL"
+        ),
+    }
+    provider = MagicMock()
+    agent = _bare_agent(provider)
+    config = MagicMock()
+    config.features.sql_repair = None  # default repair attempts (int), never a mock
+    agent.config = config  # type: ignore[attr-defined]
+    agent._lookup_snippets = MagicMock(  # type: ignore[method-assign]
+        return_value={"revenue": {"sql": "SELECT 5925920163.0 AS value"}}
+    )
+    agent._resolve_parameters = MagicMock(return_value={})  # type: ignore[method-assign]
+    ctx = ExecutionContext(duckdb_conn=duckdb.connect(), schema_mapping_id="ws")
+
+    result = agent.assemble(MagicMock(), graph, ctx, bindings, workspace_id="ws")
+
+    assert result.success is False
+    error = result.error or ""
+    # The hole, named with its honest reason:
+    assert "dependency 'cost_of_goods_sold' is ungroundable" in error
+    assert "no support" in error
+    # The groundable extract EXECUTED — its measured value is in the reason:
+    assert "revenue = 5,925,920,163.00 ✓" in error
+    # The formula downstream of the hole is blocked, not silently absent:
+    assert "gross_profit blocked (needs cost_of_goods_sold)" in error
+    # Still no LLM anywhere in assembly.
+    provider.converse.assert_not_called()
+
+
+def test_assemble_partial_report_names_every_hole_not_just_the_first() -> None:
+    """Two ungroundable deps → both named (the old path aborted on the first)."""
+    revenue = _leaf("revenue")
+    cogs = _leaf("cost_of_goods_sold")
+    graph = _graph("both_dead", {"revenue": revenue, "cost_of_goods_sold": cogs})
+    bindings = {
+        node_key(revenue, graph): NodeDecision(grounded=False, reason="reason-a"),
+        node_key(cogs, graph): NodeDecision(grounded=False, reason="reason-b"),
+    }
+    provider = MagicMock()
+    agent = _bare_agent(provider)
+    agent._lookup_snippets = MagicMock(return_value={})  # type: ignore[method-assign]
+    agent._resolve_parameters = MagicMock(return_value={})  # type: ignore[method-assign]
+    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")
+
+    result = agent.assemble(MagicMock(), graph, ctx, bindings, workspace_id="ws")
+
+    assert result.success is False
+    error = result.error or ""
+    assert "'cost_of_goods_sold', 'revenue' are ungroundable" in error
+    assert "reason-a" in error and "reason-b" in error
+    provider.converse.assert_not_called()

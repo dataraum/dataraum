@@ -398,21 +398,32 @@ class GraphAgent(LLMFeature):
         resolved_params = self._resolve_parameters(graph, parameters or {})
         schema_mapping_id = context.schema_mapping_id or "default"
 
-        # Honest-fail on the first ungroundable dependency — born-loud, no LLM. A
+        # Collect EVERY ungroundable dependency — born-loud, no re-authoring. A
         # keyable step absent from the map is a contract violation (the authoring
-        # pass authors every keyable node), so fail loud here, not silently later.
+        # pass authors every keyable node), so it fails loud here too. The metric
+        # still honest-fails, but the groundable subgraph EXECUTES first
+        # (DAT-699): revenue — groundable, 5.93B — ran zero times all day on the
+        # BookSQL smoke because gross_profit aborted whole on cost_of_goods_sold,
+        # and the artifact reason said nothing about what WAS measurable.
+        ungroundable: dict[str, str] = {}
         for step_id, step in graph.steps.items():
             key = node_key(step, graph)
             if key is None:
                 continue  # non-keyable step (rare) — caught by the cache check below
             decision = bindings.get(key)
             if decision is None or not decision.grounded:
-                reason = (
-                    decision.reason
+                ungroundable[step_id] = (
+                    (decision.reason or "ungroundable")
                     if decision is not None
                     else "not authored (absent from binding map)"
                 )
-                return Result.fail(f"dependency '{step_id}' is ungroundable: {reason}")
+        if ungroundable:
+            cached = self._lookup_snippets(session, graph, schema_mapping_id)
+            return Result.fail(
+                self._partial_execution_report(
+                    graph, cached, resolved_params, ungroundable, context
+                )
+            )
 
         # Every extract dep grounded → compose the metric PER-METRIC from the DAG
         # (DAT-646): extract leaves come from the warm cache, formulas/constants are
@@ -485,8 +496,6 @@ class GraphAgent(LLMFeature):
         CTE. Returns ``None`` when an extract leaf is absent (its dep ungroundable — the
         caller honest-fails) or a step is malformed.
         """
-        from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
-
         output_step = graph.get_output_step()
         if output_step is None:
             return None
@@ -502,39 +511,25 @@ class GraphAgent(LLMFeature):
             step = graph.steps.get(step_id)
             if step is None:
                 return None
-            description = step_id
-            try:
-                if step.step_type == StepType.EXTRACT:
-                    snippet = cached_snippets.get(step_id)
-                    if not snippet:
-                        return None  # an extract leaf is missing → dep ungroundable
-                    sql = snippet["sql"]
-                    description = snippet.get("description") or step_id
-                    for a in snippet.get("assumptions") or []:
-                        assumptions.append(
-                            GraphAssumptionOutput(
-                                dimension=a.get("dimension", "grounding.cached"),
-                                target=a.get("target", f"step:{step_id}"),
-                                assumption=a.get("assumption", ""),
-                                basis=a.get("basis", "inferred"),
-                                confidence=a.get("confidence", 0.5),
-                            )
-                        )
-                elif step.step_type == StepType.CONSTANT:
-                    value = resolved_params.get(step.parameter) if step.parameter else None
-                    if value is None:
-                        return None
-                    sql = compose_constant_sql(value)
-                elif step.step_type == StepType.FORMULA:
-                    if not step.expression:
-                        return None
-                    sql = compose_formula_sql(step.expression, set(step.depends_on))
-                else:
-                    return None
-            except ValueError:
-                # Malformed expression / non-numeric constant — composer raises; the
-                # metric honest-fails (the caller surfaces None as ungroundable).
+            sql = self._compose_step_sql(step, cached_snippets, resolved_params)
+            if sql is None:
+                # Missing extract snippet / unresolvable constant / malformed
+                # formula — the metric honest-fails (caller surfaces the reason).
                 return None
+            description = step_id
+            if step.step_type == StepType.EXTRACT:
+                snippet = cached_snippets.get(step_id) or {}
+                description = snippet.get("description") or step_id
+                for a in snippet.get("assumptions") or []:
+                    assumptions.append(
+                        GraphAssumptionOutput(
+                            dimension=a.get("dimension", "grounding.cached"),
+                            target=a.get("target", f"step:{step_id}"),
+                            assumption=a.get("assumption", ""),
+                            basis=a.get("basis", "inferred"),
+                            confidence=a.get("confidence", 0.5),
+                        )
+                    )
             steps.append({"step_id": step_id, "sql": sql, "description": description})
 
         return GeneratedCode(
@@ -548,6 +543,125 @@ class GraphAgent(LLMFeature):
             generated_at=datetime.now(UTC),
             assumptions=assumptions,
         )
+
+    @staticmethod
+    def _compose_step_sql(
+        step: GraphStep,
+        cached_snippets: dict[str, dict[str, Any]],
+        resolved_params: dict[str, Any],
+    ) -> str | None:
+        """One step's CTE SQL: extract = cached snippet, constant/formula = composed.
+
+        ``None`` = not composable (missing snippet, unresolvable constant,
+        malformed formula) — both the full compose and the DAT-699 partial
+        execution treat that as this step's honest hole.
+        """
+        from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
+
+        try:
+            if step.step_type == StepType.EXTRACT:
+                snippet = cached_snippets.get(step.step_id)
+                return snippet["sql"] if snippet else None
+            if step.step_type == StepType.CONSTANT:
+                value = resolved_params.get(step.parameter) if step.parameter else None
+                return compose_constant_sql(value) if value is not None else None
+            if step.step_type == StepType.FORMULA:
+                if not step.expression:
+                    return None
+                return compose_formula_sql(step.expression, set(step.depends_on))
+        except ValueError:
+            # Malformed expression / non-numeric constant — the composer raises;
+            # the step is not composable.
+            return None
+        return None
+
+    def _partial_execution_report(
+        self,
+        graph: TransformationGraph,
+        cached_snippets: dict[str, dict[str, Any]],
+        resolved_params: dict[str, Any],
+        ungroundable: dict[str, str],
+        context: ExecutionContext,
+    ) -> str:
+        """Execute the groundable subgraph and report EVERY step's outcome (DAT-699).
+
+        A metric with an ungroundable extract used to abort whole — on the
+        BookSQL smoke, revenue (groundable, 5.93B) executed zero times all day
+        because every profitability metric died on cost_of_goods_sold first,
+        and the artifact reason said nothing about what WAS measurable. The
+        metric still honest-fails (its composed value cannot exist), but every
+        step whose transitive dependencies ground executes, and the reason
+        names each step's measured value, its hole, or what blocks it — the
+        exact per-step story the drill-down (DAT-671) renders.
+        """
+        output_step = graph.get_output_step()
+        ordered = (
+            _ordered_dep_steps(graph, output_step) + [output_step.step_id]
+            if output_step is not None
+            else []
+        )
+        # Steps outside the output's dependency cone still get reported —
+        # nothing in the graph is silently absent from the per-step story.
+        ordered += sorted(step_id for step_id in graph.steps if step_id not in set(ordered))
+
+        # The maximal executable subgraph: a step runs iff it is not a hole,
+        # composes, and every dependency it names is itself executable.
+        executable: list[dict[str, str]] = []
+        executable_ids: set[str] = set()
+        blocked: dict[str, str] = {}
+        for step_id in ordered:
+            step = graph.steps.get(step_id)
+            if step is None or step_id in ungroundable:
+                continue
+            missing = [d for d in step.depends_on if d not in executable_ids]
+            if missing:
+                blocked[step_id] = ", ".join(missing)
+                continue
+            sql = self._compose_step_sql(step, cached_snippets, resolved_params)
+            if sql is None:
+                blocked[step_id] = "not composable"
+                continue
+            executable.append({"step_id": step_id, "sql": sql, "description": step_id})
+            executable_ids.add(step_id)
+
+        values: dict[str, Any] = {}
+        exec_note = ""
+        if executable:
+            code = GeneratedCode(
+                code_id=str(uuid4()),
+                graph_id=graph.graph_id,
+                summary=f"Partial execution of {graph.graph_id} ({len(executable)} steps)",
+                steps=executable,
+                final_sql=f"SELECT * FROM {executable[-1]['step_id']}",
+                llm_model="composed",
+                prompt_hash="composed",
+                generated_at=datetime.now(UTC),
+            )
+            exec_result = self._execute_sql(code, context, graph)
+            if exec_result.success and exec_result.value:
+                values = {sr.step_id: sr.value for sr in exec_result.value.step_results}
+            else:
+                exec_note = f" (partial execution failed: {exec_result.error})"
+
+        parts: list[str] = []
+        for step_id in ordered:
+            if step_id in ungroundable:
+                parts.append(f"{step_id} ✗ {ungroundable[step_id]}")
+            elif step_id in blocked:
+                parts.append(f"{step_id} blocked (needs {blocked[step_id]})")
+            elif step_id in values:
+                value = values[step_id]
+                if value is None:
+                    parts.append(f"{step_id} = NULL (aggregated with no measured support)")
+                elif isinstance(value, (int, float, Decimal)):
+                    parts.append(f"{step_id} = {float(value):,.2f} ✓")
+                else:
+                    parts.append(f"{step_id} = {value} ✓")
+            elif step_id in executable_ids:
+                parts.append(f"{step_id} composed but not executed")
+        names = ", ".join(f"'{s}'" for s in sorted(ungroundable))
+        verb = "is" if len(ungroundable) == 1 else "are"
+        return f"dependency {names} {verb} ungroundable — " + " · ".join(parts) + exec_note
 
     def _generate_sql(
         self,

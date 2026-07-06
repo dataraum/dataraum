@@ -25,7 +25,6 @@ import {
 	type DrillStep,
 	pinSteps,
 	referencedColumns,
-	sliceColumns,
 } from "./drill";
 
 export interface DrillComposeRequest {
@@ -79,12 +78,58 @@ type AstNode = Record<string, unknown>;
 const isRecord = (v: unknown): v is AstNode =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
 
-const colRef = (name: string): AstNode => ({
+const colRef = (name: string, qualifier?: string): AstNode => ({
 	class: "COLUMN_REF",
 	type: "COLUMN_REF",
 	alias: "",
-	column_names: [name],
+	column_names: qualifier ? [qualifier, name] : [name],
 });
+
+/** The relations of the statement's OWN scope — BASE_TABLE nodes under
+ *  `from_table` only (a subquery's relations live in a different scope and
+ *  must not qualify a top-level reference). */
+const collectScopeRelations = (
+	node: unknown,
+	out: { table: string; alias: string }[],
+): void => {
+	if (Array.isArray(node)) {
+		for (const v of node) collectScopeRelations(v, out);
+		return;
+	}
+	if (!isRecord(node)) return;
+	if (node.type === "BASE_TABLE" && typeof node.table_name === "string") {
+		out.push({
+			table: node.table_name,
+			alias: typeof node.alias === "string" ? node.alias : "",
+		});
+	}
+	// Recurse only through join structure, not into subquery select nodes.
+	if (node.type === "SUBQUERY" || node.type === "SELECT_NODE") return;
+	for (const v of Object.values(node)) collectScopeRelations(v, out);
+};
+
+/**
+ * The qualifier for an injected axis reference. The axis carries its home
+ * relations (`source`: the fact table + its enriched view); when the
+ * statement's scope reads exactly one of them, qualify with its alias so a
+ * column name shared with a joined dim/CTE (`f.business_id` vs
+ * `d.business_id`) binds to the axis's actual home — the catalog's
+ * `column_id` points at the fact, so this is resolution, not guessing.
+ */
+const qualifierFor = (
+	source: string[] | undefined,
+	relations: { table: string; alias: string }[],
+): { qualifier?: string } | { refusal: string } => {
+	if (!source || source.length === 0) return {};
+	const matches = relations.filter((r) => source.includes(r.table));
+	if (matches.length === 0) return {}; // home not in scope (e.g. behind a CTE) — bare, binder decides
+	if (matches.length > 1) {
+		return {
+			refusal: `the statement reads ${matches[0].table} more than once — the axis reference is ambiguous`,
+		};
+	}
+	return { qualifier: matches[0].alias || matches[0].table };
+};
 
 /** Zero every `query_location` in the tree: DuckDB emits u64-max sentinels
  *  that lose precision through JS `JSON.parse`/`stringify` and then fail
@@ -136,8 +181,26 @@ function injectSteps(
 	steps: DrillStep[],
 	baseParamCount: number,
 ): { pinParams: DrillPinValue[] } | { refusal: string } {
-	const dims = sliceColumns(steps);
+	// First slice step per column wins (dedup preserving order), keeping each
+	// step's `source` so its reference can be qualified against the scope.
+	const dimSteps: Extract<DrillStep, { kind: "slice" }>[] = [];
+	for (const s of steps) {
+		if (s.kind === "slice" && !dimSteps.some((d) => d.column === s.column)) {
+			dimSteps.push(s);
+		}
+	}
 	const pins = pinSteps(steps);
+
+	const scopeRelations: { table: string; alias: string }[] = [];
+	collectScopeRelations(node.from_table, scopeRelations);
+	const refFor = (
+		column: string,
+		source: string[] | undefined,
+	): { ref: AstNode } | { refusal: string } => {
+		const q = qualifierFor(source, scopeRelations);
+		if ("refusal" in q) return q;
+		return { ref: colRef(column, q.qualifier) };
+	};
 
 	const selectList = node.select_list;
 	const groupExpressions = node.group_expressions;
@@ -155,9 +218,14 @@ function injectSteps(
 		return { refusal: "statement uses GROUPING SETS" };
 	}
 
-	if (dims.length > 0) {
+	if (dimSteps.length > 0) {
+		const refs: AstNode[] = [];
+		for (const d of dimSteps) {
+			const r = refFor(d.column, d.source);
+			if ("refusal" in r) return r;
+			refs.push(r.ref);
+		}
 		const firstIdx = groupExpressions.length;
-		const refs = dims.map(colRef);
 		node.select_list = [...refs, ...selectList];
 		groupExpressions.push(...refs);
 		const added = refs.map((_, i) => firstIdx + i);
@@ -169,32 +237,37 @@ function injectSteps(
 
 	if (pins.length > 0) {
 		const pinParams: DrillPinValue[] = [];
-		// pinParams grows INSIDE the map: `$n` identifiers must be sequential in
-		// pin order, and only non-NULL pins consume a slot — the push/length
+		const predicates: AstNode[] = [];
+		// pinParams grows INSIDE the loop: `$n` identifiers must be sequential
+		// in pin order, and only non-NULL pins consume a slot — the push/length
 		// pairing below is that ordering, don't lift it out of the loop.
-		const predicates = pins.map((p) => {
+		for (const p of pins) {
+			const r = refFor(p.column, p.source);
+			if ("refusal" in r) return r;
+			const ref = r.ref;
 			if (p.value === null) {
-				return {
+				predicates.push({
 					class: "OPERATOR",
 					type: "OPERATOR_IS_NULL",
 					alias: "",
-					children: [colRef(p.column)],
-				};
+					children: [ref],
+				});
+				continue;
 			}
 			pinParams.push(p.value);
-			return {
+			predicates.push({
 				class: "COMPARISON",
 				type: "COMPARE_EQUAL",
 				alias: "",
-				left: colRef(p.column),
+				left: ref,
 				right: {
 					class: "PARAMETER",
 					type: "VALUE_PARAMETER",
 					alias: "",
 					identifier: String(baseParamCount + pinParams.length),
 				},
-			};
-		});
+			});
+		}
 		const existing = node.where_clause;
 		const children = isRecord(existing)
 			? [existing, ...predicates]

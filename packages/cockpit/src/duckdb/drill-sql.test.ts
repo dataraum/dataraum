@@ -287,3 +287,133 @@ describe("describeColumns", () => {
 		]);
 	});
 });
+
+describe("composeDrill qualification (ambiguous columns, DAT-672 review)", () => {
+	// The exact shape from the 2026-07-06 review screenshot: the extract joins
+	// the enriched fact to a CTE over the account dim, and BOTH sides carry
+	// business_id — a bare injected reference is genuinely ambiguous.
+	const JOINED_EXTRACT = `WITH acct AS (
+  SELECT DISTINCT business_id, account_name FROM coa
+)
+SELECT SUM(f.amount) AS value
+FROM enriched_sales f
+JOIN acct d ON f.business_id = d.business_id AND f.account = d.account_name`;
+
+	beforeAll(async () => {
+		await conn.run(
+			"CREATE TABLE coa (business_id INT, account_name VARCHAR, account_type VARCHAR)",
+		);
+		await conn.run(
+			"INSERT INTO coa VALUES (1,'Rent','Expenses'),(1,'Sales','Income'),(2,'Rent','Expenses')",
+		);
+		await conn.run(
+			"CREATE TABLE enriched_sales (business_id INT, account VARCHAR, amount DOUBLE)",
+		);
+		await conn.run(
+			"INSERT INTO enriched_sales VALUES (1,'Rent',10),(1,'Sales',20),(2,'Rent',40)",
+		);
+	});
+
+	it("qualifies a shared column to the axis's home relation via source", async () => {
+		const result = await composeDrill(conn, {
+			sql: JOINED_EXTRACT,
+			params: [],
+			steps: [
+				{
+					kind: "slice",
+					column: "business_id",
+					source: ["sales", "enriched_sales"],
+				},
+			],
+		});
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.sql).toContain("f.business_id");
+		expect(sorted(await rows(result.sql))).toEqual(
+			sorted(
+				await rows(
+					"SELECT f.business_id, SUM(f.amount) AS value FROM enriched_sales f JOIN (SELECT DISTINCT business_id, account_name FROM coa) d ON f.business_id = d.business_id AND f.account = d.account_name GROUP BY f.business_id",
+				),
+			),
+		);
+	});
+
+	it("pins inherit the qualification", async () => {
+		const result = await composeDrill(conn, {
+			sql: JOINED_EXTRACT,
+			params: [],
+			steps: [
+				{
+					kind: "slice",
+					column: "business_id",
+					source: ["enriched_sales"],
+				},
+				{
+					kind: "pin",
+					column: "business_id",
+					value: 1,
+					source: ["enriched_sales"],
+				},
+			],
+		});
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.params).toEqual([1]);
+		expect(await rows(result.sql, result.params)).toEqual([
+			{ business_id: 1, value: 30 },
+		]);
+	});
+
+	it("still refuses cleanly WITHOUT source (the pre-fix behavior, binder-gated)", async () => {
+		const result = await composeDrill(conn, {
+			sql: JOINED_EXTRACT,
+			params: [],
+			steps: [{ kind: "slice", column: "business_id" }],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: expect.stringContaining("Ambiguous reference"),
+		});
+	});
+
+	it("refuses when the home relation is read twice (self-join)", async () => {
+		const result = await composeDrill(conn, {
+			sql: "SELECT SUM(a.amount) AS value FROM enriched_sales a JOIN enriched_sales b ON a.business_id = b.business_id",
+			params: [],
+			steps: [
+				{
+					kind: "slice",
+					column: "business_id",
+					source: ["enriched_sales"],
+				},
+			],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: expect.stringContaining("more than once"),
+		});
+	});
+
+	it("does not let a subquery's relations hijack qualification", async () => {
+		// enriched_sales appears ONLY inside the IN-subquery; the outer scope
+		// reads coa. source matching must not see the subquery relation.
+		const result = await composeDrill(conn, {
+			sql: "SELECT COUNT(*) AS value FROM coa WHERE account_name IN (SELECT account FROM enriched_sales)",
+			params: [],
+			steps: [
+				{
+					kind: "slice",
+					column: "account_type",
+					source: ["enriched_sales"],
+				},
+			],
+		});
+		// No scope match for the source → bare reference; account_type binds on coa.
+		if (!result.ok) throw new Error(result.reason);
+		expect(sorted(await rows(result.sql))).toEqual(
+			sorted(
+				await rows(
+					"SELECT account_type, COUNT(*) AS value FROM coa WHERE account_name IN (SELECT account FROM enriched_sales) GROUP BY account_type",
+				),
+			),
+		);
+	});
+});

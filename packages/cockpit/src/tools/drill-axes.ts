@@ -25,6 +25,7 @@ import {
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
 	currentSliceDefinitions,
+	currentTables,
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
@@ -52,6 +53,7 @@ export function measureFieldsFromDag(dag: unknown): string[] {
 /** One `current_slice_definitions` row as the resolver reads it (view columns
  *  all type nullable). */
 export interface SliceRowInput {
+	tableId: string | null;
 	columnName: string | null;
 	slicePriority: number | null;
 	sliceType: string | null;
@@ -66,12 +68,16 @@ export interface SliceRowInput {
  * of the same metric is ONE axis — and narrow `distinct_values` to strings.
  * Callers pass rows already priority-ordered; the dedupe preserves that order.
  */
-export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
+export function axesFromSliceRows(
+	rows: SliceRowInput[],
+	sourcesByFact: ReadonlyMap<string, string[]>,
+): DrillAxis[] {
 	const byColumn = new Map<string, DrillAxis>();
 	for (const r of rows) {
 		if (!r.columnName || byColumn.has(r.columnName)) continue;
 		byColumn.set(r.columnName, {
 			column: r.columnName,
+			sourceRelations: sourcesByFact.get(r.tableId ?? "") ?? [],
 			priority: r.slicePriority ?? Number.MAX_SAFE_INTEGER,
 			sliceType: r.sliceType ?? "categorical",
 			values: Array.isArray(r.distinctValues)
@@ -203,8 +209,36 @@ export async function resolveDrillAxes(
 		};
 	}
 
+	// The axis's HOME relations (fact table + its enriched view) travel with
+	// each axis so the composer can qualify a shared column name (`business_id`
+	// on both the fact and a joined dim) to the fact side — the catalog's
+	// column_id points there.
+	const factRows = await metadataDb
+		.select({
+			tableId: currentTables.tableId,
+			tableName: currentTables.tableName,
+		})
+		.from(currentTables)
+		.where(inArray(currentTables.tableId, factIds));
+	const viewNameByFact = new Map(
+		viewRows
+			.filter((v) => v.factTableId && v.viewName)
+			.map((v) => [v.factTableId as string, v.viewName as string]),
+	);
+	const sourcesByFact = new Map<string, string[]>(
+		factRows
+			.filter((t): t is typeof t & { tableId: string } => Boolean(t.tableId))
+			.map((t) => [
+				t.tableId,
+				[t.tableName, viewNameByFact.get(t.tableId)].filter((n): n is string =>
+					Boolean(n),
+				),
+			]),
+	);
+
 	const sliceRows = await metadataDb
 		.select({
+			tableId: currentSliceDefinitions.tableId,
 			columnName: currentSliceDefinitions.columnName,
 			slicePriority: currentSliceDefinitions.slicePriority,
 			sliceType: currentSliceDefinitions.sliceType,
@@ -216,7 +250,7 @@ export async function resolveDrillAxes(
 		.where(inArray(currentSliceDefinitions.tableId, factIds))
 		.orderBy(asc(currentSliceDefinitions.slicePriority));
 
-	const axes = axesFromSliceRows(sliceRows);
+	const axes = axesFromSliceRows(sliceRows, sourcesByFact);
 	if (axes.length === 0) {
 		return {
 			axes,

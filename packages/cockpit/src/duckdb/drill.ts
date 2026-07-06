@@ -23,8 +23,8 @@ import { quoteIdentifier } from "./grid-query";
 export type DrillPinValue = string | number | boolean | null;
 
 export type DrillStep =
-	| { kind: "slice"; column: string }
-	| { kind: "pin"; column: string; value: DrillPinValue };
+	| { kind: "slice"; column: string; source?: string[] }
+	| { kind: "pin"; column: string; value: DrillPinValue; source?: string[] };
 
 /** Axis-resolution request (`/api/drill/axes`, metric path in P1): exactly one
  *  of the two keys. Shared client↔server so the wire contract can't silently
@@ -38,6 +38,13 @@ export interface DrillAxis {
 	/** The `slice_definitions.column_name` — addressable verbatim in the
 	 *  metric's SQL scope (the enriched view exposes FK-prefixed dim columns). */
 	column: string;
+	/** The relations this axis column LIVES on (the fact table and its
+	 *  enriched view). When the measure's SQL joins other relations sharing
+	 *  the column name (`f.business_id` vs `d.business_id`), the composer
+	 *  qualifies the injected reference with the matching relation's alias —
+	 *  the catalog's `column_id` points at the fact, so the fact-side column
+	 *  IS the axis, deterministically. */
+	sourceRelations: string[];
 	priority: number;
 	sliceType: string;
 	/** Catalog sample of the dimension's values (display hint, not exhaustive). */

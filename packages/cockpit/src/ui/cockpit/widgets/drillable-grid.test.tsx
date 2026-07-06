@@ -52,6 +52,7 @@ import { DrillableGrid } from "./drillable-grid";
 
 const axis = (column: string): DrillAxis => ({
 	column,
+	sourceRelations: ["t"],
 	priority: 1,
 	sliceType: "categorical",
 	values: [],

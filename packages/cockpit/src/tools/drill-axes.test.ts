@@ -40,6 +40,7 @@ import {
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
 	currentSliceDefinitions,
+	currentTables,
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import {
@@ -77,44 +78,53 @@ describe("measureFieldsFromDag", () => {
 
 describe("axesFromSliceRows", () => {
 	it("narrows nullable view rows and dedupes by column keeping first (best priority)", () => {
-		const axes = axesFromSliceRows([
-			{
-				columnName: "customer__region",
-				slicePriority: 1,
-				sliceType: "categorical",
-				distinctValues: ["EU", "US", 7, null],
-				valueCount: 2,
-				businessContext: "sales region",
-			},
-			// Same dimension cataloged on a second fact — lower priority, dropped.
-			{
-				columnName: "customer__region",
-				slicePriority: 3,
-				sliceType: "categorical",
-				distinctValues: [],
-				valueCount: null,
-				businessContext: null,
-			},
-			{
-				columnName: null, // stale row without a name → dropped
-				slicePriority: 2,
-				sliceType: null,
-				distinctValues: null,
-				valueCount: null,
-				businessContext: null,
-			},
-			{
-				columnName: "booking_month",
-				slicePriority: null,
-				sliceType: null,
-				distinctValues: "not-an-array",
-				valueCount: 12,
-				businessContext: null,
-			},
-		]);
+		const sources = new Map([["fact1", ["orders", "enriched_orders"]]]);
+		const axes = axesFromSliceRows(
+			[
+				{
+					tableId: "fact1",
+					columnName: "customer__region",
+					slicePriority: 1,
+					sliceType: "categorical",
+					distinctValues: ["EU", "US", 7, null],
+					valueCount: 2,
+					businessContext: "sales region",
+				},
+				// Same dimension cataloged on a second fact — lower priority, dropped.
+				{
+					tableId: "fact2",
+					columnName: "customer__region",
+					slicePriority: 3,
+					sliceType: "categorical",
+					distinctValues: [],
+					valueCount: null,
+					businessContext: null,
+				},
+				{
+					tableId: "fact1",
+					columnName: null, // stale row without a name → dropped
+					slicePriority: 2,
+					sliceType: null,
+					distinctValues: null,
+					valueCount: null,
+					businessContext: null,
+				},
+				{
+					tableId: "fact1",
+					columnName: "booking_month",
+					slicePriority: null,
+					sliceType: null,
+					distinctValues: "not-an-array",
+					valueCount: 12,
+					businessContext: null,
+				},
+			],
+			sources,
+		);
 		expect(axes).toEqual([
 			{
 				column: "customer__region",
+				sourceRelations: ["orders", "enriched_orders"],
 				priority: 1,
 				sliceType: "categorical",
 				values: ["EU", "US"],
@@ -123,6 +133,7 @@ describe("axesFromSliceRows", () => {
 			},
 			{
 				column: "booking_month",
+				sourceRelations: ["orders", "enriched_orders"],
 				priority: Number.MAX_SAFE_INTEGER,
 				sliceType: "categorical",
 				values: [],
@@ -179,8 +190,10 @@ const seed = () => {
 		},
 		{ viewName: "enriched_bank", viewTableId: "vt3", factTableId: "fact3" },
 	]);
+	rowsByTable.set(currentTables, [{ tableId: "fact1", tableName: "invoices" }]);
 	rowsByTable.set(currentSliceDefinitions, [
 		{
+			tableId: "fact1",
 			columnName: "customer__region",
 			slicePriority: 1,
 			sliceType: "categorical",
@@ -198,6 +211,7 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect(axes).toEqual([
 			{
 				column: "customer__region",
+				sourceRelations: ["invoices", "enriched_invoices"],
 				priority: 1,
 				sliceType: "categorical",
 				values: ["EU", "US"],

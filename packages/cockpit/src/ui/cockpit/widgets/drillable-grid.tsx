@@ -203,7 +203,16 @@ export function DrillableGrid({
 							(p) =>
 								p.kind === "pin" && p.column === s.column && p.value === value,
 						);
-						if (!duplicate) pins.push({ kind: "pin", column: s.column, value });
+						if (!duplicate) {
+							// The pin inherits the slice's home relations — same column,
+							// same qualification target.
+							pins.push({
+								kind: "pin",
+								column: s.column,
+								value,
+								source: s.source,
+							});
+						}
 					}
 					if (pins.length > 0) apply([...steps, ...pins]);
 				}
@@ -231,7 +240,14 @@ export function DrillableGrid({
 								key={axis.column}
 								disabled={slicedColumns.has(axis.column)}
 								onClick={() =>
-									apply([...steps, { kind: "slice", column: axis.column }])
+									apply([
+										...steps,
+										{
+											kind: "slice",
+											column: axis.column,
+											source: axis.sourceRelations,
+										},
+									])
 								}
 								rightSection={
 									axis.valueCount !== null ? (

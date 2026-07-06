@@ -26,6 +26,7 @@ import {
 	readGroundingReadiness,
 } from "#/db/metadata/grounding-readiness";
 import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { structuredOutputBudgetMiddleware } from "#/lib/structured-output-budget";
 import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { teach } from "#/tools/teach";
@@ -163,6 +164,11 @@ export async function assessAndGround(
 		middleware: [
 			llmTelemetryMiddleware("grounding"),
 			toolArgsGuardMiddleware("grounding"),
+			// modelOptions feed BOTH the streaming tool-loop turns and the final
+			// non-streaming verdict call, and the latter is hard-capped by the
+			// SDK (see llm.ts) while the loop wants the full budget for adaptive
+			// thinking + teach calls. This re-budgets only the finalization.
+			structuredOutputBudgetMiddleware(),
 		],
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		agentLoopStrategy: maxIterations(GROUNDING_LOOP_MAX_ITERATIONS),

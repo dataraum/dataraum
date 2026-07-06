@@ -14,7 +14,7 @@ import { z } from "zod";
 import { config } from "#/config";
 import type { ConversationKind } from "#/db/cockpit/conversations";
 import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
-import { MAX_OUTPUT_TOKENS, NAV_MODEL } from "#/llm";
+import { NAV_MODEL, STRUCTURED_OUTPUT_MAX_TOKENS } from "#/llm";
 
 const KINDS = ["connect", "stage", "analyse"] as const;
 
@@ -39,7 +39,7 @@ export async function classifyOpeningMessage(
 		const result = await chat({
 			adapter: createAnthropicChat(NAV_MODEL, config.anthropicApiKey),
 			middleware: [llmTelemetryMiddleware("nav_classifier")],
-			modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+			modelOptions: { max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS },
 			systemPrompts: [
 				{ content: `${SYSTEM}\nAvailable: ${available.join(", ")}.` },
 			],

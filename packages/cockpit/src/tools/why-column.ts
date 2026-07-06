@@ -33,7 +33,7 @@ import {
 import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
-import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
+import { MODEL, STRUCTURED_OUTPUT_MAX_TOKENS } from "../llm";
 import { getWhyInstructions } from "../prompts";
 import {
 	mergeCurrentEvidence,
@@ -197,7 +197,15 @@ export async function synthesizeAnalysis(
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
 		middleware: [llmTelemetryMiddleware("why_column")],
 		abortController: linkedAbortController(signal),
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+		modelOptions: {
+			max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+			// One-shot structured extraction (the adapter forces a
+			// `structured_output` tool): Sonnet 5's default adaptive thinking buys
+			// no quality here, bills a trace per call inside the capped budget,
+			// and forcing a tool while thinking is on is the fragile combination
+			// frame-family documents. Disable it.
+			thinking: { type: "disabled" },
+		},
 		systemPrompts: [getWhyInstructions()],
 		messages: [
 			{

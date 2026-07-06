@@ -16,8 +16,8 @@
         "@mantine/core": "^9.4.1",
         "@mantine/hooks": "^9.4.1",
         "@tailwindcss/vite": "^4.3.2",
-        "@tanstack/ai": "latest",
-        "@tanstack/ai-anthropic": "latest",
+        "@tanstack/ai": "^0.40.0",
+        "@tanstack/ai-anthropic": "^0.16.1",
         "@tanstack/ai-react": "latest",
         "@tanstack/react-query": "latest",
         "@tanstack/react-router": "latest",
@@ -499,9 +499,9 @@
 
     "@tailwindcss/vite": ["@tailwindcss/vite@4.3.2", "", { "dependencies": { "@tailwindcss/node": "4.3.2", "@tailwindcss/oxide": "4.3.2", "tailwindcss": "4.3.2" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7 || ^8" } }, "sha512-eHpMeX4JXfVNJDEcsouTeCBubJBTcTLigeaw/NTUW6PB5ATKKXdyonnXgTBX2VuRbjz1hjfz6C5XAhr52ImQXA=="],
 
-    "@tanstack/ai": ["@tanstack/ai@0.39.0", "", { "dependencies": { "@ag-ui/core": "^0.0.52", "@standard-schema/spec": "^1.1.0", "@tanstack/ai-event-client": "0.6.8", "@tanstack/ai-utils": "0.3.1", "partial-json": "^0.1.7" }, "peerDependencies": { "@opentelemetry/api": ">=1.9.0" }, "optionalPeers": ["@opentelemetry/api"] }, "sha512-UxqvTMwhGeUCafX/4nzFJfi1iT8uNJ4rqtB482Fc3knbmuKBO+C8d0CRxHqnPjZqc9r+lCmrv/AwqpeKfZMkaQ=="],
+    "@tanstack/ai": ["@tanstack/ai@0.40.0", "", { "dependencies": { "@ag-ui/core": "^0.0.52", "@standard-schema/spec": "^1.1.0", "@tanstack/ai-event-client": "0.6.8", "@tanstack/ai-utils": "0.3.1", "partial-json": "^0.1.7" }, "peerDependencies": { "@opentelemetry/api": ">=1.9.0" }, "optionalPeers": ["@opentelemetry/api"] }, "sha512-7942RQkjHccHRL9lTuqAjcgt5z+281HJEvWSSEIX9ZDgntSj5Xt9cOK8SL5tXtGrjj2ZpGnzaFdog5lE4QD07A=="],
 
-    "@tanstack/ai-anthropic": ["@tanstack/ai-anthropic@0.15.13", "", { "dependencies": { "@anthropic-ai/sdk": "^0.97.1", "@tanstack/ai-utils": "0.3.1" }, "peerDependencies": { "@tanstack/ai": "^0.39.0", "zod": "^4.0.0" } }, "sha512-sCUE5AbsXF+7Yk9oLIeHF7hJmLBgojVP5rYm7OYJIwWwVleur5lM1nRi60AoL0ZjAmXnpfUfV81vSJ1Tf+9k0w=="],
+    "@tanstack/ai-anthropic": ["@tanstack/ai-anthropic@0.16.1", "", { "dependencies": { "@anthropic-ai/sdk": "^0.97.1", "@tanstack/ai-utils": "0.3.1" }, "peerDependencies": { "@tanstack/ai": "^0.40.0", "zod": "^4.0.0" } }, "sha512-AyR1hNNI8vq9caGITZ5DmZy4q/Uo5b5KdIPRf+m7cWRMyol0h63L81Ti3JUsvsUvk1UBeSLqZmcLkW0MmogQBA=="],
 
     "@tanstack/ai-client": ["@tanstack/ai-client@0.19.0", "", { "dependencies": { "@tanstack/ai": "0.38.0", "@tanstack/ai-event-client": "0.6.8", "@tanstack/ai-utils": "0.3.1" } }, "sha512-TjbV1LgOfNKewdWtHGH0mhMYWyTenwGA5Pl3VZs2ZVePIANKjw85VKoRNSvkJgKBJMSiSUR5uLcSJkFCXXI93A=="],
 

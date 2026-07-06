@@ -212,11 +212,9 @@ export async function synthesizeAnalysis(
 		abortController: linkedAbortController(signal),
 		modelOptions: {
 			max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
-			// One-shot structured extraction (the adapter forces a
-			// `structured_output` tool): Sonnet 5's default adaptive thinking buys
-			// no quality here, bills a trace per call inside the capped budget,
-			// and forcing a tool while thinking is on is the fragile combination
-			// frame-family documents. Disable it.
+			// One-shot structured synthesis, no agentic reasoning: Sonnet 5's
+			// default adaptive thinking bills a trace per call with no quality
+			// gain (the frame-family precedent). Disable it.
 			thinking: { type: "disabled" },
 		},
 		systemPrompts: [getWhyInstructions()],

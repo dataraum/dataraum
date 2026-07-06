@@ -70,6 +70,7 @@ def test_rescuable_fanout_gets_a_composite_hint(con) -> None:
     assert hint is not None
     assert hint["column_pairs"] == [["account", "account_name"], ["business_id", "business_id"]]
     assert hint["cardinality"] != "many-to-many"
+    assert hint["coverage"] == 1.0  # every fact row matches in this fixture (DAT-695)
 
 
 def test_clean_single_column_candidate_is_untouched(con) -> None:

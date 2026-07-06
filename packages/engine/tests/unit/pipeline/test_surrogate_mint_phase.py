@@ -209,6 +209,7 @@ def test_mint_end_to_end(session, lake) -> None:
     assert by_id[rel.to_column_id] == "_sk__account_name__business_id"
     assert rel.cardinality == "many-to-one"
     assert rel.evidence["introduces_duplicates"] is False
+    assert rel.evidence["coverage"] == 1.0  # every fact row joins in this fixture (DAT-695)
     assert rel.evidence["surrogate"]["natural_pairs"] == [
         ["account", "account_name"],
         ["business_id", "business_id"],

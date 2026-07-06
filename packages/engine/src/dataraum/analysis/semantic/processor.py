@@ -408,6 +408,8 @@ def _augment_candidates_with_composite_rescue(
             cand["composite_key"] = {
                 "column_pairs": [list(pair) for pair in key.column_pairs],
                 "cardinality": key.cardinality,
+                "coverage": key.coverage,
+                "coverage_table": key.coverage_table,
             }
 
 
@@ -467,15 +469,17 @@ def _build_surrogate_intent(
     if len(components) < 2:
         return None  # anchor-only after dedup — effectively single-column
 
-    # Canonical component order: anchor first, then scope components sorted by
-    # from-side column name. The LLM's key_columns ordering is not stable across
-    # runs, and the digest, the surrogate column NAME, and the hash-input order
-    # all derive from this list — a canonical order keeps the minted column
-    # (and its (table_id, name)-upserted column_id) identical when the same key
-    # is re-confirmed with its components shuffled.
-    scope = sorted(zip(components[1:], name_pairs[1:], strict=True), key=lambda t: t[1][0])
-    components = [components[0], *(c for c, _n in scope)]
-    name_pairs = [name_pairs[0], *(n for _c, n in scope)]
+    # Canonical component order: ALL pairs sorted by from-side column name —
+    # including the anchor. Neither the LLM's key_columns ordering NOR its
+    # anchor choice is stable across runs (seen live 2026-07-06: the same
+    # composite arrived anchored on payment_method one run and business_id the
+    # next, minting two differently-named surrogates for one key), and the
+    # digest, the surrogate column NAME, and the hash-input order all derive
+    # from this list. The anchor's semantics live in the relationship
+    # DIRECTION, never in the column identity.
+    ordered = sorted(zip(components, name_pairs, strict=True), key=lambda t: t[1][0])
+    components = [c for c, _n in ordered]
+    name_pairs = [n for _c, n in ordered]
 
     # The composite's measured cardinality (the collapse proof). Best-effort:
     # the mint recomputes on the minted surrogate column anyway.

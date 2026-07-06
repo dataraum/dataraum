@@ -858,6 +858,9 @@ class EnrichedViewsPhase(BasePhase):
                         "to_column": to_col_name,
                         "cardinality": rel.cardinality,
                         "confidence": rel.confidence,
+                        # Measured join coverage from the mint's evidence
+                        # (DAT-695) — how much of the fact the join enriches.
+                        "coverage": (rel.evidence or {}).get("coverage"),
                     }
                 )
 

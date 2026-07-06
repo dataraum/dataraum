@@ -611,7 +611,9 @@ def _home_grain_partition(
     to find the dims constant within it. A dim constant within ONE entity homes there; a
     dim constant within SEVERAL homes at the **finest** (highest-cardinality) one — the
     most specific grain — with a deterministic name tiebreak; a dim constant within none
-    is row-level. Returns ``({entity: [home dims]}, row_dims)`` with empty entities dropped.
+    is row-level. A dim SATURATED against its home entity (a 1:1 alias of the key) is
+    DROPPED — neither homed nor row-level (DAT-695); callers must not assume every dim
+    survives. Returns ``({entity: [home dims]}, row_dims)`` with empty entities dropped.
     """
     card = {e: int(frame[e].drop_nulls().n_unique()) for e in cluster_keys}
     constant_within = {
@@ -624,7 +626,18 @@ def _home_grain_partition(
         if not homes:
             row_dims.append(d)
             continue
-        home_by_entity[max(homes, key=lambda e: (card[e], e))].append(d)
+        home = max(homes, key=lambda e: (card[e], e))
+        # A dim SATURATED against its home entity — as many distinct values as
+        # the entity has members, while constant within each — is a 1:1 alias
+        # of the key itself. Ranking an entity's own renaming across those same
+        # entities is structurally information-free, and worse: it fabricates a
+        # family whose ranking is guaranteed empty and can win headline
+        # precedence (DAT-695: business_id ↔ created_user, 27 = 27). Drop it —
+        # neither a home dim nor row-level (row-wise it is still just the key).
+        if int(frame[d].drop_nulls().n_unique()) == card[home]:
+            logger.info("driver_alias_dim_dropped", dim=d, entity=home)
+            continue
+        home_by_entity[home].append(d)
     return {e: ds for e, ds in home_by_entity.items() if ds}, row_dims
 
 
@@ -717,10 +730,33 @@ def _routed_ranking(
         return (1, 0.0, "")  # row family sits between high- and low-ICC entity families
 
     families.sort(key=precedence)
-    primary, _primary_grain, primary_entity = families[0]
+    # The alias-drop above can discard EVERY candidate (a table whose only dims
+    # were renamings of its entity keys) — no family exists then; return the
+    # honest empty ranking rather than index into nothing (DAT-695 review).
+    if not families:
+        return DriverRanking(
+            measure=measure.label, target_type=measure.target_type, n_rows=frame.height
+        )
+    # The headline must carry content: an empty high-ICC entity family ahead of
+    # a non-empty row family would bury every real driver in ``secondary`` and
+    # persist ``ranked: 0`` (DAT-695). Take the first family WITH ranked
+    # dimensions — but never past the row family: the low-ICC entity families
+    # behind it are DELIBERATELY demoted (DAT-561 — at low ICC the measure does
+    # not cluster by that entity, so its grain must not headline), content or
+    # not. All of buckets 0–1 empty → strict precedence, as before.
+    primary_idx = next(
+        (
+            i
+            for i, fam in enumerate(families)
+            if fam[0].ranked_dimensions and precedence(fam)[0] <= 1
+        ),
+        0,
+    )
+    primary, _primary_grain, primary_entity = families[primary_idx]
     secondary = [
         SecondaryDriver(d, g, grain, entity)
-        for ranking, grain, entity in families[1:]
+        for i, (ranking, grain, entity) in enumerate(families)
+        if i != primary_idx
         for d, g in ranking.ranked_dimensions
     ]
     return replace(primary, secondary_dimensions=secondary, entity=primary_entity)

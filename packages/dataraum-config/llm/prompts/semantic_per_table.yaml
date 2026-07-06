@@ -115,7 +115,15 @@ system_prompt: |
   to_column) and list the REMAINING component pair(s) in its key_columns. Leave
   key_columns empty for an ordinary single-column relationship. Only confirm a
   composite when the data shows it RESOLVES the fan-out — never staple together
-  unrelated columns.
+  unrelated columns. Treat the MEASURED USAGE on the hint as decisive evidence,
+  not color: it is the fraction of the referencing table's rows that actually
+  resolve against the key. When only a few percent resolve, the two tables
+  merely share a value format or name pool — there is NO relationship in the
+  data to confirm, however plausible the column names look. A key that "joins
+  cleanly" at near-zero usage enriches nothing and misleads every downstream
+  consumer; declining it — anchor pair included — is the correct answer, not a
+  missed detection. Confirm a low-usage reference only when the table context
+  gives strong, explicit evidence that the reference is real but sparse.
 
   Note: Do NOT determine cardinality (one-to-one, many-to-one, etc.) — this is
   computed automatically from actual data after your analysis. Focus on whether

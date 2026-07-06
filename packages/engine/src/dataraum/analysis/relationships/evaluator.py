@@ -219,6 +219,47 @@ def compute_composite_cardinality(
         return None
 
 
+def compute_join_coverage(
+    table1_path: str,
+    table2_path: str,
+    column_pairs: list[tuple[str, str]],
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> float | None:
+    """Share of table1 rows (non-NULL on every key component) with a table2 match.
+
+    Cardinality proves match MULTIPLICITY; this proves match COVERAGE — the two
+    are independent, and a key can be perfectly many-to-one while matching
+    almost nothing (DAT-695: a lookalike dimension whose values barely overlap
+    the fact's verified many-to-one at 0.3% coverage). Serves as EVIDENCE for
+    the LLM judges (relationship confirmation, enrichment), never a gate.
+
+    Returns:
+        Matched fraction in [0, 1], or ``None`` when table1 has no non-NULL
+        key rows or the probe fails.
+    """
+    if not column_pairs:
+        return None
+    on_clause = " AND ".join(f't1."{a}" = t2."{b}"' for a, b in column_pairs)
+    t1_not_null = " AND ".join(f't1."{a}" IS NOT NULL' for a, _b in column_pairs)
+    try:
+        row = duckdb_conn.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (WHERE EXISTS (
+                    SELECT 1 FROM {table2_path} t2 WHERE {on_clause})) AS matched,
+                COUNT(*) AS total
+            FROM {table1_path} t1
+            WHERE {t1_not_null}
+            """
+        ).fetchone()
+        if not row or not row[1]:
+            return None
+        return float(row[0]) / float(row[1])
+    except Exception as e:
+        logger.warning("join_coverage_failed", column_pairs=column_pairs, error=str(e))
+        return None
+
+
 def _verify_cardinality(
     detected_cardinality: str,
     table1_path: str,

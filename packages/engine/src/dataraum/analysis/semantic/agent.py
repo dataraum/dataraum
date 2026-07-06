@@ -491,12 +491,25 @@ class SemanticAgent(LLMFeature):
             composite = rel.get("composite_key")
             if composite:
                 pair_strs = [f"{a} <-> {b}" for a, b in composite.get("column_pairs", [])]
+                coverage = composite.get("coverage")
+                coverage_table = composite.get("coverage_table") or "the referencing table"
+                coverage_note = (
+                    f" MEASURED USAGE: {coverage:.1%} of {coverage_table}'s "
+                    "populated-key rows resolve against this key."
+                    if coverage is not None
+                    else ""
+                )
                 lines.append(
                     "COMPOSITE-KEY RESCUE: the best single-column join is many-to-many "
                     "(fan-out / over-counts). Joining on the full key "
-                    f"[{', '.join(pair_strs)}] is {composite.get('cardinality', '?')}. "
-                    "If this composite is the real key, confirm it: emit ONE relationship "
-                    "for the anchor pair and put the remaining pair(s) in key_columns."
+                    f"[{', '.join(pair_strs)}] is {composite.get('cardinality', '?')}."
+                    f"{coverage_note} "
+                    "Confirm ONLY when both hold: the composite resolves the fan-out AND "
+                    "the measured usage shows the reference is actually used — a "
+                    "near-zero match rate means a lookalike table (shared name pools), "
+                    "and the correct output is to DECLINE the relationship entirely, "
+                    "anchor included. To confirm: emit ONE relationship for the anchor "
+                    "pair and put the remaining pair(s) in key_columns."
                 )
 
             lines.append("Column pairs with value overlap:")

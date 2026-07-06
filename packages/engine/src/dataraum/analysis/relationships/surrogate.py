@@ -54,9 +54,11 @@ class SurrogateSpec:
 def surrogate_column_name(component_names: list[str]) -> str:
     """The deterministic surrogate name for a component set, e.g. ``_sk__a__b``.
 
-    Component order is the intent's pair order (anchor first), so the name — and
-    with it the ``(table_id, column_name)``-upserted ``column_id`` — is stable
-    across runs for the same confirmed key.
+    Component order is the intent's CANONICAL pair order (all pairs sorted by
+    the referencing side's column name — the anchor is deliberately NOT first:
+    the LLM's anchor choice is not run-stable, and the name must be), so the
+    ``(table_id, column_name)``-upserted ``column_id`` is stable across runs
+    for the same confirmed key.
     """
     return SURROGATE_PREFIX + "__".join(component_names)
 

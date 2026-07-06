@@ -17,21 +17,20 @@ Correctness over speed. The product is **analytical correctness** — the system
 
 **Branching.** Feature branches only (`type/description`: feat / fix / refactor / docs / chore / test); never push to `main`. Commit after each verified (green) phase. Open PRs with `gh pr create` only when asked.
 
-**Skills drive the work** (`.claude/skills/`):
+**Skills drive the work** (`.claude/skills/`, model: ADR-0019):
 
 | Intent | Skill |
 |--------|-------|
-| "I have an idea", "what if…" | `/ideate` → design doc |
-| "break this down", "create the epic" | `/decompose` → Jira epic |
-| "implement X", "is X feasible?" | `/refine` first (understand, surface conflicts) |
-| approved approach | `/implement` (phased; invokes the two reviewers at the end) |
+| "we should build X" | `/epic define` → `epics/<slug>.md` with measurable KPIs |
+| epic approved on main | `/epic run` (scorecard-gated loop on `epic/<slug>`) |
+| "where are we?" | `/scorecard` (harness-computed verdict, never self-reported) |
 | UI or tool just built | `/smoke` (drive it, feel the UX) |
-| cutting a release | `/release-prep` |
+| cutting a release | `/release-prep` (editorial sweep + live eval gate) |
 | quick fix (<3 files, obvious) | just do it |
 
-`/implement` updates `.claude/handoff.md`, the bridge telling `dataraum-eval` (calibration) and `dataraum-testdata` what changed. Detector changes always update it.
+Detector or pipeline-shape changes are verified through the scorecard's eval area and the live release gate — calibration truth lives in `dataraum-eval`, ground-truth corpora in `dataraum-testdata` (registry: `scorecard/scorecard.yaml`).
 
-**Sizing.** S (1–3 files): direct. M (3–8 files): plan, single session. L/XL (8+ files or cross-module): Confluence plan linked to the Jira issue, phased, each phase green before the next. Declare DO-change / DO-NOT-change file lists to fence *unrelated* scope. Cleanup the design implies — deleting dead code, removing a retired field, adapting its tests — is in-scope, not an adjacent-edit violation. What to avoid is unplanned *unrelated* edits, never design-implied deletion (see "Default to the clean cut" in the workspace CLAUDE.md).
+**Sizing.** S (1–3 files): direct. M (3–8 files): plan, single session. L/XL (8+ files or cross-module): phased, each phase green before the next. Declare DO-change / DO-NOT-change file lists to fence *unrelated* scope. Cleanup the design implies — deleting dead code, removing a retired field, adapting its tests — is in-scope, not an adjacent-edit violation. What to avoid is unplanned *unrelated* edits, never design-implied deletion (see "Default to the clean cut" in the workspace CLAUDE.md).
 
 ## Testing
 

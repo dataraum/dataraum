@@ -22,16 +22,20 @@ This codebase is mid-pivot (Python library → web-app cockpit). Retiring recent
 - **Philipp owns design direction and is the senior engineer.** Build what's specified at high quality without relitigating settled calls. Reserve check-ins for genuine forks or design risk, not micro-steps.
 - **No backwards-compat shims.** Clean cuts, no migration/compatibility paths.
 
+## How work happens — objective-driven epics (ADR-0019)
+
+Epics with machine-checkable objectives, not tickets. An epic is `epics/<slug>.md` (objective, KPIs with measure commands + targets + baselines, promotion contract), approved onto main via a small definition PR. The agent iterates on an `epic/<slug>` branch — fresh sessions, state in the branch, push after every green checkpoint — until **`scorecard/run.py`, never the agent,** says the KPIs are met with no area regression; CI recomputes the verdict with the judge (`scorecard/`, `epics/`) restored from `origin/main`. Two human gates: approve the epic definition; merge the PR. Live (real-LLM) eval gates the **release** (`/release-prep`), not the PR. Agent-written tests are scaffolding with **zero evidentiary weight** — data oracles and invariants (`scorecard/scorecard.yaml`) are the acceptance signal, and a capability epic first commits a failing oracle to main. The honorable exit (evidence that the target is unreachable) is a sanctioned outcome.
+
 ## Information has one home — by lifecycle
 
-The architecture is fixed; the work now is fixing bugs and inconsistencies. Don't let information accrete in parallel journals. Each fact has exactly one home, chosen by how long it lives:
+Don't let information accrete in parallel journals. Each fact has exactly one home, chosen by how long it lives:
 
 - **How it works *now*** (invariants, behaviour, the why behind a line) → **code: precise comments + tests.** A finished task's knowledge lives in the diff it produced. This is the default — reach for it before any doc.
-- **Why the architecture/approach is this way** → **ADRs (`docs/adr/`) + Confluence (space DD).** Long-lived, superseded only by a newer ADR.
-- **In-flight work, plans, design exploration, refinement notes, status** → **the Jira epic/task** (description or an attached `.md`). Closed issue = delete the artifact; the code is the truth, do *not* migrate a closed issue's docs anywhere.
+- **Why the architecture/approach is this way** → **ADRs (`docs/adr/`).** Long-lived, superseded only by a newer ADR.
+- **What we're building now** → **`epics/<slug>.md`**: the objective and its measurable KPIs. Frozen during the run, **deleted in the PR that completes it**. `epics/` holds live work only; git history is the archive.
 - **Non-derivable, currently-true, cross-cutting facts with no other home** → agent memory (gotchas, seams, preferences). Not a status board.
 
-**The rule that enforces it: a ticket ID in a filename (`dat-NNN-*.md`) means the file is ephemeral → it belongs in Jira, never committed to the repo and never in memory.** `docs/adr/` is the one ticket-free zone. When a task lands, delete its plan/handoff/status file — don't archive it. When a Jira issue closes, delete its `project_` memory and prune its MEMORY.md line.
+Jira and Confluence are read-only history — never a home, never agent context. The epic file is the only in-flight artifact, and it dies with its PR; nothing else (plans, handoffs, status boards, ticket-ID files) gets committed.
 
 ## How the packages connect
 
@@ -42,7 +46,7 @@ The architecture is fixed; the work now is fixing bugs and inconsistencies. Don'
 
 ## Skills
 
-Workflow skills live at the workspace root (`.claude/skills/`): `/ideate` `/refine` `/implement` `/decompose` `/smoke` `/take` `/release-prep`.
+Workflow skills live at the workspace root (`.claude/skills/`): `/epic` (define an objective, or run the scorecard-gated loop) · `/scorecard` (measure) · `/smoke` (UX test-drive) · `/release-prep` (editorial sweep + live eval gate).
 
 External, stack-specific skills:
 - **Temporal** — `npx skills add temporalio/skill-temporal-developer` (install once, auto-activates).
@@ -67,4 +71,4 @@ docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
 open http://localhost:3000                                          # cockpit (run dev outside docker for hot reload)
 ```
 
-Settled architecture decisions → `docs/adr/` (short, git-tracked). Long-form design docs → Confluence (space DD). Active work → Jira (DAT-*).
+Settled architecture decisions → `docs/adr/` (short, git-tracked). Active work → `epics/` (live objectives only, ADR-0019).

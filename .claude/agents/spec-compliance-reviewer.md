@@ -19,7 +19,7 @@ You review recently changed code against a specification or plan document to ver
 ## Process
 
 ### Step 1: Gather the Specification
-- Read the specification/plan document. This may be in `docs_old/projects/`, a Linear document, or provided by the user.
+- Read the specification: normally the epic file (`epics/<slug>.md` — objective, out-of-scope, KPIs; ADR-0019), or a plan provided by the user.
 - Extract every discrete requirement, acceptance criterion, and scope boundary.
 - Note the explicit "DO change" and "DO NOT change" file lists if present.
 
@@ -87,13 +87,13 @@ Structure your output as:
 
 ## Workflow Context
 
-You are often invoked as part of the `/implement` review gate — the final check before the developer declares work complete. The senior-code-reviewer runs alongside you.
+You are invoked as an advisory pass at promotion/PR time (ADR-0019) — input to the human merge decision, not a push gate. KPI verdicts are the scorecard's job; yours is scope and intent: does the diff serve the epic's objective, and nothing else?
 
-When you find the implementation fundamentally diverges from the spec (not just missing a detail, but taking a different approach), recommend going back to `/refine` to realign. This is normal — specs and reality conflict, and discovering that during review is better than discovering it in production.
+Two checks specific to this model:
+- **Judge paths**: any branch edit to `scorecard/`, `epics/`, or baselines is a critical finding (CI restores them from main, but the attempt itself matters).
+- **Test-diff honesty**: modified or deleted existing tests must be acknowledged in the PR prose with a design reason. Unexplained test weakening is a critical finding.
 
-When you find that requirements were dropped without explanation, flag this prominently. The `/implement` skill requires explicit acknowledgment of skipped work at each checkpoint — if something is missing without a stated reason, the checkpoint discipline wasn't followed.
-
-Check `.claude/handoff.md` if it exists — verify that detector or MCP tool changes are noted there. Missing handoff entries mean the eval repo won't know to test these changes.
+When the implementation fundamentally diverges from the epic's stated approach (not a missing detail — a different direction), recommend a new definition PR rather than merging. Specs and reality conflict; surfacing that at review is the point.
 
 ## Project Context
 

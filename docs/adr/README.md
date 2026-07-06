@@ -6,9 +6,9 @@ Short, **git-tracked** records of settled architecture decisions — the *what* 
 ## Why this exists
 
 Memory (`.claude/memory/`) is the agent's local, gitignored working scratchpad — it
-reflects what was true when written and is allowed to go stale. Confluence holds
-long-form design exploration. Neither is a durable, shared, reviewed record of *what we
-decided and why it still holds*. ADRs fill that gap:
+reflects what was true when written and is allowed to go stale. Epic files (`epics/`)
+are live objectives that die with their PR. Neither is a durable, shared, reviewed
+record of *what we decided and why it still holds*. ADRs fill that gap:
 
 - **In git** → shared with teammates + CI, reviewed in PRs, versioned with the code.
 - **In the repo tree** → greppable in-workspace, no MCP round-trip.
@@ -23,13 +23,12 @@ record). When code and an ADR disagree, the code wins and the ADR needs a supers
 - Copy `0000-template.md`. Keep it to a screen.
 - Decisions are immutable once `Accepted`. To change one, write a **new** ADR that
   supersedes it and flip the old one's status to `Superseded by ADR-NNNN`.
-- Link the long-form design (Confluence DD space) and the driving ticket (Jira DAT-*).
-  Ticket and design-doc references belong in the header, not as load-bearing prose — the
-  Context section must state the requirement so the record reads without them.
+- Header references (a driving epic, a historical ticket) are pointers, not load-bearing
+  prose — the Context section must state the requirement so the record reads without them.
 - Structure: **Context** states the requirement and the forces; the **Decision** is what
   was chosen, with the rejected options and why; **Consequences** are what follows. A
   decision is driven by a requirement — it is not itself a requirement.
 - No hand-maintained index — the directory listing *is* the index (a previous hand list
   here drifted out of date). Keep titles descriptive.
-- Two records (0005, 0006) are **internal process records** — how the repository is
-  developed — and are marked as such; the rest document product architecture.
+- Three records (0005, 0006, 0019) are **internal process records** — how the repository
+  is developed — and are marked as such; the rest document product architecture.

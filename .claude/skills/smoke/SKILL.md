@@ -121,11 +121,10 @@ Be specific. Quote actual text on screen. Reference actual route paths and netwo
 
 After smoke testing:
 1. Fix any obvious issues found (UI copy rot, missing error states, broken empty states). Rebuild engine container if you touched Python.
-2. Commit the implementation.
-3. For engine surface or detector changes: update `.claude/handoff.md` so eval picks up what changed.
-4. For cockpit-only or REST-only work: no handoff needed — eval doesn't consume the cockpit.
+2. Commit the implementation. Correctness verification is the scorecard's job
+   (`/scorecard`, ADR-0019) — smoke findings are UX input, never evidence.
 
-If smoke testing reveals deeper problems (not just UX polish but fundamental issues like wrong widget shape, contract mismatch, missing route): go back to `/implement` or even `/refine`. Don't patch over structural problems.
+If smoke testing reveals deeper problems (not just UX polish but fundamental issues like wrong widget shape, contract mismatch, missing route): treat it as evidence against the epic's current approach — fix it on the epic branch, or surface it as a definition problem. Don't patch over structural problems.
 
 ## Rules
 

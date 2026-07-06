@@ -1,6 +1,6 @@
 # ADR-0005 — Knowledge lives where its consumer reads it
 
-- **Status:** Accepted
+- **Status:** Amended by ADR-0019 — Confluence/Jira are no longer knowledge homes; `epics/` added
 - **Date:** 2026-05-30
 - **Ticket:** —
 - **Design doc:** —

@@ -78,7 +78,22 @@ grep '^version = ' packages/engine/pyproject.toml   # must equal $ARGUMENTS
 The cockpit's `package.json` carries no version — the image tag is its version. If that
 changes, add it here.
 
-### 6. Wrap up
+### 6. Release gate — the live eval family (ADR-0019 tier 3)
+
+The system/UAT tier runs at release cut, not per-PR. **Confirm with the user
+before any live spend**, then, in `../dataraum-eval`:
+
+1. Mint a **fresh seed corpus** (dataraum-testdata) — data the merged code has
+   never seen, with exact ground truth.
+2. Run the lean gate: `clean` + the union of the released epics' promotion
+   `strategies`, plus the agentic `/investigate` financial leg against the
+   corpus ground truth.
+3. Score by eval's own rules (recall as ordering with margins, pooled pass
+   rates — never point thresholds). Record GO/NO-GO in eval's `docs/history.md`.
+
+NO-GO blocks the tag — findings become epics, not footnotes.
+
+### 7. Wrap up
 
 Re-run the mechanical check, then report: previous tag + commit count, files edited
 (one line each), the CHANGELOG entry (paste it), and anything noticed but deliberately

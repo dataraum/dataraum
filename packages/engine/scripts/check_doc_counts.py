@@ -10,6 +10,10 @@ We scan a fixed set of doc files for numbered claims like
 fail if the number disagrees with the truth.
 (The MCP tool count check died with the MCP surface — DAT-487.)
 
+Missing files are skipped silently, so keep DOC_FILES pointing at files that
+exist — a stale path checks nothing. The user-facing docs live at the
+WORKSPACE root (`docs/`, published via Zensical), not in this package.
+
 Run locally:  uv run python scripts/check_doc_counts.py
 Used in CI by .github/workflows/release.yml (preflight job).
 """
@@ -25,13 +29,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 DOC_FILES = [
     "README.md",
-    "docs/index.md",
-    "docs/architecture.md",
-    "docs/pipeline.md",
-    "docs/entropy.md",
-    "docs/contributing.md",
-    "docs/configuration.md",
-    "docs/data-model.md",
+    "../../README.md",
+    "../cockpit/README.md",
+    "../../docs/index.md",
+    "../../docs/getting-started/overview.md",
+    "../../docs/concepts/pipeline.md",
+    "../../docs/concepts/measurement.md",
+    "../../docs/platform/architecture.md",
 ]
 
 # Each kind matches noun forms used in prose. Order matters for regex

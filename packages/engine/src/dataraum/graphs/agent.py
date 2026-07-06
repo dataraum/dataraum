@@ -44,6 +44,7 @@ from .models import (
     StepResult,
     StepType,
     TransformationGraph,
+    ValueSearchInput,
 )
 from .verifier import verify_execution
 
@@ -52,6 +53,13 @@ if TYPE_CHECKING:
     from dataraum.llm.providers.base import ToolDefinition
 
 logger = get_logger(__name__)
+
+# The grounding agent's catalog-search budget (DAT-699): enough turns to
+# resolve a couple of concepts' exact values on a high-cardinality
+# discriminator, small enough that a lost agent fails loud instead of
+# spelunking. Each search is one bounded DuckDB DISTINCT query.
+_MAX_VALUE_SEARCHES = 4
+_VALUE_SEARCH_LIMIT = 25
 
 
 def _ordered_dep_steps(graph: TransformationGraph, output_step: GraphStep) -> list[str]:
@@ -690,6 +698,7 @@ class GraphAgent(LLMFeature):
             ConversationRequest,
             Message,
             ToolDefinition,
+            ToolResult,
         )
 
         extract_leaves = [
@@ -773,11 +782,24 @@ class GraphAgent(LLMFeature):
             model=model,
         )
 
-        # Define tool for structured output
+        # Define tools: the structured output plus the bounded catalog search
+        # (DAT-699) — high-cardinality discriminators are served size+sample
+        # only, and their exact values live behind search_values.
         tool = ToolDefinition(
             name="generate_sql",
             description="Provide the SQL grounding the one concept in the graph specification",
             input_schema=ExtractGroundingOutput.model_json_schema(),
+        )
+        search_tool = ToolDefinition(
+            name="search_values",
+            description=(
+                "Search a column's distinct values by case-insensitive substring. "
+                "Use it to resolve the EXACT values of a high-cardinality "
+                "discriminator (marked 'NOT enumerated' in the Value sets) before "
+                "writing an IN-list — never guess a predicate. Always finish by "
+                "calling generate_sql."
+            ),
+            input_schema=ValueSearchInput.model_json_schema(),
         )
 
         # Thinking (DAT-603): grounding is the pipeline's hardest reasoning task
@@ -785,33 +807,78 @@ class GraphAgent(LLMFeature):
         # reflection is the quality lever. A FORCED tool_choice silently
         # suppresses thinking on the live API (probed 2026-07-03: forced -> no
         # thinking block, auto -> thinking block), so a thinking run offers the
-        # tool on auto and the prompt mandates the call; no tool call remains a
-        # loud bind error (checked below), never a silent prose answer.
+        # tools on auto and the prompt mandates the final call; no tool call
+        # remains a loud bind error (checked below), never a silent prose
+        # answer. Non-thinking runs use "any" (some tool must be called —
+        # search_values or generate_sql; the old forced generate_sql would
+        # make searching impossible). disable_parallel_tool_use keeps every
+        # turn to ONE call, so the search loop stays sequential and binding
+        # [0] can never ground a superseded SQL.
         thinking = bool(feature_config and feature_config.thinking)
-        request = ConversationRequest(
-            messages=[Message(role="user", content=user_prompt)],
-            system=system_prompt,
-            tools=[tool],
-            # auto (not forced): a forced choice silently suppresses thinking on
-            # the live API (probed 2026-07-03). disable_parallel_tool_use restores
-            # the <=1-tool-call guarantee that forcing used to provide — under
-            # plain auto the model may emit MULTIPLE generate_sql calls in one
-            # turn and binding [0] could ground a superseded SQL.
-            tool_choice={"type": "auto", "disable_parallel_tool_use": True}
+        tool_choice: dict[str, Any] = (
+            {"type": "auto", "disable_parallel_tool_use": True}
             if thinking
-            else {"type": "tool", "name": "generate_sql"},
-            thinking=thinking,
-            label=prompt_name,
-            effort=feature_config.effort if feature_config else None,
-            max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
-            model=model,
+            else {"type": "any", "disable_parallel_tool_use": True}
         )
+        messages = [Message(role="user", content=user_prompt)]
 
-        # converse raises a typed ProviderError on an API failure (DAT-503) —
-        # retryability rides the exception to the worker's durable boundary, so
-        # we don't re-wrap it. A returned Result is always a success.
-        response = self.provider.converse(request).unwrap()
+        def _converse() -> Any:
+            # converse raises a typed ProviderError on an API failure (DAT-503) —
+            # retryability rides the exception to the worker's durable boundary,
+            # so we don't re-wrap it. A returned Result is always a success.
+            return self.provider.converse(
+                ConversationRequest(
+                    messages=messages,
+                    system=system_prompt,
+                    tools=[tool, search_tool],
+                    tool_choice=tool_choice,
+                    thinking=thinking,
+                    label=prompt_name,
+                    effort=feature_config.effort if feature_config else None,
+                    max_tokens=self.config.limits.max_output_tokens_per_request,
+                    temperature=temperature,
+                    model=model,
+                )
+            ).unwrap()
+
+        response = _converse()
+
+        # Bounded exploration loop (DAT-699): answer each search_values call and
+        # continue the conversation (raw_content round-trips the signed thinking
+        # blocks). The budget is small — a lost agent fails loud below, never
+        # spelunks. The last allowed search's result carries the budget notice.
+        searches = 0
+        while (
+            searches < _MAX_VALUE_SEARCHES
+            and len(response.tool_calls) == 1
+            and response.tool_calls[0].name == "search_values"
+        ):
+            searches += 1
+            search_call = response.tool_calls[0]
+            outcome = self._run_value_search(context, search_call.input)
+            if searches == _MAX_VALUE_SEARCHES:
+                outcome += "\n(search budget exhausted — call generate_sql now)"
+            logger.info(
+                "grounding_value_search",
+                graph_id=graph.graph_id,
+                pattern=search_call.input.get("pattern"),
+                turn=searches,
+            )
+            messages.append(
+                Message(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                    raw_content=response.raw_content,
+                )
+            )
+            messages.append(
+                Message(
+                    role="user",
+                    content=[ToolResult(tool_use_id=search_call.id, content=outcome)],
+                )
+            )
+            response = _converse()
 
         # Extract tool call result. No tool call is a bind ERROR — never guess by
         # parsing free text as JSON (DAT-439's born-loud cut): a metric that can't
@@ -828,7 +895,10 @@ class GraphAgent(LLMFeature):
 
         tool_call = response.tool_calls[0]
         if tool_call.name != "generate_sql":
-            return Result.fail(f"Unexpected tool call: {tool_call.name}")
+            return Result.fail(
+                f"Unexpected tool call: {tool_call.name}"
+                + (" (search budget exhausted)" if searches >= _MAX_VALUE_SEARCHES else "")
+            )
 
         try:
             output = ExtractGroundingOutput.model_validate(tool_call.input)
@@ -895,6 +965,60 @@ class GraphAgent(LLMFeature):
         )
 
         return Result.ok(generated_code)
+
+    def _run_value_search(self, context: ExecutionContext, raw_input: dict[str, Any]) -> str:
+        """Execute one bounded catalog value search (DAT-699).
+
+        Returns compact text for the tool_result. Errors come back as TEXT (an
+        unknown table/column or a bad pattern is the agent's to correct within
+        its search budget), never as an exception — a broken search must not
+        kill the grounding turn. Table and column names are validated against
+        our own catalog before touching SQL; only the pattern is user…model
+        text, escaped for the one ILIKE literal it lands in.
+        """
+        try:
+            params = ValueSearchInput.model_validate(raw_input)
+        except ValidationError as e:
+            return f"invalid search_values input: {e}"
+        rich = context.rich_context
+        tables = {t.table_name: t for t in getattr(rich, "tables", None) or []}
+        table = tables.get(params.table)
+        if table is None or not table.duckdb_name:
+            known = ", ".join(sorted(tables)) or "(none)"
+            return f"unknown table '{params.table}' — known tables: {known}"
+        if params.column not in {c.column_name for c in table.columns}:
+            known = ", ".join(sorted(c.column_name for c in table.columns))
+            return f"unknown column '{params.column}' on '{params.table}' — columns: {known}"
+        if context.duckdb_conn is None:
+            return "no data connection available for value search"
+        needle = (
+            params.pattern.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+            .replace("'", "''")
+        )
+        try:
+            rows = context.duckdb_conn.execute(
+                f'SELECT CAST("{params.column}" AS VARCHAR) AS value, COUNT(*) AS n '
+                f'FROM "{table.duckdb_name}" '
+                f'WHERE "{params.column}" IS NOT NULL '
+                f"AND CAST(\"{params.column}\" AS VARCHAR) ILIKE '%{needle}%' ESCAPE '\\' "
+                f"GROUP BY 1 ORDER BY n DESC, value LIMIT {_VALUE_SEARCH_LIMIT}"
+            ).fetchall()
+        except Exception as e:
+            return f"search failed: {e}"
+        if not rows:
+            return f"no values matching '{params.pattern}' in {params.table}.{params.column}"
+        listed = "\n".join(f"- {v} ({n} rows)" for v, n in rows)
+        truncated = (
+            f"\n(first {_VALUE_SEARCH_LIMIT} matches by frequency — narrow the pattern for more)"
+            if len(rows) == _VALUE_SEARCH_LIMIT
+            else ""
+        )
+        return (
+            f"values matching '{params.pattern}' in "
+            f"{params.table}.{params.column}:\n{listed}{truncated}"
+        )
 
     def _repair_tool_output(
         self,

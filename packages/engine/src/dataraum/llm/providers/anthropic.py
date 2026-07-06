@@ -408,28 +408,55 @@ class AnthropicProvider(LLMProvider):
                 response = stream.get_final_message()
             elapsed_ms = round((time.perf_counter() - start) * 1000)
 
-            # Extract content and tool calls from response
+            # Extract content and tool calls from response. raw_content keeps
+            # the turn's blocks VERBATIM (incl. signed thinking blocks) so a
+            # continued conversation can echo the assistant turn back — the
+            # thinking-model API rejects a continuation whose assistant turn
+            # lost its thinking blocks (DAT-699).
             text_content = ""
             tool_calls: list[ToolCall] = []
+            raw_content: list[dict[str, Any]] = []
 
             schemas_by_name = {t.name: t.input_schema for t in request.tools}
             for block in response.content:
                 if block.type == "text":
                     text_content += block.text
+                    raw_content.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
-                    raw_input = dict(block.input) if block.input else {}
+                    original_input = dict(block.input) if block.input else {}
+                    # Echo the ORIGINAL input in raw_content (exact round-trip);
+                    # the coerced form is for OUR consumers only.
+                    raw_content.append(
+                        {
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": original_input,
+                        }
+                    )
+                    coerced = original_input
                     tool_schema = schemas_by_name.get(block.name)
                     if tool_schema is not None:
-                        raw_input = _coerce_stringified_args(
-                            raw_input, tool_schema, label=request.label
+                        coerced = _coerce_stringified_args(
+                            original_input, tool_schema, label=request.label
                         )
                     tool_calls.append(
                         ToolCall(
                             id=block.id,
                             name=block.name,
-                            input=raw_input,
+                            input=coerced,
                         )
                     )
+                elif block.type == "thinking":
+                    raw_content.append(
+                        {
+                            "type": "thinking",
+                            "thinking": block.thinking,
+                            "signature": block.signature,
+                        }
+                    )
+                elif block.type == "redacted_thinking":
+                    raw_content.append({"type": "redacted_thinking", "data": block.data})
 
             # Cache-usage fields are optional on the SDK Usage object (None when
             # no cache_control is in play — the engine today, until DAT-601);
@@ -464,6 +491,7 @@ class AnthropicProvider(LLMProvider):
                 ConversationResponse(
                     content=text_content,
                     tool_calls=tool_calls,
+                    raw_content=raw_content or None,
                     stop_reason=response.stop_reason or "end_turn",
                     model=response.model,
                     input_tokens=usage.input_tokens,
@@ -526,6 +554,15 @@ class AnthropicProvider(LLMProvider):
                     result.append(cast(MessageParam, {"role": "user", "content": msg.content}))
 
             elif msg.role == "assistant":
+                # Verbatim continuation (DAT-699): an echoed assistant turn uses
+                # its captured blocks unchanged — signed thinking blocks must
+                # round-trip exactly or the API rejects the continuation.
+                if msg.raw_content:
+                    result.append(
+                        cast(MessageParam, {"role": "assistant", "content": msg.raw_content})
+                    )
+                    continue
+
                 # Assistant message - could have text and/or tool calls
                 content_blocks: list[Any] = []
 

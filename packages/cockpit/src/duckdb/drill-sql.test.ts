@@ -566,3 +566,57 @@ SELECT * FROM m`;
 		});
 	});
 });
+
+describe("composeDrill tier C output-reachability gate (post-merge review)", () => {
+	it("refuses when the dim-carrying CTE is off the output's reference chain", async () => {
+		// The empirically-reproduced silent-miss shape: `orphan` is a real
+		// extract (dim-carrying after injection) but the output formula only
+		// references the constant — without the gate this composed
+		// "successfully" with the slice silently absent from the result.
+		const ORPHAN = `WITH orphan AS (
+SELECT SUM(credit) AS value FROM enriched_txn
+),
+y AS (
+SELECT 30 AS value
+),
+final AS (
+SELECT ((SELECT value FROM y) * 2.0) AS value
+)
+SELECT * FROM final`;
+		const result = await composeDrill(conn, {
+			sql: ORPHAN,
+			params: [],
+			steps: [
+				{
+					kind: "slice",
+					column: "transaction_type",
+					source: ["txn", "enriched_txn"],
+				},
+			],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: "the metric's output step cannot carry the dimension",
+		});
+	});
+
+	it("refuses a composed-metric shape whose outer select is not a bare star", async () => {
+		// The engine always emits `SELECT * FROM <output>`; a narrowed outer
+		// select would hide injected dims — assert loudly instead.
+		const result = await composeDrill(conn, {
+			sql: "WITH a AS (SELECT SUM(credit) AS value FROM enriched_txn) SELECT value FROM a",
+			params: [],
+			steps: [
+				{
+					kind: "slice",
+					column: "transaction_type",
+					source: ["txn", "enriched_txn"],
+				},
+			],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: "metric output shape not recognized",
+		});
+	});
+});

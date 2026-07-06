@@ -267,3 +267,13 @@ describe("resolveDrillAxes empty-result reasons", () => {
 		expect(stale.reason).toContain("enriched_master_txn_table");
 	});
 });
+
+describe("resolveDrillAxes bare-catalog reason", () => {
+	it("names the bare catalog when the fact resolves but has no slice definitions", async () => {
+		seed();
+		rowsByTable.set(currentSliceDefinitions, []);
+		const result = await resolveDrillAxes({ standardField: "revenue" });
+		expect(result.axes).toEqual([]);
+		expect(result.reason).toContain("No dimensions cataloged");
+	});
+});

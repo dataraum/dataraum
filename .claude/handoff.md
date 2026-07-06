@@ -52,11 +52,21 @@ DAT-679 fixture work (greedy-search miss-rate corpus).
 
 ---
 
+## DAT-672 — drill keystone; `column_mappings` removed end-to-end (PR #438, merged 2026-07-06)
+
+**For dataraum-eval:**
+- **`sql_snippets.column_mappings` no longer exists** (column dropped; LLM output field, `GeneratedCode`, reuse-merge and persist paths all removed). Any eval strategy reading it gets `UndefinedColumn` — switch to `provenance.column_mappings_basis` (`{concept: {column, filter, resolution}}`), which is the prompted, populated per-concept grounding record. The flat field had been silently empty since DAT-636 dropped its prompt teaching (`default_factory=dict` masked it).
+- No other engine response/pipeline shape changed; the rest of the PR is cockpit-side (drill tiers A/B/C over the promoted surface — read-only).
+
+**Testdata note:** BookSQL's COA has **zero COGS-type and zero inventory accounts**, so gross-profit-family metrics can never execute there (honest NULL extracts) — don't read that as a grounding regression; realistic executed ceiling on BookSQL ≈ dso + current_ratio.
+
+---
+
 ## DAT-603 — graph agent: single-extract output schema + adaptive thinking (PRs #434, merged 2026-07-03)
 
 **Re-baseline `graph_sql_generation` before trusting comparisons against the DAT-602 eval baseline.** Three changes eval must know about:
 
-1. **Output schema replaced.** `GraphSQLGenerationOutput` (summary/steps[]/final_sql) is gone; the tool now takes `ExtractGroundingOutput`: `grounding` (evidence commitment, FIRST field), `sql`, `description`, `column_mappings`, `assumptions`, `provenance` (no more `llm_reasoning`). The agent binds the SQL to the graph's own leaf id — snippet `step_id`s always equal catalogue step ids now (the DAT-664 paraphrase class is structurally gone). `validation_sql`'s schema also lost its unread `explanation` field.
+1. **Output schema replaced.** `GraphSQLGenerationOutput` (summary/steps[]/final_sql) is gone; the tool now takes `ExtractGroundingOutput`: `grounding` (evidence commitment, FIRST field), `sql`, `description`, `assumptions`, `provenance` (no more `llm_reasoning`; `column_mappings` was removed by DAT-672 — see its entry). The agent binds the SQL to the graph's own leaf id — snippet `step_id`s always equal catalogue step ids now (the DAT-664 paraphrase class is structurally gone). `validation_sql`'s schema also lost its unread `explanation` field.
 2. **Adaptive thinking ON for this label** (`thinking: true` in `llm/config.yaml`), with `tool_choice: auto` + `disable_parallel_tool_use`. Latency/token profile shifted: measured 763 → ~3,726 mean output tokens/call (thinking billed as output), ~10s → ~35s/call, absorbed by the 10-wide fan-out. Any eval latency/cost assertions on this label need new baselines.
 3. **Prompt v6.1** (floors-not-scripts rewrite) — grounding QUALITY improved on the finance fresh-wipe smoke: revenue grounds via the complete `account_type` classification and matches `ground_truth.yaml` exactly (51,766,199.72); cogs+opex+depreciation match `total_expenses` to the cent; 22/34 executed (prior fresh runs: 21 and 19). Value-level GT comparison is now part of the grounding smoke — distribution parity alone masked a 48% revenue error in pre-rework sampling.
 

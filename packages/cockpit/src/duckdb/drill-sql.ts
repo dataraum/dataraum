@@ -417,6 +417,21 @@ function composeTierC(
 	node: AstNode,
 	req: DrillComposeRequest,
 ): { pinParams: DrillPinValue[] } | { refusal: string } {
+	// The engine's composed-metric outer statement is literally
+	// `SELECT * FROM <output_step>` (agent.py hardcodes it at both call
+	// sites). Assert the STAR so a future engine change that narrows the
+	// outer select refuses loudly instead of silently hiding injected dims
+	// (post-merge review, 2026-07-06).
+	const topSelect = node.select_list;
+	if (
+		!Array.isArray(topSelect) ||
+		topSelect.length !== 1 ||
+		!isRecord(topSelect[0]) ||
+		topSelect[0].class !== "STAR"
+	) {
+		return { refusal: "metric output shape not recognized" };
+	}
+
 	const entries = cteEntries(node);
 	const cteNames = new Set(entries.map((e) => e.key));
 	const dims = req.steps.filter((s) => s.kind === "slice");
@@ -463,6 +478,17 @@ function composeTierC(
 
 	if (dimCarrying.size === 0) {
 		return { refusal: "no step of this metric can carry the dimension" };
+	}
+	// The gate must prove the dims reach the CTE the OUTER statement actually
+	// selects from — "some CTE carries them" is not enough: an extract CTE off
+	// the output's reference chain (over-declared `depends_on` in the metric
+	// YAML) would compose "successfully" with the slice silently missing from
+	// the result. Wrong numbers are worse than refusals (post-merge review,
+	// 2026-07-06 — empirically reproduced).
+	const outputRels: { table: string; alias: string }[] = [];
+	collectScopeRelations(node.from_table, outputRels);
+	if (!outputRels.some((r) => dimCarrying.has(r.table))) {
+		return { refusal: "the metric's output step cannot carry the dimension" };
 	}
 	return { pinParams };
 }

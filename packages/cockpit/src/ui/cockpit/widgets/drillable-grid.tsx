@@ -41,7 +41,7 @@ import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 type SqlParams = (string | number | boolean | null)[];
 
 type ComposeResponse =
-	| { ok: true; tier: "A" | "B"; sql: string; params: SqlParams }
+	| { ok: true; tier: "A" | "B" | "C"; sql: string; params: SqlParams }
 	| { ok: false; reason: string };
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {

@@ -417,3 +417,152 @@ JOIN acct d ON f.business_id = d.business_id AND f.account = d.account_name`;
 		);
 	});
 });
+
+describe("composeDrill tier C (engine-composed metric recomposition)", () => {
+	// The VERBATIM engine composition shape (graphs/formula_composer.py output,
+	// copied from a real dso formula snippet): scalar extract CTEs, a literal
+	// constant CTE, and a formula CTE combining deps via scalar subqueries.
+	const DSO_SHAPE = `WITH accounts_receivable AS (
+SELECT SUM(open_balance) AS value
+FROM enriched_txn
+WHERE account IN (
+  SELECT DISTINCT account_name
+  FROM coa_dim
+  WHERE account_type = 'Accounts receivable (A/R)'
+)
+),
+revenue AS (
+SELECT SUM(credit) - SUM(debit) AS value
+FROM enriched_txn
+WHERE account IN (
+  SELECT DISTINCT account_name
+  FROM coa_dim
+  WHERE account_type = 'Income'
+)
+),
+days_in_period AS (
+SELECT 30 AS value
+),
+dso AS (
+SELECT (((SELECT value FROM accounts_receivable) / NULLIF((SELECT value FROM revenue), 0)) * (SELECT value FROM days_in_period)) AS value
+)
+SELECT * FROM dso`;
+
+	const SOURCE = ["txn", "enriched_txn"];
+
+	beforeAll(async () => {
+		await conn.run(
+			"CREATE TABLE coa_dim (account_name VARCHAR, account_type VARCHAR)",
+		);
+		await conn.run(
+			"INSERT INTO coa_dim VALUES ('AR-acc','Accounts receivable (A/R)'),('INC-acc','Income')",
+		);
+		await conn.run(
+			"CREATE TABLE enriched_txn (transaction_type VARCHAR, account VARCHAR, open_balance DOUBLE, credit DOUBLE, debit DOUBLE)",
+		);
+		await conn.run(`INSERT INTO enriched_txn VALUES
+			('Invoice','AR-acc',100,0,0),
+			('Invoice','INC-acc',0,200,50),
+			('Payment','INC-acc',0,300,0),
+			('Refund','AR-acc',40,0,0)`);
+	});
+
+	it("slices a ratio metric with a constant: dims flow through every step CTE", async () => {
+		const result = await composeDrill(conn, {
+			sql: DSO_SHAPE,
+			params: [],
+			steps: [{ kind: "slice", column: "transaction_type", source: SOURCE }],
+		});
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.tier).toBe("C");
+		expect(result.columns.map((c) => c.name)).toEqual([
+			"transaction_type",
+			"value",
+		]);
+		// FULL JOIN semantics: a group present on only one side survives with a
+		// NULL other side → NULL metric value (honest, not dropped).
+		expect(sorted(await rows(result.sql))).toEqual(
+			sorted([
+				{ transaction_type: "Invoice", value: 20 }, // 100/150 * 30
+				{ transaction_type: "Payment", value: null }, // no AR
+				{ transaction_type: "Refund", value: null }, // no revenue
+			]),
+		);
+	});
+
+	it("pins apply inside EVERY extract CTE, params repeated in CTE order", async () => {
+		const result = await composeDrill(conn, {
+			sql: DSO_SHAPE,
+			params: [],
+			steps: [
+				{ kind: "slice", column: "transaction_type", source: SOURCE },
+				{
+					kind: "pin",
+					column: "transaction_type",
+					value: "Invoice",
+					source: SOURCE,
+				},
+			],
+		});
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.tier).toBe("C");
+		expect(result.params).toEqual(["Invoice", "Invoice"]);
+		expect(await rows(result.sql, result.params)).toEqual([
+			{ transaction_type: "Invoice", value: 20 },
+		]);
+	});
+
+	it("recomposes a formula-over-formula chain (nested dim-carrying deps)", async () => {
+		const NESTED = `WITH a AS (
+SELECT SUM(credit) AS value FROM enriched_txn
+),
+b AS (
+SELECT SUM(debit) AS value FROM enriched_txn
+),
+gp AS (
+SELECT ((SELECT value FROM a) - (SELECT value FROM b)) AS value
+),
+m AS (
+SELECT ((SELECT value FROM gp) / NULLIF((SELECT value FROM a), 0)) AS value
+)
+SELECT * FROM m`;
+		const result = await composeDrill(conn, {
+			sql: NESTED,
+			params: [],
+			steps: [{ kind: "slice", column: "transaction_type", source: SOURCE }],
+		});
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.tier).toBe("C");
+		expect(sorted(await rows(result.sql))).toEqual(
+			sorted([
+				{ transaction_type: "Invoice", value: 0.75 }, // (200-50)/200
+				{ transaction_type: "Payment", value: 1 }, // 300/300
+				{ transaction_type: "Refund", value: null }, // 0/NULLIF(0)
+			]),
+		);
+	});
+
+	it("refuses a metric whose steps are all constants", async () => {
+		const result = await composeDrill(conn, {
+			sql: "WITH c AS (SELECT 30 AS value), out AS (SELECT ((SELECT value FROM c) * 2.0) AS value) SELECT * FROM out",
+			params: [],
+			steps: [{ kind: "slice", column: "transaction_type", source: SOURCE }],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: "no step of this metric can carry the dimension",
+		});
+	});
+
+	it("refuses via the binder when the dimension does not exist on the fact", async () => {
+		const result = await composeDrill(conn, {
+			sql: DSO_SHAPE,
+			params: [],
+			steps: [{ kind: "slice", column: "no_such_dim", source: SOURCE }],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: expect.stringContaining("Binder Error"),
+		});
+	});
+});

@@ -275,10 +275,59 @@ def test_scope_component_order_is_canonical(session) -> None:
     assert a is not None and b is not None
     assert a["intent_digest"] == b["intent_digest"]
     assert a["column_pairs"] == b["column_pairs"]
-    # Anchor first, scope sorted by from-side name.
+    # ALL pairs sorted by from-side name — the anchor holds no positional
+    # privilege in the column identity.
     assert a["column_pairs"][0][0] == cols[(txn.table_id, "account")]
     assert a["column_pairs"][1][0] == cols[(txn.table_id, "business_id")]
     assert a["column_pairs"][2][0] == cols[(txn.table_id, "region")]
+
+
+def test_anchor_choice_does_not_change_the_surrogate_identity(session) -> None:
+    """Seen live: the LLM anchored the same composite on payment_method one run
+    and business_id the next, minting two differently-named surrogates for one
+    key. The digest and pair order must be identical whichever pair the LLM
+    picks as the anchor."""
+    from dataraum.analysis.semantic.processor import _build_surrogate_intent
+
+    txn = _table_with_columns(session, "txn", ["payment_method", "business_id"])
+    pm = _table_with_columns(session, "pm", ["payment_method", "business_id"])
+    cols = {(c.table_id, c.column_name): c.column_id for t in (txn, pm) for c in t.columns}
+    column_map = {
+        ("txn", "payment_method"): cols[(txn.table_id, "payment_method")],
+        ("txn", "business_id"): cols[(txn.table_id, "business_id")],
+        ("pm", "payment_method"): cols[(pm.table_id, "payment_method")],
+        ("pm", "business_id"): cols[(pm.table_id, "business_id")],
+    }
+
+    def _build(anchor: str, scope: str):
+        rel = Relationship(
+            relationship_id="rel-1",
+            from_table="txn",
+            from_column=anchor,
+            to_table="pm",
+            to_column=anchor,
+            key_columns=[(scope, scope)],
+            relationship_type=RelationshipType.FOREIGN_KEY,
+            confidence=0.9,
+            detection_method="llm_tool",
+            evidence={"source": "table_synthesis"},
+        )
+        return _build_surrogate_intent(
+            rel=rel,
+            from_table_id=txn.table_id,
+            from_col_id=cols[(txn.table_id, anchor)],
+            to_table_id=pm.table_id,
+            to_col_id=cols[(pm.table_id, anchor)],
+            column_map=column_map,
+            run_id=baseline_run_id(),
+            duckdb_conn=None,
+        )
+
+    anchored_on_pm = _build("payment_method", "business_id")
+    anchored_on_biz = _build("business_id", "payment_method")
+    assert anchored_on_pm is not None and anchored_on_biz is not None
+    assert anchored_on_pm["intent_digest"] == anchored_on_biz["intent_digest"]
+    assert anchored_on_pm["column_pairs"] == anchored_on_biz["column_pairs"]
 
 
 def test_duplicate_llm_relationships_fold_to_one_row(session) -> None:

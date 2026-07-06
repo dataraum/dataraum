@@ -63,8 +63,10 @@ def test_composite_rescue_hint_is_rendered() -> None:
     assert "COMPOSITE-KEY RESCUE" in out
     assert "customer_id <-> id, region <-> region" in out
     assert "many-to-one" in out
-    # The judge sees a hollow key's number AND whose rows it describes (DAT-695).
-    assert "matches 0.3% of orders's rows" in out
+    # The judge sees a hollow key's number AND whose rows it describes (DAT-695),
+    # leading the decision frame rather than trailing it.
+    assert "MEASURED USAGE: 0.3% of orders's populated-key rows" in out
+    assert "DECLINE the relationship entirely" in out
 
 
 def test_no_hint_renders_no_rescue_block() -> None:

@@ -494,7 +494,8 @@ class SemanticAgent(LLMFeature):
                 coverage = composite.get("coverage")
                 coverage_table = composite.get("coverage_table") or "the referencing table"
                 coverage_note = (
-                    f" It matches {coverage:.1%} of {coverage_table}'s rows with a populated key."
+                    f" MEASURED USAGE: {coverage:.1%} of {coverage_table}'s "
+                    "populated-key rows resolve against this key."
                     if coverage is not None
                     else ""
                 )
@@ -503,8 +504,12 @@ class SemanticAgent(LLMFeature):
                     "(fan-out / over-counts). Joining on the full key "
                     f"[{', '.join(pair_strs)}] is {composite.get('cardinality', '?')}."
                     f"{coverage_note} "
-                    "If this composite is the real key, confirm it: emit ONE relationship "
-                    "for the anchor pair and put the remaining pair(s) in key_columns."
+                    "Confirm ONLY when both hold: the composite resolves the fan-out AND "
+                    "the measured usage shows the reference is actually used — a "
+                    "near-zero match rate means a lookalike table (shared name pools), "
+                    "and the correct output is to DECLINE the relationship entirely, "
+                    "anchor included. To confirm: emit ONE relationship for the anchor "
+                    "pair and put the remaining pair(s) in key_columns."
                 )
 
             lines.append("Column pairs with value overlap:")

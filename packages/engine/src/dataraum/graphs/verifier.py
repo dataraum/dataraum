@@ -2,7 +2,12 @@
 
 This is a *cheap value-space sanity check*, NOT the grounding fix. It keeps a
 metric ``grounded``/inconclusive (never silently ``executed``/green) when:
-- an extract aggregated to NULL — its filter matched no rows ("no support");
+- an extract aggregated to NULL ("no support") — reported as the MEASUREMENT,
+  never a cause: a NULL aggregate can mean the filter matched no rows OR that
+  an aggregated operand was entirely NULL over matched rows (seen live: an A/R
+  ledger whose credit leg is all-NULL turned ``SUM(debit) - SUM(credit)`` into
+  NULL over 167,743 matched rows; the old fabricated "filter matched no rows"
+  text sent the whole triage down a wrong path — DAT-699);
 - the composed value is NULL (a contributing extract had no support);
 - a catalogue-declared per-extract ``validation:`` bound is violated (e.g. revenue
   ``value > 0``) — a one-number comparison on the step's executed scalar.
@@ -57,18 +62,25 @@ def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> R
     """
     by_step = {sr.step_id: sr for sr in execution.step_results}
 
-    # 1. Support: an extract whose aggregate is NULL matched no rows. With the
-    #    COALESCE mask removed from the prompt, an empty filter surfaces as NULL
-    #    here — no support, so the metric is inconclusive (not a real value). A
-    #    non-extract step (formula/constant) that is NULL is degenerate, not
-    #    "unfiltered" — word the reason for what the step actually is.
+    # 1. Support: an extract whose aggregate is NULL has no measured support.
+    #    With the COALESCE mask removed from the prompt, that surfaces as NULL
+    #    here — inconclusive (not a real value). Report ONLY the measurement:
+    #    this check cannot see whether the filter matched zero rows or whether
+    #    an aggregated operand was all-NULL over matched rows, and asserting
+    #    either would fabricate a cause (DAT-699). The reason enumerates the
+    #    possibility space so the re-author loop (retained failed snippet →
+    #    prior context) can resolve it instead of trusting a wrong diagnosis.
+    #    A non-extract step (formula/constant) that is NULL is degenerate —
+    #    word the reason for what the step actually is.
     for sr in execution.step_results:
         if sr.value is None:
             step = graph.steps.get(sr.step_id)
             if step is None or step.step_type == StepType.EXTRACT:
                 return Result.fail(
-                    f"extract '{sr.step_id}' has no support: its filter matched no rows "
-                    f"(aggregated to NULL) — metric inconclusive, not a real value"
+                    f"extract '{sr.step_id}' has no support: it aggregated to NULL — "
+                    "either its filter matched no rows, or an aggregated operand is "
+                    "entirely NULL over the rows it did match; metric inconclusive, "
+                    "not a real value"
                 )
             return Result.fail(
                 f"step '{sr.step_id}' computed to NULL (degenerate) — metric inconclusive"

@@ -1612,7 +1612,12 @@ class GraphAgent(LLMFeature):
                     parts.append(
                         f"Your prior attempt to ground this extract was {mode}: {why}\n"
                         f"Prior SQL (do NOT re-emit unchanged):\n{rec.sql}\n"
-                        "Revise to address the reason, or abstain (low-confidence)."
+                        "Revise to address the reason, or abstain (low-confidence). If the "
+                        "prior SQL aggregated to NULL, decide from the schema evidence which "
+                        "case applies: the concept has no supporting rows (abstain — never "
+                        "mask absence as 0), or the filter matches rows and one aggregate "
+                        "leg is legitimately empty (a one-sided ledger — net the legs with "
+                        "row-guarded NULL-safety per the empty-aggregation rule)."
                     )
         except Exception as e:
             # Feedback is best-effort — a lookup hiccup must not fail metric authoring

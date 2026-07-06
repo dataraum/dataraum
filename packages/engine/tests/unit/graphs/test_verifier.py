@@ -65,7 +65,7 @@ def _execution(step_values: dict[str, float | None], output_value: object) -> Gr
 
 class TestSupportGate:
     def test_null_extract_is_inconclusive(self) -> None:
-        """An extract that aggregated to NULL (no rows matched) fails loud."""
+        """An extract that aggregated to NULL fails loud."""
         graph = _graph({"revenue": _extract("revenue"), "cogs": _extract("cogs")})
         execution = _execution({"revenue": 1000.0, "cogs": None}, output_value=100.0)
 
@@ -74,6 +74,23 @@ class TestSupportGate:
         assert not result.success
         assert "cogs" in result.error
         assert "no support" in result.error
+
+    def test_null_extract_reason_reports_measurement_never_a_cause(self) -> None:
+        """The reason states what was MEASURED (aggregated to NULL) and the
+        possibility space — it must never assert 'filter matched no rows' as
+        fact (DAT-699: that fabricated diagnosis misclassified a one-sided
+        ledger whose join matched 167k rows, and the re-author loop feeds this
+        exact text back to the agent)."""
+        graph = _graph({"revenue": _extract("revenue"), "cogs": _extract("cogs")})
+        execution = _execution({"revenue": 1000.0, "cogs": None}, output_value=100.0)
+
+        result = verify_execution(graph, execution)
+
+        assert not result.success
+        assert "aggregated to NULL" in result.error
+        # Both possibilities enumerated, neither asserted:
+        assert "either its filter matched no rows" in result.error
+        assert "entirely NULL over the rows it did match" in result.error
 
     def test_all_supported_passes(self) -> None:
         graph = _graph({"revenue": _extract("revenue"), "cogs": _extract("cogs")})

@@ -114,7 +114,10 @@ export async function resolveDrillAxes(
 ): Promise<DrillAxesResult> {
 	const fields = await targetFields(req);
 	if (fields.length === 0) {
-		return { axes: [], reason: "The metric's definition names no measure extracts." };
+		return {
+			axes: [],
+			reason: "The metric's definition names no measure extracts.",
+		};
 	}
 
 	// The same two reads the Model loader does: newest-first graph extracts
@@ -187,7 +190,9 @@ export async function resolveDrillAxes(
 		// Distinguish "reads something, just not a promoted view" (a stale or
 		// cross-lineage snippet — the honest refusal) from "no usable extract".
 		const staleRelations = [
-			...new Set(extracts.flatMap((e) => (e.failureCount === 0 ? e.relations : []))),
+			...new Set(
+				extracts.flatMap((e) => (e.failureCount === 0 ? e.relations : [])),
+			),
 		];
 		return {
 			axes: [],

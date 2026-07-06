@@ -248,3 +248,47 @@ def test_rescued_key_carries_coverage(con) -> None:
     )
     assert key is not None
     assert key.coverage == 1.0
+
+
+def test_coverage_is_oriented_to_the_referencing_side(con) -> None:
+    """table1/table2 come from arbitrary pairing order — coverage must describe
+    the MANY (referencing) side either way, or a lookalike dim as table1 reads
+    near-100% while the fact-side truth is tiny (DAT-695 review)."""
+    con.execute("CREATE TABLE dim3 (account_name VARCHAR, business_id VARCHAR)")
+    con.execute(
+        "INSERT INTO dim3 VALUES ('Sales','B1'),('Sales','B2'),('COGS','B1'),('COGS','B2')"
+    )
+    con.execute("CREATE TABLE fact3 (account VARCHAR, business_id VARCHAR)")
+    # 10 fact rows; only the two ('Sales','B1') rows resolve against dim3.
+    con.execute(
+        "INSERT INTO fact3 VALUES ('Sales','B1'),('Sales','B1'),"
+        "('O1','B9'),('O2','B9'),('O3','B9'),('O4','B9'),('O5','B9'),"
+        "('O6','B9'),('O7','B9'),('O8','B9')"
+    )
+
+    # Dim as table1 (one-to-many measured): the naive direction would read
+    # 25% of the DIM's rows; the oriented number is the fact's 20%.
+    key = rescue_fanout_to_composite(
+        _candidate(
+            "dim3", "fact3", [("account_name", "account", 0.9), ("business_id", "business_id", 0.5)]
+        ),
+        "dim3",
+        "fact3",
+        con,
+    )
+    assert key is not None
+    assert key.coverage_table == "fact3"
+    assert key.coverage is not None and abs(key.coverage - 0.2) < 1e-9
+
+    # Mirrored pairing (fact as table1, many-to-one): identical answer.
+    key2 = rescue_fanout_to_composite(
+        _candidate(
+            "fact3", "dim3", [("account", "account_name", 0.9), ("business_id", "business_id", 0.5)]
+        ),
+        "fact3",
+        "dim3",
+        con,
+    )
+    assert key2 is not None
+    assert key2.coverage_table == "fact3"
+    assert key2.coverage is not None and abs(key2.coverage - 0.2) < 1e-9

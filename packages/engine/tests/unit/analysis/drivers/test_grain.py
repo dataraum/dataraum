@@ -249,3 +249,32 @@ class TestAliasAndEmptyHeadline:
         assert rank.ranked_dimensions, "headline family must carry content"
         assert rank.grain == "row"
         assert "row_driver" in {d for d, _ in rank.ranked_dimensions}
+
+    def test_all_dims_alias_yields_empty_ranking_not_crash(self) -> None:
+        """Every candidate an alias → no families at all; the honest empty
+        ranking comes back instead of an IndexError (DAT-695 review)."""
+        from dataraum.analysis.drivers.models import Measure
+        from dataraum.analysis.drivers.processor import (
+            DEFAULT_ICC_THRESHOLD,
+            DEFAULT_MIN_ENTITIES,
+            _routed_ranking,
+        )
+
+        df = self._frame(np.random.default_rng(3))
+        rank = _routed_ranking(
+            df,
+            ["alias"],  # the only candidate is a 1:1 renaming of the key
+            Measure(target_type="flow", column="measure"),
+            ["entity"],
+            seed=0,
+            max_depth=2,
+            alpha=0.05,
+            min_support=25,
+            missingness_gate=0.5,
+            n_perm=50,
+            icc_threshold=DEFAULT_ICC_THRESHOLD,
+            min_entities=DEFAULT_MIN_ENTITIES,
+        )
+        assert rank.ranked_dimensions == []
+        assert rank.secondary_dimensions == []
+        assert rank.n_rows == df.height

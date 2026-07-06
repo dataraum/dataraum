@@ -611,7 +611,9 @@ def _home_grain_partition(
     to find the dims constant within it. A dim constant within ONE entity homes there; a
     dim constant within SEVERAL homes at the **finest** (highest-cardinality) one — the
     most specific grain — with a deterministic name tiebreak; a dim constant within none
-    is row-level. Returns ``({entity: [home dims]}, row_dims)`` with empty entities dropped.
+    is row-level. A dim SATURATED against its home entity (a 1:1 alias of the key) is
+    DROPPED — neither homed nor row-level (DAT-695); callers must not assume every dim
+    survives. Returns ``({entity: [home dims]}, row_dims)`` with empty entities dropped.
     """
     card = {e: int(frame[e].drop_nulls().n_unique()) for e in cluster_keys}
     constant_within = {
@@ -728,6 +730,13 @@ def _routed_ranking(
         return (1, 0.0, "")  # row family sits between high- and low-ICC entity families
 
     families.sort(key=precedence)
+    # The alias-drop above can discard EVERY candidate (a table whose only dims
+    # were renamings of its entity keys) — no family exists then; return the
+    # honest empty ranking rather than index into nothing (DAT-695 review).
+    if not families:
+        return DriverRanking(
+            measure=measure.label, target_type=measure.target_type, n_rows=frame.height
+        )
     # The headline must carry content: an empty high-ICC entity family ahead of
     # a non-empty row family would bury every real driver in ``secondary`` and
     # persist ``ranked: 0`` (DAT-695). Take the first family WITH ranked

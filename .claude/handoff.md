@@ -47,7 +47,8 @@ referential coverage: a fact whose composite `(name, tenant)` FK actually
 resolves against its dimensions (coverage ≥ ~0.9), dim attributes that drive the
 measure, plus a LOOKALIKE negative (name pools overlap, coverage ≪ 1) that the
 judge must now decline. The bookkeeping smoke corpus structurally cannot serve
-this: only its payment_method dim is genuinely referenced.
+this: only its payment_method dim is genuinely referenced. Pairs with the
+DAT-679 fixture work (greedy-search miss-rate corpus).
 
 ---
 

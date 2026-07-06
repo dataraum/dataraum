@@ -409,6 +409,7 @@ def _augment_candidates_with_composite_rescue(
                 "column_pairs": [list(pair) for pair in key.column_pairs],
                 "cardinality": key.cardinality,
                 "coverage": key.coverage,
+                "coverage_table": key.coverage_table,
             }
 
 

@@ -83,9 +83,22 @@ def rescue_fanout_to_composite(
         card = compute_composite_cardinality(table1_path, table2_path, chosen, duckdb_conn)
         if card is not None and card != _MANY_TO_MANY:
             # Multiplicity proves the key SHAPE; coverage says whether the key
-            # matches the data at all (DAT-695) — measured here once, carried
-            # as evidence for the LLM judge.
-            coverage = compute_join_coverage(table1_path, table2_path, chosen, duckdb_conn)
+            # matches the data at all (DAT-695) — measured once, carried as
+            # evidence for the LLM judge. Coverage is DIRECTIONAL and must be
+            # measured from the MANY (referencing) side: table1/table2 come
+            # from arbitrary structural pairing order, and measured dim-side, a
+            # lookalike table's handful of values can read near-100% while the
+            # fact-side truth is ~0 (DAT-695 review). Orient by the measured
+            # cardinality, mirroring the mint's persisted direction.
+            if card == "one-to-many":
+                cov_t1, cov_t2 = table2_path, table1_path
+                cov_pairs = [(b, a) for a, b in chosen]
+                coverage_table = candidate.table2
+            else:  # many-to-one / one-to-one: table1 is the referencing side
+                cov_t1, cov_t2 = table1_path, table2_path
+                cov_pairs = chosen
+                coverage_table = candidate.table1
+            coverage = compute_join_coverage(cov_t1, cov_t2, cov_pairs, duckdb_conn)
             logger.info(
                 "composite_key_rescued",
                 table1=candidate.table1,
@@ -93,8 +106,14 @@ def rescue_fanout_to_composite(
                 key_columns=len(chosen),
                 cardinality=card,
                 coverage=coverage,
+                coverage_table=coverage_table,
             )
-            return CompositeKey(column_pairs=chosen, cardinality=card, coverage=coverage)
+            return CompositeKey(
+                column_pairs=chosen,
+                cardinality=card,
+                coverage=coverage,
+                coverage_table=coverage_table,
+            )
 
     return None  # genuine many-to-many — no composite of these columns collapses it
 

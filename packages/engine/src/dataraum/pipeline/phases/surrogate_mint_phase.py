@@ -609,12 +609,13 @@ class SurrogateMintPhase(BasePhase):
             "intent_digest": intent.intent_digest,
             "reasoning": intent.reasoning,
             "composite_cardinality": intent.cardinality,
-            "coverage": coverage,
             "surrogate": {
                 "natural_pairs": natural_pairs,
                 "natural_column_ids": natural_ids,
             },
         }
+        if coverage is not None:
+            evidence["coverage"] = coverage
         try:
             evidence["introduces_duplicates"] = compute_introduces_duplicates(
                 from_fqn, to_fqn, from_spec.column_name, to_spec.column_name, ctx.duckdb_conn

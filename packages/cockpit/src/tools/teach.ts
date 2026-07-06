@@ -3,7 +3,8 @@
 // Pure write: validates `{type, payload}` per type, inserts the overlay row
 // via the Drizzle metadata client, and returns the new overlay_id. Does NOT
 // start a workflow — replay is a separate tool the agent invokes after one
-// or more teaches (batchable; see /refine for the explicit-replay rationale).
+// or more teaches (batchable; explicit replay keeps teach writes cheap and
+// lets the agent bundle several overlays into one pipeline re-run).
 //
 // Per-type validation lives in `./teach.validation.ts` so the schema surface
 // is importable without booting `config.ts` (test ergonomics). This module

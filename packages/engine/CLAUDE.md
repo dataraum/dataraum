@@ -116,4 +116,4 @@ uv run python -m dataraum.worker.main
 ## Docs & tracking
 
 - Platform docs live at the **workspace root** in `docs/` (not in this package), published via Zensical (`uv run --project packages/engine zensical serve`, run from the repo root). Update when user-facing behavior changes; internal detail goes in docstrings.
-- Design docs → **Confluence** (space DD). Active work → **Jira** (DAT-*; MCP available). Not local files.
+- Settled decisions → **ADRs** (`docs/adr/`). Active work → **`epics/`** at the workspace root (live objectives only, ADR-0019). Jira/Confluence are read-only history.

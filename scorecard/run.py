@@ -12,8 +12,10 @@ and targets. Emits scorecard.json + scorecard.md; the PR body is generated
 from these — the agent never authors the numbers.
 
 The gate contract (--gate, used by CI after restoring scorecard/ and epics/
-from origin/main): exit non-zero on any failed check, any gating KPI below
-target or regressed vs baseline, or a touched judge path.
+from origin/main): exit non-zero on any failed check, any gating KPI that is
+below target, regressed, errored, or UNMEASURED, or a touched judge path.
+The one sanctioned judge edit is the completing PR deleting exactly its own
+epics/<slug>.md (ADR-0019 §1) — the contract is then read from origin/main.
 """
 
 from __future__ import annotations
@@ -29,9 +31,11 @@ from pathlib import Path
 
 import yaml
 
-# Paths the branch under judgment must not modify (CI restores them from main;
-# locally a touch is surfaced and fails the gate).
-JUDGE_PATHS = ("scorecard/", "epics/")
+# Paths the branch under judgment must not modify. CI restores scorecard/ and
+# epics/ from main; .github/ is listed so a workflow edit is at least visible
+# and gate-failing here (for pull_request events GitHub runs the PR's workflow
+# file — branch protection on the required check is the outer defense).
+JUDGE_PATHS = ("scorecard/", "epics/", ".github/")
 # Existing-test modifications carry no verdict weight but MUST be visible.
 TEST_PATH_PATTERNS = (
     re.compile(r"^packages/engine/tests/"),
@@ -40,15 +44,15 @@ TEST_PATH_PATTERNS = (
 TARGET_RE = re.compile(r"^(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)$")
 
 
-def sh(cmd: str, cwd: Path) -> tuple[int, str]:
+def sh(cmd: str, cwd: Path) -> tuple[int, str, str]:
     proc = subprocess.run(
         cmd, shell=True, cwd=cwd, capture_output=True, text=True
     )
-    return proc.returncode, (proc.stdout + proc.stderr)
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 def repo_root() -> Path:
-    code, out = sh("git rev-parse --show-toplevel", Path.cwd())
+    code, out, _ = sh("git rev-parse --show-toplevel", Path.cwd())
     if code != 0:
         sys.exit("scorecard: not inside a git repository")
     return Path(out.strip())
@@ -89,14 +93,46 @@ class Report:
     judge_touched: list[str] = field(default_factory=list)
 
 
-def load_epic_contract(root: Path, slug: str) -> dict:
-    path = root / "epics" / f"{slug}.md"
+def load_registry(root: Path) -> dict:
+    path = root / "scorecard" / "scorecard.yaml"
     if not path.exists():
         sys.exit(f"scorecard: {path} not found")
-    match = re.search(r"```yaml scorecard\n(.*?)```", path.read_text(), re.DOTALL)
+    try:
+        registry = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        sys.exit(f"scorecard: malformed {path}: {exc}")
+    if not isinstance(registry, dict) or not isinstance(registry.get("areas"), dict):
+        sys.exit(f"scorecard: {path} must define an 'areas' mapping")
+    return registry
+
+
+def area_checks(registry: dict, area: str) -> dict:
+    spec = registry["areas"].get(area)
+    if spec is None:
+        sys.exit(f"scorecard: unknown area '{area}' (see scorecard/scorecard.yaml)")
+    return spec
+
+
+def load_epic_contract(root: Path, slug: str) -> dict:
+    path = root / "epics" / f"{slug}.md"
+    if path.exists():
+        text = path.read_text()
+    else:
+        # The completing PR deletes its own epic file (ADR-0019 §1); the
+        # contract that judges it is main's version — same one CI restores.
+        code, out, _ = sh(f"git show origin/main:epics/{slug}.md", root)
+        if code != 0:
+            sys.exit(f"scorecard: epics/{slug}.md not in working tree nor on origin/main")
+        text = out
+    match = re.search(r"```yaml scorecard\n(.*?)```", text, re.DOTALL)
     if not match:
-        sys.exit(f"scorecard: no ```yaml scorecard``` block in {path}")
-    contract = yaml.safe_load(match.group(1))
+        sys.exit(f"scorecard: no ```yaml scorecard``` block in epics/{slug}.md")
+    try:
+        contract = yaml.safe_load(match.group(1))
+    except yaml.YAMLError as exc:
+        sys.exit(f"scorecard: malformed scorecard block in epics/{slug}.md: {exc}")
+    if not isinstance(contract, dict):
+        sys.exit(f"scorecard: scorecard block in epics/{slug}.md is not a mapping")
     if contract.get("slug") != slug:
         sys.exit(f"scorecard: slug mismatch — file {slug}, contract {contract.get('slug')}")
     return contract
@@ -106,9 +142,7 @@ def run_checks(root: Path, registry: dict, areas: list[str], profile: str) -> li
     results: list[CheckResult] = []
     profiles = ["fast"] if profile == "fast" else ["fast", "full"]
     for area in areas:
-        spec = registry.get("areas", {}).get(area)
-        if spec is None:
-            sys.exit(f"scorecard: unknown area '{area}' (see scorecard/scorecard.yaml)")
+        spec = area_checks(registry, area)
         for prof in profiles:
             for check in spec.get(prof) or []:
                 requires = check.get("requires")
@@ -116,21 +150,23 @@ def run_checks(root: Path, registry: dict, areas: list[str], profile: str) -> li
                     results.append(CheckResult(check["id"], area, "skip", tail=f"missing {requires}"))
                     continue
                 start = time.monotonic()
-                code, out = sh(check["run"], root)
+                code, stdout, stderr = sh(check["run"], root)
                 results.append(
                     CheckResult(
                         check["id"],
                         area,
                         "pass" if code == 0 else "fail",
                         round(time.monotonic() - start, 1),
-                        "" if code == 0 else "\n".join(out.splitlines()[-15:]),
+                        "" if code == 0 else "\n".join((stdout + stderr).splitlines()[-15:]),
                     )
                 )
     return results
 
 
-def parse_measure_output(out: str) -> float:
-    last = next(line for line in reversed(out.splitlines()) if line.strip())
+def parse_measure_output(stdout: str) -> float:
+    # stdout ONLY — tool noise (uv installs, warnings) goes to stderr and must
+    # never poison the measurement. This is the epic-template contract.
+    last = next(line for line in reversed(stdout.splitlines()) if line.strip())
     try:
         parsed = json.loads(last)
         if isinstance(parsed, dict):
@@ -146,8 +182,15 @@ def evaluate_kpi(kpi: dict, root: Path) -> KpiResult:
         statement=kpi.get("statement", ""),
         tier=kpi.get("tier", "promotion"),
         target=str(kpi["target"]).strip(),
-        baseline=kpi.get("baseline"),
+        baseline=None,
     )
+    raw_baseline = kpi.get("baseline")
+    if raw_baseline is not None:
+        try:
+            result.baseline = float(raw_baseline)
+        except (TypeError, ValueError):
+            result.status, result.detail = "error", f"unparseable baseline {raw_baseline!r}"
+            return result
     match = TARGET_RE.match(result.target)
     if not match:
         result.status, result.detail = "error", f"unparseable target {result.target!r}"
@@ -157,14 +200,15 @@ def evaluate_kpi(kpi: dict, root: Path) -> KpiResult:
     if not measure:
         result.status, result.detail = "pending", "no measure command"
         return result
-    code, out = sh(measure, root)
+    code, stdout, stderr = sh(measure, root)
     if code != 0:
-        result.status, result.detail = "error", "\n".join(out.splitlines()[-10:])
+        result.status = "error"
+        result.detail = "\n".join((stdout + stderr).splitlines()[-10:])
         return result
     try:
-        result.value = parse_measure_output(out)
+        result.value = parse_measure_output(stdout)
     except (StopIteration, ValueError) as exc:
-        result.status, result.detail = "error", f"unparseable measure output: {exc}"
+        result.status, result.detail = "error", f"unparseable measure stdout: {exc}"
         return result
 
     compare = {
@@ -183,24 +227,45 @@ def evaluate_kpi(kpi: dict, root: Path) -> KpiResult:
     return result
 
 
-def collect_diff(root: Path, report: Report) -> None:
-    code, out = sh("git diff --name-status origin/main...HEAD", root)
+def collect_diff(root: Path, report: Report, epic_slug: str) -> None:
+    code, out, _ = sh("git diff --name-status origin/main...HEAD", root)
     if code != 0:
         return
+    own_epic_file = f"epics/{epic_slug}.md" if epic_slug else None
     for line in out.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
             continue
-        status, path = parts[0][:1], parts[-1]
-        if any(path.startswith(j) for j in JUDGE_PATHS):
-            report.judge_touched.append(path)
-        if any(p.match(path) for p in TEST_PATH_PATTERNS):
+        status, old, new = parts[0][:1], parts[1], parts[-1]
+
+        for path in dict.fromkeys((old, new)):  # ordered de-dupe
+            if not any(path.startswith(j) for j in JUDGE_PATHS):
+                continue
+            # The one sanctioned judge edit: the completing PR deletes exactly
+            # its own epic file (ADR-0019 §1). Everything else is flagged.
+            if status == "D" and path == own_epic_file:
+                continue
+            if path not in report.judge_touched:
+                report.judge_touched.append(path)
+
+        old_is_test = any(p.match(old) for p in TEST_PATH_PATTERNS)
+        new_is_test = any(p.match(new) for p in TEST_PATH_PATTERNS)
+        if status == "R":
+            # A test renamed out of the test tree is a deletion in disguise.
+            if old_is_test and not new_is_test:
+                report.tests_deleted.append(old)
+            elif old_is_test or new_is_test:
+                report.tests_modified.append(f"{old} → {new}")
+        elif status == "C":
+            if new_is_test:
+                report.tests_added.append(new)
+        elif new_is_test:
             if status == "A":
-                report.tests_added.append(path)
+                report.tests_added.append(new)
             elif status == "D":
-                report.tests_deleted.append(path)
+                report.tests_deleted.append(new)
             else:
-                report.tests_modified.append(path)
+                report.tests_modified.append(new)
 
 
 ICONS = {"pass": "✅", "fail": "❌", "skip": "⏭️", "regressed": "🔻", "pending": "⏳", "error": "💥"}
@@ -251,7 +316,12 @@ def gate_failures(report: Report) -> list[str]:
     failures = [f"check failed: {c.id}" for c in report.checks if c.status == "fail"]
     for k in report.kpis:
         gating = k.tier == "checkpoint" or report.profile == "full"
-        if gating and k.status in ("fail", "regressed", "error"):
+        if not gating:
+            continue
+        if k.status == "pending":
+            # An unmeasured gating KPI must never read as "not failing".
+            failures.append(f"KPI unmeasured: {k.id}")
+        elif k.status in ("fail", "regressed", "error"):
             failures.append(f"KPI {k.status}: {k.id}")
     failures += [f"judge path touched: {p}" for p in report.judge_touched]
     return failures
@@ -269,29 +339,30 @@ def main() -> None:
     args = parser.parse_args()
 
     root = repo_root()
-    registry = yaml.safe_load((root / "scorecard" / "scorecard.yaml").read_text())
+    registry = load_registry(root)
     contract = load_epic_contract(root, args.epic) if args.epic else {}
     areas = (
         [a.strip() for a in args.areas.split(",")]
         if args.areas
-        else contract.get("areas", list(registry.get("areas", {})))
+        else contract.get("areas", list(registry["areas"]))
     )
 
     if args.list:
         print(f"profile={args.profile} epic={args.epic or '—'} areas={','.join(areas)}")
         profiles = ["fast"] if args.profile == "fast" else ["fast", "full"]
         for area in areas:
+            spec = area_checks(registry, area)
             for prof in profiles:
-                for check in (registry["areas"].get(area) or {}).get(prof) or []:
+                for check in spec.get(prof) or []:
                     print(f"  [{area}/{prof}] {check['id']}: {check['run']}")
         for kpi in contract.get("kpis", []):
             print(f"  [kpi/{kpi.get('tier', 'promotion')}] {kpi['id']}: target {kpi['target']}")
         return
 
-    _, branch = sh("git rev-parse --abbrev-ref HEAD", root)
-    _, sha = sh("git rev-parse HEAD", root)
+    _, branch, _ = sh("git rev-parse --abbrev-ref HEAD", root)
+    _, sha, _ = sh("git rev-parse HEAD", root)
     report = Report(branch.strip(), sha.strip(), args.profile, args.epic)
-    collect_diff(root, report)
+    collect_diff(root, report, args.epic or "")
     report.checks = run_checks(root, registry, areas, args.profile)
     for kpi in contract.get("kpis", []):
         if kpi.get("tier", "promotion") == "promotion" and args.profile == "fast":

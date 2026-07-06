@@ -1,9 +1,15 @@
 # Scorecard recompute — ADR-0019. Runs on epic/* PRs only.
 #
 # The tamper guard: the runner, registry, epic definitions, and baselines are
-# restored from origin/main BEFORE the verdict is computed (SWE-bench style —
-# the branch cannot bend its own judge). The epic definition must therefore
-# land on main (the approval PR) before its epic branch can gate.
+# restored from origin/main as the LAST step before the verdict is computed
+# (after dependency installs, whose lifecycle scripts run branch code) — the
+# branch cannot bend its own judge. The epic definition must therefore land on
+# main (the approval PR) before its epic branch can gate.
+#
+# Residual hole this file cannot close from inside: pull_request events run
+# the PR's version of THIS workflow. `.github/` is a judge path in run.py (so
+# an edit is visible and gate-failing on an honest run), and the outer defense
+# is branch protection: `recompute` is a required check on main.
 #
 # The eval area SKIPS here (sibling repo not checked out) — visible in the
 # report, never silent. The live tier-3 gate runs at release cut, not in CI.
@@ -23,7 +29,7 @@ jobs:
               with:
                   fetch-depth: 0
 
-            - name: Restore the judge from main
+            - name: Check the epic definition is on main
               run: |
                   git fetch origin main
                   slug="${GITHUB_HEAD_REF#epic/}"
@@ -31,7 +37,6 @@ jobs:
                       echo "::error::epics/${slug}.md not on main — land the epic definition PR first (ADR-0019 §1)."
                       exit 1
                   fi
-                  git checkout origin/main -- scorecard/ epics/
                   echo "SLUG=${slug}" >> "$GITHUB_ENV"
 
             - name: Install uv
@@ -45,6 +50,9 @@ jobs:
             - name: Install cockpit deps
               working-directory: packages/cockpit
               run: bun install --frozen-lockfile
+
+            - name: Restore the judge from main (last step before the verdict)
+              run: git checkout origin/main -- scorecard/ epics/
 
             - name: Recompute scorecard (gate)
               run: uv run scorecard/run.py --profile full --epic "$SLUG" --gate

@@ -28,10 +28,13 @@ This is the human gate — the KPI definition is the load-bearing senior work.
 4. **Promotion block**: blast-radius eval strategies, seed policy, live budget.
    Approval of this file **is** the authorization for that live spend.
 5. **Honorable exit**: what evidence would prove the target unreachable.
-6. Capture baselines (`uv run scorecard/run.py --epic <slug> --profile full` on
-   main; paste values), then open the **definition PR** containing only the epic
-   file + oracle-extension data. Philipp's approval merges it; only then may an
-   `epic/<slug>` branch gate.
+6. Capture baselines on main: `uv run scorecard/run.py --epic <slug> --profile
+   full --areas <deterministic areas only>` and paste the values. **The epic is
+   not approved yet, so nothing live is authorized**: exclude live areas (e.g.
+   `eval`) and live measure commands unless the user explicitly okays that spend
+   now. Then open the **definition PR** containing only the epic file +
+   oracle-extension data. Philipp's approval merges it; only then may an
+   `epic/<slug>` branch gate, and only then does the live budget exist.
 
 ## run <slug>
 

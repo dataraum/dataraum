@@ -92,11 +92,12 @@ def _agent(relationships: list[Relationship]) -> MagicMock:
     return agent
 
 
-def _store(session, agent, tables, conn=None, run_id=None):
+def _store(session, agent, tables, conn=None, run_id=None, candidates=None):
     return synthesize_and_store_tables(
         session,
         agent,
         [t.table_id for t in tables],
+        relationship_candidates=candidates,
         duckdb_conn=conn,
         run_id=run_id or baseline_run_id(),
     )
@@ -125,7 +126,7 @@ def test_confirmed_composite_persists_intent_not_llm_row(session, lake) -> None:
     assert intent.column_pairs == [
         [cols[(txn.table_id, "account")], cols[(coa.table_id, "account_name")]],
         [cols[(txn.table_id, "business_id")], cols[(coa.table_id, "business_id")]],
-    ]  # anchor FIRST, then the scoping component
+    ]  # canonical direction-neutral order ('account…' sorts before 'business_id')
     assert intent.cardinality == "many-to-one"  # the collapse proof, measured
     assert intent.from_table_id == txn.table_id
     assert intent.to_table_id == coa.table_id
@@ -273,8 +274,8 @@ def test_scope_component_order_is_canonical(session) -> None:
     assert a is not None and b is not None
     assert a["intent_digest"] == b["intent_digest"]
     assert a["column_pairs"] == b["column_pairs"]
-    # ALL pairs sorted by from-side name — the anchor holds no positional
-    # privilege in the column identity.
+    # ALL pairs sorted by a direction-neutral name key — neither the anchor nor
+    # the from/to orientation holds positional privilege in the column identity.
     assert a["column_pairs"][0][0] == cols[(txn.table_id, "account")]
     assert a["column_pairs"][1][0] == cols[(txn.table_id, "business_id")]
     assert a["column_pairs"][2][0] == cols[(txn.table_id, "region")]
@@ -343,3 +344,120 @@ def test_duplicate_llm_relationships_fold_to_one_row(session) -> None:
         .all()
     )
     assert len(llm_rows) == 1
+
+
+# --- Composite VERDICT records (DAT-697) ------------------------------------------
+#
+# Every offered rescue hint is adjudicated: confirmed → a status='confirmed'
+# intent (the mint's instruction), declined → a status='declined' record (the
+# keeper machinery's stop sign). The hint dicts below are pre-attached to the
+# candidates (augmentation only ADDs hints; with duckdb_conn=None it is a no-op).
+
+
+def _hint_candidate(
+    table1: str, table2: str, pairs: list[list[str]], coverage: float | None = 0.003
+) -> dict:
+    hint: dict = {"column_pairs": pairs, "cardinality": "many-to-one", "coverage_table": table1}
+    if coverage is not None:
+        hint["coverage"] = coverage
+    return {"table1": table1, "table2": table2, "join_columns": [], "composite_key": hint}
+
+
+def test_offered_hint_not_confirmed_records_declined_intent(session) -> None:
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    candidate = _hint_candidate(
+        "txn", "coa", [["account", "account_name"], ["business_id", "business_id"]]
+    )
+
+    assert _store(session, _agent([]), [txn, coa], candidates=[candidate]).success
+    session.flush()
+
+    intents = session.execute(select(SurrogateKeyIntent)).scalars().all()
+    assert len(intents) == 1
+    declined = intents[0]
+    assert declined.status == "declined"
+    assert declined.confidence == 0.0
+    assert declined.from_table_id == txn.table_id
+    assert declined.to_table_id == coa.table_id
+    assert "0.3%" in (declined.reasoning or "")
+    cols = {(c.table_id, c.column_name): c.column_id for t in (txn, coa) for c in t.columns}
+    assert sorted(map(tuple, declined.column_pairs)) == sorted(
+        [
+            (cols[(txn.table_id, "account")], cols[(coa.table_id, "account_name")]),
+            (cols[(txn.table_id, "business_id")], cols[(coa.table_id, "business_id")]),
+        ]
+    )
+
+
+def test_confirmed_hint_records_no_declined_row_even_direction_flipped(session) -> None:
+    """The hint arrives in the candidate's orientation, the confirmation in the
+    LLM's — a direction-sensitive digest would record the SAME composite as
+    both confirmed and declined. The verdict arithmetic must see one identity."""
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    # Hint oriented coa→txn; the LLM confirms txn→coa (_rel's orientation).
+    flipped = _hint_candidate(
+        "coa", "txn", [["account_name", "account"], ["business_id", "business_id"]]
+    )
+    agent = _agent([_rel(key_columns=[("business_id", "business_id")])])
+
+    assert _store(session, agent, [txn, coa], candidates=[flipped]).success
+    session.flush()
+
+    intents = session.execute(select(SurrogateKeyIntent)).scalars().all()
+    assert [i.status for i in intents] == ["confirmed"]
+
+
+def test_unresolvable_hint_records_no_verdict(session) -> None:
+    """No identity, no verdict — keeper protection stands for the pair."""
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    ghost = _hint_candidate("txn", "coa", [["account", "account_name"], ["ghost", "ghost"]])
+
+    assert _store(session, _agent([]), [txn, coa], candidates=[ghost]).success
+    session.flush()
+
+    assert session.execute(select(SurrogateKeyIntent)).scalars().all() == []
+
+
+def test_mint_loader_excludes_declined_verdicts(session) -> None:
+    """`load_surrogate_key_intents` feeds ONLY confirmed composites to the mint."""
+    from dataraum.analysis.relationships.utils import load_surrogate_key_intents
+
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    candidate = _hint_candidate(
+        "txn", "coa", [["account", "account_name"], ["business_id", "business_id"]]
+    )
+    assert _store(session, _agent([]), [txn, coa], candidates=[candidate]).success
+    session.flush()
+
+    assert session.execute(select(SurrogateKeyIntent)).scalars().all() != []
+    assert load_surrogate_key_intents(session, baseline_run_id()) == []
+
+
+def test_unbuildable_confirmation_still_records_the_declined_verdict(session) -> None:
+    """The LLM confirms the offered composite but names a nonexistent component —
+    the intent build fails and falls back to the single-column anchor. This run
+    still produced no usable composite, so the verdict arithmetic records the
+    OFFERED hint as declined: the hint re-offers deterministically next run,
+    and the keeper machinery must not resurrect the pair in the meantime."""
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    candidate = _hint_candidate(
+        "txn", "coa", [["account", "account_name"], ["business_id", "business_id"]]
+    )
+    agent = _agent([_rel(key_columns=[("ghost", "ghost")])])  # confirmation that can't build
+
+    assert _store(session, agent, [txn, coa], candidates=[candidate]).success
+    session.flush()
+
+    intents = session.execute(select(SurrogateKeyIntent)).scalars().all()
+    assert [i.status for i in intents] == ["declined"]
+    llm_rows = (
+        session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+        .scalars()
+        .all()
+    )
+    assert len(llm_rows) == 1  # the anchor fallback persists with honest cardinality

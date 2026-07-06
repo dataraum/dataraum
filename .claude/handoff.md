@@ -5,6 +5,51 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-697 — composite verdicts gate the silent-accept keeper machinery
+
+**Branch:** `feat/dat-697-keeper-adjudication`. Fixes the resurrection loop
+found live on the bookkeeping smoke: a judge-DECLINED composite (DAT-695
+measured-usage decline) was silently lifted back as a `keeper` by DAT-409's
+silent-accept, and the mint's grace window then kept its hollow `_sk__`
+columns alive run after run.
+
+### What changed
+
+- **`surrogate_key_intents` gained `status`** (`'confirmed' | 'declined'`,
+  schema.sql + drizzle mirror re-dumped): `semantic_per_table` now records a
+  verdict row for EVERY offered rescue hint — declined = offered − confirmed.
+  The mint loads only confirmed intents (unchanged behavior).
+- **`intent_digest` is direction-neutral** (`surrogate.py::composite_intent_digest`
+  — sha1 over unordered id pairs; the canonical NAME order key is likewise
+  direction-neutral now). Neither the judge's anchor nor its from/to
+  orientation is run-stable; matching recomputes digests from stored natural
+  column ids, never compares stored strings.
+- **Keeper machinery honors adjudication** (`materialize.py`): a prior llm
+  pair the current run RULED on is not lifted; a stale `keep` overlay on an
+  adjudicated pair is superseded (never deleted — audit trail) and no longer
+  materializes a keeper row. Pairs with NO verdict this run keep full DAT-409
+  flake protection. Polluted workspaces self-heal within ~2 runs (grace ages
+  out of the promoted head) instead of requiring a wipe.
+
+### Calibration to run
+
+- Composite/relationship confirmation suites: run-over-run STABILITY is the
+  new observable — a declined lookalike must STAY declined across consecutive
+  begin_session runs (pre-fix it flip-flopped back via keeper). The DAT-695
+  decline-recall expectations are unchanged.
+- Surrogate column lifecycle: after a decline, `_sk__*` columns for that
+  composite must be GONE by the second following run (grace window is one
+  promoted head, not forever).
+
+### testdata hints
+
+The lookalike-negative corpus (DAT-695 entry below) doubles as the
+resurrection fixture: run begin_session twice on it — first with the hint
+confirmed (or seeded keeper state), then with the decline — and assert the
+keeper does not resurrect the declined composite.
+
+---
+
 ## DAT-695 — join coverage as judge evidence + driver routing fixes
 
 **Branch:** `feat/dat-695-coverage-and-routing`. Root cause of "driver rankings

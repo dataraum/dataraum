@@ -285,6 +285,7 @@ CREATE TABLE surrogate_key_intents (
 	intent_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	intent_digest VARCHAR NOT NULL, 
+	status VARCHAR NOT NULL, 
 	from_table_id VARCHAR NOT NULL, 
 	to_table_id VARCHAR NOT NULL, 
 	column_pairs JSON NOT NULL, 

@@ -487,3 +487,177 @@ def test_keeper_noop_when_head_already_names_current_run(session: Session) -> No
 
     assert count == 0
     assert _keep_overlays(session) == []
+
+
+# --- Adjudication outranks silence (DAT-697) --------------------------------------
+#
+# The judge's per-run composite verdicts (SurrogateKeyIntent.status) gate the
+# silent-accept machinery: a declined composite's pairs are not lifted, its
+# stale keep overlays are superseded, and a keep overlay on an adjudicated
+# pair does not materialize a keeper row. Pairs the run did NOT rule on keep
+# full DAT-409 flake protection.
+
+
+def _seed_more_columns(session: Session) -> None:
+    session.add(Column(column_id="cx", table_id="t1", column_name="business_id", column_position=1))
+    session.add(Column(column_id="cy", table_id="t2", column_name="business_id", column_position=1))
+    session.add(Column(column_id="sk1", table_id="t1", column_name="_sk__x", column_position=2))
+    session.add(Column(column_id="sk2", table_id="t2", column_name="_sk__x", column_position=2))
+    session.flush()
+
+
+def _intent(session: Session, pairs: list[list[str]], status: str, run_id: str = "r1") -> None:
+    from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
+    from dataraum.analysis.relationships.surrogate import composite_intent_digest
+
+    session.add(
+        SurrogateKeyIntent(
+            run_id=run_id,
+            intent_digest=composite_intent_digest(pairs),
+            status=status,
+            from_table_id="t1",
+            to_table_id="t2",
+            column_pairs=pairs,
+            confidence=0.0 if status == "declined" else 0.9,
+        )
+    )
+    session.flush()
+
+
+def _surrogate_rel(
+    session: Session, run_id: str, natural_ids: list[list[str]], frm: str = "sk1", to: str = "sk2"
+) -> None:
+    session.add(
+        Relationship(
+            run_id=run_id,
+            from_table_id="t1",
+            from_column_id=frm,
+            to_table_id="t2",
+            to_column_id=to,
+            relationship_type="foreign_key",
+            confidence=0.9,
+            detection_method="llm",
+            evidence={"surrogate": {"natural_column_ids": natural_ids}},
+        )
+    )
+    session.flush()
+
+
+def test_keeper_skips_declined_component_pair(session: Session) -> None:
+    """A prior llm pair the judge declined this run (as a composite component,
+    anchor included) is a verdict, not silence — no lift."""
+    _seed_tables_columns(session)
+    _seed_more_columns(session)
+    _seed_prior_promoted_run(session, "r0")  # prior llm on (ca, cb)
+    _intent(session, [["ca", "cb"], ["cx", "cy"]], "declined")
+
+    count = write_relationship_keepers(session, current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_skips_declined_pair_whichever_direction(session: Session) -> None:
+    """Decline matching is direction-neutral — the verdict covers (b, a) too."""
+    _seed_tables_columns(session)
+    _seed_more_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _intent(session, [["cb", "ca"], ["cy", "cx"]], "declined")  # reversed orientation
+
+    assert write_relationship_keepers(session, current_run_id="r1") == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_still_lifts_unadjudicated_pair(session: Session) -> None:
+    """A verdict on one composite must not erode flake protection elsewhere."""
+    _seed_tables_columns(session)
+    _seed_more_columns(session)
+    _seed_prior_promoted_run(session, "r0")  # prior llm on (ca, cb)
+    _intent(session, [["cx", "cy"], ["sk1", "sk2"]], "declined")  # unrelated pairs
+
+    assert write_relationship_keepers(session, current_run_id="r1") == 1
+    assert _keep_overlays(session) == [
+        {"action": "keep", "from_column_id": "ca", "to_column_id": "cb"}
+    ]
+
+
+def test_keeper_skips_surrogate_row_of_adjudicated_composite(session: Session) -> None:
+    """A surrogate pair matches by digest recomputed from its mint provenance —
+    a CONFIRMED verdict supersedes a stale differently-anchored twin of itself."""
+    _seed_tables_columns(session)
+    _seed_more_columns(session)
+    _surrogate_rel(session, "r0", natural_ids=[["ca", "cb"], ["cx", "cy"]])
+    session.add(MetadataSnapshotHead(target=catalog_head_target(), stage="catalog", run_id="r0"))
+    session.flush()
+    # This run confirms the same composite — provenance arrives reordered and
+    # direction-flipped; identity must hold regardless.
+    _intent(session, [["cy", "cx"], ["cb", "ca"]], "confirmed")
+
+    assert write_relationship_keepers(session, current_run_id="r1") == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_retracts_stale_keep_on_adjudicated_pair(session: Session) -> None:
+    """An existing keep overlay on a judged pair is superseded — without this the
+    overlay re-materializes a keeper row every run and the declined composite
+    (and its hollow surrogate columns) is resurrected indefinitely."""
+    _seed_tables_columns(session)
+    _seed_more_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _overlay(session, "keep", "ca", "cb")
+    _intent(session, [["ca", "cb"], ["cx", "cy"]], "declined")
+    session.flush()
+
+    write_relationship_keepers(session, current_run_id="r1")
+    session.flush()
+
+    kept = [
+        o
+        for o in session.query(ConfigOverlay).filter(ConfigOverlay.type == "relationship").all()
+        if (o.payload or {}).get("action") == "keep"
+    ]
+    assert len(kept) == 1 and kept[0].superseded_at is not None
+    # …and the retracted overlay is invisible to the layered readers.
+    from dataraum.analysis.relationships.utils import relationship_overlay_pairs
+
+    assert relationship_overlay_pairs(session, "keep") == []
+
+
+def test_keeper_retraction_recovers_surrogate_provenance(session: Session) -> None:
+    """A keep overlay on a surrogate pair carries no evidence — provenance comes
+    from the newest llm row on the same pair, then digest-matches the verdict."""
+    _seed_tables_columns(session)
+    _seed_more_columns(session)
+    _surrogate_rel(session, "r0", natural_ids=[["ca", "cb"], ["cx", "cy"]])
+    session.add(MetadataSnapshotHead(target=catalog_head_target(), stage="catalog", run_id="r0"))
+    _overlay(session, "keep", "sk1", "sk2")
+    _intent(session, [["ca", "cb"], ["cx", "cy"]], "declined")
+    session.flush()
+
+    write_relationship_keepers(session, current_run_id="r1")
+    session.flush()
+
+    kept = [
+        o
+        for o in session.query(ConfigOverlay).filter(ConfigOverlay.type == "relationship").all()
+        if (o.payload or {}).get("action") == "keep"
+    ]
+    assert len(kept) == 1 and kept[0].superseded_at is not None
+
+
+def test_materialize_skips_keep_on_adjudicated_pair_but_honors_manual(session: Session) -> None:
+    """A stale keep on a judged pair must not materialize a keeper row this run —
+    but a USER assertion (add/confirm → manual) on the same pair always wins."""
+    _seed_tables_columns(session)
+    _seed_more_columns(session)
+    _overlay(session, "keep", "ca", "cb")
+    _overlay(session, "confirm", "ca", "cb")
+    _intent(session, [["ca", "cb"], ["cx", "cy"]], "declined")
+    session.flush()
+
+    materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
+    session.flush()
+
+    methods = [r.detection_method for r in _materialized(session)]
+    assert methods == ["manual"]  # keeper suppressed by the verdict; manual untouched

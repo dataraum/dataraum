@@ -25,6 +25,8 @@ from raw keeps hash values in lockstep with the data by construction.
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 SURROGATE_PREFIX = "_sk__"
@@ -55,12 +57,32 @@ def surrogate_column_name(component_names: list[str]) -> str:
     """The deterministic surrogate name for a component set, e.g. ``_sk__a__b``.
 
     Component order is the intent's CANONICAL pair order (all pairs sorted by
-    the referencing side's column name — the anchor is deliberately NOT first:
-    the LLM's anchor choice is not run-stable, and the name must be), so the
+    a direction-neutral name key — neither the anchor nor the from/to
+    orientation holds positional privilege: the LLM's anchor choice AND its
+    emission direction are not run-stable, and the name must be), so the
     ``(table_id, column_name)``-upserted ``column_id`` is stable across runs
     for the same confirmed key.
     """
     return SURROGATE_PREFIX + "__".join(component_names)
+
+
+def composite_intent_digest(id_pairs: Iterable[Sequence[str]]) -> str:
+    """The direction-neutral identity of a composite key (DAT-697).
+
+    sha1 over the UNORDERED component column-id pairs, each rendered
+    ``min:max`` and the pair set sorted — identity depends only on WHICH
+    column pairs the key joins. Neither the judge's anchor choice nor its
+    from/to orientation is run-stable (seen live on DAT-695), and the
+    declined-composite record is digested from the HINT's orientation while
+    a confirmation is digested from the LLM's — a direction-sensitive digest
+    would split one composite into two identities and break the
+    offered-vs-confirmed verdict arithmetic. Consumers matching stored rows
+    recompute this from the row's natural column ids rather than comparing
+    stored digest strings, so the digest format can evolve without stranding
+    old rows.
+    """
+    keys = sorted(":".join(sorted((a, b))) for a, b in id_pairs)
+    return hashlib.sha1("|".join(keys).encode(), usedforsecurity=False).hexdigest()
 
 
 def is_surrogate_column(column_name: str) -> bool:

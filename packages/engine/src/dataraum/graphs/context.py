@@ -1600,8 +1600,8 @@ def _build_value_sets(table: TableContext) -> list[str]:
       hint (DAT-699). The GraphAgent can now drill: it resolves the exact values by
       bounded substring search and grounds the IN-list on the results. The old
       render-nothing rule made a present-but-unenumerated concept structurally
-      ungroundable — on the BookSQL smoke, Depreciation and Taxes & Licenses sat
-      unseen in a 340-name account column and the agent emitted SELECT NULL;
+      ungroundable — concepts present by name in a several-hundred-value column
+      were unreachable and the agent emitted SELECT NULL for them;
     - degenerate (one value dominates) → flagged "near-constant", NO value-set — grounding
       on a ~constant flag (e.g. a 99%-true boolean) is silently wrong.
     Only key/measure/time roles are skipped (never partitions).

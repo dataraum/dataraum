@@ -338,15 +338,16 @@ class ValueSearchInput(BaseModel):
     served as size + sample, never enumerated — the exact values live behind
     THIS tool. The agent resolves them by substring search and grounds its
     IN-list on the results instead of guessing an ILIKE predicate or falling
-    loud on a concept whose values it was never shown (the BookSQL smoke's
-    Depreciation / Taxes & Licenses accounts sat unseen in a 340-name column).
+    loud on a concept whose values it was never shown (observed live: concepts
+    present by name in a several-hundred-value column were unreachable).
     """
 
     table: str = Field(description="Table name exactly as shown in <data_schema>.")
     column: str = Field(description="Column name exactly as shown in <data_schema>.")
     pattern: str = Field(
         description="Case-insensitive substring to search the column's distinct "
-        "values for (e.g. 'deprec', 'tax'). Plain text, not a SQL pattern."
+        "values for — a fragment of the concept's likely name or a synonym. "
+        "Plain text, not a SQL pattern."
     )
 
 

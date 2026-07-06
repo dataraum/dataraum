@@ -3,8 +3,8 @@
 High-cardinality discriminators are served size+sample only; their exact
 values live behind the search_values tool. The agent resolves them by
 substring search inside a small budget, then grounds its IN-list on the
-results — the BookSQL smoke's Depreciation / Taxes & Licenses accounts sat
-unseen in a 340-name column and the agent emitted SELECT NULL.
+results — before this, concepts present by name in a several-hundred-value
+column were unreachable and the agent emitted SELECT NULL for them.
 """
 
 from __future__ import annotations

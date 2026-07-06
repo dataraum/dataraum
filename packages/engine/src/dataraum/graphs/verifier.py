@@ -4,10 +4,9 @@ This is a *cheap value-space sanity check*, NOT the grounding fix. It keeps a
 metric ``grounded``/inconclusive (never silently ``executed``/green) when:
 - an extract aggregated to NULL ("no support") — reported as the MEASUREMENT,
   never a cause: a NULL aggregate can mean the filter matched no rows OR that
-  an aggregated operand was entirely NULL over matched rows (seen live: an A/R
-  ledger whose credit leg is all-NULL turned ``SUM(debit) - SUM(credit)`` into
-  NULL over 167,743 matched rows; the old fabricated "filter matched no rows"
-  text sent the whole triage down a wrong path — DAT-699);
+  an aggregated operand was entirely NULL over the matched rows (a one-sided
+  two-operand extract). The old text asserted the zero-row cause as fact and
+  misdirected diagnosis of exactly the second case — DAT-699;
 - the composed value is NULL (a contributing extract had no support);
 - a catalogue-declared per-extract ``validation:`` bound is violated (e.g. revenue
   ``value > 0``) — a one-number comparison on the step's executed scalar.

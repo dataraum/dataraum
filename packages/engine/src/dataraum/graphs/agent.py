@@ -410,9 +410,9 @@ class GraphAgent(LLMFeature):
         # keyable step absent from the map is a contract violation (the authoring
         # pass authors every keyable node), so it fails loud here too. The metric
         # still honest-fails, but the groundable subgraph EXECUTES first
-        # (DAT-699): revenue — groundable, 5.93B — ran zero times all day on the
-        # BookSQL smoke because gross_profit aborted whole on cost_of_goods_sold,
-        # and the artifact reason said nothing about what WAS measurable.
+        # (DAT-699): a groundable revenue leaf can otherwise run zero times all
+        # day because gross_profit aborts whole on cost_of_goods_sold, and the
+        # artifact reason says nothing about what WAS measurable.
         ungroundable: dict[str, str] = {}
         for step_id, step in graph.steps.items():
             key = node_key(step, graph)
@@ -519,7 +519,7 @@ class GraphAgent(LLMFeature):
             step = graph.steps.get(step_id)
             if step is None:
                 return None
-            sql = self._compose_step_sql(step, cached_snippets, resolved_params)
+            sql = self._compose_step_sql(step, step_id, cached_snippets, resolved_params)
             if sql is None:
                 # Missing extract snippet / unresolvable constant / malformed
                 # formula — the metric honest-fails (caller surfaces the reason).
@@ -555,20 +555,25 @@ class GraphAgent(LLMFeature):
     @staticmethod
     def _compose_step_sql(
         step: GraphStep,
+        step_key: str,
         cached_snippets: dict[str, dict[str, Any]],
         resolved_params: dict[str, Any],
     ) -> str | None:
         """One step's CTE SQL: extract = cached snippet, constant/formula = composed.
 
-        ``None`` = not composable (missing snippet, unresolvable constant,
-        malformed formula) — both the full compose and the DAT-699 partial
-        execution treat that as this step's honest hole.
+        ``step_key`` is the step's key in ``graph.steps`` — the dependency
+        namespace that CTE names and the snippet cache are keyed on. It usually
+        equals ``step.step_id`` but is passed explicitly because nothing
+        enforces that, and a lookup on ``step.step_id`` silently misses when
+        they diverge. ``None`` = not composable (missing snippet, unresolvable
+        constant, malformed formula) — both the full compose and the DAT-699
+        partial execution treat that as this step's honest hole.
         """
         from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
 
         try:
             if step.step_type == StepType.EXTRACT:
-                snippet = cached_snippets.get(step.step_id)
+                snippet = cached_snippets.get(step_key)
                 return snippet["sql"] if snippet else None
             if step.step_type == StepType.CONSTANT:
                 value = resolved_params.get(step.parameter) if step.parameter else None
@@ -593,10 +598,10 @@ class GraphAgent(LLMFeature):
     ) -> str:
         """Execute the groundable subgraph and report EVERY step's outcome (DAT-699).
 
-        A metric with an ungroundable extract used to abort whole — on the
-        BookSQL smoke, revenue (groundable, 5.93B) executed zero times all day
-        because every profitability metric died on cost_of_goods_sold first,
-        and the artifact reason said nothing about what WAS measurable. The
+        A metric with an ungroundable extract used to abort whole — a
+        groundable sibling (revenue) could execute zero times all day because
+        every profitability metric died on cost_of_goods_sold first, and the
+        artifact reason said nothing about what WAS measurable. The
         metric still honest-fails (its composed value cannot exist), but every
         step whose transitive dependencies ground executes, and the reason
         names each step's measured value, its hole, or what blocks it — the
@@ -625,7 +630,7 @@ class GraphAgent(LLMFeature):
             if missing:
                 blocked[step_id] = ", ".join(missing)
                 continue
-            sql = self._compose_step_sql(step, cached_snippets, resolved_params)
+            sql = self._compose_step_sql(step, step_id, cached_snippets, resolved_params)
             if sql is None:
                 blocked[step_id] = "not composable"
                 continue
@@ -1926,9 +1931,10 @@ class GraphAgent(LLMFeature):
                         "Revise to address the reason, or abstain (low-confidence). If the "
                         "prior SQL aggregated to NULL, decide from the schema evidence which "
                         "case applies: the concept has no supporting rows (abstain — never "
-                        "mask absence as 0), or the filter matches rows and one aggregate "
-                        "leg is legitimately empty (a one-sided ledger — net the legs with "
-                        "row-guarded NULL-safety per the empty-aggregation rule)."
+                        "mask absence as 0), or the filter matches rows and one aggregated "
+                        "operand is legitimately empty (one-sided data — combine the "
+                        "operands with row-guarded NULL-safety per the empty-aggregation "
+                        "rule)."
                     )
         except Exception as e:
             # Feedback is best-effort — a lookup hiccup must not fail metric authoring

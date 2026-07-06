@@ -7,7 +7,7 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ## DAT-699 — flag-and-surface over fabricated determinism (metric grounding + enrichment)
 
-**Branch:** `feat/dat-699-flag-and-surface`. Seven changes from the BookSQL
+**Branch:** `feat/dat-699-flag-and-surface`. Seven changes from the the bookkeeping smoke corpus
 clean-stack root-cause pass (0/13 metrics executed vs. a measured ceiling of 2)
 plus the determinism audit. Response shapes eval reads have changed:
 
@@ -28,7 +28,7 @@ plus the determinism audit. Response shapes eval reads have changed:
   (> 200 distinct) are served as size+sample+`search_values` hint instead of
   nothing, and the agent may spend up to 4 bounded catalog searches before
   emitting `generate_sql`. Expect grounding recall UP on datasets whose
-  discriminators exceed the enumeration bound (BookSQL depreciation/tax
+  discriminators exceed the enumeration bound (the bookkeeping smoke's depreciation/tax
   class) and 1–5 extra small LLM turns per affected extract. A tool-output
   schema validation failure gets ONE model repair turn before failing.
 - **Enrichment**: the 0.7 confidence floor is gone (the judge sees all
@@ -156,7 +156,7 @@ DAT-679 fixture work (greedy-search miss-rate corpus).
 - **`sql_snippets.column_mappings` no longer exists** (column dropped; LLM output field, `GeneratedCode`, reuse-merge and persist paths all removed). Any eval strategy reading it gets `UndefinedColumn` — switch to `provenance.column_mappings_basis` (`{concept: {column, filter, resolution}}`), which is the prompted, populated per-concept grounding record. The flat field had been silently empty since DAT-636 dropped its prompt teaching (`default_factory=dict` masked it).
 - No other engine response/pipeline shape changed; the rest of the PR is cockpit-side (drill tiers A/B/C over the promoted surface — read-only).
 
-**Testdata note:** BookSQL's COA has **zero COGS-type and zero inventory accounts**, so gross-profit-family metrics can never execute there (honest NULL extracts) — don't read that as a grounding regression; realistic executed ceiling on BookSQL ≈ dso + current_ratio.
+**Testdata note:** the bookkeeping smoke corpus's COA has **zero COGS-type and zero inventory accounts**, so gross-profit-family metrics can never execute there (honest NULL extracts) — don't read that as a grounding regression; realistic executed ceiling on the bookkeeping smoke corpus ≈ dso + current_ratio.
 
 ---
 

@@ -671,8 +671,9 @@ class TestValueSetGrounding:
         """DAT-699: a high-card / incompletely-fetched column (distinct > served) renders
         size + a frequency sample + the search_values hint — the agent can now DRILL for
         exact values instead of the old render-nothing rule, which made a
-        present-but-unenumerated concept structurally ungroundable (BookSQL's
-        Depreciation/Taxes accounts sat unseen in a 340-name column). The values still
+        present-but-unenumerated concept structurally ungroundable (concepts
+        present by name in a several-hundred-value column were unreachable). The
+        values still
         never render as an enumeration the agent might mistake for the complete set."""
         table = TableContext(
             table_id="t1",

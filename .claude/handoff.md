@@ -5,6 +5,59 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-699 — flag-and-surface over fabricated determinism (metric grounding + enrichment)
+
+**Branch:** `feat/dat-699-flag-and-surface`. Seven changes from the BookSQL
+clean-stack root-cause pass (0/13 metrics executed vs. a measured ceiling of 2)
+plus the determinism audit. Response shapes eval reads have changed:
+
+### What changed
+
+- **Metric artifact `state_reason` format** (biggest eval-facing change): a
+  metric with ungroundable dependencies now reads
+  `dependency 'cogs' is ungroundable — revenue = 5,925,920,163.00 ✓ · cogs ✗ <reason> · gross_profit blocked (needs cogs)`
+  — ALL holes named (not just the first), per-step measured values for the
+  groundable subgraph, which EXECUTES. Assertions matching the old
+  `dependency 'X' is ungroundable: <reason>` prefix need updating.
+- **Verifier no-support reason**: `has no support: it aggregated to NULL —
+  either its filter matched no rows, or an aggregated operand is entirely
+  NULL over the rows it did match` — the old `its filter matched no rows`
+  ASSERTED an unmeasured cause (misclassified a one-sided A/R ledger whose
+  join matched 167k rows).
+- **Grounding agent is no longer one-shot**: high-cardinality columns
+  (> 200 distinct) are served as size+sample+`search_values` hint instead of
+  nothing, and the agent may spend up to 4 bounded catalog searches before
+  emitting `generate_sql`. Expect grounding recall UP on datasets whose
+  discriminators exceed the enumeration bound (BookSQL depreciation/tax
+  class) and 1–5 extra small LLM turns per affected extract. A tool-output
+  schema validation failure gets ONE model repair turn before failing.
+- **Enrichment**: the 0.7 confidence floor is gone (the judge sees all
+  defined relationships); keeper rows carry their last-measured
+  confidence/cardinality/evidence stamped `not_remeasured` (never
+  `confidence=1.0, cardinality=NULL`); the sticky shape re-offers a pair
+  when its evidence fingerprint changed.
+- **Prompt** (`graph_sql_generation.yaml`): one-sided-ledger netting shape
+  (`CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(a),0) - COALESCE(SUM(b),0) END`)
+  — absence still surfaces as NULL, never masked as 0.
+
+### Calibration to run
+
+- Metric grounding recall on ledger-shaped corpora: dso-class metrics
+  (one-sided debit/credit ledgers) and depreciation/tax-class extracts
+  (values beyond the enumeration bound) should now ground; COGS-class
+  honest-NULLs must STAY declined (a confident number for an absent concept
+  is the regression to watch).
+- Any eval parser reading metric `state_reason` needs the new format.
+
+### testdata hints
+
+A one-sided-ledger fixture (AR-style: 100%-NULL credit leg over matched
+rows) + a lookalike-negative distinguishes the netting fix from COALESCE
+masking: correct = dso executes with the real balance; regression = a
+metric executes as 0 when the filter matches nothing.
+
+---
+
 ## DAT-697 — composite verdicts gate the silent-accept keeper machinery
 
 **Branch:** `feat/dat-697-keeper-adjudication`. Fixes the resurrection loop

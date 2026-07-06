@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import duckdb
 
-from dataraum.analysis.relationships.evaluator import compute_composite_cardinality
+from dataraum.analysis.relationships.evaluator import (
+    compute_composite_cardinality,
+    compute_join_coverage,
+)
 from dataraum.analysis.relationships.models import CompositeKey, RelationshipCandidate
 from dataraum.core.logging import get_logger
 
@@ -79,14 +82,19 @@ def rescue_fanout_to_composite(
 
         card = compute_composite_cardinality(table1_path, table2_path, chosen, duckdb_conn)
         if card is not None and card != _MANY_TO_MANY:
+            # Multiplicity proves the key SHAPE; coverage says whether the key
+            # matches the data at all (DAT-695) — measured here once, carried
+            # as evidence for the LLM judge.
+            coverage = compute_join_coverage(table1_path, table2_path, chosen, duckdb_conn)
             logger.info(
                 "composite_key_rescued",
                 table1=candidate.table1,
                 table2=candidate.table2,
                 key_columns=len(chosen),
                 cardinality=card,
+                coverage=coverage,
             )
-            return CompositeKey(column_pairs=chosen, cardinality=card)
+            return CompositeKey(column_pairs=chosen, cardinality=card, coverage=coverage)
 
     return None  # genuine many-to-many — no composite of these columns collapses it
 

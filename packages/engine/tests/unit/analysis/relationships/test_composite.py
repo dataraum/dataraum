@@ -199,3 +199,52 @@ def test_join_multiplication_ranks_disambiguation(con) -> None:
         "txn", "coa", [("account", "account_name"), ("business_id", "business_id")], con
     )
     assert composite < single  # the scoping column reduces the fan-out
+
+
+# ---------------------------------------------------------------------------
+# compute_join_coverage — multiplicity says "key", coverage says "used" (DAT-695)
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_is_the_matched_fraction_of_nonnull_rows(con) -> None:
+    from dataraum.analysis.relationships.evaluator import compute_join_coverage
+
+    con.execute("CREATE TABLE f (a VARCHAR, b VARCHAR)")
+    # 3 non-NULL key rows (2 match), 1 NULL-component row (excluded from the base).
+    con.execute("INSERT INTO f VALUES ('x','1'),('x','1'),('y','1'),('z',NULL)")
+    con.execute("CREATE TABLE d (a VARCHAR, b VARCHAR)")
+    con.execute("INSERT INTO d VALUES ('x','1')")
+    cov = compute_join_coverage("f", "d", [("a", "a"), ("b", "b")], con)
+    assert cov is not None and abs(cov - 2 / 3) < 1e-9
+
+
+def test_coverage_none_on_empty_or_missing(con) -> None:
+    from dataraum.analysis.relationships.evaluator import compute_join_coverage
+
+    con.execute("CREATE TABLE f2 (a VARCHAR)")
+    con.execute("CREATE TABLE d2 (a VARCHAR)")
+    assert compute_join_coverage("f2", "d2", [("a", "a")], con) is None  # no rows
+    assert compute_join_coverage("f2", "d2", [], con) is None  # no key
+    assert compute_join_coverage("missing", "d2", [("a", "a")], con) is None  # probe fails
+
+
+def test_rescued_key_carries_coverage(con) -> None:
+    """The canonical rescue fixture matches every fact row → coverage 1.0."""
+    con.execute("CREATE TABLE txn2 (account VARCHAR, business_id VARCHAR)")
+    con.execute(
+        "INSERT INTO txn2 VALUES ('Sales','B1'),('Sales','B2'),('COGS','B1'),('COGS','B2')"
+    )
+    con.execute("CREATE TABLE coa2 (account_name VARCHAR, business_id VARCHAR)")
+    con.execute(
+        "INSERT INTO coa2 VALUES ('Sales','B1'),('COGS','B1'),('Sales','B2'),('COGS','B2')"
+    )
+    key = rescue_fanout_to_composite(
+        _candidate(
+            "txn2", "coa2", [("account", "account_name", 0.9), ("business_id", "business_id", 0.5)]
+        ),
+        "txn2",
+        "coa2",
+        con,
+    )
+    assert key is not None
+    assert key.coverage == 1.0

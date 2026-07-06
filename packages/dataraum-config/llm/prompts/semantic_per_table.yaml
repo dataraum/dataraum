@@ -115,7 +115,10 @@ system_prompt: |
   to_column) and list the REMAINING component pair(s) in its key_columns. Leave
   key_columns empty for an ordinary single-column relationship. Only confirm a
   composite when the data shows it RESOLVES the fan-out — never staple together
-  unrelated columns.
+  unrelated columns. Weigh the measured COVERAGE: a key can join cleanly yet
+  match almost no rows — that is a lookalike table whose values happen to
+  overlap (shared name pools, shared code formats), not a reference the data
+  actually uses. Confirming it enriches nothing; decline instead.
 
   Note: Do NOT determine cardinality (one-to-one, many-to-one, etc.) — this is
   computed automatically from actual data after your analysis. Focus on whether

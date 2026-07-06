@@ -183,9 +183,17 @@ class EnrichmentAgent(LLMFeature):
             grain_safe = cardinality in ("many-to-one", "one-to-one")
             grain_marker = " [GRAIN-SAFE]" if grain_safe else " [AVOID - may duplicate rows]"
 
+            # Measured join coverage (DAT-695): a grain-safe key can still match
+            # almost nothing (a lookalike table) — the judge sees the number and
+            # can decline a join that would enrich nothing.
+            coverage = rel.get("coverage")
+            coverage_note = (
+                f" [matches {coverage:.1%} of fact rows]" if coverage is not None else ""
+            )
+
             lines.append(
                 f"- {from_table}.{from_col} -> {to_table}.{to_col} "
-                f"({cardinality}, confidence={confidence:.2f}){grain_marker}"
+                f"({cardinality}, confidence={confidence:.2f}){grain_marker}{coverage_note}"
             )
 
         return "\n".join(lines)

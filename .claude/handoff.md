@@ -5,6 +5,52 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-695 — join coverage as judge evidence + driver routing fixes
+
+**Branch:** `feat/dat-695-coverage-and-routing`. Root cause of "driver rankings
+empty over surrogate-joined dims" on the bookkeeping smoke corpus.
+
+### What changed
+
+- **New measured signal `coverage`** (`relationships/evaluator.py::compute_join_coverage`
+  — share of fact rows with a non-NULL key that find a dim match). Multiplicity
+  proves a key's SHAPE; coverage proves it is USED — the corpus's customer/vendor
+  dims verified many-to-one at **0.27% / ~0% coverage** (independently generated
+  lookalike tables). Coverage now rides: the composite-rescue hint + the
+  `semantic_per_table` prompt (decline lookalikes), the minted relationship's
+  evidence (`evidence.coverage`, low-coverage warning log), and the enrichment
+  feed (`[matches 0.3% of fact rows]` next to the grain marker). **Evidence for
+  the LLM judges — no numeric gate**; the slicing null-filter stays the floor.
+- **Driver routing** (`drivers/processor.py`): (1) a dim SATURATED against its
+  home entity (distinct == entity count, constant within) is a 1:1 alias of the
+  key and is dropped — it fabricated a guaranteed-empty headline family
+  (`business_id ↔ created_user`); (2) the headline family must carry content —
+  first non-empty family in precedence order wins, but never past the row
+  family (the DAT-561 low-ICC demotion is preserved, pinned by the existing
+  `test_entity_constant_dim_never_enters_row_wise_primary`).
+
+### Calibration to run
+
+- Driver-discovery recall/precision on the calibration corpora — the routing
+  changes alter WHICH family headlines (alias dims no longer home; empty
+  high-ICC families no longer block the row family). The DAT-561/563 grain
+  contracts are pinned by the existing suites, but ranked-dimension sets can
+  legitimately shift on corpora with tenant-alias structures.
+- Relationship confirmation on composite corpora — the LLM now sees coverage in
+  the hint; expect DECLINES of lookalike composites (a recall drop there is the
+  intended behavior, not a regression).
+
+### testdata hints
+
+The driver-over-surrogate acceptance (epic DAT-652) needs a corpus with REAL
+referential coverage: a fact whose composite `(name, tenant)` FK actually
+resolves against its dimensions (coverage ≥ ~0.9), dim attributes that drive the
+measure, plus a LOOKALIKE negative (name pools overlap, coverage ≪ 1) that the
+judge must now decline. The bookkeeping smoke corpus structurally cannot serve
+this: only its payment_method dim is genuinely referenced.
+
+---
+
 ## DAT-603 — graph agent: single-extract output schema + adaptive thinking (PRs #434, merged 2026-07-03)
 
 **Re-baseline `graph_sql_generation` before trusting comparisons against the DAT-602 eval baseline.** Three changes eval must know about:

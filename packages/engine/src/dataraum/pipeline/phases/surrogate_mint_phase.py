@@ -40,6 +40,7 @@ from dataraum.analysis.relationships.db_models import Relationship, SurrogateKey
 from dataraum.analysis.relationships.evaluator import (
     compute_actual_cardinality,
     compute_introduces_duplicates,
+    compute_join_coverage,
     compute_ri_metrics,
 )
 from dataraum.analysis.relationships.surrogate import (
@@ -590,11 +591,25 @@ class SurrogateMintPhase(BasePhase):
             cardinality = "many-to-one"
             natural_pairs = [[t, f] for f, t in natural_pairs]
             natural_ids = [[t, f] for f, t in natural_ids]
+        # Coverage on the MINTED pair, in the persisted (FK-side-first)
+        # direction: the share of fact rows the join actually enriches.
+        # Multiplicity said "key"; this says "used" (DAT-695). Evidence for
+        # the enrichment judge, never a gate.
+        coverage = compute_join_coverage(
+            from_fqn, to_fqn, [(from_spec.column_name, to_spec.column_name)], ctx.duckdb_conn
+        )
+        if coverage is not None and coverage < 0.5:
+            logger.warning(
+                "surrogate_low_coverage",
+                intent=intent.intent_digest,
+                coverage=round(coverage, 4),
+            )
         evidence: dict[str, Any] = {
             "source": "surrogate_mint",
             "intent_digest": intent.intent_digest,
             "reasoning": intent.reasoning,
             "composite_cardinality": intent.cardinality,
+            "coverage": coverage,
             "surrogate": {
                 "natural_pairs": natural_pairs,
                 "natural_column_ids": natural_ids,

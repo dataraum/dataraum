@@ -491,10 +491,17 @@ class SemanticAgent(LLMFeature):
             composite = rel.get("composite_key")
             if composite:
                 pair_strs = [f"{a} <-> {b}" for a, b in composite.get("column_pairs", [])]
+                coverage = composite.get("coverage")
+                coverage_note = (
+                    f" It matches {coverage:.1%} of rows with a populated key."
+                    if coverage is not None
+                    else ""
+                )
                 lines.append(
                     "COMPOSITE-KEY RESCUE: the best single-column join is many-to-many "
                     "(fan-out / over-counts). Joining on the full key "
-                    f"[{', '.join(pair_strs)}] is {composite.get('cardinality', '?')}. "
+                    f"[{', '.join(pair_strs)}] is {composite.get('cardinality', '?')}."
+                    f"{coverage_note} "
                     "If this composite is the real key, confirm it: emit ONE relationship "
                     "for the anchor pair and put the remaining pair(s) in key_columns."
                 )

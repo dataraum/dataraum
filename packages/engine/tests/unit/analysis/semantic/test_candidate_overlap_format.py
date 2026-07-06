@@ -56,11 +56,13 @@ def test_composite_rescue_hint_is_rendered() -> None:
     cands[0]["composite_key"] = {
         "column_pairs": [["customer_id", "id"], ["region", "region"]],
         "cardinality": "many-to-one",
+        "coverage": 0.003,
     }
     out = agent._format_relationship_candidates(cands)
     assert "COMPOSITE-KEY RESCUE" in out
     assert "customer_id <-> id, region <-> region" in out
     assert "many-to-one" in out
+    assert "matches 0.3% of rows" in out  # the judge sees a hollow key's number (DAT-695)
 
 
 def test_no_hint_renders_no_rescue_block() -> None:

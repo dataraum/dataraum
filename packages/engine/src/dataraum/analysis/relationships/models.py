@@ -85,10 +85,14 @@ class CompositeKey(BaseModel):
             columns added to collapse the fan-out.
         cardinality: the composite join's cardinality — never ``"many-to-many"``
             (a non-m2m result IS the rescue-success condition).
+        coverage: share of table1 rows (non-NULL key) the composite actually
+            matches — the multiplicity proof says nothing about it (DAT-695).
+            Evidence for the LLM judge, never a gate.
     """
 
     column_pairs: list[tuple[str, str]]
     cardinality: str
+    coverage: float | None = None
 
 
 class RelationshipDetectionResult(BaseModel):

@@ -184,3 +184,68 @@ class TestWithinEntityDemean:
         assert np.isnan(residual[0]) and weight[0] == 0.0
         # the rest are unaffected (still produce finite residuals somewhere)
         assert np.isfinite(residual[1:]).any()
+
+
+class TestAliasAndEmptyHeadline:
+    """DAT-695: alias dims never home; the headline family must carry content."""
+
+    @staticmethod
+    def _frame(rng: np.random.Generator) -> pl.DataFrame:
+        # 40 entities × 20 rows; measure clusters strongly by entity (high ICC).
+        # ``alias`` is a 1:1 renaming of the entity key; ``home_null`` is a
+        # legitimate (non-saturated) entity attribute with NO relation to the
+        # measure; ``row_driver`` drives WITHIN-entity variation, so it survives
+        # the row family's de-meaning.
+        n_ent, per = 40, 20
+        entity = [f"e{i}" for i in range(n_ent) for _ in range(per)]
+        alias = [f"tenant_{e}" for e in entity]
+        home_null = [f"g{i % 3}" for i in range(n_ent) for _ in range(per)]
+        row_driver = rng.choice(["hi", "lo"], size=n_ent * per)
+        base = np.repeat(rng.normal(0, 50, n_ent), per)
+        measure = base + np.where(row_driver == "hi", 5.0, -5.0) + rng.normal(0, 0.5, n_ent * per)
+        return pl.DataFrame(
+            {
+                "entity": entity,
+                "alias": alias,
+                "home_null": home_null,
+                "row_driver": row_driver,
+                "measure": measure,
+            }
+        )
+
+    def test_alias_of_cluster_key_is_dropped_not_homed(self) -> None:
+        df = self._frame(np.random.default_rng(7))
+        home, row = _home_grain_partition(df, ["entity"], ["alias", "row_driver"])
+        assert home == {}  # the alias is neither a home dim...
+        assert row == ["row_driver"]  # ...nor row-level — it IS the key, renamed
+
+    def test_headline_skips_empty_family_for_content(self) -> None:
+        from dataraum.analysis.drivers.models import Measure
+        from dataraum.analysis.drivers.processor import (
+            DEFAULT_ICC_THRESHOLD,
+            DEFAULT_MIN_ENTITIES,
+            _routed_ranking,
+        )
+
+        df = self._frame(np.random.default_rng(7))
+        rank = _routed_ranking(
+            df,
+            ["home_null", "row_driver"],
+            Measure(target_type="flow", column="measure"),
+            ["entity"],
+            seed=0,
+            max_depth=2,
+            alpha=0.05,
+            min_support=25,
+            missingness_gate=0.5,
+            n_perm=200,
+            icc_threshold=DEFAULT_ICC_THRESHOLD,
+            min_entities=DEFAULT_MIN_ENTITIES,
+        )
+        # The entity family (home_null over 40 entities, pure noise) ranks
+        # nothing; the headline must fall through to the row family that DID
+        # find the within-entity driver — never persist ranked: 0 while a
+        # non-empty family sits in secondary.
+        assert rank.ranked_dimensions, "headline family must carry content"
+        assert rank.grain == "row"
+        assert "row_driver" in {d for d, _ in rank.ranked_dimensions}

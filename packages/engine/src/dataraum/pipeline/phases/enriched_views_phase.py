@@ -56,6 +56,41 @@ from dataraum.storage import Column, Table
 logger = get_logger(__name__)
 
 
+def _dossier(rel: Relationship) -> str:
+    """The enrichment judge's dossier fingerprint for one relationship row."""
+    from dataraum.analysis.views.enrichment_agent import dossier_fingerprint
+
+    return dossier_fingerprint(
+        rel.cardinality, rel.confidence, (rel.evidence or {}).get("coverage")
+    )
+
+
+def _unchanged_considered_pairs(
+    entries: list[Any] | None,
+    current: dict[tuple[str, str], Relationship],
+) -> set[tuple[str, str]]:
+    """The prior considered pairs whose dossier is UNCHANGED (DAT-699).
+
+    Entries are ``[from_col, to_col, dossier_fingerprint]``. The DAT-516 sticky
+    shape froze the VERDICT but the dossier isn't frozen — pairs judged before
+    DAT-695 existed never saw the coverage note, and inheritance meant they
+    never would. A pair re-opens (counts as undecided, re-offered to the
+    judge) when its current dossier no longer matches the one its verdict was
+    made on, and when the stored entry carries no fingerprint at all (the
+    dossier the judge saw is unknown — conservatively re-ask). A pair absent
+    from the current catalog stays considered: there is nothing to re-judge,
+    and the existing Layer-A prune handles real drop+re-adds.
+    """
+    out: set[tuple[str, str]] = set()
+    for entry in entries or []:
+        pair = (entry[0], entry[1])
+        fingerprint = entry[2] if len(entry) > 2 else None
+        rel = current.get(pair)
+        if rel is None or (fingerprint is not None and fingerprint == _dossier(rel)):
+            out.add(pair)
+    return out
+
+
 def _lake_fqn(layer: str, bare: str) -> str:
     """Fully-qualified DuckDB name ``catalog.schema."bare"`` for a lake-layer artifact.
 
@@ -197,7 +232,11 @@ class EnrichedViewsPhase(BasePhase):
 
         def considered_pairs(fact_id: str) -> set[tuple[str, str]]:
             pv = prior_views.get(fact_id)
-            return {(a, b) for a, b in (pv.considered_relationship_pairs or [])} if pv else set()
+            if pv is None:
+                return set()
+            return _unchanged_considered_pairs(
+                pv.considered_relationship_pairs, rels_touching.get(fact_id, {})
+            )
 
         # Feed the enrichment LLM ONLY the undecided relationships (candidates not yet
         # judged for their fact), and skip the call entirely when none are undecided — the
@@ -451,11 +490,14 @@ class EnrichedViewsPhase(BasePhase):
             # later returns is thus re-judged, not stuck invisible — and since Layer A's
             # silent-accept keeps the confirmed SET stable across runs, this prune only fires
             # on a real drop+re-add, never on LLM re-judgment (the determinism the ticket wants).
+            # Each entry carries the DOSSIER FINGERPRINT its verdict was made on
+            # (DAT-699): the verdict sticks only while the measured evidence the
+            # judge saw is unchanged — a changed dossier re-opens the pair.
             considered_now = considered_pairs(fact_id) & set(cand_by_pair)
             if judged:
                 considered_now |= set(cand_by_pair)
             view_record.considered_relationship_pairs = [
-                [a, b] for (a, b) in sorted(considered_now)
+                [a, b, _dossier(cand_by_pair[(a, b)])] for (a, b) in sorted(considered_now)
             ]
             view_record.exposed_dimension_joins = [
                 {

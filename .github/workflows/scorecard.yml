@@ -1,0 +1,61 @@
+# Scorecard recompute — ADR-0019. Runs on epic/* PRs only.
+#
+# The tamper guard: the runner, registry, epic definitions, and baselines are
+# restored from origin/main BEFORE the verdict is computed (SWE-bench style —
+# the branch cannot bend its own judge). The epic definition must therefore
+# land on main (the approval PR) before its epic branch can gate.
+#
+# The eval area SKIPS here (sibling repo not checked out) — visible in the
+# report, never silent. The live tier-3 gate runs at release cut, not in CI.
+name: Scorecard
+
+on:
+    pull_request:
+        branches: [main]
+
+jobs:
+    recompute:
+        if: startsWith(github.head_ref, 'epic/')
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  fetch-depth: 0
+
+            - name: Restore the judge from main
+              run: |
+                  git fetch origin main
+                  slug="${GITHUB_HEAD_REF#epic/}"
+                  if ! git cat-file -e "origin/main:epics/${slug}.md" 2>/dev/null; then
+                      echo "::error::epics/${slug}.md not on main — land the epic definition PR first (ADR-0019 §1)."
+                      exit 1
+                  fi
+                  git checkout origin/main -- scorecard/ epics/
+                  echo "SLUG=${slug}" >> "$GITHUB_ENV"
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.3.14"
+
+            - name: Install cockpit deps
+              working-directory: packages/cockpit
+              run: bun install --frozen-lockfile
+
+            - name: Recompute scorecard (gate)
+              run: uv run scorecard/run.py --profile full --epic "$SLUG" --gate
+
+            - name: Publish report
+              if: always()
+              run: cat scorecard/out/scorecard.md >> "$GITHUB_STEP_SUMMARY" || true
+
+            - name: Upload scorecard artifact
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: scorecard
+                  path: scorecard/out/

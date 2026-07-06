@@ -1,0 +1,80 @@
+# Scorecard registry — ADR-0019.
+#
+# Vertical-agnostic by construction: this file names COMMANDS and ORACLE IDS.
+# Datasets, ground-truth values, and vertical vocabulary are data that lives in
+# the corpora repos (dataraum-testdata, dataraum-eval) and packages/dataraum-config.
+# Swapping the analytical vertical means swapping oracle entries, never the runner.
+#
+# Areas: each has a `fast` profile (every checkpoint, minutes) and a `full`
+# profile (promotion / CI recompute). A check whose `requires` path is absent is
+# reported SKIPPED — visibly, never silently.
+
+areas:
+  engine:
+    fast:
+      - id: engine-lint
+        run: uv --directory packages/engine run ruff check src/
+      - id: engine-unit
+        run: uv --directory packages/engine run pytest tests/unit -q
+    full:
+      - id: engine-types
+        run: uv --directory packages/engine run mypy src/
+      - id: engine-integration   # testcontainers — needs Docker
+        run: uv --directory packages/engine run pytest tests/integration -q
+
+  cockpit:
+    fast:
+      - id: cockpit-check
+        run: bun run --cwd packages/cockpit check
+      - id: cockpit-unit
+        run: bun run --cwd packages/cockpit test
+    full:
+      - id: cockpit-types
+        run: bun run --cwd packages/cockpit typecheck
+      - id: cockpit-build        # catches the Nitro/duckdb-neo externalization class
+        run: bun run --cwd packages/cockpit build
+
+  eval:
+    # A calibration strategy runs the REAL pipeline (real-LLM spend, ~10 min).
+    # Include area `eval` in an epic's contract ONLY when its approved
+    # promotion block authorizes the spend (live_at_promotion) — the approved
+    # epic file IS the authorization. The full live family (fresh seed, blast-
+    # radius strategies, /investigate leg) is the RELEASE gate — ADR-0019 §5.
+    fast: []
+    full:
+      - id: eval-clean-calibration   # live-LLM — epic-authorized only
+        run: make -C ../dataraum-eval calibrate STRATEGY=clean
+        requires: ../dataraum-eval
+
+# Oracle registry — data-level truth the scorecard and epics reference by id.
+# Durable data caveats live HERE, next to the oracle they qualify.
+oracles:
+  clean-corpus:
+    vertical: finance
+    dataset: ../dataraum-testdata/output/clean
+    truth: ground_truth.yaml          # value-level comparison is MANDATORY —
+                                      # distribution parity once masked a 48% revenue error
+    notes: >
+      8 mutually-referential tables; onboard ALL of them or grounding detection is
+      starved and the result is invalid. trial_balance carries trailing periods
+      (2026-01/02) with only partial accounts — an extract grounding AR at
+      period = MAX(period) honestly NULLs there.
+  injected-corpus:
+    vertical: finance
+    dataset: ../dataraum-testdata/output
+    truth: entropy_map.yaml           # known injections → detector recall/precision oracle
+  booksql:
+    vertical: finance
+    dataset: ../../testdata/booksql
+    notes: >
+      Real-world-messy grounding acceptance set (since DAT-277/ADR-0018). Two DATA
+      truths that are CORRECT platform behavior, never regressions: (1) the chart
+      of accounts has dual-role accounts (same name, different type), so no
+      name-based composite is a key — m2m + fan-trap flag + semi-join grounding is
+      the right end-state; (2) it has zero COGS-type and zero inventory accounts,
+      so gross-profit-family metrics are honestly inconclusive; the realistic
+      executed ceiling is ~ dso + current_ratio.
+  verdict-vectors:
+    vertical: none
+    dataset: packages/engine/tests/fixtures/validation_verdict_vectors.json
+    notes: Cross-language (pytest + vitest) verdict pin — ADR-0017.

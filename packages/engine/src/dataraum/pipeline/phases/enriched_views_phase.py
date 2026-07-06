@@ -4,13 +4,17 @@ Creates grain-preserving DuckDB views that LEFT JOIN fact tables with their
 confirmed dimension tables. Uses LLM to identify which relationships add
 valuable analytical dimensions (geographic, category, reference data).
 
-Only uses relationships that are:
-- Confirmed by LLM (detection_method = "llm")
-- Cardinality many_to_one or one_to_one (grain-preserving)
-- Confidence >= 0.7
-- Not flagged as introducing duplicates
+The enrichment judge sees EVERY defined relationship (llm / manual / keeper —
+raw candidates never reach this phase; they die at the semantic judge). The
+old ``confidence >= 0.7`` floor was an uncalibrated numeric gate deciding on
+the judge's behalf which already-verified relationships it was allowed to see
+— and keeper rows carried a fabricated ``confidence=1.0`` that sailed through
+it anyway (DAT-699). Confidence and cardinality are served as evidence; the
+judge decides.
 
-Post-creation: verifies row count matches fact table. Drops view if grain violated.
+Post-creation: verifies row count matches fact table. Drops view if grain
+violated — grain is the view's CONTRACT (a fan-out view silently corrupts
+every downstream number), so this stays deterministic.
 """
 
 from __future__ import annotations
@@ -50,8 +54,6 @@ from dataraum.server.storage import LAKE_CATALOG_ALIAS
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
-
-_MIN_CONFIDENCE = 0.7
 
 
 def _lake_fqn(layer: str, bare: str) -> str:
@@ -160,7 +162,6 @@ class EnrichedViewsPhase(BasePhase):
             table_ids,
             run_id=ctx.run_id,
             both_tables=False,
-            min_confidence=_MIN_CONFIDENCE,
         )
 
         # Build column lookups

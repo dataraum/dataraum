@@ -136,6 +136,29 @@ def test_load_defined_relationships_excludes_candidates_and_scopes_run(session: 
     assert all(r.run_id == "run-A" for r in defined)
 
 
+def test_load_defined_relationships_has_no_confidence_gate(session: Session) -> None:
+    """A defined row is judge-verified or user-asserted — a numeric floor here
+    would pre-empt downstream judges with an uncalibrated number (DAT-699).
+    Low-confidence rows are served as evidence, never filtered."""
+    _seed_tables_columns(session)
+    session.add(
+        Relationship(
+            run_id="run-A",
+            from_table_id="t1",
+            from_column_id="ca",
+            to_table_id="t2",
+            to_column_id="cb",
+            relationship_type="foreign_key",
+            confidence=0.3,
+            detection_method="llm",
+        )
+    )
+    session.flush()
+
+    defined = load_defined_relationships(session, ["t1", "t2"], run_id="run-A")
+    assert [r.confidence for r in defined] == [0.3]
+
+
 def test_suppressed_pairs_read_from_reject_overlay(session: Session) -> None:
     """``load_suppressed_relationship_pairs`` returns only active reject pairs."""
     session.add(

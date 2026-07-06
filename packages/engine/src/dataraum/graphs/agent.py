@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import duckdb
 import yaml
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
@@ -48,6 +49,7 @@ from .verifier import verify_execution
 
 if TYPE_CHECKING:
     from dataraum.graphs.node_warming import NodeDecision, NodeKey
+    from dataraum.llm.providers.base import ToolDefinition
 
 logger = get_logger(__name__)
 
@@ -716,8 +718,15 @@ class GraphAgent(LLMFeature):
 
         try:
             output = ExtractGroundingOutput.model_validate(tool_call.input)
-        except Exception as e:
-            return Result.fail(f"Failed to validate tool response: {e}")
+        except ValidationError as e:
+            # Enforced schema, never coercion (DAT-699): the model fixes its own
+            # output in one cheap repair turn. A finished, correct grounding was
+            # previously discarded whole on a single stringified `provenance`
+            # field — losing the metric to a serialization slip, silently.
+            repaired = self._repair_tool_output(tool, tool_call.input, e, model, prompt_name)
+            if not repaired.success:
+                return Result.fail(repaired.error or "schema repair failed")
+            output = repaired.unwrap()
 
         # Bind the one generated SQL to the graph's own leaf id (the model never
         # names a step — DAT-664's id-paraphrase class is gone by construction)
@@ -772,6 +781,62 @@ class GraphAgent(LLMFeature):
         )
 
         return Result.ok(generated_code)
+
+    def _repair_tool_output(
+        self,
+        tool: ToolDefinition,
+        invalid_input: dict[str, Any],
+        error: ValidationError,
+        model: str,
+        label: str,
+    ) -> Result[ExtractGroundingOutput]:
+        """One schema-repair turn: the model fixes its own tool output (DAT-699).
+
+        The output schema is ENFORCED, never coerced: a validation failure
+        re-prompts the model with its own serialized output plus the exact
+        validation error, under a forced tool choice — a stringified nested
+        object or a mistyped field is the model's to fix, not ours to
+        ``json.loads`` behind its back. The repair request is a fresh
+        single-turn conversation (no dataset context, so it is cheap, and no
+        assistant-turn continuation, so it cannot trip the thinking-block
+        continuation constraint). One repair attempt: a model that cannot
+        satisfy the schema twice fails loud with both errors.
+        """
+        from dataraum.llm.providers.base import ConversationRequest, Message
+
+        repair_prompt = (
+            "Your previous call to the tool below failed schema validation.\n\n"
+            f"Validation error:\n{error}\n\n"
+            f"Your tool input was:\n{json.dumps(invalid_input, indent=2)}\n\n"
+            f"Call {tool.name} again with the SAME content, corrected to satisfy "
+            "the schema exactly — e.g. a field you emitted as a JSON-encoded "
+            "string must be a structured object. Fix only the schema "
+            "violations; do not change the substance of any field."
+        )
+        request = ConversationRequest(
+            messages=[Message(role="user", content=repair_prompt)],
+            system="You repair tool-call arguments to satisfy their JSON schema exactly.",
+            tools=[tool],
+            tool_choice={"type": "tool", "name": tool.name},
+            label=f"{label}_repair",
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=0.0,
+            model=model,
+        )
+        logger.warning("tool_output_schema_repair", tool=tool.name, error=str(error)[:200])
+        response = self.provider.converse(request).unwrap()
+        if not response.tool_calls:
+            return Result.fail(
+                f"Failed to validate tool response ({error}); the schema-repair "
+                "turn produced no tool call"
+            )
+        try:
+            return Result.ok(ExtractGroundingOutput.model_validate(response.tool_calls[0].input))
+        except ValidationError as second:
+            return Result.fail(
+                f"Failed to validate tool response after a repair turn: {second} "
+                f"(original error: {error})"
+            )
 
     def _execute_sql(
         self,

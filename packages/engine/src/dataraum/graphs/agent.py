@@ -661,12 +661,20 @@ class GraphAgent(LLMFeature):
                 value = values[step_id]
                 if value is None:
                     parts.append(f"{step_id} = NULL (aggregated with no measured support)")
+                elif isinstance(value, bool):
+                    # bool BEFORE the numeric check (bool is an int subclass) —
+                    # a boolean step must read True/False, never 1.00.
+                    parts.append(f"{step_id} = {value} ✓")
                 elif isinstance(value, (int, float, Decimal)):
                     parts.append(f"{step_id} = {float(value):,.2f} ✓")
                 else:
                     parts.append(f"{step_id} = {value} ✓")
             elif step_id in executable_ids:
                 parts.append(f"{step_id} composed but not executed")
+            else:
+                # A dep referenced by the graph but absent from graph.steps
+                # (cache-only leaf) — nothing is silently absent from the story.
+                parts.append(f"{step_id} not defined in the graph")
         names = ", ".join(f"'{s}'" for s in sorted(ungroundable))
         verb = "is" if len(ungroundable) == 1 else "are"
         return f"dependency {names} {verb} ungroundable — " + " · ".join(parts) + exec_note

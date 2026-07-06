@@ -5,7 +5,6 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -27,6 +26,7 @@ from dataraum.analysis.relationships.evaluator import (
     compute_ri_metrics,
 )
 from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
+from dataraum.analysis.relationships.surrogate import composite_intent_digest
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
     ColumnConcept as ConceptModel,
@@ -421,6 +421,76 @@ def _first_wins(rows: list[dict[str, Any]], key_fields: tuple[str, ...]) -> list
     return list(folded.values())
 
 
+def _declined_intent_rows(
+    candidates: list[dict[str, Any]],
+    *,
+    confirmed_digests: set[str],
+    table_map: dict[str, str],
+    column_map: dict[tuple[str, str], str],
+    run_id: str,
+) -> list[dict[str, Any]]:
+    """Verdict rows for OFFERED composites the judge did not confirm (DAT-697).
+
+    Every COMPOSITE-KEY RESCUE hint is adjudicated: the judge either confirms
+    it (a ``status='confirmed'`` intent exists) or it was declined. A
+    confirmation the system could not build into an intent (unresolvable
+    component, non-collapsing measurement) also lands here: either way this
+    run produced no usable composite, the hint re-offers deterministically
+    next run, and the declined record is what stops the keeper machinery from
+    silently resurrecting the pair against the judge's evidence-based verdict
+    (``materialize.py``). An unresolvable HINT writes no record at all —
+    without an identity there is no verdict, and keeper protection stands.
+    """
+    rows: list[dict[str, Any]] = []
+    for cand in candidates:
+        hint = cand.get("composite_key")
+        table1, table2 = cand.get("table1"), cand.get("table2")
+        if not hint or not table1 or not table2:
+            continue
+        from_table_id, to_table_id = table_map.get(table1), table_map.get(table2)
+        id_pairs: list[tuple[str, str]] = []
+        name_pairs: list[tuple[str, str]] = []
+        for name1, name2 in hint.get("column_pairs", []):
+            id1, id2 = column_map.get((table1, name1)), column_map.get((table2, name2))
+            if not id1 or not id2:
+                id_pairs = []
+                break
+            id_pairs.append((id1, id2))
+            name_pairs.append((name1, name2))
+        if len(id_pairs) < 2 or not from_table_id or not to_table_id:
+            logger.warning(
+                "composite_decline_unrecordable",
+                table1=table1,
+                table2=table2,
+                pairs=hint.get("column_pairs"),
+            )
+            continue
+        digest = composite_intent_digest(id_pairs)
+        if digest in confirmed_digests:
+            continue
+        # Same canonical (direction-neutral) pair order as the confirmed path.
+        ordered = sorted(zip(id_pairs, name_pairs, strict=True), key=lambda t: tuple(sorted(t[1])))
+        coverage = hint.get("coverage")
+        usage = f" (measured usage {coverage:.1%})" if coverage is not None else ""
+        rows.append(
+            {
+                "run_id": run_id,
+                "intent_digest": digest,
+                "status": "declined",
+                "from_table_id": from_table_id,
+                "to_table_id": to_table_id,
+                "column_pairs": [list(pair) for pair, _n in ordered],
+                "cardinality": hint.get("cardinality"),
+                "confidence": 0.0,
+                # Neutral wording: this path also catches a confirmation the
+                # system could not build into an intent (component/measurement
+                # rejection), not only a judge omission.
+                "reasoning": f"offered rescue hint produced no confirmed composite{usage}",
+            }
+        )
+    return rows
+
+
 def _build_surrogate_intent(
     *,
     rel: SemanticRelationship,
@@ -469,15 +539,17 @@ def _build_surrogate_intent(
     if len(components) < 2:
         return None  # anchor-only after dedup — effectively single-column
 
-    # Canonical component order: ALL pairs sorted by from-side column name —
-    # including the anchor. Neither the LLM's key_columns ordering NOR its
-    # anchor choice is stable across runs (seen live 2026-07-06: the same
-    # composite arrived anchored on payment_method one run and business_id the
-    # next, minting two differently-named surrogates for one key), and the
-    # digest, the surrogate column NAME, and the hash-input order all derive
-    # from this list. The anchor's semantics live in the relationship
-    # DIRECTION, never in the column identity.
-    ordered = sorted(zip(components, name_pairs, strict=True), key=lambda t: t[1][0])
+    # Canonical component order: ALL pairs sorted by a DIRECTION-NEUTRAL name
+    # key — including the anchor. Neither the LLM's key_columns ordering, NOR
+    # its anchor choice (seen live 2026-07-06: the same composite arrived
+    # anchored on payment_method one run and business_id the next), NOR its
+    # from/to emission direction is stable across runs, and the surrogate
+    # column NAME and the hash-input order both derive from this list. A
+    # from-side-only sort key would reorder under a direction flip whenever
+    # the two sides' names sort differently (account vs account_name). The
+    # anchor's semantics live in the relationship DIRECTION, never in the
+    # column identity.
+    ordered = sorted(zip(components, name_pairs, strict=True), key=lambda t: tuple(sorted(t[1])))
     components = [c for c, _n in ordered]
     name_pairs = [n for _c, n in ordered]
 
@@ -504,12 +576,10 @@ def _build_surrogate_intent(
             )
             return None
 
-    digest = hashlib.sha1(
-        "|".join(f"{a}:{b}" for a, b in components).encode(), usedforsecurity=False
-    ).hexdigest()
     return {
         "run_id": run_id,
-        "intent_digest": digest,
+        "intent_digest": composite_intent_digest(components),
+        "status": "confirmed",
         "from_table_id": from_table_id,
         "to_table_id": to_table_id,
         "column_pairs": [list(pair) for pair in components],
@@ -713,8 +783,21 @@ def synthesize_and_store_tables(
         ],
     )
 
-    # Surrogate-key intents (DAT-277): the confirmed composites, versioned under
-    # this run for the mint phase. Same fold-then-upsert discipline as above.
+    # Surrogate-key intents (DAT-277 / DAT-697): the run's composite VERDICTS —
+    # confirmed composites for the mint phase, plus declined records for every
+    # offered-but-unconfirmed rescue hint (the keeper machinery must never
+    # silently resurrect an adjudicated pair). Confirmed rows come first so
+    # they win the fold when the same digest appears in both sets.
+    if run_id is not None:
+        intent_rows.extend(
+            _declined_intent_rows(
+                relationship_candidates or [],
+                confirmed_digests={r["intent_digest"] for r in intent_rows},
+                table_map=table_map,
+                column_map=column_map,
+                run_id=run_id,
+            )
+        )
     intent_rows = _first_wins(intent_rows, ("run_id", "intent_digest"))
     upsert(
         session,

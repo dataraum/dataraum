@@ -429,6 +429,7 @@ export const currentSurrogateKeyIntents = metadataSchema
 		intentId: varchar("intent_id"),
 		runId: varchar("run_id"),
 		intentDigest: varchar("intent_digest"),
+		status: varchar(),
 		fromTableId: varchar("from_table_id"),
 		toTableId: varchar("to_table_id"),
 		columnPairs: json("column_pairs"),
@@ -438,7 +439,7 @@ export const currentSurrogateKeyIntents = metadataSchema
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT intent_id, run_id, intent_digest, from_table_id, to_table_id, column_pairs, cardinality, confidence, reasoning, detected_at FROM ws_00000000_0000_0000_0000_000000000001.surrogate_key_intents r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT intent_id, run_id, intent_digest, status, from_table_id, to_table_id, column_pairs, cardinality, confidence, reasoning, detected_at FROM ws_00000000_0000_0000_0000_000000000001.surrogate_key_intents r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTableEntities = metadataSchema

@@ -15,13 +15,18 @@ from dataraum.storage import Column, Table
 def load_surrogate_key_intents(session: Session, run_id: str) -> list[SurrogateKeyIntent]:
     """This run's LLM-confirmed composite keys awaiting their mint (DAT-277).
 
-    Written by ``semantic_per_table`` (one row per confirmed composite), consumed
-    ONLY by the ``surrogate_mint`` phase. Run-scoped by construction — an intent
-    is an instruction to this run's mint, not durable catalog state.
+    Written by ``semantic_per_table`` (one row per composite VERDICT), consumed
+    ONLY by the ``surrogate_mint`` phase — hence the ``status='confirmed'``
+    filter: declined verdicts (DAT-697) exist for the keeper machinery, never
+    for the mint. Run-scoped by construction — an intent is an instruction to
+    this run's mint, not durable catalog state.
     """
     return list(
         session.execute(
-            select(SurrogateKeyIntent).where(SurrogateKeyIntent.run_id == run_id)
+            select(SurrogateKeyIntent).where(
+                SurrogateKeyIntent.run_id == run_id,
+                SurrogateKeyIntent.status == "confirmed",
+            )
         ).scalars()
     )
 
@@ -73,6 +78,32 @@ def load_defined_relationships(
     return list(session.execute(stmt).scalars())
 
 
+def relationship_overlay_rows(session: Session, action: str) -> list[Any]:
+    """Active ``ConfigOverlay(type='relationship')`` ROWS for one ``action``.
+
+    For callers that mutate overlays (e.g. the DAT-697 keep retraction, which
+    needs ``superseded_at``); readers that only need the column pairs use
+    :func:`relationship_overlay_pairs`. Malformed payloads (missing either
+    column id) are excluded — every consumer of the rows may rely on both ids
+    being present.
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = session.execute(
+        select(ConfigOverlay).where(
+            ConfigOverlay.type == "relationship",
+            ConfigOverlay.superseded_at.is_(None),
+        )
+    ).scalars()
+    return [
+        row
+        for row in rows
+        if (row.payload or {}).get("action") == action
+        and (row.payload or {}).get("from_column_id")
+        and (row.payload or {}).get("to_column_id")
+    ]
+
+
 def relationship_overlay_pairs(session: Session, action: str) -> list[tuple[str, str]]:
     """Active ``ConfigOverlay(type='relationship')`` column pairs for one ``action``.
 
@@ -83,26 +114,10 @@ def relationship_overlay_pairs(session: Session, action: str) -> list[tuple[str,
     these overlays goes through this one parser so they agree on the shape.
     ``superseded_at IS NULL`` filters undone teaches out.
     """
-    from dataraum.storage import ConfigOverlay
-
-    rows = list(
-        session.execute(
-            select(ConfigOverlay).where(
-                ConfigOverlay.type == "relationship",
-                ConfigOverlay.superseded_at.is_(None),
-            )
-        ).scalars()
-    )
-    out: list[tuple[str, str]] = []
-    for row in rows:
-        payload = row.payload or {}
-        if payload.get("action") != action:
-            continue
-        from_col = payload.get("from_column_id")
-        to_col = payload.get("to_column_id")
-        if from_col and to_col:
-            out.append((from_col, to_col))
-    return out
+    return [
+        (row.payload["from_column_id"], row.payload["to_column_id"])
+        for row in relationship_overlay_rows(session, action)
+    ]
 
 
 def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]:

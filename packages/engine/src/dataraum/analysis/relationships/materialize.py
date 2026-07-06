@@ -22,19 +22,36 @@ Rejected pairs are skipped (a reject wins over a stale add/confirm/keep).
 Re-running the same ``run_id`` (a Temporal retry) clears only this run's own
 ``manual``/``keeper`` rows first, so it is idempotent and non-destructive to
 other runs.
+
+Adjudication outranks silence (DAT-697): silent-accept exists for pairs the
+run did NOT rule on (an LLM flake must not erase catalog state the user
+relied on), but ``semantic_per_table`` records a VERDICT for every composite
+whose rescue hint it offered (``SurrogateKeyIntent.status``), and a verdict
+is not silence. A ``keep`` overlay on an adjudicated pair is neither
+materialized nor lifted — it is superseded — so a judge-declined composite
+(and its hollow surrogate columns, via the mint's keeper-grace window)
+cannot be resurrected run after run by machinery meant to guard against
+flakes. User assertions are untouched: ``manual`` overlays never yield to
+the judge, and ``keep`` has exactly one author (this module — the cockpit
+teach surface rejects it as a user action).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.db_models import Relationship, SurrogateKeyIntent
+from dataraum.analysis.relationships.surrogate import composite_intent_digest
 from dataraum.analysis.relationships.utils import (
     load_suppressed_relationship_pairs,
     relationship_overlay_pairs,
+    relationship_overlay_rows,
 )
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column
@@ -45,6 +62,94 @@ logger = get_logger(__name__)
 # ``confirm`` are both explicit human assertions (manual); ``add`` is listed
 # first so it wins the per-(pair, method) dedup when both overlays exist.
 _ACTION_METHOD = {"add": "manual", "confirm": "manual", "keep": "keeper"}
+
+
+@dataclass(frozen=True)
+class _Adjudication:
+    """One run's composite verdicts, in the shapes the keeper machinery matches on.
+
+    ``digests``: direction-neutral identities of EVERY composite the judge ruled
+    on this run (confirmed or declined) — matched against a surrogate
+    relationship's mint provenance, so a confirmed composite also supersedes a
+    stale differently-named/anchored surrogate twin of itself.
+    ``declined_pairs``: the unordered natural component pairs of DECLINED
+    composites — a declined verdict covers the composite's own column pairs
+    (anchor included: the judge was told to decline the relationship entirely).
+    Component pairs of CONFIRMED composites are deliberately absent: a second,
+    independent relationship between the same tables (two real FKs) must keep
+    its flake protection.
+    """
+
+    digests: frozenset[str]
+    declined_pairs: frozenset[frozenset[str]]
+
+    @property
+    def empty(self) -> bool:
+        return not self.digests and not self.declined_pairs
+
+
+def _load_adjudication(session: Session, run_id: str) -> _Adjudication:
+    """This run's composite verdicts (both statuses), from the intent rows."""
+    intents = session.execute(
+        select(SurrogateKeyIntent).where(SurrogateKeyIntent.run_id == run_id)
+    ).scalars()
+    digests: set[str] = set()
+    declined_pairs: set[frozenset[str]] = set()
+    for intent in intents:
+        digests.add(composite_intent_digest(intent.column_pairs))
+        if intent.status == "declined":
+            declined_pairs.update(frozenset(pair) for pair in intent.column_pairs)
+    return _Adjudication(frozenset(digests), frozenset(declined_pairs))
+
+
+def _natural_id_pairs(evidence: dict[str, Any] | None) -> list[Any] | None:
+    """The mint's natural component-id pairs from a relationship's evidence."""
+    surrogate = (evidence or {}).get("surrogate")
+    ids = surrogate.get("natural_column_ids") if isinstance(surrogate, dict) else None
+    return ids if isinstance(ids, list) and len(ids) >= 2 else None
+
+
+def _row_adjudicated(
+    adjudication: _Adjudication, pair: tuple[str, str], evidence: dict[str, Any] | None
+) -> bool:
+    """Whether this run RULED on the composite behind a relationship row.
+
+    Declined verdicts match the natural component pairs directly; surrogate
+    rows (whose pair is the minted ``_sk__`` columns, not the components)
+    match via the digest recomputed from their mint provenance — recomputed,
+    never string-compared, so digest-format changes cannot strand old rows.
+    """
+    if frozenset(pair) in adjudication.declined_pairs:
+        return True
+    natural = _natural_id_pairs(evidence)
+    return natural is not None and composite_intent_digest(natural) in adjudication.digests
+
+
+def _pair_adjudicated(session: Session, adjudication: _Adjudication, pair: tuple[str, str]) -> bool:
+    """`_row_adjudicated` for a bare pair (a keep overlay carries no evidence).
+
+    Surrogate provenance is recovered from the newest ``llm`` row on the same
+    pair (the original mint — mirrors the mint phase's own fallback for
+    overlay-materialized rows).
+    """
+    if frozenset(pair) in adjudication.declined_pairs:
+        return True
+    if not adjudication.digests:
+        return False
+    evidences = session.execute(
+        select(Relationship.evidence)
+        .where(
+            Relationship.from_column_id == pair[0],
+            Relationship.to_column_id == pair[1],
+            Relationship.detection_method == "llm",
+        )
+        .order_by(Relationship.detected_at.desc())
+    ).scalars()
+    for evidence in evidences:
+        natural = _natural_id_pairs(evidence)
+        if natural is not None:
+            return composite_intent_digest(natural) in adjudication.digests
+    return False
 
 
 def materialize_relationship_overlays(
@@ -68,6 +173,7 @@ def materialize_relationship_overlays(
     )
 
     suppressed = load_suppressed_relationship_pairs(session)
+    adjudication = _load_adjudication(session, run_id)
 
     # The run's DEFINED rows so far, keyed (pair, method) — candidates are
     # ephemeral and excluded. Dedup is per METHOD: an overlay row may join a
@@ -94,6 +200,12 @@ def materialize_relationship_overlays(
         for from_col, to_col in relationship_overlay_pairs(session, action):
             pair = (from_col, to_col)
             if pair in suppressed or (from_col, to_col, method) in written:
+                continue
+            if action == "keep" and _pair_adjudicated(session, adjudication, pair):
+                # This run RULED on the pair's composite (DAT-697) — a verdict
+                # is not silence, so the stale keep does not materialize. The
+                # overlay itself is superseded at the end of the run by
+                # ``write_relationship_keepers``.
                 continue
             from_table = table_by_column.get(from_col)
             to_table = table_by_column.get(to_col)
@@ -159,6 +271,13 @@ def write_relationship_keepers(
     The lifted relationship is absent from the run that detected its absence; the
     ``keep`` overlay materializes it as ``keeper`` from the NEXT run onward (the
     accepted one-run gap, by spec).
+
+    Adjudication outranks silence (DAT-697): a prior pair whose composite this
+    run's judge RULED on — declined on evidence, or confirmed under its
+    canonical surrogate identity (superseding a stale differently-named twin)
+    — is not lifted, and any existing keep overlay on such a pair is
+    superseded, so an already-polluted workspace self-heals instead of
+    resurrecting the pair every run.
     """
     from dataraum.storage import ConfigOverlay
     from dataraum.storage.snapshot_head import catalog_head_target, head_run_id
@@ -167,22 +286,37 @@ def write_relationship_keepers(
     if prior_run is None or prior_run == current_run_id:
         return 0
 
-    prior_llm = _run_pairs(session, prior_run, method="llm")
+    adjudication = _load_adjudication(session, current_run_id)
+    retracted = _retract_adjudicated_keeps(session, adjudication)
+
+    prior_llm = list(
+        session.execute(
+            select(
+                Relationship.from_column_id, Relationship.to_column_id, Relationship.evidence
+            ).where(
+                Relationship.run_id == prior_run,
+                Relationship.detection_method == "llm",
+            )
+        ).tuples()
+    )
     reproduced = _run_pairs(session, current_run_id)
     rejected = load_suppressed_relationship_pairs(session)
     already_kept = set(relationship_overlay_pairs(session, "keep"))
 
     count = 0
-    for pair in prior_llm:
+    for from_col, to_col, evidence in prior_llm:
+        pair = (from_col, to_col)
         if pair in reproduced or pair in rejected or pair in already_kept:
             continue
+        if _row_adjudicated(adjudication, pair, evidence):
+            continue  # the judge ruled this run — a verdict is not silence
         session.add(
             ConfigOverlay(
                 type="relationship",
                 payload={
                     "action": "keep",
-                    "from_column_id": pair[0],
-                    "to_column_id": pair[1],
+                    "from_column_id": from_col,
+                    "to_column_id": to_col,
                 },
             )
         )
@@ -194,8 +328,36 @@ def write_relationship_keepers(
         prior_run=prior_run,
         current_run=current_run_id,
         count=count,
+        retracted=retracted,
     )
     return count
+
+
+def _retract_adjudicated_keeps(session: Session, adjudication: _Adjudication) -> int:
+    """Supersede active ``keep`` overlays whose pair this run's judge ruled on.
+
+    Without this, a keep overlay written before the verdict re-materializes a
+    ``keeper`` row every subsequent run and the mint's grace window keeps the
+    declined composite's hollow ``_sk__`` columns alive indefinitely.
+    Supersede (the overlay system's own undo marker), never delete — the
+    record that the pair was silently kept until a verdict landed stays
+    auditable. Safe by construction: ``keep`` overlays are machine-authored
+    only (the cockpit teach validator rejects the action), so no user
+    assertion can be retracted here.
+    """
+    if adjudication.empty:
+        return 0
+    retracted = 0
+    # One provenance query per keep overlay (`_pair_adjudicated`) — fine at
+    # keeper volumes (a handful per workspace); revisit if that ever grows.
+    for overlay in relationship_overlay_rows(session, "keep"):
+        pair = (overlay.payload["from_column_id"], overlay.payload["to_column_id"])
+        if _pair_adjudicated(session, adjudication, pair):
+            overlay.superseded_at = datetime.now(UTC)
+            retracted += 1
+    if retracted:
+        session.flush()
+    return retracted
 
 
 def _run_pairs(

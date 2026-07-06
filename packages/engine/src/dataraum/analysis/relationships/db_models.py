@@ -121,19 +121,25 @@ Index("idx_relationships_to_table_column", Relationship.to_table_id, Relationshi
 
 
 class SurrogateKeyIntent(Base):
-    """An LLM-confirmed composite key awaiting its surrogate mint (DAT-277).
+    """The run's composite-key VERDICT record (DAT-277, DAT-697).
 
-    ``semantic_per_table`` confirms a composite via ``RelationshipOutput.key_columns``;
-    the confirmation is persisted HERE — never as plain llm relationship rows — so
-    no single-column consumer ever joins on a half-key. The ``surrogate_mint``
-    phase reads the run's intents, mints the NULL-propagating hash column on both
-    typed tables, and persists the ONE single-column relationship on the surrogate
-    pair (method 'llm', evidence carrying this provenance).
+    ``semantic_per_table`` writes one row per composite the judge ruled on:
+    ``status='confirmed'`` (via ``RelationshipOutput.key_columns`` — persisted
+    HERE, never as plain llm relationship rows, so no single-column consumer
+    ever joins on a half-key) or ``status='declined'`` (a COMPOSITE-KEY RESCUE
+    hint was offered and the judge did not confirm it). The ``surrogate_mint``
+    phase reads only the run's confirmed intents; the keeper machinery
+    (``materialize.py``) reads both — an adjudicated composite must not be
+    silently kept (DAT-697), because silence-as-acceptance requires the system
+    to have been silent, and a verdict is not silence.
 
     Run-versioned like the relationship catalog (DAT-408): rows coexist across
     runs; the mint reads only its own run's intents. ``intent_digest`` is
-    deterministic in the ordered component column ids so a Temporal
-    at-least-once retry upserts the same row instead of duplicating it.
+    deterministic in the component column ids and DIRECTION-NEUTRAL (neither
+    the judge's anchor choice nor its from/to orientation is run-stable), so a
+    Temporal at-least-once retry upserts the same row instead of duplicating
+    it, and the offered-vs-confirmed comparison cannot split one composite
+    into two identities.
     """
 
     __tablename__ = "surrogate_key_intents"
@@ -145,10 +151,15 @@ class SurrogateKeyIntent(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     intent_digest: Mapped[str] = mapped_column(String, nullable=False)
 
+    # The judge's ruling: 'confirmed' (mint this composite) or 'declined' (the
+    # rescue hint was offered and not confirmed — no relationship in the data).
+    status: Mapped[str] = mapped_column(String, nullable=False, default="confirmed")
+
     from_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
     to_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
 
-    # Ordered component pairs, anchor FIRST: [[from_column_id, to_column_id], …].
+    # Component pairs in CANONICAL order (direction-neutral name key — the
+    # anchor holds no positional privilege): [[from_column_id, to_column_id], …].
     # Column ids, not names — the id is the cross-phase-stable identity; the mint
     # resolves physical names from the Column rows when composing the hash DDL.
     column_pairs: Mapped[list[Any]] = mapped_column(JSON, nullable=False)

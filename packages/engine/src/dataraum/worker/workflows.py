@@ -29,11 +29,12 @@ ends; this collapsed the old per-table ``detect_table`` + parent ``detect_source
 
 Above the analysis workflows sit the two ORCHESTRATION workflows (DAT-708,
 ADR-0020 — moved here from the cockpit's TS worker): ``groundingLoopWorkflow``
-(onboarding import + bounded teach loop) and ``sessionCascadeWorkflow``
-(begin_session → operating_model), which start the analysis workflows above as
-children and bracket each with the cockpit's run-recording activities,
-scheduled by name on the cockpit's activity-only queue. See the section at the
-bottom of this module.
+(onboarding import + one grounding-teach round per execution, replays
+tail-called via ``continue_as_new`` with the budget on the input message) and
+``sessionCascadeWorkflow`` (begin_session → operating_model), which start the
+analysis workflows above as children and bracket each with the cockpit's
+run-recording activities, scheduled by name on the cockpit's activity-only
+queue. See the section at the bottom of this module.
 """
 
 from __future__ import annotations
@@ -1075,19 +1076,27 @@ class GroundingLoopWorkflow:
     Short-lived, per-trigger: all state rides the start payload — no signals,
     no cross-run state.
 
-    On a clean import it runs the DAT-551 teach agent, auto-applies the
-    mechanical grounding teaches a detector can verify, and replays (re-runs
-    add_source to re-measure), bounded by the attempt budget; a human-judgement
-    gap or exhaustion parks the run ``awaiting_input`` (the "Needs you" inbox)
-    and returns — it NEVER blocks on human input.
+    ONE grounding round per execution — re-run, don't loop: the body is
+    straight-line (import → assess → decide), and a ``replay`` verdict
+    tail-calls the workflow via ``continue_as_new`` with the decremented budget
+    on the input message. Temporal carries the loop state durably in the
+    payload, each execution's history is one stage + one assess, and the
+    replay bound is structural — a round can only recur through the input
+    contract, never through workflow-local loop state. A human-judgement gap
+    or an exhausted budget parks the run ``awaiting_input`` (the "Needs you"
+    inbox) and completes — it NEVER blocks on human input.
     """
 
     @workflow.run
     async def run(self, payload: GroundingLoopInput) -> None:
-        # 1) The onboarding import. Recorded with the real conversation id so
-        #    the watcher tracks its progress widget, but kind="onboarding" ⇒
-        #    the watcher skips its chat narration (DAT-597).
-        first = await _run_stage(
+        # 1) The import stage. The FIRST execution carries the originating
+        #    conversation id (the watcher tracks its progress widget, but
+        #    kind="onboarding" ⇒ no chat narration, DAT-597); a continuation
+        #    is an INTERNAL autonomous replay and carries conversation_id=None
+        #    — it must not fire the watcher's narration (the user already
+        #    heard the import landed; the loop's outcome surfaces via the run
+        #    monitor / awaiting_input, not N chat messages).
+        imported = await _run_stage(
             workflow_type="addSourceWorkflow",
             payload=AddSourceInput(
                 workspace_id=payload.workspace_id,
@@ -1102,13 +1111,12 @@ class GroundingLoopWorkflow:
             conversation_id=payload.conversation_id,
             cockpit_task_queue=payload.cockpit_task_queue,
         )
-        if first is None:
+        if imported is None:
             return  # import failed (already marked) — nothing to ground.
 
-        # 2) The grounding-teach loop (the autonomy step), bounded by the
-        #    attempt budget. The typed table ids are the readiness scope the
-        #    agent assesses — re-read from each replay's result.
-        table_ids = [table.typed_table_id for table in first.tables]
+        # 2) One grounding round (the autonomy step). The typed table ids from
+        #    THIS execution's import are the readiness scope the agent assesses.
+        table_ids = [table.typed_table_id for table in imported.tables]
         if not table_ids:
             return
         attempts_remaining = (
@@ -1117,82 +1125,71 @@ class GroundingLoopWorkflow:
             else _DEFAULT_GROUNDING_ATTEMPTS
         )
 
-        while True:
-            try:
-                verdict = await workflow.execute_activity(
-                    "assessAndGround",
-                    AssessAndGroundInput(tableIds=table_ids, attemptsRemaining=attempts_remaining),
-                    task_queue=payload.cockpit_task_queue,
-                    result_type=AssessAndGroundResult,
-                    start_to_close_timeout=_GROUNDING_AGENT_TIMEOUT,
-                    retry_policy=_GROUNDING_AGENT_RETRY,
-                )
-            except Exception as err:
-                # The assessment died (LLM error after retries) — stop
-                # grounding, don't crash. The import itself is already
-                # recorded complete. (Misses CancelledError deliberately.)
-                workflow.logger.warning(
-                    "grounding assess failed: workflow_id=%s err=%s",
-                    payload.workflow_id,
-                    err,
-                )
-                return
-
-            step = decide_grounding_step(verdict, attempts_remaining)
-            if step.action == "done":
-                return
-            if step.action == "surface":
-                try:
-                    await workflow.execute_activity(
-                        "markRunAwaitingInput",
-                        args=[payload.workflow_id, step.note],
-                        task_queue=payload.cockpit_task_queue,
-                        start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
-                        retry_policy=_COCKPIT_WRITE_RETRY,
-                    )
-                except Exception:
-                    # Best-effort park: a lost awaiting_input note must not
-                    # fail the loop's clean exit (the activity itself is
-                    # best-effort too — it logs, never throws — so this only
-                    # catches activity-infrastructure failure).
-                    workflow.logger.warning(
-                        "grounding park write failed: workflow_id=%s",
-                        payload.workflow_id,
-                    )
-                workflow.logger.info(
-                    "grounding surfaced for input: workflow_id=%s reason=%s",
-                    payload.workflow_id,
-                    step.reason,
-                )
-                return
-
-            # action == "replay": re-run add_source for the SAME workspace to
-            # apply the teaches + re-measure. conversation_id=None: these are
-            # INTERNAL autonomous re-runs — they must NOT fire the watcher's
-            # narration (the user already heard the import landed; the loop's
-            # outcome surfaces via the run monitor / awaiting_input, not N
-            # chat messages).
-            attempts_remaining -= 1
-            replay = await _run_stage(
-                workflow_type="addSourceWorkflow",
-                payload=AddSourceInput(
-                    workspace_id=payload.workspace_id,
-                    sources=payload.sources,
-                    verticals=payload.verticals,
-                ),
-                result_type=AddSourceResult,
-                workflow_id=payload.workflow_id,
-                workspace_id=payload.workspace_id,
-                stage="add_source",
-                kind="onboarding",
-                conversation_id=None,
-                cockpit_task_queue=payload.cockpit_task_queue,
+        try:
+            verdict = await workflow.execute_activity(
+                "assessAndGround",
+                AssessAndGroundInput(tableIds=table_ids, attemptsRemaining=attempts_remaining),
+                task_queue=payload.cockpit_task_queue,
+                result_type=AssessAndGroundResult,
+                start_to_close_timeout=_GROUNDING_AGENT_TIMEOUT,
+                retry_policy=_GROUNDING_AGENT_RETRY,
             )
-            if replay is None:
-                return  # a failed replay stops the loop (the run is marked).
-            table_ids = [table.typed_table_id for table in replay.tables]
-            if not table_ids:
-                return
+        except Exception as err:
+            # The assessment died (LLM error after retries) — stop grounding,
+            # don't crash. The import itself is already recorded complete.
+            # (Misses CancelledError deliberately.)
+            workflow.logger.warning(
+                "grounding assess failed: workflow_id=%s err=%s",
+                payload.workflow_id,
+                err,
+            )
+            return
+
+        step = decide_grounding_step(verdict, attempts_remaining)
+        if step.action == "done":
+            return
+        if step.action == "surface":
+            try:
+                await workflow.execute_activity(
+                    "markRunAwaitingInput",
+                    args=[payload.workflow_id, step.note],
+                    task_queue=payload.cockpit_task_queue,
+                    start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
+                    retry_policy=_COCKPIT_WRITE_RETRY,
+                )
+            except Exception:
+                # Best-effort park: a lost awaiting_input note must not fail
+                # the run's clean exit (the activity itself is best-effort too
+                # — it logs, never throws — so this only catches
+                # activity-infrastructure failure).
+                workflow.logger.warning(
+                    "grounding park write failed: workflow_id=%s",
+                    payload.workflow_id,
+                )
+            workflow.logger.info(
+                "grounding surfaced for input: workflow_id=%s reason=%s",
+                payload.workflow_id,
+                step.reason,
+            )
+            return
+
+        # action == "replay": teaches were applied — re-run add_source to
+        # re-measure, as a FRESH execution. The decremented budget rides the
+        # input message (Temporal persists it), the null conversation id makes
+        # the continuation a non-narrating replay, and the workflow id chain
+        # stays `grounding-<ws>` (single-flight holds across continuations —
+        # the chain counts as running until the final execution completes).
+        workflow.continue_as_new(
+            GroundingLoopInput(
+                workspace_id=payload.workspace_id,
+                workflow_id=payload.workflow_id,
+                cockpit_task_queue=payload.cockpit_task_queue,
+                sources=payload.sources,
+                verticals=payload.verticals,
+                conversation_id=None,
+                number_of_attempts=attempts_remaining - 1,
+            )
+        )
 
 
 @workflow.defn(name="sessionCascadeWorkflow")

@@ -38,8 +38,13 @@ All Temporal workflows — analysis and orchestration — are Python on the engi
 per-workspace ids (`grounding-<ws>`, `session-<ws>`), single-flight start policy,
 record-after-start run bracketing (DAT-595), `ParentClosePolicy.ABANDON` engine
 children, and the bounded teach loop (`decide_grounding_step`, ported with its unit
-tests). The engine children became native same-queue Python child workflows — the
-cross-language child hop is gone.
+tests). The teach loop's shape changed with the port: re-run, don't loop — each
+execution runs one round (import → assess → decide) and a `replay` verdict tail-calls
+the workflow via `continue_as_new`, carrying the decremented budget on the input
+message. The engine carries the loop state durably; the replay bound is structural
+(a round can only recur through the input contract), and each execution's history
+stays one stage + one assess. The engine children became native same-queue Python
+child workflows — the cross-language child hop is gone.
 
 The cockpit remains the Client — it starts the orchestration workflows by type name on
 the workspace's engine queue — and hosts an **activity-only** worker on its

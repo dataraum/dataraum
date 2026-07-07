@@ -1,6 +1,6 @@
 # ADR-0002 — Engine is a pure Temporal activity worker (no HTTP / MCP transport)
 
-- **Status:** Accepted
+- **Status:** Accepted (refined by [ADR-0008](./0008-promoted-read-views.md) — cockpit metadata reads narrowed from raw `ws_<id>` to the generated `ws_<id>_read` view surface; the `src/dataraum/mcp/` deletion candidate named below has since been deleted)
 - **Date:** 2026-05-25
 - **Ticket:** DAT-339
 - **Design doc:** Confluence DD space

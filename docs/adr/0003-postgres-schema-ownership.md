@@ -1,6 +1,6 @@
 # ADR-0003 — Postgres schema ownership: engine `ws_<id>`, cockpit `cockpit_db`, never shared
 
-- **Status:** Accepted
+- **Status:** Accepted (refined by [ADR-0008](./0008-promoted-read-views.md) — the "future SQL-DDL artifact" consequence is realized: the mirror regenerates from the offline `schema.sql`/`schema_read.sql` dump against a scratch Postgres (`packages/cockpit/scripts/pull-metadata.sh`), introspecting `ws_<id>_read`, not a live workspace DB)
 - **Date:** 2026-05-25
 - **Ticket:** DAT-321 (unified substrate)
 - **Design doc:** Confluence DD space

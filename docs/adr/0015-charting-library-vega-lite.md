@@ -1,6 +1,6 @@
 # ADR-0015 — Charting library for agent-authored report charts: Vega-Lite
 
-- **Status:** Accepted
+- **Status:** Accepted (deviation: the shipped gate validates via a zod subset + column check + `vega-lite compile()` — `cockpit/src/charts/validate.ts` — instead of the bundled 1.88 MB JSON Schema; same gate intent, cheaper mechanism)
 - **Date:** 2026-06-24
 - **Ticket:** DAT-626 (entry-criteria spike), epic DAT-623 (Cockpit Reports)
 - **Design doc:** Confluence DD/40337410 (Cockpit Reports)

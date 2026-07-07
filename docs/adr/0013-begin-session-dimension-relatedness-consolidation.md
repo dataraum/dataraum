@@ -1,6 +1,6 @@
 # ADR-0013 — begin_session consolidation: dimension catalog, inline witness aggregation, sticky enriched-view shape
 
-- **Status:** Accepted (consolidated 2026-07-02 from the original decision and the amendments of 2026-06-17 and 2026-06-20)
+- **Status:** Accepted (consolidated 2026-07-02 from the original decision and the amendments of 2026-06-17 and 2026-06-20; one listed cut is only half-executed — `dimensional_entropy` lost its loss row (`loss.yaml` DEMOTED) but the detector is still registered (`entropy/detectors/base.py`), and `grain_safe` was since removed as always-true — the deregistration is an open direct-fix item)
 - **Date:** 2026-06-16
 - **Ticket:** DAT-514 (epic), DAT-535 (spike), DAT-516 (shape stability), DAT-536/537/543/545
 - **Design doc:** Confluence DD/36798466

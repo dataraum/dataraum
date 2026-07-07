@@ -1,6 +1,6 @@
 # ADR-0001 — Temporal orchestration: Python workflows + activities on one worker
 
-- **Status:** Accepted (amended by [ADR-0014](./0014-cockpit-orchestration-worker.md))
+- **Status:** Accepted (amended by [ADR-0014](./0014-cockpit-orchestration-worker.md); scaled per-workspace by [ADR-0012](./0012-per-workspace-tenancy.md) — "one worker, one task queue" now holds *per workspace*, `engine-<workspace_id>`)
 - **Date:** 2026-05-25
 - **Ticket:** DAT-344 (built), DAT-360 (locked the direction)
 - **Design doc:** Confluence DD space

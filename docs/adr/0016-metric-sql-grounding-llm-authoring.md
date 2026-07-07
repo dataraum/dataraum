@@ -1,6 +1,6 @@
 # ADR-0016 — Metric SQL: feed deterministic grounding, let the LLM author
 
-- **Status:** Accepted
+- **Status:** Accepted (amended: sqlglot was retired by DAT-654 — canonical SQL comparison runs on DuckDB `json_serialize_sql`, `core/sql_normalize.py`; and the planned predicate⊆binding structural match was never built — the shipped gate is the `graphs/verifier.py` sanity floor + the DAT-631 confidence gate)
 - **Date:** 2026-06-25
 - **Ticket:** DAT-543 (epic), DAT-616/620/631 (the implementing arc)
 - **Design doc:** Confluence DD space (DAT-543 epic)

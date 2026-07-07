@@ -1,6 +1,6 @@
 # ADR-0010 — Failure contract: (key, run_id) idempotent writers; skips and deletes are exceptions, not the mechanism
 
-- **Status:** Accepted
+- **Status:** Accepted (the slice-substrate entries below — `slicing_views`, `temporal_slice_analysis_phase`/`processed_slice_tables`, the `temporal_slice_analyses` grain — were retired with the slice materialization by [ADR-0013](./0013-begin-session-dimension-relatedness-consolidation.md); the writer contract itself is unchanged, see `storage/read_views.py::_RUN_GRAIN_EXEMPT` for the live exempt list)
 - **Date:** 2026-06-11
 - **Ticket:** DAT-502 (Phase 1 of epic DAT-501)
 - **Design doc:** Confluence DD/34045953 §4

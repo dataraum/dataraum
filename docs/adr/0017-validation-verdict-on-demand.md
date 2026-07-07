@@ -51,7 +51,7 @@ contracted output column instead of guessing it.**
 3. **The judgement is then a trivial threshold, applied at every consumer.** `passed =
    deviation <= tolerance` (constraint: `violations == 0`). The engine in-run consumers
    (cycle health, graph context, the `cross_table_consistency` detector) apply it in Python
-   (`validation/evaluate.py`); the cockpit applies the **same two-line rule in TS** after
+   (`analysis/validation/evaluate.py`); the cockpit applies the **same two-line rule in TS** after
    re-running `sql_used` on the lake. The two copies are pinned by **one shared fixture set**
    (`rows + check_type + tolerance → verdict`) run in both pytest and vitest — drift is a test
    failure, not a production surprise. (A two-line threshold is not the duplication risk; the

@@ -22,8 +22,8 @@ expectation IS the signal (ADR-0009).
 filter (the agent improvises ``WHERE account_type ILIKE '%cost%'`` and matches the
 wrong rows) returns a well-typed, in-range value that passes every check here. The
 grounding fix lives elsewhere — feed the agent the real value distribution + a
-teach-confirmed concept→value-set binding (DAT-620) so it stops improvising the
-predicate (design: ``docs/dat543-construct-dont-improvise.md``). Keep this as the
+teach-confirmed concept→value-set binding (DAT-620, shipped as the metadata
+feed — ``graphs/context.py``) so it stops improvising the predicate. Keep this as the
 cheap floor; do not mistake it for the fix.
 
 The signal is **support, not magnitude**: a genuine ``0`` (a filter that matched

@@ -1,4 +1,4 @@
-"""Promoted-read surface generation (ADR-0008, DAT-453).
+"""Promoted-read surface generation (docs/architecture/persistence.md, DAT-453).
 
 The statement generator is pure (no DB): these tests pin the registry's
 coverage tripwire and the artifact's shape. The live properties — promoted-run
@@ -73,7 +73,7 @@ def test_dual_grain_accepts_either_head_and_discriminates() -> None:
 
 
 def test_claim_witnesses_is_dual_grain_witness_substrate() -> None:
-    """ClaimWitnessRecord (ADR-0009, DAT-457) is written by both detect paths
+    """ClaimWitnessRecord (docs/architecture/entropy.md, DAT-457) is written by both detect paths
     like entropy_objects, so its view joins either head and carries both
     discriminators — the witness provenance behind every pooled (C, U)."""
     sql = dict(read_view_statements())["current_claim_witnesses"]

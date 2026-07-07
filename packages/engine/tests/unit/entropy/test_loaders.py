@@ -400,7 +400,7 @@ class TestLoaderHeadFallback:
 
 
 class TestLoadHypothesisMatchRate:
-    """The hypothesis-grading loader (derived_value second witness, ADR-0009).
+    """The hypothesis-grading loader (derived_value second witness, docs/architecture/entropy.md).
 
     Real sqlite session (Column/Table resolution + name validation) + an
     in-memory DuckDB with a ``lake.typed`` table — the loader must grade the

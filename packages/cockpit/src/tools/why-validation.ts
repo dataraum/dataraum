@@ -72,7 +72,7 @@ export type WhyValidationResult = z.infer<typeof WhyValidationResult>;
  * shared lifecycle-detail shape, aliased here for the projection's callers. */
 export type WhyValidationArtifactRow = LifecycleArtifactDetail;
 
-/** The validation's result row — a pure SQL store (ADR-0017; null = no row). */
+/** The validation's result row — a pure SQL store (docs/architecture/grounding.md; null = no row). */
 export interface WhyValidationResultRow {
 	sqlUsed: string | null;
 	executedAt: Date | null;
@@ -107,7 +107,7 @@ export function projectWhyValidation(
 				: stripSrcDigests(artifact.stateReason),
 		strictness: artifact?.strictness ?? null,
 		grounded_against: renderEvidenceDetail(artifact?.groundedAgainst),
-		// The verdict is recomputed on demand (ADR-0017), not read; `severity` is
+		// The verdict is recomputed on demand (docs/architecture/grounding.md), not read; `severity` is
 		// the declared spec param; `details` renders the recomputed measurement.
 		status: verdict?.status ?? null,
 		severity: params?.severity ?? null,
@@ -135,7 +135,7 @@ export interface WhyValidationInput {
 export async function whyValidation(
 	input: WhyValidationInput,
 ): Promise<WhyValidationResult> {
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
 	// run → empty views → not found. The shared reader pins artifact_type =
 	// 'validation' (the key is unique only WITHIN a type — cycles/metrics share
@@ -157,7 +157,7 @@ export async function whyValidation(
 
 	const pending = await getPendingOverlays();
 
-	// Verdict computed ON DEMAND (ADR-0017): re-run sql_used + judge with the
+	// Verdict computed ON DEMAND (docs/architecture/grounding.md): re-run sql_used + judge with the
 	// declared tolerance from the vertical's specs. Server-only runner, lazy.
 	const { resolveActiveWorkspaceRow } = await import("../db/cockpit/registry");
 	const { vertical } = await resolveActiveWorkspaceRow();

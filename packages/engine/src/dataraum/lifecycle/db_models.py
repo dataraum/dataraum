@@ -8,7 +8,7 @@ through the (not yet built) endorsement workflow. This table is the general
 substrate; the state machine and stage authorization live in
 :mod:`dataraum.lifecycle.transitions`.
 
-Versioning contract (DAT-408/413 + ADR-0008):
+Versioning contract (DAT-408/413 + docs/architecture/persistence.md):
 
 * **Append-only across runs** — a re-run supersedes by writing new rows under
   its fresh ``run_id``; a prior run's rows are never mutated. Within the
@@ -16,7 +16,7 @@ Versioning contract (DAT-408/413 + ADR-0008):
   executed happen during one ``OperatingModelWorkflow`` run on one row); the
   identity UNIQUE makes that one row per ``(type, key, run)``.
 * **Born view-ready** — ``run_id``-stamped under the workspace catalog head
-  (target ``catalog``, stage ``operating_model``), so the ADR-0008
+  (target ``catalog``, stage ``operating_model``), so the docs/architecture/persistence.md
   ``current_*`` view generator covers it with the standard head join; no
   reader needs hand-rolled head resolution.
 

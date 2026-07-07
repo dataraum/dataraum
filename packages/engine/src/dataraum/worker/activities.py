@@ -494,7 +494,7 @@ class PhaseActivities:
     def run_operating_model_resolve(self, payload: RunPhaseInput) -> OperatingModelScope:
         """Pre-flight for operating_model (DAT-438/506) — pinned base runs.
 
-        Validates the workspace ``vertical`` born-loud and resolves the ADR-0008
+        Validates the workspace ``vertical`` born-loud and resolves the docs/architecture/persistence.md
         base-run map ONCE off the catalog head's run; it travels with the
         workflow's contracts to every downstream activity. operating_model takes
         NO table set — the phases read the catalog head's ``run_tables`` directly.
@@ -606,7 +606,7 @@ class PhaseActivities:
             )
         # The OM run never anchors ``run_tables`` (begin_session owns them), so
         # detect must score over the table set PINNED at operating_model_resolve
-        # (ADR-0008: payload.scope.table_ids) — the same pin validation / cycles /
+        # (docs/architecture/persistence.md: payload.scope.table_ids) — the same pin validation / cycles /
         # metrics read. Without it, ``tables_for_run(om_run)`` is empty and the
         # whole pass no-ops (``detect_no_run_tables``), so cross_table_consistency
         # silently scores nothing.

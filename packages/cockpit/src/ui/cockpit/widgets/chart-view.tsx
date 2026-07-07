@@ -1,4 +1,4 @@
-// The Vega chart renderer (DAT-626 / ADR-0015) — a thin DOM shell over vega +
+// The Vega chart renderer (see CLAUDE.md § Charting) — a thin DOM shell over vega +
 // vega-lite, no wrapper dep.
 //
 // CLIENT-ONLY: this component is always mounted under TanStack Start's <ClientOnly>

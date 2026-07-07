@@ -1,5 +1,5 @@
 // Grounding-verdict set diff — the pure half of scripts/measure-stability.ts
-// (ADR-0019, KPI `rerun_stability_flips`). Compares two verdict snapshots taken
+// (docs/architecture/development-process.md, KPI `rerun_stability_flips`). Compares two verdict snapshots taken
 // from the promoted surface after consecutive begin_session → operating_model
 // passes on unchanged data; every difference is a flip.
 //

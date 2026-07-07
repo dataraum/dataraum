@@ -7,7 +7,7 @@
 // (ListObjectsV2) and hands the engine the resulting concrete URI list. That
 // list is persisted into the Source row's `connection_config` under the DISTINCT
 // `file_uris` key (NOT the db_recipe `tables` key) and is the authoritative,
-// frozen pre-trigger artifact the import phase loops over (ADR-0007).
+// frozen pre-trigger artifact the import phase loops over (docs/architecture/pipeline.md).
 //
 // Why select and not connect: `connect(file)` sniffs exactly ONE object (it
 // cannot enumerate — a glob char is rejected there too). `connect(database)`

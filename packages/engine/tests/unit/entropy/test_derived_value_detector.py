@@ -1,4 +1,4 @@
-"""The derived-value adjudication detector shell (ADR-0009, 2nd witness).
+"""The derived-value adjudication detector shell (docs/architecture/entropy.md, 2nd witness).
 
 Drives detect() with injected analysis_results (no DB/DuckDB) and asserts the
 score contract — score = max(best graded mismatch, hygiene-passing name-vs-data

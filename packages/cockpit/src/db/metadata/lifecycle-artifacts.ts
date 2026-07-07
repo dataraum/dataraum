@@ -11,7 +11,7 @@
 // module owns that shared read so a new family's tool is mostly its own schema +
 // its own second read (the DAT-465 → DAT-466 substrate goal).
 //
-// The current_* views ARE the promoted operating_model run (ADR-0008/DAT-453):
+// The current_* views ARE the promoted operating_model run (docs/architecture/persistence.md, DAT-453):
 // the head join lives in the database, so the reads here carry no run-id
 // plumbing. `readOperatingModelHead` is the one extra read — the "analyzed"
 // check, distinguishing "promoted but zero declared artifacts" (a vertical that

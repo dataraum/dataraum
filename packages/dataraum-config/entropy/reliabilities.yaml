@@ -1,8 +1,8 @@
-# Witness reliabilities for pooled (adjudication) measurements — ADR-0009, DAT-457/450.
+# Witness reliabilities for pooled (adjudication) measurements — docs/architecture/entropy.md, DAT-457/450.
 #
 # A pooled measurement adjudicates a claim by pooling several WITNESSES, each
 # weighted by a reliability r ∈ [0, 1] (the log-linear pooling exponent — see
-# entropy/pooling/pool.py). Per ADR-0009 these r are "estimated quantities with
+# entropy/pooling/pool.py). Per docs/architecture/entropy.md these r are "estimated quantities with
 # provenance, never inline constants": they are MEASURED by the eval reliability
 # rig (dataraum-eval scripts/calibrate_reliabilities.py) — each witness run over
 # the generative injection families against ground truth, r = its agreement

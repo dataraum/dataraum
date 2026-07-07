@@ -1,4 +1,4 @@
-"""Temporal-behaviour adjudication — stock vs flow, teach-first (ADR-0009, DAT-445).
+"""Temporal-behaviour adjudication — stock vs flow, teach-first (docs/architecture/entropy.md, DAT-445).
 
 Is a measure column a STOCK (a carried-forward point-in-time level, like a balance —
 must NOT be summed across periods) or a FLOW (a per-period movement, like a
@@ -80,7 +80,7 @@ _PATTERN_PSTOCK: dict[str, float] = {"cumulative": 1.0, "per_period": 0.0}
 # Neutral uncalibrated FALLBACK — used only when no reliabilities are threaded in
 # (direct/test callers). The SHIPPED, calibrated values live in the artifact
 # dataraum-config/entropy/reliabilities.yaml (measured by the eval rig, DAT-450) and
-# are passed via ``reliabilities=``. Per ADR-0009 the shipped r are
+# are passed via ``reliabilities=``. Per docs/architecture/entropy.md the shipped r are
 # estimated-with-provenance, never inline constants.
 DEFAULT_RELIABILITIES: dict[str, float] = {
     "ontology_prior": 0.7,

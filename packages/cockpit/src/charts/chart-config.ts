@@ -1,4 +1,4 @@
-// The LLM-authorable chart-config subset (DAT-626 / ADR-0015).
+// The LLM-authorable chart-config subset (see CLAUDE.md § Charting).
 //
 // NOT the full Vega-Lite spec (1.88 MB JSON Schema) — a deliberately THIN zod
 // subset with FIXED keys and enumerated marks, because that is what an LLM can

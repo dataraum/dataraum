@@ -1,11 +1,11 @@
-// Unit tests for the look_validation projection (DAT-440 / ADR-0017). Pure — no
+// Unit tests for the look_validation projection (DAT-440 / docs/architecture/grounding.md). Pure — no
 // DB; the live read + on-demand verdict path is covered by the operating_model
 // integration smoke (scripts/smoke-operating-model.ts).
 //
 // What this guards: the projection surfaces the artifact's lifecycle
 // state/reason verbatim (digest-sanitized), and folds the RECOMPUTED verdict
 // (status/passed/message) + the declared severity over it — never a stored
-// verdict (ADR-0017).
+// verdict (docs/architecture/grounding.md).
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,7 +23,7 @@ import {
 import type { Verdict } from "./validation-verdict";
 import type { ValidationParams } from "./validation-verdict-runner";
 
-describe("projectValidationOverview (DAT-440 / ADR-0017)", () => {
+describe("projectValidationOverview (DAT-440 / docs/architecture/grounding.md)", () => {
 	it("folds the recomputed verdict + declared severity over the artifact", () => {
 		const artifact: LifecycleArtifactRow = {
 			artifactKey: "gl_invoice_match",

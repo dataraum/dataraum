@@ -1,6 +1,6 @@
 """Witness reliabilities — the calibrated trust weights for pooled measurements.
 
-ADR-0009 (DAT-457/450): a pooled measurement adjudicates a claim by pooling
+docs/architecture/entropy.md (DAT-457/450): a pooled measurement adjudicates a claim by pooling
 several WITNESSES, each weighted by a reliability ``r ∈ [0, 1]`` (the log-linear
 pooling exponent in :mod:`dataraum.entropy.pooling`). Per the design these ``r``
 are *estimated quantities with provenance, never inline constants*: the eval
@@ -69,7 +69,7 @@ class ReliabilityConfig:
 
         Reads ``provenance.measurements.<id>.calibrated`` when present and
         falls back to the file-global flag for artifacts predating the
-        per-measurement granularity. ADR-0009 piece 4 makes the distinction
+        per-measurement granularity. docs/architecture/entropy.md piece 4 makes the distinction
         mandatory: placeholders ship ``calibrated: false`` per measurement.
         """
         per = self.provenance.get("measurements", {})

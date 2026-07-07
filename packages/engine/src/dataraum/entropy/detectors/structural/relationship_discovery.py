@@ -1,4 +1,4 @@
-"""Relationship-discovery adjudication detector (ADR-0009).
+"""Relationship-discovery adjudication detector (docs/architecture/entropy.md).
 
 Pools the witness classes that already exist as ROWS on the focal directional
 column pair — the structural candidate's value-overlap statistics (the data
@@ -8,7 +8,7 @@ EntropyObject per relationship target whose score is the pooled conflict ``C``.
 High ``C`` = the witnesses disagree about whether the relationship is genuine
 (the orphan-broken-but-LLM-confirmed case detection-v1 injects); high
 ignorance ``U`` = the pair entered the catalog with nobody qualified weighing
-in. The shell contains no math (ADR-0009 piece 3); the measurement lives in
+in. The shell contains no math (docs/architecture/entropy.md piece 3); the measurement lives in
 :mod:`dataraum.entropy.measurements.relationship_discovery`.
 """
 

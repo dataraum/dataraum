@@ -4,7 +4,7 @@
 // validations with their lifecycle state and executed result.
 //
 // Pure read via the Drizzle metadata client over the promoted-read surface
-// (ADR-0008/DAT-453): the shared lifecycle-artifacts reader
+// (docs/architecture/persistence.md, DAT-453): the shared lifecycle-artifacts reader
 // (`db/metadata/lifecycle-artifacts.ts`) carries every declared validation's
 // lifecycle row (state declared/grounded/executed + the "visibly impossible"
 // state_reason when it could not run), pinned to `artifact_type = 'validation'`;
@@ -85,7 +85,7 @@ export function columnsUsedStrings(value: unknown): string[] {
 		.map((entry) => stripSrcDigests(entry));
 }
 
-/** One current_validation_results row — a pure SQL store (ADR-0017). */
+/** One current_validation_results row — a pure SQL store (docs/architecture/grounding.md). */
 export interface ValidationResultRow {
 	sqlUsed: string | null;
 	// JSON column — unknown at the boundary, narrowed in the projector.
@@ -95,7 +95,7 @@ export interface ValidationResultRow {
 /**
  * Project one lifecycle artifact (+ its on-demand verdict + declared params) to
  * the tool's shape. Pure (no DB) so the join + sanitization is unit-testable.
- * The verdict is NOT read from a stored column (ADR-0017): it is recomputed by
+ * The verdict is NOT read from a stored column (docs/architecture/grounding.md): it is recomputed by
  * re-running `sql_used` (see `runValidationVerdicts`); `severity` is the declared
  * spec param. `state_reason` / `message` are engine-built free text that can
  * embed raw `src_<digest>__` physical names — digest-backstopped here.
@@ -137,7 +137,7 @@ export async function lookValidation(): Promise<LookValidationResult> {
 		};
 	}
 
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453): the head join
 	// lives in the database. The shared reader scopes to validation artifacts —
 	// the lifecycle substrate is typed and shared with cycles/metrics.
 	const artifacts: LifecycleArtifactRow[] =
@@ -157,7 +157,7 @@ export async function lookValidation(): Promise<LookValidationResult> {
 		]),
 	);
 
-	// The verdict is computed ON DEMAND (ADR-0017): re-run each grounded
+	// The verdict is computed ON DEMAND (docs/architecture/grounding.md): re-run each grounded
 	// `sql_used` on the lake and judge it with the declared tolerance from the
 	// vertical's specs (the engine stores neither the verdict nor the params).
 	// The runner is server-only (lake/node bindings) — lazy-imported so this

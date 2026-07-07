@@ -265,7 +265,7 @@ export async function whyRelationship(
 		input.to_column_id,
 	);
 
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
 	// run → empty views → unanalyzed.
 	// Relationship targets are written by catalog-grain runs only, but the pick

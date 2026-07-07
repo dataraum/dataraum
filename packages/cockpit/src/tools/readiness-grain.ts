@@ -1,7 +1,7 @@
 // Grain precedence for the multi-head current_* entropy views (DAT-509, DAT-506).
 //
 // `current_entropy_objects` / `current_entropy_readiness` / `current_claim_witnesses`
-// are multi-grain (ADR-0008 + DAT-442): one target can carry a row sealed by the
+// are multi-grain (docs/architecture/persistence.md + DAT-442): one target can carry a row sealed by the
 // add_source per-table GENERATION head and, once begin_session / operating_model
 // run, a second row sealed by the workspace CATALOG head. For READINESS the engine
 // view itself now resolves ONE row per target (catalog-grain precedence between the

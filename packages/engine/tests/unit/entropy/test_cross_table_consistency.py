@@ -1,4 +1,4 @@
-"""Tests for cross_table_consistency entropy detector (ADR-0017).
+"""Tests for cross_table_consistency entropy detector (docs/architecture/grounding.md).
 
 The verdict is recomputed on demand: ``detect`` re-runs each record's
 ``sql_used`` via ``verdict_from_sql``, and reads the declared ``tolerance`` +
@@ -79,7 +79,7 @@ def _make_context(
 
 
 class TestScore:
-    """The uniform deviation/magnitude scoring (ADR-0017)."""
+    """The uniform deviation/magnitude scoring (docs/architecture/grounding.md)."""
 
     def test_passed_returns_zero(self) -> None:
         assert ctc._score(_verdict(ValidationStatus.PASSED), "critical") == 0.0

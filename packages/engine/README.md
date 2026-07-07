@@ -22,7 +22,7 @@ The engine owns the three durable analysis stages of the journey, each a Tempora
   drivers.
 - **`operating_model`** — grounds and executes the declared model: validations, business
   cycles, and metrics (LLM-authored SQL over deterministic grounding evidence,
-  [ADR-0016](../../docs/adr/0016-metric-sql-grounding-llm-authoring.md)).
+  `docs/architecture/grounding.md`).
 
 After each stage a terminal detector pass measures **entropy** — disagreement between
 independent witnesses — and rolls it up into per-intent readiness (*ready / investigate /
@@ -46,7 +46,7 @@ One of four packages (see the [root README](../../README.md)):
 - **`../infra`** — docker-compose orchestration.
 
 The engine↔cockpit seam is **Postgres + Temporal, nothing else** — no HTTP, no OpenAPI, no
-codegen ([ADR-0002](../../docs/adr/0002-engine-no-http-transport.md)). The engine owns the
+codegen (`docs/architecture/orchestration.md`). The engine owns the
 workspace's `ws_<id>` Postgres schema (SQLAlchemy); the cockpit reads it through a generated
 Drizzle mirror. `schema.sql` in this package is the generated offline DDL dump of all
 models — regenerate with `uv run python -m dataraum.storage.dump_ddl`, never hand-edit
@@ -85,7 +85,7 @@ To run the worker directly against an already-running substrate (Postgres, Tempo
 store), export the env the compose file wires for the `engine-worker` service —
 `packages/infra/docker-compose.yml` is the authoritative list (`DATABASE_URL`,
 `DUCKLAKE_*`, `DATARAUM_WORKSPACE_ID`, `TEMPORAL_*` with the workspace's task queue per
-[ADR-0012](../../docs/adr/0012-per-workspace-tenancy.md), `ANTHROPIC_API_KEY`) — then:
+`docs/architecture/persistence.md`, `ANTHROPIC_API_KEY`) — then:
 
 ```bash
 uv run python -m dataraum.worker.main

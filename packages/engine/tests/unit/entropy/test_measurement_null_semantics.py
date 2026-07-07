@@ -1,4 +1,4 @@
-"""Null-semantics measurement (ADR-0009, DAT-457).
+"""Null-semantics measurement (docs/architecture/entropy.md, DAT-457).
 
 Pure; no DB/config. Asserts the extractors' direction and — the point of the
 whole exercise — that a *novel* sentinel (quarantine + type say null, vocabulary

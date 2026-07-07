@@ -1,15 +1,15 @@
 // measure-grounding — KPI measure for `clean_executed_correct`
-// (epics/relational-grounding.md, ADR-0019): how many oracle metrics are
+// (epics/relational-grounding.md, docs/architecture/development-process.md): how many oracle metrics are
 // executed with values matching ground truth.
 //
-// ADR-0019 measure contract: the LAST stdout line is the verdict JSON
+// docs/architecture/development-process.md measure contract: the LAST stdout line is the verdict JSON
 //   {"value": <executed_and_correct>, "executed": N, "total": M,
 //    "mismatches": [...names], "unverified": [...], "not_executed": [...],
 //    "missing": [...]}
 // — the runner reads `value`; ALL diagnostics go to stderr.
 //
 // Default mode is measure-only: read the workspace's CURRENT promoted surface
-// (current_lifecycle_artifacts, artifact_type='metric' — ADR-0008) and compare
+// (current_lifecycle_artifacts, artifact_type='metric' — docs/architecture/persistence.md) and compare
 // against the ground-truth YAML. No pipeline run, no LLM call.
 //
 // `--run` drives the full pipeline first (add_source → begin_session →
@@ -20,7 +20,7 @@
 // GraphExecution.output_value (graphs/models.py: "ephemeral"; durable knowledge
 // is the SQL). Until the engine-side value exposure lands, every executed
 // metric classifies as `unverified` and `value` is 0 — the honest fail-on-main
-// state ADR-0019's fail-to-pass discipline requires. See
+// state docs/architecture/development-process.md's fail-to-pass discipline requires. See
 // `extractMetricValue` (src/lib/measure/compare-values.ts) for the seam.
 //
 // Env: the smoke's set (config.ts is parsed at import — bun auto-loads

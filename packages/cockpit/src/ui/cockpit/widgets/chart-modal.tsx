@@ -1,7 +1,7 @@
-// The chart authoring modal (DAT-626 / ADR-0015).
+// The chart authoring modal (see CLAUDE.md § Charting).
 //
 // Opens to an EMPTY state — no auto/default chart (a type-sniffing heuristic isn't
-// worth the code; ADR-0015). Describing the chart is the PRIMARY path: a typed
+// worth the code). Describing the chart is the PRIMARY path: a typed
 // instruction → the forced-tool chart agent → a config that seeds the draft. The
 // per-encoding controls are the same draft, surfaced behind an "Edit" disclosure
 // that opens to a one-line readout of the current mapping (the deterministic

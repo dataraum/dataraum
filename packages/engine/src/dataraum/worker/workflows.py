@@ -720,7 +720,7 @@ class OperatingModelWorkflow:
     begin_session ESTABLISHES the table set; this stage operates on the set the
     workspace catalog already anchors, so the pre-flight
     ``operating_model_resolve`` reads the catalog head's ``run_tables`` AND pins
-    the ADR-0008 base-run map (begin_session's promoted detect head + per-table
+    the docs/architecture/persistence.md base-run map (begin_session's promoted detect head + per-table
     semantic heads) AND the table set once — every downstream read scopes to
     those pins, no per-phase head resolution.
 
@@ -796,7 +796,7 @@ class OperatingModelWorkflow:
         # ⊕ teach rows) is declared for this run, bound (SQL vs workspace),
         # executed. Ungroundable specs surface as declared-with-reason. Every OM
         # phase — validation, detect, cycles, metrics — reads the table set PINNED
-        # at resolve (``scope.table_ids``, ADR-0008), not the live catalog head, so
+        # at resolve (``scope.table_ids``, docs/architecture/persistence.md), not the live catalog head, so
         # a concurrent begin_session promote cannot shift the set mid-run.
         scoped = OperatingModelScopedInput(run=run, scope=scope, vertical=vertical)
         self._progress.phase = "validation"

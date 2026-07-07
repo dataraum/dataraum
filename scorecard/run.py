@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["pyyaml"]
 # ///
-"""Scorecard runner — ADR-0019.
+"""Scorecard runner — docs/architecture/development-process.md.
 
 Computes the verdict on an epic branch: area regression checks (from
 scorecard/scorecard.yaml) plus the epic's KPI measures (from the fenced
@@ -15,7 +15,7 @@ The gate contract (--gate, used by CI after restoring scorecard/ and epics/
 from origin/main): exit non-zero on any failed check, any gating KPI that is
 below target, regressed, errored, or UNMEASURED, or a touched judge path.
 The one sanctioned judge edit is the completing PR deleting exactly its own
-epics/<slug>.md (ADR-0019 §1) — the contract is then read from origin/main.
+epics/<slug>.md (docs/architecture/development-process.md §1) — the contract is then read from origin/main.
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def load_epic_contract(root: Path, slug: str) -> dict:
     if path.exists():
         text = path.read_text()
     else:
-        # The completing PR deletes its own epic file (ADR-0019 §1); the
+        # The completing PR deletes its own epic file (docs/architecture/development-process.md §1); the
         # contract that judges it is main's version — same one CI restores.
         code, out, _ = sh(f"git show origin/main:epics/{slug}.md", root)
         if code != 0:
@@ -242,7 +242,7 @@ def collect_diff(root: Path, report: Report, epic_slug: str) -> None:
             if not any(path.startswith(j) for j in JUDGE_PATHS):
                 continue
             # The one sanctioned judge edit: the completing PR deletes exactly
-            # its own epic file (ADR-0019 §1). Everything else is flagged.
+            # its own epic file (docs/architecture/development-process.md §1). Everything else is flagged.
             if status == "D" and path == own_epic_file:
                 continue
             if path not in report.judge_touched:
@@ -277,7 +277,7 @@ def to_markdown(report: Report) -> str:
         "",
         f"Profile: **{report.profile}**"
         + (f" · Epic: **{report.epic}**" if report.epic else "")
-        + " · Verdicts computed by `scorecard/run.py` (ADR-0019); agent prose carries no numbers.",
+        + " · Verdicts computed by `scorecard/run.py` (docs/architecture/development-process.md); agent prose carries no numbers.",
         "",
     ]
     if report.kpis:

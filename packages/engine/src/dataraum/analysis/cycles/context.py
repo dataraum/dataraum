@@ -8,7 +8,7 @@ entity classifications, and confirmed relationships.
 The LLM receives pre-computed signals and synthesizes them
 into business cycle analysis — no exploration tools needed.
 
-In-run reader (ADR-0008, DAT-455): the builder never resolves snapshot heads
+In-run reader (docs/architecture/persistence.md, DAT-455): the builder never resolves snapshot heads
 itself. Every run-versioned read (defined relationships, entity
 classifications, slice definitions, per-column semantic annotations) is scoped
 by the :class:`~dataraum.lifecycle.BaseRunMap` pinned once at run start by the
@@ -74,7 +74,7 @@ def build_cycle_detection_context(
         duckdb_conn: DuckDB connection for row counts
         table_ids: Tables to analyze
         vertical: Vertical name (e.g. 'finance')
-        base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).
+        base_runs: the run's pinned upstream heads (docs/architecture/persistence.md in-run mode).
             ``relationship_run_id`` scopes the defined relationships, entity
             classifications, and slice definitions; ``semantic_runs`` scopes
             each table's per-column annotations. An absent pin reads EMPTY —
@@ -152,7 +152,7 @@ def build_cycle_detection_context(
 
     context["tables"] = table_info
 
-    # The pinned begin_session run (ADR-0008 in-run mode): the run-versioned
+    # The pinned begin_session run (docs/architecture/persistence.md in-run mode): the run-versioned
     # reads below — entity classifications, the defined relationships, AND slice
     # definitions (run-versioned since DAT-448: table-scoped + immortal was the
     # cross-session leak) — scope to the SAME run. **Fail-closed (DAT-429):**

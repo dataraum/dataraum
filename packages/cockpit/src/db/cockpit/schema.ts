@@ -256,7 +256,7 @@ export const reports = pgTable(
 		// The frozen composed CTE (stable lake names) — re-run live on every open.
 		sql: text("sql").notNull(),
 		// Frozen chart config (DAT-626) — null = table-only report (first-class). The
-		// thin LLM-authorable Vega-Lite subset (ADR-0015); rendered over LIVE re-run
+		// thin LLM-authorable Vega-Lite subset (CLAUDE.md § Charting); rendered over LIVE re-run
 		// data on detail/gallery, never carrying its own data.
 		chartConfig: jsonb("chart_config").$type<ChartConfig>(),
 		// The answer's confidence at mint (band / grounded ratio / reuse) — colored

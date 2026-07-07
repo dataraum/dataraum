@@ -1,4 +1,4 @@
-"""Null-semantics adjudication — the first pooled measurement (ADR-0009, DAT-457).
+"""Null-semantics adjudication — the first pooled measurement (docs/architecture/entropy.md, DAT-457).
 
 For each token the parser *rejected* in a column, is it a null marker
 (``is-null``) or a genuine value (``is-value``)? Three witnesses each emit a
@@ -35,7 +35,7 @@ from typing import Any
 
 from dataraum.entropy.pooling import PoolResult, Witness, pool
 
-# The canonical claim space (identity comparison, ADR-0009 v4). Order fixes the
+# The canonical claim space (identity comparison, docs/architecture/entropy.md v4). Order fixes the
 # tuple layout passed to the pooling engine.
 CLAIM_SPACE: tuple[str, str] = ("is-null", "is-value")
 
@@ -45,7 +45,7 @@ _TEXT_TYPES = frozenset({"", "VARCHAR", "TEXT", "STRING", "CHAR"})
 # Neutral uncalibrated FALLBACK — used only when no reliabilities are threaded in
 # (direct/test callers). The SHIPPED, calibrated values live in the artifact
 # dataraum-config/entropy/reliabilities.yaml (measured by the eval rig, DAT-450)
-# and are loaded by the detector and passed via ``reliabilities=``. Per ADR-0009
+# and are loaded by the detector and passed via ``reliabilities=``. Per docs/architecture/entropy.md
 # the shipped r are estimated-with-provenance, never inline constants; these
 # match the artifact's placeholder priors so direct callers behave identically
 # until the rig has run.
@@ -67,7 +67,7 @@ def resolved_null_tokens(
     *,
     is_null_threshold: float = RESOLVED_IS_NULL_THRESHOLD,
 ) -> list[str]:
-    """The rejected tokens an adjudication resolved to is-null (ADR-0009 resolved layer).
+    """The rejected tokens an adjudication resolved to is-null (docs/architecture/entropy.md resolved layer).
 
     From a null_semantics EntropyObject's per-token ``evidence`` (each entry a
     ``{token, posterior: {is-null, is-value}, conflict, ignorance}`` summary),

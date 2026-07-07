@@ -16,7 +16,7 @@ from uuid import uuid4
 
 @dataclass
 class WitnessClaim:
-    """One witness's opinion on one claim slot (ADR-0009, DAT-457).
+    """One witness's opinion on one claim slot (docs/architecture/entropy.md, DAT-457).
 
     Adjudication (pooling) detectors attach these to an :class:`EntropyObject`;
     the engine persists them as run-versioned ``ClaimWitnessRecord`` rows. They
@@ -53,7 +53,7 @@ class EntropyObject:
     # Evidence (dimension-specific)
     evidence: list[dict[str, Any]] = field(default_factory=list)
 
-    # Witness provenance for adjudication (pooled) measurements (ADR-0009).
+    # Witness provenance for adjudication (pooled) measurements (docs/architecture/entropy.md).
     # The engine persists these to claim_witnesses, run-versioned, with the same
     # scoping as this object's record. Empty for non-pooled detectors.
     witnesses: list[WitnessClaim] = field(default_factory=list)

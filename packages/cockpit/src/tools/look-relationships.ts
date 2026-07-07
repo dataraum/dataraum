@@ -378,7 +378,7 @@ export async function lookRelationships(): Promise<LookRelationshipsResult> {
 	// bands and the relationship catalog. Fire them in parallel: neither depends on
 	// the other (both read the catalog head; the union joins them in memory afterward).
 	//
-	// The current_* view IS the promoted run (ADR-0008/DAT-453): the head join
+	// The current_* view IS the promoted run (docs/architecture/persistence.md, DAT-453): the head join
 	// lives in the database. `target` carries the identity (relationship rows
 	// have null table_id/column_id), so filter by the `relationship:%` prefix.
 	const readinessQuery = metadataDb

@@ -9,7 +9,7 @@
 //   3. operatingModelWorkflow over the SAME session — resolve (pins) →
 //      validation (declare → bind → execute, real LLM SQL generation per
 //      declared spec) → promote (session:{id}, "operating_model").
-//   4. Verification THROUGH THE PROMOTED-READ SURFACE (ADR-0008): reads
+//   4. Verification THROUGH THE PROMOTED-READ SURFACE (docs/architecture/persistence.md): reads
 //      current_lifecycle_artifacts / current_validation_results via the
 //      cockpit_reader role — so a pass proves workflow → promote → views →
 //      grants in one chain, exactly what DAT-440 will consume.
@@ -198,7 +198,7 @@ async function main(): Promise<void> {
 				`\n  validation_summary: ${result.validation_summary}`,
 		);
 
-		// ---- verify THROUGH the promoted-read surface (ADR-0008) ------------------
+		// ---- verify THROUGH the promoted-read surface (docs/architecture/persistence.md) ------------------
 		// cockpit_reader can only see current_* views; rows appearing here proves
 		// the run promoted (catalog, "operating_model") AND the head join works.
 		// The views resolve at the workspace catalog head (DAT-506) — no session filter.
@@ -235,7 +235,7 @@ async function main(): Promise<void> {
 			);
 		}
 
-		// ADR-0017: validation_results is a pure SQL store — no stored verdict.
+		// docs/architecture/grounding.md: validation_results is a pure SQL store — no stored verdict.
 		// The pass/fail is recomputed on demand by look_validation (run sql_used +
 		// judge); here we just confirm each declared check grounded its SQL.
 		const results = await metadataDb.select().from(currentValidationResults);

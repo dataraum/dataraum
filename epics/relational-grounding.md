@@ -1,6 +1,6 @@
 # Epic: Relational grounding — metrics ground through real structure, stably
 
-> **DRAFT — pilot epic for ADR-0019. Not approved. Remaining before approval:
+> **DRAFT — pilot epic for docs/architecture/development-process.md. Not approved. Remaining before approval:
 > (1) baselines captured on main for all three KPIs; (2) a BookSQL-specific
 > oracle mapping (ground-truth file with `metric_aliases` for the dso /
 > current_ratio ceiling metrics) so `booksql_signature` gets a runnable

@@ -293,7 +293,7 @@ def _apply_rebind(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any
     vertical-wide name vocabulary, so the merge key is the column name.
 
     This is the column-grain teach closing the ``temporal_behavior``
-    measurement's ignorance branch (ADR-0009 pack piece 6): the appended
+    measurement's ignorance branch (docs/architecture/entropy.md pack piece 6): the appended
     indicator reaches the next run's grounding prompt
     (``OntologyLoader.format_concepts_for_prompt``), so the LLM re-grounds the
     column and the concept's declared behaviour re-enters the pool as the

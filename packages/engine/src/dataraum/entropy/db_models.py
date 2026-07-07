@@ -136,7 +136,7 @@ Index("idx_readiness_target", EntropyReadinessRecord.target)
 
 
 class ClaimWitnessRecord(Base):
-    """One witness's opinion on a single canonical claim (ADR-0009, DAT-457).
+    """One witness's opinion on a single canonical claim (docs/architecture/entropy.md, DAT-457).
 
     The persisted, run-versioned substrate the pooling engine
     (:mod:`dataraum.entropy.pooling`) reads: one row per
@@ -152,7 +152,7 @@ class ClaimWitnessRecord(Base):
     Dual-grain like :class:`EntropyObjectRecord`: written by both detect paths
     (add_source per ``table:{id}``, begin_session per the workspace ``catalog``
     head), so it carries ``table_id`` and is classified ``_DUAL_GRAIN`` on the
-    promoted-read surface (ADR-0008).
+    promoted-read surface (docs/architecture/persistence.md).
     """
 
     __tablename__ = "claim_witnesses"

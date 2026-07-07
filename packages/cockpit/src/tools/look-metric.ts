@@ -3,7 +3,7 @@
 // graph with its lifecycle state and the reason it could not ground when it
 // stopped short.
 //
-// Pure read via the shared lifecycle-artifacts reader (ADR-0008/DAT-453): the
+// Pure read via the shared lifecycle-artifacts reader (docs/architecture/persistence.md, DAT-453): the
 // `metric`-typed `current_lifecycle_artifacts` rows are the authoritative
 // declared set (the engine declares ONE artifact per declared `graph_id` —
 // vocabulary + teaches — in metrics_phase). UNLIKE validation/cycle there is NO
@@ -108,7 +108,7 @@ export async function lookMetric(): Promise<LookMetricResult> {
 		};
 	}
 
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453). The shared
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453). The shared
 	// reader scopes to metric artifacts — the authoritative declared set.
 	const artifacts: LifecycleArtifactRow[] =
 		await readLifecycleArtifactRows("metric");

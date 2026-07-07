@@ -1,4 +1,4 @@
-"""Null-semantics adjudication detector (ADR-0009, DAT-457).
+"""Null-semantics adjudication detector (docs/architecture/entropy.md, DAT-457).
 
 Pools three witnesses per *rejected* token into the claim space
 {is-null, is-value} and emits ONE EntropyObject per column whose score is the

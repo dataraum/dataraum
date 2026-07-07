@@ -99,7 +99,7 @@ def _make_ctx(
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
         run_id=run_id,
-        # base_runs is the workflow-resolved pin (ADR-0008), threaded by the
+        # base_runs is the workflow-resolved pin (docs/architecture/persistence.md), threaded by the
         # validation activity; empty pins are legitimate (fail-closed reads).
         config={"vertical": "finance", "base_runs": {}},
     )
@@ -176,7 +176,7 @@ class TestValidationPhaseOutcomes:
     def test_missing_base_runs_pin_fails_loud(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, workspace_table: Table
     ) -> None:
-        """No per-phase head resolution (ADR-0008): an unthreaded pin is a wiring bug."""
+        """No per-phase head resolution (docs/architecture/persistence.md): an unthreaded pin is a wiring bug."""
         ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
         ctx.config = {"vertical": "finance"}  # no base_runs
 
@@ -223,7 +223,7 @@ class TestValidationLifecycleFlow:
         assert artifacts["three_way_match"].state_reason == "no PO table"
         assert artifacts["three_way_match"].teaches["vertical"] == "finance"
 
-        # The verdict is NOT persisted (ADR-0017) — the lifecycle state above is
+        # The verdict is NOT persisted (docs/architecture/grounding.md) — the lifecycle state above is
         # the durable outcome; the record holds the grounded SQL + declared params.
         records = session.execute(select(ValidationResultRecord)).scalars().all()
         assert {(r.validation_id, r.run_id) for r in records} == {
@@ -294,7 +294,7 @@ class TestValidationLifecycleFlow:
         assert "inconclusive" in (artifact.state_reason or "")
 
         # The inconclusive outcome is the artifact state + reason above; the
-        # persisted record carries no verdict (ADR-0017), only the SQL/params.
+        # persisted record carries no verdict (docs/architecture/grounding.md), only the SQL/params.
         records = session.execute(select(ValidationResultRecord)).scalars().all()
         assert [r.validation_id for r in records] == ["three_way_match"]
         assert result.outputs["failed_checks"] == 0

@@ -9,7 +9,7 @@ allowed-tools:
 # Scorecard: $ARGUMENTS
 
 `$ARGUMENTS` is an epic slug, or empty for area regressions only. Runner:
-`scorecard/run.py`; registry: `scorecard/scorecard.yaml`; model: ADR-0019.
+`scorecard/run.py`; registry: `scorecard/scorecard.yaml`; model: docs/architecture/development-process.md.
 
 ```bash
 uv run scorecard/run.py --list --epic <slug>                  # resolved plan, runs nothing

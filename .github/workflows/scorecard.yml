@@ -1,4 +1,4 @@
-# Scorecard recompute — ADR-0019. Runs on epic/* PRs only.
+# Scorecard recompute — docs/architecture/development-process.md. Runs on epic/* PRs only.
 #
 # The tamper guard: the runner, registry, epic definitions, and baselines are
 # restored from origin/main as the LAST step before the verdict is computed
@@ -34,7 +34,7 @@ jobs:
                   git fetch origin main
                   slug="${GITHUB_HEAD_REF#epic/}"
                   if ! git cat-file -e "origin/main:epics/${slug}.md" 2>/dev/null; then
-                      echo "::error::epics/${slug}.md not on main — land the epic definition PR first (ADR-0019 §1)."
+                      echo "::error::epics/${slug}.md not on main — land the epic definition PR first (docs/architecture/development-process.md §1)."
                       exit 1
                   fi
                   echo "SLUG=${slug}" >> "$GITHUB_ENV"

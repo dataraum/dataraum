@@ -1,6 +1,6 @@
 name: "graph_sql_generation"
 version: "6.1"
-description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited."
+description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (docs/architecture/grounding.md). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited."
 temperature: 0.0
 
 # System prompt — defines the single job: ground ONE concept to one extract.

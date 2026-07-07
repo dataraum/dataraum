@@ -444,7 +444,7 @@ export async function lookTable(
 }
 
 /** Resolve a table's per-column readiness grid. The current_* view IS the
- * promoted run (ADR-0008/DAT-453), but it is multi-grain — the add_source
+ * promoted run (docs/architecture/persistence.md, DAT-453), but it is multi-grain — the add_source
  * table-head row and a session-grain re-roll coexist per column — which a
  * single-row LEFT JOIN can't express. Readiness is fetched separately (all
  * grains) and picked per column: the session re-roll supersedes the add_source

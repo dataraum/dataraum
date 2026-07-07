@@ -157,7 +157,7 @@ export interface WhyCycleInput {
 
 /** Explain one cycle's state: lifecycle + grounding + measured completion. */
 export async function whyCycle(input: WhyCycleInput): Promise<WhyCycleResult> {
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
 	// run → empty views → not found. The shared reader pins artifact_type =
 	// 'cycle' (the key is unique only WITHIN a type — validations/metrics share

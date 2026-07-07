@@ -1,6 +1,6 @@
 """Surprise — ``D_KL(observed ‖ reference)`` as a sample-size-invariant score.
 
-The SECOND of the two entropy kinds (ADR-0009). The pooling engine
+The SECOND of the two entropy kinds (docs/architecture/entropy.md). The pooling engine
 (:mod:`dataraum.entropy.pooling`) measures ADJUDICATION entropy — witnesses
 disagree about a *claim*, yielding conflict ``C``. A statistical detector measures
 SURPRISE — an observed distribution sits far from the reference the data is
@@ -84,7 +84,7 @@ def surprise_score(
 
     A parameter-free squash of the KL surprise: 0 when the data matches the
     reference, → 1 as it departs. Severity per intent is applied downstream by the
-    loss table, never here (per ADR-0009 — severity lives in the loss, not the
+    loss table, never here (per docs/architecture/entropy.md — severity lives in the loss, not the
     score).
     """
     div = kl_divergence(observed, reference, base=base)

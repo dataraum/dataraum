@@ -1,4 +1,4 @@
-// Control-plane WRITE surface on the raw ws_<id> schema (ADR-0008 / DAT-453).
+// Control-plane WRITE surface on the raw ws_<id> schema (docs/architecture/persistence.md / DAT-453).
 //
 // The generated mirror (./schema.ts) introspects the promoted-READ schema —
 // views only, by design: the cockpit_reader role cannot SELECT raw run-stamped

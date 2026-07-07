@@ -49,7 +49,7 @@ phases:
 
   semantic_per_table:
     description: Per-table LLM synthesis (entities, relationships) over annotations
-    # relationship_discovery (ADR-0009): pools the witness classes already on the
+    # relationship_discovery (docs/architecture/entropy.md): pools the witness classes already on the
     # focal pair's rows (candidate value-overlap stats, llm confirmation, manual/
     # keeper teaches) into {genuine, spurious} — runs at the terminal session
     # detect, after the catalog (llm + materialized overlays) is complete.

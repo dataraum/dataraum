@@ -1,4 +1,4 @@
-"""Witness and result types for the generic pooling engine (ADR-0009, DAT-457).
+"""Witness and result types for the generic pooling engine (docs/architecture/entropy.md, DAT-457).
 
 A *witness* is one opinion about a single canonical claim: a probability
 distribution over the (small, fixed) claim space plus a measured reliability.

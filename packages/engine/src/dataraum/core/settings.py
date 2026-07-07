@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     # in core/connections. (The Temporal-retry fallback stays in DAT-641 proper.)
     ducklake_max_retry_count: int = 100
 
-    # --- Promoted-read surface (ADR-0008 / DAT-453; defaulted for dev) ---
+    # --- Promoted-read surface (docs/architecture/persistence.md / DAT-453; defaulted for dev) ---
     # Password for the cluster-global ``cockpit_reader`` role the bootstrap
     # provisions with SELECT on ``ws_<id>_read`` ONLY — the cockpit's metadata
     # connection uses it, so raw run-stamped tables are unreachable from there.

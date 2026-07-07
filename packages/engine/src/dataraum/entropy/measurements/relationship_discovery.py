@@ -1,4 +1,4 @@
-"""Relationship-discovery adjudication — is this relationship genuine? (ADR-0009).
+"""Relationship-discovery adjudication — is this relationship genuine? (docs/architecture/entropy.md).
 
 For one directional column pair in the defined relationship catalog, the
 witness classes already exist as ROWS on the pair
@@ -55,7 +55,7 @@ _OPINION_EPS = 1e-6
 # Neutral uncalibrated FALLBACK — used only when no reliabilities are threaded
 # in (direct/test callers). The SHIPPED values live in the artifact
 # dataraum-config/entropy/reliabilities.yaml (placeholder priors, calibrated
-# later by the eval rig, DAT-450). Per ADR-0009 the shipped r are
+# later by the eval rig, DAT-450). Per docs/architecture/entropy.md the shipped r are
 # estimated-with-provenance, never inline constants.
 DEFAULT_RELIABILITIES: dict[str, float] = {
     "value_overlap": 0.7,

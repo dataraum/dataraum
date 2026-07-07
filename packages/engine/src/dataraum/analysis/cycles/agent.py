@@ -75,7 +75,7 @@ class BusinessCycleAgent(LLMFeature):
         """Ground the declared cycle vocabulary against the workspace (DAT-455).
 
         The single synthesis call: assemble the workspace context (every
-        run-versioned read pinned to ``base_runs``, ADR-0008 in-run mode),
+        run-versioned read pinned to ``base_runs``, docs/architecture/persistence.md in-run mode),
         let the LLM detect which declared cycle types ground to real
         columns/flows, and return them with completion measurements. The
         phase then reconciles each detected cycle against its declared
@@ -98,7 +98,7 @@ class BusinessCycleAgent(LLMFeature):
         if not feature_config or not feature_config.enabled:
             return Result.fail("Business cycles feature is disabled in config")
 
-        # 1. Build rich context from all pipeline metadata, run-pinned (ADR-0008).
+        # 1. Build rich context from all pipeline metadata, run-pinned (docs/architecture/persistence.md).
         context = build_cycle_detection_context(
             session,
             duckdb_conn,

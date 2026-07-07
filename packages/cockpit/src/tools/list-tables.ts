@@ -423,7 +423,7 @@ export async function listTables(
 	}));
 
 	// Session/detect-grain orientation (DAT-477). The current_* views resolve the
-	// promoted detect run server-side (the head join lives in the DB, ADR-0008),
+	// promoted detect run server-side (the head join lives in the DB, docs/architecture/persistence.md),
 	// so a workspace with no sealed session yields zero rows here → entity_type/
 	// is_fact stay null and enriched_views stays empty. Read inline (no shared
 	// reader — trivial duplication is intentional, DRY'd up later). Short selects;

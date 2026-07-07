@@ -1,4 +1,4 @@
-"""The null-semantics adjudication detector (ADR-0009, DAT-457).
+"""The null-semantics adjudication detector (docs/architecture/entropy.md, DAT-457).
 
 Drives detect() with injected analysis_results (no DB/DuckDB) and asserts the
 per-column object + worst-token-conflict score + loud per-token witness evidence.

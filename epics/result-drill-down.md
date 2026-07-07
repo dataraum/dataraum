@@ -1,6 +1,6 @@
 # Epic: Result drill-down — slice any result on the shared grid, no agent round-trip
 
-> **DRAFT — distilled from DAT-671 + DD/43417601 for the ADR-0019 migration. Not
+> **DRAFT — distilled from DAT-671 + DD/43417601 for the docs/architecture/development-process.md migration. Not
 > approved. All three KPI measures are pending (targets provisional until baselines
 > are captured on main); the two oracle-extension harnesses below must exist and
 > fail on main before the definition PR is approvable. The P1 keystone (Model-canvas
@@ -27,13 +27,13 @@ on-demand `discover_drivers` tool for ad-hoc measures.)
   no new engine phases, no driver-algorithm work.
 - Chat write-back: the chat canvas stays ephemeral; persistence is drill steps on
   report detail or minting a report — never mutating conversation state.
-- Charting-library changes (Vega-Lite per ADR-0015) and any client-side
+- Charting-library changes (Vega-Lite is the only charting library) and any client-side
   aggregation of drilled results.
 - Dashboards / report composition; staleness machinery.
 
 ## Oracle extension (fail-to-pass)
 
-The cockpit has a thin oracle surface (ADR-0019), so this epic builds its two
+The cockpit has a thin oracle surface (docs/architecture/development-process.md), so this epic builds its two
 computable oracles as part of definition work; both must **fail on main**:
 
 1. `drill-axis-report` — for each grain-safe `slice_definitions` axis of an oracle

@@ -1,4 +1,4 @@
-# Loss layer — severity as expected loss per intent (ADR-0009 / DAT-457).
+# Loss layer — severity as expected loss per intent (docs/architecture/entropy.md / DAT-457).
 #
 # For a POOLED (adjudication) measurement, readiness per intent is expected loss,
 # NOT the detector score:
@@ -14,7 +14,7 @@
 #
 # A detector listed here is a loss-path measurement: its risk(intent) feeds the
 # readiness assembler. The loss tables ARE the whole rollup — the Bayesian
-# network and network.yaml were deleted (DAT-442; ADR-0020). Weights are PLACEHOLDER
+# network and network.yaml were deleted (DAT-442; docs/architecture/entropy.md). Weights are PLACEHOLDER
 # priors, calibrated later from generative families (DAT-450); NOT tuned to pass a metric.
 #
 # Intents: query_intent, aggregation_intent, reporting_intent.
@@ -49,7 +49,7 @@ measurements:
     reporting_intent: { conflict: 0.7, ignorance: 0.3 }
 
   relationship_discovery:
-    # Contested relationship genuineness (ADR-0009 pack, lane/relationship-pool):
+    # Contested relationship genuineness (docs/architecture/entropy.md pack, lane/relationship-pool):
     # a join the witnesses disagree about (data overlap vs LLM/teach assertion)
     # corrupts anything built across it — reporting bears the highest loss (the
     # join shapes every cross-table number), aggregation close behind (orphan
@@ -85,7 +85,7 @@ measurements:
   # (bias-corrected Cramér's V on is-null × slice), grounded + teach-closeable.
 
   # slice_conditional_null is NOT in the loss table (DEMOTED 2026-06-22, DAT-540 P5 /
-  # ADR-0013 eval gate) → informative DirectSignal, benford/dimensional_entropy lane.
+  # docs/architecture/pipeline.md eval gate) → informative DirectSignal, benford/dimensional_entropy lane.
   # It WAS on the loss path (query 0.4 / agg 0.7 / reporting 0.6), so its bands had to
   # predict WRONG ANSWERS — but the eval band-impact ablation (dataraum-eval
   # scripts/probes/dat540, the {score}-detector analogue of the structural ablation)
@@ -124,7 +124,7 @@ measurements:
     # aggregation (you'd sum a broken derivation) and reporting. Was formula_match →
     # aggregation_intent 0.7 in the network.
     #
-    # formula_conflict / formula_ignorance (ADR-0009, derived-value second witness):
+    # formula_conflict / formula_ignorance (docs/architecture/entropy.md, derived-value second witness):
     # the pooled formula-identity adjudication — the data-discovered/graded formula
     # vs the LLM's name-based hypothesis. "score" stays the honest mismatch rate
     # (obj.score); the pooled C/U ride in evidence under these names because a

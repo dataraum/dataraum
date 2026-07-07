@@ -1,4 +1,4 @@
-// TS mirror of the engine validation judgement (ADR-0017 / DAT-617).
+// TS mirror of the engine validation judgement (docs/architecture/grounding.md / DAT-617).
 //
 // The validation pass/fail is computed ON DEMAND, never stored — a stored
 // verdict goes stale the moment data is re-imported, the SQL does not. The

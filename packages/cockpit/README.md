@@ -18,7 +18,7 @@ The cockpit is the product surface: typed chats (**Connect** / **Stage** / **Ana
 - **Vitest** — tests
 - **TypeScript** only, strict
 
-Also in the stack: **TanStack AI** (the agent loop + tool streaming), **xyflow / React Flow** (the operating-model canvas), **Vega-Lite** (agent-authored charts, [ADR-0015](../../docs/adr/0015-charting-library-vega-lite.md)), **CodeMirror** (SQL editing), **marked** (chat markdown).
+Also in the stack: **TanStack AI** (the agent loop + tool streaming), **xyflow / React Flow** (the operating-model canvas), **Vega-Lite** (agent-authored charts — the only charting library, see CLAUDE.md § Charting), **CodeMirror** (SQL editing), **marked** (chat markdown).
 
 ## Architecture
 
@@ -33,7 +33,7 @@ TanStack Start ── metadata reads ──→ engine's ws_<id> schema (Drizzle,
                ── workflow starts ──→ Temporal ──→ engine worker (Python, the analysis)
 ```
 
-The engine has **no HTTP surface** ([ADR-0002](../../docs/adr/0002-engine-no-http-transport.md)): the seam is Postgres + Temporal, nothing else. Metadata is consumed via a generated Drizzle mirror — no OpenAPI, no codegen.
+The engine has **no HTTP surface** (`docs/architecture/orchestration.md`): the seam is Postgres + Temporal, nothing else. Metadata is consumed via a generated Drizzle mirror — no OpenAPI, no codegen.
 
 ## Sibling packages
 

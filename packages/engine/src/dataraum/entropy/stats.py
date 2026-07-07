@@ -1,4 +1,4 @@
-"""Pure measurement statistics — the math behind the measurement table (ADR-0009).
+"""Pure measurement statistics — the math behind the measurement table (docs/architecture/entropy.md).
 
 Each function maps raw column data → a value in ``[0, 1]``. No config, no I/O, no
 boost curves, no magic constants: a measurement is a *pure function*, testable in
@@ -91,7 +91,7 @@ def confidence_entropy(confidence: float) -> float:
     """``1 − confidence`` — the model's uncertainty about a declaration.
 
     A column's meaning or a unit: garbage names / undeclared units read low confidence →
-    high entropy. Pure model confidence, no deterministic override (ADR-0009 hard rule
+    high entropy. Pure model confidence, no deterministic override (docs/architecture/entropy.md hard rule
     against deterministic semantic patches). (teach: name the column / declare the unit.)
     """
     return _clamp01(1.0 - confidence)

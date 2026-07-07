@@ -1,4 +1,4 @@
-"""Generic opinion-pooling engine for adjudication entropy (ADR-0009, DAT-457).
+"""Generic opinion-pooling engine for adjudication entropy (docs/architecture/entropy.md, DAT-457).
 
 Witnessed canonical claims pool into a posterior plus two orthogonal entropy
 outputs: conflict ``C`` (witnesses disagree) and ignorance ``U`` (thin

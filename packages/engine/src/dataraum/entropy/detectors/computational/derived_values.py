@@ -1,6 +1,6 @@
 """Derived value detector — formula mismatch rate + the formula adjudication.
 
-Two signals per derived column (ADR-0009, derived-value second witness):
+Two signals per derived column (docs/architecture/entropy.md, derived-value second witness):
 
 * ``obj.score`` is the WORSE of two honest statistics: the formula-mismatch rate
   ``1 − match_rate`` of the best GRADED formula, and the pooled name-vs-data

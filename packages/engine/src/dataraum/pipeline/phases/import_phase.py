@@ -188,7 +188,7 @@ class ImportPhase(BasePhase):
             # foreign bucket, or a cred-in-URL form is a loud failure here, not a
             # silent arbitrary-file read (DAT-389). The engine never globs — the
             # cockpit's ``select`` stage already enumerated the prefix into this
-            # explicit, immutable list (DAT-378 / ADR-0007). No filesystem stat:
+            # explicit, immutable list (DAT-378 / docs/architecture/pipeline.md). No filesystem stat:
             # a missing/unreadable but well-formed source still surfaces as the
             # DuckDB read error through ``Result.fail``. The loader is selected by
             # the URI suffix, so ``source_type`` is not consulted here.

@@ -1,5 +1,5 @@
 // Ground-truth metric oracle parsing — the pure input half of
-// scripts/measure-grounding.ts (ADR-0019 measure contract). Takes the PARSED
+// scripts/measure-grounding.ts (docs/architecture/development-process.md measure contract). Takes the PARSED
 // YAML document (`unknown` at the boundary, narrowed explicitly); no IO here so
 // the accepted shapes are unit-testable without fixtures on disk.
 //
@@ -14,7 +14,7 @@
 //      carries a per-metric tolerance that overrides the run default.
 //
 // Names are canonicalized through an alias map so oracle vocabulary meets the
-// vertical's metric graph ids (ADR-0019 §6: vocabulary is data). An oracle file
+// vertical's metric graph ids (docs/architecture/development-process.md §6: vocabulary is data). An oracle file
 // may ship its own `metric_aliases: {oracle_name: graph_id}` block, merged over
 // the built-in aliases for the current generator's naming.
 

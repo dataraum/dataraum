@@ -86,7 +86,7 @@ def run_detector_post_step(
         )
     )
     # Same SANCTIONED form-(b) clear for the pooled-witness provenance
-    # (ADR-0009): witness sets shrink when an adjudication resolves
+    # (docs/architecture/entropy.md): witness sets shrink when an adjudication resolves
     # differently on redelivery. A no-op for non-adjudication detectors (they
     # write none), so it stays a single generic step rather than a
     # per-detector side effect. ``uq_claim_witness_target_field_witness_run``
@@ -342,7 +342,7 @@ def _make_witness_records(
     column_id: str | None,
     run_id: str | None,
 ) -> list[ClaimWitnessRecord]:
-    """The run-versioned witness rows behind a pooled EntropyObject (ADR-0009).
+    """The run-versioned witness rows behind a pooled EntropyObject (docs/architecture/entropy.md).
 
     Same ``(table_id, column_id, run_id)`` anchoring as the object's record, so
     the head-joined ``current_claim_witnesses`` view resolves them on the same

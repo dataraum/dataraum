@@ -1,6 +1,6 @@
 """Tests for the validation schema resolver.
 
-The resolver is an in-run reader (ADR-0008): every run-versioned read is
+The resolver is an in-run reader (docs/architecture/persistence.md): every run-versioned read is
 scoped by the pinned :class:`BaseRunMap` passed in — it never resolves heads
 itself. Absent pins read EMPTY (fail-closed, DAT-429).
 """

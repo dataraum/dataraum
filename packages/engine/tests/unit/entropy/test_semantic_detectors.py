@@ -2,7 +2,7 @@
 
 Measurements are pure functions in entropy/stats.py: temporal_entropy →
 time_role_mismatch (binary), business_meaning → confidence_entropy (1 - confidence,
-no deterministic metadata override per ADR-0009).
+no deterministic metadata override per docs/architecture/entropy.md).
 """
 
 import pytest
@@ -60,7 +60,7 @@ class TestTemporalEntropyDetector:
 class TestBusinessMeaningDetector:
     """The score is the LLM's naming confidence alone: score = 1 - confidence.
 
-    No deterministic metadata override (ADR-0009 / DAT-442 two-table): documentation
+    No deterministic metadata override (docs/architecture/entropy.md / DAT-442 two-table): documentation
     and ontology presence are evidence context, never the score.
     """
 
@@ -98,7 +98,7 @@ class TestBusinessMeaningDetector:
     def test_documentation_presence_does_not_change_the_score(
         self, detector: BusinessMeaningDetector
     ) -> None:
-        """ADR-0009 hard rule: metadata presence is CONTEXT, never score.
+        """docs/architecture/entropy.md hard rule: metadata presence is CONTEXT, never score.
 
         At the same confidence, a fully-documented column and a bare one score
         identically — the old base_score / concept_bonus deterministic override is gone.

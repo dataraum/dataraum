@@ -5,7 +5,7 @@ The measurement is the LLM's NAMING CONFIDENCE alone: score = 1 - confidence
 column name is meaningless/random even if it can guess meaning from the data — that
 confidence is the naming entropy, and a teach (name the column) closes it.
 
-ADR-0009 hard rule: NO deterministic semantic override. The old additive formula
+docs/architecture/entropy.md hard rule: NO deterministic semantic override. The old additive formula
 (``base_score`` from description/metadata presence + ``confidence_weight·(1-conf)`` −
 ``ontology_bonus``) is GONE (DAT-442 two-table): documentation presence and ontology
 alignment are CONTEXT carried in evidence, never the score — a confident annotation of
@@ -22,7 +22,7 @@ class BusinessMeaningDetector(EntropyDetector):
     """Detector for business meaning clarity.
 
     The score is the LLM's naming confidence alone (score = 1 - confidence). No
-    deterministic metadata override (ADR-0009): description / business_name /
+    deterministic metadata override (docs/architecture/entropy.md): description / business_name /
     entity_type / business_concept are evidence CONTEXT, not score.
 
     Source: semantic/SemanticAnnotation
@@ -52,7 +52,7 @@ class BusinessMeaningDetector(EntropyDetector):
 
         score = 1 - confidence (``stats.confidence_entropy``) — the LLM's naming
         confidence alone. Documentation / ontology presence are evidence context, not
-        score (ADR-0009 hard rule, no deterministic semantic override).
+        score (docs/architecture/entropy.md hard rule, no deterministic semantic override).
 
         Args:
             context: Detector context with semantic analysis results
@@ -93,7 +93,7 @@ class BusinessMeaningDetector(EntropyDetector):
             "has_business_concept": bool(business_concept),
         }
 
-        # The measurement is the LLM's naming confidence ALONE (ADR-0009 hard rule:
+        # The measurement is the LLM's naming confidence ALONE (docs/architecture/entropy.md hard rule:
         # no deterministic semantic override). score = 1 - confidence. Documentation
         # presence + ontology alignment in raw_metrics below are CONTEXT, not score.
         score = stats.confidence_entropy(confidence)

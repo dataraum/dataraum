@@ -1,4 +1,4 @@
-"""Adjudication-entropy measurements built on the pooling engine (ADR-0009).
+"""Adjudication-entropy measurements built on the pooling engine (docs/architecture/entropy.md).
 
 Each measurement is a small module of pure witness extractors plus a
 ``measure_*`` entry that pools them per claim slot. The generic engine lives in

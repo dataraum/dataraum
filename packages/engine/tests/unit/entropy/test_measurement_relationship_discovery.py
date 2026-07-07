@@ -1,4 +1,4 @@
-"""Tests for the relationship-discovery adjudication measurement (ADR-0009).
+"""Tests for the relationship-discovery adjudication measurement (docs/architecture/entropy.md).
 
 The grounding result this pins (probe 2026-06-10, real pooling engine, observed
 live values from the DAT-405 calibration runs): the pooled conflict ``C``

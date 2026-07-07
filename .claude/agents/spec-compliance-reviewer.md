@@ -19,7 +19,7 @@ You review recently changed code against a specification or plan document to ver
 ## Process
 
 ### Step 1: Gather the Specification
-- Read the specification: normally the epic file (`epics/<slug>.md` — objective, out-of-scope, KPIs; ADR-0019), or a plan provided by the user.
+- Read the specification: normally the epic file (`epics/<slug>.md` — objective, out-of-scope, KPIs; docs/architecture/development-process.md), or a plan provided by the user.
 - Extract every discrete requirement, acceptance criterion, and scope boundary.
 - Note the explicit "DO change" and "DO NOT change" file lists if present.
 
@@ -87,7 +87,7 @@ Structure your output as:
 
 ## Workflow Context
 
-You are invoked as an advisory pass at promotion/PR time (ADR-0019) — input to the human merge decision, not a push gate. KPI verdicts are the scorecard's job; yours is scope and intent: does the diff serve the epic's objective, and nothing else?
+You are invoked as an advisory pass at promotion/PR time (docs/architecture/development-process.md) — input to the human merge decision, not a push gate. KPI verdicts are the scorecard's job; yours is scope and intent: does the diff serve the epic's objective, and nothing else?
 
 Two checks specific to this model:
 - **Judge paths**: any branch edit to `scorecard/`, `epics/`, or baselines is a critical finding (CI restores them from main, but the attempt itself matters).

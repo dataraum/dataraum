@@ -1,4 +1,4 @@
-// The compile-validate gate (DAT-626 / ADR-0015) — the single check a chart config
+// The compile-validate gate (see CLAUDE.md § Charting) — the single check a chart config
 // must pass before it's previewed, accepted, or frozen.
 //
 // Three layers, cheapest first:
@@ -6,7 +6,7 @@
 //   2. referenced-column check — every encoded `field` must be a real result
 //      column (the agent emits from columns+types only, but a hallucinated or
 //      misspelled name still has to be caught here, not at render).
-//   3. vega-lite `compile()` — the cheap structural backstop ADR-0015 leans on
+//   3. vega-lite `compile()` — the cheap structural backstop this gate leans on
 //      instead of inlining the 1.88 MB schema; a spec that won't compile can't
 //      render, so reject it now.
 //

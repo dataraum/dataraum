@@ -8,7 +8,7 @@ Binds the engine (:mod:`tree`) to the begin_session substrate:
 - **Substrate** = the fact's grain-verified enriched view, read at ROW grain via
   DuckDB (required so the (B) missingness gate sees NULL structure). Columns are
   pulled ONCE into memory; the permutation null runs in numpy (the design's "GROUP
-  BYs over aggregation views" is moot — ADR-0013 removed those, and 500 shuffles in
+  BYs over aggregation views" is moot — docs/architecture/pipeline.md removed those, and 500 shuffles in
   SQL would be hundreds of scans).
 - **Target type** = the measure's ``ColumnConcept.temporal_behavior`` (DAT-637)
   (``additive`` → flow, ``point_in_time`` → stock) via :func:`resolve_target_type`.

@@ -78,7 +78,7 @@ grep '^version = ' packages/engine/pyproject.toml   # must equal $ARGUMENTS
 The cockpit's `package.json` carries no version — the image tag is its version. If that
 changes, add it here.
 
-### 6. Release gate — the live eval family (ADR-0019 tier 3)
+### 6. Release gate — the live eval family (docs/architecture/development-process.md tier 3)
 
 The system/UAT tier runs at release cut, not per-PR. **Confirm with the user
 before any live spend**, then, in `../dataraum-eval`:

@@ -15,7 +15,7 @@ from dataraum.storage import Base
 
 
 class ValidationResultRecord(Base):
-    """A single validation's grounded SQL for a run — a pure SQL store (ADR-0017).
+    """A single validation's grounded SQL for a run — a pure SQL store (docs/architecture/grounding.md).
 
     Run-versioned (DAT-438): one row per ``(session, validation, run)``. A
     re-run supersedes by writing rows under its fresh ``run_id``; readers scope

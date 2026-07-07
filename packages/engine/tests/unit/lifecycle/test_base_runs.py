@@ -1,4 +1,4 @@
-"""Tests for the pinned base-run map resolution (ADR-0008 in-run mode, DAT-438)."""
+"""Tests for the pinned base-run map resolution (docs/architecture/persistence.md in-run mode, DAT-438)."""
 
 from __future__ import annotations
 

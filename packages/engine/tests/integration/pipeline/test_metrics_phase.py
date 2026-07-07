@@ -165,7 +165,7 @@ class TestMetricsPhaseOutcomes:
         duckdb_conn: duckdb.DuckDBPyConnection,
         workspace_table: Table,
     ) -> None:
-        """No per-phase head resolution (ADR-0008): an unthreaded pin is a wiring bug."""
+        """No per-phase head resolution (docs/architecture/persistence.md): an unthreaded pin is a wiring bug."""
         mock_defs.return_value = {"dso": _metric_def("dso")}
         ctx = _make_ctx(
             session,

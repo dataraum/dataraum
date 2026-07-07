@@ -383,7 +383,7 @@ class TestValidationAgentBindExecute:
         schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
 
         # Mock LLM to return valid SQL with tool call — the contracted output
-        # (ADR-0017): one row with `deviation` + `magnitude`. The data is
+        # (docs/architecture/grounding.md): one row with `deviation` + `magnitude`. The data is
         # balanced (debits == credits) so deviation = 0 → PASSED.
         tool_input = {
             "sql": "SELECT ABS(SUM(debit) - SUM(credit)) AS deviation, GREATEST(ABS(SUM(debit)), ABS(SUM(credit))) AS magnitude FROM typed_journal_entries",
@@ -497,7 +497,7 @@ class TestValidationAgentBindExecute:
     ):
         """End-to-end execute pin: SQL runs but ignores the output contract
         (no ``deviation`` column) → status ERROR (inconclusive), never FAILED
-        (DAT-439 item 1 / ADR-0017)."""
+        (DAT-439 item 1 / docs/architecture/grounding.md)."""
         table = table_with_data
 
         spec = ValidationSpec(

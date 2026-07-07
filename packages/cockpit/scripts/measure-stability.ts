@@ -1,9 +1,9 @@
 // measure-stability — KPI measure for `rerun_stability_flips`
-// (epics/relational-grounding.md, ADR-0019): drive begin_session →
+// (epics/relational-grounding.md, docs/architecture/development-process.md): drive begin_session →
 // operating_model TWICE on unchanged data and count grounding-verdict flips
 // between the two promoted runs.
 //
-// ADR-0019 measure contract: the LAST stdout line is the verdict JSON
+// docs/architecture/development-process.md measure contract: the LAST stdout line is the verdict JSON
 //   {"value": <flip_count>, "flips": [{kind, key, before, after}, ...]}
 // — the runner reads `value`; ALL diagnostics go to stderr.
 //

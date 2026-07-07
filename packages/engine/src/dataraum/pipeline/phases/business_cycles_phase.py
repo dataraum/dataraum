@@ -111,7 +111,7 @@ class BusinessCyclesPhase(BasePhase):
             )
 
         run_id = ctx.require_run_id()
-        # Pinned upstream heads (ADR-0008 in-run mode): resolved ONCE by the
+        # Pinned upstream heads (docs/architecture/persistence.md in-run mode): resolved ONCE by the
         # workflow's pre-flight ``operating_model_resolve`` activity and threaded
         # here through the phase config. The phase performs NO head resolution
         # itself — a missing pin is a wiring bug, fail loud.
@@ -120,7 +120,7 @@ class BusinessCyclesPhase(BasePhase):
             return PhaseResult.failed(
                 "base_runs missing from the phase config — OperatingModelWorkflow's "
                 "resolve activity pins the base-run map before this phase runs "
-                "(ADR-0008 in-run mode; no per-phase head resolution)."
+                "(docs/architecture/persistence.md in-run mode; no per-phase head resolution)."
             )
         base_runs = BaseRunMap.model_validate(raw_base_runs)
 

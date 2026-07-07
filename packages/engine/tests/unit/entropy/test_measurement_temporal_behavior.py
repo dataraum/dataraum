@@ -1,4 +1,4 @@
-"""Temporal-behaviour measurement — teach-first (ADR-0009, DAT-445).
+"""Temporal-behaviour measurement — teach-first (docs/architecture/entropy.md, DAT-445).
 
 Two witnesses: grounding-conditional ontology prior + independent LLM claim. Asserts
 the witnesses' direction, the grounding-conditional weakening (the contest AC), the

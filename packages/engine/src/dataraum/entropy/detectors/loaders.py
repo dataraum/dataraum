@@ -373,7 +373,7 @@ def load_semantic(
             semantic_dict["unit_source_column"] = cc.unit_source_column
         if cc.temporal_behavior:
             semantic_dict["temporal_behavior"] = cc.temporal_behavior
-        # The LLM formula-hypothesis witness (derived_value second witness, ADR-0009).
+        # The LLM formula-hypothesis witness (derived_value second witness, docs/architecture/entropy.md).
         if cc.derived_formula_hypothesis:
             semantic_dict["derived_formula_hypothesis"] = cc.derived_formula_hypothesis
         if cc.derived_formula_confidence is not None:
@@ -622,7 +622,7 @@ def load_hypothesis_match_rate(
 ) -> dict[str, Any] | None:
     """Row-grade an LLM-hypothesized formula over the column's typed table.
 
-    The derived_value second witness (ADR-0009): the LLM hypothesizes
+    The derived_value second witness (docs/architecture/entropy.md): the LLM hypothesizes
     ``column = col1 op col2``; the data grounds it with the SAME row statistic
     the formula discovery uses (``formula_match_counts`` — shared tolerance,
     shared zero-target exclusion). Source names are resolved case-insensitively

@@ -1,9 +1,9 @@
-"""Pinned base-run map — ADR-0008's in-run read mode (DAT-438).
+"""Pinned base-run map — docs/architecture/persistence.md's in-run read mode (DAT-438).
 
 An ``OperatingModelWorkflow`` run reads upstream promoted state (begin_session
 relationships, add_source per-column semantics) through run_ids **pinned once
 at run start** — the detached-HEAD mode. Re-deriving heads per reader is the
-deprecated convention ADR-0008 retires: it tears under a concurrent re-promote
+deprecated convention docs/architecture/persistence.md retires: it tears under a concurrent re-promote
 and re-implements the head join at every site. The map is also the artifact's
 ``grounded_against`` provenance (refine decision D2) — what the bind actually
 read from, recorded verbatim.

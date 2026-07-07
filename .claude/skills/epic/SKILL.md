@@ -1,11 +1,11 @@
 ---
 name: epic
-description: Objective-driven epic (ADR-0019) — define an epic with machine-checkable KPIs, or run the scorecard-gated loop on one until the harness says the objective is met
+description: Objective-driven epic (docs/architecture/development-process.md) — define an epic with machine-checkable KPIs, or run the scorecard-gated loop on one until the harness says the objective is met
 ---
 
 # Epic: $ARGUMENTS
 
-`$ARGUMENTS` is `define <idea>` or `run <slug>`. The model is ADR-0019: the agent
+`$ARGUMENTS` is `define <idea>` or `run <slug>`. The model is docs/architecture/development-process.md: the agent
 never grades its own homework — `scorecard/run.py` computes every verdict, CI
 recomputes it with the judge restored from `origin/main`, and the PR body is
 generated from the scorecard, not written as prose.

@@ -17,7 +17,7 @@ Correctness over speed. The product is **analytical correctness** — the system
 
 **Branching.** Feature branches only (`type/description`: feat / fix / refactor / docs / chore / test); never push to `main`. Commit after each verified (green) phase. Open PRs with `gh pr create` only when asked.
 
-**Skills drive the work** (`.claude/skills/`, model: ADR-0019):
+**Skills drive the work** (`.claude/skills/`, model: docs/architecture/development-process.md):
 
 | Intent | Skill |
 |--------|-------|
@@ -53,7 +53,7 @@ Tests pass · type-check passes · lint passes · output verified (not just "it 
 
 ## Architecture
 
-The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface is **gone** (retired by ADR-0002, deleted in DAT-487); recover it from git history only as a reading reference, never as something to rebuild on.
+The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface is **gone** (retired by docs/architecture/orchestration.md, deleted in DAT-487); recover it from git history only as a reading reference, never as something to rebuild on.
 
 **Key design decisions:**
 - **VARCHAR-first staging** — everything loads as VARCHAR; type inference happens in profiling, not load. Failed casts go to quarantine tables, never pipeline failure.
@@ -117,4 +117,4 @@ uv run python -m dataraum.worker.main
 ## Docs & tracking
 
 - Platform docs live at the **workspace root** in `docs/` (not in this package), published via Zensical (`uv run --project packages/engine zensical serve`, run from the repo root). Update when user-facing behavior changes; internal detail goes in docstrings.
-- Settled decisions → **ADRs** (`docs/adr/`). Active work → **`epics/`** at the workspace root (live objectives only, ADR-0019). Jira/Confluence are read-only history.
+- Settled decisions → **ADRs** (`docs/adr/`). Active work → **`epics/`** at the workspace root (live objectives only, docs/architecture/development-process.md). Jira/Confluence are read-only history.

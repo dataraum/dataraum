@@ -1,4 +1,4 @@
-"""Derived-formula adjudication — the second witness for derived_value (ADR-0009).
+"""Derived-formula adjudication — the second witness for derived_value (docs/architecture/entropy.md).
 
 Is a column governed by a within-table arithmetic formula? For each canonical
 formula identity in play the claim space is {``holds``, ``fails``} — "this
@@ -74,7 +74,7 @@ _SYMBOL_OPERATION: dict[str, str] = {symbol: op for op, symbol in OPERATION_SYMB
 # (direct/test callers). The SHIPPED values live in the artifact
 # dataraum-config/entropy/reliabilities.yaml (placeholder priors until the eval
 # rig runs for this measurement) and are passed via ``reliabilities=``. Per
-# ADR-0009 the shipped r are estimated-with-provenance, never inline constants.
+# docs/architecture/entropy.md the shipped r are estimated-with-provenance, never inline constants.
 DEFAULT_RELIABILITIES: dict[str, float] = {
     "formula_discovery": 0.9,
     "llm_hypothesis": 0.6,

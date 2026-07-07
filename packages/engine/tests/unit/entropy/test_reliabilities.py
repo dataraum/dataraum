@@ -1,6 +1,6 @@
 """Witness reliabilities config — the shipped, provenance-bearing trust weights.
 
-ADR-0009 (DAT-457/450): reliabilities are estimated-with-provenance artifacts, not
+docs/architecture/entropy.md (DAT-457/450): reliabilities are estimated-with-provenance artifacts, not
 inline constants. This proves the loader contract (per-measurement lookup, the
 calibrated flag) and that the shipped artifact actually carries the three
 null_semantics witnesses the pooled measurement expects.

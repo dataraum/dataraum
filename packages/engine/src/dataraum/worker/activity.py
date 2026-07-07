@@ -400,7 +400,7 @@ def run_session_phase(
 
     ``extra_config`` merges runtime keys over the static phase config — e.g.
     the operating_model activities thread the resolved ``base_runs`` pin
-    (ADR-0008) into ``ctx.config`` through it.
+    (docs/architecture/persistence.md) into ``ctx.config`` through it.
     """
     phase_cls = get_phase_class(phase_name)
     if phase_cls is None:
@@ -485,7 +485,7 @@ def run_detectors(
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
         # ``table_ids`` is supplied explicitly by operating_model_detect — its run
         # never anchors ``run_tables`` (those belong to begin_session), so it passes
-        # the scope PINNED at operating_model_resolve (ADR-0008). add_source /
+        # the scope PINNED at operating_model_resolve (docs/architecture/persistence.md). add_source /
         # begin_session leave it None and resolve their own ``run_tables`` here.
         if table_ids is None:
             table_ids = tables_for_run(session, run_id)
@@ -512,7 +512,7 @@ def run_detectors(
         # transaction (DAT-394). flush() makes the just-added rows visible to the
         # rollup's repository select before we read them back.
         session.flush()
-        # Resolved layer (ADR-0009 / DAT-457): collapse this run's adjudications
+        # Resolved layer (docs/architecture/entropy.md / DAT-457): collapse this run's adjudications
         # onto the semantic rows semantic_per_column already wrote — null_semantics
         # → SemanticAnnotation.null_tokens, temporal_behavior → the adjudicated
         # stock/flow + contested flag (DAT-445). No-op when no adjudication ran.
@@ -666,7 +666,7 @@ def resolve_operating_model_scope(
 
     operating_model takes NO table set: it reads the workspace catalog head's
     ``run_tables`` (begin_session's promoted run) — never a re-passed copy. The
-    base-run map (ADR-0008 in-run mode) is resolved HERE, once per run, and
+    base-run map (docs/architecture/persistence.md in-run mode) is resolved HERE, once per run, and
     travels with the workflow's contracts; the phases read the catalog's tables
     directly. The catalog head must already point at a promoted begin_session run
     (its run_id resolves the catalog's table set).
@@ -729,7 +729,7 @@ def resolve_operating_model_scope(
     return OperatingModelScope(
         relationship_run_id=base_runs.relationship_run_id,
         semantic_runs=base_runs.semantic_runs,
-        # ADR-0008 pin: the catalog head's table set is resolved ONCE here and
+        # docs/architecture/persistence.md pin: the catalog head's table set is resolved ONCE here and
         # travels on the scope so all three OM phases share one pinned set — a
         # concurrent begin_session promoting a new head mid-run cannot make them
         # diverge (the TOCTOU each phase re-reading the catalog head exhibits).

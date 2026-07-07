@@ -1,4 +1,4 @@
-// Unit tests for the why_validation projection (DAT-440 / ADR-0017). Pure — no
+// Unit tests for the why_validation projection (DAT-440 / docs/architecture/grounding.md). Pure — no
 // DB; the live read + on-demand verdict path is covered by the operating_model
 // integration smoke.
 //
@@ -46,7 +46,7 @@ const failedVerdict: Verdict = {
 
 const errorParams: ValidationParams = { tolerance: 0.01, severity: "error" };
 
-describe("projectWhyValidation (DAT-440 / ADR-0017)", () => {
+describe("projectWhyValidation (DAT-440 / docs/architecture/grounding.md)", () => {
 	it("assembles the executed drill-down: state + recomputed verdict + grounded detail", () => {
 		const projected = projectWhyValidation(
 			"gl_invoice_match",

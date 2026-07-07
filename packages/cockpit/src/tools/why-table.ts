@@ -250,7 +250,7 @@ export async function whyTable(
 
 	const target = tableTargetKey(tableName);
 
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453): the head
 	// join lives in the database, so no head resolution and no runId plumbing
 	// here. No promoted run → the views are empty → unanalyzed. The catalog
 	// readiness view resolves ONE row per target (DAT-506), so `pickCurrentRow`

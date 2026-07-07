@@ -96,7 +96,7 @@ def _make_ctx(
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
         run_id=run_id,
-        # base_runs is the workflow-resolved pin (ADR-0008), threaded by the
+        # base_runs is the workflow-resolved pin (docs/architecture/persistence.md), threaded by the
         # business_cycles activity; empty pins are legitimate (fail-closed reads).
         config={"vertical": "finance", "base_runs": {}},
     )
@@ -181,7 +181,7 @@ class TestBusinessCyclesPhaseOutcomes:
     def test_missing_base_runs_pin_fails_loud(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, workspace_table: Table
     ) -> None:
-        """No per-phase head resolution (ADR-0008): an unthreaded pin is a wiring bug."""
+        """No per-phase head resolution (docs/architecture/persistence.md): an unthreaded pin is a wiring bug."""
         ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
         ctx.config = {"vertical": "finance"}  # no base_runs
 

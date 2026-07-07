@@ -3,7 +3,7 @@
 Provides table schemas with semantic annotations and relationships for LLM context.
 Supports multi-table validation by fetching all related tables at once.
 
-The resolver is an **in-run reader** (ADR-0008): it never resolves snapshot
+The resolver is an **in-run reader** (docs/architecture/persistence.md): it never resolves snapshot
 heads itself — every run-versioned read (defined relationships, per-column
 semantic annotations) is scoped by the :class:`~dataraum.lifecycle.BaseRunMap`
 pinned once at run start and passed in. An absent pin reads EMPTY, never
@@ -43,7 +43,7 @@ def get_multi_table_schema_for_llm(
 
     This is the primary function for multi-table validation. It fetches all
     table schemas along with detected relationships between them, every
-    run-versioned read scoped by the pinned ``base_runs`` (ADR-0008 in-run
+    run-versioned read scoped by the pinned ``base_runs`` (docs/architecture/persistence.md in-run
     mode — the resolver never resolves heads itself).
 
     Args:
@@ -147,7 +147,7 @@ def get_multi_table_schema_for_llm(
         return {"error": "No tables with DuckDB paths found"}
 
     # The defined relationships (not candidate) between these tables, scoped to
-    # the PINNED begin_session run (ADR-0008 in-run mode). **Fail-closed
+    # the PINNED begin_session run (docs/architecture/persistence.md in-run mode). **Fail-closed
     # (DAT-429, session isolation):** with no pinned run we MUST NOT fall back
     # to a cross-run read (``run_id=None`` reads ALL runs), which would surface
     # OTHER sessions' relationships into this schema. Leave relationships empty

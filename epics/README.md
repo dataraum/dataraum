@@ -1,6 +1,6 @@
 # epics/ — live objectives only
 
-One file per epic currently being worked or next up. The full model is ADR-0019.
+One file per epic currently being worked or next up. The full model is docs/architecture/development-process.md.
 
 - An epic file lands on `main` via a small definition PR — approving that PR is the
   human gate and authorizes the epic's live-eval budget.

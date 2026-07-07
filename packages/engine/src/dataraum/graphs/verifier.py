@@ -16,7 +16,7 @@ EXPECTATION, not a gate (DAT-699): a violation FLAGS the executed metric
 A declared "shouldn't" stated as "can't" kept blocking real values (negative
 COGS is unusual, not impossible), and refusing the number hides exactly the
 signal the user needs; the measured value disagreeing with the declared
-expectation IS the signal (ADR-0009).
+expectation IS the signal (docs/architecture/entropy.md).
 
 **It is structurally blind to the real bug** (DAT-616): a *wrong-but-non-empty*
 filter (the agent improvises ``WHERE account_type ILIKE '%cost%'`` and matches the

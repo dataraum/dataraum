@@ -1,4 +1,4 @@
-// Server-only on-demand validation verdict (ADR-0017 / DAT-617).
+// Server-only on-demand validation verdict (docs/architecture/grounding.md / DAT-617).
 //
 // Re-runs each validation's grounded `sql_used` on the lake and judges it with
 // the shared `verdictFromRows` mirror — the verdict is computed fresh, never read
@@ -24,7 +24,7 @@ export interface ValidationParams {
 
 /**
  * Declared judgement params per `validation_id`, read from the vertical's shipped
- * specs (the engine no longer stores them — ADR-0017). Shipped specs cover the
+ * specs (the engine no longer stores them — docs/architecture/grounding.md). Shipped specs cover the
  * vertical's built-in validations; a teach-overridden tolerance falls back to the
  * shipped/default value (overlay merge is a follow-up if a teach ever moves a
  * threshold).

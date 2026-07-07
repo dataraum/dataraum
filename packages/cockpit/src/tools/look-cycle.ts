@@ -3,7 +3,7 @@
 // declared validations with their lifecycle state + executed verdict, this grids
 // the session's declared cycles with their lifecycle state + measured completion.
 //
-// Pure read via the shared lifecycle-artifacts reader (ADR-0008/DAT-453): the
+// Pure read via the shared lifecycle-artifacts reader (docs/architecture/persistence.md, DAT-453): the
 // `cycle`-typed `current_lifecycle_artifacts` rows are the authoritative declared
 // set (the engine declares ONE artifact per declared canonical_type — vocabulary
 // + teaches — in business_cycles_phase), and `current_detected_business_cycles`
@@ -121,7 +121,7 @@ export async function lookCycle(): Promise<LookCycleResult> {
 		};
 	}
 
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453): the head join
 	// lives in the database. The shared reader scopes to cycle artifacts — the
 	// authoritative declared set.
 	const artifacts: LifecycleArtifactRow[] =

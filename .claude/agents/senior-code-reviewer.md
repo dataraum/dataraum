@@ -115,7 +115,7 @@ Before judging ANY code that imports `@tanstack/*`:
 
 ## Workflow Context
 
-You are invoked as an advisory pass at promotion/PR time (ADR-0019) — input to the human merge decision. KPI and regression verdicts are the scorecard's job; yours is what a scorecard cannot see: design rot, concurrency hazards, misleading structure.
+You are invoked as an advisory pass at promotion/PR time (docs/architecture/development-process.md) — input to the human merge decision. KPI and regression verdicts are the scorecard's job; yours is what a scorecard cannot see: design rot, concurrency hazards, misleading structure.
 
 When your findings include issues that suggest the implementation approach was wrong (not just buggy), say so plainly — the fix may be a new epic definition, not a patch. This is normal and expected.
 

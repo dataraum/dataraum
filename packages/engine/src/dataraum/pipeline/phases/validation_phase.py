@@ -123,7 +123,7 @@ class ValidationPhase(BasePhase):
             )
 
         run_id = ctx.require_run_id()
-        # Pinned upstream heads (ADR-0008 in-run mode): resolved ONCE by the
+        # Pinned upstream heads (docs/architecture/persistence.md in-run mode): resolved ONCE by the
         # workflow's pre-flight ``operating_model_resolve`` activity and
         # threaded here through the phase config. The phase performs NO head
         # resolution itself — a missing pin is a wiring bug, fail loud.
@@ -132,7 +132,7 @@ class ValidationPhase(BasePhase):
             return PhaseResult.failed(
                 "base_runs missing from the phase config — OperatingModelWorkflow's "
                 "resolve activity pins the base-run map before this phase runs "
-                "(ADR-0008 in-run mode; no per-phase head resolution)."
+                "(docs/architecture/persistence.md in-run mode; no per-phase head resolution)."
             )
         base_runs = BaseRunMap.model_validate(raw_base_runs)
         grounded_against = base_runs.model_dump(mode="json")
@@ -335,7 +335,7 @@ def _persist_results(session: Session, run_result: ValidationRunResult) -> None:
     """Persist one run-stamped ``ValidationResultRecord`` per result — a pure SQL store.
 
     The pass/fail VERDICT and the declared params (severity/tolerance) are NOT
-    persisted (ADR-0017): a stored verdict goes stale on re-import, the params
+    persisted (docs/architecture/grounding.md): a stored verdict goes stale on re-import, the params
     live in config. Each row holds only the grounded ``sql_used`` (+ the columns
     it touched); the verdict is recomputed on demand by re-running it.
 

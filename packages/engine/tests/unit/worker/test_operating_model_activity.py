@@ -1,7 +1,7 @@
 """Unit tests for the operating_model activity helpers (DAT-438/506).
 
 ``resolve_operating_model_scope(manager, identity, vertical)`` — the pre-flight
-that reads the workspace catalog head's ``run_tables`` and pins the ADR-0008
+that reads the workspace catalog head's ``run_tables`` and pins the docs/architecture/persistence.md
 base-run map AND the table set once per run (the three phases read
 ``scope.table_ids`` rather than each re-reading the catalog head, closing the
 TOCTOU a concurrent begin_session promote would open) — and
@@ -120,7 +120,7 @@ class TestResolveOperatingModelScope:
 
         scope = resolve_operating_model_scope(_manager(session_factory), _IDENTITY, _VERTICAL)
 
-        # The scope pins the catalog head's table set ONCE (ADR-0008): the three
+        # The scope pins the catalog head's table set ONCE (docs/architecture/persistence.md): the three
         # phases read scope.table_ids, never re-reading the head per phase.
         assert set(scope.table_ids) == {"tbl-1", "tbl-2"}
         # It also pins the base-run map once.

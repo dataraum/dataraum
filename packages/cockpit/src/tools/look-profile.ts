@@ -7,7 +7,7 @@
 // quality metrics (outliers + Benford), the temporal profile, and any derived
 // columns that point AT this column. Each block reads from a `current_*` view,
 // so it reflects the latest promoted run — the view's head-join lives in the
-// database (ADR-0008/DAT-453); no run plumbing here.
+// database (docs/architecture/persistence.md, DAT-453); no run plumbing here.
 //
 // Read-only → no approval. A column with no promoted artifact for a given stage
 // gets a null/empty block for it; an unknown column_id returns the empty shell
@@ -555,7 +555,7 @@ export async function lookProfile(input: {
 
 	// The seven per-column reads share no input once the column is known — fan
 	// them out. Each `current_*` view IS the promoted run (the head join lives in
-	// the database, ADR-0008/DAT-453), so a plain by-columnId read suffices; a
+	// the database, docs/architecture/persistence.md, DAT-453), so a plain by-columnId read suffices; a
 	// stage with no promoted row simply returns nothing → a null/empty block.
 	const [
 		semantic,

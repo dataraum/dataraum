@@ -1,4 +1,4 @@
-"""Loss layer — risk(intent) = w_conflict·C + w_ignorance·U (ADR-0009, DAT-457).
+"""Loss layer — risk(intent) = w_conflict·C + w_ignorance·U (docs/architecture/entropy.md, DAT-457).
 
 Severity lives in the loss table, not the score: the SAME conflict is weighted
 differently per intent, and a resolved column (C→0, e.g. after a teach) collapses

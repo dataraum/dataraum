@@ -62,7 +62,7 @@ class SemanticAnnotation(Base):
     business_name: Mapped[str | None] = mapped_column(String)
     business_description: Mapped[str | None] = mapped_column(Text)
 
-    # Object-grain stock/flow witness (ADR-0009 / DAT-445): the column agent's
+    # Object-grain stock/flow witness (docs/architecture/entropy.md / DAT-445): the column agent's
     # INDEPENDENT per-column read ('stock'/'flow'/'unsure') + its confidence,
     # decidable from one column's name + values, written by semantic_per_column.
     # The ontology-derived ``temporal_behavior`` it is pooled against is
@@ -71,7 +71,7 @@ class SemanticAnnotation(Base):
     temporal_behavior_claim: Mapped[str | None] = mapped_column(String)
     temporal_behavior_claim_confidence: Mapped[float | None] = mapped_column(Float)
 
-    # Resolved null-marker tokens (ADR-0009 / DAT-457): the rejected tokens the
+    # Resolved null-marker tokens (docs/architecture/entropy.md / DAT-457): the rejected tokens the
     # null_semantics adjudication resolved to is-null (pooled posterior past
     # threshold). Written by the resolved-layer pass inside the terminal detect
     # (dataraum.entropy.resolve), updating THIS run's annotation. The query agent

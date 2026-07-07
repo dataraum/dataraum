@@ -1,4 +1,4 @@
-# Scorecard registry — ADR-0019.
+# Scorecard registry — docs/architecture/development-process.md.
 #
 # Vertical-agnostic by construction: this file names COMMANDS and ORACLE IDS.
 # Datasets, ground-truth values, and vertical vocabulary are data that lives in
@@ -39,7 +39,7 @@ areas:
     # Include area `eval` in an epic's contract ONLY when its approved
     # promotion block authorizes the spend (live_at_promotion) — the approved
     # epic file IS the authorization. The full live family (fresh seed, blast-
-    # radius strategies, /investigate leg) is the RELEASE gate — ADR-0019 §5.
+    # radius strategies, /investigate leg) is the RELEASE gate — docs/architecture/development-process.md §5.
     fast: []
     full:
       - id: eval-clean-calibration   # live-LLM — epic-authorized only
@@ -67,7 +67,7 @@ oracles:
     vertical: finance
     dataset: ../../testdata/booksql
     notes: >
-      Real-world-messy grounding acceptance set (since DAT-277/ADR-0018). Two DATA
+      Real-world-messy grounding acceptance set (since DAT-277/docs/architecture/pipeline.md). Two DATA
       truths that are CORRECT platform behavior, never regressions: (1) the chart
       of accounts has dual-role accounts (same name, different type), so no
       name-based composite is a key — m2m + fan-trap flag + semi-join grounding is
@@ -77,4 +77,4 @@ oracles:
   verdict-vectors:
     vertical: none
     dataset: packages/engine/tests/fixtures/validation_verdict_vectors.json
-    notes: Cross-language (pytest + vitest) verdict pin — ADR-0017.
+    notes: Cross-language (pytest + vitest) verdict pin — docs/architecture/grounding.md.

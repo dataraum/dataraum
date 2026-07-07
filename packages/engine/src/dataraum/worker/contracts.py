@@ -328,7 +328,7 @@ class OperatingModelInput(BaseModel):
 class OperatingModelScope(BaseModel):
     """``operating_model_resolve``'s output — the pinned base-run map + table set.
 
-    The ADR-0008 in-run pin, resolved ONCE at run start: ``relationship_run_id``
+    The docs/architecture/persistence.md in-run pin, resolved ONCE at run start: ``relationship_run_id``
     is begin_session's promoted ``(catalog, catalog)`` head; ``semantic_runs``
     the per-table promoted ``(table:{id}, semantic_per_column)`` heads. Wire
     mirror of :class:`dataraum.lifecycle.BaseRunMap` (contracts stay
@@ -336,7 +336,7 @@ class OperatingModelScope(BaseModel):
     cockpit's ``types.ts``).
 
     ``table_ids`` is the catalog head's ``run_tables`` PINNED here at resolve
-    (ADR-0008): all three OM phase activities read ``payload.scope.table_ids``
+    (docs/architecture/persistence.md): all three OM phase activities read ``payload.scope.table_ids``
     rather than each re-reading the catalog head, so a concurrent begin_session
     promoting a new head mid-run cannot make the three phases see different
     table sets. This is the engine-internal RESOLVE OUTPUT, NOT a wire input —

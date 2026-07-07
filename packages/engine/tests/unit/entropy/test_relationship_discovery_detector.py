@@ -1,4 +1,4 @@
-"""Wiring tests for the relationship_discovery detector shell (ADR-0009).
+"""Wiring tests for the relationship_discovery detector shell (docs/architecture/entropy.md).
 
 Drives the REAL relationship-scoped post-step on SQLite (engine → snapshot →
 loader → shell → measurement) — the same harness that caught the

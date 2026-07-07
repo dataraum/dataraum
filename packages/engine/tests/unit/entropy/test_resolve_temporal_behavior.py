@@ -1,4 +1,4 @@
-"""Resolved layer for temporal_behavior — ADR-0009 / DAT-445.
+"""Resolved layer for temporal_behavior — docs/architecture/entropy.md / DAT-445.
 
 ``resolve_temporal_behavior`` collapses each column's stock/flow adjudication onto
 its ``SemanticAnnotation`` row: ``temporal_behavior`` becomes the pooled-resolved

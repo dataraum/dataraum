@@ -1,8 +1,8 @@
-"""Unit tests for the generic pooling engine (ADR-0009, DAT-457).
+"""Unit tests for the generic pooling engine (docs/architecture/entropy.md, DAT-457).
 
 Pure math; no DB, no LLM. These assert the (C, U) *separation* that the whole
 adjudication model rests on — the DAT-457 acceptance criteria, written as
-orderings/properties rather than point thresholds (ADR-0009 eval grammar).
+orderings/properties rather than point thresholds (docs/architecture/entropy.md eval grammar).
 """
 
 from __future__ import annotations

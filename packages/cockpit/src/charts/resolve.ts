@@ -1,5 +1,5 @@
 // Lift the thin authorable config (chart-config.ts) into a real Vega-Lite spec
-// (DAT-626 / ADR-0015).
+// (see CLAUDE.md § Charting).
 //
 // The subset is what the LLM/user authors; THIS is the spec the renderer compiles
 // and the gate validates. The data is a NAMED reference (`{ name: "table" }`) — the

@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 
 # --- Model request-shape capabilities (Claude 4.7+ / Sonnet 5 / Fable 5) ---
 #
-# The engine is the structured-extraction tier (ADR-0004): every call forces a
+# The engine is the structured-extraction tier (docs/architecture/orchestration.md): every call forces a
 # tool for typed output and wants determinism, not agentic reasoning. Two
 # request-shape changes landed with this model generation that the tier must
 # honour, or Sonnet 5 rejects the call outright:

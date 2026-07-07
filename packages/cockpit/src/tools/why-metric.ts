@@ -152,7 +152,7 @@ export interface WhyMetricInput {
 export async function whyMetric(
 	input: WhyMetricInput,
 ): Promise<WhyMetricResult> {
-	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// The current_* views ARE the promoted run (docs/architecture/persistence.md, DAT-453): the head join
 	// lives in the database — no head resolution. No promoted run → empty views →
 	// not found. The shared reader pins artifact_type = 'metric'.
 	const artifactRow = await readLifecycleArtifact("metric", input.graph_id);

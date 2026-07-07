@@ -1,4 +1,4 @@
-"""Resolved layer — collapse adjudications onto the read-surface row (ADR-0009).
+"""Resolved layer — collapse adjudications onto the read-surface row (docs/architecture/entropy.md).
 
 The pooling engine produces per-token posteriors; the *resolved* layer writes the
 column's best value where the consumer reads it. The query agent doesn't want a
@@ -69,7 +69,7 @@ def resolve_null_tokens(session: Session, run_id: str | None) -> int:
 def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
     """Write the adjudicated stock/flow behaviour onto this run's annotations.
 
-    Reads the ``temporal_behavior`` EntropyObject rows written this run (ADR-0009 /
+    Reads the ``temporal_behavior`` EntropyObject rows written this run (docs/architecture/entropy.md /
     DAT-445) and, for each column whose adjudication resolved to a behaviour, UPDATEs
     the matching ``(column_id, run_id)`` annotation: ``temporal_behavior`` becomes the
     pooled-resolved value (the ontology prior reconciled with the LLM stock/flow

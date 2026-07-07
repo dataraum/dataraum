@@ -1,7 +1,7 @@
 """Cross-table consistency entropy detector.
 
 Consumes ValidationResultRecord (the grounded ``sql_used`` + declared params).
-The verdict is **recomputed on demand** (ADR-0017): this detector re-runs each
+The verdict is **recomputed on demand** (docs/architecture/grounding.md): this detector re-runs each
 check's run-versioned ``sql_used`` against current data and scores the fresh
 verdict — it never reads a stored pass/fail (a stored verdict goes stale on
 re-import, the SQL does not).
@@ -20,7 +20,7 @@ Score semantics (DAT-442 honesty + the L7 scoreboard finding):
   deliverable number was measurably wrong: 0 prevented / 8 wrong-delivered.)
 - Non-critical failures score the honest relative discrepancy ``deviation /
   magnitude`` (no boost, DAT-442) — uniform across check types now that the SQL
-  output is contracted (ADR-0017), no per-check_type rate matching.
+  output is contracted (docs/architecture/grounding.md), no per-check_type rate matching.
 - ERROR/inconclusive (or unbound) scores 0.0 + a ``validation_unassessed``
   warning: an unassessed check is ignorance, not measured risk — the old 0.5
   turned LLM SQL-generation nondeterminism into clean-table false alarms.
@@ -49,7 +49,7 @@ logger = get_logger(__name__)
 
 
 def _score(verdict: ValidationVerdict, severity: str) -> float:
-    """Score a recomputed validation verdict (ADR-0017).
+    """Score a recomputed validation verdict (docs/architecture/grounding.md).
 
     The verdict is recomputed on demand from the contracted SQL output, so its
     ``details`` carry a uniform ``deviation``/``magnitude`` — no per-check_type
@@ -88,7 +88,7 @@ def _load_run_specs(context: DetectorContext) -> dict[str, Any]:
     """Load this run's validation specs (severity + tolerance) from config.
 
     The verdict's tolerance and the critical-rule severity are declared config,
-    not stored on the record (ADR-0017). The run's vertical is read from a
+    not stored on the record (docs/architecture/grounding.md). The run's vertical is read from a
     validation lifecycle artifact via the shared session — the entropy/detect
     layer is otherwise vertical-free. Returns ``{}`` (graceful, never raises) when
     the run/session/vertical can't be resolved; consumers fall back to defaults.
@@ -172,7 +172,7 @@ class CrossTableConsistencyDetector(EntropyDetector):
             ]
 
         # The verdict's tolerance + the critical-rule severity are declared config
-        # (ADR-0017), read from the spec — never stored on the record. The run's
+        # (docs/architecture/grounding.md), read from the spec — never stored on the record. The run's
         # vertical comes from a validation lifecycle artifact via the shared session.
         specs = _load_run_specs(context)
 
@@ -190,7 +190,7 @@ class CrossTableConsistencyDetector(EntropyDetector):
             )
             severity = spec.severity.value if spec is not None else "info"
 
-            # Recompute the verdict on demand (ADR-0017): re-run the run-versioned
+            # Recompute the verdict on demand (docs/architecture/grounding.md): re-run the run-versioned
             # ``sql_used`` against current data rather than read a stored pass/fail
             # that goes stale on re-import. check_type isn't needed (the score is
             # uniform deviation/magnitude); the message uses a generic label.

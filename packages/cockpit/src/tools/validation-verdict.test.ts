@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { verdictFromRows } from "./validation-verdict";
 
-// The SHARED truth table (ADR-0017): the same cases the engine asserts in
+// The SHARED truth table (docs/architecture/grounding.md): the same cases the engine asserts in
 // pytest (tests/unit/analysis/validation/test_evaluate.py). Reading the one
 // file from both suites is the anti-drift guardrail — a divergence between the
 // TS mirror and the Python judgement is a test failure here.

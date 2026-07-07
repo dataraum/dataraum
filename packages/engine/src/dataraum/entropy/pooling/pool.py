@@ -1,4 +1,4 @@
-"""The generic opinion-pooling engine (ADR-0009, DAT-457).
+"""The generic opinion-pooling engine (docs/architecture/entropy.md, DAT-457).
 
 Pure functions — no DB, no LLM, no config. Given a set of :class:`Witness`
 opinions over one shared canonical claim space, compute:
@@ -116,7 +116,7 @@ def pool(witnesses: Sequence[Witness], *, prior_strength: float = 1.0) -> PoolRe
         prior_strength: The ``κ`` in ``U = κ / (κ + m)`` — the pseudo-count mass
             of the "we know nothing" prior. Larger ``κ`` means more corroborating
             evidence is needed before ignorance falls. Documented knob, not tuned
-            against a metric (per ADR-0009).
+            against a metric (per docs/architecture/entropy.md).
 
     Returns:
         A :class:`PoolResult`. With no witnesses: empty posterior, ``C = 0``,

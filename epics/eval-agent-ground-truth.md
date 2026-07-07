@@ -1,6 +1,6 @@
 # Epic: Eval grades the agent layer — metadata ground truth at decision tolerance
 
-> **DRAFT — distilled from DAT-680 P0+P1 (plus DAT-669) for the ADR-0019 migration.
+> **DRAFT — distilled from DAT-680 P0+P1 (plus DAT-669) for the docs/architecture/development-process.md migration.
 > Not approved. Targets are provisional until baselines are captured on main.
 > DAT-680's P2 (vertical-agnostic testdata protocol) and P3 (wild-data gate) are
 > deliberately excluded — they become their own epic files when actually next.
@@ -13,7 +13,7 @@ and column labels, cycles, validation SQL, the metric graph's own SQL, driver
 rankings — is graded against generator-exported ground truth, closing the gap
 where detectors are well graded but everything in the `current_*` views is
 asserted by nothing. Grading is at **decision tolerance per KPI** (pipeline error
-+ model error ≤ decision tolerance — ADR-0022), never reporting-grade exactness.
++ model error ≤ decision tolerance — docs/architecture/product.md), never reporting-grade exactness.
 No new framework: assertions reuse the existing grammar (ordering + margin,
 measured clean bands, `xfail(strict=False)`, pooled C/U) plus named set statistics
 (precision/recall/F1/Jaccard) for set-valued outputs; the tool surface
@@ -27,7 +27,7 @@ outlier root-cause.)
 
 - Breaking the generator's finance hardcoding / vertical protocol (DAT-680 P2) and
   any vertical build — vertical selection, multi-site panels, lever ontologies are
-  explicitly undecided (ADR-0022).
+  explicitly undecided (docs/architecture/product.md).
 - The wild-data external-corpus lane (DAT-680 P3: WWI, CTU Financial, RelBench,
   Raha/Baran) and its curation checklist.
 - Model-swap batteries (MMTU) and cassette record/replay infrastructure.

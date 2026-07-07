@@ -335,7 +335,7 @@ class ConnectionManager:
 
         Base.metadata.create_all(self._engine)
 
-        # Promoted-read surface (ADR-0008 / DAT-453): refresh the ws_<id>_read
+        # Promoted-read surface (docs/architecture/persistence.md / DAT-453): refresh the ws_<id>_read
         # views + reader grants AFTER create_all on every boot, so the read
         # schema tracks the models without migrations. Postgres-only — the
         # SQLite test substrate has no read surface.

@@ -78,7 +78,7 @@ x-engine-worker-env: &engine-worker-env
   TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
   TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
   # Password for the cockpit_reader role the bootstrap provisions with SELECT on
-  # ws_<id>_read ONLY (ADR-0008/DAT-453); the cockpit's METADATA_DATABASE_URL
+  # ws_<id>_read ONLY (docs/architecture/persistence.md/DAT-453); the cockpit's METADATA_DATABASE_URL
   # connects with it.
   METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
 
@@ -347,7 +347,7 @@ services:
       # registry + chat history + ui_state.
       COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
       # Engine metadata — read through the cockpit_reader role, which the
-      # engine bootstrap grants SELECT on ws_<id>_read ONLY (ADR-0008/DAT-453):
+      # engine bootstrap grants SELECT on ws_<id>_read ONLY (docs/architecture/persistence.md/DAT-453):
       # the promoted-read views are the cockpit's entire metadata surface; raw
       # run-stamped tables are not even visible to this connection.
       METADATA_DATABASE_URL: postgresql://cockpit_reader:${METADATA_READER_PASSWORD:-cockpit-reader-dev}@postgres:5432/${POSTGRES_DB}

@@ -1,4 +1,4 @@
-"""On-demand validation verdict — re-run the stored SQL and judge it (ADR-0017).
+"""On-demand validation verdict — re-run the stored SQL and judge it (docs/architecture/grounding.md).
 
 The durable validation artifact stores the run-versioned SQL, not the pass/fail
 verdict: a stored verdict goes stale the moment data is re-imported, the SQL does
@@ -141,7 +141,7 @@ def _judge(
     tolerance: float,
     result_rows: list[dict[str, Any]],
 ) -> tuple[ValidationStatus, str, dict[str, Any]]:
-    """The contract judgement (ADR-0017): ``deviation <= tolerance``.
+    """The contract judgement (docs/architecture/grounding.md): ``deviation <= tolerance``.
 
     Every validation SQL returns ONE row with a non-negative numeric
     ``deviation`` (0 = perfectly satisfied) and a ``magnitude`` (the reference

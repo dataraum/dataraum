@@ -1,4 +1,4 @@
-"""Temporal-behaviour (stock vs flow) detector — teach-first (ADR-0009, DAT-445).
+"""Temporal-behaviour (stock vs flow) detector — teach-first (docs/architecture/entropy.md, DAT-445).
 
 Column-scoped semantic adjudication. For each column it pools the grounding-conditional
 ontology prior (the concept's ``temporal_behavior`` + grounding confidence) against the

@@ -1,4 +1,4 @@
-"""Tests for the on-demand validation verdict (ADR-0017 / DAT-617).
+"""Tests for the on-demand validation verdict (docs/architecture/grounding.md / DAT-617).
 
 ``evaluate_result`` is the uniform judgement over a contracted result row
 (``deviation``/``magnitude``); ``evaluate_validation`` re-runs a stored

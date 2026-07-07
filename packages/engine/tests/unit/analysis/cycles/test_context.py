@@ -2,7 +2,7 @@
 
 ``build_cycle_detection_context`` assembles two run-versioned reads — entity
 classifications and the defined relationships — both of which coexist across runs
-(DAT-408/413). The builder is an in-run reader (ADR-0008): it scopes by the
+(DAT-408/413). The builder is an in-run reader (docs/architecture/persistence.md): it scopes by the
 :class:`BaseRunMap` pinned once at run start and passed in, never resolving a head
 itself. With no pinned run (``relationship_run_id is None``) it must surface
 NEITHER: a cross-run read here would mix other runs' entities/relationships

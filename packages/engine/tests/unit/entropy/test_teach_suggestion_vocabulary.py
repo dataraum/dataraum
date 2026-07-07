@@ -1,4 +1,4 @@
-"""Teach-suggestion vocabulary guard (ADR-0009 pack piece 6).
+"""Teach-suggestion vocabulary guard (docs/architecture/entropy.md pack piece 6).
 
 Every ``teach_suggestion`` any measurement emits must name a teach type the
 system can APPLY — either a registered overlay applier
@@ -144,7 +144,7 @@ def test_every_emitted_teach_suggestion_names_an_appliable_type() -> None:
                 problems.append(
                     f"{module}: suggests teach type '{teach_type}' which has no overlay "
                     "applier (core/overlay.py) and no documented direct config_overlay "
-                    "read — the product surface cannot execute it (ADR-0009 piece 6)"
+                    "read — the product surface cannot execute it (docs/architecture/entropy.md piece 6)"
                 )
     assert not problems, "\n".join(problems)
 

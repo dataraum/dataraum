@@ -281,7 +281,7 @@ class TestBuilderExtractsTableEntity:
 
 
 class TestBuilderRecomputesValidationVerdict:
-    """The validation verdict is recomputed on demand (ADR-0017), not read.
+    """The validation verdict is recomputed on demand (docs/architecture/grounding.md), not read.
 
     The builder no longer surfaces a stored verdict — it re-runs ``sql_used``.
     Recompute needs a DuckDB connection AND a declared spec, so the unit path

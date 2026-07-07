@@ -29,7 +29,7 @@ if (!workspaceId) {
   )
 }
 
-// The cockpit introspects the promoted-READ schema (ADR-0008/DAT-453): the
+// The cockpit introspects the promoted-READ schema (docs/architecture/persistence.md, DAT-453): the
 // current_* head-joined views + pass-throughs are its entire metadata surface.
 // The raw ws_<id> tables are not visible to the cockpit_reader role at runtime,
 // so they must not be in the mirror either.

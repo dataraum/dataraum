@@ -1,4 +1,4 @@
-// Text-to-chart authoring (DAT-626 / ADR-0015) — the PRIMARY path: a typed
+// Text-to-chart authoring (see CLAUDE.md § Charting) — the PRIMARY path: a typed
 // instruction → a validated chart config.
 //
 // Same forced-tool drain-stream shape as `induceStructured` (frame-family.ts): the
@@ -13,7 +13,7 @@
 // the model re-emits, up to CHART_AUTHOR_MAX_ATTEMPTS. Then we give up and tell the
 // user to map it manually — NOT a heavy repair loop.
 //
-// CONTEXT IS DELIBERATELY THIN (ADR-0015): result columns + their measurement types
+// CONTEXT IS DELIBERATELY THIN: result columns + their measurement types
 // + the user's instruction. NO catalogue, NO query-context, NO result-column→
 // lineage name-matching (fragile + false-positive-prone on composed-SQL aliases).
 // The instruction carries intent; the model reads measure/temporal from name+type.

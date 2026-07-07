@@ -1,4 +1,4 @@
-"""Loss layer — severity as expected loss per intent (ADR-0009, DAT-442/457).
+"""Loss layer — severity as expected loss per intent (docs/architecture/entropy.md, DAT-442/457).
 
 For a modeled measurement, readiness per intent is EXPECTED LOSS, not the detector
 score:

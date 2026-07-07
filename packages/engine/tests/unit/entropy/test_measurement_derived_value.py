@@ -1,4 +1,4 @@
-"""Derived-formula adjudication measurement (ADR-0009, derived-value 2nd witness).
+"""Derived-formula adjudication measurement (docs/architecture/entropy.md, derived-value 2nd witness).
 
 Two witnesses per canonical formula claim: the data's row grading (discovery /
 loader match rate) vs the LLM's name-based hypothesis. Asserts canonicalization

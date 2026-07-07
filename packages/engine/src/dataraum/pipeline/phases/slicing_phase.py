@@ -3,7 +3,7 @@
 LLM-powered analysis to identify optimal data slicing dimensions:
 - Identifies categorical columns suitable for slicing
 - Persists slice definitions into the dimension catalog (no slice tables are
-  materialized -- the slice substrate was retired by ADR-0013)
+  materialized -- the slice substrate was retired by docs/architecture/pipeline.md)
 - Considers semantic meaning and statistical properties
 """
 

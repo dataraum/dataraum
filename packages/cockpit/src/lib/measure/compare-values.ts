@@ -1,11 +1,11 @@
 // Metric value-vs-ground-truth comparison — the pure verdict half of
-// scripts/measure-grounding.ts (ADR-0019, KPI `clean_executed_correct`). No IO,
+// scripts/measure-grounding.ts (docs/architecture/development-process.md, KPI `clean_executed_correct`). No IO,
 // no DB: the script feeds the promoted-surface rows in, this module classifies.
 //
 // The KPI counts metrics that are BOTH executed AND value-correct: an executed
 // metric whose value cannot be read is `unverified`, never silently correct —
 // so a surface that exposes no values scores 0, which is the honest
-// fail-on-main state ADR-0019's fail-to-pass discipline requires.
+// fail-on-main state docs/architecture/development-process.md's fail-to-pass discipline requires.
 
 import type { GroundTruthMetric } from "./ground-truth";
 

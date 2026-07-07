@@ -436,6 +436,41 @@ describe("composeNodeQuery — pins", () => {
 		expect(num((await rows(q.sql, q.params))[0]?.value)).toBe(380); // 500 - 120
 	});
 
+	it("pinning a grouped row reproduces exactly that row's value (pin ≡ group)", async () => {
+		// The grouped result showed materials = -200 via COALESCE(revenue → 0);
+		// pinning that row restricts the domain, so the SUM extract's empty
+		// result is the same true zero — never a contradicting NULL.
+		const grouped = composed(GROSS_PROFIT, undefined, {
+			slices: ["account"],
+			pins: [],
+		});
+		const materialsRow = (await rows(grouped.sql)).find(
+			(r) => r.account === "materials",
+		);
+		const pinned = composed(GROSS_PROFIT, undefined, {
+			slices: [],
+			pins: [{ column: "account", value: "materials" }],
+		});
+		expect(num((await rows(pinned.sql, pinned.params))[0]?.value)).toBe(
+			num(materialsRow?.value),
+		);
+	});
+
+	it("the UNRESTRICTED scalar keeps engine parity — no COALESCE, NULL stays loud", async () => {
+		// cogs-of-nothing: an extract whose predicate matches no rows at all.
+		const steps: NodeStep[] = [
+			REVENUE,
+			extract(
+				"phantom",
+				parts("SUM(debit)", "enriched_txn", ["kind = 'nope'"]),
+			),
+			formula("out", "revenue - phantom", ["revenue", "phantom"], true),
+		];
+		const q = composed(steps);
+		expect(q.sql).not.toContain("COALESCE");
+		expect(num((await rows(q.sql))[0]?.value)).toBeNull();
+	});
+
 	it("pins NULL as IS NULL without consuming a param slot", async () => {
 		const q = composed(GROSS_PROFIT, undefined, {
 			slices: [],
@@ -447,7 +482,9 @@ describe("composeNodeQuery — pins", () => {
 		expect(q.params).toEqual(["sales"]);
 		expect(q.sql).toContain('"region" IS NULL');
 		expect(q.sql).toContain('"account" = $1');
-		expect(num((await rows(q.sql, q.params))[0]?.value)).toBeNull(); // no NULL-region rows → SUM of nothing
+		// No NULL-region rows exist: under the pinned (restricted) domain the
+		// SUM extracts' empty results are true zeros → 0 - 0, not NULL.
+		expect(num((await rows(q.sql, q.params))[0]?.value)).toBe(0);
 	});
 });
 

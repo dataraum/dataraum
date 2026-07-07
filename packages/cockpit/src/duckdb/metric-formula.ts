@@ -190,6 +190,13 @@ const floatLiteral = (value: number): string =>
 export interface CarrierContext {
 	carriers: ReadonlySet<string>;
 	zeroAbsent: ReadonlySet<string>;
+	/** Scalar-subquery refs whose EMPTY value is a true zero under the current
+	 *  composition's RESTRICTED domain (pins): a SUM/COUNT extract over zero
+	 *  matching rows yields SQL NULL, but the measure's semantics say 0 — so a
+	 *  pinned grouped row and its pin-only re-evaluation agree. Never set for
+	 *  the unrestricted scalar, which stays byte-parity with the engine
+	 *  composition (a whole-domain NULL is the fall-loud grounding flag). */
+	zeroAbsentScalars?: ReadonlySet<string>;
 }
 
 function renderExpr(
@@ -216,7 +223,12 @@ function renderExpr(
 				sql: ctx.zeroAbsent.has(expr.name) ? `COALESCE(${ref}, 0)` : ref,
 			};
 		}
-		return { sql: `(SELECT value FROM ${expr.name})` };
+		const scalar = `(SELECT value FROM ${expr.name})`;
+		return {
+			sql: ctx?.zeroAbsentScalars?.has(expr.name)
+				? `COALESCE(${scalar}, 0)`
+				: scalar,
+		};
 	}
 	if (expr.kind === "num") return { sql: floatLiteral(expr.value) };
 	if (expr.kind === "neg") {

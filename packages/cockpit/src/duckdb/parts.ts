@@ -280,6 +280,12 @@ export function composeNodeQuery(
 	const ctes: Record<string, SelectQuery> = {};
 	const carriers = new Set<string>(); // dim-carrying CTEs (grouped mode)
 	const zeroAbsent = new Set<string>();
+	// Scalar-mode counterpart of zeroAbsent: SUM/COUNT extracts whose EMPTY
+	// value is a true zero once pins RESTRICT the domain — so pinning a
+	// grouped row reproduces exactly that row's value. Applied only when a
+	// pin exists: the unrestricted scalar stays byte-parity with the engine
+	// composition, where a whole-domain NULL is the fall-loud grounding flag.
+	const zeroAbsentScalars = new Set<string>();
 
 	for (const step of order) {
 		if (step.kind === "extract") {
@@ -309,10 +315,13 @@ export function composeNodeQuery(
 				q = q.where(...preds.map((p) => verbatim(`(${p})`)));
 			}
 			ctes[step.stepId] = q;
+			const agg = (step.aggregation ?? "").toLowerCase();
+			const zeroWhenEmpty = agg === "sum" || agg === "count";
 			if (dims.length > 0) {
 				carriers.add(step.stepId);
-				const agg = (step.aggregation ?? "").toLowerCase();
-				if (agg === "sum" || agg === "count") zeroAbsent.add(step.stepId);
+				if (zeroWhenEmpty) zeroAbsent.add(step.stepId);
+			} else if (zeroWhenEmpty) {
+				zeroAbsentScalars.add(step.stepId);
 			}
 			continue;
 		}
@@ -341,7 +350,12 @@ export function composeNodeQuery(
 		const rendered = renderFormulaValue(
 			step.expression,
 			new Set(step.dependsOn),
-			{ carriers, zeroAbsent },
+			{
+				carriers,
+				zeroAbsent,
+				zeroAbsentScalars:
+					pinPredicates.length > 0 ? zeroAbsentScalars : undefined,
+			},
 		);
 		if ("refusal" in rendered) {
 			return { refusal: `step '${step.stepId}': ${rendered.refusal}` };

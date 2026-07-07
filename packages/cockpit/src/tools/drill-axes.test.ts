@@ -37,16 +37,23 @@ vi.mock("#/db/metadata/client", () => ({
 }));
 
 import {
+	currentDimensionHierarchies,
+	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
 	currentSliceDefinitions,
 	currentTables,
 	sqlSnippets,
 } from "#/db/metadata/schema";
+import type { DrillAxis } from "#/duckdb/drill";
 import {
 	axesFromSliceRows,
+	collapseAliasAxes,
+	driverGains,
 	measureFieldsFromDag,
+	orderAxesByDrivers,
 	resolveDrillAxes,
+	unionSubstrateAxes,
 } from "./drill-axes";
 
 describe("measureFieldsFromDag", () => {
@@ -144,6 +151,111 @@ describe("axesFromSliceRows", () => {
 	});
 });
 
+/** A minimal curated axis for the pure-function tests. */
+const axis = (column: string, priority = 1): DrillAxis => ({
+	column,
+	sourceRelations: ["orders", "enriched_orders"],
+	priority,
+	sliceType: "categorical",
+	values: [],
+	valueCount: null,
+	businessContext: null,
+});
+
+describe("unionSubstrateAxes", () => {
+	it("appends uncataloged substrate dims below curated axes, skipping covered columns", () => {
+		const sources = new Map([["fact1", ["orders", "enriched_orders"]]]);
+		const substrate = new Map([
+			["fact1", ["customer__region", "customer__segment"]],
+		]);
+		const out = unionSubstrateAxes(
+			[axis("customer__region", 1)],
+			substrate,
+			sources,
+		);
+		expect(out.map((a) => a.column)).toEqual([
+			"customer__region",
+			"customer__segment",
+		]);
+		// The curated row is untouched; the substrate row carries no curation.
+		expect(out[0]?.priority).toBe(1);
+		expect(out[1]).toEqual({
+			column: "customer__segment",
+			sourceRelations: ["orders", "enriched_orders"],
+			priority: Number.MAX_SAFE_INTEGER,
+			sliceType: "categorical",
+			values: [],
+			valueCount: null,
+			businessContext: null,
+		});
+	});
+});
+
+describe("collapseAliasAxes", () => {
+	it("drops non-canonical alias members while the canonical survives", () => {
+		const out = collapseAliasAxes(
+			[axis("account__name"), axis("account__code")],
+			[
+				{
+					canonicalLabel: "account__name",
+					members: [
+						{ column_name: "account__name" },
+						{ column_name: "account__code" },
+					],
+				},
+			],
+		);
+		expect(out.map((a) => a.column)).toEqual(["account__name"]);
+	});
+
+	it("keeps a member when its canonical is not an offered axis, and tolerates malformed members", () => {
+		const out = collapseAliasAxes(
+			[axis("account__code")],
+			[
+				{
+					canonicalLabel: "account__name",
+					members: [{ column_name: "account__code" }],
+				},
+				{ canonicalLabel: "account__code", members: "not-an-array" },
+				{ canonicalLabel: null, members: [{ column_name: "account__code" }] },
+			],
+		);
+		expect(out.map((a) => a.column)).toEqual(["account__code"]);
+	});
+});
+
+describe("driver ordering", () => {
+	it("takes the max gain per dimension across rankings, ignoring malformed entries", () => {
+		const gains = driverGains([
+			{
+				rankedDimensions: [
+					{ dimension: "region", gain: 0.2 },
+					{ dimension: "channel", gain: 0.5 },
+					{ dimension: 7, gain: 0.9 },
+					"junk",
+				],
+			},
+			{ rankedDimensions: [{ dimension: "region", gain: 0.4 }] },
+			{ rankedDimensions: null },
+		]);
+		expect([...gains.entries()]).toEqual([
+			["region", 0.4],
+			["channel", 0.5],
+		]);
+	});
+
+	it("puts measured drivers first by gain and keeps the rest in incoming order", () => {
+		const out = orderAxesByDrivers(
+			[axis("a", 1), axis("b", 2), axis("c", 3), axis("d", 4)],
+			new Map([
+				["c", 0.1],
+				["b", 0.6],
+			]),
+		);
+		expect(out.map((a) => a.column)).toEqual(["b", "c", "a", "d"]);
+	});
+});
+
 const seed = () => {
 	rowsByTable.clear();
 	rowsByTable.set(currentLifecycleArtifacts, [
@@ -182,11 +294,17 @@ const seed = () => {
 			viewName: "enriched_invoices",
 			viewTableId: "vt1",
 			factTableId: "fact1",
+			// The grain-verified substrate: one column the catalog also curates
+			// (stays curated) and one it doesn't (offered bare, after curated).
+			dimensionColumns: ["customer__region", "customer__segment"],
+			isGrainVerified: true,
 		},
 		{
 			viewName: "enriched_purchases",
 			viewTableId: "vt2",
 			factTableId: "fact2",
+			dimensionColumns: ["supplier__country"],
+			isGrainVerified: true,
 		},
 		{ viewName: "enriched_bank", viewTableId: "vt3", factTableId: "fact3" },
 	]);
@@ -205,7 +323,7 @@ const seed = () => {
 };
 
 describe("resolveDrillAxes (mocked metadata client)", () => {
-	it("joins dag → grounded extracts → fact table → slice definitions", async () => {
+	it("joins dag → grounded extracts → fact table → curated ∪ substrate axes", async () => {
 		seed();
 		const { axes } = await resolveDrillAxes({ metricKey: "gross_margin" });
 		expect(axes).toEqual([
@@ -218,6 +336,61 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				valueCount: 2,
 				businessContext: null,
 			},
+			// Substrate-only: the view exposes it, the catalog never curated it.
+			// supplier__country stays absent — its fact (cogs) never grounded.
+			{
+				column: "customer__segment",
+				sourceRelations: ["invoices", "enriched_invoices"],
+				priority: Number.MAX_SAFE_INTEGER,
+				sliceType: "categorical",
+				values: [],
+				valueCount: null,
+				businessContext: null,
+			},
+		]);
+	});
+
+	it("offers no substrate from a view that is not grain-verified", async () => {
+		seed();
+		rowsByTable.set(currentEnrichedViews, [
+			{
+				viewName: "enriched_invoices",
+				viewTableId: "vt1",
+				factTableId: "fact1",
+				dimensionColumns: ["customer__region", "customer__segment"],
+				isGrainVerified: false,
+			},
+		]);
+		const { axes } = await resolveDrillAxes({ standardField: "revenue" });
+		expect(axes.map((a) => a.column)).toEqual(["customer__region"]);
+	});
+
+	it("collapses a persisted alias group to its canonical axis", async () => {
+		seed();
+		rowsByTable.set(currentDimensionHierarchies, [
+			{
+				canonicalLabel: "customer__region",
+				members: [
+					{ column_name: "customer__region" },
+					{ column_name: "customer__segment" },
+				],
+			},
+		]);
+		const { axes } = await resolveDrillAxes({ standardField: "revenue" });
+		expect(axes.map((a) => a.column)).toEqual(["customer__region"]);
+	});
+
+	it("puts a measured driver ahead of curated priority", async () => {
+		seed();
+		rowsByTable.set(currentDriverRankings, [
+			{
+				rankedDimensions: [{ dimension: "customer__segment", gain: 0.31 }],
+			},
+		]);
+		const { axes } = await resolveDrillAxes({ standardField: "revenue" });
+		expect(axes.map((a) => a.column)).toEqual([
+			"customer__segment",
+			"customer__region",
 		]);
 	});
 
@@ -225,7 +398,10 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		seed();
 		rowsByTable.delete(currentLifecycleArtifacts);
 		const { axes } = await resolveDrillAxes({ standardField: "revenue" });
-		expect(axes.map((a) => a.column)).toEqual(["customer__region"]);
+		expect(axes.map((a) => a.column)).toEqual([
+			"customer__region",
+			"customer__segment",
+		]);
 	});
 
 	it("yields no axes for an unknown metric or a fully ungrounded one", async () => {
@@ -269,11 +445,30 @@ describe("resolveDrillAxes empty-result reasons", () => {
 });
 
 describe("resolveDrillAxes bare-catalog reason", () => {
-	it("names the bare catalog when the fact resolves but has no slice definitions", async () => {
+	it("names the bare catalogs when the fact resolves but neither source offers a dimension", async () => {
 		seed();
 		rowsByTable.set(currentSliceDefinitions, []);
+		rowsByTable.set(currentEnrichedViews, [
+			{
+				viewName: "enriched_invoices",
+				viewTableId: "vt1",
+				factTableId: "fact1",
+				dimensionColumns: [],
+				isGrainVerified: true,
+			},
+		]);
 		const result = await resolveDrillAxes({ standardField: "revenue" });
 		expect(result.axes).toEqual([]);
-		expect(result.reason).toContain("No dimensions cataloged");
+		expect(result.reason).toContain("No dimensions available");
+	});
+
+	it("still resolves axes from the substrate alone when the slice catalog is empty", async () => {
+		seed();
+		rowsByTable.set(currentSliceDefinitions, []);
+		const { axes } = await resolveDrillAxes({ standardField: "revenue" });
+		expect(axes.map((a) => a.column)).toEqual([
+			"customer__region",
+			"customer__segment",
+		]);
 	});
 });

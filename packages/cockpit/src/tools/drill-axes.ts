@@ -8,12 +8,21 @@
 //   metric → dag extract steps (standard fields) → newest extract snippet per
 //   field → the extract SQL's parsed relations (`sqlRelations`, DuckDB's own
 //   parser) → the promoted enriched view among them (`resolveGrounding`, the
-//   same matcher the Model loader uses) → that view's FACT table →
-//   `current_slice_definitions` rows on the fact, priority-ordered.
+//   same matcher the Model loader uses) → that view's FACT table → the axes.
 //
-// `slice_definitions.column_name` is addressable VERBATIM in the metric's SQL
-// scope: metric SQL reads the enriched view (the GraphAgent's prefer-enriched
-// contract) and the enriched view exposes exactly those FK-prefixed dimension
+// Axes come from TWO catalogs on the fact (DAT-673): the slicing agent's
+// curated `current_slice_definitions` (priority, values, context) UNIONED with
+// the enriched view's grain-verified `dimension_columns` substrate — the
+// curation is an annotation layer, never a filter (the slicing agent picks a
+// handful; the substrate routinely exposes more grain-safe joined dims). DAT-537
+// 1:1 alias groups collapse to their canonical member (mirroring the drivers
+// processor's `_candidate_dims`), and `driver_rankings.ranked_dimensions`
+// orders what survives: measured drivers first by gain, then curated priority,
+// then bare substrate.
+//
+// Every offered column is addressable VERBATIM in the metric's SQL scope:
+// metric SQL reads the enriched view (the GraphAgent's prefer-enriched
+// contract) and the enriched view exposes exactly these FK-prefixed dimension
 // columns. Whether an axis actually binds in a given statement stays the
 // composer's call (`/api/drill/compose`, binder-gated).
 
@@ -22,6 +31,8 @@ import { and, asc, desc, eq, inArray, like } from "drizzle-orm";
 import { config } from "#/config";
 import { metadataDb } from "#/db/metadata/client";
 import {
+	currentDimensionHierarchies,
+	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
 	currentSliceDefinitions,
@@ -90,6 +101,114 @@ export function axesFromSliceRows(
 	return [...byColumn.values()];
 }
 
+/**
+ * Union the enriched views' grain-verified `dimension_columns` substrate into
+ * the curated axes (pure): every join-projected dim the view exposes is
+ * drillable, whether or not the slicing agent picked it. Substrate-only axes
+ * carry no curation metadata and sink below curated ones (max priority);
+ * columns the catalog already covers keep their curated row untouched.
+ */
+export function unionSubstrateAxes(
+	axes: DrillAxis[],
+	substrateByFact: ReadonlyMap<string, string[]>,
+	sourcesByFact: ReadonlyMap<string, string[]>,
+): DrillAxis[] {
+	const seen = new Set(axes.map((a) => a.column));
+	const out = [...axes];
+	for (const [factId, columns] of substrateByFact) {
+		for (const column of columns) {
+			if (seen.has(column)) continue;
+			seen.add(column);
+			out.push({
+				column,
+				sourceRelations: sourcesByFact.get(factId) ?? [],
+				priority: Number.MAX_SAFE_INTEGER,
+				sliceType: "categorical",
+				values: [],
+				valueCount: null,
+				businessContext: null,
+			});
+		}
+	}
+	return out;
+}
+
+/** One `current_dimension_hierarchies` alias-group row as the resolver reads
+ *  it (`members` is engine JSON: `[{column_name: ...}, ...]`). */
+export interface AliasGroupInput {
+	canonicalLabel: string | null;
+	members: unknown;
+}
+
+/**
+ * Collapse DAT-537 1:1 alias groups to their canonical axis (pure) — two
+ * columns that identify each other are ONE dimension, not two menu entries.
+ * Mirrors the drivers processor's `_candidate_dims`, with one deliberate
+ * difference: a non-canonical member is dropped only while its canonical
+ * survives as an axis — drill offers dimensions to a user, and losing a
+ * group's only drillable representative would hide the dimension entirely.
+ */
+export function collapseAliasAxes(
+	axes: DrillAxis[],
+	groups: AliasGroupInput[],
+): DrillAxis[] {
+	const present = new Set(axes.map((a) => a.column));
+	const dropped = new Set<string>();
+	for (const g of groups) {
+		if (!g.canonicalLabel || !present.has(g.canonicalLabel)) continue;
+		if (!Array.isArray(g.members)) continue;
+		for (const member of g.members) {
+			const name =
+				typeof member === "object" && member !== null
+					? (member as Record<string, unknown>).column_name
+					: undefined;
+			if (typeof name === "string" && name !== g.canonicalLabel) {
+				dropped.add(name);
+			}
+		}
+	}
+	return axes.filter((a) => !dropped.has(a.column));
+}
+
+/** One `current_driver_rankings` row as the resolver reads it
+ *  (`ranked_dimensions` is engine JSON: `[{dimension, gain}, ...]`). */
+export interface DriverRankingInput {
+	rankedDimensions: unknown;
+}
+
+/** Measured driver gain per dimension (pure): the max across a fact's measure
+ *  rankings — a dim that drives ANY of the metric's measures leads the menu. */
+export function driverGains(rows: DriverRankingInput[]): Map<string, number> {
+	const gains = new Map<string, number>();
+	for (const row of rows) {
+		if (!Array.isArray(row.rankedDimensions)) continue;
+		for (const entry of row.rankedDimensions) {
+			if (typeof entry !== "object" || entry === null) continue;
+			const { dimension, gain } = entry as Record<string, unknown>;
+			if (typeof dimension !== "string" || typeof gain !== "number") continue;
+			const prev = gains.get(dimension);
+			if (prev === undefined || gain > prev) gains.set(dimension, gain);
+		}
+	}
+	return gains;
+}
+
+/**
+ * Order axes for the menu (pure): measured drivers first by gain (the engine
+ * already gated what earns a ranking entry — any listed gain outranks curated
+ * intuition), then everything else in its incoming order (curated priority,
+ * then substrate). Stable within each group.
+ */
+export function orderAxesByDrivers(
+	axes: DrillAxis[],
+	gains: ReadonlyMap<string, number>,
+): DrillAxis[] {
+	const ranked = axes
+		.filter((a) => gains.has(a.column))
+		.sort((a, b) => (gains.get(b.column) ?? 0) - (gains.get(a.column) ?? 0));
+	return [...ranked, ...axes.filter((a) => !gains.has(a.column))];
+}
+
 /** The measure standard fields the request targets: a measure names itself, a
  *  metric contributes every extract step of its promoted DAG. */
 async function targetFields(req: DrillAxesRequest): Promise<string[]> {
@@ -149,6 +268,8 @@ export async function resolveDrillAxes(
 				viewName: currentEnrichedViews.viewName,
 				viewTableId: currentEnrichedViews.viewTableId,
 				factTableId: currentEnrichedViews.factTableId,
+				dimensionColumns: currentEnrichedViews.dimensionColumns,
+				isGrainVerified: currentEnrichedViews.isGrainVerified,
 			})
 			.from(currentEnrichedViews),
 	]);
@@ -236,26 +357,73 @@ export async function resolveDrillAxes(
 			]),
 	);
 
-	const sliceRows = await metadataDb
-		.select({
-			tableId: currentSliceDefinitions.tableId,
-			columnName: currentSliceDefinitions.columnName,
-			slicePriority: currentSliceDefinitions.slicePriority,
-			sliceType: currentSliceDefinitions.sliceType,
-			distinctValues: currentSliceDefinitions.distinctValues,
-			valueCount: currentSliceDefinitions.valueCount,
-			businessContext: currentSliceDefinitions.businessContext,
-		})
-		.from(currentSliceDefinitions)
-		.where(inArray(currentSliceDefinitions.tableId, factIds))
-		.orderBy(asc(currentSliceDefinitions.slicePriority));
+	// The grain-verified substrate: the enriched view's join-projected
+	// dimension columns, keyed by fact. Only a row-count-verified view's dims
+	// are safe to group by (the same gate the drivers phase applies).
+	const substrateByFact = new Map<string, string[]>(
+		viewRows
+			.filter(
+				(v): v is typeof v & { factTableId: string } =>
+					Boolean(v.factTableId) &&
+					factIds.includes(v.factTableId as string) &&
+					v.isGrainVerified === true,
+			)
+			.map((v) => [
+				v.factTableId,
+				Array.isArray(v.dimensionColumns)
+					? v.dimensionColumns.filter((c): c is string => typeof c === "string")
+					: [],
+			]),
+	);
 
-	const axes = axesFromSliceRows(sliceRows, sourcesByFact);
+	const [sliceRows, aliasRows, rankingRows] = await Promise.all([
+		metadataDb
+			.select({
+				tableId: currentSliceDefinitions.tableId,
+				columnName: currentSliceDefinitions.columnName,
+				slicePriority: currentSliceDefinitions.slicePriority,
+				sliceType: currentSliceDefinitions.sliceType,
+				distinctValues: currentSliceDefinitions.distinctValues,
+				valueCount: currentSliceDefinitions.valueCount,
+				businessContext: currentSliceDefinitions.businessContext,
+			})
+			.from(currentSliceDefinitions)
+			.where(inArray(currentSliceDefinitions.tableId, factIds))
+			.orderBy(asc(currentSliceDefinitions.slicePriority)),
+		metadataDb
+			.select({
+				canonicalLabel: currentDimensionHierarchies.canonicalLabel,
+				members: currentDimensionHierarchies.members,
+			})
+			.from(currentDimensionHierarchies)
+			.where(
+				and(
+					inArray(currentDimensionHierarchies.tableId, factIds),
+					eq(currentDimensionHierarchies.kind, "alias"),
+				),
+			),
+		metadataDb
+			.select({ rankedDimensions: currentDriverRankings.rankedDimensions })
+			.from(currentDriverRankings)
+			.where(inArray(currentDriverRankings.measureTableId, factIds)),
+	]);
+
+	const axes = orderAxesByDrivers(
+		collapseAliasAxes(
+			unionSubstrateAxes(
+				axesFromSliceRows(sliceRows, sourcesByFact),
+				substrateByFact,
+				sourcesByFact,
+			),
+			aliasRows,
+		),
+		driverGains(rankingRows),
+	);
 	if (axes.length === 0) {
 		return {
 			axes,
 			reason:
-				"No dimensions cataloged for this computation's fact table — the slicing phase found nothing grain-safe to offer.",
+				"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
 		};
 	}
 	return { axes };

@@ -1,15 +1,22 @@
 """Post-execution SANITY floor for metric graphs (DAT-616).
 
 This is a *cheap value-space sanity check*, NOT the grounding fix. It keeps a
-metric ``grounded``/inconclusive (never silently ``executed``/green) when:
+metric ``grounded``/inconclusive (never silently ``executed``/green) when there
+is NO VALUE to stand behind:
 - an extract aggregated to NULL ("no support") — reported as the MEASUREMENT,
   never a cause: a NULL aggregate can mean the filter matched no rows OR that
   an aggregated operand was entirely NULL over the matched rows (a one-sided
   two-operand extract). The old text asserted the zero-row cause as fact and
   misdirected diagnosis of exactly the second case — DAT-699;
-- the composed value is NULL (a contributing extract had no support);
-- a catalogue-declared per-extract ``validation:`` bound is violated (e.g. revenue
-  ``value > 0``) — a one-number comparison on the step's executed scalar.
+- the composed value is NULL (a contributing extract had no support).
+
+A catalogue-declared ``validation:`` bound (e.g. ``0 <= value <= 365``) is an
+EXPECTATION, not a gate (DAT-699): a violation FLAGS the executed metric
+(execute-and-flag, the DAT-631 amber pattern) — it never refuses the number.
+A declared "shouldn't" stated as "can't" kept blocking real values (negative
+COGS is unusual, not impossible), and refusing the number hides exactly the
+signal the user needs; the measured value disagreeing with the declared
+expectation IS the signal (ADR-0009).
 
 **It is structurally blind to the real bug** (DAT-616): a *wrong-but-non-empty*
 filter (the agent improvises ``WHERE account_type ILIKE '%cost%'`` and matches the
@@ -46,18 +53,20 @@ _COMPARATORS: dict[type[ast.cmpop], Callable[[Any, Any], bool]] = {
 }
 
 
-def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> Result[None]:
-    """Judge a clean execution for support, non-degeneracy, and declared conditions.
+def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> Result[list[str]]:
+    """Judge a clean execution for support and non-degeneracy; flag declared expectations.
 
     Args:
         graph: The metric graph (carries each step's declared ``validations``).
         execution: The completed execution (per-step values + composed value).
 
     Returns:
-        ``Result.ok(None)`` if the metric is trustworthy; ``Result.fail(reason)``
-        with a human-readable reason if it is inconclusive or violates a declared
-        condition — the caller keeps the artifact ``grounded`` with that reason
-        and does not cache the SQL.
+        ``Result.ok(flags)`` — the metric EXECUTES; ``flags`` is the (possibly
+        empty) list of declared-expectation violations to surface on the
+        artifact as visible state_reason flags. ``Result.fail(reason)`` is
+        reserved for NO-VALUE outcomes (no support / degenerate NULL) — there
+        is nothing to execute-and-flag, the caller keeps the artifact
+        ``grounded`` with the reason and does not cache the SQL.
     """
     by_step = {sr.step_id: sr for sr in execution.step_results}
 
@@ -92,10 +101,15 @@ def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> R
             "composed metric value is NULL — a contributing extract had no support; inconclusive"
         )
 
-    # 3. Enforce the catalogue's declared per-extract conditions (e.g. revenue
-    #    `value > 0`, cogs `value >= 0`), bound to the executed step by step_id
-    #    (the dependency key). An unbindable condition is skipped — the support
-    #    gate above already guards the real risk; DAT-619 hardens the binding.
+    # 3. The catalogue's declared conditions (e.g. `0 <= value <= 365`), bound
+    #    to the executed step by step_id (the dependency key). Violations FLAG,
+    #    never gate (DAT-699) — the number executed; the flag says the declared
+    #    expectation disagrees with it, and severity rides along as the flag's
+    #    weight. An unbindable condition is skipped — the support gate above
+    #    already guards the real risk; DAT-619 hardens the binding. A malformed
+    #    condition is a config bug: flagged on the artifact (visible where the
+    #    cockpit shows it) and never a reason to refuse a good number.
+    flags: list[str] = []
     for step_id, step in graph.steps.items():
         bound = by_step.get(step_id)
         if bound is None or bound.value is None:
@@ -104,22 +118,22 @@ def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> R
             try:
                 holds = _condition_holds(check.condition, bound.value)
             except (ValueError, SyntaxError) as exc:
-                # A malformed catalogue condition fails loud HERE as a clean
-                # Result.fail (routed through the caller's snippet-failure path),
-                # not escaping to the blanket worker handler. ValueError = parseable
-                # but unsupported (e.g. a bad operator); SyntaxError = unparseable
-                # (e.g. SQL `AND` where Python wants `and` or a chained comparison).
-                return Result.fail(
-                    f"catalogue validation condition for '{step_id}' is malformed "
+                # ValueError = parseable but unsupported (e.g. a bad operator);
+                # SyntaxError = unparseable (e.g. SQL `AND` where Python wants
+                # `and`). Neither escapes to the blanket worker handler.
+                flags.append(
+                    f"declared expectation for '{step_id}' is malformed "
                     f"({check.condition!r}): {exc}"
                 )
+                continue
             if not holds:
                 reason = check.message or check.condition
-                return Result.fail(
-                    f"declared validation failed for '{step_id}': {reason} (value={bound.value})"
+                flags.append(
+                    f"declared expectation not met for '{step_id}': {reason} "
+                    f"(value={bound.value}, severity={check.severity})"
                 )
 
-    return Result.ok(None)
+    return Result.ok(flags)
 
 
 def _condition_holds(condition: str, value: Any) -> bool:

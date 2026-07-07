@@ -366,6 +366,7 @@ class GraphAgent(LLMFeature):
                 reason=reason,
             )
             return Result.fail(reason)
+        execution.verification_flags = verdict.unwrap() or []
 
         # Save snippets AFTER successful execution AND verification — includes
         # repair info and only saves SQL that actually works AND is trustworthy.
@@ -466,6 +467,7 @@ class GraphAgent(LLMFeature):
         verdict = verify_execution(graph, execution)
         if not verdict.success:
             return Result.fail(verdict.error or "metric verification failed")
+        execution.verification_flags = verdict.unwrap() or []
 
         # Persist THIS metric's composed FORMULA/CONSTANT snippets (DAT-646) AFTER it
         # executed AND verified — only trustworthy SQL enters the cockpit reuse KB. The

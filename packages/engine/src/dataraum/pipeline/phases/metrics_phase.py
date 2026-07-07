@@ -317,15 +317,20 @@ class MetricsPhase(BasePhase):
         for graph_id, result, inspiration_id in results:
             artifact = artifacts[graph_id]
             if result.success:
-                # DAT-631: consume the grounding confidence. A clean+verified run
-                # reaches executed, but if its weakest input grounded below the
-                # floor we record WHY on the (still-executed) artifact, so it is
-                # no longer silently green.
-                reason = _low_confidence_reason(result.value)
+                # Execute-and-flag (DAT-631 + DAT-699): a clean run reaches
+                # executed, and everything the run has to say about the number
+                # rides the (still-executed) artifact's state_reason — the
+                # weakest input's low grounding confidence AND any declared
+                # expectations the executed value violates. Never silently
+                # green, never a refused number.
+                confidence_reason = _low_confidence_reason(result.value)
+                flags = result.value.verification_flags if result.value else []
+                parts = [p for p in [confidence_reason, *flags] if p]
+                reason = "; ".join(parts) or None
                 transition(artifact, operation="execute", stage=_STAGE, state_reason=reason)
                 if reason:
                     low_confidence += 1
-                    _log.warning("metric_executed_low_confidence", graph_id=graph_id, reason=reason)
+                    _log.warning("metric_executed_flagged", graph_id=graph_id, reason=reason)
                 else:
                     _log.info("metric_executed", graph_id=graph_id)
                 # Snippet promotion: drop the ad-hoc snippet once the metric it
@@ -350,10 +355,11 @@ class MetricsPhase(BasePhase):
         previews: list[str] = []
         for graph_id, a in artifacts.items():
             if a.state == "executed":
-                # An executed artifact carries a reason ONLY when flagged
-                # low-confidence (DAT-631) — surface it so the flag is visible.
+                # An executed artifact carries a reason ONLY when flagged —
+                # low grounding confidence (DAT-631) and/or a declared
+                # expectation the value violates (DAT-699). Surface it.
                 if a.state_reason:
-                    previews.append(f"{graph_id}: executed (low-confidence) — {a.state_reason}")
+                    previews.append(f"{graph_id}: executed (flagged) — {a.state_reason}")
                 else:
                     previews.append(f"{graph_id}: executed")
             else:

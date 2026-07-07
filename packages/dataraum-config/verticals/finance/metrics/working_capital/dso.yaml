@@ -31,10 +31,6 @@ dependencies:
       standard_field: accounts_receivable
       statement: balance_sheet
     aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
-    validation:
-    - condition: value >= 0
-      severity: error
-      message: AR cannot be negative
   revenue:
     level: 1
     type: extract
@@ -42,10 +38,6 @@ dependencies:
       standard_field: revenue
       statement: income_statement
     aggregation: sum
-    validation:
-    - condition: value > 0
-      severity: error
-      message: Revenue must be positive for DSO
   days_in_period:
     level: 1
     type: constant

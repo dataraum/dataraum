@@ -40,6 +40,18 @@ plus the determinism audit. Response shapes eval reads have changed:
   (`CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(a),0) - COALESCE(SUM(b),0) END`)
   — absence still surfaces as NULL, never masked as 0.
 
+- **Declared metric validations flag, never gate** (approved follow-up on this
+  branch): a violated catalogue `validation:` condition no longer blocks
+  execution ("composed but not executed: declared validation failed …" is
+  gone) — the metric EXECUTES and the violation rides `state_reason` as
+  "declared expectation not met for 'X': … (value=…, severity=…)", combined
+  with the DAT-631 low-confidence flag. Config-side, all extract-level sign
+  bounds (revenue > 0, COGS >= 0, …) were removed from the finance metric
+  YAMLs — the sign rule's homes are the `sign_natural_balance` convention
+  (authoring) and the `sign_conventions` validation (dataset-level); only
+  formula-level plausibility ranges remain (dso/dpo/dio 0–365 at warning,
+  current_ratio sign) and they flag.
+
 ### Calibration to run
 
 - Metric grounding recall on ledger-shaped corpora: dso-class metrics

@@ -240,3 +240,46 @@ def test_assemble_partial_report_names_every_hole_not_just_the_first() -> None:
     assert "'cost_of_goods_sold', 'revenue' are ungroundable" in error
     assert "reason-a" in error and "reason-b" in error
     provider.converse.assert_not_called()
+
+
+def test_assemble_executes_and_flags_a_violated_declared_expectation() -> None:
+    """DAT-699: a declared expectation is a 'should', not a gate — the metric
+    EXECUTES and the violation rides execution.verification_flags to the
+    artifact's state_reason (the amber pattern). The old gate refused the
+    number ('composed but not executed: declared validation failed')."""
+    import duckdb
+
+    from dataraum.graphs.models import StepValidation
+
+    cogs = GraphStep(
+        step_id="cost_of_goods_sold",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field="cost_of_goods_sold", statement="income_statement"),
+        aggregation="sum",
+        output_step=True,
+        validations=[StepValidation(condition="value >= 0", message="COGS should not be negative")],
+    )
+    graph = _graph("cogs_only", {"cost_of_goods_sold": cogs})
+    bindings = {node_key(cogs, graph): NodeDecision(grounded=True)}
+    provider = MagicMock()
+    agent = _bare_agent(provider)
+    config = MagicMock()
+    config.features.sql_repair = None
+    agent.config = config  # type: ignore[attr-defined]
+    agent._lookup_snippets = MagicMock(  # type: ignore[method-assign]
+        return_value={"cost_of_goods_sold": {"sql": "SELECT -4200000.0 AS value"}}
+    )
+    agent._resolve_parameters = MagicMock(return_value={})  # type: ignore[method-assign]
+    agent._track_snippet_usage = MagicMock()  # type: ignore[method-assign]
+    agent._save_composed_snippets = MagicMock()  # type: ignore[method-assign]
+    ctx = ExecutionContext(duckdb_conn=duckdb.connect(), schema_mapping_id="ws")
+
+    result = agent.assemble(MagicMock(), graph, ctx, bindings, workspace_id="ws")
+
+    assert result.success  # the number is never refused
+    execution = result.unwrap()
+    assert execution.output_value == -4200000.0
+    assert len(execution.verification_flags) == 1
+    assert "declared expectation not met" in execution.verification_flags[0]
+    assert "COGS should not be negative" in execution.verification_flags[0]
+    provider.converse.assert_not_called()

@@ -286,6 +286,11 @@ class GraphExecution:
     # Assumptions made during execution (populated from LLM output)
     assumptions: list[QueryAssumption] = field(default_factory=list)
 
+    # Declared-expectation violations from the verifier (DAT-699): the metric
+    # EXECUTED; these surface on the artifact as visible state_reason flags
+    # (execute-and-flag) — never a reason the number was refused.
+    verification_flags: list[str] = field(default_factory=list)
+
     @classmethod
     def create(cls, graph: TransformationGraph) -> GraphExecution:
         """Create a new execution for a graph."""

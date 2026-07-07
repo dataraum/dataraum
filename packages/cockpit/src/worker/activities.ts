@@ -19,7 +19,7 @@
 // no request ALS) so a stage's completion still narrates into the chat that
 // triggered it (DAT-528). These are thin re-exports — the SQL + idempotency are
 // tested in db/cockpit/runs.test; the orchestration around them is exercised by
-// the DAT-579 compose-smoke.
+// the compose smoke (a live grounding loop / session cascade run).
 //
 // DAT-551 P3c adds `assessAndGround` — a heavier activity that reads the run's
 // readiness and runs an LLM to auto-apply mechanical grounding teaches. It is the

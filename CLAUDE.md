@@ -4,7 +4,7 @@ Monorepo. Four packages, two languages.
 
 ```
 packages/
-├── engine/          # Python — pipeline, detectors, Temporal activity worker. → packages/engine/CLAUDE.md
+├── engine/          # Python — pipeline, detectors, Temporal worker. → packages/engine/CLAUDE.md
 ├── cockpit/         # TypeScript — TanStack Start web UI.              → packages/cockpit/CLAUDE.md
 ├── dataraum-config/ # YAML data (entropy contracts, LLM prompts, verticals). No code; bind-mounted, never imported.
 └── infra/           # docker-compose orchestration.                   → packages/infra/docker-compose.yml
@@ -35,7 +35,7 @@ The architecture is fixed; the work now is fixing bugs and inconsistencies. Don'
 
 ## How the packages connect
 
-- **Engine ↔ cockpit:** the engine is a **Temporal activity worker** (no HTTP). No OpenAPI, no codegen. The cockpit reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle (`bun run db:pull:metadata`) and drives long-running work as Temporal workflows.
+- **Engine ↔ cockpit:** the engine is a **Temporal worker** (no HTTP). No OpenAPI, no codegen. The cockpit reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle (`bun run db:pull:metadata`) and drives long-running work as Temporal workflows.
 - **Orchestration:** Temporal (DAT-344). ALL workflows — analysis and orchestration — are **Python on the engine worker** (ADR-0020 / DAT-708); the cockpit is a **Client** that triggers workflows by name (`@temporalio/client`) and renders progress, plus a co-located **activity-only** worker (queue `cockpit-orchestration`) hosting the cockpit_db run writers + the grounding-teach agent the orchestration workflows call back into. See `feedback-durable-execution-lean` memory. (This reverses DAT-360's "workflows in TS"; DAT-529/609's TS orchestration workflows were retired by DAT-708.)
 - **Persistence:** one Postgres instance, separate schemas — engine owns `ws_<id>` (SQLAlchemy), cockpit owns `cockpit_db` (Drizzle). Never shared.
 - **Config:** `packages/dataraum-config/` is **data, not code** — bind-mounted at `/opt/dataraum/config`, resolved through `dataraum.core.config` (engine) / `fs` (cockpit), never imported or path-navigated.

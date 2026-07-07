@@ -1,6 +1,6 @@
 # DataRaum Context Engine
 
-Python **engine** that pre-computes rich metadata from data sources — interpreted through domain ontologies — so AI tools reason over prepared context instead of discovering metadata at runtime. It runs as a **Temporal activity worker** (no HTTP); the cockpit reads the metadata directly from the `ws_<id>` Postgres schema.
+Python **engine** that pre-computes rich metadata from data sources — interpreted through domain ontologies — so AI tools reason over prepared context instead of discovering metadata at runtime. It runs as a **Temporal worker** (no HTTP); the cockpit reads the metadata directly from the `ws_<id>` Postgres schema.
 
 ## What "working" means here
 
@@ -54,7 +54,7 @@ Tests pass · type-check passes · lint passes · output verified (not just "it 
 
 ## Architecture
 
-The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface is **gone** (retired by ADR-0002, deleted in DAT-487); recover it from git history only as a reading reference, never as something to rebuild on.
+The engine is a **Temporal worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface is **gone** (retired by ADR-0002, deleted in DAT-487); recover it from git history only as a reading reference, never as something to rebuild on.
 
 **Key design decisions:**
 - **VARCHAR-first staging** — everything loads as VARCHAR; type inference happens in profiling, not load. Failed casts go to quarantine tables, never pipeline failure.

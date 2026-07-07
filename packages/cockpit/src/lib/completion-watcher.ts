@@ -19,8 +19,8 @@
 // claim is gone — the chat-bus is single-instance by design (see chat-bus.ts), so the
 // multi-process case it guarded can't occur.
 //
-// A run that completed while NO client was connected was marked terminal by its own
-// worker (`runStage` / the reconcile), so it isn't watchable on reconnect → not
+// A run that completed while NO client was connected was marked terminal by the
+// workflow's stage bracket (`_run_stage`, engine worker) or the reconcile, so it isn't watchable on reconnect → not
 // narrated; the canvas already shows its terminal state. Consistent, not a regression.
 //
 // SERVER-ONLY (Temporal client + cockpit_db + the agent loop).

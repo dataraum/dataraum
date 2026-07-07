@@ -42,9 +42,9 @@ flowchart TB
   call back into. ([ADR-0004](../adr/0004-agent-tier-boundary.md): agentic LLM lives in
   the cockpit; [ADR-0020](../adr/0020-workflows-python-cockpit-activity-only.md): no
   workflow code in the cockpit.)
-- **The engine** is the **durable analysis tier**. It is a pure **Temporal activity
-  worker** — it has no HTTP server and no API. It runs deterministic, long-running
-  analysis and writes the results to Postgres. ([ADR-0002](../adr/0002-engine-no-http-transport.md): engine is a pure activity worker, no HTTP/MCP transport.)
+- **The engine** is the **durable analysis tier**. It is a pure **Temporal worker** —
+  it has no HTTP server and no API. It hosts every workflow and runs the
+  deterministic, long-running analysis, writing results to Postgres. ([ADR-0002](../adr/0002-engine-no-http-transport.md): engine is a pure activity worker, no HTTP/MCP transport.)
 
 There is **no shared process state** between them. The cockpit and engine talk only
 through the substrate: Postgres for metadata, Temporal for work.

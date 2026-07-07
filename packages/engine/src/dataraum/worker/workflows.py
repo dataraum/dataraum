@@ -26,11 +26,21 @@ replayed verbatim). Detectors run once at the very end, source-wide, in the
 parent's terminal ``detect`` step — not per phase, not per table (DAT-394:
 nothing reads entropy mid-run, so detection has no reason to run before the run
 ends; this collapsed the old per-table ``detect_table`` + parent ``detect_source``).
+
+Above the analysis workflows sit the two ORCHESTRATION workflows (DAT-708,
+ADR-0020 — moved here from the cockpit's TS worker): ``groundingLoopWorkflow``
+(onboarding import + bounded teach loop) and ``sessionCascadeWorkflow``
+(begin_session → operating_model), which start the analysis workflows above as
+children and bracket each with the cockpit's run-recording activities,
+scheduled by name on the cockpit's activity-only queue. See the section at the
+bottom of this module.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
+from typing import Literal
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -40,8 +50,11 @@ with workflow.unsafe.imports_passed_through():
     from dataraum.worker.contracts import (
         AddSourceInput,
         AddSourceResult,
+        AssessAndGroundInput,
+        AssessAndGroundResult,
         BeginSessionInput,
         BeginSessionResult,
+        GroundingLoopInput,
         ImportInput,
         ImportResult,
         OperatingModelInput,
@@ -53,13 +66,18 @@ with workflow.unsafe.imports_passed_through():
         ProcessTableResult,
         ProgressFailure,
         ProgressSnapshot,
+        RecordRunInput,
+        RunKind,
         RunPhaseInput,
         RunRef,
         RunScopedInput,
+        RunStage,
+        SessionCascadeInput,
         SessionScopedInput,
         TableProgress,
         TableScopedInput,
         TypingResult,
+        operating_model_workflow_id,
         process_table_workflow_id,
     )
 
@@ -866,4 +884,367 @@ class OperatingModelWorkflow:
         return OperatingModelResult(
             run_id=run_id,
             validation_summary=outcome.summary,
+        )
+
+
+# --- Orchestration workflows (DAT-708) ----------------------------------------
+#
+# The two short-lived per-trigger orchestration workflows, ported from the
+# cockpit's TS worker (ADR-0020 supersedes ADR-0014): Temporal discourages
+# workflow workers outside authentic Node.js, and the cockpit runs under Bun —
+# DAT-705 proved workflow-interceptor headers silently never leave its vm
+# sandbox. Here they run on the SAME worker and queue as the engine children
+# they start, so the children are native Python→Python (no cross-language hop)
+# and inherit the parent's task queue. The four cockpit-bound activities
+# (cockpit_db run writers + the DAT-551 grounding-teach agent) are scheduled BY
+# NAME on the cockpit's activity-only queue (``cockpit_task_queue`` on the
+# payload) — same by-string idiom as the phase activities above, plus one
+# ``task_queue=`` kwarg. Neither workflow narrates: the cockpit's server-side
+# completion-watcher narrates on each run row's done edge.
+
+# The cockpit_db run writers each stage is bracketed with — quick local writes,
+# so a short timeout; retried because losing the bracket (not the stage) is the
+# recoverable failure.
+_COCKPIT_WRITE_TIMEOUT = timedelta(minutes=1)
+_COCKPIT_WRITE_RETRY = RetryPolicy(maximum_attempts=3)
+
+# The grounding-teach agent (DAT-551) — an LLM tool-loop, so a much longer
+# timeout than the cockpit_db writes, and only one retry (a re-run is expensive
+# and the loop tolerates a failed round by stopping, never crashing).
+_GROUNDING_AGENT_TIMEOUT = timedelta(minutes=10)
+_GROUNDING_AGENT_RETRY = RetryPolicy(maximum_attempts=2)
+
+# Default replay budget when the trigger carries none.
+_DEFAULT_GROUNDING_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class GroundingStep:
+    """What the grounding loop does after one ``assessAndGround`` round.
+
+    ``reason``/``note`` are set only for ``action="surface"`` — why the run
+    parks (a human-judgement gap vs an exhausted replay budget) and what to
+    tell the human.
+    """
+
+    action: Literal["replay", "surface", "done"]
+    reason: Literal["judgement", "exhausted"] | None = None
+    note: str | None = None
+
+
+def decide_grounding_step(verdict: AssessAndGroundResult, attempts_remaining: int) -> GroundingStep:
+    """Pure decision for one grounding-loop round (DAT-551 P3c).
+
+    Pure over the agent's verdict + the remaining replay budget, so it is
+    unit-testable without a Temporal server (``test_grounding_step.py``) — the
+    loop's control flow around it is smoke-covered, like the phase chains.
+
+    - Applied teaches AND attempts left → replay (re-run add_source to
+      re-measure); a flagged judgement gap is re-evaluated next round on fresh
+      readiness, so replay wins while the budget lasts.
+    - Applied teaches BUT out of attempts → surface (couldn't converge in
+      budget).
+    - No teaches applied → nothing mechanical left: surface if a judgement gap
+      remains, else done (clean).
+    """
+    if verdict.appliedCount > 0:
+        if attempts_remaining > 0:
+            return GroundingStep(action="replay")
+        return GroundingStep(action="surface", reason="exhausted", note=verdict.judgementNote)
+    if verdict.needsJudgement:
+        return GroundingStep(action="surface", reason="judgement", note=verdict.judgementNote)
+    return GroundingStep(action="done")
+
+
+# The type parameter is constrained to the three engine stage results so
+# ``_run_stage`` returns the caller's concrete type (the grounding loop reads
+# ``AddSourceResult.tables`` off it).
+async def _run_stage[StageResultT: (AddSourceResult, BeginSessionResult, OperatingModelResult)](
+    *,
+    workflow_type: str,
+    payload: AddSourceInput | BeginSessionInput | OperatingModelInput,
+    result_type: type[StageResultT],
+    workflow_id: str,
+    workspace_id: str,
+    stage: RunStage,
+    kind: RunKind,
+    conversation_id: str | None,
+    cockpit_task_queue: str,
+) -> StageResultT | None:
+    """Run one engine stage as a child workflow, bracketed by cockpit_db writes.
+
+    The shared stage runner both orchestration workflows use: start the engine
+    child (by its registered type name — the bracket stays monomorphic over the
+    three stage types; ``result_type`` reconstructs the concrete result), record
+    the run in cockpit_db with the child's REAL execution id (DAT-595 —
+    recording post-start under the reused ``addsource-<ws>``-style id keeps
+    every run a distinct ``(workflowId, runId)`` row), await it, mark it
+    terminal. Returns the child's result, or None on failure — a failed stage
+    NEVER raises out of the workflow: the run is marked failed (if recorded)
+    and the caller stops (a failed stage has no clean follow-on).
+
+    ``ParentClosePolicy.ABANDON``: the orchestration workflow finishing (or
+    being terminated) must not kill a running engine stage — let it complete
+    independently. A grounding REPLAY reuses the same child workflow id; the
+    prior execution is already closed by then, so the default id-reuse policy
+    (allow-duplicate-when-closed) permits it.
+
+    Recording post-start is orphan-safe HERE: ``recordRun`` is a durable
+    activity, so a worker crash replays the workflow and re-runs it (the
+    ABANDON'd child keeps going). One residual window: if ``recordRun`` itself
+    failed terminally AFTER the child started, the runId is set but no row
+    exists — the mark-failed below is a harmless no-op, and the ABANDON'd child
+    runs to completion INVISIBLY (the reconcile keys off recorded rows).
+    Accepted: that needs a total activity failure after 3 retries, and the
+    engine work still completes.
+    """
+    run_id: str | None = None
+    try:
+        child = await workflow.start_child_workflow(
+            workflow_type,
+            payload,
+            id=workflow_id,
+            result_type=result_type,
+            parent_close_policy=workflow.ParentClosePolicy.ABANDON,
+        )
+        run_id = child.first_execution_run_id
+
+        await workflow.execute_activity(
+            "recordRun",
+            RecordRunInput(
+                workspaceId=workspace_id,
+                kind=kind,
+                stage=stage,
+                workflowId=workflow_id,
+                runId=run_id,
+                conversationId=conversation_id,
+            ),
+            task_queue=cockpit_task_queue,
+            start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
+            retry_policy=_COCKPIT_WRITE_RETRY,
+        )
+
+        # The by-string handle is untyped (Any); ``result_type`` above makes the
+        # converter reconstruct the concrete model, so this annotation is true.
+        result: StageResultT = await child
+        await workflow.execute_activity(
+            "markRunStatus",
+            args=[workflow_id, run_id, "completed"],
+            task_queue=cockpit_task_queue,
+            start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
+            retry_policy=_COCKPIT_WRITE_RETRY,
+        )
+        return result
+    except Exception as err:
+        # ``except Exception`` deliberately misses CancelledError (a
+        # BaseException) so cancellation still propagates clean.
+        workflow.logger.warning(
+            "orchestration stage failed: stage=%s workflow_id=%s err=%s",
+            stage,
+            workflow_id,
+            err,
+        )
+        # Mark failed best-effort, but only if the child started (we have a
+        # real runId); a pre-start failure recorded nothing, so there is
+        # nothing to mark.
+        if run_id is not None:
+            try:
+                await workflow.execute_activity(
+                    "markRunStatus",
+                    args=[workflow_id, run_id, "failed"],
+                    task_queue=cockpit_task_queue,
+                    start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
+                    retry_policy=_COCKPIT_WRITE_RETRY,
+                )
+            except Exception as mark_err:
+                workflow.logger.warning(
+                    "orchestration stage mark-failed write failed: workflow_id=%s err=%s",
+                    workflow_id,
+                    mark_err,
+                )
+        return None
+
+
+@workflow.defn(name="groundingLoopWorkflow")
+class GroundingLoopWorkflow:
+    """The onboarding import + autonomous grounding-teach loop (DAT-609/708).
+
+    Started by the ``select`` import trigger only, under the per-workspace id
+    ``grounding-<ws>`` (a manual replay is a DIRECT engine start — the user is
+    doing teach+replay by hand, so it must NOT re-enter this autonomous loop).
+    Short-lived, per-trigger: all state rides the start payload — no signals,
+    no cross-run state.
+
+    On a clean import it runs the DAT-551 teach agent, auto-applies the
+    mechanical grounding teaches a detector can verify, and replays (re-runs
+    add_source to re-measure), bounded by the attempt budget; a human-judgement
+    gap or exhaustion parks the run ``awaiting_input`` (the "Needs you" inbox)
+    and returns — it NEVER blocks on human input.
+    """
+
+    @workflow.run
+    async def run(self, payload: GroundingLoopInput) -> None:
+        # 1) The onboarding import. Recorded with the real conversation id so
+        #    the watcher tracks its progress widget, but kind="onboarding" ⇒
+        #    the watcher skips its chat narration (DAT-597).
+        first = await _run_stage(
+            workflow_type="addSourceWorkflow",
+            payload=AddSourceInput(
+                workspace_id=payload.workspace_id,
+                sources=payload.sources,
+                verticals=payload.verticals,
+            ),
+            result_type=AddSourceResult,
+            workflow_id=payload.workflow_id,
+            workspace_id=payload.workspace_id,
+            stage="add_source",
+            kind="onboarding",
+            conversation_id=payload.conversation_id,
+            cockpit_task_queue=payload.cockpit_task_queue,
+        )
+        if first is None:
+            return  # import failed (already marked) — nothing to ground.
+
+        # 2) The grounding-teach loop (the autonomy step), bounded by the
+        #    attempt budget. The typed table ids are the readiness scope the
+        #    agent assesses — re-read from each replay's result.
+        table_ids = [table.typed_table_id for table in first.tables]
+        if not table_ids:
+            return
+        attempts_remaining = (
+            payload.number_of_attempts
+            if payload.number_of_attempts is not None
+            else _DEFAULT_GROUNDING_ATTEMPTS
+        )
+
+        while True:
+            try:
+                verdict = await workflow.execute_activity(
+                    "assessAndGround",
+                    AssessAndGroundInput(tableIds=table_ids, attemptsRemaining=attempts_remaining),
+                    task_queue=payload.cockpit_task_queue,
+                    result_type=AssessAndGroundResult,
+                    start_to_close_timeout=_GROUNDING_AGENT_TIMEOUT,
+                    retry_policy=_GROUNDING_AGENT_RETRY,
+                )
+            except Exception as err:
+                # The assessment died (LLM error after retries) — stop
+                # grounding, don't crash. The import itself is already
+                # recorded complete. (Misses CancelledError deliberately.)
+                workflow.logger.warning(
+                    "grounding assess failed: workflow_id=%s err=%s",
+                    payload.workflow_id,
+                    err,
+                )
+                return
+
+            step = decide_grounding_step(verdict, attempts_remaining)
+            if step.action == "done":
+                return
+            if step.action == "surface":
+                try:
+                    await workflow.execute_activity(
+                        "markRunAwaitingInput",
+                        args=[payload.workflow_id, step.note],
+                        task_queue=payload.cockpit_task_queue,
+                        start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
+                        retry_policy=_COCKPIT_WRITE_RETRY,
+                    )
+                except Exception:
+                    # Best-effort park: a lost awaiting_input note must not
+                    # fail the loop's clean exit (the activity itself is
+                    # best-effort too — it logs, never throws — so this only
+                    # catches activity-infrastructure failure).
+                    workflow.logger.warning(
+                        "grounding park write failed: workflow_id=%s",
+                        payload.workflow_id,
+                    )
+                workflow.logger.info(
+                    "grounding surfaced for input: workflow_id=%s reason=%s",
+                    payload.workflow_id,
+                    step.reason,
+                )
+                return
+
+            # action == "replay": re-run add_source for the SAME workspace to
+            # apply the teaches + re-measure. conversation_id=None: these are
+            # INTERNAL autonomous re-runs — they must NOT fire the watcher's
+            # narration (the user already heard the import landed; the loop's
+            # outcome surfaces via the run monitor / awaiting_input, not N
+            # chat messages).
+            attempts_remaining -= 1
+            replay = await _run_stage(
+                workflow_type="addSourceWorkflow",
+                payload=AddSourceInput(
+                    workspace_id=payload.workspace_id,
+                    sources=payload.sources,
+                    verticals=payload.verticals,
+                ),
+                result_type=AddSourceResult,
+                workflow_id=payload.workflow_id,
+                workspace_id=payload.workspace_id,
+                stage="add_source",
+                kind="onboarding",
+                conversation_id=None,
+                cockpit_task_queue=payload.cockpit_task_queue,
+            )
+            if replay is None:
+                return  # a failed replay stops the loop (the run is marked).
+            table_ids = [table.typed_table_id for table in replay.tables]
+            if not table_ids:
+                return
+
+
+@workflow.defn(name="sessionCascadeWorkflow")
+class SessionCascadeWorkflow:
+    """begin_session → (clean) operating_model (DAT-609/708).
+
+    Started under the per-workspace id ``session-<ws>``. Short-lived,
+    per-trigger: the cascade is unconditional on a clean begin_session
+    (autonomy) — no signals, no breaker. A failed begin_session stops here (no
+    cascade); the run is already marked and the watcher narrates the failure.
+    """
+
+    @workflow.run
+    async def run(self, payload: SessionCascadeInput) -> None:
+        began = await _run_stage(
+            workflow_type="beginSessionWorkflow",
+            payload=BeginSessionInput(
+                workspace_id=payload.workspace_id,
+                tables=payload.tables,
+                verticals=payload.verticals,
+            ),
+            result_type=BeginSessionResult,
+            workflow_id=payload.workflow_id,
+            workspace_id=payload.workspace_id,
+            stage="begin_session",
+            kind="begin_session",
+            conversation_id=payload.conversation_id,
+            cockpit_task_queue=payload.cockpit_task_queue,
+        )
+        if began is None:
+            return
+
+        # Auto-cascade: a clean begin_session advances into operating_model.
+        # The OM child id is derived from the workspace (DAT-562 — one per
+        # workspace), reusing the same verticals + conversation id.
+        # operating_model re-reads the session's table set from the catalog
+        # head (DAT-506), so no table set on the wire.
+        workflow.logger.info(
+            "session cascade → operating_model: workspace_id=%s",
+            payload.workspace_id,
+        )
+        await _run_stage(
+            workflow_type="operatingModelWorkflow",
+            payload=OperatingModelInput(
+                workspace_id=payload.workspace_id,
+                verticals=payload.verticals,
+            ),
+            result_type=OperatingModelResult,
+            workflow_id=operating_model_workflow_id(payload.workspace_id),
+            workspace_id=payload.workspace_id,
+            stage="operating_model",
+            kind="begin_session",
+            conversation_id=payload.conversation_id,
+            cockpit_task_queue=payload.cockpit_task_queue,
         )

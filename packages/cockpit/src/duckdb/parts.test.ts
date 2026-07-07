@@ -108,7 +108,7 @@ const formula = (
 	dependsOn,
 	outputStep: output,
 });
-const constant = (stepId: string, v: string): NodeStep => ({
+const constant = (stepId: string, v: string | null): NodeStep => ({
 	stepId,
 	kind: "constant",
 	parts: null,
@@ -386,6 +386,28 @@ describe("composeNodeQuery — grouped", () => {
 		expect(result).toHaveLength(4);
 	});
 
+	it("chains a 3-carrier FULL JOIN spine (three-way disjoint decomposition)", async () => {
+		const steps: NodeStep[] = [
+			REVENUE,
+			COGS,
+			DEPR,
+			formula(
+				"out",
+				"revenue - cost_of_goods_sold - depreciation_amortization",
+				["revenue", "cost_of_goods_sold", "depreciation_amortization"],
+				true,
+			),
+		];
+		const scalar = num((await rows(composed(steps).sql))[0]?.value);
+		expect(scalar).toBe(560); // 800 - 200 - 40
+		const q = composed(steps, undefined, { slices: ["account"], pins: [] });
+		expect(q.sql.match(/FULL JOIN/g)).toHaveLength(2);
+		const result = await rows(q.sql);
+		expect(result).toHaveLength(3); // union domain across all three sides
+		const sum = result.reduce((s, r) => s + (num(r.value) ?? 0), 0);
+		expect(sum).toBe(scalar);
+	});
+
 	it("a grouped bare measure carries the dims itself", async () => {
 		const q = composed([{ ...REVENUE, outputStep: true }], undefined, {
 			slices: ["region"],
@@ -536,20 +558,57 @@ describe("composeNodeQuery — refusals", () => {
 	});
 
 	it("refuses a non-numeric constant and an undeclared formula ref", () => {
-		expect(
-			composeNodeQuery(
-				[
-					constant("days", "thirty"),
-					formula("out", "days * 2", ["days"], true),
-				],
-				undefined,
-			),
-		).toEqual({ refusal: "constant 'days' value 'thirty' is not numeric" });
+		for (const bad of ["thirty", "", null]) {
+			expect(
+				composeNodeQuery(
+					[constant("days", bad), formula("out", "days * 2", ["days"], true)],
+					undefined,
+				),
+			).toEqual({
+				refusal: `constant 'days' value '${String(bad)}' is not numeric`,
+			});
+		}
 		const undeclared = composeNodeQuery(
 			[REVENUE, formula("out", "revenue * 2", [], true)],
 			undefined,
 		);
 		if (!("refusal" in undeclared)) throw new Error("expected refusal");
 		expect(undeclared.refusal).toContain("not a declared dependency");
+	});
+
+	it("refuses a DECLARED dep that names no step — never a raw binder error", () => {
+		// Declared + referenced but absent from the steps: without the guard the
+		// render would emit (SELECT value FROM phantom_leaf) and the failure
+		// would be the binder's Catalog Error (or a silent bind against a real
+		// lake table carrying a `value` column).
+		expect(
+			composeNodeQuery(
+				[
+					REVENUE,
+					formula(
+						"out",
+						"revenue - phantom_leaf",
+						["revenue", "phantom_leaf"],
+						true,
+					),
+				],
+				undefined,
+			),
+		).toEqual({
+			refusal:
+				"formula step 'out' depends on 'phantom_leaf', which is not a step of this metric",
+		});
+	});
+
+	it("refuses slicing by a dimension literally named 'value' (alias collision)", () => {
+		expect(
+			composeNodeQuery([{ ...REVENUE, outputStep: true }], undefined, {
+				slices: ["value"],
+				pins: [],
+			}),
+		).toEqual({
+			refusal:
+				"cannot slice by a dimension named 'value' — it collides with the composed measure column",
+		});
 	});
 });

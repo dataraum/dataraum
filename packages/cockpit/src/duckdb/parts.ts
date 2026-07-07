@@ -264,6 +264,15 @@ export function composeNodeQuery(
 	for (const d of drill.slices) {
 		if (!dims.includes(d)) dims.push(d);
 	}
+	// `value` is the composition's own measure alias in every CTE projection —
+	// a dimension with that literal name would collide with it (WHERE-level
+	// pins are fine: predicates bind against the relation, pre-projection).
+	if (dims.includes("value")) {
+		return {
+			refusal:
+				"cannot slice by a dimension named 'value' — it collides with the composed measure column",
+		};
+	}
 
 	// Pins render once and are appended to EVERY extract CTE below.
 	const params: DrillPinValue[] = [];
@@ -346,6 +355,18 @@ export function composeNodeQuery(
 		const parsed = parseFormulaExpression(step.expression);
 		if ("refusal" in parsed) {
 			return { refusal: `step '${step.stepId}': ${parsed.refusal}` };
+		}
+		// A ref that is DECLARED but names no step would pass the declared-set
+		// validation below yet have no CTE — surfacing as a raw Catalog Error
+		// (or, worse, silently binding a real lake table that happens to carry
+		// a `value` column). Refuse it by name like every other malformed shape.
+		const phantom = formulaRefs(parsed.expr).find(
+			(r) => step.dependsOn.includes(r) && !byId.has(r),
+		);
+		if (phantom !== undefined) {
+			return {
+				refusal: `formula step '${step.stepId}' depends on '${phantom}', which is not a step of this metric`,
+			};
 		}
 		const rendered = renderFormulaValue(
 			step.expression,

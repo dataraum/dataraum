@@ -114,6 +114,20 @@ describe("renderFormulaValue with a carrier context (DAT-703)", () => {
 			}),
 		).toHaveProperty("refusal");
 	});
+
+	it("zeroAbsentScalars COALESCEs a scalar-subquery ref (pin≡group), leaving others bare", () => {
+		expect(
+			renderFormulaValue("revenue - accounts_receivable", DEPS, {
+				carriers: new Set(),
+				zeroAbsent: new Set(),
+				zeroAbsentScalars: new Set(["revenue"]),
+			}),
+		).toEqual({
+			sql:
+				"(COALESCE((SELECT value FROM revenue), 0) - " +
+				"(SELECT value FROM accounts_receivable))",
+		});
+	});
 });
 
 describe("formulaRefs (the walk's reachability signal)", () => {

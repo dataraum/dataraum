@@ -27,10 +27,11 @@
 //
 // DEPENDENCY NAMES come from the step's PARSED expression references
 // (`metricStepRefs`, DAT-702) — the same signal the per-node drill composer
-// walks (metric-compose.ts), so the canvas and the composed SQL can never
-// disagree about a metric's parts. Declared `depends_on` over-declares (the
-// retired tier-C output-reachability gate existed because of it) and remains
-// only the fallback for steps without a parseable expression.
+// walks (parts.ts, `composeNodeQuery`), so the canvas and the composed SQL
+// can never disagree about a metric's parts. Declared `depends_on`
+// over-declares (the retired tier-C output-reachability gate existed because
+// of it) and remains only the fallback for steps without a parseable
+// expression.
 
 import { formulaRefs, parseFormulaExpression } from "#/duckdb/metric-formula";
 

@@ -248,33 +248,3 @@ export function renderFormulaValue(
 	if ("refusal" in parsed) return parsed;
 	return renderExpr(parsed.expr, depStepIds, expression, ctx);
 }
-
-/**
- * Compose a FORMULA step's scalar SQL from its expression — the mirror of
- * `compose_formula_sql`. Identifiers must be declared dependencies (the CTE
- * namespace); the result selects the rendered arithmetic `AS value`.
- */
-export function composeFormulaSql(
-	expression: string,
-	depStepIds: ReadonlySet<string>,
-): { sql: string } | { refusal: string } {
-	const rendered = renderFormulaValue(expression, depStepIds);
-	if ("refusal" in rendered) return rendered;
-	return { sql: `SELECT ${rendered.sql} AS value` };
-}
-
-/**
- * Compose a CONSTANT step's scalar SQL — the mirror of `compose_constant_sql`.
- * The value arrives stringified from the parsed DAG (`value ?? default`); an
- * integer stays integer (`30` → `SELECT 30 AS value` — a constant is never a
- * division denominator, so integer typing is safe), non-numeric refuses.
- */
-export function composeConstantSql(
-	value: string | null,
-): { sql: string } | { refusal: string } {
-	const numeric = value === null || value.trim() === "" ? NaN : Number(value);
-	if (!Number.isFinite(numeric)) {
-		return { refusal: `constant value '${String(value)}' is not numeric` };
-	}
-	return { sql: `SELECT ${String(numeric)} AS value` };
-}

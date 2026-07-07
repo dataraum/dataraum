@@ -1,66 +1,71 @@
 // The TS mirror of graphs/formula_composer.py (DAT-702). Every rendering case
 // here pins PARITY with the engine composer — if one of these needs changing,
-// check the Python first: the mirror follows, never leads.
+// check the Python first: the mirror follows, never leads. The carrier
+// context (DAT-703) is cockpit-only: it changes WHERE a ref reads from (the
+// grouped join spine), never how arithmetic renders.
 
 import { describe, expect, it } from "vitest";
 
 import {
-	composeConstantSql,
-	composeFormulaSql,
 	formulaRefs,
 	parseFormulaExpression,
+	renderFormulaValue,
 } from "./metric-formula";
 
 const DEPS = new Set(["accounts_receivable", "revenue", "days_in_period"]);
 
-describe("composeFormulaSql (engine parity)", () => {
+describe("renderFormulaValue (engine parity, scalar)", () => {
 	it("renders the dso shape exactly like the engine", () => {
 		// Engine output for this expression, byte-for-byte (verified against a
-		// real persisted dso formula snippet).
+		// real persisted dso formula snippet, minus the SELECT … AS value
+		// wrapper the builder owns).
 		expect(
-			composeFormulaSql(
+			renderFormulaValue(
 				"(accounts_receivable / revenue) * days_in_period",
 				DEPS,
 			),
 		).toEqual({
 			sql:
-				"SELECT (((SELECT value FROM accounts_receivable) / " +
+				"(((SELECT value FROM accounts_receivable) / " +
 				"NULLIF((SELECT value FROM revenue), 0)) * " +
-				"(SELECT value FROM days_in_period)) AS value",
+				"(SELECT value FROM days_in_period))",
 		});
 	});
 
 	it("guards every division denominator with NULLIF", () => {
-		expect(composeFormulaSql("revenue / days_in_period", DEPS)).toEqual({
-			sql: "SELECT ((SELECT value FROM revenue) / NULLIF((SELECT value FROM days_in_period), 0)) AS value",
+		expect(renderFormulaValue("revenue / days_in_period", DEPS)).toEqual({
+			sql: "((SELECT value FROM revenue) / NULLIF((SELECT value FROM days_in_period), 0))",
 		});
 	});
 
 	it("float-forces numeric literals so division can never integer-truncate", () => {
-		expect(composeFormulaSql("revenue * 100", DEPS)).toEqual({
-			sql: "SELECT ((SELECT value FROM revenue) * 100.0) AS value",
+		expect(renderFormulaValue("revenue * 100", DEPS)).toEqual({
+			sql: "((SELECT value FROM revenue) * 100.0)",
 		});
-		expect(composeFormulaSql("revenue * 0.5", DEPS)).toEqual({
-			sql: "SELECT ((SELECT value FROM revenue) * 0.5) AS value",
+		expect(renderFormulaValue("revenue * 0.5", DEPS)).toEqual({
+			sql: "((SELECT value FROM revenue) * 0.5)",
 		});
 	});
 
 	it("renders unary minus and left-associative chains like Python ast", () => {
-		expect(composeFormulaSql("-revenue + days_in_period", DEPS)).toEqual({
-			sql: "SELECT (-(SELECT value FROM revenue) + (SELECT value FROM days_in_period)) AS value",
+		expect(renderFormulaValue("-revenue + days_in_period", DEPS)).toEqual({
+			sql: "(-(SELECT value FROM revenue) + (SELECT value FROM days_in_period))",
 		});
 		// a - b - c ≡ (a - b) - c
 		expect(
-			composeFormulaSql("accounts_receivable - revenue - days_in_period", DEPS),
+			renderFormulaValue(
+				"accounts_receivable - revenue - days_in_period",
+				DEPS,
+			),
 		).toEqual({
 			sql:
-				"SELECT (((SELECT value FROM accounts_receivable) - " +
-				"(SELECT value FROM revenue)) - (SELECT value FROM days_in_period)) AS value",
+				"(((SELECT value FROM accounts_receivable) - " +
+				"(SELECT value FROM revenue)) - (SELECT value FROM days_in_period))",
 		});
 	});
 
 	it("refuses an operand that is not a declared dependency (fabrication guard)", () => {
-		const result = composeFormulaSql("revenue - cogs", DEPS);
+		const result = renderFormulaValue("revenue - cogs", DEPS);
 		expect(result).toEqual({
 			refusal: expect.stringContaining(
 				"'cogs', which is not a declared dependency",
@@ -77,8 +82,37 @@ describe("composeFormulaSql (engine parity)", () => {
 			"", // empty
 			"a; DROP TABLE x", // statement injection
 		]) {
-			expect(composeFormulaSql(expr, DEPS)).toHaveProperty("refusal");
+			expect(renderFormulaValue(expr, DEPS)).toHaveProperty("refusal");
 		}
+	});
+});
+
+describe("renderFormulaValue with a carrier context (DAT-703)", () => {
+	it("reads a carrier off the spine, COALESCEs only zero-absent carriers, keeps scalars as subqueries", () => {
+		expect(
+			renderFormulaValue(
+				"(accounts_receivable / revenue) * days_in_period",
+				DEPS,
+				{
+					carriers: new Set(["accounts_receivable", "revenue"]),
+					zeroAbsent: new Set(["revenue"]),
+				},
+			),
+		).toEqual({
+			sql:
+				'(("accounts_receivable"."value" / ' +
+				'NULLIF(COALESCE("revenue"."value", 0), 0)) * ' +
+				"(SELECT value FROM days_in_period))",
+		});
+	});
+
+	it("still validates refs against the DECLARED set — a carrier is not a license", () => {
+		expect(
+			renderFormulaValue("revenue - cogs", DEPS, {
+				carriers: new Set(["cogs"]),
+				zeroAbsent: new Set(),
+			}),
+		).toHaveProperty("refusal");
 	});
 });
 
@@ -99,22 +133,5 @@ describe("formulaRefs (the walk's reachability signal)", () => {
 		const parsed = parseFormulaExpression("revenue * 2");
 		if ("refusal" in parsed) throw new Error(parsed.refusal);
 		expect(formulaRefs(parsed.expr)).toEqual(["revenue"]);
-	});
-});
-
-describe("composeConstantSql (engine parity)", () => {
-	it("keeps an integer value integer", () => {
-		expect(composeConstantSql("30")).toEqual({ sql: "SELECT 30 AS value" });
-		expect(composeConstantSql("30.0")).toEqual({ sql: "SELECT 30 AS value" });
-	});
-
-	it("renders a non-integer value as-is", () => {
-		expect(composeConstantSql("0.5")).toEqual({ sql: "SELECT 0.5 AS value" });
-	});
-
-	it("refuses non-numeric values", () => {
-		for (const v of ["true", "posted", "", null]) {
-			expect(composeConstantSql(v)).toHaveProperty("refusal");
-		}
 	});
 });

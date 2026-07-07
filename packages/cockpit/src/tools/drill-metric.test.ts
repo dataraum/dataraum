@@ -1,7 +1,8 @@
-// Metric-drill part resolution (DAT-702) through a mocked
-// `#/db/metadata/client` — the newest-accepted-snippet pick and the
-// hole-is-not-a-refusal contract are where a silent shape mismatch would
-// starve the composer, so they get pinned with fake rows.
+// Node-drill part resolution (DAT-702/703) through a mocked
+// `#/db/metadata/client` — the newest-accepted-snippet pick, the parts
+// narrowing at the boundary, and the hole-is-not-a-refusal contract are where
+// a silent shape mismatch would starve the composer, so they get pinned with
+// fake rows.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -36,7 +37,7 @@ vi.mock("#/db/metadata/client", () => ({
 }));
 
 import { currentLifecycleArtifacts, sqlSnippets } from "#/db/metadata/schema";
-import { resolveMetricDrillSteps } from "./drill-metric";
+import { resolveNodeSteps } from "./drill-metric";
 
 const DSO_DAG = {
 	dependencies: {
@@ -65,31 +66,54 @@ const DSO_DAG = {
 	output: { unit: "days" },
 };
 
+/** The engine-persisted parts shape (`extract_parts_dict`). */
+const partsJson = (expr: string, where: string[]) => ({
+	select: [{ expr, alias: "value" }],
+	from: ["enriched_txn"],
+	where,
+});
+
 beforeEach(() => rowsByTable.clear());
 
-describe("resolveMetricDrillSteps", () => {
-	it("attaches the newest ACCEPTED snippet per field; a newer failing row is a hole", async () => {
+describe("resolveNodeSteps — metric", () => {
+	it("attaches the newest ACCEPTED snippet's narrowed parts per field; a newer failing row is a hole", async () => {
 		rowsByTable.set(currentLifecycleArtifacts, [{ dag: DSO_DAG }]);
 		// Rows arrive newest-first (the query orders by updatedAt desc):
 		// revenue's newest row FAILS → hole, no silent fall-back to the older
 		// accepted one; accounts_receivable's newest is accepted.
 		rowsByTable.set(sqlSnippets, [
-			{ standardField: "revenue", sql: "SELECT 1 AS value", failureCount: 2 },
-			{ standardField: "revenue", sql: "SELECT 2 AS value", failureCount: 0 },
+			{
+				standardField: "revenue",
+				parts: partsJson("SUM(bad)", []),
+				aggregation: "sum",
+				failureCount: 2,
+			},
+			{
+				standardField: "revenue",
+				parts: partsJson("SUM(credit)", ["kind = 'rev'"]),
+				aggregation: "sum",
+				failureCount: 0,
+			},
 			{
 				standardField: "accounts_receivable",
-				sql: "SELECT 3 AS value",
+				parts: partsJson("SUM(open_balance)", ["kind = 'ar'"]),
+				aggregation: "sum",
 				failureCount: 0,
 			},
 		]);
-		const parts = await resolveMetricDrillSteps("dso");
-		if ("missing" in parts) throw new Error(parts.missing);
-		const byId = new Map(parts.steps.map((s) => [s.stepId, s]));
+		const resolved = await resolveNodeSteps({ metricKey: "dso" });
+		if ("missing" in resolved) throw new Error(resolved.missing);
+		const byId = new Map(resolved.steps.map((s) => [s.stepId, s]));
 		expect(byId.get("accounts_receivable")).toMatchObject({
 			kind: "extract",
-			sql: "SELECT 3 AS value",
+			aggregation: "sum",
+			parts: {
+				selectExpr: "SUM(open_balance)",
+				relation: "enriched_txn",
+				where: ["kind = 'ar'"],
+			},
 		});
-		expect(byId.get("revenue")).toMatchObject({ kind: "extract", sql: null });
+		expect(byId.get("revenue")).toMatchObject({ kind: "extract", parts: null });
 		expect(byId.get("days_in_period")).toMatchObject({
 			kind: "constant",
 			value: "30",
@@ -101,17 +125,91 @@ describe("resolveMetricDrillSteps", () => {
 		});
 	});
 
+	it("an accepted snippet WITHOUT narrowable parts (pre-parts row) is a hole", async () => {
+		rowsByTable.set(currentLifecycleArtifacts, [{ dag: DSO_DAG }]);
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: null,
+				aggregation: "sum",
+				failureCount: 0,
+			},
+		]);
+		const resolved = await resolveNodeSteps({ metricKey: "dso" });
+		if ("missing" in resolved) throw new Error(resolved.missing);
+		const byId = new Map(resolved.steps.map((s) => [s.stepId, s]));
+		expect(byId.get("revenue")).toMatchObject({ parts: null });
+	});
+
 	it("reports a missing metric definition", async () => {
 		rowsByTable.set(currentLifecycleArtifacts, []);
-		expect(await resolveMetricDrillSteps("nope")).toEqual({
+		expect(await resolveNodeSteps({ metricKey: "nope" })).toEqual({
 			missing: "no metric definition found for 'nope'",
 		});
 	});
 
 	it("reports an unparseable definition as missing", async () => {
 		rowsByTable.set(currentLifecycleArtifacts, [{ dag: { dependencies: {} } }]);
-		expect(await resolveMetricDrillSteps("empty")).toEqual({
+		expect(await resolveNodeSteps({ metricKey: "empty" })).toEqual({
 			missing: "no metric definition found for 'empty'",
+		});
+	});
+});
+
+describe("resolveNodeSteps — measure", () => {
+	it("resolves a bare measure to the single-extract output step", async () => {
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: partsJson("SUM(credit)", ["kind = 'rev'"]),
+				aggregation: "sum",
+				failureCount: 0,
+			},
+		]);
+		const resolved = await resolveNodeSteps({ standardField: "revenue" });
+		if ("missing" in resolved) throw new Error(resolved.missing);
+		expect(resolved.steps).toEqual([
+			{
+				stepId: "revenue",
+				kind: "extract",
+				parts: {
+					selectExpr: "SUM(credit)",
+					relation: "enriched_txn",
+					where: ["kind = 'rev'"],
+				},
+				aggregation: "sum",
+				expression: null,
+				value: null,
+				dependsOn: [],
+				outputStep: true,
+			},
+		]);
+	});
+
+	it("a failing newest measure snippet is a hole (composer refuses by name), not a fall-back", async () => {
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: partsJson("SUM(bad)", []),
+				aggregation: "sum",
+				failureCount: 1,
+			},
+			{
+				standardField: "revenue",
+				parts: partsJson("SUM(credit)", []),
+				aggregation: "sum",
+				failureCount: 0,
+			},
+		]);
+		const resolved = await resolveNodeSteps({ standardField: "revenue" });
+		if ("missing" in resolved) throw new Error(resolved.missing);
+		expect(resolved.steps[0]).toMatchObject({ parts: null });
+	});
+
+	it("reports a measure with no snippet at all as missing", async () => {
+		rowsByTable.set(sqlSnippets, []);
+		expect(await resolveNodeSteps({ standardField: "ghost" })).toEqual({
+			missing: "no graph extract snippet found for 'ghost'",
 		});
 	});
 });

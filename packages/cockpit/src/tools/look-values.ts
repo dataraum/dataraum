@@ -44,6 +44,19 @@ const LookValuesResult = z.object({ columns: z.array(ColumnValues) });
 export type LookValuesResult = z.infer<typeof LookValuesResult>;
 
 /**
+ * Escape a plain-text needle for one ILIKE literal (DAT-701, mirrors the engine's
+ * search_values): wildcards are LITERAL text — a pattern of "%" must match nothing
+ * rather than everything — and quotes can't break out of the literal.
+ */
+export function escapeIlikeNeedle(pattern: string): string {
+	return pattern
+		.replaceAll("\\", "\\\\")
+		.replaceAll("%", "\\%")
+		.replaceAll("_", "\\_")
+		.replaceAll("'", "''");
+}
+
+/**
  * Project the live freq-ordered rows into the value list + completeness flag (pure).
  * The query pulls `limit + 1`; `complete` is false when that extra row came back (more
  * distinct values exist → the list is a sample, not exhaustive).
@@ -58,6 +71,28 @@ export function projectValueRows(
 			.map((r) => ({ value: r.value, count: Number(r.count) })),
 		complete: rows.length <= limit,
 	};
+}
+
+/**
+ * The freq-ordered DISTINCT query for one column (pure — pinned by tests
+ * against a real DuckDB so the ILIKE/ESCAPE semantics can never drift).
+ * `needle` must already be escaped via {@link escapeIlikeNeedle}; null = no
+ * pattern filter.
+ */
+export function valuesQuerySql(
+	address: string,
+	columnName: string,
+	needle: string | null,
+): string {
+	const patternClause = needle
+		? `AND CAST("${columnName}" AS VARCHAR) ILIKE '%${needle}%' ESCAPE '\\' `
+		: "";
+	return (
+		`SELECT "${columnName}" AS value, COUNT(*) AS count FROM ${address} ` +
+		`WHERE "${columnName}" IS NOT NULL ` +
+		patternClause +
+		`GROUP BY 1 ORDER BY count DESC, value LIMIT ${LOOK_VALUES_LIMIT + 1}`
+	);
 }
 
 interface ResolvedColumn {
@@ -99,8 +134,12 @@ async function resolveColumns(
 
 async function lookValues(input: {
 	column_ids: string[];
+	pattern?: string;
 }): Promise<LookValuesResult> {
 	const resolved = await resolveColumns(input.column_ids);
+	// Optional bounded substring search (DAT-701): a value outside the drill
+	// ceiling is still findable by pattern instead of invisible.
+	const needle = input.pattern ? escapeIlikeNeedle(input.pattern) : null;
 	return withLakeConnection(async (conn) => {
 		const out: z.infer<typeof ColumnValues>[] = [];
 
@@ -120,9 +159,7 @@ async function lookValues(input: {
 			const address = `${LAKE_ALIAS}.${schemaForLayer(col.layer)}."${col.tableName}"`;
 			try {
 				const reader = await conn.runAndReadAll(
-					`SELECT "${col.columnName}" AS value, COUNT(*) AS count FROM ${address} ` +
-						`WHERE "${col.columnName}" IS NOT NULL ` +
-						`GROUP BY 1 ORDER BY count DESC, value LIMIT ${LOOK_VALUES_LIMIT + 1}`,
+					valuesQuerySql(address, col.columnName, needle),
 				);
 				const { values, complete } = projectValueRows(
 					readerToResult(reader).rows,
@@ -160,13 +197,24 @@ export const lookValuesTool = toolDefinition({
 		"carries a size + sample): pass the column_ids (from look_table) you need and " +
 		"get their full value lists in ONE call. `complete: false` means the column has " +
 		`more than ${LOOK_VALUES_LIMIT} distinct values (you got the top — treat as a ` +
-		"sample, not exhaustive). Read-only.",
+		"sample, not exhaustive). Pass `pattern` to SEARCH a large set instead: a " +
+		"case-insensitive substring over the values (plain text — wildcards are " +
+		"literal), so a value outside the drill ceiling is still findable. " +
+		"With a pattern, `values`/`complete` describe the MATCHES. Read-only.",
 	inputSchema: z.object({
 		column_ids: z
 			.array(z.string())
 			.min(1)
 			.describe(
 				"Columns to fetch full value-sets for (column_ids from look_table).",
+			),
+		pattern: z
+			.string()
+			.optional()
+			.describe(
+				"Optional case-insensitive substring filter over the values — a fragment " +
+					"of the value you expect (plain text, wildcards are literal). Applies " +
+					"to every requested column.",
 			),
 	}),
 	outputSchema: LookValuesResult,

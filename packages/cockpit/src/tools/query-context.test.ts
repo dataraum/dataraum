@@ -49,14 +49,12 @@ const concepts: SchemaConceptRow[] = [
 		columnId: "c1",
 		businessConcept: "amount",
 		temporalBehavior: null,
-		temporalBehaviorContested: null,
 	},
 	// c2 has no concept; c3 maps to account_classification.
 	{
 		columnId: "c3",
 		businessConcept: "account_classification",
 		temporalBehavior: null,
-		temporalBehaviorContested: null,
 	},
 ];
 
@@ -100,33 +98,35 @@ describe("formatSchema", () => {
 		);
 	});
 
-	it("marks the resolved stock/flow behaviour and an open contest (DAT-509)", () => {
+	it("marks the resolved stock/flow behaviour as settled fact (DAT-509 / DAT-701)", () => {
 		const semantics: SchemaConceptRow[] = [
 			{
 				columnId: "c1",
 				businessConcept: "account_balance",
 				temporalBehavior: "point_in_time",
-				temporalBehaviorContested: true,
 			},
-			// A resolved, uncontested flow renders the marker without the caveat —
-			// even with no concept mapped.
+			// A resolved flow renders the marker — even with no concept mapped.
 			{
 				columnId: "c3",
 				businessConcept: null,
 				temporalBehavior: "additive",
-				temporalBehaviorContested: false,
 			},
 		];
 		const block = formatSchema(tables, columnRows, semantics);
 		expect(block).toContain(
-			'- "Betrag" :: DECIMAL  [concept: account_balance] (point_in_time)  [stock/flow contested]',
+			'- "Betrag" :: DECIMAL  [concept: account_balance] (point_in_time)',
 		);
 		const accountLine = block
 			.split("\n")
 			.find((l) => l.includes('"account_type"'));
 		expect(accountLine).toBe('  - "account_type" :: VARCHAR (additive)');
-		// The instruction header explains both markers to the sub-agent.
+		// The instruction header explains the markers to the sub-agent.
 		expect(block).toContain("never SUM it across periods");
+		// The contested flag is DELIBERATELY absent (decision 2026-07-07, mirrors
+		// the engine GraphAgent): the adjudication outperforms an LLM
+		// second-guessing stock/flow from metadata — the verdict is settled fact.
+		// Contested surfaces on the human teach lane (why_column), never here.
+		expect(block).not.toContain("contested");
 	});
 
 	it("omits the concept tag for an unmapped column", () => {

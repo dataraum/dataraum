@@ -73,9 +73,14 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
     DAT-445) and, for each column whose adjudication resolved to a behaviour, UPDATEs
     the matching ``(column_id, run_id)`` annotation: ``temporal_behavior`` becomes the
     pooled-resolved value (the ontology prior reconciled with the LLM stock/flow
-    claim) and ``temporal_behavior_contested`` records whether the witnesses disagreed
-    — so the query agent's don't-SUM-a-stock read incorporates the LLM witness and can
-    caveat a contested stock. Columns that resolved to total ignorance (no witness)
+    claim) and ``temporal_behavior_contested`` records whether the witnesses disagreed.
+    The contested flag is DELIBERATELY NOT rendered to the SQL-authoring agents
+    (decision 2026-07-07): the adjudication outperforms an LLM reading stock/flow
+    from metadata alone, so the agents get the resolved verdict as settled fact —
+    a "(contested)" tag would invite second-guessing by the weaker judge. The
+    flag's consumers are the teach/readiness lane (the entropy object already
+    carries the ranked teach suggestion). Columns that resolved to total
+    ignorance (no witness)
     are left untouched, preserving the ontology backfill. Idempotent on retry (same
     run_id → same UPDATE). Returns the number of annotations updated.
     """

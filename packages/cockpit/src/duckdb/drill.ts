@@ -35,8 +35,10 @@ export type DrillAxesRequest =
 
 /** One sliceable dimension of a metric's fact catalog (`/api/drill/axes`). */
 export interface DrillAxis {
-	/** The `slice_definitions.column_name` — addressable verbatim in the
-	 *  metric's SQL scope (the enriched view exposes FK-prefixed dim columns). */
+	/** The catalog column name — a curated `slice_definitions.column_name` or
+	 *  a grain-verified `enriched_views.dimension_columns` entry (DAT-673);
+	 *  either way addressable verbatim in the metric's SQL scope (the enriched
+	 *  view exposes exactly these FK-prefixed dim columns). */
 	column: string;
 	/** The relations this axis column LIVES on (the fact table and its
 	 *  enriched view). When the measure's SQL joins other relations sharing

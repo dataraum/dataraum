@@ -271,7 +271,11 @@ export async function resolveDrillAxes(
 				dimensionColumns: currentEnrichedViews.dimensionColumns,
 				isGrainVerified: currentEnrichedViews.isGrainVerified,
 			})
-			.from(currentEnrichedViews),
+			.from(currentEnrichedViews)
+			// Deterministic pick: the per-fact maps below (substrate, view name)
+			// fold on first occurrence — without an ORDER BY, which row wins
+			// would be Postgres row-order roulette.
+			.orderBy(asc(currentEnrichedViews.viewTableId)),
 	]);
 
 	const wanted = new Set(fields);

@@ -38,7 +38,6 @@ def load_defined_relationships(
     run_id: str | None = None,
     both_tables: bool = True,
     eager_columns: bool = False,
-    min_confidence: float | None = None,
 ) -> list[Relationship]:
     """The session's **defined** relationships for ``table_ids`` (DAT-408).
 
@@ -54,7 +53,10 @@ def load_defined_relationships(
     - ``both_tables``: require BOTH endpoints in ``table_ids`` (intra-selection
       joins) vs either endpoint.
     - ``eager_columns``: eager-load from/to columns + their tables.
-    - ``min_confidence``: optional confidence floor.
+
+    Deliberately NO confidence filter (DAT-699): defined rows are already
+    judge-verified or user-asserted; a numeric floor here pre-empts downstream
+    judges with an uncalibrated number. Confidence is evidence, not a gate.
     """
     stmt = select(Relationship).where(Relationship.detection_method != "candidate")
     if eager_columns:
@@ -73,8 +75,6 @@ def load_defined_relationships(
         )
     if run_id is not None:
         stmt = stmt.where(Relationship.run_id == run_id)
-    if min_confidence is not None:
-        stmt = stmt.where(Relationship.confidence >= min_confidence)
     return list(session.execute(stmt).scalars())
 
 

@@ -286,6 +286,11 @@ class GraphExecution:
     # Assumptions made during execution (populated from LLM output)
     assumptions: list[QueryAssumption] = field(default_factory=list)
 
+    # Declared-expectation violations from the verifier (DAT-699): the metric
+    # EXECUTED; these surface on the artifact as visible state_reason flags
+    # (execute-and-flag) — never a reason the number was refused.
+    verification_flags: list[str] = field(default_factory=list)
+
     @classmethod
     def create(cls, graph: TransformationGraph) -> GraphExecution:
         """Create a new execution for a graph."""
@@ -329,6 +334,26 @@ class GraphProvenanceOutput(BaseModel):
     # No free-text reasoning field: the former `llm_reasoning` was written into the
     # snippet provenance blob and read by nothing (DAT-603 consumer audit) — output
     # tokens are serial-decode latency, so an unread sentence per call is pure cost.
+
+
+class ValueSearchInput(BaseModel):
+    """Input for the grounding agent's bounded catalog search (DAT-699).
+
+    High-cardinality discriminators (above the complete-enumeration bound) are
+    served as size + sample, never enumerated — the exact values live behind
+    THIS tool. The agent resolves them by substring search and grounds its
+    IN-list on the results instead of guessing an ILIKE predicate or falling
+    loud on a concept whose values it was never shown (observed live: concepts
+    present by name in a several-hundred-value column were unreachable).
+    """
+
+    table: str = Field(description="Table name exactly as shown in <data_schema>.")
+    column: str = Field(description="Column name exactly as shown in <data_schema>.")
+    pattern: str = Field(
+        description="Case-insensitive substring to search the column's distinct "
+        "values for — a fragment of the concept's likely name or a synonym. "
+        "Plain text, not a SQL pattern."
+    )
 
 
 class ExtractGroundingOutput(BaseModel):

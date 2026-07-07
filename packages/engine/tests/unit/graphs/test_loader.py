@@ -52,26 +52,30 @@ class TestLoadMetricGraphs:
 class TestParseStepValidation:
     """The catalogue's per-extract `validation:` block is parsed, not dropped (DAT-616)."""
 
-    def test_finance_gross_margin_revenue_condition_parsed(self) -> None:
-        """gross_margin's revenue extract carries its declared `value > 0` check."""
+    def test_finance_dso_formula_expectation_parsed(self) -> None:
+        """dso's formula step carries its declared plausibility range — a chained
+        comparison at severity=warning, parsed from the shipped config."""
         loader = _finance_loader()
-        gm = loader.graphs["gross_margin"]
-        revenue = gm.steps["revenue"]
-        assert len(revenue.validations) == 1
-        assert revenue.validations[0].condition == "value > 0"
-        assert revenue.validations[0].severity == "error"
-        assert "positive" in revenue.validations[0].message.lower()
-        # The cogs extract declares no condition; the formula step none either.
-        assert gm.steps["cost_of_goods_sold"].validations == []
-        assert gm.steps["gross_margin"].validations == []
+        dso = loader.graphs["dso"]
+        formula = dso.steps["dso"]
+        assert [v.condition for v in formula.validations] == ["0 <= value <= 365"]
+        assert formula.validations[0].severity == "warning"
 
-    def test_finance_gross_profit_cogs_condition_parsed(self) -> None:
-        """gross_profit's cogs extract carries its declared `value >= 0` check."""
+    def test_finance_extract_steps_declare_no_sign_bounds(self) -> None:
+        """DAT-699: extract-level sign expectations were removed from the metric
+        catalogue — the sign rule's home is the vertical's sign_natural_balance
+        convention (authoring) + the sign_conventions validation (dataset-level).
+        A per-metric `value > 0` on a shared extract was a duplicated hard gate
+        that blocked real numbers and drifted between hand-copied blocks."""
         loader = _finance_loader()
-        gp = loader.graphs["gross_profit"]
-        cogs = gp.steps["cost_of_goods_sold"]
-        assert [v.condition for v in cogs.validations] == ["value >= 0"]
-        assert [v.condition for v in gp.steps["revenue"].validations] == ["value > 0"]
+        from dataraum.graphs.models import StepType
+
+        for graph in loader.graphs.values():
+            for step in graph.steps.values():
+                if step.step_type == StepType.EXTRACT:
+                    assert step.validations == [], (
+                        f"{graph.graph_id}.{step.step_id} declares an extract-level bound"
+                    )
 
     def test_missing_validation_block_yields_empty_list(self) -> None:
         """A step with no `validation:` key parses to an empty list, not None."""

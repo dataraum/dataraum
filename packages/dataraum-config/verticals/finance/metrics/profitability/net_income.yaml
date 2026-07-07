@@ -23,10 +23,6 @@ dependencies:
       standard_field: revenue
       statement: income_statement
     aggregation: sum
-    validation:
-    - condition: value > 0
-      severity: error
-      message: Revenue must be positive
   cost_of_goods_sold:
     level: 1
     type: extract

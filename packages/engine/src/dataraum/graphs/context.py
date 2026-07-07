@@ -1593,14 +1593,15 @@ def _build_value_sets(table: TableContext) -> list[str]:
     """Render the value enumeration for a table's categorical columns (DAT-621).
 
     The agent grounds a concept in the discriminator VALUES from here, never a guessed
-    ILIKE. The GraphAgent is ONE-SHOT with NO tools (it cannot drill), so it gets the
-    LOW-CARD BASELINE only — nothing it would be tempted to guess at:
+    ILIKE:
     - low-card (≤ reasonable-top) + non-degenerate → the COMPLETE value-set inline (the
       assembler fetched it live);
-    - high-card (> reasonable-top) → NOT rendered at all. High-card discriminators are the
-      cockpit answer sub-agent's + user's lane (they have look_values to drill on demand);
-      dangling a high-card column here only invites the ILIKE-guess that is the root bug. A
-      metric that genuinely needs one falls loud (no value-set → no IN-list → abstain);
+    - high-card (> reasonable-top) → size + a frequency sample + the ``search_values``
+      hint (DAT-699). The GraphAgent can now drill: it resolves the exact values by
+      bounded substring search and grounds the IN-list on the results. The old
+      render-nothing rule made a present-but-unenumerated concept structurally
+      ungroundable — concepts present by name in a several-hundred-value column
+      were unreachable and the agent emitted SELECT NULL for them;
     - degenerate (one value dominates) → flagged "near-constant", NO value-set — grounding
       on a ~constant flag (e.g. a 99%-true boolean) is silently wrong.
     Only key/measure/time roles are skipped (never partitions).
@@ -1613,10 +1614,18 @@ def _build_value_sets(table: TableContext) -> list[str]:
             continue
         served = len(col.top_values)
         dc = col.distinct_count
-        # High-card / incomplete-fetch → NOT served to the one-shot GraphAgent at all (it
-        # can't drill; high-card is the cockpit/user lane). The served set must be the
-        # COMPLETE enumeration to render — a partial never becomes a value list here.
+        # High-card / incomplete-fetch → size + sample + the drill hint; the
+        # values NEVER render as an (incomplete) enumeration the agent might
+        # mistake for the complete set.
         if dc is not None and dc > served:
+            sample = ", ".join(
+                str(tv.get("value")) for tv in col.top_values[:8] if tv.get("value") is not None
+            )
+            out.append(
+                f"- **{col.column_name}**: {dc} distinct values — NOT enumerated; "
+                f"resolve exact values with the search_values tool before filtering. "
+                f"Most frequent: {sample}"
+            )
             continue
         # Degenerate / near-constant → not a discriminator; flag, don't serve as groundable
         # (grounding a concept on a ~constant flag is silently wrong).

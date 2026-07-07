@@ -65,7 +65,7 @@ def _execution(step_values: dict[str, float | None], output_value: object) -> Gr
 
 class TestSupportGate:
     def test_null_extract_is_inconclusive(self) -> None:
-        """An extract that aggregated to NULL (no rows matched) fails loud."""
+        """An extract that aggregated to NULL fails loud."""
         graph = _graph({"revenue": _extract("revenue"), "cogs": _extract("cogs")})
         execution = _execution({"revenue": 1000.0, "cogs": None}, output_value=100.0)
 
@@ -74,6 +74,23 @@ class TestSupportGate:
         assert not result.success
         assert "cogs" in result.error
         assert "no support" in result.error
+
+    def test_null_extract_reason_reports_measurement_never_a_cause(self) -> None:
+        """The reason states what was MEASURED (aggregated to NULL) and the
+        possibility space — it must never assert 'filter matched no rows' as
+        fact (DAT-699: that fabricated diagnosis misclassified a one-sided
+        ledger whose join matched 167k rows, and the re-author loop feeds this
+        exact text back to the agent)."""
+        graph = _graph({"revenue": _extract("revenue"), "cogs": _extract("cogs")})
+        execution = _execution({"revenue": 1000.0, "cogs": None}, output_value=100.0)
+
+        result = verify_execution(graph, execution)
+
+        assert not result.success
+        assert "aggregated to NULL" in result.error
+        # Both possibilities enumerated, neither asserted:
+        assert "either its filter matched no rows" in result.error
+        assert "entirely NULL over the rows it did match" in result.error
 
     def test_all_supported_passes(self) -> None:
         graph = _graph({"revenue": _extract("revenue"), "cogs": _extract("cogs")})
@@ -122,8 +139,14 @@ class TestSupportGate:
 
 
 class TestDeclaredConditions:
-    def test_violated_condition_fails_with_message(self) -> None:
-        """A declared `value > 0` on a 0-valued extract fails with the message."""
+    """Declared conditions are EXPECTATIONS, not gates (DAT-699): violations flag
+    the executed metric — the number is never refused. Result.fail is reserved
+    for no-value outcomes (the support gate)."""
+
+    def test_violated_condition_flags_with_message_never_gates(self) -> None:
+        """A declared `value > 0` on a 0-valued extract executes WITH the flag —
+        a "shouldn't" stated as "can't" used to block real numbers (negative
+        COGS is unusual, not impossible)."""
         graph = _graph(
             {
                 "revenue": _extract(
@@ -137,10 +160,15 @@ class TestDeclaredConditions:
         execution = _execution({"revenue": 0.0}, output_value=0.0)
 
         result = verify_execution(graph, execution)
-        assert not result.success
-        assert "Revenue must be positive" in result.error
+        assert result.success
+        flags = result.unwrap()
+        assert len(flags) == 1
+        assert "declared expectation not met" in flags[0]
+        assert "Revenue must be positive" in flags[0]
+        assert "value=0.0" in flags[0]
+        assert "severity=error" in flags[0]  # severity rides as the flag's weight
 
-    def test_satisfied_condition_passes(self) -> None:
+    def test_satisfied_condition_passes_with_no_flags(self) -> None:
         graph = _graph(
             {
                 "revenue": _extract("revenue", validations=[StepValidation(condition="value > 0")]),
@@ -149,10 +177,12 @@ class TestDeclaredConditions:
         )
         execution = _execution({"revenue": 1000.0, "cogs": 0.0}, output_value=100.0)
 
-        assert verify_execution(graph, execution).success
+        result = verify_execution(graph, execution)
+        assert result.success
+        assert result.unwrap() == []
 
     def test_unbindable_condition_is_skipped(self) -> None:
-        """A condition whose step_id has no executed step is skipped, not failed —
+        """A condition whose step_id has no executed step is skipped, not flagged —
         the support gate already guards the real risk; DAT-619 hardens binding."""
         graph = _graph(
             {"revenue": _extract("revenue", validations=[StepValidation(condition="value > 0")])}
@@ -160,10 +190,13 @@ class TestDeclaredConditions:
         # The executed step is named differently (LLM renamed it) — no binding.
         execution = _execution({"total_revenue": 1000.0}, output_value=1000.0)
 
-        assert verify_execution(graph, execution).success
+        result = verify_execution(graph, execution)
+        assert result.success
+        assert result.unwrap() == []
 
-    def test_malformed_condition_fails_loud_not_raises(self) -> None:
-        """A malformed catalogue condition becomes a clean Result.fail, not a raise."""
+    def test_malformed_condition_flags_never_raises_or_gates(self) -> None:
+        """A malformed catalogue condition is a config bug: flagged visibly on the
+        executed artifact, never a raise and never a reason to refuse a good number."""
         graph = _graph(
             {
                 "revenue": _extract(
@@ -174,13 +207,13 @@ class TestDeclaredConditions:
         execution = _execution({"revenue": 1000.0}, output_value=1000.0)
 
         result = verify_execution(graph, execution)
-        assert not result.success
-        assert "malformed" in result.error
+        assert result.success
+        assert any("malformed" in f for f in result.unwrap())
 
-    def test_unparseable_condition_fails_loud_not_crashes_worker(self) -> None:
+    def test_unparseable_condition_flags_not_crashes_worker(self) -> None:
         """A condition that isn't valid Python (e.g. SQL `AND` instead of a chained
-        comparison) raises SyntaxError in ast.parse — it must be caught HERE as a
-        clean Result.fail, not escape to the blanket worker handler as an opaque
+        comparison) raises SyntaxError in ast.parse — caught HERE as a flag, not
+        escaping to the blanket worker handler as an opaque
         "Unexpected error ... invalid syntax" (the dso/dpo regression)."""
         graph = _graph(
             {
@@ -192,8 +225,26 @@ class TestDeclaredConditions:
         execution = _execution({"revenue": 30.0}, output_value=30.0)
 
         result = verify_execution(graph, execution)
-        assert not result.success
-        assert "malformed" in result.error
+        assert result.success
+        assert any("malformed" in f for f in result.unwrap())
+
+    def test_all_violations_flag_not_just_the_first(self) -> None:
+        """Every violated expectation surfaces — the old gate stopped at one."""
+        graph = _graph(
+            {
+                "revenue": _extract(
+                    "revenue", validations=[StepValidation(condition="value > 0", message="R")]
+                ),
+                "cogs": _extract(
+                    "cogs", validations=[StepValidation(condition="value >= 0", message="C")]
+                ),
+            }
+        )
+        execution = _execution({"revenue": 0.0, "cogs": -5.0}, output_value=5.0)
+
+        result = verify_execution(graph, execution)
+        assert result.success
+        assert len(result.unwrap()) == 2
 
     def test_decimal_value_is_comparable(self) -> None:
         """Currency sums arrive as Decimal in production — conditions still hold."""
@@ -206,7 +257,9 @@ class TestDeclaredConditions:
         ex.step_results = [sr]
         ex.output_value = Decimal("1234.56")
 
-        assert verify_execution(graph, ex).success
+        result = verify_execution(graph, ex)
+        assert result.success
+        assert result.unwrap() == []
 
 
 class TestConditionEvaluator:

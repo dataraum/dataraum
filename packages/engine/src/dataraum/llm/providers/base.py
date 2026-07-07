@@ -101,6 +101,13 @@ class Message(BaseModel):
     role: str  # "user", "assistant", "tool_result"
     content: str | list[ToolResult] = ""
     tool_calls: list[ToolCall] | None = None  # For assistant messages with tool use
+    # Verbatim provider content blocks for an ASSISTANT turn being echoed back
+    # in a continued conversation (DAT-699). A thinking model's assistant turn
+    # must round-trip its (signed) thinking blocks when the conversation
+    # continues past a tool call — rebuilding from text + tool_calls drops
+    # them and the API rejects the continuation. Set from
+    # ConversationResponse.raw_content; None = rebuild from text/tool_calls.
+    raw_content: list[dict[str, Any]] | None = None
 
 
 class ConversationRequest(BaseModel):
@@ -137,6 +144,9 @@ class ConversationResponse(BaseModel):
 
     content: str  # Text content (may be empty if only tool calls)
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    # The turn's verbatim content blocks (text / tool_use / thinking /
+    # redacted_thinking) for continuation — see Message.raw_content (DAT-699).
+    raw_content: list[dict[str, Any]] | None = None
     stop_reason: str  # "end_turn", "tool_use", "max_tokens"
     model: str
     input_tokens: int

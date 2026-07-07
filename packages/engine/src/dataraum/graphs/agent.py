@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import duckdb
 import yaml
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
@@ -43,13 +44,22 @@ from .models import (
     StepResult,
     StepType,
     TransformationGraph,
+    ValueSearchInput,
 )
 from .verifier import verify_execution
 
 if TYPE_CHECKING:
     from dataraum.graphs.node_warming import NodeDecision, NodeKey
+    from dataraum.llm.providers.base import ToolDefinition
 
 logger = get_logger(__name__)
+
+# The grounding agent's catalog-search budget (DAT-699): enough turns to
+# resolve a couple of concepts' exact values on a high-cardinality
+# discriminator, small enough that a lost agent fails loud instead of
+# spelunking. Each search is one bounded DuckDB DISTINCT query.
+_MAX_VALUE_SEARCHES = 4
+_VALUE_SEARCH_LIMIT = 25
 
 
 def _ordered_dep_steps(graph: TransformationGraph, output_step: GraphStep) -> list[str]:
@@ -356,6 +366,7 @@ class GraphAgent(LLMFeature):
                 reason=reason,
             )
             return Result.fail(reason)
+        execution.verification_flags = verdict.unwrap() or []
 
         # Save snippets AFTER successful execution AND verification — includes
         # repair info and only saves SQL that actually works AND is trustworthy.
@@ -396,21 +407,32 @@ class GraphAgent(LLMFeature):
         resolved_params = self._resolve_parameters(graph, parameters or {})
         schema_mapping_id = context.schema_mapping_id or "default"
 
-        # Honest-fail on the first ungroundable dependency — born-loud, no LLM. A
+        # Collect EVERY ungroundable dependency — born-loud, no re-authoring. A
         # keyable step absent from the map is a contract violation (the authoring
-        # pass authors every keyable node), so fail loud here, not silently later.
+        # pass authors every keyable node), so it fails loud here too. The metric
+        # still honest-fails, but the groundable subgraph EXECUTES first
+        # (DAT-699): a groundable revenue leaf can otherwise run zero times all
+        # day because gross_profit aborts whole on cost_of_goods_sold, and the
+        # artifact reason says nothing about what WAS measurable.
+        ungroundable: dict[str, str] = {}
         for step_id, step in graph.steps.items():
             key = node_key(step, graph)
             if key is None:
                 continue  # non-keyable step (rare) — caught by the cache check below
             decision = bindings.get(key)
             if decision is None or not decision.grounded:
-                reason = (
-                    decision.reason
+                ungroundable[step_id] = (
+                    (decision.reason or "ungroundable")
                     if decision is not None
                     else "not authored (absent from binding map)"
                 )
-                return Result.fail(f"dependency '{step_id}' is ungroundable: {reason}")
+        if ungroundable:
+            cached = self._lookup_snippets(session, graph, schema_mapping_id)
+            return Result.fail(
+                self._partial_execution_report(
+                    graph, cached, resolved_params, ungroundable, context
+                )
+            )
 
         # Every extract dep grounded → compose the metric PER-METRIC from the DAG
         # (DAT-646): extract leaves come from the warm cache, formulas/constants are
@@ -445,6 +467,7 @@ class GraphAgent(LLMFeature):
         verdict = verify_execution(graph, execution)
         if not verdict.success:
             return Result.fail(verdict.error or "metric verification failed")
+        execution.verification_flags = verdict.unwrap() or []
 
         # Persist THIS metric's composed FORMULA/CONSTANT snippets (DAT-646) AFTER it
         # executed AND verified — only trustworthy SQL enters the cockpit reuse KB. The
@@ -483,8 +506,6 @@ class GraphAgent(LLMFeature):
         CTE. Returns ``None`` when an extract leaf is absent (its dep ungroundable — the
         caller honest-fails) or a step is malformed.
         """
-        from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
-
         output_step = graph.get_output_step()
         if output_step is None:
             return None
@@ -500,39 +521,25 @@ class GraphAgent(LLMFeature):
             step = graph.steps.get(step_id)
             if step is None:
                 return None
-            description = step_id
-            try:
-                if step.step_type == StepType.EXTRACT:
-                    snippet = cached_snippets.get(step_id)
-                    if not snippet:
-                        return None  # an extract leaf is missing → dep ungroundable
-                    sql = snippet["sql"]
-                    description = snippet.get("description") or step_id
-                    for a in snippet.get("assumptions") or []:
-                        assumptions.append(
-                            GraphAssumptionOutput(
-                                dimension=a.get("dimension", "grounding.cached"),
-                                target=a.get("target", f"step:{step_id}"),
-                                assumption=a.get("assumption", ""),
-                                basis=a.get("basis", "inferred"),
-                                confidence=a.get("confidence", 0.5),
-                            )
-                        )
-                elif step.step_type == StepType.CONSTANT:
-                    value = resolved_params.get(step.parameter) if step.parameter else None
-                    if value is None:
-                        return None
-                    sql = compose_constant_sql(value)
-                elif step.step_type == StepType.FORMULA:
-                    if not step.expression:
-                        return None
-                    sql = compose_formula_sql(step.expression, set(step.depends_on))
-                else:
-                    return None
-            except ValueError:
-                # Malformed expression / non-numeric constant — composer raises; the
-                # metric honest-fails (the caller surfaces None as ungroundable).
+            sql = self._compose_step_sql(step, step_id, cached_snippets, resolved_params)
+            if sql is None:
+                # Missing extract snippet / unresolvable constant / malformed
+                # formula — the metric honest-fails (caller surfaces the reason).
                 return None
+            description = step_id
+            if step.step_type == StepType.EXTRACT:
+                snippet = cached_snippets.get(step_id) or {}
+                description = snippet.get("description") or step_id
+                for a in snippet.get("assumptions") or []:
+                    assumptions.append(
+                        GraphAssumptionOutput(
+                            dimension=a.get("dimension", "grounding.cached"),
+                            target=a.get("target", f"step:{step_id}"),
+                            assumption=a.get("assumption", ""),
+                            basis=a.get("basis", "inferred"),
+                            confidence=a.get("confidence", 0.5),
+                        )
+                    )
             steps.append({"step_id": step_id, "sql": sql, "description": description})
 
         return GeneratedCode(
@@ -546,6 +553,138 @@ class GraphAgent(LLMFeature):
             generated_at=datetime.now(UTC),
             assumptions=assumptions,
         )
+
+    @staticmethod
+    def _compose_step_sql(
+        step: GraphStep,
+        step_key: str,
+        cached_snippets: dict[str, dict[str, Any]],
+        resolved_params: dict[str, Any],
+    ) -> str | None:
+        """One step's CTE SQL: extract = cached snippet, constant/formula = composed.
+
+        ``step_key`` is the step's key in ``graph.steps`` — the dependency
+        namespace that CTE names and the snippet cache are keyed on. It usually
+        equals ``step.step_id`` but is passed explicitly because nothing
+        enforces that, and a lookup on ``step.step_id`` silently misses when
+        they diverge. ``None`` = not composable (missing snippet, unresolvable
+        constant, malformed formula) — both the full compose and the DAT-699
+        partial execution treat that as this step's honest hole.
+        """
+        from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
+
+        try:
+            if step.step_type == StepType.EXTRACT:
+                snippet = cached_snippets.get(step_key)
+                return snippet["sql"] if snippet else None
+            if step.step_type == StepType.CONSTANT:
+                value = resolved_params.get(step.parameter) if step.parameter else None
+                return compose_constant_sql(value) if value is not None else None
+            if step.step_type == StepType.FORMULA:
+                if not step.expression:
+                    return None
+                return compose_formula_sql(step.expression, set(step.depends_on))
+        except ValueError:
+            # Malformed expression / non-numeric constant — the composer raises;
+            # the step is not composable.
+            return None
+        return None
+
+    def _partial_execution_report(
+        self,
+        graph: TransformationGraph,
+        cached_snippets: dict[str, dict[str, Any]],
+        resolved_params: dict[str, Any],
+        ungroundable: dict[str, str],
+        context: ExecutionContext,
+    ) -> str:
+        """Execute the groundable subgraph and report EVERY step's outcome (DAT-699).
+
+        A metric with an ungroundable extract used to abort whole — a
+        groundable sibling (revenue) could execute zero times all day because
+        every profitability metric died on cost_of_goods_sold first, and the
+        artifact reason said nothing about what WAS measurable. The
+        metric still honest-fails (its composed value cannot exist), but every
+        step whose transitive dependencies ground executes, and the reason
+        names each step's measured value, its hole, or what blocks it — the
+        exact per-step story the drill-down (DAT-671) renders.
+        """
+        output_step = graph.get_output_step()
+        ordered = (
+            _ordered_dep_steps(graph, output_step) + [output_step.step_id]
+            if output_step is not None
+            else []
+        )
+        # Steps outside the output's dependency cone still get reported —
+        # nothing in the graph is silently absent from the per-step story.
+        ordered += sorted(step_id for step_id in graph.steps if step_id not in set(ordered))
+
+        # The maximal executable subgraph: a step runs iff it is not a hole,
+        # composes, and every dependency it names is itself executable.
+        executable: list[dict[str, str]] = []
+        executable_ids: set[str] = set()
+        blocked: dict[str, str] = {}
+        for step_id in ordered:
+            step = graph.steps.get(step_id)
+            if step is None or step_id in ungroundable:
+                continue
+            missing = [d for d in step.depends_on if d not in executable_ids]
+            if missing:
+                blocked[step_id] = ", ".join(missing)
+                continue
+            sql = self._compose_step_sql(step, step_id, cached_snippets, resolved_params)
+            if sql is None:
+                blocked[step_id] = "not composable"
+                continue
+            executable.append({"step_id": step_id, "sql": sql, "description": step_id})
+            executable_ids.add(step_id)
+
+        values: dict[str, Any] = {}
+        exec_note = ""
+        if executable:
+            code = GeneratedCode(
+                code_id=str(uuid4()),
+                graph_id=graph.graph_id,
+                summary=f"Partial execution of {graph.graph_id} ({len(executable)} steps)",
+                steps=executable,
+                final_sql=f"SELECT * FROM {executable[-1]['step_id']}",
+                llm_model="composed",
+                prompt_hash="composed",
+                generated_at=datetime.now(UTC),
+            )
+            exec_result = self._execute_sql(code, context, graph)
+            if exec_result.success and exec_result.value:
+                values = {sr.step_id: sr.value for sr in exec_result.value.step_results}
+            else:
+                exec_note = f" (partial execution failed: {exec_result.error})"
+
+        parts: list[str] = []
+        for step_id in ordered:
+            if step_id in ungroundable:
+                parts.append(f"{step_id} ✗ {ungroundable[step_id]}")
+            elif step_id in blocked:
+                parts.append(f"{step_id} blocked (needs {blocked[step_id]})")
+            elif step_id in values:
+                value = values[step_id]
+                if value is None:
+                    parts.append(f"{step_id} = NULL (aggregated with no measured support)")
+                elif isinstance(value, bool):
+                    # bool BEFORE the numeric check (bool is an int subclass) —
+                    # a boolean step must read True/False, never 1.00.
+                    parts.append(f"{step_id} = {value} ✓")
+                elif isinstance(value, (int, float, Decimal)):
+                    parts.append(f"{step_id} = {float(value):,.2f} ✓")
+                else:
+                    parts.append(f"{step_id} = {value} ✓")
+            elif step_id in executable_ids:
+                parts.append(f"{step_id} composed but not executed")
+            else:
+                # A dep referenced by the graph but absent from graph.steps
+                # (cache-only leaf) — nothing is silently absent from the story.
+                parts.append(f"{step_id} not defined in the graph")
+        names = ", ".join(f"'{s}'" for s in sorted(ungroundable))
+        verb = "is" if len(ungroundable) == 1 else "are"
+        return f"dependency {names} {verb} ungroundable — " + " · ".join(parts) + exec_note
 
     def _generate_sql(
         self,
@@ -574,6 +713,7 @@ class GraphAgent(LLMFeature):
             ConversationRequest,
             Message,
             ToolDefinition,
+            ToolResult,
         )
 
         extract_leaves = [
@@ -657,11 +797,24 @@ class GraphAgent(LLMFeature):
             model=model,
         )
 
-        # Define tool for structured output
+        # Define tools: the structured output plus the bounded catalog search
+        # (DAT-699) — high-cardinality discriminators are served size+sample
+        # only, and their exact values live behind search_values.
         tool = ToolDefinition(
             name="generate_sql",
             description="Provide the SQL grounding the one concept in the graph specification",
             input_schema=ExtractGroundingOutput.model_json_schema(),
+        )
+        search_tool = ToolDefinition(
+            name="search_values",
+            description=(
+                "Search a column's distinct values by case-insensitive substring. "
+                "Use it to resolve the EXACT values of a high-cardinality "
+                "discriminator (marked 'NOT enumerated' in the Value sets) before "
+                "writing an IN-list — never guess a predicate. Always finish by "
+                "calling generate_sql."
+            ),
+            input_schema=ValueSearchInput.model_json_schema(),
         )
 
         # Thinking (DAT-603): grounding is the pipeline's hardest reasoning task
@@ -669,33 +822,78 @@ class GraphAgent(LLMFeature):
         # reflection is the quality lever. A FORCED tool_choice silently
         # suppresses thinking on the live API (probed 2026-07-03: forced -> no
         # thinking block, auto -> thinking block), so a thinking run offers the
-        # tool on auto and the prompt mandates the call; no tool call remains a
-        # loud bind error (checked below), never a silent prose answer.
+        # tools on auto and the prompt mandates the final call; no tool call
+        # remains a loud bind error (checked below), never a silent prose
+        # answer. Non-thinking runs use "any" (some tool must be called —
+        # search_values or generate_sql; the old forced generate_sql would
+        # make searching impossible). disable_parallel_tool_use keeps every
+        # turn to ONE call, so the search loop stays sequential and binding
+        # [0] can never ground a superseded SQL.
         thinking = bool(feature_config and feature_config.thinking)
-        request = ConversationRequest(
-            messages=[Message(role="user", content=user_prompt)],
-            system=system_prompt,
-            tools=[tool],
-            # auto (not forced): a forced choice silently suppresses thinking on
-            # the live API (probed 2026-07-03). disable_parallel_tool_use restores
-            # the <=1-tool-call guarantee that forcing used to provide — under
-            # plain auto the model may emit MULTIPLE generate_sql calls in one
-            # turn and binding [0] could ground a superseded SQL.
-            tool_choice={"type": "auto", "disable_parallel_tool_use": True}
+        tool_choice: dict[str, Any] = (
+            {"type": "auto", "disable_parallel_tool_use": True}
             if thinking
-            else {"type": "tool", "name": "generate_sql"},
-            thinking=thinking,
-            label=prompt_name,
-            effort=feature_config.effort if feature_config else None,
-            max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
-            model=model,
+            else {"type": "any", "disable_parallel_tool_use": True}
         )
+        messages = [Message(role="user", content=user_prompt)]
 
-        # converse raises a typed ProviderError on an API failure (DAT-503) —
-        # retryability rides the exception to the worker's durable boundary, so
-        # we don't re-wrap it. A returned Result is always a success.
-        response = self.provider.converse(request).unwrap()
+        def _converse() -> Any:
+            # converse raises a typed ProviderError on an API failure (DAT-503) —
+            # retryability rides the exception to the worker's durable boundary,
+            # so we don't re-wrap it. A returned Result is always a success.
+            return self.provider.converse(
+                ConversationRequest(
+                    messages=messages,
+                    system=system_prompt,
+                    tools=[tool, search_tool],
+                    tool_choice=tool_choice,
+                    thinking=thinking,
+                    label=prompt_name,
+                    effort=feature_config.effort if feature_config else None,
+                    max_tokens=self.config.limits.max_output_tokens_per_request,
+                    temperature=temperature,
+                    model=model,
+                )
+            ).unwrap()
+
+        response = _converse()
+
+        # Bounded exploration loop (DAT-699): answer each search_values call and
+        # continue the conversation (raw_content round-trips the signed thinking
+        # blocks). The budget is small — a lost agent fails loud below, never
+        # spelunks. The last allowed search's result carries the budget notice.
+        searches = 0
+        while (
+            searches < _MAX_VALUE_SEARCHES
+            and len(response.tool_calls) == 1
+            and response.tool_calls[0].name == "search_values"
+        ):
+            searches += 1
+            search_call = response.tool_calls[0]
+            outcome = self._run_value_search(context, search_call.input)
+            if searches == _MAX_VALUE_SEARCHES:
+                outcome += "\n(search budget exhausted — call generate_sql now)"
+            logger.info(
+                "grounding_value_search",
+                graph_id=graph.graph_id,
+                pattern=search_call.input.get("pattern"),
+                turn=searches,
+            )
+            messages.append(
+                Message(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                    raw_content=response.raw_content,
+                )
+            )
+            messages.append(
+                Message(
+                    role="user",
+                    content=[ToolResult(tool_use_id=search_call.id, content=outcome)],
+                )
+            )
+            response = _converse()
 
         # Extract tool call result. No tool call is a bind ERROR — never guess by
         # parsing free text as JSON (DAT-439's born-loud cut): a metric that can't
@@ -712,12 +910,22 @@ class GraphAgent(LLMFeature):
 
         tool_call = response.tool_calls[0]
         if tool_call.name != "generate_sql":
-            return Result.fail(f"Unexpected tool call: {tool_call.name}")
+            return Result.fail(
+                f"Unexpected tool call: {tool_call.name}"
+                + (" (search budget exhausted)" if searches >= _MAX_VALUE_SEARCHES else "")
+            )
 
         try:
             output = ExtractGroundingOutput.model_validate(tool_call.input)
-        except Exception as e:
-            return Result.fail(f"Failed to validate tool response: {e}")
+        except ValidationError as e:
+            # Enforced schema, never coercion (DAT-699): the model fixes its own
+            # output in one cheap repair turn. A finished, correct grounding was
+            # previously discarded whole on a single stringified `provenance`
+            # field — losing the metric to a serialization slip, silently.
+            repaired = self._repair_tool_output(tool, tool_call.input, e, model, prompt_name)
+            if not repaired.success:
+                return Result.fail(repaired.error or "schema repair failed")
+            output = repaired.unwrap()
 
         # Bind the one generated SQL to the graph's own leaf id (the model never
         # names a step — DAT-664's id-paraphrase class is gone by construction)
@@ -772,6 +980,116 @@ class GraphAgent(LLMFeature):
         )
 
         return Result.ok(generated_code)
+
+    def _run_value_search(self, context: ExecutionContext, raw_input: dict[str, Any]) -> str:
+        """Execute one bounded catalog value search (DAT-699).
+
+        Returns compact text for the tool_result. Errors come back as TEXT (an
+        unknown table/column or a bad pattern is the agent's to correct within
+        its search budget), never as an exception — a broken search must not
+        kill the grounding turn. Table and column names are validated against
+        our own catalog before touching SQL; only the pattern is user…model
+        text, escaped for the one ILIKE literal it lands in.
+        """
+        try:
+            params = ValueSearchInput.model_validate(raw_input)
+        except ValidationError as e:
+            return f"invalid search_values input: {e}"
+        rich = context.rich_context
+        tables = {t.table_name: t for t in getattr(rich, "tables", None) or []}
+        table = tables.get(params.table)
+        if table is None or not table.duckdb_name:
+            known = ", ".join(sorted(tables)) or "(none)"
+            return f"unknown table '{params.table}' — known tables: {known}"
+        if params.column not in {c.column_name for c in table.columns}:
+            known = ", ".join(sorted(c.column_name for c in table.columns))
+            return f"unknown column '{params.column}' on '{params.table}' — columns: {known}"
+        if context.duckdb_conn is None:
+            return "no data connection available for value search"
+        needle = (
+            params.pattern.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+            .replace("'", "''")
+        )
+        try:
+            rows = context.duckdb_conn.execute(
+                f'SELECT CAST("{params.column}" AS VARCHAR) AS value, COUNT(*) AS n '
+                f'FROM "{table.duckdb_name}" '
+                f'WHERE "{params.column}" IS NOT NULL '
+                f"AND CAST(\"{params.column}\" AS VARCHAR) ILIKE '%{needle}%' ESCAPE '\\' "
+                f"GROUP BY 1 ORDER BY n DESC, value LIMIT {_VALUE_SEARCH_LIMIT}"
+            ).fetchall()
+        except Exception as e:
+            return f"search failed: {e}"
+        if not rows:
+            return f"no values matching '{params.pattern}' in {params.table}.{params.column}"
+        listed = "\n".join(f"- {v} ({n} rows)" for v, n in rows)
+        truncated = (
+            f"\n(first {_VALUE_SEARCH_LIMIT} matches by frequency — narrow the pattern for more)"
+            if len(rows) == _VALUE_SEARCH_LIMIT
+            else ""
+        )
+        return (
+            f"values matching '{params.pattern}' in "
+            f"{params.table}.{params.column}:\n{listed}{truncated}"
+        )
+
+    def _repair_tool_output(
+        self,
+        tool: ToolDefinition,
+        invalid_input: dict[str, Any],
+        error: ValidationError,
+        model: str,
+        label: str,
+    ) -> Result[ExtractGroundingOutput]:
+        """One schema-repair turn: the model fixes its own tool output (DAT-699).
+
+        The output schema is ENFORCED, never coerced: a validation failure
+        re-prompts the model with its own serialized output plus the exact
+        validation error, under a forced tool choice — a stringified nested
+        object or a mistyped field is the model's to fix, not ours to
+        ``json.loads`` behind its back. The repair request is a fresh
+        single-turn conversation (no dataset context, so it is cheap, and no
+        assistant-turn continuation, so it cannot trip the thinking-block
+        continuation constraint). One repair attempt: a model that cannot
+        satisfy the schema twice fails loud with both errors.
+        """
+        from dataraum.llm.providers.base import ConversationRequest, Message
+
+        repair_prompt = (
+            "Your previous call to the tool below failed schema validation.\n\n"
+            f"Validation error:\n{error}\n\n"
+            f"Your tool input was:\n{json.dumps(invalid_input, indent=2)}\n\n"
+            f"Call {tool.name} again with the SAME content, corrected to satisfy "
+            "the schema exactly — e.g. a field you emitted as a JSON-encoded "
+            "string must be a structured object. Fix only the schema "
+            "violations; do not change the substance of any field."
+        )
+        request = ConversationRequest(
+            messages=[Message(role="user", content=repair_prompt)],
+            system="You repair tool-call arguments to satisfy their JSON schema exactly.",
+            tools=[tool],
+            tool_choice={"type": "tool", "name": tool.name},
+            label=f"{label}_repair",
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=0.0,
+            model=model,
+        )
+        logger.warning("tool_output_schema_repair", tool=tool.name, error=str(error)[:200])
+        response = self.provider.converse(request).unwrap()
+        if not response.tool_calls:
+            return Result.fail(
+                f"Failed to validate tool response ({error}); the schema-repair "
+                "turn produced no tool call"
+            )
+        try:
+            return Result.ok(ExtractGroundingOutput.model_validate(response.tool_calls[0].input))
+        except ValidationError as second:
+            return Result.fail(
+                f"Failed to validate tool response after a repair turn: {second} "
+                f"(original error: {error})"
+            )
 
     def _execute_sql(
         self,
@@ -1612,7 +1930,13 @@ class GraphAgent(LLMFeature):
                     parts.append(
                         f"Your prior attempt to ground this extract was {mode}: {why}\n"
                         f"Prior SQL (do NOT re-emit unchanged):\n{rec.sql}\n"
-                        "Revise to address the reason, or abstain (low-confidence)."
+                        "Revise to address the reason, or abstain (low-confidence). If the "
+                        "prior SQL aggregated to NULL, decide from the schema evidence which "
+                        "case applies: the concept has no supporting rows (abstain — never "
+                        "mask absence as 0), or the filter matches rows and one aggregated "
+                        "operand is legitimately empty (one-sided data — combine the "
+                        "operands with row-guarded NULL-safety per the empty-aggregation "
+                        "rule)."
                     )
         except Exception as e:
             # Feedback is best-effort — a lookup hiccup must not fail metric authoring

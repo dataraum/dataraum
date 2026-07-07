@@ -22,10 +22,6 @@ dependencies:
       standard_field: current_assets
       statement: balance_sheet
     aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
-    validation:
-    - condition: value >= 0
-      severity: error
-      message: Current assets cannot be negative
   current_liabilities:
     level: 1
     type: extract
@@ -33,10 +29,6 @@ dependencies:
       standard_field: current_liabilities
       statement: balance_sheet
     aggregation: sum  # period axis (all vs latest) is data-reconciled via target_type — never hardcode end_of_period
-    validation:
-    - condition: value > 0
-      severity: error
-      message: Current liabilities must be positive
   current_ratio:
     level: 2
     type: formula
@@ -48,7 +40,7 @@ dependencies:
     validation:
     - condition: value >= 0
       severity: error
-      message: Current ratio cannot be negative
+      message: Current ratio should not be negative (assets and liabilities disagree in sign)
 interpretation:
   ranges:
   - min: 0

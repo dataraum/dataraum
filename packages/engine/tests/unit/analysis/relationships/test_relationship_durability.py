@@ -136,6 +136,29 @@ def test_load_defined_relationships_excludes_candidates_and_scopes_run(session: 
     assert all(r.run_id == "run-A" for r in defined)
 
 
+def test_load_defined_relationships_has_no_confidence_gate(session: Session) -> None:
+    """A defined row is judge-verified or user-asserted — a numeric floor here
+    would pre-empt downstream judges with an uncalibrated number (DAT-699).
+    Low-confidence rows are served as evidence, never filtered."""
+    _seed_tables_columns(session)
+    session.add(
+        Relationship(
+            run_id="run-A",
+            from_table_id="t1",
+            from_column_id="ca",
+            to_table_id="t2",
+            to_column_id="cb",
+            relationship_type="foreign_key",
+            confidence=0.3,
+            detection_method="llm",
+        )
+    )
+    session.flush()
+
+    defined = load_defined_relationships(session, ["t1", "t2"], run_id="run-A")
+    assert [r.confidence for r in defined] == [0.3]
+
+
 def test_suppressed_pairs_read_from_reject_overlay(session: Session) -> None:
     """``load_suppressed_relationship_pairs`` returns only active reject pairs."""
     session.add(
@@ -272,9 +295,27 @@ def test_materialize_add_overlay_creates_manual(session: Session) -> None:
     assert row.is_confirmed is True
 
 
-def test_materialize_keep_overlay_creates_keeper(session: Session) -> None:
-    """A `keep` overlay (silent-accept) materializes as `keeper`, not `manual`."""
+def test_materialize_keep_overlay_creates_keeper_with_last_measured_evidence(
+    session: Session,
+) -> None:
+    """A `keep` overlay materializes as `keeper` CARRYING its last measurement
+    (DAT-699): the newest llm row's confidence/cardinality/evidence, stamped
+    not_remeasured — never a fabricated confidence=1.0 with no cardinality."""
     _seed_tables_columns(session)
+    session.add(
+        Relationship(
+            run_id="r0",
+            from_table_id="t1",
+            from_column_id="ca",
+            to_table_id="t2",
+            to_column_id="cb",
+            relationship_type="foreign_key",
+            cardinality="many-to-one",
+            confidence=0.85,
+            detection_method="llm",
+            evidence={"coverage": 0.92},
+        )
+    )
     _overlay(session, "keep", "ca", "cb")
     session.flush()
 
@@ -283,6 +324,30 @@ def test_materialize_keep_overlay_creates_keeper(session: Session) -> None:
 
     rows = _materialized(session)
     assert [r.detection_method for r in rows] == ["keeper"]
+    keeper = rows[0]
+    assert keeper.confidence == 0.85
+    assert keeper.cardinality == "many-to-one"
+    assert keeper.evidence == {
+        "coverage": 0.92,
+        "source": "config_overlay",
+        "action": "keep",
+        "measured_run_id": "r0",
+        "not_remeasured": True,
+    }
+
+
+def test_keep_overlay_without_measurement_is_skipped_loud(session: Session) -> None:
+    """A keeper is lifted FROM an llm row; with no measurement recoverable it
+    has no basis — any stamped confidence would be fabricated. Loud skip."""
+    _seed_tables_columns(session)
+    _overlay(session, "keep", "ca", "cb")
+    session.flush()
+
+    count = materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
+    session.flush()
+
+    assert count == 0
+    assert _materialized(session) == []
 
 
 def test_materialize_joins_a_pair_already_llm_this_run(session: Session) -> None:
@@ -324,7 +389,14 @@ def test_confirm_overlay_materializes_a_manual_row_beside_llm(session: Session) 
     pairs = session.query(Relationship).filter(Relationship.run_id == "r1").all()
     by_method = {p.detection_method: p for p in pairs}
     assert set(by_method) == {"llm", "manual"}
-    assert by_method["manual"].evidence == {"source": "config_overlay", "action": "confirm"}
+    manual = by_method["manual"]
+    # The user's assertion keeps confidence 1.0 (their voice, not a fabrication)
+    # and copies the pair's last measurement alongside the overlay stamp.
+    assert manual.confidence == 1.0
+    assert manual.evidence["source"] == "config_overlay"
+    assert manual.evidence["action"] == "confirm"
+    assert manual.evidence["not_remeasured"] is True
+    assert manual.evidence["measured_run_id"] == "r1"
 
 
 def test_add_and_confirm_overlays_never_duplicate_the_manual_row(session: Session) -> None:

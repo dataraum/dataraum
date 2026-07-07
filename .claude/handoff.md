@@ -5,6 +5,71 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-699 — flag-and-surface over fabricated determinism (metric grounding + enrichment)
+
+**Branch:** `feat/dat-699-flag-and-surface`. Seven changes from the the bookkeeping smoke corpus
+clean-stack root-cause pass (0/13 metrics executed vs. a measured ceiling of 2)
+plus the determinism audit. Response shapes eval reads have changed:
+
+### What changed
+
+- **Metric artifact `state_reason` format** (biggest eval-facing change): a
+  metric with ungroundable dependencies now reads
+  `dependency 'cogs' is ungroundable — revenue = 5,925,920,163.00 ✓ · cogs ✗ <reason> · gross_profit blocked (needs cogs)`
+  — ALL holes named (not just the first), per-step measured values for the
+  groundable subgraph, which EXECUTES. Assertions matching the old
+  `dependency 'X' is ungroundable: <reason>` prefix need updating.
+- **Verifier no-support reason**: `has no support: it aggregated to NULL —
+  either its filter matched no rows, or an aggregated operand is entirely
+  NULL over the rows it did match` — the old `its filter matched no rows`
+  ASSERTED an unmeasured cause (misclassified a one-sided A/R ledger whose
+  join matched 167k rows).
+- **Grounding agent is no longer one-shot**: high-cardinality columns
+  (> 200 distinct) are served as size+sample+`search_values` hint instead of
+  nothing, and the agent may spend up to 4 bounded catalog searches before
+  emitting `generate_sql`. Expect grounding recall UP on datasets whose
+  discriminators exceed the enumeration bound (the bookkeeping smoke's depreciation/tax
+  class) and 1–5 extra small LLM turns per affected extract. A tool-output
+  schema validation failure gets ONE model repair turn before failing.
+- **Enrichment**: the 0.7 confidence floor is gone (the judge sees all
+  defined relationships); keeper rows carry their last-measured
+  confidence/cardinality/evidence stamped `not_remeasured` (never
+  `confidence=1.0, cardinality=NULL`); the sticky shape re-offers a pair
+  when its evidence fingerprint changed.
+- **Prompt** (`graph_sql_generation.yaml`): one-sided-ledger netting shape
+  (`CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(a),0) - COALESCE(SUM(b),0) END`)
+  — absence still surfaces as NULL, never masked as 0.
+
+- **Declared metric validations flag, never gate** (approved follow-up on this
+  branch): a violated catalogue `validation:` condition no longer blocks
+  execution ("composed but not executed: declared validation failed …" is
+  gone) — the metric EXECUTES and the violation rides `state_reason` as
+  "declared expectation not met for 'X': … (value=…, severity=…)", combined
+  with the DAT-631 low-confidence flag. Config-side, all extract-level sign
+  bounds (revenue > 0, COGS >= 0, …) were removed from the finance metric
+  YAMLs — the sign rule's homes are the `sign_natural_balance` convention
+  (authoring) and the `sign_conventions` validation (dataset-level); only
+  formula-level plausibility ranges remain (dso/dpo/dio 0–365 at warning,
+  current_ratio sign) and they flag.
+
+### Calibration to run
+
+- Metric grounding recall on ledger-shaped corpora: dso-class metrics
+  (one-sided debit/credit ledgers) and depreciation/tax-class extracts
+  (values beyond the enumeration bound) should now ground; COGS-class
+  honest-NULLs must STAY declined (a confident number for an absent concept
+  is the regression to watch).
+- Any eval parser reading metric `state_reason` needs the new format.
+
+### testdata hints
+
+A one-sided-ledger fixture (AR-style: 100%-NULL credit leg over matched
+rows) + a lookalike-negative distinguishes the netting fix from COALESCE
+masking: correct = dso executes with the real balance; regression = a
+metric executes as 0 when the filter matches nothing.
+
+---
+
 ## DAT-697 — composite verdicts gate the silent-accept keeper machinery
 
 **Branch:** `feat/dat-697-keeper-adjudication`. Fixes the resurrection loop
@@ -103,7 +168,7 @@ DAT-679 fixture work (greedy-search miss-rate corpus).
 - **`sql_snippets.column_mappings` no longer exists** (column dropped; LLM output field, `GeneratedCode`, reuse-merge and persist paths all removed). Any eval strategy reading it gets `UndefinedColumn` — switch to `provenance.column_mappings_basis` (`{concept: {column, filter, resolution}}`), which is the prompted, populated per-concept grounding record. The flat field had been silently empty since DAT-636 dropped its prompt teaching (`default_factory=dict` masked it).
 - No other engine response/pipeline shape changed; the rest of the PR is cockpit-side (drill tiers A/B/C over the promoted surface — read-only).
 
-**Testdata note:** BookSQL's COA has **zero COGS-type and zero inventory accounts**, so gross-profit-family metrics can never execute there (honest NULL extracts) — don't read that as a grounding regression; realistic executed ceiling on BookSQL ≈ dso + current_ratio.
+**Testdata note:** the bookkeeping smoke corpus's COA has **zero COGS-type and zero inventory accounts**, so gross-profit-family metrics can never execute there (honest NULL extracts) — don't read that as a grounding regression; realistic executed ceiling on the bookkeeping smoke corpus ≈ dso + current_ratio.
 
 ---
 

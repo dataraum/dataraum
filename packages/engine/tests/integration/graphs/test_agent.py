@@ -1105,6 +1105,11 @@ class TestPriorContextFeedback:
         assert "SENTINEL_NO_SUPPORT" in out
         assert "SELECT SUM(x)" in out
         assert "do NOT re-emit unchanged" in out
+        # DAT-699: the NULL-ambiguity steer — the agent must be told how to
+        # resolve BOTH cases (absent concept -> abstain; one-sided data ->
+        # row-guarded combination), because the verifier no longer asserts a cause.
+        assert "concept has no supporting rows (abstain" in out
+        assert "one-sided data" in out
 
     def test_retained_failure_reuse_excluded_but_fed_back(
         self, session: Session, sample_graph

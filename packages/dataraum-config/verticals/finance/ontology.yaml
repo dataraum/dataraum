@@ -318,6 +318,20 @@ conventions:
         - current_assets
         - cash
 
+    # Ledger legs net one-sidedly all the time (an A/R account only ever debited,
+    # an A/P account only ever credited) — the generic empty-aggregation rule
+    # owns the row-guarded netting SHAPE; which legs net, and that a one-sided
+    # account is normal ledger reality, is finance knowledge and lives here.
+  - id: ledger_leg_netting
+    targets: [extraction, qa]
+    statement: >
+      Ledger measures net two legs (debit and credit). A one-sided account — e.g.
+      a receivables account only ever debited, a payables account only ever
+      credited — has an entirely NULL opposite leg over its matched rows; that is
+      normal ledger reality, not missing data. Net the legs with the row-guarded
+      NULL-safe shape from the empty-aggregation rule, ordering the legs by the
+      account family's natural balance (see sign_natural_balance).
+
     # Balance-sheet concepts are NOT single columns — they are account FAMILIES
     # drawn from the chart of accounts. account_type (asset/liability/…) is too
     # coarse (it mixes current and non-current), and the abstract concept

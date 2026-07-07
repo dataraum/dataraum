@@ -130,9 +130,12 @@ def test_feature_config_sets_tier_and_effort(monkeypatch) -> None:
     provider.get_model_for_tier.assert_called_with("fast")
     request = provider.converse.call_args.args[0]
     assert request.effort == "low"
-    # thinking not set on the feature → forced tool_choice, thinking off.
+    # thinking not set on the feature → thinking off; tool_choice is "any"
+    # (some tool must be called — search_values or generate_sql; forcing
+    # generate_sql would make the DAT-699 catalog search impossible), one
+    # call per turn.
     assert request.thinking is False
-    assert request.tool_choice == {"type": "tool", "name": "generate_sql"}
+    assert request.tool_choice == {"type": "any", "disable_parallel_tool_use": True}
 
 
 def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:

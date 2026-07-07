@@ -7,6 +7,7 @@ Uses tool-based output for structured responses.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -33,6 +34,25 @@ if TYPE_CHECKING:
     from dataraum.llm.providers.base import LLMProvider
 
 logger = get_logger(__name__)
+
+
+def dossier_fingerprint(
+    cardinality: str | None, confidence: float | None, coverage: float | None
+) -> str:
+    """Fingerprint of the evidence the judge sees for one relationship (DAT-699).
+
+    Mirrors exactly the measured fields ``_format_relationships`` renders per
+    pair — cardinality, confidence, coverage — so the two cannot disagree
+    about what "the dossier" is. The sticky shape (DAT-516) stores this beside
+    each considered pair; a pair whose CURRENT dossier no longer matches
+    counts as undecided and is re-offered. Not a threshold: ANY change to the
+    measured evidence re-opens the question ("the dossier changed, re-ask the
+    judge"). Pairs judged before an evidence field existed (e.g. pre-DAT-695
+    coverage) re-open exactly once, then stick under the new fingerprint.
+    """
+    return hashlib.sha1(
+        f"{cardinality}|{confidence}|{coverage}".encode(), usedforsecurity=False
+    ).hexdigest()[:16]
 
 
 class EnrichmentAgent(LLMFeature):

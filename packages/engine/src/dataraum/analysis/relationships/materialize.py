@@ -161,6 +161,17 @@ def materialize_relationship_overlays(
     """Write this run's durable (`manual`/`keeper`) relationships from overlays.
 
     Returns the number of rows materialized. Idempotent per ``run_id``.
+
+    Materialized rows carry their LAST MEASURED evidence (DAT-699): the newest
+    llm row on the same pair supplies cardinality, evidence and — for keepers —
+    confidence, stamped ``not_remeasured`` so no consumer mistakes a copied
+    measurement for a fresh one. A keeper is silence over a prior measurement;
+    materializing it at a fabricated ``confidence=1.0`` with no cardinality
+    laundered "not re-measured this run" into full certainty (it also sailed
+    over the late confidence gate this fix's sibling removed). A keeper whose
+    measurement is unrecoverable has no basis and is skipped LOUD. ``manual``
+    rows keep ``confidence=1.0`` — that one is the user's own assertion, not a
+    fabrication — but copy the measured evidence too when it exists.
     """
     # Retry-safe clear: drop only THIS run's prior durable rows (run_id-scoped, like
     # the candidate clear), never another run's. candidate/llm are owned by their
@@ -213,6 +224,31 @@ def materialize_relationship_overlays(
                 # Endpoint outside the session's tables (or unknown) — nothing to
                 # anchor the row to; skip rather than write a dangling relationship.
                 continue
+            measured = _last_measured_row(session, pair)
+            if method == "keeper" and measured is None:
+                # A keeper is lifted FROM an llm row; with no measurement
+                # recoverable it has no basis, and any confidence we stamped
+                # would be fabricated. Loud skip — the overlay stays for a
+                # future run where the measurement may reappear.
+                logger.warning(
+                    "keeper_without_measurement_skipped",
+                    from_column=from_col,
+                    to_column=to_col,
+                )
+                continue
+            evidence: dict[str, Any] = {"source": "config_overlay", "action": action}
+            cardinality = None
+            confidence = 1.0
+            if measured is not None:
+                evidence = {
+                    **(measured.evidence or {}),
+                    **evidence,
+                    "measured_run_id": measured.run_id,
+                    "not_remeasured": True,
+                }
+                cardinality = measured.cardinality
+                if method == "keeper":
+                    confidence = measured.confidence
             session.add(
                 Relationship(
                     relationship_id=str(uuid4()),
@@ -222,10 +258,10 @@ def materialize_relationship_overlays(
                     to_table_id=to_table,
                     to_column_id=to_col,
                     relationship_type="foreign_key",
-                    cardinality=None,
-                    confidence=1.0,
+                    cardinality=cardinality,
+                    confidence=confidence,
                     detection_method=method,
-                    evidence={"source": "config_overlay", "action": action},
+                    evidence=evidence,
                     is_confirmed=True,
                 )
             )
@@ -238,6 +274,28 @@ def materialize_relationship_overlays(
         count=count,
     )
     return count
+
+
+def _last_measured_row(session: Session, pair: tuple[str, str]) -> Relationship | None:
+    """The newest ``llm`` row on a pair — the last time this edge was MEASURED.
+
+    Overlay materialization copies its cardinality/evidence (and, for keepers,
+    confidence) so a durable row never asserts more than was ever measured.
+    """
+    return (
+        session.execute(
+            select(Relationship)
+            .where(
+                Relationship.from_column_id == pair[0],
+                Relationship.to_column_id == pair[1],
+                Relationship.detection_method == "llm",
+            )
+            .order_by(Relationship.detected_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
 
 
 def _column_table_map(session: Session, table_ids: list[str]) -> dict[str, str]:

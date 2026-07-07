@@ -231,13 +231,9 @@ def test_coverage_none_on_empty_or_missing(con) -> None:
 def test_rescued_key_carries_coverage(con) -> None:
     """The canonical rescue fixture matches every fact row → coverage 1.0."""
     con.execute("CREATE TABLE txn2 (account VARCHAR, business_id VARCHAR)")
-    con.execute(
-        "INSERT INTO txn2 VALUES ('Sales','B1'),('Sales','B2'),('COGS','B1'),('COGS','B2')"
-    )
+    con.execute("INSERT INTO txn2 VALUES ('Sales','B1'),('Sales','B2'),('COGS','B1'),('COGS','B2')")
     con.execute("CREATE TABLE coa2 (account_name VARCHAR, business_id VARCHAR)")
-    con.execute(
-        "INSERT INTO coa2 VALUES ('Sales','B1'),('COGS','B1'),('Sales','B2'),('COGS','B2')"
-    )
+    con.execute("INSERT INTO coa2 VALUES ('Sales','B1'),('COGS','B1'),('Sales','B2'),('COGS','B2')")
     key = rescue_fanout_to_composite(
         _candidate(
             "txn2", "coa2", [("account", "account_name", 0.9), ("business_id", "business_id", 0.5)]
@@ -255,9 +251,7 @@ def test_coverage_is_oriented_to_the_referencing_side(con) -> None:
     the MANY (referencing) side either way, or a lookalike dim as table1 reads
     near-100% while the fact-side truth is tiny (DAT-695 review)."""
     con.execute("CREATE TABLE dim3 (account_name VARCHAR, business_id VARCHAR)")
-    con.execute(
-        "INSERT INTO dim3 VALUES ('Sales','B1'),('Sales','B2'),('COGS','B1'),('COGS','B2')"
-    )
+    con.execute("INSERT INTO dim3 VALUES ('Sales','B1'),('Sales','B2'),('COGS','B1'),('COGS','B2')")
     con.execute("CREATE TABLE fact3 (account VARCHAR, business_id VARCHAR)")
     # 10 fact rows; only the two ('Sales','B1') rows resolve against dim3.
     con.execute(

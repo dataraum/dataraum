@@ -667,11 +667,14 @@ class TestValueSetGrounding:
         assert "Sales Revenue (120)" in result
         assert "COGS (100)" in result
 
-    def test_high_card_column_not_served_to_graph_agent(self) -> None:
-        """DAT-621: the one-shot GraphAgent gets the LOW-CARD BASELINE only. A high-card /
-        incompletely-fetched column (distinct > served) is NOT rendered at all — no size
-        line, no partial sample. High-card is the cockpit sub-agent's + user's drill lane;
-        dangling it here only invites the ILIKE-guess that is the root bug."""
+    def test_high_card_column_served_as_explorable_never_enumerated(self) -> None:
+        """DAT-699: a high-card / incompletely-fetched column (distinct > served) renders
+        size + a frequency sample + the search_values hint — the agent can now DRILL for
+        exact values instead of the old render-nothing rule, which made a
+        present-but-unenumerated concept structurally ungroundable (concepts
+        present by name in a several-hundred-value column were unreachable). The
+        values still
+        never render as an enumeration the agent might mistake for the complete set."""
         table = TableContext(
             table_id="t1",
             table_name="ledger",
@@ -679,11 +682,11 @@ class TestValueSetGrounding:
         )
         result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
 
-        # The column is still MENTIONED in the catalog, but carries NO value-set entry and
-        # no size-only/abstain line — high-card is simply not a groundable surface here.
-        assert "**cost_center**" not in result  # no value-set entry
-        assert "not inlined" not in result  # the old size-only branch is gone
-        assert "North (9)" not in result  # no partial value sample leaked
+        assert "**cost_center**: 30 distinct values — NOT enumerated" in result
+        assert "search_values" in result
+        assert "Most frequent: North, South" in result
+        assert "North (9)" not in result  # a sample, never a count-enumerated value set
+        assert "(complete" not in result  # and never marked complete
 
     def test_near_constant_column_flagged_not_served(self) -> None:
         """A near-constant column (one value ≥90%) is flagged, never served as groundable —

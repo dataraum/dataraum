@@ -556,3 +556,67 @@ class TestEffort:
     def test_no_effort_no_output_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         kwargs = self._capture_kwargs(monkeypatch, "claude-sonnet-5", None)
         assert "output_config" not in kwargs
+
+
+class TestRawContentRoundTrip:
+    """Thinking-block continuation plumbing (DAT-699): converse captures the
+    turn's blocks VERBATIM in raw_content, and _convert_messages echoes an
+    assistant turn's raw_content unchanged — the live API rejects a continued
+    conversation whose assistant turn lost its signed thinking blocks."""
+
+    def _fake_message(self) -> SimpleNamespace:
+        usage = SimpleNamespace(
+            input_tokens=10,
+            output_tokens=5,
+            cache_read_input_tokens=None,
+            cache_creation_input_tokens=None,
+        )
+        blocks = [
+            SimpleNamespace(type="thinking", thinking="chain", signature="sig-1"),
+            SimpleNamespace(type="text", text="here"),
+            SimpleNamespace(
+                type="tool_use", id="tu-1", name="search_values", input={"pattern": "tax"}
+            ),
+            SimpleNamespace(type="redacted_thinking", data="opaque"),
+        ]
+        return SimpleNamespace(
+            content=blocks, usage=usage, stop_reason="tool_use", model="claude-test"
+        )
+
+    def test_converse_captures_blocks_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = _provider()
+        message = self._fake_message()
+        _patch_stream(monkeypatch, provider, lambda **_: message)
+
+        response = provider.converse(_request()).unwrap()
+
+        assert response.raw_content == [
+            {"type": "thinking", "thinking": "chain", "signature": "sig-1"},
+            {"type": "text", "text": "here"},
+            {
+                "type": "tool_use",
+                "id": "tu-1",
+                "name": "search_values",
+                "input": {"pattern": "tax"},
+            },
+            {"type": "redacted_thinking", "data": "opaque"},
+        ]
+        assert [tc.name for tc in response.tool_calls] == ["search_values"]
+
+    def test_assistant_raw_content_echoes_unchanged(self) -> None:
+        provider = _provider()
+        raw = [
+            {"type": "thinking", "thinking": "chain", "signature": "sig-1"},
+            {"type": "tool_use", "id": "tu-1", "name": "search_values", "input": {"p": 1}},
+        ]
+        converted = provider._convert_messages(
+            [Message(role="assistant", content="ignored-when-raw", raw_content=raw)]
+        )
+
+        assert converted == [{"role": "assistant", "content": raw}]
+
+    def test_assistant_without_raw_content_rebuilds_from_fields(self) -> None:
+        provider = _provider()
+        converted = provider._convert_messages([Message(role="assistant", content="plain")])
+
+        assert converted == [{"role": "assistant", "content": [{"type": "text", "text": "plain"}]}]

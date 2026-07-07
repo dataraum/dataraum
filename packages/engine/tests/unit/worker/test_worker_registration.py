@@ -25,7 +25,7 @@ from dataraum.worker.workflows import _SESSION_PHASE_ORDER, _SESSION_VALUE_PHASE
 
 
 def _executed_activity_names() -> set[str]:
-    """Activity names the workflow bodies execute, read off the source AST."""
+    """Activity names the workflow bodies execute ON THIS WORKER, off the source AST."""
     tree = ast.parse(inspect.getsource(workflows_mod))
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -35,6 +35,13 @@ def _executed_activity_names() -> set[str]:
             and node.func.attr == "execute_activity"
             and node.args
         ):
+            # A call carrying an explicit ``task_queue=`` is cross-queue by
+            # construction (DAT-708): the orchestration workflows schedule the
+            # cockpit's run writers + teach agent on the cockpit's activity-only
+            # queue, so THIS worker's registration list rightly never carries
+            # them. Everything scheduled on the worker's own queue stays guarded.
+            if any(kw.arg == "task_queue" for kw in node.keywords):
+                continue
             first = node.args[0]
             if isinstance(first, ast.Constant) and isinstance(first.value, str):
                 names.add(first.value)

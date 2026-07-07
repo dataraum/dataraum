@@ -47,13 +47,19 @@ class TestLLMFeaturesRegistration:
                 not_a_registered_feature=FeatureConfig(),  # type: ignore[call-arg]
             )
 
-    def test_sql_repair_and_graph_sql_generation_are_declared(self) -> None:
+    def test_graph_sql_generation_is_declared(self) -> None:
         features = LLMFeatures(
             semantic_analysis=FeatureConfig(),
-            sql_repair=FeatureConfig(model_tier="fast", max_repair_attempts=2),
             graph_sql_generation=FeatureConfig(model_tier="balanced", effort="low"),
         )
-        assert features.sql_repair is not None
-        assert features.sql_repair.enabled is True
         assert features.graph_sql_generation is not None
         assert features.graph_sql_generation.effort == "low"
+
+    def test_sql_repair_is_retired(self) -> None:
+        # DAT-671: graph-path text repair is gone — the key must fail loud if
+        # it ever reappears in llm/config.yaml.
+        with pytest.raises(ValidationError, match="sql_repair"):
+            LLMFeatures(
+                semantic_analysis=FeatureConfig(),
+                sql_repair=FeatureConfig(),  # type: ignore[call-arg]
+            )

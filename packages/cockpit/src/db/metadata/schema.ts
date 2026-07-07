@@ -619,6 +619,7 @@ export const sqlSnippets = metadataSchema
 		source: varchar(),
 		llmModel: varchar("llm_model"),
 		provenance: json(),
+		parts: json(),
 		executionCount: integer("execution_count"),
 		failureCount: integer("failure_count"),
 		lastUsedAt: timestamp("last_used_at"),
@@ -627,7 +628,7 @@ export const sqlSnippets = metadataSchema
 		updatedAt: timestamp("updated_at"),
 	})
 	.as(
-		sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, llm_model, provenance, execution_count, failure_count, last_used_at, column_hash, created_at, updated_at FROM ws_00000000_0000_0000_0000_000000000001.sql_snippets`,
+		sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, llm_model, provenance, parts, execution_count, failure_count, last_used_at, column_hash, created_at, updated_at FROM ws_00000000_0000_0000_0000_000000000001.sql_snippets`,
 	);
 
 export const tables = metadataSchema

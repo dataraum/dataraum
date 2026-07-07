@@ -1,17 +1,22 @@
-// DrillableGrid (DAT-672): the shared result grid with a drill layer on top.
+// DrillableGrid (DAT-672, per-node re-cut DAT-703): the shared result grid
+// with a drill layer on top.
 //
 // Owns the drill-step stack and the EFFECTIVE query. Drill composes upstream
-// of the grid: every accepted step stack is composed server-side
-// (`/api/drill/compose`, binder-validated) into a new effective base SQL +
-// params, and the ordinary `WindowedGrid` renders it — remounting on the
+// of the grid, server-side and binder-validated, into a new effective base
+// SQL + params; the ordinary `WindowedGrid` renders it — remounting on the
 // effective key so grid-local sort/filters reset exactly as on a new agent
-// query (React rule 5). The stack only ever holds compositions the server
-// ACCEPTED: a candidate stack is sent as a user-event mutation and committed
-// on `ok: true`; a refusal shows the amber "can't slice this deterministically"
-// state and leaves the grid on the last good drill.
+// query (React rule 5). TWO compose paths, chosen by `nodeRef`:
+//   - a canvas NODE (metric or measure) recomposes from its persisted clause
+//     parts with the steps as clause appends (`/api/drill/node`);
+//   - an ad-hoc grid wraps its own visible columns (`/api/drill/compose`,
+//     tier A only).
+// The stack only ever holds compositions the server ACCEPTED: a candidate
+// stack is sent as a user-event mutation and committed on `ok: true`; a
+// refusal shows the amber "can't slice this deterministically" state and
+// leaves the grid on the last good drill.
 //
 // Axes come from the metric path (`/api/drill/axes`, catalog metadata only —
-// DAT-678 adds ad-hoc resolution). This widget fetches both drill routes
+// DAT-678 adds ad-hoc resolution). This widget fetches the drill routes
 // instead of importing server modules (bundle hygiene).
 
 import {
@@ -41,7 +46,7 @@ import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 type SqlParams = (string | number | boolean | null)[];
 
 type ComposeResponse =
-	| { ok: true; tier: "A" | "B" | "C"; sql: string; params: SqlParams }
+	| { ok: true; sql: string; params: SqlParams }
 	| { ok: false; reason: string };
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -95,12 +100,16 @@ export function DrillableGrid({
 	sql,
 	params,
 	axesRequest,
+	nodeRef,
 }: {
-	/** The base query (a metric's flattened SQL on the canvas path). */
+	/** The base query (the node's composed SQL on the canvas path). */
 	sql: string;
 	params?: SqlParams;
 	/** What the Slice control offers — resolved by the metric path in P1. */
 	axesRequest: DrillAxesRequest;
+	/** Present on the canvas path: drill steps recompose the NODE from its
+	 *  persisted parts (`/api/drill/node`) instead of wrapping the base SQL. */
+	nodeRef?: DrillAxesRequest;
 }) {
 	const baseParams = useMemo<SqlParams>(() => params ?? [], [params]);
 	// The committed stack + its server-composed statement move TOGETHER: steps
@@ -144,11 +153,16 @@ export function DrillableGrid({
 		}) => ({
 			candidate,
 			generation,
-			result: await postJson<ComposeResponse>("/api/drill/compose", {
-				sql,
-				params: baseParams,
-				steps: candidate,
-			}),
+			result: nodeRef
+				? await postJson<ComposeResponse>("/api/drill/node", {
+						...nodeRef,
+						steps: candidate,
+					})
+				: await postJson<ComposeResponse>("/api/drill/compose", {
+						sql,
+						params: baseParams,
+						steps: candidate,
+					}),
 		}),
 		onSuccess: ({ candidate, generation, result }) => {
 			if (generation !== generationRef.current) return; // superseded — drop
@@ -204,14 +218,7 @@ export function DrillableGrid({
 								p.kind === "pin" && p.column === s.column && p.value === value,
 						);
 						if (!duplicate) {
-							// The pin inherits the slice's home relations — same column,
-							// same qualification target.
-							pins.push({
-								kind: "pin",
-								column: s.column,
-								value,
-								source: s.source,
-							});
+							pins.push({ kind: "pin", column: s.column, value });
 						}
 					}
 					if (pins.length > 0) apply([...steps, ...pins]);
@@ -240,14 +247,7 @@ export function DrillableGrid({
 								key={axis.column}
 								disabled={slicedColumns.has(axis.column)}
 								onClick={() =>
-									apply([
-										...steps,
-										{
-											kind: "slice",
-											column: axis.column,
-											source: axis.sourceRelations,
-										},
-									])
+									apply([...steps, { kind: "slice", column: axis.column }])
 								}
 								rightSection={
 									axis.valueCount !== null ? (

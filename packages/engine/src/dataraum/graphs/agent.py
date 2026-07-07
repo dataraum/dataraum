@@ -110,9 +110,12 @@ class GeneratedCode:
     code_id: str
     graph_id: str
 
-    # Generated SQL
+    # Generated SQL. A freshly-authored EXTRACT step also carries "parts" —
+    # the clause-parts dict (DAT-671) its "sql" was rendered from; formula/
+    # constant steps and cache-composed steps carry none here (cached parts
+    # live on the snippet row).
     summary: str  # Plain English description of what the query calculates
-    steps: list[dict[str, str]]  # List of {step_id, sql, description}
+    steps: list[dict[str, Any]]  # List of {step_id, sql, description[, parts]}
     final_sql: str
 
     # Generation metadata
@@ -368,14 +371,13 @@ class GraphAgent(LLMFeature):
             return Result.fail(reason)
         execution.verification_flags = verdict.unwrap() or []
 
-        # Save snippets AFTER successful execution AND verification — includes
-        # repair info and only saves SQL that actually works AND is trustworthy.
+        # Save snippets AFTER successful execution AND verification — only SQL
+        # that actually works AND is trustworthy, with its clause parts.
         self._save_snippets(
             session=session,
             graph=graph,
             generated_code=generated_code,
             schema_mapping_id=schema_mapping_id,
-            step_results=execution.step_results,
             workspace_id=workspace_id,
         )
 
@@ -927,9 +929,14 @@ class GraphAgent(LLMFeature):
                 return Result.fail(repaired.error or "schema repair failed")
             output = repaired.unwrap()
 
-        # Bind the one generated SQL to the graph's own leaf id (the model never
-        # names a step — DAT-664's id-paraphrase class is gone by construction)
-        # and surface it through the same composed shape the cache path produces.
+        # Bind the one generated grounding to the graph's own leaf id (the model
+        # never names a step — DAT-664's id-paraphrase class is gone by
+        # construction). The model emits CLAUSE PARTS (DAT-671); the fused
+        # statement is rendered exactly once, here, and the parts travel with
+        # the step so persistence keeps them as the artifact.
+        from dataraum.graphs.formula_composer import compose_extract_sql, extract_parts_dict
+
+        rendered_sql = compose_extract_sql(output.select_expr, output.relation, output.where)
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
@@ -937,8 +944,9 @@ class GraphAgent(LLMFeature):
             steps=[
                 {
                     "step_id": leaf.step_id,
-                    "sql": output.sql,
+                    "sql": rendered_sql,
                     "description": output.description,
+                    "parts": extract_parts_dict(output.select_expr, output.relation, output.where),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
@@ -960,7 +968,10 @@ class GraphAgent(LLMFeature):
             {
                 "step_id": leaf.step_id,
                 "grounding": output.grounding,
-                "sql": output.sql,
+                "relation": output.relation,
+                "where": output.where,
+                "select_expr": output.select_expr,
+                "sql": rendered_sql,
                 "field_resolution": output.provenance.field_resolution
                 if output.provenance
                 else None,
@@ -1130,13 +1141,6 @@ class GraphAgent(LLMFeature):
             )
         execution.assumptions = assumptions
 
-        # Get max repair attempts from config (default 2). max_repair_attempts is
-        # a YAML extra on FeatureConfig (extra="allow"), so getattr with default.
-        feature_config = self.config.features.sql_repair
-        max_repair_attempts = (
-            getattr(feature_config, "max_repair_attempts", 2) if feature_config else 2
-        )
-
         # Convert generated code steps to shared format
         steps = [
             SQLStep(
@@ -1147,22 +1151,18 @@ class GraphAgent(LLMFeature):
             for s in generated_code.steps
         ]
 
-        # Create repair function that captures context
-        def repair_fn(failed_sql: str, error_msg: str, description: str) -> Result[str]:
-            return self._repair_sql(
-                failed_sql=failed_sql,
-                error_message=error_msg,
-                context=context,
-                step_description=description,
-            )
-
-        # Execute using shared function
+        # NO text repair (DAT-671; execute_sql_steps no longer carries any): a
+        # repaired statement would silently diverge from the clause parts it
+        # was rendered from (and, before parts, already diverged from the
+        # model's committed column_mappings_basis). A failing extract
+        # honest-fails into the retained-failure → prior_context → re-author
+        # loop (DAT-543/616) — looping is the graph agent's healing mechanism,
+        # not in-place rewrites. The retained failure rows are the measurement
+        # of what this costs.
         exec_result = execute_sql_steps(
             steps=steps,
             final_sql=generated_code.final_sql,
             duckdb_conn=context.duckdb_conn,
-            max_repair_attempts=max_repair_attempts,
-            repair_fn=repair_fn,
             return_table=False,
         )
 
@@ -1179,7 +1179,6 @@ class GraphAgent(LLMFeature):
                 inputs_used={
                     "sql": sr.sql_executed,
                     "step_id": sr.step_id,
-                    "repair_attempts": sr.repair_attempts,
                 },
             )
             # bool BEFORE int (bool is an int subclass); Decimal IS the common
@@ -1324,88 +1323,6 @@ class GraphAgent(LLMFeature):
 
         return yaml.dump(graph_dict, default_flow_style=False, allow_unicode=True)
 
-    def _repair_sql(
-        self,
-        failed_sql: str,
-        error_message: str,
-        context: ExecutionContext,
-        step_description: str = "",
-    ) -> Result[str]:
-        """Use LLM to repair SQL that failed validation or execution.
-
-        Uses the sql_repair feature from llm.yaml with proper caching
-        and model tier configuration.
-
-        Args:
-            failed_sql: The SQL that failed
-            error_message: Error message from DuckDB
-            context: Execution context with table schema
-            step_description: What the SQL should accomplish
-
-        Returns:
-            Result containing repaired SQL or error
-        """
-        from dataraum.llm.providers.base import ConversationRequest, Message
-
-        # Check if sql_repair feature is enabled. The field is DECLARED on
-        # LLMFeatures (DAT-603) — before that, the YAML entry was silently dropped
-        # by pydantic and this guard disabled repair on every call.
-        feature_config = self.config.features.sql_repair
-        if not feature_config or not feature_config.enabled:
-            return Result.fail("SQL repair feature is disabled")
-
-        model_tier = feature_config.model_tier
-
-        # Build multi-table schema for context
-        schema_info = self._build_schema_info(context)
-
-        # Build prompt context
-        prompt_context = {
-            "error_message": error_message,
-            "failed_sql": failed_sql,
-            "table_schema": json.dumps(schema_info, indent=2),
-            "step_description": step_description or "Execute the query",
-        }
-
-        # Render repair prompt
-        try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "sql_repair", prompt_context
-            )
-        except Exception as e:
-            return Result.fail(f"Failed to render repair prompt: {e}")
-
-        # Call LLM with configured model tier
-        # Note: SQL repairs are not cached since errors are typically unique situations
-        request = ConversationRequest(
-            messages=[Message(role="user", content=user_prompt)],
-            system=system_prompt,
-            max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
-            model=self.provider.get_model_for_tier(model_tier),
-            label="sql_repair",
-            effort=feature_config.effort,
-        )
-
-        # converse raises a typed ProviderError on an API failure (DAT-503) —
-        # retryability rides the exception to the worker's durable boundary, so
-        # we don't re-wrap it. A returned Result is always a success.
-        response = self.provider.converse(request).unwrap()
-        if not response.content:
-            return Result.fail("LLM returned empty response")
-
-        # Extract SQL from response (strip markdown code blocks if present)
-        repaired_sql = response.content.strip()
-        if repaired_sql.startswith("```sql"):
-            repaired_sql = repaired_sql[6:]
-        if repaired_sql.startswith("```"):
-            repaired_sql = repaired_sql[3:]
-        if repaired_sql.endswith("```"):
-            repaired_sql = repaired_sql[:-3]
-        repaired_sql = repaired_sql.strip()
-
-        return Result.ok(repaired_sql)
-
     def _resolve_parameters(
         self, graph: TransformationGraph, provided: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1494,26 +1411,25 @@ class GraphAgent(LLMFeature):
 
     @staticmethod
     def _build_snippet_provenance(
-        generated_code: GeneratedCode, *, repaired: bool
+        generated_code: GeneratedCode,
     ) -> dict[str, Any] | None:
         """The provenance blob saved alongside a snippet.
 
-        Carries the LLM grounding decisions (field_resolution, column_mappings_basis),
-        a repair flag, and — crucially for the phase confidence gate — the per-input
+        Carries the LLM grounding decisions (field_resolution, column_mappings_basis)
+        and — crucially for the phase confidence gate — the per-input
         ``assumptions`` (so a metric ASSEMBLED from cache still surfaces its weakest
         grounding's confidence). Composed FORMULA/CONSTANT snippets have no LLM
         provenance but DO carry forward their extract leaves' assumptions.
+        (The ``was_repaired`` flag died with graph-path text repair, DAT-671 —
+        a snippet's SQL can no longer diverge from its committed grounding.)
         """
         provenance: dict[str, Any] | None = None
         if generated_code.provenance:
             prov = generated_code.provenance
             provenance = {
                 "field_resolution": prov.field_resolution,
-                "was_repaired": repaired,
                 "column_mappings_basis": prov.column_mappings_basis,
             }
-        elif repaired:
-            provenance = {"was_repaired": True}
 
         if generated_code.assumptions:
             if provenance is None:
@@ -1530,7 +1446,6 @@ class GraphAgent(LLMFeature):
         graph: TransformationGraph,
         generated_code: GeneratedCode,
         schema_mapping_id: str,
-        step_results: list[StepResult] | None = None,
         *,
         workspace_id: str,
     ) -> None:
@@ -1543,30 +1458,24 @@ class GraphAgent(LLMFeature):
         ``_save_composed_snippets`` (from ``assemble``) sourced to their own metric —
         never shared by shape (the aliasing DAT-646 removed).
 
-        Called AFTER successful execution so that:
-        - Only working SQL is saved (not broken SQL that needs marking as failed)
-        - Repair info from step_results can be included in provenance
+        Called AFTER successful execution AND verification, so only working,
+        trustworthy SQL is saved. The step's clause ``parts`` (DAT-671) persist
+        alongside the rendered ``sql`` — the parts are the artifact, the sql is
+        their render, and nothing between authoring and here may rewrite either
+        (graph-path text repair was removed for exactly that reason).
         """
         from dataraum.query.snippet_library import SnippetLibrary
 
         library = SnippetLibrary(session, workspace_id=workspace_id)
         source = f"graph:{graph.graph_id}"
 
-        generated_steps: dict[str, dict[str, str]] = {}
+        generated_steps: dict[str, dict[str, Any]] = {}
         for step_dict in generated_code.steps:
             step_id = step_dict.get("step_id", "")
             if step_id:
                 generated_steps[step_id] = step_dict
 
-        repair_by_step: dict[str, StepResult] = {}
-        if step_results:
-            for sr in step_results:
-                if sr.inputs_used.get("repair_attempts", 0) > 0:
-                    repair_by_step[sr.step_id] = sr
-
-        provenance_dict = self._build_snippet_provenance(
-            generated_code, repaired=bool(repair_by_step)
-        )
+        provenance_dict = self._build_snippet_provenance(generated_code)
 
         saved_count = 0
         for step_id, graph_step in graph.steps.items():
@@ -1587,19 +1496,13 @@ class GraphAgent(LLMFeature):
                 )
                 continue
 
-            repaired = repair_by_step.get(step_id)
-            sql = (
-                repaired.source_query
-                if (repaired and repaired.source_query)
-                else gen_step.get("sql", "")
-            )
             description = gen_step.get("description", "") or generated_code.summary
 
             # Extract snippet: keyed by standard_field + statement + aggregation.
             # Per-concept grounding lives in provenance.column_mappings_basis.
             library.save_snippet(
                 snippet_type="extract",
-                sql=sql,
+                sql=gen_step.get("sql", ""),
                 description=description,
                 schema_mapping_id=schema_mapping_id,
                 source=source,
@@ -1608,6 +1511,7 @@ class GraphAgent(LLMFeature):
                 aggregation=graph_step.aggregation,
                 llm_model=generated_code.llm_model,
                 provenance=provenance_dict,
+                parts=gen_step.get("parts"),
             )
             saved_count += 1
 
@@ -1680,6 +1584,7 @@ class GraphAgent(LLMFeature):
                 aggregation=graph_step.aggregation,
                 llm_model=generated_code.llm_model,
                 provenance=provenance,
+                parts=gen_step.get("parts"),
                 failed=True,
             )
         logger.debug("saved_failed_snippet", graph_id=graph.graph_id, mode=mode)
@@ -1724,7 +1629,7 @@ class GraphAgent(LLMFeature):
 
         library = SnippetLibrary(session, workspace_id=workspace_id)
         source = f"graph:{graph.graph_id}"
-        provenance_dict = self._build_snippet_provenance(generated_code, repaired=False)
+        provenance_dict = self._build_snippet_provenance(generated_code)
         steps_by_id = {s["step_id"]: s for s in generated_code.steps if s.get("step_id")}
 
         for step_id, graph_step in graph.steps.items():

@@ -7,12 +7,13 @@
 //
 // Drill composes UPSTREAM of the grid: each drill state yields a new effective
 // base SQL + params, and the existing grid machinery (`buildGridQuery`,
-// `/api/run-sql`) wraps it unchanged. Two composition tiers:
+// `/api/run-sql`) wraps it unchanged. Two composition paths (DAT-703):
 //   - Tier A (this module, pure): every referenced column exists on the base
-//     result → wrap it in an outer GROUP BY with default aggregates.
-//   - Tier B (`drill-sql.ts`, server-only): the column lives INSIDE the
-//     statement's scope (e.g. a scalar metric aggregate) → AST injection via
-//     `json_serialize_sql`.
+//     result → wrap it in an outer GROUP BY with default aggregates. The
+//     ad-hoc grid path (`/api/drill/compose`).
+//   - Per-node (`parts.ts`, behind `/api/drill/node`): a canvas node rebuilds
+//     from its persisted clause parts with the steps as clause appends —
+//     never by parsing or mutating SQL text (tier-B AST injection is gone).
 // This module is neo-free so widgets can import the types (grid-query.ts is
 // the precedent).
 
@@ -23,8 +24,8 @@ import { quoteIdentifier } from "./grid-query";
 export type DrillPinValue = string | number | boolean | null;
 
 export type DrillStep =
-	| { kind: "slice"; column: string; source?: string[] }
-	| { kind: "pin"; column: string; value: DrillPinValue; source?: string[] };
+	| { kind: "slice"; column: string }
+	| { kind: "pin"; column: string; value: DrillPinValue };
 
 /** Axis-resolution request (`/api/drill/axes`, metric path in P1): exactly one
  *  of the two keys. Shared client↔server so the wire contract can't silently
@@ -33,18 +34,12 @@ export type DrillAxesRequest =
 	| { metricKey: string; standardField?: undefined }
 	| { standardField: string; metricKey?: undefined };
 
-/** One sliceable dimension of a metric's fact catalog (`/api/drill/axes`). */
+/** One sliceable dimension of a node's fact catalog (`/api/drill/axes`). */
 export interface DrillAxis {
-	/** The `slice_definitions.column_name` — addressable verbatim in the
-	 *  metric's SQL scope (the enriched view exposes FK-prefixed dim columns). */
+	/** The dimension column — addressable verbatim in the extract's SQL scope
+	 *  (the enriched view exposes FK-prefixed dim columns; whether it binds in
+	 *  a given composition stays the compose-time binder's call). */
 	column: string;
-	/** The relations this axis column LIVES on (the fact table and its
-	 *  enriched view). When the measure's SQL joins other relations sharing
-	 *  the column name (`f.business_id` vs `d.business_id`), the composer
-	 *  qualifies the injected reference with the matching relation's alias —
-	 *  the catalog's `column_id` points at the fact, so the fact-side column
-	 *  IS the axis, deterministically. */
-	sourceRelations: string[];
 	priority: number;
 	sliceType: string;
 	/** Catalog sample of the dimension's values (display hint, not exhaustive). */

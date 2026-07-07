@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "bun --bun vite dev --port 3000",
-    "build": "bun run scripts/build-workflow-bundle.ts && bun --bun vite build",
+    "build": "bun --bun vite build",
     "start": "bun run .output/server/index.mjs",
     "preview": "bun --bun vite preview",
     "test": "vitest run --project unit",
@@ -47,6 +47,7 @@
     "@temporalio/client": "^1.19.0",
     "@temporalio/worker": "^1.19.0",
     "@temporalio/workflow": "^1.19.0",
+    "@uwdata/mosaic-sql": "^0.28.1",
     "@xyflow/react": "^12.11.2",
     "dompurify": "^3.4.11",
     "drizzle-orm": "1.0.0-rc.4-5d5b77c",

@@ -1,7 +1,7 @@
-// Boot seam (DAT-529): start the co-located orchestration worker ONCE when the
-// cockpit server process boots. A Nitro plugin runs a single time at startup
-// (before serving), which is exactly the "module-level singleton started at
-// server boot" the design calls for — and it makes the worker tab-independent
+// Boot seam (DAT-529): start the co-located ACTIVITY-ONLY worker (DAT-708) ONCE
+// when the cockpit server process boots. A Nitro plugin runs a single time at
+// startup (before serving), which is exactly the "module-level singleton started
+// at server boot" the design calls for — and it makes the worker tab-independent
 // (it polls for the life of the process, no browser subscription needed).
 //
 // Registered via `nitro({ plugins: [...] })` in vite.config.ts. Fire-and-forget:

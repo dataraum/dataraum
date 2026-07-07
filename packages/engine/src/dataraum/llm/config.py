@@ -69,8 +69,8 @@ class LLMFeatures(BaseModel):
     # pipeline's most central agent (DAT-603). None keeps the built-in defaults
     # (balanced tier, API-default effort).
     graph_sql_generation: FeatureConfig | None = None
-    # LLM repair of failed step SQL (GraphAgent._repair_sql).
-    sql_repair: FeatureConfig | None = None
+    # (sql_repair died with graph-path text repair, DAT-671 — the graph agent
+    # heals by looping, never by rewriting a statement behind its grounding.)
 
 
 class LLMLimits(BaseModel):

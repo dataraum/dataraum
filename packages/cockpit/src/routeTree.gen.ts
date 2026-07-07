@@ -22,6 +22,7 @@ import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as ApiReportsMintRouteImport } from './routes/api/reports/mint'
+import { Route as ApiDrillNodeRouteImport } from './routes/api/drill/node'
 import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
 import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
 import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
@@ -99,6 +100,11 @@ const appSettingsRoute = appSettingsRouteImport.update({
 const ApiReportsMintRoute = ApiReportsMintRouteImport.update({
   id: '/api/reports/mint',
   path: '/api/reports/mint',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDrillNodeRoute = ApiDrillNodeRouteImport.update({
+  id: '/api/drill/node',
+  path: '/api/drill/node',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiDrillComposeRoute = ApiDrillComposeRouteImport.update({
@@ -197,6 +203,7 @@ export interface FileRoutesByFullPath {
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
+  '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -225,6 +232,7 @@ export interface FileRoutesByTo {
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
+  '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
@@ -254,6 +262,7 @@ export interface FileRoutesById {
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
+  '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -284,6 +293,7 @@ export interface FileRouteTypes {
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
+    | '/api/drill/node'
     | '/api/reports/mint'
     | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
@@ -312,6 +322,7 @@ export interface FileRouteTypes {
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
+    | '/api/drill/node'
     | '/api/reports/mint'
     | '/workspace/$wsId/governance'
     | '/workspace/$wsId/library'
@@ -340,6 +351,7 @@ export interface FileRouteTypes {
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
+    | '/api/drill/node'
     | '/api/reports/mint'
     | '/(app)/workspace/$wsId/cockpit'
     | '/(app)/workspace/$wsId/governance'
@@ -368,6 +380,7 @@ export interface RootRouteChildren {
   ApiChartsAuthorRoute: typeof ApiChartsAuthorRoute
   ApiDrillAxesRoute: typeof ApiDrillAxesRoute
   ApiDrillComposeRoute: typeof ApiDrillComposeRoute
+  ApiDrillNodeRoute: typeof ApiDrillNodeRoute
   ApiReportsMintRoute: typeof ApiReportsMintRoute
 }
 
@@ -462,6 +475,13 @@ declare module '@tanstack/react-router' {
       path: '/api/reports/mint'
       fullPath: '/api/reports/mint'
       preLoaderRoute: typeof ApiReportsMintRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drill/node': {
+      id: '/api/drill/node'
+      path: '/api/drill/node'
+      fullPath: '/api/drill/node'
+      preLoaderRoute: typeof ApiDrillNodeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/drill/compose': {
@@ -639,6 +659,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChartsAuthorRoute: ApiChartsAuthorRoute,
   ApiDrillAxesRoute: ApiDrillAxesRoute,
   ApiDrillComposeRoute: ApiDrillComposeRoute,
+  ApiDrillNodeRoute: ApiDrillNodeRoute,
   ApiReportsMintRoute: ApiReportsMintRoute,
 }
 export const routeTree = rootRouteImport

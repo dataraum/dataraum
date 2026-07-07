@@ -1,41 +1,41 @@
-// Metric-path drill-axis resolver (DAT-672) — the SERVER-ONLY read behind
-// `/api/drill/axes`. Imports config + the metadata client, so it must never be
-// imported by a client component (canvas widgets fetch the API route).
+// Per-node drill-axis resolver (DAT-672, per-node re-cut DAT-703) — the
+// SERVER-ONLY read behind `/api/drill/axes`. Imports config + the metadata
+// client, so it must never be imported by a client component (canvas widgets
+// fetch the API route).
 //
-// The canvas-first contract: a metric's drillable dimensions resolve from what
-// its SQL ACTUALLY reads — no naming conventions, no substring matching:
+// The canvas-first contract: a node's drillable dimensions resolve from what
+// its extracts ACTUALLY read — no naming conventions, no substring matching.
+// Since parts-at-source (DAT-671) that read is direct: the extract's
+// persisted clause parts name their ONE relation, which is the promoted
+// enriched view; that view's FACT table carries the axes. No SQL parsing on
+// this path anymore.
 //
-//   metric → dag extract steps (standard fields) → newest extract snippet per
-//   field → the extract SQL's parsed relations (`sqlRelations`, DuckDB's own
-//   parser) → the promoted enriched view among them (`resolveGrounding`, the
-//   same matcher the Model loader uses) → that view's FACT table →
-//   `current_slice_definitions` rows on the fact, priority-ordered.
-//
-// `slice_definitions.column_name` is addressable VERBATIM in the metric's SQL
-// scope: metric SQL reads the enriched view (the GraphAgent's prefer-enriched
-// contract) and the enriched view exposes exactly those FK-prefixed dimension
-// columns. Whether an axis actually binds in a given statement stays the
-// composer's call (`/api/drill/compose`, binder-gated).
+// Axes come from TWO catalogs on the node's own fact(s): the slicing agent's
+// curated `current_slice_definitions` (priority, values, context) UNIONED
+// with the enriched view's grain-verified `dimension_columns` substrate — the
+// curation is an annotation layer, never a filter (the slicing agent picks a
+// handful; the substrate routinely exposes more grain-safe joined dims).
+// `driver_rankings.ranked_dimensions` orders what survives: measured drivers
+// first by gain, then curated priority, then bare substrate. No
+// alias-collapse in v1, and no pre-bind testing — whether an axis actually
+// binds in a given composition stays the compose-time binder's call
+// (`/api/drill/node`).
 
 import { and, asc, desc, eq, inArray, like } from "drizzle-orm";
 
 import { config } from "#/config";
 import { metadataDb } from "#/db/metadata/client";
 import {
+	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
 	currentSliceDefinitions,
-	currentTables,
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
-import { sqlRelations } from "#/lib/sql-canonical";
+import { narrowSnippetParts } from "#/duckdb/parts";
 
-import {
-	type ExtractSnippetInput,
-	parseMetricDag,
-	resolveGrounding,
-} from "./operating-model-graph";
+import { parseMetricDag } from "./operating-model-graph";
 
 /** The extract-step standard fields of a metric's persisted DAG (pure). */
 export function measureFieldsFromDag(dag: unknown): string[] {
@@ -65,19 +65,15 @@ export interface SliceRowInput {
 /**
  * Slice rows → axes (pure): drop rows without a column name, dedupe by column
  * keeping the best (lowest) priority — a dimension cataloged on several facts
- * of the same metric is ONE axis — and narrow `distinct_values` to strings.
+ * of the same node is ONE axis — and narrow `distinct_values` to strings.
  * Callers pass rows already priority-ordered; the dedupe preserves that order.
  */
-export function axesFromSliceRows(
-	rows: SliceRowInput[],
-	sourcesByFact: ReadonlyMap<string, string[]>,
-): DrillAxis[] {
+export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
 	const byColumn = new Map<string, DrillAxis>();
 	for (const r of rows) {
 		if (!r.columnName || byColumn.has(r.columnName)) continue;
 		byColumn.set(r.columnName, {
 			column: r.columnName,
-			sourceRelations: sourcesByFact.get(r.tableId ?? "") ?? [],
 			priority: r.slicePriority ?? Number.MAX_SAFE_INTEGER,
 			sliceType: r.sliceType ?? "categorical",
 			values: Array.isArray(r.distinctValues)
@@ -88,6 +84,73 @@ export function axesFromSliceRows(
 		});
 	}
 	return [...byColumn.values()];
+}
+
+/**
+ * Union the enriched views' grain-verified `dimension_columns` substrate into
+ * the curated axes (pure): every join-projected dim the view exposes is
+ * drillable, whether or not the slicing agent picked it. Substrate-only axes
+ * carry no curation metadata and sink below curated ones (max priority);
+ * columns the catalog already covers keep their curated row untouched.
+ */
+export function unionSubstrateAxes(
+	axes: DrillAxis[],
+	substrateColumns: readonly string[],
+): DrillAxis[] {
+	const seen = new Set(axes.map((a) => a.column));
+	const out = [...axes];
+	for (const column of substrateColumns) {
+		if (seen.has(column)) continue;
+		seen.add(column);
+		out.push({
+			column,
+			priority: Number.MAX_SAFE_INTEGER,
+			sliceType: "categorical",
+			values: [],
+			valueCount: null,
+			businessContext: null,
+		});
+	}
+	return out;
+}
+
+/** One `current_driver_rankings` row as the resolver reads it
+ *  (`ranked_dimensions` is engine JSON: `[{dimension, gain}, ...]`). */
+export interface DriverRankingInput {
+	rankedDimensions: unknown;
+}
+
+/** Measured driver gain per dimension (pure): the max across a fact's measure
+ *  rankings — a dim that drives ANY of the node's measures leads the menu. */
+export function driverGains(rows: DriverRankingInput[]): Map<string, number> {
+	const gains = new Map<string, number>();
+	for (const row of rows) {
+		if (!Array.isArray(row.rankedDimensions)) continue;
+		for (const entry of row.rankedDimensions) {
+			if (typeof entry !== "object" || entry === null) continue;
+			const { dimension, gain } = entry as Record<string, unknown>;
+			if (typeof dimension !== "string" || typeof gain !== "number") continue;
+			const prev = gains.get(dimension);
+			if (prev === undefined || gain > prev) gains.set(dimension, gain);
+		}
+	}
+	return gains;
+}
+
+/**
+ * Order axes for the menu (pure): measured drivers first by gain (the engine
+ * already gated what earns a ranking entry — any listed gain outranks curated
+ * intuition), then everything else in its incoming order (curated priority,
+ * then substrate). Stable within each group.
+ */
+export function orderAxesByDrivers(
+	axes: DrillAxis[],
+	gains: ReadonlyMap<string, number>,
+): DrillAxis[] {
+	const ranked = axes
+		.filter((a) => gains.has(a.column))
+		.sort((a, b) => (gains.get(b.column) ?? 0) - (gains.get(a.column) ?? 0));
+	return [...ranked, ...axes.filter((a) => !gains.has(a.column))];
 }
 
 /** The measure standard fields the request targets: a measure names itself, a
@@ -126,13 +189,13 @@ export async function resolveDrillAxes(
 		};
 	}
 
-	// The same two reads the Model loader does: newest-first graph extracts
-	// (first-per-field wins in resolveGrounding) + the promoted enriched views.
+	// Newest-first graph extracts (first per field DECIDES, the resolver
+	// contract) + the promoted enriched views.
 	const [snippetRows, viewRows] = await Promise.all([
 		metadataDb
 			.select({
 				standardField: sqlSnippets.standardField,
-				sql: sqlSnippets.sql,
+				parts: sqlSnippets.parts,
 				failureCount: sqlSnippets.failureCount,
 			})
 			.from(sqlSnippets)
@@ -141,121 +204,109 @@ export async function resolveDrillAxes(
 					eq(sqlSnippets.schemaMappingId, config.dataraumWorkspaceId),
 					like(sqlSnippets.source, "graph:%"),
 					eq(sqlSnippets.snippetType, "extract"),
+					inArray(sqlSnippets.standardField, fields),
 				),
 			)
 			.orderBy(desc(sqlSnippets.updatedAt)),
 		metadataDb
 			.select({
 				viewName: currentEnrichedViews.viewName,
-				viewTableId: currentEnrichedViews.viewTableId,
 				factTableId: currentEnrichedViews.factTableId,
+				dimensionColumns: currentEnrichedViews.dimensionColumns,
+				isGrainVerified: currentEnrichedViews.isGrainVerified,
 			})
-			.from(currentEnrichedViews),
+			.from(currentEnrichedViews)
+			// Deterministic pick: the per-view folds below take the first
+			// occurrence — without an ORDER BY, which row wins would be
+			// Postgres row-order roulette.
+			.orderBy(asc(currentEnrichedViews.viewTableId)),
 	]);
 
+	// The parts contract makes grounding a lookup: an accepted extract's ONE
+	// relation either names a promoted view (→ its fact carries the axes) or
+	// it is stale/foreign — no SQL parsing. The `wanted` filter mirrors the
+	// SQL `inArray` (belt over braces — the field set defines the node).
 	const wanted = new Set(fields);
-	const extracts: ExtractSnippetInput[] = await Promise.all(
-		snippetRows
-			.filter(
-				(r): r is typeof r & { standardField: string } =>
-					r.standardField !== null && wanted.has(r.standardField),
-			)
-			.map(async (r) => ({
-				standardField: r.standardField,
-				sql: r.sql ?? null,
-				relations: r.sql ? ((await sqlRelations(r.sql)) ?? []) : [],
-				failureCount: r.failureCount ?? 0,
-			})),
-	);
-	const views = viewRows
-		.filter((v): v is typeof v & { viewName: string; viewTableId: string } =>
-			Boolean(v.viewName && v.viewTableId),
-		)
-		// baseTableIds feed only resolveGrounding's baseTables output, unused here.
-		.map((v) => ({
-			viewName: v.viewName,
-			viewTableId: v.viewTableId,
-			baseTableIds: [],
-		}));
-
-	const grounding = resolveGrounding(extracts, views, new Map());
-	const factByViewTableId = new Map(
+	const relations: string[] = [];
+	const decided = new Set<string>();
+	for (const r of snippetRows) {
+		if (!r.standardField || !wanted.has(r.standardField)) continue;
+		if (decided.has(r.standardField)) continue;
+		decided.add(r.standardField);
+		if ((r.failureCount ?? 0) !== 0) continue;
+		const parts = narrowSnippetParts(r.parts);
+		if (parts?.relation) relations.push(parts.relation);
+	}
+	const viewByName = new Map(
 		viewRows
-			.filter((v) => v.viewTableId && v.factTableId)
-			.map((v) => [v.viewTableId as string, v.factTableId as string]),
+			.filter((v): v is typeof v & { viewName: string } => Boolean(v.viewName))
+			.map((v) => [v.viewName, v] as const),
 	);
 	const factIds = [
 		...new Set(
-			grounding
-				.filter((g) => g.grounded && g.enrichedView)
-				.map((g) => factByViewTableId.get(g.enrichedView?.tableId ?? ""))
+			relations
+				.map((rel) => viewByName.get(rel)?.factTableId)
 				.filter((id): id is string => Boolean(id)),
 		),
 	];
 	if (factIds.length === 0) {
 		// Distinguish "reads something, just not a promoted view" (a stale or
 		// cross-lineage snippet — the honest refusal) from "no usable extract".
-		const staleRelations = [
-			...new Set(
-				extracts.flatMap((e) => (e.failureCount === 0 ? e.relations : [])),
-			),
-		];
+		const stale = [...new Set(relations)].filter((r) => !viewByName.has(r));
 		return {
 			axes: [],
 			reason:
-				staleRelations.length > 0
-					? `The computation reads relations outside the current analysis (${staleRelations.join(", ")}) — likely a stale snippet from an earlier run.`
-					: "No accepted extract SQL to resolve dimensions from.",
+				stale.length > 0
+					? `The computation reads relations outside the current analysis (${stale.join(", ")}) — likely a stale snippet from an earlier run.`
+					: "No accepted extract parts to resolve dimensions from.",
 		};
 	}
 
-	// The axis's HOME relations (fact table + its enriched view) travel with
-	// each axis so the composer can qualify a shared column name (`business_id`
-	// on both the fact and a joined dim) to the fact side — the catalog's
-	// column_id points there.
-	const factRows = await metadataDb
-		.select({
-			tableId: currentTables.tableId,
-			tableName: currentTables.tableName,
-		})
-		.from(currentTables)
-		.where(inArray(currentTables.tableId, factIds));
-	const viewNameByFact = new Map(
-		viewRows
-			.filter((v) => v.factTableId && v.viewName)
-			.map((v) => [v.factTableId as string, v.viewName as string]),
-	);
-	const sourcesByFact = new Map<string, string[]>(
-		factRows
-			.filter((t): t is typeof t & { tableId: string } => Boolean(t.tableId))
-			.map((t) => [
-				t.tableId,
-				[t.tableName, viewNameByFact.get(t.tableId)].filter((n): n is string =>
-					Boolean(n),
-				),
-			]),
-	);
+	// The grain-verified substrate: the enriched view's join-projected
+	// dimension columns. Only a row-count-verified view's dims are safe to
+	// group by (the same gate the drivers phase applies).
+	const substrateColumns = viewRows
+		.filter(
+			(v) =>
+				Boolean(v.factTableId) &&
+				factIds.includes(v.factTableId as string) &&
+				v.isGrainVerified === true,
+		)
+		.flatMap((v) =>
+			Array.isArray(v.dimensionColumns)
+				? v.dimensionColumns.filter((c): c is string => typeof c === "string")
+				: [],
+		);
 
-	const sliceRows = await metadataDb
-		.select({
-			tableId: currentSliceDefinitions.tableId,
-			columnName: currentSliceDefinitions.columnName,
-			slicePriority: currentSliceDefinitions.slicePriority,
-			sliceType: currentSliceDefinitions.sliceType,
-			distinctValues: currentSliceDefinitions.distinctValues,
-			valueCount: currentSliceDefinitions.valueCount,
-			businessContext: currentSliceDefinitions.businessContext,
-		})
-		.from(currentSliceDefinitions)
-		.where(inArray(currentSliceDefinitions.tableId, factIds))
-		.orderBy(asc(currentSliceDefinitions.slicePriority));
+	const [sliceRows, rankingRows] = await Promise.all([
+		metadataDb
+			.select({
+				tableId: currentSliceDefinitions.tableId,
+				columnName: currentSliceDefinitions.columnName,
+				slicePriority: currentSliceDefinitions.slicePriority,
+				sliceType: currentSliceDefinitions.sliceType,
+				distinctValues: currentSliceDefinitions.distinctValues,
+				valueCount: currentSliceDefinitions.valueCount,
+				businessContext: currentSliceDefinitions.businessContext,
+			})
+			.from(currentSliceDefinitions)
+			.where(inArray(currentSliceDefinitions.tableId, factIds))
+			.orderBy(asc(currentSliceDefinitions.slicePriority)),
+		metadataDb
+			.select({ rankedDimensions: currentDriverRankings.rankedDimensions })
+			.from(currentDriverRankings)
+			.where(inArray(currentDriverRankings.measureTableId, factIds)),
+	]);
 
-	const axes = axesFromSliceRows(sliceRows, sourcesByFact);
+	const axes = orderAxesByDrivers(
+		unionSubstrateAxes(axesFromSliceRows(sliceRows), substrateColumns),
+		driverGains(rankingRows),
+	);
 	if (axes.length === 0) {
 		return {
 			axes,
 			reason:
-				"No dimensions cataloged for this computation's fact table — the slicing phase found nothing grain-safe to offer.",
+				"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
 		};
 	}
 	return { axes };

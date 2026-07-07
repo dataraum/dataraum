@@ -7,13 +7,14 @@
 // there is no separate "Add source" button or `/api/add-source` route, and no
 // approval hop.
 //
-// DAT-609: this trigger starts the per-workspace `groundingLoopWorkflow` (id
-// `grounding-<ws>`) on the cockpit-orchestration queue. That workflow records the run
-// in cockpit_db (authoritative, before start — an unrecorded run is orphaned), starts
-// `addSourceWorkflow` as a cross-language CHILD on the workspace's `engine-<id>` queue,
-// and runs the autonomous teach-and-replay loop. (A manual `replay` is a DIRECT engine
-// start — not this loop.) The workflow advances tab-independently; the tool captures
-// the current conversationId and threads it through so the import's progress routes to
+// DAT-609/708: this trigger starts the per-workspace `groundingLoopWorkflow` (id
+// `grounding-<ws>`) — Python on the engine worker since DAT-708 — on the
+// workspace's `engine-<id>` queue. That workflow starts `addSourceWorkflow` as a
+// native child on the same queue, records the run in cockpit_db with the child's
+// real execution id (via the cockpit's activity-only worker), and runs the
+// autonomous teach-and-replay loop. (A manual `replay` is a DIRECT engine start —
+// not this loop.) The workflow advances tab-independently; the tool captures the
+// current conversationId and threads it through so the import's progress routes to
 // THIS chat (the worker has no request ALS — DAT-528).
 //
 // The tool returns the DETERMINISTIC engine workflow id immediately (the cockpit polls

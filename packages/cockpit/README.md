@@ -4,7 +4,7 @@ The DataRaum cockpit — the TanStack Start web app you actually use. One of fou
 
 ## What it is
 
-The cockpit is the product surface: typed chats (**Connect** / **Stage** / **Analyse**) with an agent canvas, plus the standing views — the operating-**Model** graph, **Governance**, **Runs**, and minted **Reports**. It hosts the chat agent (streaming via the Anthropic SDK), reads engine metadata straight from Postgres, and drives the engine's durable analysis by starting Temporal workflows. It also runs its own co-located TS **orchestration worker** for control-plane workflows (grounding loop, session cascade) — analysis itself stays in the Python engine.
+The cockpit is the product surface: typed chats (**Connect** / **Stage** / **Analyse**) with an agent canvas, plus the standing views — the operating-**Model** graph, **Governance**, **Runs**, and minted **Reports**. It hosts the chat agent (streaming via the Anthropic SDK), reads engine metadata straight from Postgres, and drives the engine's durable work by starting Temporal workflows — all workflows, analysis and orchestration alike, run in the Python engine. It also runs a co-located **activity-only Temporal worker** hosting the control-plane activities (run recording, the grounding-teach agent) the engine's orchestration workflows call back into.
 
 ## Stack
 
@@ -27,7 +27,7 @@ Browser ── /api/chat + /api/chat-stream (SSE) ──→ TanStack Start (this
                                                     ├── Anthropic streaming (TanStack AI agent loop)
                                                     ├── Tool registry (TS fns over Drizzle metadata + Temporal)
                                                     ├── cockpit_db (Drizzle → chat, reports, control plane)
-                                                    └── co-located TS orchestration worker (@temporalio/worker)
+                                                    └── co-located activity-only worker (@temporalio/worker)
 
 TanStack Start ── metadata reads ──→ engine's ws_<id> schema (Drizzle, src/db/metadata/)
                ── workflow starts ──→ Temporal ──→ engine worker (Python, the analysis)

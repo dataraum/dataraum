@@ -255,7 +255,9 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
     tool_call.name = "generate_sql"
     tool_call.input = {
         "grounding": "accounts_receivable via account_id__name IN ('Accounts Receivable')",
-        "sql": "SELECT SUM(amount) AS value FROM enriched_gl",
+        "relation": "enriched_gl",
+        "where": [],
+        "select_expr": "SUM(amount)",
         "description": "AR at latest period",
         "assumptions": [],
         "provenance": None,
@@ -277,8 +279,13 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
     assert code.steps == [
         {
             "step_id": "accounts_receivable",
-            "sql": "SELECT SUM(amount) AS value FROM enriched_gl",
+            "sql": "SELECT SUM(amount) AS value\nFROM enriched_gl",
             "description": "AR at latest period",
+            "parts": {
+                "select": [{"expr": "SUM(amount)", "alias": "value"}],
+                "from": ["enriched_gl"],
+                "where": [],
+            },
         }
     ]
     assert code.final_sql == "SELECT * FROM accounts_receivable"

@@ -10,7 +10,10 @@ Temporal worker.
 
 from __future__ import annotations
 
-from dataraum.worker.contracts import process_table_workflow_id
+from dataraum.worker.contracts import (
+    operating_model_workflow_id,
+    process_table_workflow_id,
+)
 
 _PARENT_A = "addsource-12345678-1234-1234-1234-123456789abc-run-7"
 _PARENT_B = "addsource-00000000-0000-0000-0000-000000000001-run-7"
@@ -27,3 +30,13 @@ def test_child_id_is_parent_prefixed() -> None:
 def test_distinct_parents_do_not_collide() -> None:
     """The DAT-364 anti-footgun: identical raw table, distinct parent → distinct ids."""
     assert process_table_workflow_id(_PARENT_A, _RAW) != process_table_workflow_id(_PARENT_B, _RAW)
+
+
+def test_operating_model_id_matches_the_cockpit_convention() -> None:
+    """`operatingmodel-<ws>` — the cascade and the cockpit's manual re-trigger share it.
+
+    The cockpit derives the identical id in ``src/temporal/workflow-id.ts``
+    (``operatingModelWorkflowId``); the literal here pins the hand-mirrored
+    convention so a drift on either side fails a test, not a live run.
+    """
+    assert operating_model_workflow_id("ws-1") == "operatingmodel-ws-1"

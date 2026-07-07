@@ -90,6 +90,15 @@ class SQLSnippetRecord(Base):
     llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
+    # --- Clause parts (DAT-671, parts-at-source; EXTRACT snippets only) ---
+    # The structured artifact `sql` is rendered from — `{select: [{expr, alias}],
+    # from: [relation], where: [pred, …]}`. The cockpit drill builder composes
+    # every variant (scalar, sliced, pinned) from these parts without parsing
+    # SQL; `sql` is their one-time render (compose_extract_sql), kept for
+    # display and non-drill consumers. NULL on formula/constant/query snippets
+    # and on rows authored before the cut (healed by re-injection).
+    parts: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
     # --- Quality tracking ---
     execution_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

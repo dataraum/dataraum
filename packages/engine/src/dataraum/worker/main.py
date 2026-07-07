@@ -33,8 +33,10 @@ from dataraum.worker.bootstrap import (
 from dataraum.worker.workflows import (
     AddSourceWorkflow,
     BeginSessionWorkflow,
+    GroundingLoopWorkflow,
     OperatingModelWorkflow,
     ProcessTableWorkflow,
+    SessionCascadeWorkflow,
 )
 
 logger = get_logger(__name__)
@@ -154,6 +156,13 @@ async def run_worker() -> None:
                     ProcessTableWorkflow,
                     BeginSessionWorkflow,
                     OperatingModelWorkflow,
+                    # Orchestration (DAT-708, ADR-0020): the grounding loop +
+                    # session cascade run HERE, starting the analysis workflows
+                    # above as native children; their cockpit-bound activities
+                    # (run writers, teach agent) are scheduled by name on the
+                    # cockpit's activity-only queue, NOT registered here.
+                    GroundingLoopWorkflow,
+                    SessionCascadeWorkflow,
                 ],
                 activities=activities,  # type: ignore[arg-type]  # bound @activity.defn methods
                 activity_executor=executor,
@@ -181,6 +190,8 @@ async def run_worker() -> None:
                     "processTableWorkflow",
                     "beginSessionWorkflow",
                     "operatingModelWorkflow",
+                    "groundingLoopWorkflow",
+                    "sessionCascadeWorkflow",
                 ],
                 activities=_activity_names(activities),
             )

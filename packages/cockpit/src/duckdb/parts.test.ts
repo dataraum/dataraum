@@ -17,6 +17,7 @@ import type { DrillPinValue } from "./drill";
 import {
 	type ComposedNodeQuery,
 	composeNodeQuery,
+	flattenAdditive,
 	type NodeDrill,
 	type NodeStep,
 	narrowSnippetParts,
@@ -82,12 +83,11 @@ const parts = (
 const extract = (
 	stepId: string,
 	p: SnippetParts | null,
-	opts: { aggregation?: string | null; output?: boolean } = {},
+	opts: { output?: boolean } = {},
 ): NodeStep => ({
 	stepId,
 	kind: "extract",
 	parts: p,
-	aggregation: opts.aggregation ?? "sum",
 	expression: null,
 	value: null,
 	dependsOn: [],
@@ -102,7 +102,6 @@ const formula = (
 	stepId,
 	kind: "formula",
 	parts: null,
-	aggregation: null,
 	expression,
 	value: null,
 	dependsOn,
@@ -112,7 +111,6 @@ const constant = (stepId: string, v: string | null): NodeStep => ({
 	stepId,
 	kind: "constant",
 	parts: null,
-	aggregation: null,
 	expression: null,
 	value: v,
 	dependsOn: [],
@@ -300,7 +298,6 @@ describe("composeNodeQuery — grouped", () => {
 			extract(
 				"avg_balance",
 				parts("AVG(open_balance)", "enriched_txn", ["kind = 'ar'"]),
-				{ aggregation: "avg" },
 			),
 			REVENUE,
 			formula(
@@ -417,6 +414,31 @@ describe("composeNodeQuery — grouped", () => {
 		expect(byAccount.get("materials")).toBeNull();
 	});
 
+	it("an OBSERVED contribution with a NULL aggregate POISONS its group — never skipped (review 50e4a143)", async () => {
+		// `weird` observes the same rows as revenue but its aggregate is NULL —
+		// SQL's NULL-skipping SUM would fabricate 800 for sales where the
+		// non-additive view of the same data shows the dash.
+		const steps: NodeStep[] = [
+			REVENUE,
+			extract(
+				"weird",
+				parts("SUM(CAST(NULL AS DOUBLE))", "enriched_txn", ["kind = 'rev'"]),
+			),
+			formula("out", "revenue + weird", ["revenue", "weird"], true),
+		];
+		const grouped = await rows(
+			composed(steps, undefined, { slices: ["account"], pins: [] }).sql,
+		);
+		expect(grouped).toHaveLength(1); // both carriers observe only 'sales'
+		expect(grouped[0]?.value).toBeNull();
+		// …and the pinned re-evaluation agrees (pin ≡ group through the poison).
+		const pinned = composed(steps, undefined, {
+			slices: [],
+			pins: [{ column: "account", value: "sales" }],
+		});
+		expect((await rows(pinned.sql, pinned.params))[0]?.value).toBeNull();
+	});
+
 	it("a fall-loud leaf makes the node NON-additive — its NULL absorbs every group", async () => {
 		const steps: NodeStep[] = [
 			REVENUE,
@@ -480,6 +502,112 @@ describe("composeNodeQuery — grouped", () => {
 		);
 		expect(byRegion.get("west")).toBe(500);
 		expect(byRegion.get("east")).toBe(300);
+	});
+});
+
+// --- flattenAdditive (the doctrine-v2 classifier, pure) ---------------------------
+
+describe("flattenAdditive", () => {
+	const byIdOf = (steps: NodeStep[]) =>
+		new Map(steps.map((s) => [s.stepId, s]));
+	const contributionsOf = (steps: NodeStep[]) => {
+		const target = steps.find((s) => s.outputStep);
+		if (!target) throw new Error("no output step");
+		return flattenAdditive(target, byIdOf(steps));
+	};
+
+	it("flips signs through nesting, unary minus, and double negation", () => {
+		// a - (b - c) → +a, -b, +c
+		expect(
+			contributionsOf([
+				REVENUE,
+				COGS,
+				DEPR,
+				formula(
+					"out",
+					"revenue - (cost_of_goods_sold - depreciation_amortization)",
+					["revenue", "cost_of_goods_sold", "depreciation_amortization"],
+					true,
+				),
+			]),
+		).toEqual([
+			{ stepId: "revenue", sign: 1 },
+			{ stepId: "cost_of_goods_sold", sign: -1 },
+			{ stepId: "depreciation_amortization", sign: 1 },
+		]);
+		// a - -b → +a, +b
+		expect(
+			contributionsOf([
+				REVENUE,
+				COGS,
+				formula(
+					"out",
+					"revenue - -cost_of_goods_sold",
+					["revenue", "cost_of_goods_sold"],
+					true,
+				),
+			]),
+		).toEqual([
+			{ stepId: "revenue", sign: 1 },
+			{ stepId: "cost_of_goods_sold", sign: 1 },
+		]);
+		// -(a - b) → -a, +b
+		expect(
+			contributionsOf([
+				REVENUE,
+				COGS,
+				formula(
+					"out",
+					"-(revenue - cost_of_goods_sold)",
+					["revenue", "cost_of_goods_sold"],
+					true,
+				),
+			]),
+		).toEqual([
+			{ stepId: "revenue", sign: -1 },
+			{ stepId: "cost_of_goods_sold", sign: 1 },
+		]);
+	});
+
+	it("contributes once per REFERENCE — a + a doubles, like the arithmetic", () => {
+		expect(
+			contributionsOf([
+				REVENUE,
+				formula("out", "revenue + revenue", ["revenue"], true),
+			]),
+		).toEqual([
+			{ stepId: "revenue", sign: 1 },
+			{ stepId: "revenue", sign: 1 },
+		]);
+	});
+
+	it("bails to non-additive on literals, ratios, constants, and fall-loud leaves", () => {
+		const cases: NodeStep[][] = [
+			[REVENUE, formula("out", "revenue + 10", ["revenue"], true)],
+			[
+				REVENUE,
+				COGS,
+				formula(
+					"out",
+					"revenue / cost_of_goods_sold",
+					["revenue", "cost_of_goods_sold"],
+					true,
+				),
+			],
+			[
+				REVENUE,
+				constant("days", "30"),
+				formula("out", "revenue + days", ["revenue", "days"], true),
+			],
+			[
+				REVENUE,
+				extract("fall_loud", parts("NULL", null)),
+				formula("out", "revenue + fall_loud", ["revenue", "fall_loud"], true),
+			],
+		];
+		for (const steps of cases) {
+			expect(contributionsOf(steps)).toBeNull();
+		}
 	});
 });
 
@@ -721,15 +849,16 @@ describe("composeNodeQuery — refusals", () => {
 		});
 	});
 
-	it("refuses slicing by a dimension literally named 'value' (alias collision)", () => {
-		expect(
-			composeNodeQuery([{ ...REVENUE, outputStep: true }], undefined, {
-				slices: ["value"],
-				pins: [],
-			}),
-		).toEqual({
-			refusal:
-				"cannot slice by a dimension named 'value' — it collides with the composed measure column",
-		});
+	it("refuses slicing by a reserved composed-column name ('value', '_observed')", () => {
+		for (const reserved of ["value", "_observed"]) {
+			expect(
+				composeNodeQuery([{ ...REVENUE, outputStep: true }], undefined, {
+					slices: [reserved],
+					pins: [],
+				}),
+			).toEqual({
+				refusal: `cannot slice by a dimension named '${reserved}' — it collides with a composed column`,
+			});
+		}
 	});
 });

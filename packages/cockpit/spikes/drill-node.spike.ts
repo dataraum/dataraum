@@ -7,7 +7,7 @@
 // Checks per node:
 //   scalar   — composes, binds, executes; revenue == ground truth.
 //   per axis — grouped composition binds + executes; additive metrics must
-//              have Σ(groups) == scalar (zero-absence); NULL groups counted.
+//              have Σ(groups) == scalar (signed contributions); NULL counted.
 //   pin      — the first grouped row's value must be reproduced exactly by
 //              pinning that row (pin ≡ group, the coherence the browser
 //              smoke clicks).

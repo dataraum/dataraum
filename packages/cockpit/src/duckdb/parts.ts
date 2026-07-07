@@ -118,9 +118,6 @@ export interface NodeStep {
 	/** extract: the newest ACCEPTED snippet's narrowed parts — null is a hole,
 	 *  refused only when reachable from the composed node. */
 	parts: SnippetParts | null;
-	/** extract: the step's declared aggregation (display/metadata — absence
-	 *  semantics are structural since doctrine v2, not aggregation-driven). */
-	aggregation: string | null;
 	/** formula: the closed-grammar arithmetic expression over step ids. */
 	expression: string | null;
 	/** constant: the resolved value (`value ?? default`), stringified. */
@@ -194,7 +191,10 @@ export interface Contribution {
  * the moment a literal, `*`, `/`, constant ref, fall-loud extract, or hole
  * appears: the node is then non-additive (bare refs, NULL absorbs). One
  * occurrence per REFERENCE, not per step — `a + a` contributes twice, exactly
- * like the formula's own arithmetic. Exported for the enumeration spike.
+ * like the formula's own arithmetic. Classification only: refs are NOT
+ * validated here — `composeNodeQuery` runs the fabrication/phantom guards
+ * over the same tree first, so call this on an already-validated tree.
+ * Exported for the enumeration spike.
  */
 export function flattenAdditive(
 	target: NodeStep,
@@ -321,14 +321,16 @@ export function composeNodeQuery(
 	for (const d of drill.slices) {
 		if (!dims.includes(d)) dims.push(d);
 	}
-	// `value` is the composition's own measure alias in every CTE projection —
-	// a dimension with that literal name would collide with it (WHERE-level
-	// pins are fine: predicates bind against the relation, pre-projection).
-	if (dims.includes("value")) {
-		return {
-			refusal:
-				"cannot slice by a dimension named 'value' — it collides with the composed measure column",
-		};
+	// `value` is the composition's own measure alias in every CTE projection
+	// (`_observed` its additive observation counter) — a dimension with either
+	// literal name would collide (WHERE-level pins are fine: predicates bind
+	// against the relation, pre-projection).
+	for (const reserved of ["value", "_observed"]) {
+		if (dims.includes(reserved)) {
+			return {
+				refusal: `cannot slice by a dimension named '${reserved}' — it collides with a composed column`,
+			};
+		}
 	}
 
 	// Pins render once and are appended to EVERY extract CTE below.
@@ -344,17 +346,24 @@ export function composeNodeQuery(
 	}
 
 	/** An extract's CTE under the current drill: dims + GROUP BY when sliced,
-	 *  the persisted predicates plus the pins in WHERE — identical in both
-	 *  modes. */
-	const extractCte = (parts: SnippetParts, relation: string): SelectQuery => {
+	 *  the persisted predicates plus the pins in WHERE. The additive mode adds
+	 *  `_observed` (the row count) so a pinned-scalar extract can tell "nothing
+	 *  matched" (skip) from "matched but the aggregate is NULL" (poison). */
+	const extractCte = (
+		parts: SnippetParts,
+		relation: string,
+		withObservedCount = false,
+	): SelectQuery => {
+		const valueCols: Record<string, ReturnType<typeof verbatim>>[] = [
+			{ value: verbatim(parts.selectExpr) },
+		];
+		if (withObservedCount) valueCols.push({ _observed: verbatim("COUNT(*)") });
 		let q =
 			dims.length > 0
 				? Query.from(relation)
-						.select(...dims.map((d) => column(d)), {
-							value: verbatim(parts.selectExpr),
-						})
+						.select(...dims.map((d) => column(d)), ...valueCols)
 						.groupby(...dims.map((d) => column(d)))
-				: Query.from(relation).select({ value: verbatim(parts.selectExpr) });
+				: Query.from(relation).select(...valueCols);
 		const preds = [...parts.where, ...pinPredicates];
 		if (preds.length > 0) {
 			q = q.where(...preds.map((p) => verbatim(`(${p})`)));
@@ -385,26 +394,36 @@ export function composeNodeQuery(
 			if (!step?.parts?.relation) {
 				return { refusal: `no persisted clause parts for '${stepId}'` };
 			}
-			ctes[stepId] = extractCte(step.parts, step.parts.relation);
+			ctes[stepId] = extractCte(step.parts, step.parts.relation, true);
 		}
+		// Branches drop UNOBSERVED rows (`_observed = 0` only occurs in the
+		// pinned-scalar shape — an aggregate without GROUP BY emits one row
+		// even over nothing; grouped rows always observed ≥ 1).
 		const branches = contributions.map(({ stepId, sign }) => {
 			const value =
 				sign === 1
 					? { value: column("value") }
 					: { value: verbatim('-("value")') };
-			return dims.length > 0
-				? Query.from(stepId).select(...dims.map((d) => column(d)), value)
-				: Query.from(stepId).select(value);
+			const q =
+				dims.length > 0
+					? Query.from(stepId).select(...dims.map((d) => column(d)), value)
+					: Query.from(stepId).select(value);
+			return q.where(verbatim('("_observed" > 0)'));
 		});
 		const unioned = Query.unionAll(...branches);
+		// An OBSERVED contribution whose aggregate is legitimately NULL must
+		// POISON its group, not be skipped — SQL's NULL-skipping SUM would
+		// otherwise fabricate a value where the non-additive view of the same
+		// data shows the dash (doctrine v2's whole point; review 50e4a143).
+		const summed = verbatim(
+			'CASE WHEN COUNT(*) = COUNT("value") THEN SUM("value") ELSE NULL END',
+		);
 		ctes[target.stepId] =
 			dims.length > 0
 				? Query.from(unioned)
-						.select(...dims.map((d) => column(d)), {
-							value: verbatim('SUM("value")'),
-						})
+						.select(...dims.map((d) => column(d)), { value: summed })
 						.groupby(...dims.map((d) => column(d)))
-				: Query.from(unioned).select({ value: verbatim('SUM("value")') });
+				: Query.from(unioned).select({ value: summed });
 		targetGrouped = dims.length > 0;
 	} else {
 		// ---- General path: engine-parity scalar, or the non-additive

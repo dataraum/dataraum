@@ -44,12 +44,10 @@ const DSO_DAG = {
 		accounts_receivable: {
 			type: "extract",
 			source: { standard_field: "accounts_receivable" },
-			aggregation: "sum",
 		},
 		revenue: {
 			type: "extract",
 			source: { standard_field: "revenue" },
-			aggregation: "sum",
 		},
 		days_in_period: {
 			type: "constant",
@@ -85,19 +83,16 @@ describe("resolveNodeSteps — metric", () => {
 			{
 				standardField: "revenue",
 				parts: partsJson("SUM(bad)", []),
-				aggregation: "sum",
 				failureCount: 2,
 			},
 			{
 				standardField: "revenue",
 				parts: partsJson("SUM(credit)", ["kind = 'rev'"]),
-				aggregation: "sum",
 				failureCount: 0,
 			},
 			{
 				standardField: "accounts_receivable",
 				parts: partsJson("SUM(open_balance)", ["kind = 'ar'"]),
-				aggregation: "sum",
 				failureCount: 0,
 			},
 		]);
@@ -106,7 +101,6 @@ describe("resolveNodeSteps — metric", () => {
 		const byId = new Map(resolved.steps.map((s) => [s.stepId, s]));
 		expect(byId.get("accounts_receivable")).toMatchObject({
 			kind: "extract",
-			aggregation: "sum",
 			parts: {
 				selectExpr: "SUM(open_balance)",
 				relation: "enriched_txn",
@@ -131,7 +125,6 @@ describe("resolveNodeSteps — metric", () => {
 			{
 				standardField: "revenue",
 				parts: null,
-				aggregation: "sum",
 				failureCount: 0,
 			},
 		]);
@@ -162,7 +155,6 @@ describe("resolveNodeSteps — measure", () => {
 			{
 				standardField: "revenue",
 				parts: partsJson("SUM(credit)", ["kind = 'rev'"]),
-				aggregation: "sum",
 				failureCount: 0,
 			},
 		]);
@@ -177,7 +169,6 @@ describe("resolveNodeSteps — measure", () => {
 					relation: "enriched_txn",
 					where: ["kind = 'rev'"],
 				},
-				aggregation: "sum",
 				expression: null,
 				value: null,
 				dependsOn: [],
@@ -191,13 +182,11 @@ describe("resolveNodeSteps — measure", () => {
 			{
 				standardField: "revenue",
 				parts: partsJson("SUM(bad)", []),
-				aggregation: "sum",
 				failureCount: 1,
 			},
 			{
 				standardField: "revenue",
 				parts: partsJson("SUM(credit)", []),
-				aggregation: "sum",
 				failureCount: 0,
 			},
 		]);

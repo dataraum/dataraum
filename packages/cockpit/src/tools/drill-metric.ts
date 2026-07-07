@@ -28,11 +28,6 @@ import { parseMetricDag } from "./operating-model-graph";
 
 export type NodeDrillSteps = { steps: NodeStep[] } | { missing: string };
 
-interface ResolvedSnippet {
-	parts: SnippetParts | null;
-	aggregation: string | null;
-}
-
 /** The newest graph extract per standard field DECIDES (resolveGrounding's
  *  contract): a failing newest row means the field has no accepted parts — a
  *  hole, not a silent fall-back to an older accepted row. Accepted rows
@@ -40,14 +35,13 @@ interface ResolvedSnippet {
  *  null and refuses downstream by name. */
 async function resolveSnippets(
 	fields: string[],
-): Promise<Map<string, ResolvedSnippet>> {
+): Promise<Map<string, SnippetParts | null>> {
 	const rows =
 		fields.length > 0
 			? await metadataDb
 					.select({
 						standardField: sqlSnippets.standardField,
 						parts: sqlSnippets.parts,
-						aggregation: sqlSnippets.aggregation,
 						failureCount: sqlSnippets.failureCount,
 					})
 					.from(sqlSnippets)
@@ -61,13 +55,13 @@ async function resolveSnippets(
 					)
 					.orderBy(desc(sqlSnippets.updatedAt))
 			: [];
-	const byField = new Map<string, ResolvedSnippet>();
+	const byField = new Map<string, SnippetParts | null>();
 	for (const r of rows) {
 		if (!r.standardField || byField.has(r.standardField)) continue;
-		byField.set(r.standardField, {
-			parts: (r.failureCount ?? 0) === 0 ? narrowSnippetParts(r.parts) : null,
-			aggregation: r.aggregation ?? null,
-		});
+		byField.set(
+			r.standardField,
+			(r.failureCount ?? 0) === 0 ? narrowSnippetParts(r.parts) : null,
+		);
 	}
 	return byField;
 }
@@ -80,8 +74,7 @@ export async function resolveNodeSteps(
 ): Promise<NodeDrillSteps> {
 	if (req.standardField !== undefined) {
 		const byField = await resolveSnippets([req.standardField]);
-		const snippet = byField.get(req.standardField);
-		if (!snippet) {
+		if (!byField.has(req.standardField)) {
 			return {
 				missing: `no graph extract snippet found for '${req.standardField}'`,
 			};
@@ -94,8 +87,7 @@ export async function resolveNodeSteps(
 				{
 					stepId: req.standardField,
 					kind: "extract",
-					parts: snippet.parts,
-					aggregation: snippet.aggregation,
+					parts: byField.get(req.standardField) ?? null,
 					expression: null,
 					value: null,
 					dependsOn: [],
@@ -135,11 +127,8 @@ export async function resolveNodeSteps(
 					stepId: s.stepId,
 					kind: "extract" as const,
 					parts: s.standardField
-						? (byField.get(s.standardField)?.parts ?? null)
+						? (byField.get(s.standardField) ?? null)
 						: null,
-					// The DAG's declared aggregation drives the zero-absence
-					// decision — the ontology owns the measure's semantics.
-					aggregation: s.aggregation,
 					expression: null,
 					value: null,
 					dependsOn: s.dependsOn,
@@ -149,7 +138,6 @@ export async function resolveNodeSteps(
 					stepId: s.stepId,
 					kind: s.kind,
 					parts: null,
-					aggregation: null,
 					expression: s.expression,
 					value: s.value,
 					dependsOn: s.dependsOn,

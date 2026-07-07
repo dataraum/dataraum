@@ -5,7 +5,6 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from dataraum.core.models.base import Result
 from dataraum.query.execution import SQLStep, execute_sql_steps
 
 
@@ -226,33 +225,26 @@ class TestExecuteSqlSteps:
         assert composed.rstrip().endswith("SELECT val FROM reuse_test")
         assert result.value.final_value == 42
 
-    def test_repair_function_called_on_failure(self, duckdb_conn):
-        """Repair function is called when a step fails."""
-        repair_called = []
-
-        def mock_repair(failed_sql: str, error_msg: str, description: str) -> Result[str]:
-            repair_called.append({"sql": failed_sql, "error": error_msg})
-            return Result.ok("SELECT 42 AS val")
-
+    def test_failing_step_fails_loud_no_repair(self, duckdb_conn):
+        """DAT-671: there is no text repair — a failing step FAILS, named.
+        The graph path heals by looping (retained failure → prior_context →
+        re-author), never by rewriting a statement behind its grounding."""
         steps = [
             SQLStep(
-                step_id="repair_test",
-                sql="SELECT * FROM nonexistent_repair",
+                step_id="failing_step",
+                sql="SELECT * FROM nonexistent_table",
                 description="Failing step",
             )
         ]
 
         result = execute_sql_steps(
             steps=steps,
-            final_sql="SELECT val FROM repair_test",
+            final_sql="SELECT val FROM failing_step",
             duckdb_conn=duckdb_conn,
-            repair_fn=mock_repair,
-            max_repair_attempts=1,
         )
 
-        assert result.success
-        assert len(repair_called) == 1
-        assert "nonexistent_repair" in repair_called[0]["sql"]
+        assert not result.success
+        assert "failing_step" in (result.error or "")
 
     def test_no_steps_only_final(self, duckdb_conn):
         """Works with no steps, only final SQL."""
@@ -266,31 +258,3 @@ class TestExecuteSqlSteps:
         assert result.value is not None
         assert result.value.final_value == 3
         assert len(result.value.step_results) == 0
-
-    def test_step_result_tracks_repair_attempts(self, duckdb_conn):
-        """Step results track how many repair attempts were made."""
-        call_count = 0
-
-        def mock_repair(failed_sql: str, error_msg: str, description: str) -> Result[str]:
-            nonlocal call_count
-            call_count += 1
-            return Result.ok("SELECT 99 AS val")
-
-        steps = [
-            SQLStep(
-                step_id="attempt_test",
-                sql="INVALID SQL HERE",
-                description="Will be repaired",
-            )
-        ]
-
-        result = execute_sql_steps(
-            steps=steps,
-            final_sql="SELECT val FROM attempt_test",
-            duckdb_conn=duckdb_conn,
-            repair_fn=mock_repair,
-            max_repair_attempts=2,
-        )
-
-        assert result.success
-        assert result.value.step_results[0].repair_attempts == 1

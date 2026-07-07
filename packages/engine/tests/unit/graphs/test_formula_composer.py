@@ -11,7 +11,12 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
+from dataraum.graphs.formula_composer import (
+    compose_constant_sql,
+    compose_extract_sql,
+    compose_formula_sql,
+    extract_parts_dict,
+)
 
 # Every distinct formula expression in packages/dataraum-config/verticals/finance,
 # paired with its declared dependency step ids.
@@ -157,3 +162,57 @@ class TestComposedSqlExecutes:
             )
             == 200.0
         )
+
+
+class TestComposeExtractSql:
+    """DAT-671 parts-at-source: the extract render is the ONE engine-side place
+    clause parts become a string; the parts themselves persist as the artifact."""
+
+    def test_simple_aggregate(self) -> None:
+        assert compose_extract_sql(
+            "SUM(credit) - SUM(debit)",
+            "enriched_journal_lines",
+            ["account_id__account_type = 'revenue'"],
+        ) == (
+            "SELECT SUM(credit) - SUM(debit) AS value\n"
+            "FROM enriched_journal_lines\n"
+            "WHERE account_id__account_type = 'revenue'"
+        )
+
+    def test_multiple_predicates_and_compose_parenthesized(self) -> None:
+        sql = compose_extract_sql("SUM(x)", "t", ["a = 1 OR a = 2", "b = 3"])
+        assert sql.endswith("WHERE (a = 1 OR a = 2) AND (b = 3)")
+
+    def test_no_predicates(self) -> None:
+        assert compose_extract_sql("SUM(x)", "t", []) == "SELECT SUM(x) AS value\nFROM t"
+
+    def test_fall_loud_shape(self) -> None:
+        # Ungroundable concept: NULL expression, no relation, no predicates.
+        assert compose_extract_sql("NULL", None, []) == "SELECT NULL AS value"
+
+    def test_blank_predicates_dropped(self) -> None:
+        assert compose_extract_sql("SUM(x)", "t", ["", "  ", "a = 1"]).endswith("WHERE a = 1")
+
+    def test_renders_and_executes(self) -> None:
+        conn = duckdb.connect(":memory:")
+        conn.execute("CREATE TABLE t (a VARCHAR, x DOUBLE)")
+        conn.execute("INSERT INTO t VALUES ('k', 2.0), ('k', 3.0), ('other', 9.0)")
+        sql = compose_extract_sql("SUM(x)", "t", ["a = 'k'"])
+        row = conn.execute(sql).fetchone()
+        assert row is not None and row[0] == 5.0
+
+
+class TestExtractPartsDict:
+    def test_general_clause_shape(self) -> None:
+        assert extract_parts_dict("SUM(x)", "t", ["a = 1", " b = 2 "]) == {
+            "select": [{"expr": "SUM(x)", "alias": "value"}],
+            "from": ["t"],
+            "where": ["a = 1", "b = 2"],
+        }
+
+    def test_fall_loud_has_empty_from(self) -> None:
+        assert extract_parts_dict("NULL", None, []) == {
+            "select": [{"expr": "NULL", "alias": "value"}],
+            "from": [],
+            "where": [],
+        }

@@ -121,7 +121,18 @@ class TestSaveSnippetsCallerAssignedIds:
 
     def _generated(self, step_id: str) -> MagicMock:
         code = MagicMock()
-        code.steps = [{"step_id": step_id, "sql": "SELECT 1", "description": "d"}]
+        code.steps = [
+            {
+                "step_id": step_id,
+                "sql": "SELECT 1 AS value",
+                "description": "d",
+                "parts": {
+                    "select": [{"expr": "1", "alias": "value"}],
+                    "from": [],
+                    "where": [],
+                },
+            }
+        ]
         code.summary = "s"
         code.llm_model = "claude-test"
         code.provenance = None
@@ -137,7 +148,6 @@ class TestSaveSnippetsCallerAssignedIds:
                 graph=graph,
                 generated_code=code,
                 schema_mapping_id="ws",
-                step_results=None,
                 workspace_id="ws",
             )
             return lib_cls.return_value

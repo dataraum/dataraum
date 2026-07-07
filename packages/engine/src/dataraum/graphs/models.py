@@ -372,13 +372,17 @@ class ExtractGroundingOutput(BaseModel):
     before writing SQL (field order is generation order). The original audit
     cut the old `summary` field as "decorative" by counting only downstream
     readers and missed this consumer class; don't repeat that. Downstream:
-    `sql` executes and persists as the snippet; `description` is the snippet's
-    human line (cockpit reuse KB, compose-path descriptions); `assumptions`
-    feed the DAT-631 confidence gate + the answer UI; `provenance` feeds
-    prior_context (DAT-616) and the confidence gate — its
-    `column_mappings_basis` is THE per-concept grounding record (a flat
-    `column_mappings` duplicate was removed 2026-07-03: the prompt stopped
-    teaching it in DAT-636 and it had been silently empty since).
+    the CLAUSE PARTS (`relation`, `where`, `select_expr` — DAT-671
+    parts-at-source: the parts ARE the artifact; the fused statement is
+    rendered ONCE by `compose_extract_sql` and persisted alongside them, and
+    the cockpit drill builder composes every variant from the parts without
+    ever parsing SQL); `description` is the snippet's human line (cockpit
+    reuse KB, compose-path descriptions); `assumptions` feed the DAT-631
+    confidence gate + the answer UI; `provenance` feeds prior_context
+    (DAT-616) and the confidence gate — its `column_mappings_basis` is THE
+    per-concept grounding record (a flat `column_mappings` duplicate was
+    removed 2026-07-03: the prompt stopped teaching it in DAT-636 and it had
+    been silently empty since).
     """
 
     grounding: str = Field(
@@ -388,9 +392,23 @@ class ExtractGroundingOutput(BaseModel):
         '(complete 5-value set)". Name the value-set entries verbatim; if you cannot, '
         "the concept is not grounded — fall loud instead of writing SQL around it."
     )
-    sql: str = Field(
-        description="The single standalone DuckDB SQL statement computing the concept, "
-        "returning one row aliased AS value."
+    relation: str | None = Field(
+        default=None,
+        description="The ONE relation the extract reads — an enriched view or table name "
+        "verbatim from the provided schema, never invented. null ONLY in the fall-loud "
+        "case (the concept cannot be grounded).",
+    )
+    where: list[str] = Field(
+        default_factory=list,
+        description="Row filters as standalone SQL predicate texts over the relation's "
+        "columns, AND-composed by the system. Every literal must be verified against the "
+        "served Value sets. A predicate may contain subqueries (e.g. an IN over a "
+        "reference table). Empty when the concept needs no filter.",
+    )
+    select_expr: str = Field(
+        description="The scalar value expression over the relation's columns using the "
+        "step's aggregation, WITHOUT an alias (the system renders it AS value) — e.g. "
+        '"SUM(credit) - SUM(debit)". In the fall-loud case: "NULL".',
     )
     description: str = Field(
         description="One short line: what this extract computes and how it is filtered, "

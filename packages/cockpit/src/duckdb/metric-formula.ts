@@ -182,10 +182,21 @@ export function formulaRefs(expr: FormulaExpr): string[] {
 const floatLiteral = (value: number): string =>
 	Number.isInteger(value) ? `${value}.0` : String(value);
 
+/** Grouped-composition context for the ref render (DAT-703, parts.ts): which
+ *  dependency steps are dim-CARRYING CTEs — referenced `"dep"."value"` off the
+ *  FULL-JOIN spine instead of a scalar subquery — and which of those are
+ *  zero-absent (absence for a group is a TRUE zero → `COALESCE(ref, 0)`).
+ *  Without a context every ref is a scalar subquery, the engine mirror. */
+export interface CarrierContext {
+	carriers: ReadonlySet<string>;
+	zeroAbsent: ReadonlySet<string>;
+}
+
 function renderExpr(
 	expr: FormulaExpr,
 	depStepIds: ReadonlySet<string>,
 	expression: string,
+	ctx: CarrierContext | undefined,
 ): { sql: string } | { refusal: string } {
 	if (expr.kind === "ref") {
 		if (!depStepIds.has(expr.name)) {
@@ -195,20 +206,47 @@ function renderExpr(
 					`declared dependency — refusing to compose a fabricated operand`,
 			};
 		}
+		if (ctx?.carriers.has(expr.name)) {
+			// The one measure-local absence decision (no per-operator threading):
+			// COALESCE exactly where the measure's aggregation makes absence a
+			// true zero; bare otherwise, so SQL NULL propagation yields the
+			// honest undefined for a one-sided group.
+			const ref = `"${expr.name}"."value"`;
+			return {
+				sql: ctx.zeroAbsent.has(expr.name) ? `COALESCE(${ref}, 0)` : ref,
+			};
+		}
 		return { sql: `(SELECT value FROM ${expr.name})` };
 	}
 	if (expr.kind === "num") return { sql: floatLiteral(expr.value) };
 	if (expr.kind === "neg") {
-		const inner = renderExpr(expr.operand, depStepIds, expression);
+		const inner = renderExpr(expr.operand, depStepIds, expression, ctx);
 		if ("refusal" in inner) return inner;
 		return { sql: `-${inner.sql}` };
 	}
-	const left = renderExpr(expr.left, depStepIds, expression);
+	const left = renderExpr(expr.left, depStepIds, expression, ctx);
 	if ("refusal" in left) return left;
-	const right = renderExpr(expr.right, depStepIds, expression);
+	const right = renderExpr(expr.right, depStepIds, expression, ctx);
 	if ("refusal" in right) return right;
 	const rhs = expr.op === "/" ? `NULLIF(${right.sql}, 0)` : right.sql;
 	return { sql: `(${left.sql} ${expr.op} ${rhs})` };
+}
+
+/**
+ * Render a FORMULA step's value expression — the mirror of the engine's
+ * `compose_formula_sql` rendering, minus the `SELECT … AS value` wrapper (the
+ * builder owns aliasing). Identifiers must be declared dependencies (the CTE
+ * namespace); with a `CarrierContext`, refs to dim-carrying deps render off
+ * the join spine instead of as scalar subqueries.
+ */
+export function renderFormulaValue(
+	expression: string,
+	depStepIds: ReadonlySet<string>,
+	ctx?: CarrierContext,
+): { sql: string } | { refusal: string } {
+	const parsed = parseFormulaExpression(expression);
+	if ("refusal" in parsed) return parsed;
+	return renderExpr(parsed.expr, depStepIds, expression, ctx);
 }
 
 /**
@@ -220,9 +258,7 @@ export function composeFormulaSql(
 	expression: string,
 	depStepIds: ReadonlySet<string>,
 ): { sql: string } | { refusal: string } {
-	const parsed = parseFormulaExpression(expression);
-	if ("refusal" in parsed) return parsed;
-	const rendered = renderExpr(parsed.expr, depStepIds, expression);
+	const rendered = renderFormulaValue(expression, depStepIds);
 	if ("refusal" in rendered) return rendered;
 	return { sql: `SELECT ${rendered.sql} AS value` };
 }

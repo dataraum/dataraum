@@ -21,8 +21,8 @@ the run. This is what lets messy real-world sources in without a brittle import 
 overwriting. A terminal **promote** step flips a per-stage pointer to the new run only once
 the run has succeeded, so a failed or partial run never becomes visible. "The current state"
 is always a clean, complete run. (The mechanics — heads, promoted read views, idempotent
-writers — are in [ADR-0008](../adr/0008-promoted-read-views.md) and
-[ADR-0010](../adr/0010-failure-contract-idempotent-writers.md).)
+writers — are in `docs/architecture/persistence.md` and
+`docs/architecture/persistence.md`.)
 
 ## add_source — raw sources to typed, annotated data
 

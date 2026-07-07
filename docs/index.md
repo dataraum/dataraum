@@ -129,7 +129,7 @@ See the [Overview](getting-started/overview.md) for the whole arc, and
   [Running the stack](getting-started/running-the-stack.md).
 - **Under the hood** — the [platform architecture](platform/architecture.md), the
   [pipeline & phases](concepts/pipeline.md), the
-  [decision records](adr/README.md), and [Deployment](operations/deployment.md) for
+  [architecture facts](architecture/README.md), and [Deployment](operations/deployment.md) for
   running released images.
 - **The design intent** (north-star, not current state) —
   [Architecture (vision)](vision/architecture-future.md).

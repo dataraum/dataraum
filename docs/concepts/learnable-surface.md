@@ -19,7 +19,7 @@ result ("this column is sparse because the field is only collected for a subset"
 context is recorded alongside the measurement; the measured value is unchanged.
 Corrections happen by **teaching**, which enters the next analysis run as a witness. (The
 disagreement model is in [measurement](measurement.md); the principle is
-[ADR-0009](../adr/0009-entropy-as-disagreement.md).)
+`docs/architecture/entropy.md`.)
 
 Adding a new teach *type* is a change to the platform, made by the people building it —
 not an in-loop action.

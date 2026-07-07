@@ -4,7 +4,7 @@ DataRaum is a small set of cooperating containers. This page describes how they 
 together: the two workers, the substrate they share, the seam between them, and the
 per-workspace model that makes the whole thing multi-tenant.
 
-The decisions behind this shape are recorded as [ADRs](../adr/README.md); this page links
+The cross-cutting facts behind this shape live in [architecture documents](../architecture/README.md); this page links
 to the relevant one wherever a choice matters.
 
 ## The two-tier split
@@ -38,10 +38,10 @@ flowchart TB
 
 - **The cockpit** is the **agentic, interactive tier**. It hosts the chat, the LLM agent
   loop, and all user-facing rendering. It also *orchestrates* the journey — deciding when
-  to run which engine stage — via its own co-located Temporal worker. ([ADR-0004](../adr/0004-agent-tier-boundary.md): agentic LLM lives in the cockpit.)
+  to run which engine stage — via its own co-located Temporal worker. (`docs/architecture/orchestration.md`: agentic LLM lives in the cockpit.)
 - **The engine** is the **durable analysis tier**. It is a pure **Temporal activity
   worker** — it has no HTTP server and no API. It runs deterministic, long-running
-  analysis and writes the results to Postgres. ([ADR-0002](../adr/0002-engine-no-http-transport.md): engine is a pure activity worker, no HTTP/MCP transport.)
+  analysis and writes the results to Postgres. (`docs/architecture/orchestration.md`: engine is a pure activity worker, no HTTP/MCP transport.)
 
 There is **no shared process state** between them. The cockpit and engine talk only
 through the substrate: Postgres for metadata, Temporal for work.
@@ -60,7 +60,7 @@ flowchart LR
 ```
 
 **Postgres** — one instance hosts several logically separate stores
-([ADR-0003](../adr/0003-postgres-schema-ownership.md)):
+(`docs/architecture/persistence.md`):
 
 | Database / schema | Owner | Holds |
 |---|---|---|
@@ -75,11 +75,11 @@ typed/staged data as parquet under the workspace's lake prefix; file uploads lan
 `uploads/` prefix in the same bucket. In dev this is a single-node **SeaweedFS** S3
 gateway; in production it is a real object store with real IAM. (The per-workspace lake
 prefix and catalog layout are in
-[ADR-0012](../adr/0012-per-workspace-tenancy.md).)
+`docs/architecture/persistence.md`.)
 
 **Temporal** — the durable orchestration backbone. Both workers poll it; it guarantees
 long-running analysis survives restarts and is retried correctly.
-([ADR-0001](../adr/0001-temporal-orchestration-python.md).)
+(`docs/architecture/orchestration.md`.)
 
 ## The engine↔cockpit seam
 
@@ -91,8 +91,8 @@ The cockpit triggers analysis by starting **engine workflows** by name on the wo
 task queue. The engine worker bundles three analysis workflows
 (`add_source`, `begin_session`, `operating_model`) plus a per-table child workflow. The
 cockpit never runs analysis itself. The full orchestration model is in
-[ADR-0001](../adr/0001-temporal-orchestration-python.md) and
-[ADR-0014](../adr/0014-cockpit-orchestration-worker.md).
+`docs/architecture/orchestration.md` and
+`docs/architecture/orchestration.md`.
 
 ### 2. Metadata flows through promoted Postgres views
 
@@ -101,7 +101,7 @@ engine's raw tables. Engine metadata is **run-versioned**: every phase appends
 run-stamped rows, and a terminal *promote* step atomically flips a per-stage head pointer.
 Reading "the current state" therefore means joining through that head — a join the engine
 materializes once, as a set of generated `current_<table>` **views** in the `ws_<id>_read`
-schema. ([ADR-0008](../adr/0008-promoted-read-views.md), [ADR-0010](../adr/0010-failure-contract-idempotent-writers.md).)
+schema. (`docs/architecture/persistence.md`, `docs/architecture/persistence.md`.)
 
 The cockpit connects with a dedicated `cockpit_reader` role that has `SELECT` on the read
 schema **only**. The raw run-stamped tables are not even visible to it — a stale or
@@ -116,7 +116,7 @@ DuckLake catalog **read-only** and reads parquet from S3 directly via DuckDB.
     With no codegen, two contracts are maintained by hand on both sides: the **Temporal
     workflow signatures** (the cockpit mirrors the engine's `worker/contracts.py` in
     TypeScript) and the **concept overlay payload** the cockpit writes for the engine to
-    ground against ([ADR-0007](../adr/0007-frame-frozen-artifact-contract.md)). Changing
+    ground against (`docs/architecture/pipeline.md`). Changing
     either is a coordinated edit across both packages.
 
 ## The per-workspace model
@@ -165,6 +165,6 @@ per-workspace template.
 
 ## Next
 
-- [Decision records](../adr/README.md) — the settled architecture decisions and the *why*
+- [Architecture documents](../architecture/README.md) — the system's standing facts, requirements, and invariants
   behind each one.
 - [How it works](../concepts/the-journey.md) — the journey and the model behind it.

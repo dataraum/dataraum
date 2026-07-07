@@ -83,7 +83,7 @@ uv run --project packages/engine zensical serve   # run from the repo root
 - [Overview](docs/getting-started/overview.md) — what DataRaum does, at a glance
 - [The approach](docs/concepts/approach.md) · [the journey](docs/concepts/the-journey.md) · [pipeline & phases](docs/concepts/pipeline.md) · [learnable surface](docs/concepts/learnable-surface.md) · [measurement & detectors](docs/concepts/measurement.md)
 - [Platform architecture](docs/platform/architecture.md) — under the hood
-- [Decision records](docs/adr/README.md) — the *why* behind the architecture
+- [Architecture](docs/architecture/README.md) — the system's requirements and invariants, as living documents
 
 ## License
 

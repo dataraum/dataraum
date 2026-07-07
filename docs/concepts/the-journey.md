@@ -65,7 +65,7 @@ target shape, no data binding yet. The rest of the journey binds it to the data.
 
 - **Runs in:** the cockpit. **Produces:** a declared ontology + metric/validation DAG,
   written as the frozen grounding contract the engine reads
-  ([ADR-0007](../adr/0007-frame-frozen-artifact-contract.md)).
+  (`docs/architecture/pipeline.md`).
 
 ### add_source
 

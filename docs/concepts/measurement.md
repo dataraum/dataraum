@@ -87,7 +87,7 @@ Four properties of the pooling address it:
   alongside the measurement; it has no distribution and no reliability, so it cannot move
   `q`, `C`, or `U`.
 
-(Framework: [ADR-0009](../adr/0009-entropy-as-disagreement.md).)
+(Framework: `docs/architecture/entropy.md`.)
 
 ## The detectors
 
@@ -135,7 +135,7 @@ Every measurement ships in one fixed shape — claim space, witness extractors, 
 shell, config rows, write-back, teach applier, eval entry — with no tuned numbers in
 detector code: every threshold, weight, and reliability lives in config with provenance.
 Implementation and calibration are separate activities on separate artifacts.
-([ADR-0011](../adr/0011-measurement-pack.md).)
+(`docs/architecture/entropy.md`.)
 
 When a score is elevated, the **why** view surfaces the witnesses, the contested claim, and
 a ranked list of teaches that would resolve it. After a teach, the affected phase re-runs

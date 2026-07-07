@@ -46,7 +46,7 @@ primitive; there is no separate "data quality" score beside it.
 This is why no method is trusted alone: a witness that only reads the column name and a
 witness that only reads the data can be wrong in the same direction, so at least one witness
 per question must read the *data*, not the label. (The framework behind this is recorded in
-[ADR-0009](../adr/0009-entropy-as-disagreement.md); the mechanics are in
+`docs/architecture/entropy.md`; the mechanics are in
 [measurement & detectors](measurement.md).)
 
 ## Phases compose the methods; detectors measure the result

@@ -68,7 +68,9 @@ describe("look_values pattern search against real DuckDB", () => {
 	});
 
 	it("no pattern returns the full freq-ordered drill", async () => {
-		const reader = await conn.runAndReadAll(valuesQuerySql("accounts", "name", null));
+		const reader = await conn.runAndReadAll(
+			valuesQuerySql("accounts", "name", null),
+		);
 		expect(reader.getRowObjects().length).toBe(6);
 	});
 });

@@ -26,6 +26,7 @@ const OPTIONAL = [
 	"TEMPORAL_NAMESPACE",
 	"TEMPORAL_TASK_QUEUE",
 	"TEMPORAL_UI_URL",
+	"OTEL_EXPORTER_OTLP_ENDPOINT",
 ];
 
 function stubBaseline(): void {
@@ -93,6 +94,24 @@ describe("cockpit config (DAT-363)", () => {
 			"/opt/dataraum/duckdb-extensions",
 		);
 		expect(config.ducklakeSkipInstall).toBe(true);
+	});
+
+	it("keeps telemetry OFF for both unset AND empty OTLP endpoint (ADR-0019)", async () => {
+		// Empty string = compose interpolation of an unset var; `|| undefined`
+		// in loadConfig maps it to off, never a half-configured exporter.
+		stubBaseline();
+		vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+		const { config } = await import("./config");
+
+		expect(config.otelExporterOtlpEndpoint).toBeUndefined();
+	});
+
+	it("parses the OTLP endpoint when set (the single telemetry switch)", async () => {
+		stubBaseline();
+		vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-lgtm:4318");
+		const { config } = await import("./config");
+
+		expect(config.otelExporterOtlpEndpoint).toBe("http://otel-lgtm:4318");
 	});
 
 	it("fails loud naming the field when a required var is missing", async () => {

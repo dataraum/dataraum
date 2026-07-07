@@ -16,13 +16,12 @@
 // placeholder (run_id === workflow_id). See getWorkflowProgress for the two-caller
 // rationale (DAT-595). NON-mutating (query + describe) → safe to poll on an interval.
 
-import { Client, Connection } from "@temporalio/client";
 import { inArray } from "drizzle-orm";
 import { z } from "zod";
 
-import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { tables as tablesTable } from "../db/metadata/schema";
+import { getTemporalClient } from "./client";
 import {
 	PROGRESS_DONE_PHASE,
 	type ProgressFailure,
@@ -92,49 +91,6 @@ async function resolveTableNames(
 		name: nameById.get(t.raw_table_id) ?? `table ${t.raw_table_id.slice(0, 8)}`,
 		status: t.status,
 	}));
-}
-
-/** The Temporal-unconfigured guard, identical to trigger-add-source.ts /
- * replay.ts: Temporal config is OPTIONAL in config.ts, so fail loud (not
- * silently) when it isn't wired. */
-function requireTemporalConfig(): { host: string; namespace: string } {
-	if (!config.temporalHost || !config.temporalNamespace) {
-		throw new Error(
-			"Temporal client is not configured. Set TEMPORAL_HOST, " +
-				"TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE in the cockpit env.",
-		);
-	}
-	return { host: config.temporalHost, namespace: config.temporalNamespace };
-}
-
-/**
- * A lazily-created, process-SHARED Temporal client. The connection is long-lived
- * (a gRPC channel that reconnects internally), so opening + closing one per call
- * — which the progress poll AND the completion watcher do every couple of seconds
- * per run — was pure churn. Cache the connect PROMISE so concurrent first-callers
- * share one connect; reset it only if the connect itself fails, so the next call
- * retries rather than reusing a rejected promise.
- */
-let temporalClientPromise: Promise<Client> | null = null;
-
-export function getTemporalClient(): Promise<Client> {
-	if (!temporalClientPromise) {
-		const { host, namespace } = requireTemporalConfig();
-		temporalClientPromise = Connection.connect({ address: host })
-			.then((connection) => new Client({ connection, namespace }))
-			.catch((err) => {
-				temporalClientPromise = null;
-				throw err;
-			});
-	}
-	return temporalClientPromise;
-}
-
-/** Drop the shared Temporal client so the next call reconnects. Primarily for
- * tests (the module-level cache otherwise leaks across cases); also a hook if a
- * forced reconnect is ever needed. */
-export function resetTemporalClient(): void {
-	temporalClientPromise = null;
 }
 
 /** True when the snapshot's phase OR the describe() status marks the run done. */

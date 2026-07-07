@@ -97,11 +97,12 @@ vi.mock("@temporalio/client", () => ({
 	}),
 }));
 
-import {
-	getWorkflowProgress,
-	isProgressDone,
-	resetTemporalClient,
-} from "./progress";
+// getOtel: null = telemetry off in unit tests — the client factory (./client)
+// then constructs no interceptor, and the OTel SDK never loads.
+vi.mock("#/otel", () => ({ getOtel: () => null }));
+
+import { resetTemporalClient } from "./client";
+import { getWorkflowProgress, isProgressDone } from "./progress";
 
 beforeEach(() => {
 	// The Temporal client is process-cached (a shared, long-lived connection) —

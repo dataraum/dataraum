@@ -17,17 +17,19 @@
 // raises `WorkflowExecutionAlreadyStartedError`, which the caller turns into an
 // actionable message (`RunAlreadyRunningError`).
 //
+// All starts go through the process-shared client (./client, DAT-705) — one
+// factory carries the cross-cutting client concerns (today: the OTel tracing
+// interceptor that roots each run's trace) and the per-call connect/close churn
+// is gone. The factory fails loud when Temporal isn't configured.
+//
 // SERVER-ONLY (Temporal client + cockpit_db).
 
-import {
-	Client,
-	Connection,
-	WorkflowExecutionAlreadyStartedError,
-} from "@temporalio/client";
+import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 
 import { config } from "#/config";
 import { type RunKind, type RunStage, recordRun } from "#/db/cockpit/runs";
 import { AgentActionableError } from "#/tools/agent-error";
+import { getTemporalClient } from "./client";
 import type { GroundingLoopInput, SessionCascadeInput } from "./types";
 import {
 	groundingLoopWorkflowId,
@@ -39,29 +41,6 @@ import {
 // refers to them by string, exactly like the analysis workflow drivers.
 const GROUNDING_LOOP_WORKFLOW_TYPE = "groundingLoopWorkflow";
 const SESSION_CASCADE_WORKFLOW_TYPE = "sessionCascadeWorkflow";
-
-/** Temporal-unconfigured guard, mirroring the engine-workflow drivers: Temporal
- * config is OPTIONAL in config.ts, so fail loud (not silent) when it isn't wired. */
-function requireTemporalConfig(): { host: string; namespace: string } {
-	if (!config.temporalHost || !config.temporalNamespace) {
-		throw new Error(
-			"Temporal client is not configured. Set TEMPORAL_HOST, " +
-				"TEMPORAL_NAMESPACE in the cockpit env.",
-		);
-	}
-	return { host: config.temporalHost, namespace: config.temporalNamespace };
-}
-
-/** Run `fn` with a short-lived Temporal client, always closing the connection. */
-async function withClient<T>(fn: (client: Client) => Promise<T>): Promise<T> {
-	const { host, namespace } = requireTemporalConfig();
-	const connection = await Connection.connect({ address: host });
-	try {
-		return await fn(new Client({ connection, namespace }));
-	} finally {
-		await connection.close();
-	}
-}
 
 // Single-flight per workflow id: re-start once the prior is CLOSED (ALLOW_DUPLICATE),
 // reject (FAIL) while one is RUNNING — so two executions of one id never overlap.
@@ -183,14 +162,13 @@ async function startOrchestration(
 	busyMessage: string,
 ): Promise<void> {
 	try {
-		await withClient((client) =>
-			client.workflow.start(type, {
-				taskQueue,
-				workflowId,
-				args: [input],
-				...SINGLE_FLIGHT,
-			}),
-		);
+		const client = await getTemporalClient();
+		await client.workflow.start(type, {
+			taskQueue,
+			workflowId,
+			args: [input],
+			...SINGLE_FLIGHT,
+		});
 	} catch (err) {
 		if (err instanceof WorkflowExecutionAlreadyStartedError) {
 			throw new RunAlreadyRunningError(busyMessage);
@@ -233,16 +211,14 @@ export interface DirectRunSpec {
 export async function startDirectRun(spec: DirectRunSpec): Promise<void> {
 	let runId: string;
 	try {
-		runId = await withClient((client) =>
-			client.workflow
-				.start(spec.workflowType, {
-					taskQueue: spec.taskQueue,
-					workflowId: spec.workflowId,
-					args: spec.args,
-					...SINGLE_FLIGHT,
-				})
-				.then((handle) => handle.firstExecutionRunId),
-		);
+		const client = await getTemporalClient();
+		const handle = await client.workflow.start(spec.workflowType, {
+			taskQueue: spec.taskQueue,
+			workflowId: spec.workflowId,
+			args: spec.args,
+			...SINGLE_FLIGHT,
+		});
+		runId = handle.firstExecutionRunId;
 	} catch (err) {
 		if (err instanceof WorkflowExecutionAlreadyStartedError) {
 			throw new RunAlreadyRunningError(spec.busyMessage);

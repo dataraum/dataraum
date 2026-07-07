@@ -87,6 +87,11 @@ const ConfigSchema = z.object({
 		.string()
 		.min(1)
 		.default("cockpit-orchestration"),
+
+	// --- Observability (ADR-0019/DAT-705; optional — unset/empty = telemetry
+	// off). The OTLP endpoint IS the vendor seam: src/otel.ts bootstraps the
+	// tracer provider from it and nothing else configures telemetry. ---
+	otelExporterOtlpEndpoint: z.string().optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -117,6 +122,10 @@ function loadConfig(): Config {
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,
 		temporalUiUrl: process.env.TEMPORAL_UI_URL,
 		cockpitOrchestrationTaskQueue: process.env.COCKPIT_ORCHESTRATION_TASK_QUEUE,
+		// `|| undefined`: an empty string (compose interpolation of an unset var)
+		// means OFF, never a half-configured exporter.
+		otelExporterOtlpEndpoint:
+			process.env.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
 	});
 
 	if (!parsed.success) {

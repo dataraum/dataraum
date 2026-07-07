@@ -1,26 +1,23 @@
-# Architecture — living facts
+# Architecture — ideas and requirements
 
-These documents state **what is true of the system now**: the overarching ideas,
-requirements, invariants, and cross-package structure. They are not decision
-records, not a changelog, and not an archive.
+These documents state the **overarching ideas** of the system and the
+**requirements** they serve — what a reader cannot get from any single file of
+code.
 
-The rules:
+The test for every sentence: **can the code already answer this?** Then it does
+not belong here. Module wiring, chosen libraries, transports, table names —
+the code states those precisely and is always current. What the code cannot
+state is why the system has this shape and what must hold for it to fulfill
+its purpose. That is all these documents carry.
 
-- **Present tense only.** A sentence that describes the past, a decision-event,
-  or a dead idea does not belong here — delete it. Git history is the only
-  archive; there is no status field, no "superseded", no dates, no tickets.
-- **Updated in place, in the same PR that changes the fact.** A document that
-  contradicts the code is a bug in whichever of the two is wrong.
-- **Constraints are declarative facts** ("the engine has no HTTP surface";
-  "the loss table is the whole rollup"). A stated fact carries the constraint —
-  an edit that contradicts it is visibly wrong. Imperatives addressed at a
-  future editor ("do not add X") are agent guidance, not architecture: they
-  belong in CLAUDE.md or agent memory. A rejected alternative earns a line only
-  as the absence it left behind, never as a story about how it was rejected.
-- **Cross-cutting facts only.** What one module does belongs in that module's
-  code comments and tests; what one package needs belongs in its CLAUDE.md.
-  A fact goes here when it spans packages or constrains future work broadly.
-- **Requirements are facts about the target**, stated so a stranger can check
-  the system against them. "Not yet defined: X" is a valid fact.
+Rules:
 
-One file per concern; the directory listing is the index.
+- Present tense, current truth, updated in place by the same PR that changes
+  it. Git history is the only archive — no status fields, no supersede chains,
+  no tickets, no dates.
+- Ideas and requirements only. No decision log, no implementation inventory,
+  no editor instructions ("do not add X" is agent guidance and belongs in
+  CLAUDE.md or agent memory).
+- A requirement is stated so a stranger can check the system against it.
+  "Not yet defined: X" is a valid statement.
+- One file per concern; the directory listing is the index.

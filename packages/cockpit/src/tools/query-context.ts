@@ -137,13 +137,16 @@ export interface SchemaColumnRow {
  * plus the resolved stock/flow adjudication (DAT-509): `temporalBehavior` is
  * the pooled-resolved value the resolve layer wrote onto the annotation
  * (`additive` = flow, `point_in_time` = stock — never SUM a stock across
- * periods), and `temporalBehaviorContested` marks an open witness conflict the
- * agent must caveat instead of silently aggregating over. */
+ * periods). The contested flag is DELIBERATELY NOT served to the agent
+ * (decision 2026-07-07, mirrors the engine GraphAgent): the adjudication
+ * outperforms an LLM reading stock/flow from metadata alone, so the agent
+ * gets the resolved verdict as settled fact — a contested tag would invite
+ * second-guessing by the weaker judge. The flag's consumer is the human
+ * teach lane (why_column renders it). */
 export interface SchemaConceptRow {
 	columnId: string;
 	businessConcept: string | null;
 	temporalBehavior: string | null;
-	temporalBehaviorContested: boolean | null;
 }
 
 /**
@@ -163,7 +166,7 @@ export function formatSchema(
 
 	const conceptByColumn = new Map<string, SchemaConceptRow>();
 	for (const c of conceptRows) {
-		if (c.businessConcept || c.temporalBehavior || c.temporalBehaviorContested)
+		if (c.businessConcept || c.temporalBehavior)
 			conceptByColumn.set(c.columnId, c);
 	}
 
@@ -190,15 +193,12 @@ export function formatSchema(
 				? `  [concept: ${semantic.businessConcept}]`
 				: "";
 			// Mirror the engine's render (graphs/context.py): the resolved
-			// stock/flow behaviour as a parenthesized marker; an open witness
-			// conflict becomes an explicit caveat tag (DAT-509).
+			// stock/flow behaviour as a parenthesized marker, served as settled
+			// fact (no contested tag — see SchemaConceptRow).
 			const temporalTag = semantic?.temporalBehavior
 				? ` (${semantic.temporalBehavior})`
 				: "";
-			const contestedTag = semantic?.temporalBehaviorContested
-				? "  [stock/flow contested]"
-				: "";
-			return `  - "${c.name}" :: ${type}${conceptTag}${temporalTag}${contestedTag}`;
+			return `  - "${c.name}" :: ${type}${conceptTag}${temporalTag}`;
 		});
 		return `Table ${address}:\n${colLines.join("\n")}`;
 	});
@@ -213,9 +213,7 @@ export function formatSchema(
 		"named like a balance, level, or position is NOT a stock if it is marked (additive) " +
 		"— the data decided. (additive) is a flow: SUM it across ALL periods, never restrict " +
 		"to a single period. (point_in_time) is a stock: never SUM it across periods (take " +
-		"the latest period's value, or an average). A column tagged [stock/flow contested] " +
-		"has disagreeing evidence about which it is — state that caveat in your answer when " +
-		"aggregating over it.\n\n" +
+		"the latest period's value, or an average).\n\n" +
 		`${tableBlocks.join("\n\n")}\n` +
 		"</schema>"
 	);
@@ -298,8 +296,6 @@ export async function buildSchemaBlock(): Promise<string> {
 			columnId: currentColumnConcepts.columnId,
 			businessConcept: currentColumnConcepts.businessConcept,
 			temporalBehavior: currentColumnConcepts.temporalBehavior,
-			temporalBehaviorContested:
-				currentColumnConcepts.temporalBehaviorContested,
 		})
 		.from(currentColumnConcepts);
 
@@ -315,7 +311,6 @@ export async function buildSchemaBlock(): Promise<string> {
 			columnId: c.columnId ?? "",
 			businessConcept: c.businessConcept ?? null,
 			temporalBehavior: c.temporalBehavior ?? null,
-			temporalBehaviorContested: c.temporalBehaviorContested ?? null,
 		})),
 	);
 }

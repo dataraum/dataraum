@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import { projectValueRows } from "./look-values";
+import { escapeIlikeNeedle, projectValueRows } from "./look-values";
 
 describe("projectValueRows (DAT-621)", () => {
 	it("returns the full freq-ordered set as complete when within the limit", () => {
@@ -41,5 +41,21 @@ describe("projectValueRows (DAT-621)", () => {
 	it("coerces counts to numbers (DuckDB COUNT returns bigint-ish)", () => {
 		const out = projectValueRows([{ value: "x", count: "42" }], 1000);
 		expect(out.values[0]).toEqual({ value: "x", count: 42 });
+	});
+});
+
+describe("escapeIlikeNeedle (DAT-701)", () => {
+	it("treats wildcards as literal text", () => {
+		expect(escapeIlikeNeedle("%")).toBe("\\%");
+		expect(escapeIlikeNeedle("a_b")).toBe("a\\_b");
+	});
+
+	it("escapes quotes and backslashes for the SQL literal", () => {
+		expect(escapeIlikeNeedle("O'Brien")).toBe("O''Brien");
+		expect(escapeIlikeNeedle("a\\b")).toBe("a\\\\b");
+	});
+
+	it("passes plain fragments through unchanged", () => {
+		expect(escapeIlikeNeedle("deprec")).toBe("deprec");
 	});
 });

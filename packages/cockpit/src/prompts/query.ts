@@ -67,7 +67,8 @@ Generate valid DuckDB SQL:
 - GROUP BY strictness: every non-aggregated column in SELECT/ORDER BY/HAVING must appear in GROUP BY (or use ANY_VALUE).
 - Never use a reserved word as an alias (DATE, MONTH, YEAR, TIME, CURRENT_DATE …) — use descriptive names (period_month, calculation_date).
 - Case-insensitive matching: ILIKE, not LOWER(col) = '…'. Dates: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'.
-- Handle nulls in aggregations (COALESCE) when it matters; CAST explicitly when comparing different types.
+- Empty aggregations: never wrap an aggregate in COALESCE(<agg>, 0) — a SUM/AVG/MIN/MAX over zero matching rows MUST surface as NULL (no support); a masked 0 reads as a real value and silently corrupts the answer. One-sided data is the exception that proves the rule: when COMBINING two or more aggregates arithmetically (SUM(a) - SUM(b)), an operand that is entirely NULL over MATCHED rows is real information (activity recorded on one side only) and must not NULL-destroy the other operand — combine with row-guarded NULL-safety: CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(a), 0) - COALESCE(SUM(b), 0) END. Domain conventions (when present below) say WHICH operands combine and in what order.
+- CAST explicitly when comparing different types.
 </duckdb_dialect>
 
 <validation>

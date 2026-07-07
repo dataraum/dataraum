@@ -17,7 +17,7 @@ Before substantial work:
 Knowledge sources beyond Intent:
 - **AG-UI (the streaming protocol under TanStack AI):** the `@tanstack/ai#ai-core/ag-ui-protocol` sub-skill covers the event layer (`RUN_*`, `TOOL_CALL_*`, `STATE_SNAPSHOT`/`STATE_DELTA`, `CUSTOM`). Load it for chat-transport, tool-state, or model-only-context work; upstream protocol reference: <https://docs.ag-ui.com>. Where a skill doc and the installed dist disagree, the installed types win.
 - **React 19 has NO Intent skill** — the authority is <https://react.dev> (fetch it; never write React idioms from training-data memory). Project-distilled rules: the "UI quality bar" below, plus the cockpit-idiom conventions as the React-idiom audit lands.
-- **Dependency convention:** `@tanstack/*` deps are declared `latest` and **nothing freezes** — bun.lock owns resolution; never add version pins. Contract tests + tsc guard deliberate updates.
+- **Dependency convention:** `@tanstack/*` deps are declared `latest` and **nothing freezes** — bun.lock owns resolution; never add version pins. Contract tests + tsc guard deliberate updates. **Declare only packages whose version we own:** never re-declare a dep another declared package already pins (`@codemirror/view|state|language` ship with `commands`/`lang-sql`; `@tanstack/ai-client` with `ai-react`; `router-plugin` with `react-start`) — double declaration splits the lockfile into two resolved copies on the next bump, and the split type/runtime instances refuse to unify (DAT-700). Imports of transitive deps resolve against the single hoisted copy.
 
 ## Layout
 

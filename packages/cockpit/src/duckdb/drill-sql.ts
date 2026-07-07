@@ -7,7 +7,9 @@
 // pins AND-merged into where_clause) → `json_deserialize_sql` → validate with
 // a bound DESCRIBE. There are no skip heuristics: DuckDB's binder is the gate,
 // and a BinderException is the deterministic "cannot slice this" refusal the
-// UI renders (an LLM fallback is P2, DAT-673).
+// UI renders. Engine-composed metrics are handled per NODE instead — rebuilt
+// from persisted parts in `metric-compose.ts` behind `/api/drill/node`
+// (DAT-702), never by mutating the flattened statement here.
 //
 // Everything runs on a caller-provided connection: the API route passes a
 // lake connection scoped like the engine's (`USE lake.typed`), unit tests an
@@ -46,8 +48,9 @@ export type DrillComposeResult =
 const refuse = (reason: string): DrillComposeResult => ({ ok: false, reason });
 
 /** The first line of a DuckDB error — `Binder Error: …` etc.; the rest is
- *  candidate-list noise the refusal state doesn't need. */
-const errorLine = (err: unknown): string =>
+ *  candidate-list noise the refusal state doesn't need. (Exported for the
+ *  `/api/drill/node` route, which shares the binder-as-gate refusal shape.) */
+export const errorLine = (err: unknown): string =>
 	(err instanceof Error ? err.message : String(err)).split("\n")[0] ??
 	"unknown error";
 
@@ -309,243 +312,20 @@ async function parseSingleSelect(
 	return { tree, node };
 }
 
-// --- Tier C: engine-composed metric recomposition -----------------------------
-//
-// The engine composes a metric as scalar step-CTEs (graphs/formula_composer.py,
-// a CLOSED grammar): extract CTEs aggregate the enriched fact to one `value`,
-// constant CTEs are literal SELECTs, and formula CTEs combine dependencies
-// exclusively via `(SELECT value FROM <dep>)` scalar subqueries — no FROM.
-// A dimension is therefore aggregated away INSIDE each extract CTE before any
-// scope tier B could inject into. Recomposition per slice:
-//   1. extract CTEs — inject dims + pins (the same tier-B injection, per CTE);
-//      each now returns (dims…, value) rows.
-//   2. formula CTEs — every scalar ref to a dim-carrying dep becomes
-//      `<dep>.value`, the deps join on a FULL JOIN … USING (dims) spine (a
-//      group missing on one side keeps the row, its side NULL — honest), and
-//      the dims are prepended to the select. Constant refs stay scalar.
-//   3. the final `SELECT * FROM <output>` passes the dims through.
-// Same end gate as every tier: the composed statement must DESCRIBE-bind.
-
-/** The cte_map entries as (name, inner select node), in definition order. */
-function cteEntries(node: AstNode): { key: string; inner: AstNode }[] {
-	const map = isRecord(node.cte_map) ? node.cte_map.map : null;
-	if (!Array.isArray(map)) return [];
-	const out: { key: string; inner: AstNode }[] = [];
-	for (const e of map) {
-		if (!isRecord(e) || typeof e.key !== "string") continue;
-		const query = isRecord(e.value) ? e.value.query : null;
-		const inner = isRecord(query) ? query.node : null;
-		if (isRecord(inner) && inner.type === "SELECT_NODE") {
-			out.push({ key: e.key, inner });
-		}
-	}
-	return out;
-}
-
-/** The CTE a SCALAR subquery reads (`(SELECT value FROM dep)`), or null. */
-function scalarDepName(expr: AstNode, cteNames: Set<string>): string | null {
-	if (expr.class !== "SUBQUERY" || expr.subquery_type !== "SCALAR") return null;
-	const sub = isRecord(expr.subquery) ? expr.subquery.node : null;
-	const from = isRecord(sub) ? sub.from_table : null;
-	if (!isRecord(from) || from.type !== "BASE_TABLE") return null;
-	const name = from.table_name;
-	return typeof name === "string" && cteNames.has(name) ? name : null;
-}
-
-/** Replace every scalar ref to a dim-carrying dep with `<dep>."value"`,
- *  collecting the referenced dep names in first-appearance order. */
-function rewriteDepRefs(
-	value: unknown,
-	dimCarrying: Set<string>,
-	cteNames: Set<string>,
-	found: string[],
-): unknown {
-	if (Array.isArray(value)) {
-		return value.map((v) => rewriteDepRefs(v, dimCarrying, cteNames, found));
-	}
-	if (!isRecord(value)) return value;
-	const dep = scalarDepName(value, cteNames);
-	if (dep && dimCarrying.has(dep)) {
-		if (!found.includes(dep)) found.push(dep);
-		// Preserve the ref's alias (formula roots carry `AS value`).
-		const ref = colRef("value", dep);
-		ref.alias = value.alias ?? "";
-		return ref;
-	}
-	const out: AstNode = {};
-	for (const [k, v] of Object.entries(value)) {
-		out[k] = rewriteDepRefs(v, dimCarrying, cteNames, found);
-	}
-	return out;
-}
-
-const baseTableRef = (name: string): AstNode => ({
-	type: "BASE_TABLE",
-	alias: "",
-	sample: null,
-	query_location: 0,
-	schema_name: "",
-	table_name: name,
-	column_name_alias: [],
-	catalog_name: "",
-	at_clause: null,
-});
-
-/** dep1 FULL JOIN dep2 USING (dims…) FULL JOIN dep3 USING (dims…) … */
-function joinSpine(deps: string[], dims: string[]): AstNode {
-	let node = baseTableRef(deps[0] as string);
-	for (const dep of deps.slice(1)) {
-		node = {
-			type: "JOIN",
-			alias: "",
-			sample: null,
-			query_location: 0,
-			left: node,
-			right: baseTableRef(dep),
-			condition: null,
-			join_type: "FULL",
-			ref_type: "REGULAR",
-			using_columns: dims,
-			delim_flipped: false,
-			duplicate_eliminated_columns: [],
-		};
-	}
-	return node;
-}
-
-function composeTierC(
-	node: AstNode,
-	req: DrillComposeRequest,
-): { pinParams: DrillPinValue[] } | { refusal: string } {
-	// The engine's composed-metric outer statement is literally
-	// `SELECT * FROM <output_step>` (agent.py hardcodes it at both call
-	// sites). Assert the STAR so a future engine change that narrows the
-	// outer select refuses loudly instead of silently hiding injected dims
-	// (post-merge review, 2026-07-06).
-	const topSelect = node.select_list;
-	if (
-		!Array.isArray(topSelect) ||
-		topSelect.length !== 1 ||
-		!isRecord(topSelect[0]) ||
-		topSelect[0].class !== "STAR"
-	) {
-		return { refusal: "metric output shape not recognized" };
-	}
-
-	const entries = cteEntries(node);
-	const cteNames = new Set(entries.map((e) => e.key));
-	const dims = req.steps.filter((s) => s.kind === "slice");
-	const dimCols = [...new Set(dims.map((d) => d.column))];
-	const dimCarrying = new Set<string>();
-	const pinParams: DrillPinValue[] = [];
-
-	for (const { key, inner } of entries) {
-		const scopeRels: { table: string; alias: string }[] = [];
-		collectScopeRelations(inner.from_table, scopeRels);
-		const readsBase = scopeRels.some((r) => !cteNames.has(r.table));
-
-		if (readsBase) {
-			// Extract CTE — the dims live on the relation it reads. Placeholder
-			// numbering is sequential across CTEs (each occurrence binds its own
-			// param, appended in CTE order).
-			const injected = injectSteps(
-				inner,
-				req.steps,
-				req.params.length + pinParams.length,
-			);
-			if ("refusal" in injected) return injected;
-			pinParams.push(...injected.pinParams);
-			dimCarrying.add(key);
-			continue;
-		}
-
-		// Formula / constant CTE: rewrite scalar refs to dim-carrying deps.
-		const found: string[] = [];
-		inner.select_list = rewriteDepRefs(
-			inner.select_list,
-			dimCarrying,
-			cteNames,
-			found,
-		);
-		if (found.length === 0) continue; // constant, or formula over constants only
-		inner.from_table = joinSpine(found, dimCols);
-		inner.select_list = [
-			...dimCols.map((c) => colRef(c)),
-			...(Array.isArray(inner.select_list) ? inner.select_list : []),
-		];
-		dimCarrying.add(key);
-	}
-
-	if (dimCarrying.size === 0) {
-		return { refusal: "no step of this metric can carry the dimension" };
-	}
-	// The gate must prove the dims reach the CTE the OUTER statement actually
-	// selects from — "some CTE carries them" is not enough: an extract CTE off
-	// the output's reference chain (over-declared `depends_on` in the metric
-	// YAML) would compose "successfully" with the slice silently missing from
-	// the result. Wrong numbers are worse than refusals (post-merge review,
-	// 2026-07-06 — empirically reproduced).
-	const outputRels: { table: string; alias: string }[] = [];
-	collectScopeRelations(node.from_table, outputRels);
-	if (!outputRels.some((r) => dimCarrying.has(r.table))) {
-		return { refusal: "the metric's output step cannot carry the dimension" };
-	}
-	return { pinParams };
-}
-
-async function composeTierBC(
+/** Tier B end-to-end: parse the single SELECT, inject the steps into its top
+ *  scope, re-serialize. The bound-DESCRIBE gate runs in `composeDrill` — one
+ *  gate for every tier. */
+async function composeTierB(
 	conn: DuckDBConnection,
 	req: DrillComposeRequest,
-): Promise<{ composed: ComposedDrill; tier: "B" | "C" } | { refusal: string }> {
-	// Tier B first — inject into the top scope. No shape heuristic decides the
-	// fallback: if the top-scope injection BINDS it wins (e.g. a CTE that
-	// exposes the dim), and only a binder failure on a CTE-bearing statement
-	// escalates to the tier-C recomposition. The binder stays the gate.
-	const parsedB = await parseSingleSelect(conn, req.sql);
-	if ("refusal" in parsedB) return parsedB;
-	const injectedB = injectSteps(parsedB.node, req.steps, req.params.length);
-	let tierBFailure: string | null = null;
-	if ("refusal" in injectedB) {
-		tierBFailure = injectedB.refusal;
-	} else {
-		const sqlB = await deserializeSql(conn, parsedB.tree);
-		if (!sqlB) return { refusal: "statement did not re-serialize" };
-		const paramsB = [...req.params, ...injectedB.pinParams];
-		try {
-			await describeColumns(conn, sqlB, paramsB);
-			return { composed: { sql: sqlB, params: paramsB }, tier: "B" };
-		} catch (err) {
-			tierBFailure = errorLine(err);
-		}
-	}
-
-	// Escalate only for the composed-metric shape: a CTE graph whose TOP scope
-	// reads nothing but step CTEs (the engine's `SELECT * FROM <output_step>`).
-	// Recomposing anything else is meaningless — the top scope wouldn't gain
-	// the dims — so those report tier B's failure as-is. (injectSteps mutated
-	// select/group/where of the B tree, but never from_table — safe to read.)
-	const cteNames = new Set(cteEntries(parsedB.node).map((e) => e.key));
-	const topRels: { table: string; alias: string }[] = [];
-	collectScopeRelations(parsedB.node.from_table, topRels);
-	const composedMetricShape =
-		cteNames.size > 0 &&
-		topRels.length > 0 &&
-		topRels.every((r) => cteNames.has(r.table));
-	if (!composedMetricShape) {
-		return { refusal: tierBFailure };
-	}
-	// injectSteps mutated the tier-B tree — parse fresh for the recomposition.
-	const parsedC = await parseSingleSelect(conn, req.sql);
-	if ("refusal" in parsedC) return parsedC;
-	const injectedC = composeTierC(parsedC.node, req);
-	if ("refusal" in injectedC) return injectedC;
-
-	const sqlC = await deserializeSql(conn, parsedC.tree);
-	if (!sqlC) return { refusal: "statement did not re-serialize" };
-	return {
-		composed: { sql: sqlC, params: [...req.params, ...injectedC.pinParams] },
-		tier: "C",
-	};
+): Promise<{ composed: ComposedDrill } | { refusal: string }> {
+	const parsed = await parseSingleSelect(conn, req.sql);
+	if ("refusal" in parsed) return parsed;
+	const injected = injectSteps(parsed.node, req.steps, req.params.length);
+	if ("refusal" in injected) return injected;
+	const sql = await deserializeSql(conn, parsed.tree);
+	if (!sql) return { refusal: "statement did not re-serialize" };
+	return { composed: { sql, params: [...req.params, ...injected.pinParams] } };
 }
 
 // --- The composer -------------------------------------------------------------
@@ -554,12 +334,16 @@ async function composeTierBC(
  * Compose a drilled statement from a base query + step stack.
  *
  * Tier decision is data-driven: every referenced column present on the base
- * RESULT (per DESCRIBE) → tier A outer wrap; a composed-metric shape (the top
- * level reads only step CTEs) → tier C recomposition through the CTE graph;
- * anything else → tier B AST injection into the top scope. Every tier's
- * output is validated with a bound DESCRIBE before it is returned — the
- * caller never receives SQL that will not bind, and a binder failure IS the
- * refusal.
+ * RESULT (per DESCRIBE) → tier A outer wrap; anything else → tier B AST
+ * injection into the top scope. Every tier's output is validated with a bound
+ * DESCRIBE before it is returned — the caller never receives SQL that will
+ * not bind, and a binder failure IS the refusal. An engine-composed metric
+ * (scalar step-CTEs — every dimension aggregated away inside the extracts)
+ * is NOT recomposed here: its drill entry is per NODE, rebuilt from the
+ * metric's persisted parts (`metric-compose.ts` behind `/api/drill/node`,
+ * DAT-702 — tier "C" in the response taxonomy). Until DAT-703 lands grouped
+ * per-node composition, slicing a composed metric refuses honestly with the
+ * tier-B binder error.
  */
 export async function composeDrill(
 	conn: DuckDBConnection,
@@ -577,15 +361,15 @@ export async function composeDrill(
 	const baseNames = new Set(baseColumns.map((c) => c.name));
 	const tierA = referencedColumns(req.steps).every((c) => baseNames.has(c));
 
-	let tier: "A" | "B" | "C";
+	let tier: "A" | "B";
 	let composed: ComposedDrill;
 	if (tierA) {
 		tier = "A";
 		composed = composeTierA(req.sql, req.params, baseColumns, req.steps);
 	} else {
-		const result = await composeTierBC(conn, req);
+		const result = await composeTierB(conn, req);
 		if ("refusal" in result) return refuse(result.refusal);
-		tier = result.tier;
+		tier = "B";
 		composed = result.composed;
 	}
 

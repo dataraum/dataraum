@@ -184,19 +184,14 @@ const floatLiteral = (value: number): string =>
 
 /** Grouped-composition context for the ref render (DAT-703, parts.ts): which
  *  dependency steps are dim-CARRYING CTEs — referenced `"dep"."value"` off the
- *  FULL-JOIN spine instead of a scalar subquery — and which of those are
- *  zero-absent (absence for a group is a TRUE zero → `COALESCE(ref, 0)`).
- *  Without a context every ref is a scalar subquery, the engine mirror. */
+ *  FULL-JOIN spine instead of a scalar subquery. Every ref renders BARE
+ *  (absence doctrine v2: no COALESCE anywhere — NULL absorbs, so a group's
+ *  value exists iff every carrier is observed in it; additive nodes decompose
+ *  via signed contributions in parts.ts instead and never render through a
+ *  carrier context). Without a context every ref is a scalar subquery, the
+ *  engine mirror. */
 export interface CarrierContext {
 	carriers: ReadonlySet<string>;
-	zeroAbsent: ReadonlySet<string>;
-	/** Scalar-subquery refs whose EMPTY value is a true zero under the current
-	 *  composition's RESTRICTED domain (pins): a SUM/COUNT extract over zero
-	 *  matching rows yields SQL NULL, but the measure's semantics say 0 — so a
-	 *  pinned grouped row and its pin-only re-evaluation agree. Never set for
-	 *  the unrestricted scalar, which stays byte-parity with the engine
-	 *  composition (a whole-domain NULL is the fall-loud grounding flag). */
-	zeroAbsentScalars?: ReadonlySet<string>;
 }
 
 function renderExpr(
@@ -214,21 +209,9 @@ function renderExpr(
 			};
 		}
 		if (ctx?.carriers.has(expr.name)) {
-			// The one measure-local absence decision (no per-operator threading):
-			// COALESCE exactly where the measure's aggregation makes absence a
-			// true zero; bare otherwise, so SQL NULL propagation yields the
-			// honest undefined for a one-sided group.
-			const ref = `"${expr.name}"."value"`;
-			return {
-				sql: ctx.zeroAbsent.has(expr.name) ? `COALESCE(${ref}, 0)` : ref,
-			};
+			return { sql: `"${expr.name}"."value"` };
 		}
-		const scalar = `(SELECT value FROM ${expr.name})`;
-		return {
-			sql: ctx?.zeroAbsentScalars?.has(expr.name)
-				? `COALESCE(${scalar}, 0)`
-				: scalar,
-		};
+		return { sql: `(SELECT value FROM ${expr.name})` };
 	}
 	if (expr.kind === "num") return { sql: floatLiteral(expr.value) };
 	if (expr.kind === "neg") {

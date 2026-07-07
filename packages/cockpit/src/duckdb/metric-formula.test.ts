@@ -88,20 +88,17 @@ describe("renderFormulaValue (engine parity, scalar)", () => {
 });
 
 describe("renderFormulaValue with a carrier context (DAT-703)", () => {
-	it("reads a carrier off the spine, COALESCEs only zero-absent carriers, keeps scalars as subqueries", () => {
+	it("reads carriers off the spine BARE (NULL absorbs), keeps scalars as subqueries", () => {
 		expect(
 			renderFormulaValue(
 				"(accounts_receivable / revenue) * days_in_period",
 				DEPS,
-				{
-					carriers: new Set(["accounts_receivable", "revenue"]),
-					zeroAbsent: new Set(["revenue"]),
-				},
+				{ carriers: new Set(["accounts_receivable", "revenue"]) },
 			),
 		).toEqual({
 			sql:
 				'(("accounts_receivable"."value" / ' +
-				'NULLIF(COALESCE("revenue"."value", 0), 0)) * ' +
+				'NULLIF("revenue"."value", 0)) * ' +
 				"(SELECT value FROM days_in_period))",
 		});
 	});
@@ -110,23 +107,8 @@ describe("renderFormulaValue with a carrier context (DAT-703)", () => {
 		expect(
 			renderFormulaValue("revenue - cogs", DEPS, {
 				carriers: new Set(["cogs"]),
-				zeroAbsent: new Set(),
 			}),
 		).toHaveProperty("refusal");
-	});
-
-	it("zeroAbsentScalars COALESCEs a scalar-subquery ref (pin≡group), leaving others bare", () => {
-		expect(
-			renderFormulaValue("revenue - accounts_receivable", DEPS, {
-				carriers: new Set(),
-				zeroAbsent: new Set(),
-				zeroAbsentScalars: new Set(["revenue"]),
-			}),
-		).toEqual({
-			sql:
-				"(COALESCE((SELECT value FROM revenue), 0) - " +
-				"(SELECT value FROM accounts_receivable))",
-		});
 	});
 });
 

@@ -23,6 +23,7 @@ export async function run(
 }
 
 export const num = (v: unknown): number | null => {
+	if (v === null) return null; // Number(null) is 0 — never conflate — with 0
 	const n = typeof v === "number" ? v : Number(v);
 	return Number.isFinite(n) ? n : null;
 };

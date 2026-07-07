@@ -11,26 +11,33 @@
 // end (the mosaic posture), so a slice is a clause APPEND (dims into SELECT +
 // GROUP BY), a pin a WHERE append, never a mutation of a fused string.
 //
-// GROUPED COMPOSITION (DAT-703): every dim-carrying extract in the subtree
-// gets the dims + GROUP BY → `(dims…, value)`; a formula's carriers join
-// `FULL JOIN … USING (dims)` — the union domain, so a disjoint decomposition
-// (gross_profit by account: revenue rows ∩ cogs rows = ∅) keeps both sides —
-// and the formula's arithmetic runs per row off that spine. Constants stay
-// scalar, as does an extract's fall-loud shape (no relation → SELECT NULL).
+// ABSENCE DOCTRINE v2 — "observed or dash" (DAT-703 smoke finding: zero-absence
+// COALESCE presented degenerate ratios as real values — gross_margin showed
+// 100.00 on every account that simply has no COGS). ONE structural
+// classification per opened node, from its parsed reachable tree, decided
+// once at compose time — never per operator (the chain-B context threading
+// stays deleted):
 //
-// ABSENCE is a property of the measure, decided once at ref-render time (the
-// chain-B per-operator context threading stays deleted): a carrier ref is
-// `COALESCE(ref, 0)` iff its absence for a group is a TRUE zero —
-//   - a SUM/COUNT extract (no rows ⇒ the sum IS zero), or
-//   - an additive combination (+, -, unary minus) of refs that are themselves
-//     zero-absent carriers (found empirically: ebitda = operating_income +
-//     depreciation_amortization lost the depreciation-only groups while the
-//     intermediate stayed bare — spikes/drill-metrics, commit a8e99d32).
-//     A numeric literal or scalar-ref addend breaks the proof — the absent
-//     group's true value would be the addend, not 0 — so `provablyZeroAbsent`
-//     is deliberately tighter than "all ops are additive".
-// Every other ref stays bare: SQL NULL propagation yields the honest
-// undefined for a one-sided ratio group, never a fabricated 0.
+//   ADDITIVE — every reachable formula uses only `+`, binary `-`, unary
+//   minus, and refs, and every leaf is an extract WITH a relation. The
+//   grouped/pinned result is a SUM over a UNION ALL of SIGNED CARRIER
+//   CONTRIBUTIONS: each extract keeps its grouped CTE, the expression
+//   flattens to (extract, sign) pairs, and an absent carrier simply
+//   contributes no rows. No join, no COALESCE — the disjoint-decomposition
+//   union domain (gross_profit by account: +sales / -materials, Σ = total)
+//   holds by algebra.
+//
+//   NON-ADDITIVE (any ratio, product, literal, constant ref, or fall-loud
+//   leaf) — carriers join `FULL JOIN … USING (dims)` and every ref renders
+//   BARE. SQL NULL absorbs through the arithmetic, so a group shows a value
+//   iff EVERY carrier the formula touches is observed in that group; anything
+//   partial is the honest `—` (filterable), never a fabricated number.
+//
+// Pins follow the node's mode (additive → contributions under the filter,
+// non-additive → bare), so a pinned re-evaluation reproduces exactly the
+// grouped row it came from — including NULL ≡ NULL. The UNRESTRICTED scalar
+// (no dims, no pins) stays byte-parity with the engine composition, where a
+// whole-domain NULL is the fall-loud grounding flag.
 //
 // mosaic-sql gotchas (pinned by the spikes, commit cacb0174): computed select
 // items MUST be `{alias: expr}` objects — bare expressions auto-alias with
@@ -111,8 +118,8 @@ export interface NodeStep {
 	/** extract: the newest ACCEPTED snippet's narrowed parts — null is a hole,
 	 *  refused only when reachable from the composed node. */
 	parts: SnippetParts | null;
-	/** extract: the step's declared aggregation — SUM/COUNT is what makes
-	 *  absence a true zero under grouping. */
+	/** extract: the step's declared aggregation (display/metadata — absence
+	 *  semantics are structural since doctrine v2, not aggregation-driven). */
 	aggregation: string | null;
 	/** formula: the closed-grammar arithmetic expression over step ids. */
 	expression: string | null;
@@ -127,7 +134,7 @@ export interface NodeStep {
 /** A drill over the composed node: slice dims become GROUP BY appends on every
  *  dim-carrying extract; pins are row-level filters pushed into every
  *  extract's WHERE, pre-aggregation — pins without a slice re-evaluate the
- *  scalar under the filter. */
+ *  scalar under the filter, in the same mode as the grouped view. */
 export interface NodeDrill {
 	slices: string[];
 	pins: { column: string; value: DrillPinValue }[];
@@ -167,37 +174,62 @@ function targetStep(
 }
 
 /** A formula step's outgoing references: parsed expression identifiers. An
- *  unparseable expression contributes none — the render refusal names it. */
+ *  unparseable expression contributes none — the validation pass names it. */
 function stepRefs(step: NodeStep): string[] {
 	if (step.kind !== "formula" || !step.expression) return [];
 	const parsed = parseFormulaExpression(step.expression);
 	return "refusal" in parsed ? [] : formulaRefs(parsed.expr);
 }
 
-/** True when the expression's value for an all-absent group is provably zero:
- *  an additive (+, -, unary minus) combination of refs that are themselves
- *  zero-absent carriers. `false` the moment a numeric literal or a scalar
- *  (non-carrier) ref appears as an addend — absence would then equal the
- *  addend, not zero — or any multiplicative structure is involved. */
-function provablyZeroAbsent(
-	expr: FormulaExpr,
-	carriers: ReadonlySet<string>,
-	zeroAbsent: ReadonlySet<string>,
-): boolean {
-	switch (expr.kind) {
-		case "ref":
-			return carriers.has(expr.name) && zeroAbsent.has(expr.name);
-		case "num":
-			return false;
-		case "neg":
-			return provablyZeroAbsent(expr.operand, carriers, zeroAbsent);
-		case "bin":
-			return (
-				(expr.op === "+" || expr.op === "-") &&
-				provablyZeroAbsent(expr.left, carriers, zeroAbsent) &&
-				provablyZeroAbsent(expr.right, carriers, zeroAbsent)
-			);
-	}
+/** A signed extract contribution of an additive tree: `sign · extract.value`. */
+export interface Contribution {
+	stepId: string;
+	sign: 1 | -1;
+}
+
+/**
+ * Classify the target's reachable tree (doctrine v2): flatten it to signed
+ * extract contributions when it is PURELY ADDITIVE — only `+`, binary `-`,
+ * unary minus, and refs, every leaf an extract with a relation. Returns null
+ * the moment a literal, `*`, `/`, constant ref, fall-loud extract, or hole
+ * appears: the node is then non-additive (bare refs, NULL absorbs). One
+ * occurrence per REFERENCE, not per step — `a + a` contributes twice, exactly
+ * like the formula's own arithmetic. Exported for the enumeration spike.
+ */
+export function flattenAdditive(
+	target: NodeStep,
+	byId: ReadonlyMap<string, NodeStep>,
+): Contribution[] | null {
+	const out: Contribution[] = [];
+	const visitStep = (step: NodeStep, sign: 1 | -1): boolean => {
+		if (step.kind === "extract") {
+			if (!step.parts?.relation) return false; // fall-loud or hole
+			out.push({ stepId: step.stepId, sign });
+			return true;
+		}
+		if (step.kind !== "formula" || !step.expression) return false;
+		const parsed = parseFormulaExpression(step.expression);
+		if ("refusal" in parsed) return false;
+		return visitExpr(parsed.expr, sign);
+	};
+	const visitExpr = (e: FormulaExpr, sign: 1 | -1): boolean => {
+		switch (e.kind) {
+			case "num":
+				return false; // an absent group's value would be the literal, not 0
+			case "ref": {
+				const dep = byId.get(e.name);
+				return dep ? visitStep(dep, sign) : false;
+			}
+			case "neg":
+				return visitExpr(e.operand, sign === 1 ? -1 : 1);
+			case "bin": {
+				if (e.op !== "+" && e.op !== "-") return false;
+				const rightSign = e.op === "-" ? (sign === 1 ? -1 : 1) : sign;
+				return visitExpr(e.left, sign) && visitExpr(e.right, rightSign);
+			}
+		}
+	};
+	return visitStep(target, 1) ? out : null;
 }
 
 /**
@@ -237,9 +269,8 @@ export function composeNodeQuery(
 		onPath.add(step.stepId);
 		for (const ref of stepRefs(step)) {
 			const dep = byId.get(ref);
-			// A ref to a non-step surfaces in the formula render (not declared)
-			// or is a declared cache-only leaf the engine also treats as absent
-			// here — either way, nothing to visit.
+			// An unresolvable ref is handled by the validation pass below —
+			// nothing to visit here.
 			if (!dep) continue;
 			const cycle = visit(dep);
 			if (cycle) return cycle;
@@ -252,9 +283,35 @@ export function composeNodeQuery(
 	const cycle = visit(target);
 	if (cycle) return cycle;
 
+	// One validation pass for BOTH modes (the additive path never renders the
+	// formulas, so validation cannot live in the renderer alone): identifier
+	// gate, parseability, the engine's fabrication guard (every ref DECLARED),
+	// and the phantom guard (every ref an actual step — a phantom would
+	// surface as a raw Catalog Error, or worse, silently bind a real lake
+	// table that happens to carry a `value` column).
 	for (const step of order) {
 		if (!IDENT_RE.test(step.stepId)) {
 			return { refusal: `step id '${step.stepId}' is not a SQL identifier` };
+		}
+		if (step.kind !== "formula" || !step.expression) continue;
+		const parsed = parseFormulaExpression(step.expression);
+		if ("refusal" in parsed) {
+			return { refusal: `step '${step.stepId}': ${parsed.refusal}` };
+		}
+		for (const ref of formulaRefs(parsed.expr)) {
+			if (!step.dependsOn.includes(ref)) {
+				return {
+					refusal:
+						`step '${step.stepId}': formula '${step.expression}' references ` +
+						`'${ref}', which is not a declared dependency — refusing to ` +
+						`compose a fabricated operand`,
+				};
+			}
+			if (!byId.has(ref)) {
+				return {
+					refusal: `formula step '${step.stepId}' depends on '${ref}', which is not a step of this metric`,
+				};
+			}
 		}
 	}
 
@@ -286,129 +343,149 @@ export function composeNodeQuery(
 		}
 	}
 
-	const ctes: Record<string, SelectQuery> = {};
-	const carriers = new Set<string>(); // dim-carrying CTEs (grouped mode)
-	const zeroAbsent = new Set<string>();
-	// Scalar-mode counterpart of zeroAbsent: SUM/COUNT extracts whose EMPTY
-	// value is a true zero once pins RESTRICT the domain — so pinning a
-	// grouped row reproduces exactly that row's value. Applied only when a
-	// pin exists: the unrestricted scalar stays byte-parity with the engine
-	// composition, where a whole-domain NULL is the fall-loud grounding flag.
-	const zeroAbsentScalars = new Set<string>();
+	/** An extract's CTE under the current drill: dims + GROUP BY when sliced,
+	 *  the persisted predicates plus the pins in WHERE — identical in both
+	 *  modes. */
+	const extractCte = (parts: SnippetParts, relation: string): SelectQuery => {
+		let q =
+			dims.length > 0
+				? Query.from(relation)
+						.select(...dims.map((d) => column(d)), {
+							value: verbatim(parts.selectExpr),
+						})
+						.groupby(...dims.map((d) => column(d)))
+				: Query.from(relation).select({ value: verbatim(parts.selectExpr) });
+		const preds = [...parts.where, ...pinPredicates];
+		if (preds.length > 0) {
+			q = q.where(...preds.map((p) => verbatim(`(${p})`)));
+		}
+		return q;
+	};
 
-	for (const step of order) {
-		if (step.kind === "extract") {
-			if (!step.parts) {
-				return {
-					refusal: `no persisted clause parts for '${step.stepId}'`,
-				};
+	const ctes: Record<string, SelectQuery> = {};
+	// Whether the final select carries the dims (the target composed grouped).
+	let targetGrouped = false;
+
+	// ---- ADDITIVE mode (restricted domains only): SUM over signed carrier
+	// contributions. The unrestricted scalar deliberately does NOT take this
+	// path — it stays byte-parity with the engine composition, where a
+	// whole-domain NULL is the fall-loud grounding flag.
+	const restricted = dims.length > 0 || pinPredicates.length > 0;
+	const contributions =
+		restricted && target.kind !== "extract"
+			? flattenAdditive(target, byId)
+			: null;
+	if (contributions !== null) {
+		for (const { stepId } of contributions) {
+			if (ctes[stepId]) continue;
+			const step = byId.get(stepId);
+			// flattenAdditive only emits extracts with a relation.
+			if (!step?.parts?.relation) {
+				return { refusal: `no persisted clause parts for '${stepId}'` };
 			}
-			const { selectExpr, relation, where } = step.parts;
-			if (!relation) {
-				// The fall-loud shape (SELECT NULL, no FROM) stays scalar: there
-				// is nothing to group or filter, and the NULL propagates through
-				// a bare formula ref as the honest undefined.
-				ctes[step.stepId] = Query.select({ value: verbatim(selectExpr) });
+			ctes[stepId] = extractCte(step.parts, step.parts.relation);
+		}
+		const branches = contributions.map(({ stepId, sign }) => {
+			const value =
+				sign === 1
+					? { value: column("value") }
+					: { value: verbatim('-("value")') };
+			return dims.length > 0
+				? Query.from(stepId).select(...dims.map((d) => column(d)), value)
+				: Query.from(stepId).select(value);
+		});
+		const unioned = Query.unionAll(...branches);
+		ctes[target.stepId] =
+			dims.length > 0
+				? Query.from(unioned)
+						.select(...dims.map((d) => column(d)), {
+							value: verbatim('SUM("value")'),
+						})
+						.groupby(...dims.map((d) => column(d)))
+				: Query.from(unioned).select({ value: verbatim('SUM("value")') });
+		targetGrouped = dims.length > 0;
+	} else {
+		// ---- General path: engine-parity scalar, or the non-additive
+		// grouped/pinned composition (FULL JOIN spine, BARE refs — NULL absorbs,
+		// a group is `—` unless every carrier is observed in it).
+		const carriers = new Set<string>(); // dim-carrying CTEs (grouped mode)
+
+		for (const step of order) {
+			if (step.kind === "extract") {
+				if (!step.parts) {
+					return {
+						refusal: `no persisted clause parts for '${step.stepId}'`,
+					};
+				}
+				const { selectExpr, relation } = step.parts;
+				if (!relation) {
+					// The fall-loud shape (SELECT NULL, no FROM) stays scalar: there
+					// is nothing to group or filter, and the NULL absorbs through a
+					// bare formula ref as the honest undefined.
+					ctes[step.stepId] = Query.select({ value: verbatim(selectExpr) });
+					continue;
+				}
+				ctes[step.stepId] = extractCte(step.parts, relation);
+				if (dims.length > 0) carriers.add(step.stepId);
 				continue;
 			}
-			let q =
-				dims.length > 0
-					? Query.from(relation)
-							.select(...dims.map((d) => column(d)), {
-								value: verbatim(selectExpr),
-							})
-							.groupby(...dims.map((d) => column(d)))
-					: Query.from(relation).select({ value: verbatim(selectExpr) });
-			const preds = [...where, ...pinPredicates];
-			if (preds.length > 0) {
-				q = q.where(...preds.map((p) => verbatim(`(${p})`)));
+			if (step.kind === "constant") {
+				const numeric =
+					step.value === null || step.value.trim() === ""
+						? Number.NaN
+						: Number(step.value);
+				if (!Number.isFinite(numeric)) {
+					return {
+						refusal: `constant '${step.stepId}' value '${String(step.value)}' is not numeric`,
+					};
+				}
+				// Engine parity (compose_constant_sql): an integer stays integer — a
+				// constant is never a division denominator, so integer typing is safe.
+				ctes[step.stepId] = Query.select({ value: verbatim(String(numeric)) });
+				continue;
 			}
-			ctes[step.stepId] = q;
-			const agg = (step.aggregation ?? "").toLowerCase();
-			const zeroWhenEmpty = agg === "sum" || agg === "count";
-			if (dims.length > 0) {
-				carriers.add(step.stepId);
-				if (zeroWhenEmpty) zeroAbsent.add(step.stepId);
-			} else if (zeroWhenEmpty) {
-				zeroAbsentScalars.add(step.stepId);
+			if (!step.expression) {
+				return { refusal: `formula step '${step.stepId}' has no expression` };
 			}
-			continue;
-		}
-		if (step.kind === "constant") {
-			const numeric =
-				step.value === null || step.value.trim() === ""
-					? Number.NaN
-					: Number(step.value);
-			if (!Number.isFinite(numeric)) {
-				return {
-					refusal: `constant '${step.stepId}' value '${String(step.value)}' is not numeric`,
-				};
+			const parsed = parseFormulaExpression(step.expression);
+			if ("refusal" in parsed) {
+				return { refusal: `step '${step.stepId}': ${parsed.refusal}` };
 			}
-			// Engine parity (compose_constant_sql): an integer stays integer — a
-			// constant is never a division denominator, so integer typing is safe.
-			ctes[step.stepId] = Query.select({ value: verbatim(String(numeric)) });
-			continue;
-		}
-		if (!step.expression) {
-			return { refusal: `formula step '${step.stepId}' has no expression` };
-		}
-		const parsed = parseFormulaExpression(step.expression);
-		if ("refusal" in parsed) {
-			return { refusal: `step '${step.stepId}': ${parsed.refusal}` };
-		}
-		// A ref that is DECLARED but names no step would pass the declared-set
-		// validation below yet have no CTE — surfacing as a raw Catalog Error
-		// (or, worse, silently binding a real lake table that happens to carry
-		// a `value` column). Refuse it by name like every other malformed shape.
-		const phantom = formulaRefs(parsed.expr).find(
-			(r) => step.dependsOn.includes(r) && !byId.has(r),
-		);
-		if (phantom !== undefined) {
-			return {
-				refusal: `formula step '${step.stepId}' depends on '${phantom}', which is not a step of this metric`,
-			};
-		}
-		const rendered = renderFormulaValue(
-			step.expression,
-			new Set(step.dependsOn),
-			{
-				carriers,
-				zeroAbsent,
-				zeroAbsentScalars:
-					pinPredicates.length > 0 ? zeroAbsentScalars : undefined,
-			},
-		);
-		if ("refusal" in rendered) {
-			return { refusal: `step '${step.stepId}': ${rendered.refusal}` };
-		}
-		const [first, ...rest] = formulaRefs(parsed.expr).filter((r) =>
-			carriers.has(r),
-		);
-		if (dims.length > 0 && first !== undefined) {
-			// FULL JOIN … USING (dims) spine over the dim-carrying deps; scalar
-			// deps (constants, fall-loud extracts) stay subqueries in the value.
-			let spine: Parameters<typeof join>[0] = first;
-			for (const dep of rest) {
-				spine = join(spine, dep, { type: "FULL", using: dims });
-			}
-			ctes[step.stepId] = Query.from(spine).select(
-				...dims.map((d) => column(d)),
-				{
-					value: verbatim(rendered.sql),
-				},
+			const rendered = renderFormulaValue(
+				step.expression,
+				new Set(step.dependsOn),
+				{ carriers },
 			);
-			carriers.add(step.stepId);
-			if (provablyZeroAbsent(parsed.expr, carriers, zeroAbsent)) {
-				zeroAbsent.add(step.stepId);
+			if ("refusal" in rendered) {
+				return { refusal: `step '${step.stepId}': ${rendered.refusal}` };
 			}
-		} else {
-			ctes[step.stepId] = Query.select({ value: verbatim(rendered.sql) });
+			const [first, ...rest] = formulaRefs(parsed.expr).filter((r) =>
+				carriers.has(r),
+			);
+			if (dims.length > 0 && first !== undefined) {
+				// FULL JOIN … USING (dims) spine over the dim-carrying deps; scalar
+				// deps (constants, fall-loud extracts) stay subqueries in the value.
+				let spine: Parameters<typeof join>[0] = first;
+				for (const dep of rest) {
+					spine = join(spine, dep, { type: "FULL", using: dims });
+				}
+				ctes[step.stepId] = Query.from(spine).select(
+					...dims.map((d) => column(d)),
+					{
+						value: verbatim(rendered.sql),
+					},
+				);
+				carriers.add(step.stepId);
+			} else {
+				ctes[step.stepId] = Query.select({ value: verbatim(rendered.sql) });
+			}
 		}
+		targetGrouped = carriers.has(target.stepId);
 	}
 
 	// No bare `*` (mosaic would alias it): select the target CTE's columns
 	// explicitly — grouped output carries the dims, scalar carries value only.
-	const outCols = carriers.has(target.stepId)
+	const outCols = targetGrouped
 		? [...dims.map((d) => column(d)), column("value")]
 		: [column("value")];
 	const sql = String(

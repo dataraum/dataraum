@@ -1,14 +1,14 @@
 // Parts-at-source composition (DAT-671 / DAT-703) against a real in-memory
-// DuckDB.
-//
-// The builder was proven on the live workspace first (spikes, commit
-// a8e99d32); these tests pin the semantics on a hand-built oracle:
+// DuckDB. These tests pin absence doctrine v2 ("observed or dash") on a
+// hand-built oracle:
 //   - scalar parity with the engine's flattened statement shape,
-//   - the FULL JOIN union domain for disjoint decompositions,
-//   - the zero-absence rule — COALESCE(·, 0) iff SUM/COUNT extract or
-//     purely-additive formula over zero-absent refs — including where the
-//     proof must FAIL (a literal addend), and
-//   - pins as pre-aggregation row filters with `$n` params.
+//   - ADDITIVE nodes: signed-contribution UNION — union domain for disjoint
+//     decompositions, Σ = scalar, no COALESCE, no join,
+//   - NON-ADDITIVE nodes: bare refs off the FULL JOIN spine — a group has a
+//     value iff every carrier is observed in it (the gross_margin smoke
+//     regression is the load-bearing pin), and
+//   - pins as pre-aggregation row filters with `$n` params, mode-coherent
+//     with the grouped view (pin ≡ group, including NULL ≡ NULL).
 
 import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -276,24 +276,26 @@ describe("composeNodeQuery — grouped", () => {
 		),
 	];
 
-	it("disjoint decomposition: FULL JOIN keeps the union domain and sums to the scalar", async () => {
+	it("ADDITIVE: disjoint decomposition via signed contributions — union domain, Σ = scalar, no COALESCE, no join", async () => {
 		const scalar = num((await rows(composed(GROSS_PROFIT).sql))[0]?.value);
 		const q = composed(GROSS_PROFIT, undefined, {
 			slices: ["account"],
 			pins: [],
 		});
-		expect(q.sql).toContain("FULL JOIN");
+		expect(q.sql).toContain("UNION ALL");
+		expect(q.sql).not.toContain("FULL JOIN");
+		expect(q.sql).not.toContain("COALESCE");
 		const result = await rows(q.sql);
-		// revenue rows and cogs rows live on DISJOINT accounts — an INNER join
-		// would return zero rows; the union domain has both sides.
+		// revenue rows and cogs rows live on DISJOINT accounts — each side
+		// contributes its own groups; absence contributes nothing.
 		const byAccount = new Map(result.map((r) => [r.account, num(r.value)]));
-		expect(byAccount.get("sales")).toBe(800); // revenue 800 - COALESCE(cogs, 0)
-		expect(byAccount.get("materials")).toBe(-200); // COALESCE(revenue, 0) - 200
+		expect(byAccount.get("sales")).toBe(800); // +revenue, no cogs contribution
+		expect(byAccount.get("materials")).toBe(-200); // -cogs, no revenue contribution
 		const sum = result.reduce((s, r) => s + (num(r.value) ?? 0), 0);
 		expect(sum).toBe(scalar);
 	});
 
-	it("a one-sided group under a NON-sum carrier stays honestly NULL", async () => {
+	it("NON-ADDITIVE: a one-sided ratio group is `—`, whichever side is absent", async () => {
 		const steps: NodeStep[] = [
 			extract(
 				"avg_balance",
@@ -309,18 +311,42 @@ describe("composeNodeQuery — grouped", () => {
 			),
 		];
 		const q = composed(steps, undefined, { slices: ["region"], pins: [] });
+		expect(q.sql).toContain("FULL JOIN");
+		expect(q.sql).not.toContain("COALESCE");
 		const byRegion = new Map(
 			(await rows(q.sql)).map((r) => [r.region, num(r.value)]),
 		);
-		// AR balances exist only in the west: east has revenue but the AVG
-		// carrier is absent — absence of an average is NOT zero.
+		// AR balances exist only in the west: east has revenue but not the
+		// other carrier — NULL absorbs, the group is honestly undefined.
 		expect(byRegion.get("west")).toBeCloseTo(180 / 500, 9);
 		expect(byRegion.get("east")).toBeNull();
 	});
 
-	it("zero-absence propagates bottom-up through purely-additive formulas", async () => {
+	it("REGRESSION (the smoke finding): a margin over disjoint carriers never fabricates 100", async () => {
+		// gross_margin = (revenue - cogs) / revenue * 100 sliced by the very
+		// dimension that separates its carriers: under COALESCE-0 every revenue
+		// account showed 100.00. Doctrine v2: no group observes BOTH carriers,
+		// so every group is `—`.
+		const steps: NodeStep[] = [
+			REVENUE,
+			COGS,
+			formula(
+				"gross_margin",
+				"(revenue - cost_of_goods_sold) / revenue * 100",
+				["revenue", "cost_of_goods_sold"],
+				true,
+			),
+		];
+		const result = await rows(
+			composed(steps, undefined, { slices: ["account"], pins: [] }).sql,
+		);
+		expect(result).toHaveLength(2); // the union domain still shows the groups…
+		for (const r of result) expect(r.value).toBeNull(); // …but no fabricated values
+	});
+
+	it("ADDITIVE: contributions flatten through nested additive formulas", async () => {
 		// ebitda-shaped: operating_income is itself a formula; the depreciation-
-		// only account must still get a row with COALESCE(operating_income → 0).
+		// only account decomposes through it (+revenue -cogs +depreciation).
 		const steps: NodeStep[] = [
 			REVENUE,
 			COGS,
@@ -341,16 +367,18 @@ describe("composeNodeQuery — grouped", () => {
 			composed(steps, undefined, { slices: ["account"], pins: [] }).sql,
 		);
 		const byAccount = new Map(result.map((r) => [r.account, num(r.value)]));
-		expect(byAccount.get("depr")).toBe(40); // 0 (propagated) + 40
+		expect(byAccount.get("depr")).toBe(40);
 		expect(byAccount.get("sales")).toBe(800);
 		expect(byAccount.get("materials")).toBe(-200);
 		const sum = result.reduce((s, r) => s + (num(r.value) ?? 0), 0);
 		expect(sum).toBe(scalar);
 	});
 
-	it("a literal addend BREAKS the zero-absence proof (absence ≠ the addend)", async () => {
-		// sub = revenue + 10 is additive but its absent-group value would be 10,
-		// not 0 — the parent must see NULL for groups sub does not cover.
+	it("a literal addend makes the whole node NON-additive — observed-or-dash everywhere", async () => {
+		// sub = revenue + 10: an absent group's value would be the addend, not
+		// 0, so the node cannot decompose. Doctrine v2 classifies the WHOLE
+		// tree non-additive: bare refs, and any partially-observed group is `—`
+		// (sales lacks cogs, materials lacks revenue).
 		const steps: NodeStep[] = [
 			REVENUE,
 			COGS,
@@ -369,8 +397,26 @@ describe("composeNodeQuery — grouped", () => {
 				)
 			).map((r) => [r.account, num(r.value)]),
 		);
-		expect(byAccount.get("sales")).toBe(810); // (800 + 10) + COALESCE(cogs, 0)
-		expect(byAccount.get("materials")).toBeNull(); // NULL + 200 — never 10 + 200
+		expect(byAccount.get("sales")).toBeNull();
+		expect(byAccount.get("materials")).toBeNull();
+	});
+
+	it("a fall-loud leaf makes the node NON-additive — its NULL absorbs every group", async () => {
+		const steps: NodeStep[] = [
+			REVENUE,
+			extract("missing_measure", parts("NULL", null)),
+			formula(
+				"out",
+				"revenue - missing_measure",
+				["revenue", "missing_measure"],
+				true,
+			),
+		];
+		const result = await rows(
+			composed(steps, undefined, { slices: ["account"], pins: [] }).sql,
+		);
+		expect(result.length).toBeGreaterThan(0); // revenue's groups still appear
+		for (const r of result) expect(r.value).toBeNull();
 	});
 
 	it("slices by several dims at once (GROUP BY + USING both)", async () => {
@@ -386,7 +432,7 @@ describe("composeNodeQuery — grouped", () => {
 		expect(result).toHaveLength(4);
 	});
 
-	it("chains a 3-carrier FULL JOIN spine (three-way disjoint decomposition)", async () => {
+	it("unions a 3-carrier contribution set (three-way disjoint decomposition)", async () => {
 		const steps: NodeStep[] = [
 			REVENUE,
 			COGS,
@@ -401,7 +447,7 @@ describe("composeNodeQuery — grouped", () => {
 		const scalar = num((await rows(composed(steps).sql))[0]?.value);
 		expect(scalar).toBe(560); // 800 - 200 - 40
 		const q = composed(steps, undefined, { slices: ["account"], pins: [] });
-		expect(q.sql.match(/FULL JOIN/g)).toHaveLength(2);
+		expect(q.sql.match(/UNION ALL/g)).toHaveLength(2); // three signed branches
 		const result = await rows(q.sql);
 		expect(result).toHaveLength(3); // union domain across all three sides
 		const sum = result.reduce((s, r) => s + (num(r.value) ?? 0), 0);
@@ -458,10 +504,10 @@ describe("composeNodeQuery — pins", () => {
 		expect(num((await rows(q.sql, q.params))[0]?.value)).toBe(380); // 500 - 120
 	});
 
-	it("pinning a grouped row reproduces exactly that row's value (pin ≡ group)", async () => {
-		// The grouped result showed materials = -200 via COALESCE(revenue → 0);
-		// pinning that row restricts the domain, so the SUM extract's empty
-		// result is the same true zero — never a contradicting NULL.
+	it("pinning a grouped row reproduces exactly that row's value (pin ≡ group, additive)", async () => {
+		// The grouped result showed materials = -200 (its only contribution is
+		// -cogs); the pinned re-evaluation composes the same contributions under
+		// the filter — never a contradicting number.
 		const grouped = composed(GROSS_PROFIT, undefined, {
 			slices: ["account"],
 			pins: [],
@@ -476,6 +522,32 @@ describe("composeNodeQuery — pins", () => {
 		expect(num((await rows(pinned.sql, pinned.params))[0]?.value)).toBe(
 			num(materialsRow?.value),
 		);
+	});
+
+	it("pin ≡ group holds on ratios too — a `—` group pins to `—`", async () => {
+		const MARGIN: NodeStep[] = [
+			REVENUE,
+			COGS,
+			formula(
+				"gross_margin",
+				"(revenue - cost_of_goods_sold) / revenue * 100",
+				["revenue", "cost_of_goods_sold"],
+				true,
+			),
+		];
+		const grouped = composed(MARGIN, undefined, {
+			slices: ["account"],
+			pins: [],
+		});
+		const salesRow = (await rows(grouped.sql)).find(
+			(r) => r.account === "sales",
+		);
+		expect(salesRow?.value).toBeNull(); // no cogs observed on sales
+		const pinned = composed(MARGIN, undefined, {
+			slices: [],
+			pins: [{ column: "account", value: "sales" }],
+		});
+		expect((await rows(pinned.sql, pinned.params))[0]?.value).toBeNull();
 	});
 
 	it("the UNRESTRICTED scalar keeps engine parity — no COALESCE, NULL stays loud", async () => {
@@ -504,9 +576,10 @@ describe("composeNodeQuery — pins", () => {
 		expect(q.params).toEqual(["sales"]);
 		expect(q.sql).toContain('"region" IS NULL');
 		expect(q.sql).toContain('"account" = $1');
-		// No NULL-region rows exist: under the pinned (restricted) domain the
-		// SUM extracts' empty results are true zeros → 0 - 0, not NULL.
-		expect(num((await rows(q.sql, q.params))[0]?.value)).toBe(0);
+		// No NULL-region rows exist: a pin matching NOTHING is `—` (doctrine
+		// v2 — nothing observed, nothing fabricated), matching the grouped
+		// view where such a group simply would not appear.
+		expect(num((await rows(q.sql, q.params))[0]?.value)).toBeNull();
 	});
 });
 

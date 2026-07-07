@@ -22,11 +22,7 @@ import { currentLifecycleArtifacts, sqlSnippets } from "#/db/metadata/schema";
 import type { DrillPinValue } from "#/duckdb/drill";
 import { describeColumns } from "#/duckdb/drill-sql";
 import { applyEngineScope, closeLake, withLakeConnection } from "#/duckdb/lake";
-import {
-	formulaRefs,
-	parseFormulaExpression,
-} from "#/duckdb/metric-formula";
-import { composeNodeQuery, type NodeStep } from "#/duckdb/parts";
+import { composeNodeQuery, flattenAdditive, type NodeStep } from "#/duckdb/parts";
 import { resolveDrillAxes } from "#/tools/drill-axes";
 import { resolveNodeSteps } from "#/tools/drill-metric";
 
@@ -34,38 +30,13 @@ import { num } from "./spike-lib";
 
 const GROUND_TRUTH: Record<string, number> = { revenue: 51766199.72 };
 
-/** Every op of every formula reachable from the output ∈ {+,-} → additive. */
+/** The production classification (doctrine v2): additive nodes decompose via
+ *  signed contributions and must satisfy Σ(groups) == scalar on every axis. */
 function isAdditive(steps: NodeStep[]): boolean {
-	const ops: string[] = [];
-	const opsOf = (e: ReturnType<typeof parseFormulaExpression>): void => {
-		if ("refusal" in e) return;
-		const walk = (x: (typeof e)["expr"]): void => {
-			if (x.kind === "bin") {
-				ops.push(x.op);
-				walk(x.left);
-				walk(x.right);
-			} else if (x.kind === "neg") walk(x.operand);
-		};
-		walk(e.expr);
-	};
 	const byId = new Map(steps.map((s) => [s.stepId, s]));
 	const output =
 		steps.find((s) => s.outputStep) ?? steps[steps.length - 1] ?? null;
-	const seen = new Set<string>();
-	const visit = (s: NodeStep): void => {
-		if (seen.has(s.stepId)) return;
-		seen.add(s.stepId);
-		if (s.kind !== "formula" || !s.expression) return;
-		const parsed = parseFormulaExpression(s.expression);
-		opsOf(parsed);
-		if ("refusal" in parsed) return;
-		for (const r of formulaRefs(parsed.expr)) {
-			const dep = byId.get(r);
-			if (dep) visit(dep);
-		}
-	};
-	if (output) visit(output);
-	return ops.every((o) => o === "+" || o === "-");
+	return output !== null && flattenAdditive(output, byId) !== null;
 }
 
 const toPin = (v: unknown): DrillPinValue | undefined =>

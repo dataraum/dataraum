@@ -20,25 +20,28 @@ flowchart TB
         UI["chat surfaces + pages"]
         Agent["agentic LLM tier<br/>(TanStack AI → Anthropic)"]
         Client["Temporal client"]
-        OWk["co-located orchestration worker<br/>(cockpit-orchestration queue)"]
+        AWk["co-located activity-only worker<br/>(cockpit-orchestration queue)"]
     end
 
     subgraph EWk["Engine container(s) — Python"]
         direction TB
-        Worker["Temporal activity worker<br/>(engine-&lt;workspace&gt; queue)"]
+        Worker["Temporal worker — workflows + activities<br/>(engine-&lt;workspace&gt; queue)"]
         Phases["20 pipeline phases<br/>typing · stats · semantic · …"]
     end
 
     User --> UI --> Agent
     Agent --> Client
-    Agent --> OWk
-    OWk -- "cross-language child workflows" --> Worker
-    Client -- "direct single-shot starts" --> Worker
+    Client -- "workflow starts (orchestration + single-shot)" --> Worker
+    Worker -- "run recording + teach agent, by name" --> AWk
 ```
 
 - **The cockpit** is the **agentic, interactive tier**. It hosts the chat, the LLM agent
-  loop, and all user-facing rendering. It also *orchestrates* the journey — deciding when
-  to run which engine stage — via its own co-located Temporal worker. ([ADR-0004](../adr/0004-agent-tier-boundary.md): agentic LLM lives in the cockpit.)
+  loop, and all user-facing rendering. It triggers the journey by starting the engine's
+  orchestration workflows, and hosts a co-located **activity-only** Temporal worker for
+  the control-plane activities (run recording, the grounding-teach agent) those workflows
+  call back into. ([ADR-0004](../adr/0004-agent-tier-boundary.md): agentic LLM lives in
+  the cockpit; [ADR-0020](../adr/0020-workflows-python-cockpit-activity-only.md): no
+  workflow code in the cockpit.)
 - **The engine** is the **durable analysis tier**. It is a pure **Temporal activity
   worker** — it has no HTTP server and no API. It runs deterministic, long-running
   analysis and writes the results to Postgres. ([ADR-0002](../adr/0002-engine-no-http-transport.md): engine is a pure activity worker, no HTTP/MCP transport.)
@@ -89,10 +92,13 @@ Because there is no HTTP between them, the seam is two channels, and only two:
 
 The cockpit triggers analysis by starting **engine workflows** by name on the workspace's
 task queue. The engine worker bundles three analysis workflows
-(`add_source`, `begin_session`, `operating_model`) plus a per-table child workflow. The
-cockpit never runs analysis itself. The full orchestration model is in
+(`add_source`, `begin_session`, `operating_model`), a per-table child workflow, and the
+two orchestration workflows that sequence them (the grounding loop and the session
+cascade). The cockpit never runs analysis or workflow code itself; its activity-only
+worker serves the run-recording writes and the grounding-teach agent the orchestration
+workflows schedule by name. The full orchestration model is in
 [ADR-0001](../adr/0001-temporal-orchestration-python.md) and
-[ADR-0014](../adr/0014-cockpit-orchestration-worker.md).
+[ADR-0020](../adr/0020-workflows-python-cockpit-activity-only.md).
 
 ### 2. Metadata flows through promoted Postgres views
 
@@ -156,7 +162,7 @@ A default local stack is:
 | `seaweedfs` (+ `seaweedfs-init`) | the S3 object store + one-shot bucket creation |
 | `temporal` (+ `temporal-admin-tools`, `temporal-create-namespace`, `temporal-ui`) | the Temporal server, schema setup, namespace registration, and web UI |
 | `engine-worker` | the engine analysis worker for workspace 1 (one per workspace) |
-| `cockpit` (+ `cockpit-migrate`) | the web app + its co-located orchestration worker; migrations run once first |
+| `cockpit` (+ `cockpit-migrate`) | the web app + its co-located activity-only worker; migrations run once first |
 
 The engine has **no healthcheck port** — its health is the Temporal worker heartbeat, not
 an HTTP probe. See [Running the stack](../getting-started/running-the-stack.md) to bring

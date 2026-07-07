@@ -1,6 +1,6 @@
 # ADR-0014 — Cockpit orchestration worker: short-lived TS workflows for the control plane
 
-- **Status:** Accepted (revised 2026-06-23 — short-lived per-trigger workflows replaced the original singleton; see History)
+- **Status:** Superseded by [ADR-0020](./0020-workflows-python-cockpit-activity-only.md) (2026-07-07 — the orchestration workflows moved to Python on the engine worker; the cockpit worker is activity-only)
 - **Date:** 2026-06-17 (revised 2026-06-23)
 - **Ticket:** DAT-529 (co-located worker), DAT-530 (journey), DAT-609 (collapse to short-lived)
 - **Design doc:** Confluence DD/36175874

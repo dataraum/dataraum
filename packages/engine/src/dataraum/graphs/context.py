@@ -1011,6 +1011,10 @@ def build_execution_context(
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
                     entity_type=sem_ann.entity_type if sem_ann else None,
                     business_concept=concept.business_concept if concept else None,
+                    # The RESOLVED stock/flow verdict (entropy/resolve.py re-bases
+                    # the ColumnConcept row at session_detect). Served as settled
+                    # fact — temporal_behavior_contested is deliberately NOT
+                    # rendered here (see resolve_temporal_behavior's docstring).
                     temporal_behavior=concept.temporal_behavior if concept else None,
                     business_name=sem_ann.business_name if sem_ann else None,
                     business_description=sem_ann.business_description if sem_ann else None,

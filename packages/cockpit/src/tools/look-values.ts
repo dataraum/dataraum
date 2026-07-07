@@ -73,6 +73,28 @@ export function projectValueRows(
 	};
 }
 
+/**
+ * The freq-ordered DISTINCT query for one column (pure — pinned by tests
+ * against a real DuckDB so the ILIKE/ESCAPE semantics can never drift).
+ * `needle` must already be escaped via {@link escapeIlikeNeedle}; null = no
+ * pattern filter.
+ */
+export function valuesQuerySql(
+	address: string,
+	columnName: string,
+	needle: string | null,
+): string {
+	const patternClause = needle
+		? `AND CAST("${columnName}" AS VARCHAR) ILIKE '%${needle}%' ESCAPE '\\' `
+		: "";
+	return (
+		`SELECT "${columnName}" AS value, COUNT(*) AS count FROM ${address} ` +
+		`WHERE "${columnName}" IS NOT NULL ` +
+		patternClause +
+		`GROUP BY 1 ORDER BY count DESC, value LIMIT ${LOOK_VALUES_LIMIT + 1}`
+	);
+}
+
 interface ResolvedColumn {
 	columnId: string;
 	columnName: string;
@@ -135,15 +157,9 @@ async function lookValues(input: {
 				continue;
 			}
 			const address = `${LAKE_ALIAS}.${schemaForLayer(col.layer)}."${col.tableName}"`;
-			const patternClause = needle
-				? `AND CAST("${col.columnName}" AS VARCHAR) ILIKE '%${needle}%' ESCAPE '\\' `
-				: "";
 			try {
 				const reader = await conn.runAndReadAll(
-					`SELECT "${col.columnName}" AS value, COUNT(*) AS count FROM ${address} ` +
-						`WHERE "${col.columnName}" IS NOT NULL ` +
-						patternClause +
-						`GROUP BY 1 ORDER BY count DESC, value LIMIT ${LOOK_VALUES_LIMIT + 1}`,
+					valuesQuerySql(address, col.columnName, needle),
 				);
 				const { values, complete } = projectValueRows(
 					readerToResult(reader).rows,

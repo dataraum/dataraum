@@ -16,6 +16,7 @@ import signal
 from concurrent.futures import ThreadPoolExecutor
 
 from temporalio.client import Client
+from temporalio.contrib.opentelemetry import TracingInterceptor
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import (
@@ -30,6 +31,7 @@ from dataraum.worker.bootstrap import (
     bootstrap_worker_substrate,
     shutdown_worker_substrate,
 )
+from dataraum.worker.telemetry import init_telemetry
 from dataraum.worker.workflows import (
     AddSourceWorkflow,
     BeginSessionWorkflow,
@@ -124,6 +126,21 @@ async def run_worker() -> None:
     namespace = settings.temporal_namespace
     task_queue = settings.temporal_task_queue
 
+    # OTel tracing (ADR-0019/DAT-705) — no-op unless OTEL_EXPORTER_OTLP_ENDPOINT
+    # is set. On the Client, TracingInterceptor covers BOTH directions: outbound
+    # client calls AND this worker's workflow/activity spans. Every workflow
+    # start arrives from the traced cockpit client (ADR-0020 — the orchestration
+    # workflows run HERE and the cockpit is the only starter), so each run is
+    # one connected trace over the shared `_tracer-data` header (W3C). The
+    # workflow OUTBOUND side propagates that context to activities, children AND
+    # continue_as_new — the grounding loop's replay chain stays one trace — and
+    # across the queue hop to the cockpit's activity-only worker (its run
+    # writers + teach agent join via the same header). Deliberately NO
+    # `always_create_workflow_spans`: it exists for client-context-LESS starts
+    # (CLI/schedules/smoke scripts), which stay untraced rather than minting
+    # orphan-parented trace shards.
+    tracer_provider = init_telemetry(settings)
+
     # Substrate bootstrap strictly precedes worker.run() — the worker must not
     # advertise itself as polling until its DuckLake anchor + ConnectionManager
     # are open (the worker-health invariant P4 relies on).
@@ -133,6 +150,7 @@ async def run_worker() -> None:
             host,
             namespace=namespace,
             data_converter=pydantic_data_converter,  # PhaseActivity{Input,Result} are Pydantic
+            interceptors=[TracingInterceptor()] if tracer_provider else [],
         )
         phase_activities = PhaseActivities(manager)
         activities = worker_activities(phase_activities)
@@ -176,7 +194,17 @@ async def run_worker() -> None:
                 # (banned time/random/etc.) still apply.
                 workflow_runner=SandboxedWorkflowRunner(
                     restrictions=SandboxRestrictions.default.with_passthrough_modules(
-                        "dataraum", "pydantic", "pydantic_core"
+                        # opentelemetry: the contrib TracingWorkflowInboundInterceptor
+                        # imports it inside the sandbox; the contrib module is
+                        # engineered to survive a sandboxed import (it eagerly
+                        # loads the otel context at import time), but passing it
+                        # through skips a per-workflow re-import of the whole
+                        # otel package. Deterministic-safe: workflow-side spans
+                        # are created by the interceptor around task boundaries.
+                        "dataraum",
+                        "pydantic",
+                        "pydantic_core",
+                        "opentelemetry",
                     )
                 ),
             )
@@ -200,6 +228,8 @@ async def run_worker() -> None:
             logger.info("worker_stopping")
     finally:
         shutdown_worker_substrate(manager)
+        if tracer_provider:
+            tracer_provider.shutdown()  # flush buffered spans before exit
 
 
 def main() -> None:

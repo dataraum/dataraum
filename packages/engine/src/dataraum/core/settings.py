@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # only way to read the *actual* produced prompt, not the template. Unset in
     # production; a smoke/eval run flips ``PROMPT_DUMP_DIR`` to inspect grounding.
     prompt_dump_dir: Path | None = None
+    # OTLP telemetry sink (ADR-0019/DAT-705) — the whole vendor seam. Unset or
+    # empty = telemetry off (worker/telemetry.py constructs nothing). The OTel
+    # SDK's exporter reads the same env var natively (base URL + per-signal
+    # path), so this field only gates the bootstrap; it is never re-plumbed.
+    otel_exporter_otlp_endpoint: str | None = None
 
 
 @cache

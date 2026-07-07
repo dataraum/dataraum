@@ -1,6 +1,6 @@
 # ADR-0009 — Entropy measures disagreement between witnesses; no deterministic semantic overrides
 
-- **Status:** Accepted
+- **Status:** Accepted; the transitional noisy-OR rollup clause is superseded — the loss tables are the whole readiness rollup ([ADR-0020](./0020-readiness-transparent-rollup.md))
 - **Date:** 2026-06-08
 - **Ticket:** DAT-442 (epic)
 - **Design doc:** Confluence DD — "Entropy as Disagreement" (page 32145409)

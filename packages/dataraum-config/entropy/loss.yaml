@@ -13,9 +13,8 @@
 # belief — the log-linear posterior stays confident even under conflict.
 #
 # A detector listed here is a loss-path measurement: its risk(intent) feeds the
-# readiness assembler in parallel to the network rollup — a loss-path detector has
-# NO network.yaml node (benford, null_ratio, and derived_value were moved off the
-# network onto this path; their nodes/edges are gone). Weights are PLACEHOLDER
+# readiness assembler. The loss tables ARE the whole rollup — the Bayesian
+# network and network.yaml were deleted (DAT-442; ADR-0020). Weights are PLACEHOLDER
 # priors, calibrated later from generative families (DAT-450); NOT tuned to pass a metric.
 #
 # Intents: query_intent, aggregation_intent, reporting_intent.

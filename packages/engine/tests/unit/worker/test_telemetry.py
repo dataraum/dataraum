@@ -8,6 +8,7 @@ set yields a provider carrying the worker's service identity.
 from __future__ import annotations
 
 import pytest
+from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
 from dataraum.core.settings import Settings
@@ -28,8 +29,18 @@ def test_off_when_endpoint_empty(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_provider_when_endpoint_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    # Intercept the GLOBAL provider registration: opentelemetry treats
+    # set_tracer_provider as once-per-process (an override only warns and is
+    # ignored), so letting the test mutate real process-global state could
+    # leak into any later test that reads trace.get_tracer_provider().
+    # telemetry.py calls through this same `opentelemetry.trace` module object,
+    # so patching the attribute here intercepts it; monkeypatch restores after.
+    registered: list[trace.TracerProvider] = []
+    monkeypatch.setattr(trace, "set_tracer_provider", registered.append)
+
     provider = init_telemetry(Settings())  # type: ignore[call-arg]
     assert isinstance(provider, TracerProvider)
+    assert registered == [provider]  # installed as the process-global provider
     attrs = provider.resource.attributes
     assert attrs["service.name"] == "dataraum-engine-worker"
     # conftest pins DATARAUM_WORKSPACE_ID=test — the per-workspace identity.

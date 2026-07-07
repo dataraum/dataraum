@@ -40,7 +40,7 @@ One of four packages (see the [root README](../../README.md)):
 
 - **engine** (this package) — Python pipeline, detectors, Temporal activity worker.
 - **`../cockpit`** — TanStack Start web app: the chat agent, the canvas, and a co-located
-  TS orchestration worker.
+  activity-only Temporal worker.
 - **`../dataraum-config`** — YAML data (entropy contracts, LLM prompts, verticals);
   bind-mounted, never imported.
 - **`../infra`** — docker-compose orchestration.

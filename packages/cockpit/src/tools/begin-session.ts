@@ -8,13 +8,15 @@
 // teaches → detect → keepers → promote (semantic_per_table makes real Anthropic
 // calls), so this is a compute kick on the user's explicit instruction.
 //
-// DAT-609: this tool starts the per-workspace `sessionCascadeWorkflow` (id
-// `session-<ws>`) on the cockpit-orchestration queue. That workflow records the run in
-// cockpit_db (authoritative, before start), starts `beginSessionWorkflow` as a
-// cross-language CHILD on the workspace's `engine-<id>` queue, and — on a clean result
-// — auto-cascades into operating_model. It advances tab-independently. The tool
-// captures the current conversationId and passes it through so both children's
-// completions narrate into THIS chat (the worker has no request ALS — DAT-528).
+// DAT-609/708: this tool starts the per-workspace `sessionCascadeWorkflow` (id
+// `session-<ws>`) — Python on the engine worker since DAT-708 — on the
+// workspace's `engine-<id>` queue. That workflow starts `beginSessionWorkflow` as
+// a native child on the same queue, records the run in cockpit_db with the
+// child's real execution id (via the cockpit's activity-only worker), and — on a
+// clean result — auto-cascades into operating_model. It advances
+// tab-independently. The tool captures the current conversationId and passes it
+// through so both children's completions narrate into THIS chat (the worker has
+// no request ALS — DAT-528).
 //
 // The tool returns the DETERMINISTIC workflow id immediately (the cockpit polls
 // progress by workflow id — the latest execution; the real Temporal run id is owned by

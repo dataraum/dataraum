@@ -68,9 +68,10 @@ make down                    # stop the stack
   docker compose -f packages/infra/docker-compose.yml up -d --build --force-recreate cockpit
   ```
 
-  This matters for the cockpit's orchestration worker in particular: its workflow bundle is
-  baked into the image at build time, so without `--build --force-recreate` the old bundle
-  keeps running and your change silently never lands.
+  This matters for the Temporal workers in particular — the engine worker (which hosts
+  all workflows) and the cockpit's activity-only worker alike: their code is baked into
+  the image at build time, so without `--build --force-recreate` the old worker keeps
+  polling and your change silently never lands.
 
 ## Multiple workspaces
 

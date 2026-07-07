@@ -21,10 +21,11 @@
 // parent id is engine-safe.
 //
 // TWO ID FAMILIES (DAT-609): these `<stage>-<ws>` ids name the ENGINE analysis
-// workflows (the children + the direct single-shots). The cockpit ORCHESTRATION
-// workflows that wrap them have their own ids below (`grounding-<ws>` /
-// `session-<ws>`) — separate so an orchestration execution and the engine child it
-// starts never collide on one id.
+// workflows (the children + the direct single-shots). The ORCHESTRATION
+// workflows that wrap them (Python on the engine worker since DAT-708; the
+// cockpit still derives their ids at the trigger) have their own ids below
+// (`grounding-<ws>` / `session-<ws>`) — separate so an orchestration execution
+// and the engine child it starts never collide on one id.
 
 /**
  * Workflow ID for the parent `addSourceWorkflow` of an import run (a fresh import
@@ -52,11 +53,13 @@ export function operatingModelWorkflowId(workspaceId: string): string {
 	return `operatingmodel-${workspaceId}`;
 }
 
-// --- Cockpit ORCHESTRATION workflow ids (DAT-609) ---------------------------
-// The short-lived per-trigger workflows on the `cockpit-orchestration` queue.
-// Distinct from the engine ids above so an orchestration execution and the engine
-// child it starts never share an id. One id per workspace gives single-flight per
-// workspace (id-reuse policy), and re-runs reuse it once the prior is closed.
+// --- ORCHESTRATION workflow ids (DAT-609/708) --------------------------------
+// The short-lived per-trigger orchestration workflows — Python on the engine
+// worker (DAT-708), started by the cockpit trigger on the workspace's engine
+// queue. Distinct from the engine analysis ids above so an orchestration
+// execution and the engine child it starts never share an id. One id per
+// workspace gives single-flight per workspace (id-reuse policy), and re-runs
+// reuse it once the prior is closed.
 
 /**
  * Workflow ID for `groundingLoopWorkflow` — the onboarding import + autonomous

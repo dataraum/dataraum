@@ -27,6 +27,7 @@ scoped to a single typed table, the begin_session phases to the whole selection.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -430,3 +431,141 @@ def process_table_workflow_id(parent_workflow_id: str, raw_table_id: str) -> str
     unique per run, so two per-object sources in the same run never collide.
     """
     return f"{parent_workflow_id}-table-{raw_table_id}"
+
+
+def operating_model_workflow_id(workspace_id: str) -> str:
+    """``operatingModelWorkflow`` ID for a workspace — ``operatingmodel-<ws>``.
+
+    One id per workspace (DAT-562): the session cascade's auto-advance (the
+    ``sessionCascadeWorkflow`` below derives it for its second stage) and the
+    cockpit's manual re-trigger (a direct single-shot start) share it, so
+    single-flight (the id-reuse/conflict policy) holds across both paths. The
+    cockpit derives the same id in ``src/temporal/workflow-id.ts`` — the id
+    convention is part of the hand-mirrored cross-package seam.
+    """
+    return f"operatingmodel-{workspace_id}"
+
+
+# --- Orchestration workflows (DAT-708) ----------------------------------------
+#
+# The two short-lived per-trigger orchestration workflows (grounding loop,
+# session cascade) run on the ENGINE worker (ADR-0020, superseding ADR-0014's
+# TS worker): Temporal discourages workflow workers outside authentic Node.js,
+# and the cockpit runs under Bun — DAT-705 proved workflow-interceptor headers
+# silently never leave its vm sandbox. The engine now OWNS these start payloads;
+# the cockpit Client hand-mirrors them (``src/temporal/types.ts``), the same
+# cross-package seam as the analysis contracts above with the direction reversed.
+# The cockpit keeps an ACTIVITY-ONLY worker for the shapes further below.
+
+
+RunKind = Literal["onboarding", "begin_session", "replay"]
+"""How a run originated — the cockpit's ``runs.kind`` column values (DAT-562)."""
+
+RunStage = Literal["add_source", "begin_session", "operating_model"]
+"""Which engine workflow a run executed — the cockpit's ``runs.stage`` values."""
+
+
+class GroundingLoopInput(BaseModel):
+    """Start payload of ``groundingLoopWorkflow`` (id ``grounding-<ws>``).
+
+    The cockpit trigger (which has the request context) computes the derived
+    ids/queues and captures the conversation id, so the workflow stays free of
+    any workspace IO — it runs the import child + the bounded teach loop off
+    this payload alone. Triggered ONLY by the onboarding import (``select``); a
+    manual replay is a DIRECT engine start, not this loop.
+    """
+
+    workspace_id: str
+    # The deterministic ENGINE child id (``addsource-<ws>``) the import + its
+    # replays run under (reused across attempts; the SDK groups the iterations).
+    workflow_id: str
+    # The queue the cockpit's activity-only worker polls — where the workflow
+    # schedules the cockpit_db writers + the grounding-teach agent. Cockpit
+    # config owns the value (COCKPIT_ORCHESTRATION_TASK_QUEUE), so it rides the
+    # payload rather than being hardcoded here. The engine children need no
+    # queue on the wire: they inherit this workflow's own task queue.
+    cockpit_task_queue: str
+    # The source ids this run imports — a run is over a SET of objects (DAT-422).
+    sources: list[str]
+    # The workspace verticals (one today; born-loud on >1).
+    verticals: list[str]
+    # The originating chat (DAT-528) for the import run's progress routing. The
+    # onboarding import is recorded under this id (so the watcher tracks its
+    # progress) but never narrated into chat (DAT-597). None = no chat.
+    conversation_id: str | None = None
+    # How many grounding-teach replay attempts the loop may make (default 3).
+    number_of_attempts: int | None = None
+
+
+class SessionCascadeInput(BaseModel):
+    """Start payload of ``sessionCascadeWorkflow`` (id ``session-<ws>``).
+
+    begin_session runs first; a clean result cascades into operating_model (the
+    OM child id is derived inside the workflow via
+    :func:`operating_model_workflow_id`, reusing the same verticals +
+    conversation id).
+    """
+
+    workspace_id: str
+    # The deterministic ENGINE child id for begin_session (``beginsession-<ws>``).
+    workflow_id: str
+    # See :class:`GroundingLoopInput.cockpit_task_queue`.
+    cockpit_task_queue: str
+    # The typed table ids to stage.
+    tables: list[str]
+    # The workspace verticals (one today; born-loud on >1).
+    verticals: list[str]
+    # The originating chat (DAT-528) — rides to BOTH children so the watcher
+    # narrates each completion into the originating chat. None = no chat.
+    conversation_id: str | None = None
+
+
+# The cockpit-activity wire shapes. Field names are camelCase DELIBERATELY —
+# wire fidelity: these activities are TypeScript-OWNED (ADR-0003/0004 pin the
+# cockpit_db writes and the teach agent to the cockpit) and their contracts live
+# in ``src/db/cockpit/runs.ts`` / ``src/worker/grounding-agent.ts``; the
+# workflows schedule them BY NAME on the cockpit queue, and both converters
+# (pydantic here, the TS default there) pass JSON keys through verbatim. Do not
+# "fix" the casing — a rename here is a silent wire break.
+
+
+class RecordRunInput(BaseModel):
+    """Input to the cockpit ``recordRun`` activity — one run row, recorded post-start.
+
+    Recorded with the child's REAL execution id (DAT-595) right after the child
+    starts, so every run is a distinct ``(workflowId, runId)`` row under the
+    reused per-workspace workflow id.
+    """
+
+    workspaceId: str
+    kind: RunKind
+    stage: RunStage
+    workflowId: str
+    runId: str
+    # Explicit — the worker has no request ALS (DAT-530): an explicit value
+    # (including null, = a deliberately non-narrating run) wins over the
+    # cockpit's request-scoped fallback. The pydantic converter always emits the
+    # key, so the TS activity never falls back to its (absent) ALS here.
+    conversationId: str | None = None
+
+
+class AssessAndGroundInput(BaseModel):
+    """Input to the cockpit ``assessAndGround`` activity (the DAT-551 teach agent)."""
+
+    # The run's typed table ids — the readiness scope to assess + ground.
+    tableIds: list[str]
+    # How many grounding attempts remain (context for the agent; the grounding
+    # loop owns the actual bound).
+    attemptsRemaining: int
+
+
+class AssessAndGroundResult(BaseModel):
+    """``assessAndGround`` result — the verdict :func:`decide_grounding_step` reads."""
+
+    # Mechanical grounding teaches applied this round (captured from the tool,
+    # not self-reported) — the loop replays iff > 0 and attempts remain.
+    appliedCount: int
+    # A non-mechanical gap remains → the loop surfaces it (awaiting_input).
+    needsJudgement: bool
+    # What to tell the human, when needsJudgement.
+    judgementNote: str | None = None

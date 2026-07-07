@@ -17,7 +17,7 @@ Registry. Each is tagged with the release version **and** `latest`:
 | Image | Role |
 |---|---|
 | `ghcr.io/dataraum/dataraum` | the engine analysis worker (one container per workspace) |
-| `ghcr.io/dataraum/dataraum-cockpit` | the web app + its co-located orchestration worker |
+| `ghcr.io/dataraum/dataraum-cockpit` | the web app + its co-located activity-only worker |
 | `ghcr.io/dataraum/dataraum-cockpit-migrate` | one-shot: applies the `cockpit_db` migrations, then exits |
 
 The engine is **not** published to PyPI and the cockpit is **not** published to npm — the

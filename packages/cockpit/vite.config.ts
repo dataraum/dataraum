@@ -25,8 +25,9 @@ const config = defineConfig({
 		// preset "bun": the runner serves with `bun .output/server/index.mjs`, so
 		// build the Bun-native server (Bun.serve via srvx) instead of the node
 		// default — the sanctioned shape for a Bun deployment (DAT-451).
-		// The co-located orchestration worker (DAT-529) boots here: a Nitro plugin
-		// runs once at server startup and starts the singleton worker.
+		// The co-located activity-only worker (DAT-529, slimmed DAT-708) boots
+		// here: a Nitro plugin runs once at server startup and starts the
+		// singleton worker.
 		nitro({
 			preset: "bun",
 			plugins: ["./src/server/plugins/orchestration-worker.ts"],
@@ -34,13 +35,12 @@ const config = defineConfig({
 				external: [
 					/^@duckdb\/node-bindings-/,
 					// The Temporal WORKER side is native (Rust core-bridge `.node`) and
-					// drags in a workflow bundler (webpack + @swc/core native); bundling it
-					// dies like duckdb's binary. Externalize the whole @temporalio scope +
-					// @swc so they `require` from node_modules at runtime (the runner image
-					// copies @temporalio — see Dockerfile). The workflow code itself is
-					// PRE-BUNDLED at build time (scripts/build-workflow-bundle.ts) and the
-					// string is bundled into the server, so the runtime never needs the
-					// webpack/swc bundler — only the slim worker core + core-bridge.
+					// its package tree drags in a workflow bundler (webpack + @swc/core
+					// native); bundling it dies like duckdb's binary. Externalize the
+					// whole @temporalio scope + @swc so they `require` from node_modules
+					// at runtime (the runner image copies @temporalio — see Dockerfile).
+					// The worker is ACTIVITY-ONLY (DAT-708): no workflow code, no vm
+					// sandbox — the runtime uses only the slim worker core + core-bridge.
 					/^@temporalio\//,
 					/^@swc\//,
 				],

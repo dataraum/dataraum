@@ -313,20 +313,23 @@ describe("composeNodeQuery — grouped", () => {
 		const q = composed(steps, undefined, { slices: ["region"], pins: [] });
 		expect(q.sql).toContain("FULL JOIN");
 		expect(q.sql).not.toContain("COALESCE");
-		const byRegion = new Map(
-			(await rows(q.sql)).map((r) => [r.region, num(r.value)]),
-		);
+		const byRegion = new Map((await rows(q.sql)).map((r) => [r.region, r]));
 		// AR balances exist only in the west: east has revenue but not the
-		// other carrier — NULL absorbs, the group is honestly undefined.
-		expect(byRegion.get("west")).toBeCloseTo(180 / 500, 9);
-		expect(byRegion.get("east")).toBeNull();
+		// other carrier — NULL absorbs, the group is honestly undefined, and
+		// the projected components show exactly which side is missing.
+		expect(num(byRegion.get("west")?.value)).toBeCloseTo(180 / 500, 9);
+		expect(num(byRegion.get("west")?.avg_balance)).toBe(180);
+		expect(byRegion.get("east")?.value).toBeNull();
+		expect(byRegion.get("east")?.avg_balance).toBeNull();
+		expect(num(byRegion.get("east")?.revenue)).toBe(300);
 	});
 
-	it("REGRESSION (the smoke finding): a margin over disjoint carriers never fabricates 100", async () => {
+	it("REGRESSION (the smoke finding): a margin over disjoint carriers never fabricates 100 — and its components explain the dash", async () => {
 		// gross_margin = (revenue - cogs) / revenue * 100 sliced by the very
 		// dimension that separates its carriers: under COALESCE-0 every revenue
 		// account showed 100.00. Doctrine v2: no group observes BOTH carriers,
-		// so every group is `—`.
+		// so every group is `—` — and the COMPONENT BREAKDOWN projects the
+		// target's operands so the one-sidedness is visible, not a bare dash.
 		const steps: NodeStep[] = [
 			REVENUE,
 			COGS,
@@ -341,7 +344,20 @@ describe("composeNodeQuery — grouped", () => {
 			composed(steps, undefined, { slices: ["account"], pins: [] }).sql,
 		);
 		expect(result).toHaveLength(2); // the union domain still shows the groups…
-		for (const r of result) expect(r.value).toBeNull(); // …but no fabricated values
+		for (const r of result) {
+			expect(Object.keys(r)).toEqual([
+				"account",
+				"revenue",
+				"cost_of_goods_sold",
+				"value",
+			]);
+			expect(r.value).toBeNull(); // …but no fabricated values
+		}
+		const byAccount = new Map(result.map((r) => [r.account, r]));
+		expect(num(byAccount.get("sales")?.revenue)).toBe(800);
+		expect(byAccount.get("sales")?.cost_of_goods_sold).toBeNull();
+		expect(byAccount.get("materials")?.revenue).toBeNull();
+		expect(num(byAccount.get("materials")?.cost_of_goods_sold)).toBe(200);
 	});
 
 	it("ADDITIVE: contributions flatten through nested additive formulas", async () => {
@@ -524,7 +540,7 @@ describe("composeNodeQuery — pins", () => {
 		);
 	});
 
-	it("pin ≡ group holds on ratios too — a `—` group pins to `—`", async () => {
+	it("pin ≡ group holds on ratios too — a `—` group pins to `—`, components intact", async () => {
 		const MARGIN: NodeStep[] = [
 			REVENUE,
 			COGS,
@@ -547,7 +563,39 @@ describe("composeNodeQuery — pins", () => {
 			slices: [],
 			pins: [{ column: "account", value: "sales" }],
 		});
-		expect((await rows(pinned.sql, pinned.params))[0]?.value).toBeNull();
+		const [row] = await rows(pinned.sql, pinned.params);
+		expect(row?.value).toBeNull();
+		// The pinned breakdown shows the same components as the grouped row.
+		expect(num(row?.revenue)).toBe(num(salesRow?.revenue));
+		expect(row?.cost_of_goods_sold).toBeNull();
+	});
+
+	it("constants are NOT projected as components", async () => {
+		const steps: NodeStep[] = [
+			extract(
+				"accounts_receivable",
+				parts("SUM(open_balance)", "enriched_txn", ["kind = 'ar'"]),
+			),
+			REVENUE,
+			constant("days_in_period", "30"),
+			formula(
+				"dso",
+				"(accounts_receivable / revenue) * days_in_period",
+				["accounts_receivable", "revenue", "days_in_period"],
+				true,
+			),
+		];
+		const result = await rows(
+			composed(steps, undefined, { slices: ["region"], pins: [] }).sql,
+		);
+		for (const r of result) {
+			expect(Object.keys(r)).toEqual([
+				"region",
+				"accounts_receivable",
+				"revenue",
+				"value",
+			]);
+		}
 	});
 
 	it("the UNRESTRICTED scalar keeps engine parity — no COALESCE, NULL stays loud", async () => {

@@ -365,6 +365,8 @@ export function composeNodeQuery(
 	const ctes: Record<string, SelectQuery> = {};
 	// Whether the final select carries the dims (the target composed grouped).
 	let targetGrouped = false;
+	// The component-breakdown columns (non-additive restricted views only).
+	let projectedOperands: string[] = [];
 
 	// ---- ADDITIVE mode (restricted domains only): SUM over signed carrier
 	// contributions. The unrestricted scalar deliberately does NOT take this
@@ -462,6 +464,29 @@ export function composeNodeQuery(
 			const [first, ...rest] = formulaRefs(parsed.expr).filter((r) =>
 				carriers.has(r),
 			);
+			// COMPONENT BREAKDOWN: in a restricted view, the TARGET formula's
+			// immediate non-constant operands ride along as columns — a `—` in
+			// `value` then explains itself (the inputs decompose even where the
+			// ratio cannot), instead of a bare dash the user must reverse-
+			// engineer. Only the opened node's own operands, never intermediate
+			// CTEs'; skipped on a name collision with a dim or the value alias.
+			const operands =
+				restricted && step.stepId === target.stepId
+					? formulaRefs(parsed.expr).filter((r) => {
+							const dep = byId.get(r);
+							return (
+								dep !== undefined &&
+								dep.kind !== "constant" &&
+								r !== "value" &&
+								!dims.includes(r)
+							);
+						})
+					: [];
+			const operandCols = operands.map((r) => ({
+				[r]: verbatim(
+					carriers.has(r) ? `"${r}"."value"` : `(SELECT value FROM ${r})`,
+				),
+			}));
 			if (dims.length > 0 && first !== undefined) {
 				// FULL JOIN … USING (dims) spine over the dim-carrying deps; scalar
 				// deps (constants, fall-loud extracts) stay subqueries in the value.
@@ -471,23 +496,30 @@ export function composeNodeQuery(
 				}
 				ctes[step.stepId] = Query.from(spine).select(
 					...dims.map((d) => column(d)),
+					...operandCols,
 					{
 						value: verbatim(rendered.sql),
 					},
 				);
 				carriers.add(step.stepId);
 			} else {
-				ctes[step.stepId] = Query.select({ value: verbatim(rendered.sql) });
+				ctes[step.stepId] = Query.select(...operandCols, {
+					value: verbatim(rendered.sql),
+				});
 			}
+			if (operands.length > 0) projectedOperands = operands;
 		}
 		targetGrouped = carriers.has(target.stepId);
 	}
 
 	// No bare `*` (mosaic would alias it): select the target CTE's columns
-	// explicitly — grouped output carries the dims, scalar carries value only.
-	const outCols = targetGrouped
-		? [...dims.map((d) => column(d)), column("value")]
-		: [column("value")];
+	// explicitly — dims when the target composed grouped, then the projected
+	// operand components (non-additive restricted views), then the value.
+	const outCols = [
+		...(targetGrouped ? dims.map((d) => column(d)) : []),
+		...projectedOperands.map((c) => column(c)),
+		column("value"),
+	];
 	const sql = String(
 		Query.with(ctes)
 			.select(...outCols)

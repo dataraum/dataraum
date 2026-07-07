@@ -6,7 +6,7 @@ How work moves between the cockpit and the engine.
 
 - All long-running work runs as Temporal workflows. There is no second
   scheduler, no job queue, no cron.
-- The engine has **no HTTP server and no MCP transport — do not add one**. No
+- The engine has **no HTTP server and no MCP transport**. No
   OpenAPI, no client codegen. The engine↔cockpit integration surface is exactly
   two things: Postgres (see [persistence](./persistence.md)) and Temporal.
 - Worker health is the Temporal heartbeat (`temporal worker list`), not an HTTP
@@ -43,8 +43,7 @@ How work moves between the cockpit and the engine.
 - Each orchestration workflow runs once per trigger under a deterministic
   per-workspace id (`grounding-<ws>`, `session-<ws>`), carries its state on the
   start payload, and holds no cross-run state. No signals, no `patched()`, no
-  continue-as-new — there is no resident per-workspace coordinator; do not add
-  one.
+  continue-as-new — no resident per-workspace coordinator exists.
 - **Single-flight** per workflow id: reuse policy `ALLOW_DUPLICATE` (restartable
   once the prior run closed) + conflict policy `FAIL` (rejected while one runs),
   surfaced as an actionable "already running" error. An orchestration workflow

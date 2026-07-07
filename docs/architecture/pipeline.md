@@ -38,8 +38,7 @@ and reads the results from the workspace schema.
 
 - `addSourceWorkflow` ingests 1–N sources: the import phase runs once per
   source, then everything downstream is source-free and session-scoped. Stages
-  past import address typed `table_id`s, never a `source_id` — do not bind a
-  post-import stage to a source.
+  past import address typed `table_id`s; a `source_id` has no meaning there.
 - Staging is **VARCHAR-first**: every object loads as VARCHAR; typing infers
   types and mints typed tables, routing failed casts to quarantine tables. A
   failed cast is never a pipeline failure.
@@ -78,7 +77,7 @@ and reads the results from the workspace schema.
 ## The catalog speaks single-column; composite keys are cured at the source
 
 - Every defined relationship is one column pair. No multi-column join machinery
-  exists anywhere — do not add any.
+  exists anywhere; composite keys exist only as minted surrogate columns.
 - Detection is evidence, the LLM is the judge: a greedy pre-pass
   (`analysis/relationships/composite.py`) probes each many-to-many candidate —
   anchor on the strongest pair, fuse the co-present pair that most reduces join
@@ -107,5 +106,5 @@ and reads the results from the workspace schema.
 - Every workflow execution mints a `run_id`; derived metadata coexists across
   runs and the terminal promote names the current run. A teach re-run is a full
   re-run under a fresh `run_id` — there is no partial replay scope.
-- `relationship_id` is a per-run uuid — never key cross-run state on it; the
+- `relationship_id` is a per-run uuid, valid only within its run; the
   cross-run-stable identity is the `(from_column_id, to_column_id)` pair.

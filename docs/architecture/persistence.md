@@ -29,8 +29,8 @@ Where data lives and who may touch it.
   use this-run run ids plus a base-run map pinned once at run start. **Views
   are never read inside a run** — promote is terminal, so mid-run the head
   still names the prior run.
-- No reader queries raw run-stamped tables for current state. There is no
-  metadata API service — do not add one.
+- No reader queries raw run-stamped tables for current state. No metadata API
+  service exists; the views and grants are the entire read integration.
 
 ## Writers converge under redelivery
 
@@ -43,8 +43,8 @@ Where data lives and who may touch it.
   legitimately shrinks on redelivery.
 - `storage/read_views.py::enforce_run_grain` polices this structurally, at
   workspace boot and in CI: every run-stamped table carries a run-including
-  UNIQUE or appears on `_RUN_GRAIN_EXEMPT` with its reason. Never remove a
-  delete or skip before its writer has a DB-enforced grain.
+  UNIQUE or appears on `_RUN_GRAIN_EXEMPT` with its reason — a delete or skip
+  survives only until its writer has a DB-enforced grain.
 - Only metadata is versioned. The physical lake is latest-only
   (`CREATE OR REPLACE` / `DROP`).
 
@@ -53,8 +53,8 @@ Where data lives and who may touch it.
 - The cockpit's Drizzle mirror of engine metadata is generated, never
   hand-maintained: SQLAlchemy models → offline DDL dump
   (`packages/engine/schema.sql` + `schema_read.sql`, via `storage/dump_ddl.py`)
-  → ephemeral scratch Postgres → `bun run db:pull:metadata`. Never hand-edit
-  `schema.sql` or the mirror — re-dump.
+  → ephemeral scratch Postgres → `bun run db:pull:metadata`. Hand edits to
+  `schema.sql` or the mirror do not survive regeneration.
 - The `schema-drift` CI job (`.github/workflows/ci.yml`) fails when models,
   dump, and mirror disagree.
 

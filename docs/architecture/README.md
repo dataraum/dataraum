@@ -11,9 +11,12 @@ The rules:
   archive; there is no status field, no "superseded", no dates, no tickets.
 - **Updated in place, in the same PR that changes the fact.** A document that
   contradicts the code is a bug in whichever of the two is wrong.
-- **A prohibition is a fact** ("the engine has no HTTP surface — do not add
-  one"). That is the only form in which a rejected alternative earns a line:
-  as a standing constraint, never as a story about how it was rejected.
+- **Constraints are declarative facts** ("the engine has no HTTP surface";
+  "the loss table is the whole rollup"). A stated fact carries the constraint —
+  an edit that contradicts it is visibly wrong. Imperatives addressed at a
+  future editor ("do not add X") are agent guidance, not architecture: they
+  belong in CLAUDE.md or agent memory. A rejected alternative earns a line only
+  as the absence it left behind, never as a story about how it was rejected.
 - **Cross-cutting facts only.** What one module does belongs in that module's
   code comments and tests; what one package needs belongs in its CLAUDE.md.
   A fact goes here when it spans packages or constrains future work broadly.

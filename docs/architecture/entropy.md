@@ -79,8 +79,8 @@ implementation.
   `risk ≤ 0.3` ready, `≤ 0.6` investigate, else blocked (`readiness_bands` in
   `loss.yaml`).
 - **No Bayesian network exists, and no graph of hand-set edge weights** — the
-  loss table is the whole rollup. Do not reintroduce graph/edge-weight rollups
-  or bake severity into detector scores.
+  loss table is the whole rollup, and severity is never baked into a
+  detector's score.
 - Severity lives in the loss table, not the score: the same conflict is
   catastrophic for aggregation and mild for an exploratory query that can hedge
   on a caveat.

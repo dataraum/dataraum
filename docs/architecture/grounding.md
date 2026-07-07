@@ -11,10 +11,9 @@ across the engine (metrics) and the cockpit (Q&A).
   its own context-assembly path (`graphs/context.py` vs. the cockpit's prompt
   blocks); both follow the same discipline: deterministic evidence in, LLM SQL
   out.
-- **There is no deterministic metric-SQL builder — do not build one.** The
-  metric-SQL shape space is open-ended; deterministic builders are legitimate
-  only for fixed-shape SQL. LLM authoring of extract SQL is the design, not a
-  fallback.
+- **Extract SQL is LLM-authored by design, not as a fallback.** The metric-SQL
+  shape space is open-ended; no deterministic metric-SQL builder exists — the
+  only deterministic SQL composition is the closed formula/constant grammar.
 - Within a metric graph, only **extract** steps are LLM-authored. **Formula**
   and **constant** steps compose deterministically from the metric DAG
   (`graphs/formula_composer.py`): a closed arithmetic grammar over declared
@@ -70,4 +69,4 @@ across the engine (metrics) and the cockpit (Q&A).
 
 - Canonical SQL comparison runs on DuckDB's `json_serialize_sql` in both
   packages (engine `core/sql_normalize.py`, cockpit `src/lib/sql-canonical.ts`)
-  — the same parser that executes the SQL. **Do not add another SQL parser.**
+  — the same parser that executes the SQL. It is the system's only SQL parser.

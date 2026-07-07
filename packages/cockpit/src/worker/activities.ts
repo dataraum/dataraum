@@ -1,19 +1,25 @@
-// Orchestration-worker activities (DAT-529, reshaped DAT-530, DAT-609) — the
-// side-effecting half of the worker.
+// The cockpit's Temporal activities (DAT-529, reshaped DAT-530/609/708) — the
+// full registration surface of the activity-only worker.
 //
-// MAIN-THREAD (not sandboxed): activities run as ordinary Bun code and reuse the
-// existing cockpit control-plane driver in-process — the co-location payoff. The
-// orchestration workflows (DAT-609: groundingLoopWorkflow / sessionCascadeWorkflow,
-// via the shared `runStage`) start each engine stage as a cross-language CHILD
-// workflow (a deterministic command, in the sandbox) and use these activities only
-// for the cockpit_db writes around it: record the run before start, attach the
-// child's real execution id, mark it terminal on completion.
+// The orchestration WORKFLOWS that call these run in Python on the ENGINE worker
+// (DAT-708, ADR-0020); they schedule these activities cross-language BY NAME on
+// the cockpit's activity queue. The names + IO shapes are therefore a
+// cross-PACKAGE contract: the engine mirrors them as camelCase Pydantic models
+// (`worker/contracts.py` — `RecordRunInput`, `AssessAndGroundInput/Result`, the
+// positional `markRunStatus`/`markRunAwaitingInput` args). Renaming an export or
+// reshaping its IO here is a silent wire break — change both sides in lockstep.
 //
-// `recordRun` takes an EXPLICIT conversationId from the workflow (the worker has no
-// request ALS) so a stage's completion still narrates into the chat that triggered
-// it (DAT-528). These are thin re-exports — the SQL + idempotency are tested in
-// db/cockpit/runs.test; the workflows' orchestration is exercised by the DAT-579
-// compose-smoke (the sandbox bundle is guarded offline by workflow-bundle.test).
+// The activities run as ordinary Bun code on the main isolate (no vm sandbox)
+// and reuse the cockpit control-plane driver in-process — the co-location
+// payoff. The workflows use them to bracket each engine stage: record the run
+// (with the child's real execution id) after start, mark it terminal on
+// completion, park it awaiting input.
+//
+// `recordRun` takes an EXPLICIT conversationId from the workflow (the worker has
+// no request ALS) so a stage's completion still narrates into the chat that
+// triggered it (DAT-528). These are thin re-exports — the SQL + idempotency are
+// tested in db/cockpit/runs.test; the orchestration around them is exercised by
+// the DAT-579 compose-smoke.
 //
 // DAT-551 P3c adds `assessAndGround` — a heavier activity that reads the run's
 // readiness and runs an LLM to auto-apply mechanical grounding teaches. It is the

@@ -134,3 +134,50 @@ export interface ProgressSnapshot {
 // The terminal `phase` the parent sets just before returning AddSourceResult —
 // the cockpit's progress poll stops here (alongside a terminal describe() status).
 export const PROGRESS_DONE_PHASE = "done";
+
+// --- Orchestration workflows (DAT-708) ---------------------------------------
+// The grounding loop + session cascade run on the ENGINE worker (ADR-0020
+// superseded ADR-0014's TS worker: Temporal discourages workflow workers
+// outside authentic Node.js, and the cockpit runs under Bun). The cockpit is
+// their Client — it starts them by type name on the workspace's engine queue
+// (orchestration-trigger.ts) — and hosts only the activity-only worker they
+// call back into. Mirrors `worker.contracts.{GroundingLoopInput,
+// SessionCascadeInput}`; same lockstep discipline as the shapes above.
+
+export interface GroundingLoopInput {
+	workspace_id: string;
+	// The deterministic ENGINE child id (`addsource-<ws>`) the import + its
+	// replays run under (reused across attempts; the SDK groups the iterations).
+	workflow_id: string;
+	// The queue the cockpit's activity-only worker polls — where the workflow
+	// schedules the cockpit_db writers + the grounding-teach agent. Cockpit
+	// config owns the value, so it rides the payload (the trigger injects
+	// `config.cockpitOrchestrationTaskQueue`). The engine children need no queue
+	// on the wire — they inherit the workflow's own (engine) task queue.
+	cockpit_task_queue: string;
+	// The source ids this run imports — a run is over a SET of objects (DAT-422).
+	sources: string[];
+	// The workspace verticals (one today; born-loud on >1).
+	verticals: string[];
+	// The originating chat (DAT-528) for the import run's progress routing; the
+	// onboarding import is tracked but never narrated (DAT-597). Null = none.
+	conversation_id: string | null;
+	// How many grounding-teach replay attempts the loop may make (default 3).
+	number_of_attempts?: number;
+}
+
+export interface SessionCascadeInput {
+	workspace_id: string;
+	// The deterministic ENGINE child id for begin_session (`beginsession-<ws>`);
+	// the workflow derives the operating_model child id itself.
+	workflow_id: string;
+	// See GroundingLoopInput.cockpit_task_queue.
+	cockpit_task_queue: string;
+	// The typed table ids to stage.
+	tables: string[];
+	// The workspace verticals (one today; born-loud on >1).
+	verticals: string[];
+	// The originating chat (DAT-528) — rides to BOTH children so the watcher
+	// narrates each completion into the originating chat. Null = none.
+	conversation_id: string | null;
+}

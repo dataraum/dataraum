@@ -66,7 +66,7 @@ const SINGLE_FLIGHT = {
 	workflowIdConflictPolicy: "FAIL",
 };
 
-describe("startGroundingLoop (DAT-609)", () => {
+describe("startGroundingLoop (DAT-609/708)", () => {
 	const input = {
 		workspaceId: "ws-1",
 		workflowId: "addsource-ws-1",
@@ -76,14 +76,26 @@ describe("startGroundingLoop (DAT-609)", () => {
 		conversationId: "conv-1",
 	};
 
-	it("starts groundingLoopWorkflow under the per-ws id with single-flight policy", async () => {
+	it("starts groundingLoopWorkflow on the ENGINE queue with the snake_case wire payload", async () => {
 		await startGroundingLoop(input);
+		// DAT-708: the workflow runs on the engine worker → started on the
+		// workspace's engine queue; the wire payload is the engine-owned mirror
+		// (snake_case) with the cockpit ACTIVITY queue injected from config.
 		expect(h.start).toHaveBeenCalledWith(
 			"groundingLoopWorkflow",
 			expect.objectContaining({
-				taskQueue: "cockpit-orchestration",
+				taskQueue: "engine-ws-1",
 				workflowId: "grounding-ws-1",
-				args: [input],
+				args: [
+					{
+						workspace_id: "ws-1",
+						workflow_id: "addsource-ws-1",
+						cockpit_task_queue: "cockpit-orchestration",
+						sources: ["src-a"],
+						verticals: ["finance"],
+						conversation_id: "conv-1",
+					},
+				],
 				...SINGLE_FLIGHT,
 			}),
 		);
@@ -105,7 +117,7 @@ describe("startGroundingLoop (DAT-609)", () => {
 	});
 });
 
-describe("startSessionCascade (DAT-609)", () => {
+describe("startSessionCascade (DAT-609/708)", () => {
 	const input = {
 		workspaceId: "ws-1",
 		workflowId: "beginsession-ws-1",
@@ -115,14 +127,23 @@ describe("startSessionCascade (DAT-609)", () => {
 		conversationId: "conv-1",
 	};
 
-	it("starts sessionCascadeWorkflow under the per-ws id with single-flight policy", async () => {
+	it("starts sessionCascadeWorkflow on the ENGINE queue with the snake_case wire payload", async () => {
 		await startSessionCascade(input);
 		expect(h.start).toHaveBeenCalledWith(
 			"sessionCascadeWorkflow",
 			expect.objectContaining({
-				taskQueue: "cockpit-orchestration",
+				taskQueue: "engine-ws-1",
 				workflowId: "session-ws-1",
-				args: [input],
+				args: [
+					{
+						workspace_id: "ws-1",
+						workflow_id: "beginsession-ws-1",
+						cockpit_task_queue: "cockpit-orchestration",
+						tables: ["t1", "t2"],
+						verticals: ["finance"],
+						conversation_id: "conv-1",
+					},
+				],
 				...SINGLE_FLIGHT,
 			}),
 		);

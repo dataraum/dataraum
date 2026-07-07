@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "bun --bun vite dev --port 3000",
-    "build": "bun run scripts/build-workflow-bundle.ts && bun --bun vite build",
+    "build": "bun --bun vite build",
     "start": "bun run .output/server/index.mjs",
     "preview": "bun --bun vite preview",
     "test": "vitest run --project unit",

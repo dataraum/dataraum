@@ -22,13 +22,14 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # ---------- 1b. deps-prod ----------
-# Production-only node_modules for the runner. The orchestration worker (DAT-529)
-# is co-located in the server process, and @temporalio/* is externalized from the
-# bundle (native Rust core-bridge — can't be bundled), so the runner must carry
-# the worker's runtime dependency tree (worker + core-bridge + common + proto +
-# nexus-rpc + grpc + protobufjs + …). That tree is too tangled to hand-pick, so
-# install the whole prod set here (`--production` drops devDependencies). This
-# also provides @duckdb, so the runner needs no per-package COPY.
+# Production-only node_modules for the runner. The activity-only worker
+# (DAT-529, slimmed DAT-708) is co-located in the server process, and
+# @temporalio/* is externalized from the bundle (native Rust core-bridge —
+# can't be bundled), so the runner must carry the worker's runtime dependency
+# tree (worker + core-bridge + common + proto + nexus-rpc + grpc + protobufjs +
+# …). That tree is too tangled to hand-pick, so install the whole prod set here
+# (`--production` drops devDependencies). This also provides @duckdb, so the
+# runner needs no per-package COPY.
 FROM oven/bun:1 AS deps-prod
 WORKDIR /app
 COPY package.json bun.lock ./
@@ -64,11 +65,9 @@ COPY --from=build /app/.output ./.output
 
 # The prod-only node_modules: carries every dependency externalized from the
 # bundle and resolved at runtime — @duckdb/node-bindings-* (native `.node`)
-# and the @temporalio worker tree (native
-# core-bridge + its transitive runtime deps). The workflow code is pre-bundled at
-# build time (scripts/build-workflow-bundle.ts) into the server bundle, so the
-# webpack/swc workflow bundler is never invoked at runtime even though it ships
-# here as a worker dependency.
+# and the @temporalio worker tree (native core-bridge + its transitive runtime
+# deps) for the ACTIVITY-ONLY worker (DAT-708 — the orchestration workflows run
+# on the engine worker, so there is no workflow bundle and no runtime bundler).
 COPY --from=deps-prod /app/node_modules ./node_modules
 
 # Pre-install the DuckDB extensions at image build time (mirror of the engine's

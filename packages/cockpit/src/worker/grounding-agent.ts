@@ -164,6 +164,9 @@ export async function assessAndGround(
 			llmTelemetryMiddleware("grounding"),
 			toolArgsGuardMiddleware("grounding"),
 		],
+		// The verdict rides the streaming tool loop itself (combined
+		// tools+outputSchema request — see llm.ts), so the loop's full budget
+		// applies; there is no separate structured-output call to re-budget.
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		agentLoopStrategy: maxIterations(GROUNDING_LOOP_MAX_ITERATIONS),
 		systemPrompts: [GROUNDING_INSTRUCTIONS],

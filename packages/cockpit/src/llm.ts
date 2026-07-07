@@ -1,7 +1,10 @@
 // Shared LLM config for the cockpit agent tier (DAT-353).
 //
-// ONE source for the model id + the output-token ceiling, used by the chat agent
-// loop and the structured-output tools (frame induction, why_column synthesis).
+// ONE source for the model ids + the two output-token ceilings: streaming
+// chat (the agent loops, the forced-tool streams) takes MAX_OUTPUT_TOKENS;
+// pure `chat({ outputSchema })` calls (why_* synthesis, nav classifier,
+// report summary) take STRUCTURED_OUTPUT_MAX_TOKENS — sized under the SDK's
+// non-streaming gate so adapter routing can't break them (DAT-700).
 //
 // max_tokens MUST be set explicitly — via `modelOptions: { max_tokens }` — on
 // every Anthropic call: the `@tanstack/ai-anthropic` adapter defaults it to
@@ -29,7 +32,25 @@ export const NAV_MODEL = "claude-haiku-4-5";
 // choice for this surface is explicit and tunable independently.
 export const SUMMARY_MODEL = "claude-haiku-4-5";
 
+// STREAMING calls only — every non-streaming call must use
+// STRUCTURED_OUTPUT_MAX_TOKENS below or the SDK throws before sending.
 export const MAX_OUTPUT_TOKENS = 24576;
+
+// The ceiling for `chat({ outputSchema })` calls (DAT-700). How those route
+// is adapter-internal and MODEL-keyed: models in `@tanstack/ai-anthropic`'s
+// combined set — all of ours since adapter 0.16.1 — get ONE streaming request
+// with the schema attached (`output_config`); a model OUTSIDE the set falls
+// to a legacy NON-streaming forced-tool `messages.create`, which the
+// Anthropic SDK refuses client-side above 21,333 max_tokens (`Streaming is
+// required …`, thrown before anything is sent). That set lags model releases
+// (claude-sonnet-5 was outside it on adapter 0.15.x — the DAT-700 outage,
+// MAX_OUTPUT_TOKENS 24576 over the gate), so the budget rule is: every
+// outputSchema site uses this constant, sized under the gate — a new model
+// id landing outside the set degrades to the slower transport instead of
+// breaking. 8192 is ample for these payloads (a few-paragraph narrative at
+// most, thinking disabled on the one-shot emits). Set membership for our
+// model ids is pinned in llm.contract.test.ts.
+export const STRUCTURED_OUTPUT_MAX_TOKENS = 8192;
 
 // The agent-loop iteration ceiling for /api/chat. chat() defaults to
 // maxIterations(5) when no agentLoopStrategy is given — a SILENT governor from

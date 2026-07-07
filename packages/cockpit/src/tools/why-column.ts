@@ -33,7 +33,7 @@ import {
 import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
-import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
+import { MODEL, STRUCTURED_OUTPUT_MAX_TOKENS } from "../llm";
 import { getWhyInstructions } from "../prompts";
 import {
 	mergeCurrentEvidence,
@@ -197,7 +197,13 @@ export async function synthesizeAnalysis(
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
 		middleware: [llmTelemetryMiddleware("why_column")],
 		abortController: linkedAbortController(signal),
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+		modelOptions: {
+			max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+			// One-shot structured synthesis, no agentic reasoning: Sonnet 5's
+			// default adaptive thinking bills a trace per call with no quality
+			// gain (the frame-family precedent). Disable it.
+			thinking: { type: "disabled" },
+		},
 		systemPrompts: [getWhyInstructions()],
 		messages: [
 			{

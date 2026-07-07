@@ -3,7 +3,7 @@ spike/
 data/
 test_output/
 pipeline_output/
-testdata/
+testdata
 examples/*
 !examples/*.ipynb
 prototypes/

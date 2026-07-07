@@ -98,6 +98,7 @@ CREATE TABLE sql_snippets (
 	source VARCHAR NOT NULL, 
 	llm_model VARCHAR, 
 	provenance JSON, 
+	parts JSON, 
 	execution_count INTEGER NOT NULL, 
 	failure_count INTEGER NOT NULL, 
 	last_used_at TIMESTAMP WITHOUT TIME ZONE, 

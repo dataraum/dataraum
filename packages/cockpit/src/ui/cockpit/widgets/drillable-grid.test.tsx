@@ -52,7 +52,6 @@ import { DrillableGrid } from "./drillable-grid";
 
 const axis = (column: string): DrillAxis => ({
 	column,
-	sourceRelations: ["t"],
 	priority: 1,
 	sliceType: "categorical",
 	values: [],
@@ -69,16 +68,24 @@ const jsonResponse = (body: unknown) =>
 /** Compose calls resolve MANUALLY — the tests control network order. */
 let composeQueue: Array<(r: Response) => void>;
 
+/** The body of each compose POST, in call order — the wire-contract probe. */
+let composeBodies: unknown[];
+
 function stubFetch() {
 	composeQueue = [];
+	composeBodies = [];
 	vi.stubGlobal(
 		"fetch",
-		vi.fn(async (url: RequestInfo | URL) => {
+		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
 			const u = String(url);
 			if (u.endsWith("/api/drill/axes")) {
 				return jsonResponse({ axes: [axis("region"), axis("product")] });
 			}
-			if (u.endsWith("/api/drill/compose")) {
+			if (u.endsWith("/api/drill/compose") || u.endsWith("/api/drill/node")) {
+				composeBodies.push({
+					url: u.slice(u.lastIndexOf("/api")),
+					body: JSON.parse(String(init?.body ?? "null")),
+				});
 				return new Promise<Response>((resolve) => composeQueue.push(resolve));
 			}
 			throw new Error(`unexpected fetch: ${u}`);
@@ -88,12 +95,16 @@ function stubFetch() {
 
 const BASE_SQL = "SELECT SUM(x) AS value FROM t";
 
-function renderGrid() {
+function renderGrid(nodeRef?: { metricKey: string }) {
 	stubFetch();
 	return render(
 		<TestQueryProvider>
 			<MantineProvider theme={theme} env="test">
-				<DrillableGrid sql={BASE_SQL} axesRequest={{ metricKey: "m1" }} />
+				<DrillableGrid
+					sql={BASE_SQL}
+					axesRequest={{ metricKey: "m1" }}
+					nodeRef={nodeRef}
+				/>
 			</MantineProvider>
 		</TestQueryProvider>,
 	);
@@ -109,7 +120,7 @@ async function sliceBy(column: string, composedSql: string) {
 	fireEvent.click(await screen.findByText(column));
 	await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
 	composeQueue.shift()?.(
-		jsonResponse({ ok: true, tier: "B", sql: composedSql, params: [] }),
+		jsonResponse({ ok: true, sql: composedSql, params: [] }),
 	);
 	await screen.findByTestId(`drill-step-slice-${column}`);
 }
@@ -159,12 +170,27 @@ describe("DrillableGrid", () => {
 		// The stale pin composition now resolves OK — it must be dropped, not
 		// committed (without the guard it would win by resolving last).
 		composeQueue.shift()?.(
-			jsonResponse({ ok: true, tier: "B", sql: "STALE", params: [] }),
+			jsonResponse({ ok: true, sql: "STALE", params: [] }),
 		);
 		await waitFor(() =>
 			expect(screen.getByTestId("mock-grid-sql").textContent).toBe(BASE_SQL),
 		);
 		expect(screen.queryByTestId("drill-step-pin-region")).toBeNull();
 		expect(screen.queryByTestId("drill-refusal")).toBeNull();
+	});
+
+	it("with a nodeRef, steps recompose the NODE (`/api/drill/node`), not the base SQL", async () => {
+		renderGrid({ metricKey: "m1" });
+		await sliceBy("region", "NODE_SQL");
+		expect(gridSql()).toBe("NODE_SQL");
+		expect(composeBodies).toEqual([
+			{
+				url: "/api/drill/node",
+				body: {
+					metricKey: "m1",
+					steps: [{ kind: "slice", column: "region" }],
+				},
+			},
+		]);
 	});
 });

@@ -122,7 +122,9 @@ from dataraum.graphs.models import (  # noqa: E402
 
 _VALID_OUTPUT = {
     "grounding": "depreciation via account_name IN ('Depreciation') (searched)",
-    "sql": "SELECT SUM(amount) AS value FROM t WHERE account_name IN ('Depreciation')",
+    "relation": "t",
+    "where": ["account_name IN ('Depreciation')"],
+    "select_expr": "SUM(amount)",
     "description": "Depreciation expense",
 }
 

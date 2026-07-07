@@ -22,19 +22,12 @@ const PinValueSchema = z.union([
 ]);
 const ColumnSchema = z.string().min(1).max(256);
 
-const SourceSchema = z.array(z.string().min(1).max(256)).max(8).optional();
-
 const StepSchema = z.discriminatedUnion("kind", [
-	z.object({
-		kind: z.literal("slice"),
-		column: ColumnSchema,
-		source: SourceSchema,
-	}),
+	z.object({ kind: z.literal("slice"), column: ColumnSchema }),
 	z.object({
 		kind: z.literal("pin"),
 		column: ColumnSchema,
 		value: PinValueSchema,
-		source: SourceSchema,
 	}),
 ]);
 

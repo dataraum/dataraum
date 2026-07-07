@@ -258,13 +258,16 @@ class TestGraphAgentIntegration:
             prompt_renderer=mock_renderer,
         )
 
-        # Mock the LLM converse call with tool response (single-extract shape,
-        # DAT-603 — the step id is bound by the agent, not named by the model).
+        # Mock the LLM converse call with tool response (single-extract clause-parts
+        # shape, DAT-603/671 — the step id is bound by the agent, not named by the
+        # model, and the model authors parts, never a fused SQL string).
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"  # Set as attribute, not constructor kwarg
         mock_tool_call.input = {
             "grounding": "test grounding: served values verified",
-            "sql": "SELECT SUM(amount) AS value FROM test_data",
+            "relation": "test_data",
+            "where": [],
+            "select_expr": "SUM(amount)",
             "description": "Sum amounts",
         }
 
@@ -285,8 +288,11 @@ class TestGraphAgentIntegration:
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
 
 
-def _agent_with_sql(sql: str, description: str = "test") -> GraphAgent:
-    """A GraphAgent whose mocked LLM emits the given extract SQL (DAT-603 shape)."""
+def _agent_with_parts(
+    select_expr: str, where: list[str] | None = None, description: str = "test"
+) -> GraphAgent:
+    """A GraphAgent whose mocked LLM emits extract clause parts over ``test_data``
+    (DAT-603 single-extract shape, DAT-671 parts-at-source)."""
     mock_config = MagicMock()
     mock_config.limits.max_output_tokens_per_request = 4000
     mock_config.limits.cache_ttl_seconds = 3600
@@ -301,7 +307,9 @@ def _agent_with_sql(sql: str, description: str = "test") -> GraphAgent:
     tool_call.name = "generate_sql"
     tool_call.input = {
         "grounding": "test grounding: served values verified",
-        "sql": sql,
+        "relation": "test_data",
+        "where": where or [],
+        "select_expr": select_expr,
         "description": description,
     }
     response = MagicMock()
@@ -330,8 +338,9 @@ class TestGraphAgentVerifier:
 
         from dataraum.query.snippet_models import SQLSnippetRecord
 
-        agent = _agent_with_sql(
-            "SELECT SUM(amount) AS value FROM test_data WHERE id = 999",
+        agent = _agent_with_parts(
+            "SUM(amount)",
+            where=["id = 999"],
             description="empty filter",
         )
         context = _make_execution_context(duckdb_with_data)
@@ -352,8 +361,9 @@ class TestGraphAgentVerifier:
 
         `id = 1` matches a row; `amount * 0` sums to a real 0 — support exists, so
         the metric is executed with value 0, not rejected as degenerate."""
-        agent = _agent_with_sql(
-            "SELECT SUM(amount * 0) AS value FROM test_data WHERE id = 1",
+        agent = _agent_with_parts(
+            "SUM(amount * 0)",
+            where=["id = 1"],
             description="genuine zero with support",
         )
         context = _make_execution_context(duckdb_with_data)
@@ -823,13 +833,15 @@ class TestGraphAgentSnippets:
             prompt_renderer=mock_renderer,
         )
 
-        # Mock LLM response (single-extract shape — the agent binds the SQL to
-        # the graph's "value" leaf itself, DAT-603).
+        # Mock LLM response (single-extract clause-parts shape — the agent binds
+        # the parts to the graph's "value" leaf itself, DAT-603/671).
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"
         mock_tool_call.input = {
             "grounding": "test grounding: served values verified",
-            "sql": "SELECT SUM(amount) AS value FROM test_data",
+            "relation": "test_data",
+            "where": [],
+            "select_expr": "SUM(amount)",
             "description": "Sum amounts from test data",
         }
 
@@ -986,12 +998,14 @@ class TestGraphAgentSnippets:
             prompt_renderer=mock_renderer,
         )
 
-        # Mock LLM response (single-extract shape, DAT-603)
+        # Mock LLM response (single-extract clause-parts shape, DAT-603/671)
         mock_tool_call = MagicMock()
         mock_tool_call.name = "generate_sql"
         mock_tool_call.input = {
             "grounding": "test grounding: served values verified",
-            "sql": "SELECT SUM(amount) AS value FROM test_data",
+            "relation": "test_data",
+            "where": [],
+            "select_expr": "SUM(amount)",
             "description": "Sum amounts from test data",
         }
 

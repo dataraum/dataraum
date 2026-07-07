@@ -538,3 +538,51 @@ describe("filterGraph (kind toggles + hide-orphans)", () => {
 		expect(ids(g)).toContain("table:t1");
 	});
 });
+
+describe("parsed refs drive the edges (DAT-702)", () => {
+	it("an over-declared dependency draws no edge and mints no node", () => {
+		// `orphan` is declared on the output step but never referenced by the
+		// expression — the retired tier-C reachability gate existed for this
+		// shape; the walk now excludes it by construction.
+		const m = metric("doubled_revenue", "Doubled Revenue", "currency", {
+			revenue: extract("revenue", "income_statement"),
+			orphan: extract("orphan", "income_statement"),
+			doubled_revenue: formula("revenue * 2", ["revenue", "orphan"], true),
+		});
+		const g = buildOperatingModelGraph({ metrics: [m], grounding: [] });
+		expect(g.edges.map((e) => e.id)).toContain(
+			"metric:doubled_revenue->measure:revenue:reads",
+		);
+		expect(g.nodes.some((n) => n.id === "measure:orphan")).toBe(false);
+	});
+
+	it("a step without a parseable expression falls back to declared deps", () => {
+		const m = metric("broken", "Broken", "currency", {
+			revenue: extract("revenue", "income_statement"),
+			broken: formula("revenue ** oops(", ["revenue"], true),
+		});
+		const g = buildOperatingModelGraph({ metrics: [m], grounding: [] });
+		expect(g.edges.map((e) => e.id)).toContain(
+			"metric:broken->measure:revenue:reads",
+		);
+	});
+
+	it("metric nodes carry the hasDag analyse gate", () => {
+		const g = buildOperatingModelGraph({
+			metrics: [
+				DSO,
+				{
+					graphId: "bare",
+					state: "failed",
+					stateReason: null,
+					dag: null,
+					sql: null,
+				},
+			],
+			grounding: [],
+		});
+		const byId = new Map(g.nodes.map((n) => [n.id, n]));
+		expect(byId.get("metric:dso")?.data).toMatchObject({ hasDag: true });
+		expect(byId.get("metric:bare")?.data).toMatchObject({ hasDag: false });
+	});
+});

@@ -19,11 +19,21 @@
 // TWO LAYERS: STRUCTURE (this node/edge graph, for visualization) and EXECUTION (each
 // metric/measure node carries its flattened runnable SQL, shown in the detail panel).
 //
-// COMPOSITION is resolved by the naming convention: a metric's output-step `depends_on`
+// COMPOSITION is resolved by the naming convention: a metric's output-step dependency
 // name that matches a known metric graph_id IS a reference to that metric (we follow
 // that metric's own definition, ignoring the inlined self-contained copy). A name that
 // is an extract step is a measure; a constant step is a constant; a non-metric formula
 // step is inlined (recursed) — the one case today is `dio` before its metric exists.
+//
+// DEPENDENCY NAMES come from the step's PARSED expression references
+// (`metricStepRefs`, DAT-702) — the same signal the per-node drill composer
+// walks (parts.ts, `composeNodeQuery`), so the canvas and the composed SQL
+// can never disagree about a metric's parts. Declared `depends_on`
+// over-declares (the retired tier-C output-reachability gate existed because
+// of it) and remains only the fallback for steps without a parseable
+// expression.
+
+import { formulaRefs, parseFormulaExpression } from "#/duckdb/metric-formula";
 
 // --- Graph model -----------------------------------------------------------
 
@@ -54,6 +64,10 @@ interface MetricData {
 	category: string | null;
 	/** The metric's flattened runnable SQL (execution layer); null when not composed. */
 	sql: string | null;
+	/** Whether a parsed DAG exists — the gate for the per-node analyse path
+	 *  (DAT-702: the node composes ad hoc from its parts; the flattened `sql`
+	 *  above stays a reference display, never the gate). */
+	hasDag: boolean;
 }
 interface MeasureData {
 	kind: "measure";
@@ -222,6 +236,19 @@ export function parseMetricDag(raw: unknown): MetricDag | null {
 }
 
 /**
+ * A step's outgoing dependency NAMES: the PARSED references of its expression
+ * (what the formula actually uses — the drill composer's reachability signal,
+ * DAT-702), falling back to declared `depends_on` for steps without a
+ * parseable expression (extracts, constants, malformed formulas) so the
+ * canvas stays informative on parts the composer would refuse.
+ */
+export function metricStepRefs(step: MetricStep): string[] {
+	if (step.kind !== "formula" || !step.expression) return step.dependsOn;
+	const parsed = parseFormulaExpression(step.expression);
+	return "refusal" in parsed ? step.dependsOn : formulaRefs(parsed.expr);
+}
+
+/**
  * The output step of a metric's DAG — the one flagged `output_step`, falling back to
  * a root (a step nothing else depends on) so a malformed DAG still resolves. Returns
  * null only when the DAG has no steps at all (already excluded by parseMetricDag).
@@ -385,6 +412,7 @@ export function buildOperatingModelGraph(
 				unit: dag?.unit ?? null,
 				category: dag?.category ?? null,
 				sql: m.sql,
+				hasDag: dag !== null,
 			},
 		});
 		if (!dag || !output) continue;
@@ -392,9 +420,10 @@ export function buildOperatingModelGraph(
 		const stepById = new Map(dag.steps.map((s) => [s.stepId, s]));
 		const seen = new Set<string>(); // guard against a depends_on cycle while recursing
 
-		// Resolve a metric's dependency NAMES into edges, following the naming
-		// convention: a name that is a metric composes; an extract is a measure; a
-		// constant is used; a non-metric formula is inlined (recursed into its own deps).
+		// Resolve a metric's dependency NAMES (parsed refs, `metricStepRefs`) into
+		// edges, following the naming convention: a name that is a metric composes;
+		// an extract is a measure; a constant is used; a non-metric formula is
+		// inlined (recursed into its own refs).
 		const resolveDeps = (depNames: string[]): void => {
 			for (const name of depNames) {
 				if (name !== m.graphId && metricNames.has(name)) {
@@ -436,11 +465,11 @@ export function buildOperatingModelGraph(
 					// Non-metric intermediate formula (e.g. `dio` before its metric exists):
 					// inline it so the metric still reaches its real leaves.
 					seen.add(step.stepId);
-					resolveDeps(step.dependsOn);
+					resolveDeps(metricStepRefs(step));
 				}
 			}
 		};
-		resolveDeps(output.dependsOn);
+		resolveDeps(metricStepRefs(output));
 	}
 
 	return { nodes: [...nodes.values()], edges: [...edges.values()] };

@@ -32,6 +32,41 @@ _BINOP_SQL: dict[type[ast.operator], str] = {
 }
 
 
+def compose_extract_sql(select_expr: str, relation: str | None, where: list[str]) -> str:
+    """Render an EXTRACT's clause parts to its scalar SQL (DAT-671, parts-at-source).
+
+    The parts are the persisted artifact; this render is the ONE place they
+    become a string on the engine side (the cockpit drill builder composes its
+    own variants — sliced, pinned — from the same parts, never parsing SQL).
+    Multiple predicates AND-compose, each parenthesized so an OR inside one
+    leaf can never bleed across leaves; a null relation is the fall-loud shape
+    (``SELECT NULL AS value``, no FROM).
+    """
+    sql = f"SELECT {select_expr} AS value"
+    if relation:
+        sql += f"\nFROM {relation}"
+    preds = [p.strip() for p in where if p and p.strip()]
+    if preds:
+        joined = preds[0] if len(preds) == 1 else " AND ".join(f"({p})" for p in preds)
+        sql += f"\nWHERE {joined}"
+    return sql
+
+
+def extract_parts_dict(select_expr: str, relation: str | None, where: list[str]) -> dict[str, Any]:
+    """The persisted clause-parts shape (DAT-671).
+
+    This is the GENERAL schema every structured SQL author shares (the answer
+    agent adopts it later), even though the graph agent only ever fills the
+    single-relation single-item case:
+    ``{select: [{expr, alias}], from: [relation], where: [pred, …]}``.
+    """
+    return {
+        "select": [{"expr": select_expr, "alias": "value"}],
+        "from": [relation] if relation else [],
+        "where": [p.strip() for p in where if p and p.strip()],
+    }
+
+
 def compose_constant_sql(value: Any) -> str:
     """SQL for a CONSTANT node — emit the resolved parameter value as a scalar.
 

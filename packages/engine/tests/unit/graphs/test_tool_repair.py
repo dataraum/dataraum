@@ -28,13 +28,18 @@ from dataraum.graphs.models import (
 
 _VALID_INPUT = {
     "grounding": "revenue via account_type = 'Income' (complete value set)",
-    "sql": "SELECT SUM(amount) AS value FROM t WHERE account_type IN ('Income')",
+    "relation": "t",
+    "where": ["account_type IN ('Income')"],
+    "select_expr": "SUM(amount)",
     "description": "Total revenue",
     "provenance": {
         "field_resolution": "direct",
         "column_mappings_basis": {"revenue": {"column": "amount", "filter": "Income"}},
     },
 }
+
+# What compose_extract_sql renders from _VALID_INPUT's parts — the step's `sql`.
+_VALID_RENDERED = "SELECT SUM(amount) AS value\nFROM t\nWHERE account_type IN ('Income')"
 
 # The live failure shape: the nested provenance object emitted as a JSON string.
 _STRINGIFIED_INPUT = {**_VALID_INPUT, "provenance": json.dumps(_VALID_INPUT["provenance"])}
@@ -130,7 +135,7 @@ def test_stringified_field_is_repaired_by_the_model(monkeypatch) -> None:
 
     assert result.success
     generated = result.unwrap()
-    assert generated.steps[0]["sql"] == _VALID_INPUT["sql"]
+    assert generated.steps[0]["sql"] == _VALID_RENDERED
     assert provider.converse.call_count == 2
 
     repair_request = provider.converse.call_args_list[1].args[0]

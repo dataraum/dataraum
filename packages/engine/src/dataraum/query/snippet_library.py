@@ -256,6 +256,7 @@ class SnippetLibrary:
         llm_model: str | None = None,
         column_hash: str | None = None,
         provenance: dict[str, Any] | None = None,
+        parts: dict[str, Any] | None = None,
         failed: bool = False,
     ) -> SQLSnippetRecord:
         """Save a new snippet or update an existing one.
@@ -285,6 +286,8 @@ class SnippetLibrary:
             llm_model: LLM model used to generate
             column_hash: Hash for schema change invalidation
             provenance: Grounding decisions (field_resolution, column_mappings_basis, etc.)
+            parts: Clause parts the extract's ``sql`` was rendered from (DAT-671) —
+                the structured artifact drill composition builds on; extracts only.
 
         Returns:
             The created or updated SQLSnippetRecord
@@ -332,6 +335,7 @@ class SnippetLibrary:
             existing.llm_model = llm_model
             existing.column_hash = column_hash
             existing.provenance = provenance
+            existing.parts = parts
             existing.failure_count = 1 if failed else 0
             existing.updated_at = datetime.now(UTC)
             record = existing
@@ -358,6 +362,7 @@ class SnippetLibrary:
                 llm_model=llm_model,
                 column_hash=column_hash,
                 provenance=provenance,
+                parts=parts,
                 execution_count=0,
                 failure_count=1 if failed else 0,
                 created_at=datetime.now(UTC),

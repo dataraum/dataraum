@@ -478,7 +478,7 @@ describe("composeNodeQuery — grouped", () => {
 		for (const r of result) expect(r.value).toBeNull();
 	});
 
-	it("slices by several dims at once (GROUP BY + USING both)", async () => {
+	it("slices by several dims at once (GROUP BY over every dim, deduped)", async () => {
 		const q = composed(GROSS_PROFIT, undefined, {
 			slices: [
 				{ column: "account" },
@@ -610,6 +610,76 @@ describe("composeNodeQuery — NULL-dim non-additive slice (DAT-714)", () => {
 				9,
 			);
 		}
+	});
+
+	it("3 carriers × 2 dims: the chained spine COALESCEs the left key across ALL prior carriers — no split, no dup keys", async () => {
+		// revenue / cogs * depreciation is non-additive with THREE carriers,
+		// sliced by region AND cost_center at once. depr lives only on
+		// (west, NULL) — a group present ONLY in the 3rd (last-joined) carrier,
+		// absent in the first two; revenue and cogs share (west, cc1) and
+		// (east, NULL). A FULL JOIN can leave EITHER side's key NULL, so the left
+		// key of the third join must be COALESCE over BOTH prior carriers, not
+		// just the immediate-left neighbour — the accumulation the reviewers
+		// verified with throwaway probes, pinned here as a real regression.
+		const steps: NodeStep[] = [
+			REVENUE,
+			COGS,
+			DEPR,
+			formula(
+				"tri",
+				"revenue / cost_of_goods_sold * depreciation_amortization",
+				["revenue", "cost_of_goods_sold", "depreciation_amortization"],
+				true,
+			),
+		];
+		const q = composed(steps, undefined, {
+			slices: [{ column: "region" }, { column: "cost_center" }],
+			pins: [],
+		});
+		// The 3rd carrier's ON accumulates COALESCE over BOTH prior carriers per
+		// dim (the immediate-left-neighbour bug would reference only cogs).
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."region", "cost_of_goods_sold"."region") ' +
+				'IS NOT DISTINCT FROM "depreciation_amortization"."region"',
+		);
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."cost_center", "cost_of_goods_sold"."cost_center") ' +
+				'IS NOT DISTINCT FROM "depreciation_amortization"."cost_center"',
+		);
+		// …and each output dim is COALESCE across all THREE carriers.
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."region", "cost_of_goods_sold"."region", ' +
+				'"depreciation_amortization"."region") AS "region"',
+		);
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."cost_center", "cost_of_goods_sold"."cost_center", ' +
+				'"depreciation_amortization"."cost_center") AS "cost_center"',
+		);
+
+		const result = await rows(q.sql);
+		// Three groups, each ONCE: (west,cc1) rev+cogs, (east,NULL) rev+cogs — the
+		// NULL cost_center never splits — and (west,NULL) depr-only. USING would
+		// split every NULL-cost_center group → four rows, (east,NULL) twice.
+		expect(result).toHaveLength(3);
+		const key = (r: Record<string, unknown>) =>
+			`${String(r.region)}|${String(r.cost_center)}`;
+		const keys = result.map(key);
+		expect(new Set(keys).size).toBe(keys.length); // no duplicate group keys
+		const byKey = new Map(result.map((r) => [key(r), r]));
+		// (west,cc1): the NULL-safe first join matched rev+cogs on non-null dims.
+		expect(num(byKey.get("west|cc1")?.revenue)).toBe(500);
+		expect(num(byKey.get("west|cc1")?.cost_of_goods_sold)).toBe(120);
+		// (east,NULL): first join matched despite a NULL cost_center.
+		expect(num(byKey.get("east|null")?.revenue)).toBe(300);
+		expect(num(byKey.get("east|null")?.cost_of_goods_sold)).toBe(80);
+		// The 3rd-carrier-only group lands as ONE correct row: depr observed, the
+		// other carriers absent → the honest dash (doctrine v2), never a split.
+		const depOnly = byKey.get("west|null");
+		expect(depOnly).toBeDefined();
+		expect(num(depOnly?.depreciation_amortization)).toBe(40);
+		expect(depOnly?.revenue).toBeNull();
+		expect(depOnly?.cost_of_goods_sold).toBeNull();
+		expect(depOnly?.value).toBeNull();
 	});
 });
 

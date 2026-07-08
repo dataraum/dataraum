@@ -41,10 +41,12 @@ AVERAGE = "average"  # AVG — an average of averages is meaningless
 DISTINCT_COUNT = "distinct_count"  # COUNT(DISTINCT) — slices overlap
 MIN_MAX = "min_max"  # MIN/MAX — non-summable this cut
 SNAPSHOT_COUNT = "snapshot_count"  # COUNT over a periodic-snapshot fact, across time
-RATIO = "ratio"  # a formula division/product of measures
+RATIO = "ratio"  # a formula/extract division or product of measures
 UNKNOWN_AGGREGATE = "unknown_aggregate"  # an aggregate outside the doctrine — conservative
+UNKNOWN_TEMPORAL = "unknown_temporal"  # an aggregated column with no resolved stock/flow verdict
 
 POINT_IN_TIME = "point_in_time"  # temporal_behavior value marking a stock column
+FLOW = "additive"  # temporal_behavior value marking a flow column
 
 
 @dataclass(frozen=True)
@@ -103,19 +105,73 @@ def parse_aggregate_calls(select_expr: str, con: duckdb.DuckDBPyConnection) -> l
         ValueError: the expression does not parse (a malformed catalogue extract
             — surfaced loud rather than silently classified).
     """
+    doc = _serialize(select_expr, con)
+    agg_names = _aggregate_function_names(con)
+    calls: list[AggregateCall] = []
+    _collect_aggregates(doc["statements"][0]["node"]["select_list"], agg_names, calls)
+    return calls
+
+
+def select_expr_is_ratio(select_expr: str, con: duckdb.DuckDBPyConnection) -> bool:
+    """Whether the extract combines its measures by division or a product of measures.
+
+    A ratio computed inline in ONE ``select_expr`` (``SUM(num) / SUM(den)``) does
+    not reconcile under SUM, exactly like a formula-level division — but the flat
+    aggregate-call list can't see it. Detected structurally on the AST: a ``/``
+    whose denominator subtree contains an aggregate (dividing by a measure —
+    scaling by a constant stays additive), or a ``*`` whose BOTH sides contain an
+    aggregate (a product of measures). Sums/differences, constant scaling, and
+    ``COALESCE`` guards are not ratios.
+    """
+    doc = _serialize(select_expr, con)
+    agg_names = _aggregate_function_names(con)
+    return _has_ratio(doc["statements"][0]["node"]["select_list"], agg_names)
+
+
+def _serialize(select_expr: str, con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    """Parse ``SELECT <select_expr>`` to DuckDB's JSON AST (a catalog-free parse)."""
     try:
         raw = con.execute("SELECT json_serialize_sql(?)", [f"SELECT {select_expr}"]).fetchone()
     except duckdb.Error as exc:  # pragma: no cover - defensive
         raise ValueError(f"unparseable select_expr {select_expr!r}: {exc}") from exc
     if raw is None:  # pragma: no cover - json_serialize_sql always returns a row
         raise ValueError(f"select_expr {select_expr!r} did not serialize")
-    doc = json.loads(raw[0])
+    doc: dict[str, Any] = json.loads(raw[0])
     if doc.get("error"):
         raise ValueError(f"unparseable select_expr {select_expr!r}: {doc.get('error_message')}")
-    agg_names = _aggregate_function_names(con)
-    calls: list[AggregateCall] = []
-    _collect_aggregates(doc["statements"][0]["node"]["select_list"], agg_names, calls)
-    return calls
+    return doc
+
+
+def _has_ratio(node: Any, agg_names: frozenset[str]) -> bool:
+    """A division-by-measure or product-of-measures anywhere in the AST."""
+    if isinstance(node, dict):
+        if node.get("class") == "FUNCTION":
+            fn = node.get("function_name")
+            kids = node.get("children") or []
+            if fn == "/" and len(kids) == 2 and _has_aggregate(kids[1], agg_names):
+                return True
+            if (
+                fn == "*"
+                and len(kids) == 2
+                and _has_aggregate(kids[0], agg_names)
+                and _has_aggregate(kids[1], agg_names)
+            ):
+                return True
+        return any(_has_ratio(v, agg_names) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_ratio(item, agg_names) for item in node)
+    return False
+
+
+def _has_aggregate(node: Any, agg_names: frozenset[str]) -> bool:
+    """Whether an aggregate FUNCTION appears anywhere in a subtree."""
+    if isinstance(node, dict):
+        if node.get("class") == "FUNCTION" and node.get("function_name") in agg_names:
+            return True
+        return any(_has_aggregate(v, agg_names) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_aggregate(item, agg_names) for item in node)
+    return False
 
 
 _AGG_NAMES: frozenset[str] | None = None
@@ -127,7 +183,9 @@ def _aggregate_function_names(con: duckdb.DuckDBPyConnection) -> frozenset[str]:
     The authority for "is this FUNCTION node an aggregate?" — it separates
     ``sum``/``count`` from the arithmetic operators (``-``/``*``) that serialize
     as ``FUNCTION`` nodes too. The set is the same for every connection, so one
-    global memo is safe.
+    global memo is safe; the unlocked check-then-set is benign (the value is
+    idempotent and the GIL makes the assignment atomic — and the metrics phase
+    only reaches this after its ThreadPoolExecutor stages have joined).
     """
     global _AGG_NAMES
     if _AGG_NAMES is None:
@@ -203,16 +261,24 @@ def _column_refs(node: Any) -> list[str]:
 def classify_extract(
     calls: list[AggregateCall],
     temporal_by_column: dict[str, str | None],
-    fact_is_snapshot: bool,
+    fact_is_snapshot: bool | None,
+    *,
+    is_ratio: bool = False,
 ) -> AxisClass:
     """The additivity of one extract — the most-restrictive of its aggregate calls.
 
     ``temporal_by_column`` maps each base column to its ``temporal_behavior``
-    (``'additive'`` / ``'point_in_time'`` / ``None``); ``fact_is_snapshot`` is
-    True when a time column sits in the extract's fact grain (a periodic
-    snapshot), the ``COUNT``-across-time signal. An extract with no aggregate
-    (a bare passthrough) is treated as additive.
+    (``'additive'`` / ``'point_in_time'``); a column ABSENT from the map (or
+    mapping to ``None``) has no resolved verdict and is treated conservatively.
+    ``fact_is_snapshot`` is True for a periodic-snapshot fact (a time column in
+    the grain), False for a confirmed event fact, ``None`` when the grain is
+    unknown — both snapshot and unknown deny ``COUNT`` the time axis.
+    ``is_ratio`` marks an extract whose measures are combined by division/product
+    inline in one ``select_expr`` (a ratio) — non-additive on every axis. An
+    extract with no aggregate (a bare passthrough) is treated as additive.
     """
+    if is_ratio:
+        return AxisClass(False, False, RATIO, RATIO)
     result = ADDITIVE
     for call in calls:
         result = _most_restrictive(
@@ -222,18 +288,26 @@ def classify_extract(
 
 
 def _classify_call(
-    call: AggregateCall, temporal_by_column: dict[str, str | None], fact_is_snapshot: bool
+    call: AggregateCall, temporal_by_column: dict[str, str | None], fact_is_snapshot: bool | None
 ) -> AxisClass:
     fn = call.function
     if fn == "sum":
-        stock = any(temporal_by_column.get(c) == POINT_IN_TIME for c in call.columns)
-        # SUM reconciles across categorical dims always; across time only for flows.
-        return AxisClass(True, not stock, None, STOCK if stock else None)
+        behaviors = [temporal_by_column.get(c) for c in call.columns]
+        if any(b == POINT_IN_TIME for b in behaviors):
+            # A summed balance reconciles across categories but not across time.
+            return AxisClass(True, False, None, STOCK)
+        if call.columns and all(b == FLOW for b in behaviors):
+            return AxisClass(True, True)
+        # A column with no resolved flow/stock verdict (no concept row / NULL) —
+        # can't confirm it sums across time; refuse it, never assume flow.
+        return AxisClass(True, False, None, UNKNOWN_TEMPORAL)
     if fn in ("count_star", "count"):
-        # Counting rows/values: additive across categorical; across time only when
-        # the fact is not a periodic snapshot (else each period recounts the same population).
+        # Counting is additive across categorical; across time only on a CONFIRMED
+        # event fact — a snapshot (or an unknown grain) recounts the same population.
+        if fact_is_snapshot is False:
+            return AxisClass(True, True)
         return AxisClass(
-            True, not fact_is_snapshot, None, SNAPSHOT_COUNT if fact_is_snapshot else None
+            True, False, None, SNAPSHOT_COUNT if fact_is_snapshot else UNKNOWN_TEMPORAL
         )
     if fn == "count_distinct":
         return AxisClass(False, False, DISTINCT_COUNT, DISTINCT_COUNT)
@@ -291,18 +365,32 @@ def roll_up_metric(graph: Any, extract_class_by_step: dict[str, AxisClass]) -> M
         for cls in extract_class_by_step.values():
             result = _most_restrictive(result, cls)
         return _to_verdict(result)
-    return _to_verdict(_step_class(output.step_id, graph, extract_class_by_step))
+    return _to_verdict(_step_class(output.step_id, graph, extract_class_by_step, frozenset()))
 
 
-def _step_class(step_id: str, graph: Any, extract_class_by_step: dict[str, AxisClass]) -> AxisClass:
+def _step_class(
+    step_id: str,
+    graph: Any,
+    extract_class_by_step: dict[str, AxisClass],
+    seen: frozenset[str],
+) -> AxisClass:
     from dataraum.graphs.models import StepType
 
+    if step_id in seen:
+        # A FORMULA→FORMULA cycle. Guarded upstream by agent.assemble's dependency
+        # ordering before a metric reaches `executed`, but never recurse unbounded
+        # on that assumption — refuse.
+        return AxisClass(False, False, UNKNOWN_AGGREGATE, UNKNOWN_AGGREGATE)
     step = graph.steps.get(step_id)
     if step is None:
         # A referenced-but-absent dependency — conservative.
         return AxisClass(False, False, UNKNOWN_AGGREGATE, UNKNOWN_AGGREGATE)
     if step.step_type == StepType.EXTRACT:
-        return extract_class_by_step.get(step_id, ADDITIVE)
+        # An extract absent from the map never grounded (the resolver skips a
+        # source-less/ungrounded leaf) — refuse conservatively, never assume additive.
+        return extract_class_by_step.get(
+            step_id, AxisClass(False, False, UNKNOWN_AGGREGATE, UNKNOWN_AGGREGATE)
+        )
     if step.step_type == StepType.CONSTANT:
         return CONSTANT
     # FORMULA: classify its expression over the dependency step ids.
@@ -310,21 +398,21 @@ def _step_class(step_id: str, graph: Any, extract_class_by_step: dict[str, AxisC
         tree = ast.parse(step.expression or "", mode="eval")
     except SyntaxError:
         return AxisClass(False, False, RATIO, RATIO)
-    return _expr_class(tree.body, graph, extract_class_by_step)
+    return _expr_class(tree.body, graph, extract_class_by_step, seen | {step_id})
 
 
 def _expr_class(
-    node: ast.expr, graph: Any, extract_class_by_step: dict[str, AxisClass]
+    node: ast.expr, graph: Any, extract_class_by_step: dict[str, AxisClass], seen: frozenset[str]
 ) -> AxisClass:
     if isinstance(node, ast.Name):
-        return _step_class(node.id, graph, extract_class_by_step)
+        return _step_class(node.id, graph, extract_class_by_step, seen)
     if isinstance(node, ast.Constant):
         return CONSTANT
     if isinstance(node, ast.UnaryOp):
-        return _expr_class(node.operand, graph, extract_class_by_step)
+        return _expr_class(node.operand, graph, extract_class_by_step, seen)
     if isinstance(node, ast.BinOp):
-        left = _expr_class(node.left, graph, extract_class_by_step)
-        right = _expr_class(node.right, graph, extract_class_by_step)
+        left = _expr_class(node.left, graph, extract_class_by_step, seen)
+        right = _expr_class(node.right, graph, extract_class_by_step, seen)
         if isinstance(node.op, ast.Div):
             # A ratio never reconciles under SUM, whatever its operands.
             return AxisClass(False, False, RATIO, RATIO)

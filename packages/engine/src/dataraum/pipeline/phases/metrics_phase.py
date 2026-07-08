@@ -446,6 +446,14 @@ def _persist_additivity_verdicts(
     A metric whose verdict can't be computed (an extract without healthy grounded
     parts) is skipped: no row is better than a misleading one. The catalogue run
     pins ``temporal_behavior``/grain; without it (a wiring gap) nothing is written.
+
+    **Fault-isolated (best-effort annotation).** This runs on the shared phase
+    session AFTER every metric's execute bookkeeping is already recorded there; an
+    unhandled failure here would surface as a phase failure and roll that session
+    back — discarding every metric's ``executed`` state and forcing a full Temporal
+    retry of already-successful work. So each verdict computation and the upsert
+    run inside their own SAVEPOINT: a bug (a parse error, a bad query) rolls back
+    only its own annotation, never the metric bookkeeping.
     """
     from dataraum.graphs.additivity_db_models import MetricAdditivity
     from dataraum.graphs.additivity_resolver import compute_metric_verdict
@@ -460,13 +468,18 @@ def _persist_additivity_verdicts(
         graph = graphs.get(graph_id)
         if graph is None:
             continue
-        verdict = compute_metric_verdict(
-            session,
-            duckdb_conn,
-            graph=graph,
-            workspace_id=workspace_id,
-            catalogue_run_id=catalogue_run_id,
-        )
+        try:
+            with session.begin_nested():
+                verdict = compute_metric_verdict(
+                    session,
+                    duckdb_conn,
+                    graph=graph,
+                    workspace_id=workspace_id,
+                    catalogue_run_id=catalogue_run_id,
+                )
+        except Exception as exc:  # noqa: BLE001 - best-effort; never fail the phase
+            _log.warning("metric_additivity_compute_error", graph_id=graph_id, error=str(exc))
+            continue
         if verdict is None:
             continue
         rows.append(
@@ -480,8 +493,15 @@ def _persist_additivity_verdicts(
             }
         )
 
-    if rows:
-        upsert(session, MetricAdditivity, rows, index_elements=["metric_key", "run_id"])
+    if not rows:
+        _log.info("metric_additivity_persisted", count=0, executed=len(executed_keys))
+        return
+    try:
+        with session.begin_nested():
+            upsert(session, MetricAdditivity, rows, index_elements=["metric_key", "run_id"])
+    except Exception as exc:  # noqa: BLE001 - isolate the write from phase bookkeeping
+        _log.warning("metric_additivity_upsert_error", error=str(exc), count=len(rows))
+        return
     _log.info("metric_additivity_persisted", count=len(rows), executed=len(executed_keys))
 
 

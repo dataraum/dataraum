@@ -27,6 +27,14 @@ calibration change** — the metric grounding numbers are untouched.
   (measure, dimension)) so the full additivity matrix is exercised on real
   metrics. That is where testdata + a new calibration/eval check land.
 
+### Confirmed for DAT-717 (drill axes)
+
+A fact's own bare date/period column DOES reach the drill axis set today: the
+enriched view selects `f.*` for fact columns (`analysis/views/builder.py`),
+unfiltered by role/type — so `trial_balance.period` survives into the view as a
+usable categorical axis. No engine fix was needed for the DAT-716 AC7 check;
+surfacing it as a *time grain* (vs a categorical slice) is DAT-717's call.
+
 ### For testdata (directional, lands in DAT-718)
 
 The current finance corpus exercises only `SUM(flow)` (→ additive) and

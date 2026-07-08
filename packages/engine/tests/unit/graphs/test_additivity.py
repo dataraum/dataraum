@@ -19,11 +19,14 @@ from dataraum.graphs.additivity import (
     RATIO,
     SNAPSHOT_COUNT,
     STOCK,
+    UNKNOWN_AGGREGATE,
+    UNKNOWN_TEMPORAL,
     AggregateCall,
     AxisClass,
     classify_extract,
     parse_aggregate_calls,
     roll_up_metric,
+    select_expr_is_ratio,
 )
 from dataraum.graphs.models import (
     GraphMetadata,
@@ -258,3 +261,59 @@ def test_rollup_sum_of_flow_and_stock_is_semi_additive():
     assert verdict.categorical_additive is True
     assert verdict.time_additive is False
     assert verdict.time_reason == STOCK
+
+
+# --- 4. conservatism when a signal is missing (reviewer findings) ------------
+
+
+def test_sum_of_unresolved_column_strips_time():
+    """A column with no resolved temporal_behavior can't be confirmed a flow — strip time."""
+    cls = classify_extract([AggregateCall("sum", ("mystery",))], {}, fact_is_snapshot=False)
+    assert cls.categorical_additive is True
+    assert cls.time_additive is False
+    assert cls.time_reason == UNKNOWN_TEMPORAL
+
+
+def test_count_on_unknown_grain_strips_time():
+    """An unknown fact grain (no TableEntity) denies COUNT the time axis, not offers it."""
+    cls = classify_extract([AggregateCall("count_star", ())], {}, fact_is_snapshot=None)
+    assert cls.categorical_additive is True
+    assert cls.time_additive is False
+    assert cls.time_reason == UNKNOWN_TEMPORAL
+
+
+def test_is_ratio_flag_overrides_to_non_additive():
+    cls = classify_extract([AggregateCall("sum", ("credit",))], FLOW, False, is_ratio=True)
+    assert cls == AxisClass(False, False, RATIO, RATIO)
+
+
+# --- 5. intra-extract ratio detection (select_expr_is_ratio) -----------------
+
+
+def test_ratio_detection_division_of_measures(con):
+    assert select_expr_is_ratio("SUM(numerator) / SUM(denominator)", con) is True
+
+
+def test_ratio_detection_product_of_measures(con):
+    assert select_expr_is_ratio("SUM(a) * SUM(b)", con) is True
+
+
+def test_ratio_detection_scaling_by_constant_is_not_ratio(con):
+    assert select_expr_is_ratio("SUM(revenue) / 12", con) is False
+    assert select_expr_is_ratio("SUM(revenue) * 1.1", con) is False
+
+
+def test_ratio_detection_difference_is_not_ratio(con):
+    assert select_expr_is_ratio("COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0)", con) is False
+
+
+# --- 6. roll-up cycle guard --------------------------------------------------
+
+
+def test_rollup_formula_cycle_is_refused():
+    """A FORMULA referencing itself is refused, not recursed unbounded."""
+    graph = _graph({"a": _formula("a", "a + 1", ["a"])})
+    verdict = roll_up_metric(graph, {})
+    assert verdict.categorical_additive is False
+    assert verdict.time_additive is False
+    assert verdict.time_reason == UNKNOWN_AGGREGATE

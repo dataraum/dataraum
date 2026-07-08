@@ -30,10 +30,11 @@ from dataraum.graphs.additivity import (
     classify_extract,
     parse_aggregate_calls,
     roll_up_metric,
+    select_expr_is_ratio,
 )
 from dataraum.graphs.models import StepType
 from dataraum.query.snippet_library import SnippetLibrary
-from dataraum.storage import Column
+from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
     import duckdb
@@ -73,7 +74,8 @@ def compute_metric_verdict(
         columns = {col for call in calls for col in call.columns}
         temporal = _temporal_by_column(session, fact_id, columns, catalogue_run_id)
         snapshot = _fact_is_snapshot(session, fact_id, catalogue_run_id)
-        extract_classes[step_id] = classify_extract(calls, temporal, snapshot)
+        is_ratio = select_expr_is_ratio(select_expr, duckdb_conn)
+        extract_classes[step_id] = classify_extract(calls, temporal, snapshot, is_ratio=is_ratio)
     if not extract_classes:
         return None
     return roll_up_metric(graph, extract_classes)
@@ -92,6 +94,7 @@ def _grounded_select(
         statement=step.source.statement,
         aggregation=step.aggregation,
     )
+    # find_by_key already filters failure_count == 0; the re-check is belt-and-braces.
     if match is None or (match.snippet.failure_count or 0) != 0:
         return None
     parts = match.snippet.parts or {}
@@ -106,12 +109,26 @@ def _grounded_select(
     return expr, relation
 
 
-def _fact_table_id(session: Session, view_name: str) -> str | None:
-    """The fact table behind an enriched view (latest-only, name-keyed)."""
+def _fact_table_id(session: Session, relation: str) -> str | None:
+    """The fact table an extract reads.
+
+    Usually an enriched view (`EnrichedView.view_name` — latest-only, and unique
+    by construction via the `enriched_{duckdb_path}` naming convention, not a DB
+    constraint). A fact with no confirmed dimensions has no enriched view, so the
+    extract reads the typed table directly (the schema fallback in
+    `GraphAgent._build_schema_info`) — resolve that by table name / duckdb_path.
+    """
     row = session.execute(
-        select(EnrichedView.fact_table_id).where(EnrichedView.view_name == view_name)
+        select(EnrichedView.fact_table_id).where(EnrichedView.view_name == relation)
     ).first()
-    return row[0] if row else None
+    if row:
+        return str(row[0])
+    row = session.execute(
+        select(Table.table_id).where(
+            (Table.table_name == relation) | (Table.duckdb_path == relation)
+        )
+    ).first()
+    return str(row[0]) if row else None
 
 
 def _temporal_by_column(
@@ -131,12 +148,15 @@ def _temporal_by_column(
     return {row[0]: row[1] for row in rows}
 
 
-def _fact_is_snapshot(session: Session, fact_table_id: str, run_id: str) -> bool:
+def _fact_is_snapshot(session: Session, fact_table_id: str, run_id: str) -> bool | None:
     """Whether a time column sits in the fact's grain (a periodic snapshot).
 
     ``grain_columns`` is ``{"columns": [name, ...]}``; ``time_columns`` is a list
     of ``{"column": name, ...}``. A snapshot fact re-states the same population
-    each period, so a ``COUNT`` over it is non-additive across time.
+    each period, so a ``COUNT`` over it is non-additive across time. Returns
+    ``None`` when the fact has no ``TableEntity`` for this run — the grain is
+    unknown, and the classifier denies ``COUNT`` the time axis rather than
+    assuming an event fact.
     """
     row = session.execute(
         select(TableEntity.grain_columns, TableEntity.time_columns).where(
@@ -144,7 +164,7 @@ def _fact_is_snapshot(session: Session, fact_table_id: str, run_id: str) -> bool
         )
     ).first()
     if row is None:
-        return False
+        return None
     grain_columns, time_columns = row
     grain = set((grain_columns or {}).get("columns", []))
     times = {tc.get("column") for tc in (time_columns or []) if isinstance(tc, dict)}

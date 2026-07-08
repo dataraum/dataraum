@@ -233,26 +233,36 @@ async function targetFields(req: DrillAxesRequest): Promise<string[]> {
 	return measureFieldsFromDag(row?.dag ?? null);
 }
 
+/** A column's stock/flow adjudication as the flow gate reads it: the
+ *  `temporal_behavior` verdict plus whether that verdict is CONTESTED (the
+ *  detectors disagreed). A contested or point_in_time input counts as stock. */
+export interface TemporalBehavior {
+	behavior: string | null;
+	contested: boolean;
+}
+
 /**
  * The FLOW GATE (DAT-673): a node's measures may be summed into time buckets
- * only when every base column they aggregate is a FLOW (`temporal_behavior =
- * additive`). A stock (point-in-time balance) summed per period double-counts —
- * arithmetically consistent, semantically fabricated. Unclassified (null) fails
- * CLOSED: we can't assert "summable flow", so we don't offer the grain.
- * Pure → unit-tested; the aggregated-column extraction is the AST read
- * (`sql-ast.ts`).
+ * only when every base column they aggregate is a summable FLOW —
+ * `temporal_behavior = additive` AND NOT `temporal_behavior_contested`. A stock
+ * (point-in-time balance) summed per period double-counts — arithmetically
+ * consistent, semantically fabricated; a CONTESTED verdict counts as stock too
+ * (we can't stand behind "summable flow" when the detectors disagreed).
+ * Unclassified (null) fails CLOSED for the same reason. Pure → unit-tested; the
+ * aggregated-column extraction is the AST read (`sql-ast.ts`).
  */
 export function temporalGate(
 	aggregatedCols: ReadonlySet<string>,
-	behaviorByColumn: ReadonlyMap<string, string | null>,
+	behaviorByColumn: ReadonlyMap<string, TemporalBehavior>,
 ): { safe: boolean; offending: string[] } {
 	if (aggregatedCols.size === 0) {
 		// Couldn't determine what's aggregated (unparseable expr) → fail closed.
 		return { safe: false, offending: [] };
 	}
-	const offending = [...aggregatedCols].filter(
-		(c) => behaviorByColumn.get(c) !== "additive",
-	);
+	const offending = [...aggregatedCols].filter((c) => {
+		const b = behaviorByColumn.get(c);
+		return b === undefined || b.behavior !== "additive" || b.contested;
+	});
 	return { safe: offending.length === 0, offending };
 }
 
@@ -414,6 +424,10 @@ export async function resolveDrillAxes(
 				// The adjudicated stock/flow verdict for the flow gate (DAT-673) —
 				// null when the column has no concept (unclassified → fail closed).
 				temporalBehavior: currentColumnConcepts.temporalBehavior,
+				// …and whether that verdict is CONTESTED: a contested `additive` is
+				// treated as stock (fail closed — the detectors disagreed).
+				temporalBehaviorContested:
+					currentColumnConcepts.temporalBehaviorContested,
 			})
 			.from(columns)
 			.leftJoin(
@@ -457,16 +471,23 @@ export async function resolveDrillAxes(
 	// gate the grain on their stock/flow verdict.
 	if (axes.some((a) => a.temporal !== null)) {
 		const factIdSet = new Set(factIds);
-		const behaviorByColumn = new Map<string, string | null>();
+		const behaviorByColumn = new Map<string, TemporalBehavior>();
 		for (const r of columnRows) {
 			if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
-			// First-wins per name (rows are ordered); a stock verdict is never
-			// overwritten by a later additive one for the same name.
-			if (
-				!behaviorByColumn.has(r.columnName) ||
-				behaviorByColumn.get(r.columnName) === "additive"
-			) {
-				behaviorByColumn.set(r.columnName, r.temporalBehavior ?? null);
+			// First-wins per name (rows are ordered); an OFFENDING verdict (stock,
+			// unclassified, or contested) is sticky — never overwritten by a later
+			// flow-safe (additive & uncontested) row for the same name, so a shared
+			// column can only lose grain, never regain it across facts.
+			const current = behaviorByColumn.get(r.columnName);
+			const currentFlowSafe =
+				current !== undefined &&
+				current.behavior === "additive" &&
+				!current.contested;
+			if (current === undefined || currentFlowSafe) {
+				behaviorByColumn.set(r.columnName, {
+					behavior: r.temporalBehavior ?? null,
+					contested: r.temporalBehaviorContested ?? false,
+				});
 			}
 		}
 		const aggCols = new Set<string>();

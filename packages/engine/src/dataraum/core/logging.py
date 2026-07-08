@@ -52,6 +52,12 @@ def enable_otel_logging(provider: LoggerProvider) -> None:
     stderr-only, which also keeps the OTel SDK's own error logging out of the
     export path (no feedback loop on exporter failures).
 
+    Once armed, every kv pair at every call site leaves the container. The
+    same boundary ADR-0019 sets for spans applies to log attributes: metadata
+    only (counts, ids, labels, table/column names) — never row values, prompt
+    or completion text, or other business data, while PII handling (DAT-554)
+    is open.
+
     Args:
         provider: The logs provider whose exporter pipeline receives events.
     """
@@ -90,7 +96,7 @@ class _ProxyLogger:
         print("  ".join(parts), file=sys.stderr, flush=True)
 
     log = debug = info = warn = warning = msg
-    err = error = exception = msg
+    err = error = exception = critical = fatal = msg
 
 
 class _ProxyLoggerFactory:
@@ -142,7 +148,15 @@ def _otel_emit(logger: Any, method_name: str, event_dict: EventDict) -> EventDic
     for key, value in event_dict.items():
         if key in ("event", "level", "trace_id", "span_id", "exc_info"):
             continue
-        attributes[key] = value if isinstance(value, str | bool | int | float) else str(value)
+        if isinstance(value, str | bool | int | float):
+            attributes[key] = value
+        else:
+            # Coerced objects get a defensive cap: an accidentally-logged
+            # DataFrame/dict must not become a multi-MB OTLP attribute.
+            # Explicit strings pass whole (e.g. base.py's phase_failed
+            # traceback is a deliberate, bounded payload).
+            text = str(value)
+            attributes[key] = text[:2048] + "…[truncated]" if len(text) > 2048 else text
     level = str(event_dict.get("level", "info"))
     _otel_logger.emit(
         severity_number=_SEVERITY.get(level, SeverityNumber.INFO),

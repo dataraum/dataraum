@@ -72,6 +72,8 @@ class TestProxyLogger:
             "err",
             "error",
             "exception",
+            "critical",
+            "fatal",
         ]
         for alias in aliases:
             assert getattr(proxy, alias) == proxy.msg, f"{alias} does not match msg"
@@ -173,6 +175,22 @@ class TestOtelEmit:
         assert attrs["exception.message"] == "boom"
         assert "raise ValueError" in str(attrs["exception.stacktrace"])
         assert record.severity_text == "ERROR"
+
+    def test_coerced_attribute_capped(self, exporter: InMemoryLogRecordExporter) -> None:
+        """A huge coerced object ships truncated, not as a multi-MB attribute."""
+        get_logger("test").info("big_thing", blob=list(range(5000)))
+        (record,) = [f.log_record for f in exporter.get_finished_logs()]
+        blob = str(dict(record.attributes or {})["blob"])
+        assert blob.endswith("…[truncated]")
+        assert len(blob) < 2100
+
+    def test_critical_maps_to_fatal(self, exporter: InMemoryLogRecordExporter) -> None:
+        """logger.critical() renders AND ships as FATAL severity."""
+        get_logger("test").critical("meltdown")
+        (record,) = [f.log_record for f in exporter.get_finished_logs()]
+        assert record.severity_text == "CRITICAL"
+        assert record.severity_number is not None
+        assert record.severity_number.name == "FATAL"
 
     def test_off_by_default_no_ship_no_error(self) -> None:
         """Without enable_otel_logging, logging works and nothing ships."""

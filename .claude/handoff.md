@@ -5,6 +5,38 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-716 — metric additivity verdict (new `metric_additivity` read-view)
+
+**Branch:** `feat/dat-716-additivity-verdict`. Engine-internal, **no detector or
+calibration change** — the metric grounding numbers are untouched.
+
+### What changed
+
+- **New artifact `metric_additivity`** (read-view `current_metric_additivity`,
+  operating_model stage): one row per executed metric —
+  `{categorical_additive, time_additive, categorical_reason, time_reason}`. The
+  operating_model `metrics` phase now computes it (deterministically, no LLM)
+  after each metric executes, classifying whether the value reconciles under
+  aggregation across categorical vs time axes (function symmetry × stock/flow ×
+  periodic-snapshot grain, rolled up through the metric DAG). A metric with an
+  unresolved extract gets no row.
+- **No response-shape change to existing artifacts.** The drill (cockpit) will
+  consume this in DAT-717; the eval-relevant work is **DAT-718** — extending the
+  finance vertical + `dataraum-testdata` with `AVG` / `COUNT(*)` /
+  `COUNT(DISTINCT)` metrics and a ground-truth oracle (expected verdict per
+  (measure, dimension)) so the full additivity matrix is exercised on real
+  metrics. That is where testdata + a new calibration/eval check land.
+
+### For testdata (directional, lands in DAT-718)
+
+The current finance corpus exercises only `SUM(flow)` (→ additive) and
+`SUM(stock)` (→ semi-additive) and ratios (→ non-additive). To cover the matrix,
+DAT-718 needs induced metrics using `COUNT(*)` (event fact → time-additive),
+`COUNT(DISTINCT)` (→ non-additive), and `AVG` (→ non-additive), plus a standalone
+stock metric with a surfaced date axis.
+
+---
+
 ## DAT-699 — flag-and-surface over fabricated determinism (metric grounding + enrichment)
 
 **Branch:** `feat/dat-699-flag-and-surface`. Seven changes from the the bookkeeping smoke corpus

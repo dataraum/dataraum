@@ -23,7 +23,7 @@
 import {
 	OpenTelemetryActivityInboundInterceptor,
 	OpenTelemetryActivityOutboundInterceptor,
-} from "@temporalio/interceptors-opentelemetry";
+} from "@temporalio/interceptors-opentelemetry-v2";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import * as activities from "./activities";
 

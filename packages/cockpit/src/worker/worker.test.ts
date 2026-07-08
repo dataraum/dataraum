@@ -22,7 +22,7 @@ vi.mock("@temporalio/worker", () => ({
 	NativeConnection: { connect: h.connect },
 	Worker: { create: h.create },
 }));
-vi.mock("@temporalio/interceptors-opentelemetry", () => ({
+vi.mock("@temporalio/interceptors-opentelemetry-v2", () => ({
 	OpenTelemetryActivityInboundInterceptor: vi.fn(
 		function OpenTelemetryActivityInboundInterceptor(ctx: unknown) {
 			h.inboundCtor(ctx);

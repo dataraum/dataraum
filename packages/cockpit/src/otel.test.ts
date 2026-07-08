@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
 	config: {} as Record<string, unknown>,
 	providerRegister: vi.fn(),
-	providerAddSpanProcessor: vi.fn(),
 	providerCtor: vi.fn(),
 	exporterCtor: vi.fn(),
 }));
@@ -27,7 +26,6 @@ vi.mock("@opentelemetry/sdk-trace-node", () => ({
 	) {
 		h.providerCtor(opts);
 		this.register = h.providerRegister;
-		this.addSpanProcessor = h.providerAddSpanProcessor;
 		this.shutdown = vi.fn(async () => {});
 	}),
 }));
@@ -40,7 +38,7 @@ vi.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
 	}),
 }));
 vi.mock("@opentelemetry/resources", () => ({
-	Resource: vi.fn(),
+	resourceFromAttributes: vi.fn(),
 }));
 
 // The module pins its singleton on globalThis (HMR guard) — drop it between
@@ -52,7 +50,6 @@ beforeEach(() => {
 	delete (globalThis as Record<symbol, unknown>)[SINGLETON];
 	h.config = {};
 	h.providerRegister.mockClear();
-	h.providerAddSpanProcessor.mockClear();
 	h.providerCtor.mockClear();
 	h.exporterCtor.mockClear();
 });
@@ -80,6 +77,11 @@ describe("getOtel (ADR-0019/DAT-705)", () => {
 		expect(second).toBe(first);
 		expect(h.providerCtor).toHaveBeenCalledTimes(1);
 		expect(h.providerRegister).toHaveBeenCalledTimes(1);
+		// OTel 2.x: the processor rides the CONSTRUCTOR (addSpanProcessor is gone).
+		const opts = h.providerCtor.mock.calls[0][0] as {
+			spanProcessors: unknown[];
+		};
+		expect(opts.spanProcessors).toHaveLength(1);
 	});
 
 	it("derives the OTLP traces URL from the base endpoint (trailing slash tolerated)", async () => {

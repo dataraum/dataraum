@@ -345,6 +345,21 @@ class MetricsPhase(BasePhase):
                 artifact.state_reason = f"composed but not executed: {result.error}"
                 _log.warning("metric_not_executed", graph_id=graph_id, error=result.error)
 
+        # Additivity verdict (DAT-716): classify how each EXECUTED metric's value
+        # reconciles under aggregation (offer a time grain? does a categorical
+        # breakdown sum or dash?) from the grounded snippets + catalogue
+        # temporal_behavior/grain — no LLM. A metric that can't be classified
+        # writes no row, never a wrong one. Read at the pinned catalogue run.
+        _persist_additivity_verdicts(
+            ctx.session,
+            ctx.duckdb_conn,
+            graphs=graphs,
+            executed_keys={gid for gid, a in artifacts.items() if a.state == "executed"},
+            workspace_id=schema_mapping_id,
+            run_id=run_id,
+            catalogue_run_id=catalogue_run_id,
+        )
+
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
         declared_stuck = sum(1 for a in artifacts.values() if a.state == "declared")
@@ -408,6 +423,66 @@ def _low_confidence_reason(execution: GraphExecution | None) -> str | None:
         f"low-confidence grounding ({weakest.confidence:.2f} < {_LOW_CONFIDENCE_FLOOR:.2f}): "
         f"{weakest.assumption}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Additivity verdict (DAT-716)
+# ---------------------------------------------------------------------------
+
+
+def _persist_additivity_verdicts(
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    graphs: dict[str, TransformationGraph],
+    executed_keys: set[str],
+    workspace_id: str,
+    run_id: str,
+    catalogue_run_id: str | None,
+) -> None:
+    """Persist one additivity verdict per executed, classifiable metric.
+
+    Idempotent per run — ``(metric_key, run_id)`` UPSERTed (ADR-0010 form-(a)).
+    A metric whose verdict can't be computed (an extract without healthy grounded
+    parts) is skipped: no row is better than a misleading one. The catalogue run
+    pins ``temporal_behavior``/grain; without it (a wiring gap) nothing is written.
+    """
+    from dataraum.graphs.additivity_db_models import MetricAdditivity
+    from dataraum.graphs.additivity_resolver import compute_metric_verdict
+    from dataraum.storage.upsert import upsert
+
+    if not catalogue_run_id:
+        _log.warning("metric_additivity_skipped_no_catalogue_run")
+        return
+
+    rows: list[dict[str, object]] = []
+    for graph_id in executed_keys:
+        graph = graphs.get(graph_id)
+        if graph is None:
+            continue
+        verdict = compute_metric_verdict(
+            session,
+            duckdb_conn,
+            graph=graph,
+            workspace_id=workspace_id,
+            catalogue_run_id=catalogue_run_id,
+        )
+        if verdict is None:
+            continue
+        rows.append(
+            {
+                "run_id": run_id,
+                "metric_key": graph_id,
+                "categorical_additive": verdict.categorical_additive,
+                "time_additive": verdict.time_additive,
+                "categorical_reason": verdict.categorical_reason,
+                "time_reason": verdict.time_reason,
+            }
+        )
+
+    if rows:
+        upsert(session, MetricAdditivity, rows, index_elements=["metric_key", "run_id"])
+    _log.info("metric_additivity_persisted", count=len(rows), executed=len(executed_keys))
 
 
 # ---------------------------------------------------------------------------

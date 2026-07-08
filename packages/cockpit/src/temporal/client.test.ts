@@ -27,7 +27,7 @@ vi.mock("@temporalio/client", () => ({
 	}),
 	WorkflowExecutionAlreadyStartedError: class extends Error {},
 }));
-vi.mock("@temporalio/interceptors-opentelemetry", () => ({
+vi.mock("@temporalio/interceptors-opentelemetry-v2", () => ({
 	OpenTelemetryWorkflowClientInterceptor: vi.fn(
 		function OpenTelemetryWorkflowClientInterceptor() {
 			h.interceptorCtor();

@@ -13,17 +13,17 @@
 // interceptors; TanStack AI middleware in DAT-706), so no module patching and
 // no import-order fragility.
 //
-// SDK line: the @opentelemetry/* SDK deps deliberately track the 1.x line
-// (sdk-trace-node ^1.30, exporter 0.57.x) — @temporalio/interceptors-opentelemetry
-// is built against sdk-trace-base/resources ^1.25, so mixing in the 2.x SDK
-// splits the types and the runtime across that seam. Bump both together when
-// Temporal's interceptors move to 2.x. (@opentelemetry/api is line-independent
-// and shared.)
+// SDK line: deliberately the OTel JS 2.x line, paired with Temporal's official
+// `@temporalio/interceptors-opentelemetry-v2` (EXPERIMENTAL by its README —
+// accepted deliberately: we build on the current SDK line, not the frozen 1.x
+// one the non-v2 interceptors package pins). The v2 package's peers pin the
+// EXACT matching `@temporalio/*` version, so the interceptors package and the
+// Temporal SDK move in lockstep — bump them together.
 
 import "@tanstack/react-start/server-only";
 
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { Resource } from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
@@ -64,11 +64,14 @@ export function getOtel(): NodeTracerProvider | null {
 	}
 
 	const provider = new NodeTracerProvider({
-		resource: new Resource({ "service.name": "dataraum-cockpit" }),
+		resource: resourceFromAttributes({ "service.name": "dataraum-cockpit" }),
+		// 2.x: processors ride the constructor (addSpanProcessor was removed).
+		spanProcessors: [
+			new BatchSpanProcessor(
+				new OTLPTraceExporter({ url: tracesUrl(endpoint) }),
+			),
+		],
 	});
-	provider.addSpanProcessor(
-		new BatchSpanProcessor(new OTLPTraceExporter({ url: tracesUrl(endpoint) })),
-	);
 	provider.register();
 
 	// Flush parity with the engine worker (its `finally` calls

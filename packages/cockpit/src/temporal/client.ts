@@ -8,7 +8,7 @@
 // SERVER-ONLY (imports `config`).
 
 import { Client, Connection } from "@temporalio/client";
-import { OpenTelemetryWorkflowClientInterceptor } from "@temporalio/interceptors-opentelemetry";
+import { OpenTelemetryWorkflowClientInterceptor } from "@temporalio/interceptors-opentelemetry-v2";
 
 import { config } from "#/config";
 import { getOtel } from "#/otel";
@@ -46,9 +46,10 @@ export function getTemporalClient(): Promise<Client> {
 						namespace,
 						// Tracing (ADR-0019/DAT-705): inject the active W3C context into
 						// Temporal's `_tracer-data` header so the engine's Python
-						// TracingInterceptor and the TS orchestration worker continue ONE
-						// trace across the seam. Attached only when telemetry is on — off
-						// keeps the client byte-identical to before.
+						// TracingInterceptor (workflows + engine activities) and the
+						// cockpit's activity-only worker continue ONE trace across the
+						// seam. Attached only when telemetry is on — off keeps the
+						// client byte-identical to before.
 						...(getOtel()
 							? {
 									interceptors: {

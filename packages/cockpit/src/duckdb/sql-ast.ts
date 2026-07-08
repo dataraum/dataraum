@@ -41,6 +41,17 @@ function aggregateNames(): Promise<ReadonlySet<string>> {
 	return aggregateNamesPromise;
 }
 
+/** Does any node anywhere in the parse tree carry `class === cls`? (A shallow
+ *  structural probe — used to fail closed on shapes the aggregate walk can't
+ *  yet read, e.g. `WINDOW`.) */
+function hasClass(node: unknown, cls: string): boolean {
+	if (Array.isArray(node)) return node.some((child) => hasClass(child, cls));
+	if (node === null || typeof node !== "object") return false;
+	const obj = node as Record<string, unknown>;
+	if (obj.class === cls) return true;
+	return Object.values(obj).some((value) => hasClass(value, cls));
+}
+
 /** The last element of a COLUMN_REF's `column_names` — the bare column, dropping
  *  any table/schema qualification (`["t","credit"]` → `credit`). */
 function bareColumn(columnNames: unknown): string | null {
@@ -69,6 +80,15 @@ export async function aggregatedColumns(
 	) {
 		return new Set();
 	}
+
+	// Fail CLOSED on window aggregates (DAT-673). A windowed `SUM(x) OVER (…)`
+	// parses as a `WINDOW` node, NOT a `FUNCTION`, so the aggregate walk below
+	// would miss its columns — a windowed STOCK would read as "nothing
+	// aggregated" → the gate wrongly says safe and offers grain (the one
+	// direction a safety gate must never get wrong). Stopgap: any WINDOW node →
+	// empty set → the caller fails closed (strips grain). Parsing window bodies
+	// properly (and FILTER-clause / case-sensitivity handling) is DAT-715.
+	if (hasClass(ast, "WINDOW")) return new Set();
 
 	const columns = new Set<string>();
 	const walk = (node: unknown, insideAggregate: boolean): void => {

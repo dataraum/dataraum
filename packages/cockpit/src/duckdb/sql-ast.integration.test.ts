@@ -46,4 +46,13 @@ describe("aggregatedColumns", () => {
 	it("returns empty for an unparseable expression (fail-closed signal)", async () => {
 		expect((await aggregatedColumns("this is not sql )(")).size).toBe(0);
 	});
+
+	it("fails CLOSED on a window aggregate — a WINDOW node yields an empty set (DAT-673)", async () => {
+		// `SUM(x) OVER (…)` parses as a WINDOW node, not FUNCTION — the aggregate
+		// walk can't read it, so returning {} makes the gate fail closed (strip
+		// grain) rather than miss a windowed stock. Proper window parsing: DAT-715.
+		expect((await aggregatedColumns("SUM(x) OVER (PARTITION BY y)")).size).toBe(
+			0,
+		);
+	});
 });

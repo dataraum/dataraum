@@ -123,10 +123,11 @@ class MetricsPhase(BasePhase):
 
     @property
     def db_models(self) -> list[ModuleType]:
+        from dataraum.graphs import additivity_db_models
         from dataraum.lifecycle import db_models as lifecycle_db_models
         from dataraum.query import snippet_models
 
-        return [snippet_models, lifecycle_db_models]
+        return [snippet_models, lifecycle_db_models, additivity_db_models]
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Declare → compose → execute every declared metric graph."""

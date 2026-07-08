@@ -33,7 +33,13 @@ def test_off_when_endpoint_empty(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_providers_when_endpoint_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    # Deliberately NOT the collector's real port (4318): shutdown() flushes the
+    # buffered telemetry_enabled record, and on a dev host with the compose
+    # stack up that would ship a stray unit-test record into the live Loki.
+    # The 1s timeout caps the exporter's connection-refused retry backoff so
+    # the flush fails fast instead of burning ~7s of test time.
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TIMEOUT", "1")
     # Intercept the GLOBAL provider registration: opentelemetry treats
     # set_tracer_provider as once-per-process (an override only warns and is
     # ignored), so letting the test mutate real process-global state could

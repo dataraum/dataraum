@@ -6,8 +6,14 @@
 //
 // Checks per node:
 //   scalar   — composes, binds, executes; revenue == ground truth.
+//   totals   — composeNodeTotals binds + executes; its value == scalar and
+//              its columns == the node shape's non-constant operands + value
+//              (DAT-712: the footer + the equation's open binding).
 //   per axis — grouped composition binds + executes; additive metrics must
 //              have Σ(groups) == scalar (signed contributions); NULL counted.
+//   grain    — every TEMPORAL axis × every preset grain composes, binds,
+//              executes; additive Σ(buckets) == scalar; the first bucket row
+//              pins back exactly (grained pin ≡ group) — DAT-712's matrix.
 //   pin      — the first grouped row's value must be reproduced exactly by
 //              pinning that row (pin ≡ group, the coherence the browser
 //              smoke clicks).
@@ -21,8 +27,15 @@ import { metadataDb } from "#/db/metadata/client";
 import { currentLifecycleArtifacts, sqlSnippets } from "#/db/metadata/schema";
 import type { DrillPinValue } from "#/duckdb/drill";
 import { describeColumns } from "#/duckdb/drill-sql";
+import { grainPresets } from "#/duckdb/grain";
 import { applyEngineScope, closeLake, withLakeConnection } from "#/duckdb/lake";
-import { composeNodeQuery, flattenAdditive, type NodeStep } from "#/duckdb/parts";
+import {
+	composeNodeQuery,
+	composeNodeTotals,
+	flattenAdditive,
+	type NodeStep,
+	nodeShape,
+} from "#/duckdb/parts";
 import { resolveDrillAxes } from "#/tools/drill-axes";
 import { resolveNodeSteps } from "#/tools/drill-metric";
 
@@ -126,13 +139,53 @@ async function main(): Promise<void> {
 					: "";
 			if (gtNote.includes("✗")) fails++;
 
+			// 1b) totals (DAT-712): value == scalar, columns == shape operands+value
+			const shape = nodeShape(resolved.steps, undefined);
+			const tq = composeNodeTotals(resolved.steps, undefined);
+			let totalsNote = "";
+			if ("refusal" in tq) {
+				flag(`${label}: totals REFUSED — ${tq.refusal}`);
+			} else {
+				try {
+					const [trow] = await exec(tq.sql, []);
+					const tv = num(trow?.value);
+					const same =
+						(tv === null && scalar === null) ||
+						(tv !== null &&
+							scalar !== null &&
+							Math.abs(tv - scalar) < 1e-6);
+					if (!same) {
+						flag(`${label}: totals value ${String(tv)} ≠ scalar ${String(scalar)}`);
+					}
+					const expectCols = [
+						...("refusal" in shape
+							? []
+							: shape.operands
+									.filter((o) => o.kind !== "constant")
+									.map((o) => o.stepId)),
+						"value",
+					];
+					const gotCols = Object.keys(trow ?? {});
+					// Operand columns collide-skip against dims only in restricted
+					// views; totals are unrestricted, so the sets must match exactly.
+					if (JSON.stringify(gotCols) !== JSON.stringify(expectCols)) {
+						flag(
+							`${label}: totals columns [${gotCols.join(",")}] ≠ shape [${expectCols.join(",")}]`,
+						);
+					}
+					totalsNote = ` | totals✓(${gotCols.length - 1} operands)`;
+				} catch (err) {
+					flag(`${label}: totals ERR ${String(err).split("\n")[0]}`);
+				}
+			}
+
 			// 2) axes
 			const { axes, reason } = await resolveDrillAxes(ref);
 			const additive = isAdditive(resolved.steps);
 			report.push(
 				`## ${label} — scalar=${String(scalar)}${gtNote} | ${axes.length} axes${
 					axes.length === 0 ? ` (${reason ?? "?"})` : ""
-				} | ${additive ? "additive" : "non-additive"}`,
+				} | ${additive ? "additive" : "non-additive"}${totalsNote}`,
 			);
 
 			let pinChecked = false;
@@ -163,8 +216,91 @@ async function main(): Promise<void> {
 					}
 				}
 				report.push(
-					`  [${axis.priority === Number.MAX_SAFE_INTEGER ? "substrate" : "curated"}] ${axis.column}: ${rows.length} groups${nulls ? `, ${nulls} NULL` : ""}${sumNote}`,
+					`  [${axis.priority === Number.MAX_SAFE_INTEGER ? "substrate" : "curated"}] ${axis.column}: ${rows.length} groups${nulls ? `, ${nulls} NULL` : ""}${sumNote}${axis.temporal ? ` [temporal:${axis.temporal}]` : ""}`,
 				);
+
+				// 2b) the grain matrix (DAT-712): every preset grain on a temporal
+				// axis — compose, bind, execute; additive Σ = scalar; the first
+				// bucket pins back exactly under ITS grain.
+				if (axis.temporal !== null) {
+					for (const preset of grainPresets(axis.temporal)) {
+						const gq = composeNodeQuery(resolved.steps, undefined, {
+							slices: [{ column: axis.column, grain: preset.token }],
+							pins: [],
+						});
+						if ("refusal" in gq) {
+							flag(
+								`${label} by ${axis.column}@${preset.token}: REFUSED — ${gq.refusal}`,
+							);
+							continue;
+						}
+						let buckets: Record<string, unknown>[];
+						try {
+							buckets = await exec(gq.sql, []);
+						} catch (err) {
+							flag(
+								`${label} by ${axis.column}@${preset.token}: ERR ${String(err).split("\n")[0]}`,
+							);
+							continue;
+						}
+						let gSumNote = "";
+						if (additive && scalar !== null) {
+							const sum = buckets.reduce(
+								(s, r) => s + (num(r.value) ?? 0),
+								0,
+							);
+							if (Math.abs(sum - scalar) < 1e-6) gSumNote = " Σ=scalar";
+							else {
+								gSumNote = ` Σ≠scalar (Σ=${sum})`;
+								fails++;
+							}
+						}
+						// Grained pin ≡ bucket, on the first pinnable bucket.
+						const bRow = buckets.find(
+							(r) => toPin(r[axis.column]) !== undefined,
+						);
+						const bVal = bRow ? toPin(bRow[axis.column]) : undefined;
+						let pinNote = "";
+						if (bRow && bVal !== undefined) {
+							const gpq = composeNodeQuery(resolved.steps, undefined, {
+								slices: [],
+								pins: [
+									{ column: axis.column, value: bVal, grain: preset.token },
+								],
+							});
+							if ("refusal" in gpq) {
+								flag(
+									`${label} pin ${axis.column}@${preset.token}: REFUSED — ${gpq.refusal}`,
+								);
+							} else {
+								try {
+									const pv = num(
+										(await exec(gpq.sql, gpq.params))[0]?.value,
+									);
+									const gv = num(bRow.value);
+									const same =
+										(pv === null && gv === null) ||
+										(pv !== null &&
+											gv !== null &&
+											Math.abs(pv - gv) < 1e-6);
+									if (same) pinNote = " pin≡bucket✓";
+									else {
+										flag(
+											`${label} pin ${axis.column}@${preset.token}=${String(bVal)}: pin=${String(pv)} ≠ bucket=${String(gv)}`,
+										);
+									}
+								} catch (err) {
+									flag(
+										`${label} pin ${axis.column}@${preset.token}: ERR ${String(err).split("\n")[0]}`,
+									);
+								}
+							}
+						}
+						report.push(
+							`    grain ${preset.token} (${preset.label}): ${buckets.length} buckets${gSumNote}${pinNote}`,
+						);
+					}
+				}
 
 				// 3) pin ≡ group, once per node on the first pinnable row
 				if (!pinChecked) {

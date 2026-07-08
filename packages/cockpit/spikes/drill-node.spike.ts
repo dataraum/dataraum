@@ -138,7 +138,7 @@ async function main(): Promise<void> {
 			let pinChecked = false;
 			for (const axis of axes) {
 				const q = composeNodeQuery(resolved.steps, undefined, {
-					slices: [axis.column],
+					slices: [{ column: axis.column }],
 					pins: [],
 				});
 				if ("refusal" in q) {

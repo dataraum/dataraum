@@ -11,14 +11,28 @@
 // `ok: false` refusal naming the missing part (a refusal is a domain result,
 // not a transport error). The composed SQL is executed by the CLIENT through
 // the ordinary `/api/run-sql` grid path.
+//
+// The OPEN call (empty `steps`) additionally ships what the analyse header
+// needs once per node (DAT-712) — both are drill-independent, so re-drills
+// stay lean:
+//   - `node`: name/unit + the target's formula shape (`nodeShape`) for the
+//     live equation;
+//   - `totals`: the unrestricted scalar WITH operand components projected
+//     (`composeNodeTotals`) for the footer row and the scalar-bound equation.
+//     Binder-gated like the main statement, but a totals failure only omits
+//     the field — it never blocks the node.
 
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { pinSteps, sliceColumns } from "#/duckdb/drill";
+import { pinSteps, sliceSteps } from "#/duckdb/drill";
 import { describeColumns, errorLine } from "#/duckdb/drill-sql";
 import { applyEngineScope, withLakeConnection } from "#/duckdb/lake";
-import { composeNodeQuery } from "#/duckdb/parts";
+import {
+	composeNodeQuery,
+	composeNodeTotals,
+	nodeShape,
+} from "#/duckdb/parts";
 import { resolveNodeSteps } from "#/tools/drill-metric";
 
 // Length bounds follow the grid-query convention (column names 256, values
@@ -31,13 +45,17 @@ const PinValueSchema = z.union([
 	z.null(),
 ]);
 const ColumnSchema = z.string().min(1).max(256);
+// Shape-only bound (count + unit letter); the composer parses it against the
+// closed grammar and refuses off-grammar tokens by name (grain.ts).
+const GrainSchema = z.string().min(2).max(8).optional();
 
 const StepSchema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("slice"), column: ColumnSchema }),
+	z.object({ kind: z.literal("slice"), column: ColumnSchema, grain: GrainSchema }),
 	z.object({
 		kind: z.literal("pin"),
 		column: ColumnSchema,
 		value: PinValueSchema,
+		grain: GrainSchema,
 	}),
 ]);
 
@@ -98,15 +116,28 @@ export const Route = createFileRoute("/api/drill/node")({
 						return Response.json({ ok: false, reason: resolved.missing });
 					}
 					const composed = composeNodeQuery(resolved.steps, stepId, {
-						slices: sliceColumns(steps),
+						slices: sliceSteps(steps),
 						pins: pinSteps(steps).map((p) => ({
 							column: p.column,
 							value: p.value,
+							grain: p.grain,
 						})),
 					});
 					if ("refusal" in composed) {
 						return Response.json({ ok: false, reason: composed.refusal });
 					}
+					// The open call's header block (drill-independent, so only when
+					// `steps` is empty): the equation's node shape + the totals
+					// statement. A shape refusal or totals bind failure only omits the
+					// block — the grid must open regardless.
+					const shape = steps.length === 0 ? nodeShape(resolved.steps, stepId) : null;
+					const node =
+						shape !== null && !("refusal" in shape)
+							? { name: resolved.name, unit: resolved.unit, ...shape }
+							: undefined;
+					const totalsCandidate =
+						steps.length === 0 ? composeNodeTotals(resolved.steps, stepId) : null;
+
 					const result = await withLakeConnection(async (conn) => {
 						// Engine scope, matching /api/run-sql: extract parts are
 						// engine-authored (unqualified enriched-view names).
@@ -117,11 +148,22 @@ export const Route = createFileRoute("/api/drill/node")({
 								composed.sql,
 								composed.params,
 							);
+							let totals: { sql: string } | undefined;
+							if (totalsCandidate !== null && !("refusal" in totalsCandidate)) {
+								try {
+									await describeColumns(conn, totalsCandidate.sql, []);
+									totals = { sql: totalsCandidate.sql };
+								} catch {
+									// Totals are an enhancement — omit, never block the node.
+								}
+							}
 							return {
 								ok: true as const,
 								sql: composed.sql,
 								params: composed.params,
 								columns,
+								node,
+								totals,
 							};
 						} catch (err) {
 							// The binder is the gate — its first line IS the refusal.

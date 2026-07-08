@@ -57,6 +57,7 @@ const axis = (column: string): DrillAxis => ({
 	values: [],
 	valueCount: 3,
 	businessContext: null,
+	temporal: null,
 });
 
 const jsonResponse = (body: unknown) =>

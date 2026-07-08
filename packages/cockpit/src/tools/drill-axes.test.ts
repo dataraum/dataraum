@@ -38,6 +38,7 @@ vi.mock("#/db/metadata/client", () => ({
 }));
 
 import {
+	columns,
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
@@ -46,11 +47,13 @@ import {
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
 import {
+	applyTemporalKinds,
 	axesFromSliceRows,
 	driverGains,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
 	resolveDrillAxes,
+	temporalKindsFromColumns,
 	unionSubstrateAxes,
 } from "./drill-axes";
 
@@ -130,6 +133,7 @@ describe("axesFromSliceRows", () => {
 				values: ["EU", "US"],
 				valueCount: 2,
 				businessContext: "sales region",
+				temporal: null,
 			},
 			{
 				column: "booking_month",
@@ -138,6 +142,7 @@ describe("axesFromSliceRows", () => {
 				values: [],
 				valueCount: 12,
 				businessContext: null,
+				temporal: null,
 			},
 		]);
 	});
@@ -151,6 +156,7 @@ const axis = (column: string, priority = 1): DrillAxis => ({
 	values: [],
 	valueCount: null,
 	businessContext: null,
+	temporal: null,
 });
 
 describe("unionSubstrateAxes", () => {
@@ -172,7 +178,56 @@ describe("unionSubstrateAxes", () => {
 			values: [],
 			valueCount: null,
 			businessContext: null,
+			temporal: null,
 		});
+	});
+});
+
+describe("temporalKindsFromColumns", () => {
+	const viewIds = new Set(["vt1"]);
+
+	it("maps DATE/TIMESTAMP resolved types, ignoring everything else", () => {
+		const kinds = temporalKindsFromColumns(
+			[
+				{ tableId: "vt1", columnName: "entry__date", resolvedType: "DATE" },
+				{ tableId: "vt1", columnName: "created", resolvedType: "TIMESTAMP" },
+				{ tableId: "vt1", columnName: "name", resolvedType: "VARCHAR" },
+				{ tableId: "vt1", columnName: null, resolvedType: "DATE" },
+			],
+			viewIds,
+		);
+		expect(kinds.get("entry__date")).toBe("date");
+		expect(kinds.get("created")).toBe("timestamp");
+		expect(kinds.has("name")).toBe(false);
+	});
+
+	it("lets a view row decide over a same-named fact row — including 'not temporal'", () => {
+		const kinds = temporalKindsFromColumns(
+			[
+				// The fact stores the raw value as VARCHAR; the view projects DATE.
+				{ tableId: "fact1", columnName: "booked", resolvedType: "VARCHAR" },
+				{ tableId: "vt1", columnName: "booked", resolvedType: "DATE" },
+				// The view says VARCHAR — the fact's DATE must not leak through.
+				{ tableId: "vt1", columnName: "label", resolvedType: "VARCHAR" },
+				{ tableId: "fact1", columnName: "label", resolvedType: "DATE" },
+				// No view row → the fact type fills in (bare fact columns).
+				{ tableId: "fact1", columnName: "paid_at", resolvedType: "TIMESTAMP" },
+			],
+			viewIds,
+		);
+		expect(kinds.get("booked")).toBe("date");
+		expect(kinds.has("label")).toBe(false);
+		expect(kinds.get("paid_at")).toBe("timestamp");
+	});
+});
+
+describe("applyTemporalKinds", () => {
+	it("stamps resolved kinds onto matching axes only", () => {
+		const out = applyTemporalKinds(
+			[axis("entry__date"), axis("region")],
+			new Map([["entry__date", "date" as const]]),
+		);
+		expect(out.map((a) => a.temporal)).toEqual(["date", null]);
 	});
 });
 
@@ -278,6 +333,12 @@ const seed = () => {
 			businessContext: null,
 		},
 	]);
+	// The catalog types behind temporal detection: the VIEW table (vt1) carries
+	// the FK-projected dims; customer__segment is a DATE there.
+	rowsByTable.set(columns, [
+		{ tableId: "vt1", columnName: "customer__region", resolvedType: "VARCHAR" },
+		{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+	]);
 };
 
 describe("resolveDrillAxes (mocked metadata client)", () => {
@@ -292,9 +353,11 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				values: ["EU", "US"],
 				valueCount: 2,
 				businessContext: null,
+				temporal: null,
 			},
 			// Substrate-only: the view exposes it, the catalog never curated it.
 			// supplier__country stays absent — its fact (cogs) never grounded.
+			// Its DATE type on the view table makes it the temporal axis.
 			{
 				column: "customer__segment",
 				priority: Number.MAX_SAFE_INTEGER,
@@ -302,6 +365,7 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				values: [],
 				valueCount: null,
 				businessContext: null,
+				temporal: "date",
 			},
 		]);
 	});

@@ -28,10 +28,12 @@
 //   holds by algebra.
 //
 //   NON-ADDITIVE (any ratio, product, literal, constant ref, or fall-loud
-//   leaf) — carriers join `FULL JOIN … USING (dims)` and every ref renders
-//   BARE. SQL NULL absorbs through the arithmetic, so a group shows a value
-//   iff EVERY carrier the formula touches is observed in that group; anything
-//   partial is the honest `—` (filterable), never a fabricated number.
+//   leaf) — carriers join `FULL JOIN … ON (dim IS NOT DISTINCT FROM dim)`
+//   (NULL-safe: a slice group whose dim is NULL stays ONE group, not a split
+//   of dashes — DAT-714) and every ref renders BARE. SQL NULL absorbs through
+//   the arithmetic, so a group shows a value iff EVERY carrier the formula
+//   touches is observed in that group; anything partial is the honest `—`
+//   (filterable), never a fabricated number.
 //
 // Pins follow the node's mode (additive → contributions under the filter,
 // non-additive → bare), so a pinned re-evaluation reproduces exactly the
@@ -381,6 +383,23 @@ const invalidGrain = (token: string): { refusal: string } => ({
 		`1d, 1w, 1M, 1q, 1y (m is minutes, M is months)`,
 });
 
+/** A carrier CTE's dim column, fully qualified: `"revenue"."cost_center"`. The
+ *  carrier alias is its CTE name (a step id, IDENT_RE-gated) and the dim is a
+ *  slice column (user/agent-influenced) — both are quoted. */
+const qualifiedDim = (carrierId: string, dim: string): string =>
+	`${quoteIdentifier(carrierId)}.${quoteIdentifier(dim)}`;
+
+/** The NULL-safe dim key across the carriers already in the FULL-JOIN spine
+ *  (DAT-714). A FULL JOIN can leave ANY joined carrier's key NULL, so a dim's
+ *  live value is the COALESCE across every carrier so far — a single carrier
+ *  needs none. Drives BOTH the `IS NOT DISTINCT FROM` join key (left side) and
+ *  the `COALESCE(…) AS dim` output projection (with ON, not USING, every
+ *  carrier alias carries the dim, so a bare `dim` would be ambiguous). */
+const coalesceDim = (carrierIds: readonly string[], dim: string): string => {
+	const refs = carrierIds.map((c) => qualifiedDim(c, dim));
+	return refs.length === 1 ? refs[0] : `COALESCE(${refs.join(", ")})`;
+};
+
 function composeNode(
 	steps: NodeStep[],
 	requestedStepId: string | undefined,
@@ -687,14 +706,34 @@ function composeNode(
 				),
 			}));
 			if (dims.length > 0 && first !== undefined) {
-				// FULL JOIN … USING (dims) spine over the dim-carrying deps; scalar
-				// deps (constants, fall-loud extracts) stay subqueries in the value.
+				// NULL-SAFE FULL-JOIN spine over the dim-carrying deps (DAT-714);
+				// scalar deps (constants, fall-loud extracts) stay subqueries in the
+				// value. `FULL JOIN … USING (dim)` treats NULL as UNEQUAL (NULL !=
+				// NULL), so a slice group whose dim is NULL never matches across
+				// carriers — it SPLITS into two one-sided rows that each dash out and
+				// DISCARD the real value. Join ON `dim IS NOT DISTINCT FROM dim`
+				// instead (NULL ≡ NULL, one honest group); because a FULL JOIN can
+				// leave EITHER side's key NULL, the left key of each successive join
+				// is the COALESCE over every carrier already in the spine. The output
+				// dim is likewise COALESCE(all carriers) AS dim — with ON (not USING)
+				// every carrier alias carries the dim column, so a bare `dim` is
+				// ambiguous. (The additive path stays GROUP BY, which already folds
+				// NULL into one group — this is the non-additive spine only.)
+				const joined: string[] = [first];
 				let spine: Parameters<typeof join>[0] = first;
 				for (const dep of rest) {
-					spine = join(spine, dep, { type: "FULL", using: dimColumns });
+					const on = dimColumns
+						.map(
+							(d) =>
+								`(${coalesceDim(joined, d)} IS NOT DISTINCT FROM ` +
+								`${qualifiedDim(dep, d)})`,
+						)
+						.join(" AND ");
+					spine = join(spine, dep, { type: "FULL", on: verbatim(on) });
+					joined.push(dep);
 				}
 				ctes[step.stepId] = Query.from(spine).select(
-					...dimColumns.map((d) => column(d)),
+					...dimColumns.map((d) => ({ [d]: verbatim(coalesceDim(joined, d)) })),
 					...operandCols,
 					{
 						value: verbatim(rendered.sql),

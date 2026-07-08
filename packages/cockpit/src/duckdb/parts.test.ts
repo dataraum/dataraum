@@ -32,20 +32,23 @@ beforeAll(async () => {
 	instance = await DuckDBInstance.create(":memory:");
 	conn = await instance.connect();
 	await conn.run(
-		"CREATE TABLE enriched_txn (account VARCHAR, region VARCHAR, kind VARCHAR, credit DOUBLE, debit DOUBLE, open_balance DOUBLE, booked_on DATE)",
+		"CREATE TABLE enriched_txn (account VARCHAR, region VARCHAR, kind VARCHAR, credit DOUBLE, debit DOUBLE, open_balance DOUBLE, booked_on DATE, cost_center VARCHAR)",
 	);
 	// revenue lives on 'sales' accounts, cogs on 'materials', depreciation on
 	// 'depr', AR balances on 'sales' west only — the disjoint shapes the
 	// grouped composition must keep honest. Dates: revenue books only in
 	// January (two days), cogs in BOTH months — the time-grain tests bucket
 	// these (raw days ≠ month groups; February has cogs but no revenue).
+	// cost_center is a PARTIALLY-NULL slice dim (the 'east' rows are NULL): both
+	// revenue and cogs are observed in the NULL group AND in 'cc1', the shape
+	// the DAT-714 NULL-safe FULL-JOIN tests pin.
 	await conn.run(`INSERT INTO enriched_txn VALUES
-		('sales', 'west', 'rev', 500, 0, 0, DATE '2025-01-05'),
-		('sales', 'east', 'rev', 400, 100, 0, DATE '2025-01-20'),
-		('materials', 'west', 'cogs', 0, 120, 0, DATE '2025-01-12'),
-		('materials', 'east', 'cogs', 0, 80, 0, DATE '2025-02-08'),
-		('depr', 'west', 'depr', 0, 40, 0, DATE '2025-02-15'),
-		('sales', 'west', 'ar', 0, 0, 180, DATE '2025-02-15')`);
+		('sales', 'west', 'rev', 500, 0, 0, DATE '2025-01-05', 'cc1'),
+		('sales', 'east', 'rev', 400, 100, 0, DATE '2025-01-20', NULL),
+		('materials', 'west', 'cogs', 0, 120, 0, DATE '2025-01-12', 'cc1'),
+		('materials', 'east', 'cogs', 0, 80, 0, DATE '2025-02-08', NULL),
+		('depr', 'west', 'depr', 0, 40, 0, DATE '2025-02-15', NULL),
+		('sales', 'west', 'ar', 0, 0, 180, DATE '2025-02-15', 'cc1')`);
 });
 afterAll(() => {
 	conn?.closeSync();
@@ -315,7 +318,12 @@ describe("composeNodeQuery — grouped", () => {
 			pins: [],
 		});
 		expect(q.sql).toContain("FULL JOIN");
-		expect(q.sql).not.toContain("COALESCE");
+		// NULL-safe carrier join (DAT-714): the spine matches on `IS NOT DISTINCT
+		// FROM`, not `USING`. The COALESCE here is the NULL-safe DIM KEY, never a
+		// value-fabricating COALESCE-0 — the value guard is the `— for the absent
+		// side` assertions below (east's value/avg_balance stay NULL).
+		expect(q.sql).toContain("IS NOT DISTINCT FROM");
+		expect(q.sql).not.toContain("USING (");
 		const byRegion = new Map((await rows(q.sql)).map((r) => [r.region, r]));
 		// AR balances exist only in the west: east has revenue but not the
 		// other carrier — NULL absorbs, the group is honestly undefined, and
@@ -470,7 +478,7 @@ describe("composeNodeQuery — grouped", () => {
 		for (const r of result) expect(r.value).toBeNull();
 	});
 
-	it("slices by several dims at once (GROUP BY + USING both)", async () => {
+	it("slices by several dims at once (GROUP BY over every dim, deduped)", async () => {
 		const q = composed(GROSS_PROFIT, undefined, {
 			slices: [
 				{ column: "account" },
@@ -522,6 +530,156 @@ describe("composeNodeQuery — grouped", () => {
 		);
 		expect(byRegion.get("west")).toBe(500);
 		expect(byRegion.get("east")).toBe(300);
+	});
+});
+
+// --- NULL-dim non-additive slice (DAT-714) ----------------------------------------
+//
+// `FULL JOIN … USING (dim)` treats NULL as UNEQUAL (NULL != NULL), so a slice
+// group whose dim is NULL never matches across carriers — it SPLITS into two
+// one-sided rows that each render `—` and DISCARD the real value. On the live
+// workspace `operating_margin` by `cost_center` (NULL for 52% of journal rows)
+// returned 7 rows for 6 groups, the NULL group twice and both dashed, its true
+// 46.46% lost. The fix joins ON `dim IS NOT DISTINCT FROM dim` (NULL ≡ NULL)
+// with a COALESCE'd key. cost_center is NULL for the 'east' rows here, and BOTH
+// carriers (revenue, cogs) are observed in the NULL group, so it must be ONE
+// row with a REAL value — the exact shape the buggy USING join loses.
+describe("composeNodeQuery — NULL-dim non-additive slice (DAT-714)", () => {
+	const RATIO: NodeStep[] = [
+		REVENUE,
+		COGS,
+		formula(
+			"rev_over_cogs",
+			"revenue / cost_of_goods_sold",
+			["revenue", "cost_of_goods_sold"],
+			true,
+		),
+	];
+	const sliced = (): ComposedNodeQuery =>
+		composed(RATIO, undefined, {
+			slices: [{ column: "cost_center" }],
+			pins: [],
+		});
+
+	it("joins NULL-safe (IS NOT DISTINCT FROM) — never FULL JOIN … USING", () => {
+		const q = sliced();
+		expect(q.sql).toContain("FULL JOIN");
+		expect(q.sql).toContain("IS NOT DISTINCT FROM");
+		expect(q.sql).not.toContain("USING (");
+	});
+
+	it("the NULL group is ONE row with the real value, never two dashes", async () => {
+		const result = await rows(sliced().sql);
+		// cc1 (both carriers) + NULL (both carriers) = exactly two groups. Under
+		// the USING bug the NULL group split into two dashed rows → three rows.
+		expect(result).toHaveLength(2);
+		// No duplicate group keys — the split's signature is two rows sharing a
+		// key (here, the NULL key appearing twice).
+		const keys = result.map((r) => JSON.stringify(r.cost_center));
+		expect(new Set(keys).size).toBe(keys.length);
+		const byCc = new Map(result.map((r) => [r.cost_center, r]));
+		expect(num(byCc.get("cc1")?.value)).toBeCloseTo(500 / 120, 9);
+		// The NULL group: revenue 300 (east 400−100), cogs 80 (east) — both
+		// observed, so a REAL value (3.75), never a dash.
+		const nullRow = byCc.get(null);
+		expect(nullRow).toBeDefined();
+		expect(num(nullRow?.value)).toBeCloseTo(300 / 80, 9);
+		expect(num(nullRow?.revenue)).toBe(300);
+		expect(num(nullRow?.cost_of_goods_sold)).toBe(80);
+	});
+
+	it("pin ≡ group for EVERY group INCLUDING the NULL group (IS NULL pin)", async () => {
+		const groups = await rows(sliced().sql);
+		// The NULL group must actually be present — the old test only sampled a
+		// non-null group, which is exactly why the split went uncaught.
+		expect(groups.some((r) => r.cost_center === null)).toBe(true);
+		for (const row of groups) {
+			const pinValue: DrillPinValue =
+				row.cost_center === null ? null : String(row.cost_center);
+			const pinned = composed(RATIO, undefined, {
+				slices: [],
+				pins: [{ column: "cost_center", value: pinValue }],
+			});
+			if (pinValue === null) {
+				expect(pinned.sql).toContain('"cost_center" IS NULL');
+				expect(pinned.params).toEqual([]);
+			}
+			const [pinnedRow] = await rows(pinned.sql, pinned.params);
+			expect(num(pinnedRow?.value)).toBeCloseTo(
+				num(row.value) ?? Number.NaN,
+				9,
+			);
+		}
+	});
+
+	it("3 carriers × 2 dims: the chained spine COALESCEs the left key across ALL prior carriers — no split, no dup keys", async () => {
+		// revenue / cogs * depreciation is non-additive with THREE carriers,
+		// sliced by region AND cost_center at once. depr lives only on
+		// (west, NULL) — a group present ONLY in the 3rd (last-joined) carrier,
+		// absent in the first two; revenue and cogs share (west, cc1) and
+		// (east, NULL). A FULL JOIN can leave EITHER side's key NULL, so the left
+		// key of the third join must be COALESCE over BOTH prior carriers, not
+		// just the immediate-left neighbour — the accumulation the reviewers
+		// verified with throwaway probes, pinned here as a real regression.
+		const steps: NodeStep[] = [
+			REVENUE,
+			COGS,
+			DEPR,
+			formula(
+				"tri",
+				"revenue / cost_of_goods_sold * depreciation_amortization",
+				["revenue", "cost_of_goods_sold", "depreciation_amortization"],
+				true,
+			),
+		];
+		const q = composed(steps, undefined, {
+			slices: [{ column: "region" }, { column: "cost_center" }],
+			pins: [],
+		});
+		// The 3rd carrier's ON accumulates COALESCE over BOTH prior carriers per
+		// dim (the immediate-left-neighbour bug would reference only cogs).
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."region", "cost_of_goods_sold"."region") ' +
+				'IS NOT DISTINCT FROM "depreciation_amortization"."region"',
+		);
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."cost_center", "cost_of_goods_sold"."cost_center") ' +
+				'IS NOT DISTINCT FROM "depreciation_amortization"."cost_center"',
+		);
+		// …and each output dim is COALESCE across all THREE carriers.
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."region", "cost_of_goods_sold"."region", ' +
+				'"depreciation_amortization"."region") AS "region"',
+		);
+		expect(q.sql).toContain(
+			'COALESCE("revenue"."cost_center", "cost_of_goods_sold"."cost_center", ' +
+				'"depreciation_amortization"."cost_center") AS "cost_center"',
+		);
+
+		const result = await rows(q.sql);
+		// Three groups, each ONCE: (west,cc1) rev+cogs, (east,NULL) rev+cogs — the
+		// NULL cost_center never splits — and (west,NULL) depr-only. USING would
+		// split every NULL-cost_center group → four rows, (east,NULL) twice.
+		expect(result).toHaveLength(3);
+		const key = (r: Record<string, unknown>) =>
+			`${String(r.region)}|${String(r.cost_center)}`;
+		const keys = result.map(key);
+		expect(new Set(keys).size).toBe(keys.length); // no duplicate group keys
+		const byKey = new Map(result.map((r) => [key(r), r]));
+		// (west,cc1): the NULL-safe first join matched rev+cogs on non-null dims.
+		expect(num(byKey.get("west|cc1")?.revenue)).toBe(500);
+		expect(num(byKey.get("west|cc1")?.cost_of_goods_sold)).toBe(120);
+		// (east,NULL): first join matched despite a NULL cost_center.
+		expect(num(byKey.get("east|null")?.revenue)).toBe(300);
+		expect(num(byKey.get("east|null")?.cost_of_goods_sold)).toBe(80);
+		// The 3rd-carrier-only group lands as ONE correct row: depr observed, the
+		// other carriers absent → the honest dash (doctrine v2), never a split.
+		const depOnly = byKey.get("west|null");
+		expect(depOnly).toBeDefined();
+		expect(num(depOnly?.depreciation_amortization)).toBe(40);
+		expect(depOnly?.revenue).toBeNull();
+		expect(depOnly?.cost_of_goods_sold).toBeNull();
+		expect(depOnly?.value).toBeNull();
 	});
 });
 

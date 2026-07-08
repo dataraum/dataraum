@@ -12,6 +12,8 @@ import traceback
 from abc import ABC, abstractmethod
 from types import ModuleType
 
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
@@ -20,6 +22,10 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.storage import Table
 
 logger = get_logger(__name__)
+
+# Resolves against the worker's global TracerProvider (worker/telemetry.py);
+# a no-op tracer when telemetry is off.
+tracer = trace.get_tracer(__name__)
 
 
 class BasePhase(ABC):
@@ -79,26 +85,40 @@ class BasePhase(ABC):
         and make every LLM 429 a non-retryable phase failure. The enclosing
         ``session_scope`` rolls the phase's partial writes back on the raise.
         """
-        start = time.monotonic()
-        try:
-            result = self._run(ctx)
-        except ProviderError:
-            # Let the typed provider failure propagate to _outcome_or_raise,
-            # which classifies it for Temporal retry. session_scope rolls back.
-            raise
-        except Exception as e:
-            elapsed = time.monotonic() - start
-            tb = traceback.format_exc()
-            logger.error(
-                "phase_failed",
-                phase=self.name,
-                error=str(e),
-                traceback=tb,
-            )
-            error_msg = f"{type(e).__name__}: {e}"
-            return PhaseResult.failed(error_msg, duration=elapsed)
-        result.duration_seconds = time.monotonic() - start
-        return result
+        # One span per phase (DAT-706): the phase body's exact wall-clock
+        # (`PhaseResult.duration_seconds`), inside the enclosing RunActivity
+        # span — the activity span additionally covers session lease/promote
+        # overhead, this one is the phase itself. run_id keys the span to the
+        # run's versioned metadata rows.
+        span_attributes: dict[str, str] = {"dataraum.phase": self.name}
+        if ctx.run_id is not None:
+            span_attributes["dataraum.run_id"] = ctx.run_id
+        with tracer.start_as_current_span(f"phase {self.name}", attributes=span_attributes) as span:
+            start = time.monotonic()
+            try:
+                result = self._run(ctx)
+            except ProviderError:
+                # Let the typed provider failure propagate to _outcome_or_raise,
+                # which classifies it for Temporal retry. session_scope rolls
+                # back. The span context manager records the exception and
+                # marks ERROR on the propagating raise.
+                raise
+            except Exception as e:
+                elapsed = time.monotonic() - start
+                tb = traceback.format_exc()
+                logger.error(
+                    "phase_failed",
+                    phase=self.name,
+                    error=str(e),
+                    traceback=tb,
+                )
+                error_msg = f"{type(e).__name__}: {e}"
+                # Flattened into a FAILED PhaseResult, not raised — mark the
+                # span explicitly so the failure is visible in the trace.
+                span.set_status(Status(StatusCode.ERROR, error_msg))
+                return PhaseResult.failed(error_msg, duration=elapsed)
+            result.duration_seconds = time.monotonic() - start
+            return result
 
     @abstractmethod
     def _run(self, ctx: PhaseContext) -> PhaseResult:

@@ -6,6 +6,7 @@
 // Keeping it here (not in the route) lets the watcher reuse it without importing
 // a route module. SERVER-ONLY (pulls the tool registry + the Anthropic adapter).
 
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
 	chat,
 	type chatParamsFromRequest,
@@ -20,7 +21,7 @@ import {
 	type ConversationKind,
 } from "#/db/cockpit/conversations";
 import { publish } from "#/lib/chat-bus";
-import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { llmOtel } from "#/lib/llm-otel";
 import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { getInstructions } from "#/prompts";
@@ -123,12 +124,12 @@ export function buildChatOptions(
 		messages,
 		tools: [...toolsByKind[kind]],
 		abortController,
-		// Per-turn LLM telemetry (DAT-600) + the tool-args guard (DAT-661
-		// coercion/rejection counters). Same label so the lines correlate; tags
+		// Per-run gen_ai spans/metrics (DAT-706) + the tool-args guard (DAT-661
+		// coercion/rejection counters). Same label so the signals correlate; tags
 		// this orchestrator turn distinctly from the nested `answer` sub-agent
 		// (tools/query.ts).
 		middleware: [
-			llmTelemetryMiddleware("orchestrator"),
+			...llmOtel("orchestrator"),
 			toolArgsGuardMiddleware("orchestrator"),
 		],
 	};
@@ -185,17 +186,63 @@ export async function streamAgentTurnToBus(
 	},
 ): Promise<void> {
 	const { kind, workspaceContext, abortController, persist = true } = opts;
-	const stream = chat(
-		buildChatOptions(kind, modelMessages, abortController, workspaceContext),
-	);
-	const source = persist ? teeAndPersist(stream, conversationId) : stream;
-	try {
-		for await (const chunk of source) {
-			publish(conversationId, chunk);
-		}
-	} catch (err) {
-		if (!abortController?.signal.aborted) {
-			console.error("[agent-turn] stream failed:", err);
-		}
-	}
+	// One ACTIVE span per turn (DAT-706): chat() spans parent to context.active(),
+	// and the drain below is where tools — and their NESTED chat() runs (the
+	// `answer` sub-agent, the chart author, the report summary) — execute. With
+	// this span current for the whole create+drain, all of them join ONE trace;
+	// without it each nested run is its own root and the turn's latency picture
+	// fragments. Telemetry off = no-op tracer, the callback just runs.
+	await trace
+		.getTracer("dataraum-cockpit")
+		.startActiveSpan(
+			`turn ${kind}`,
+			{ attributes: { "gen_ai.conversation.id": conversationId } },
+			async (span) => {
+				// chat() construction sits INSIDE the guard: it validates
+				// middleware/adapter capabilities synchronously, and a throw
+				// there must not leak an unended span.
+				try {
+					const stream = chat(
+						buildChatOptions(
+							kind,
+							modelMessages,
+							abortController,
+							workspaceContext,
+						),
+					);
+					const source = persist
+						? teeAndPersist(stream, conversationId)
+						: stream;
+					for await (const chunk of source) {
+						publish(conversationId, chunk);
+					}
+				} catch (err) {
+					if (!abortController?.signal.aborted) {
+						console.error("[agent-turn] stream failed:", err);
+						// The turn span is the FIRST thing an operator opens on a
+						// red trace — carry the full diagnostic payload, like the
+						// nested chat spans do.
+						const error = err instanceof Error ? err : new Error(String(err));
+						span.recordException(error);
+						span.setStatus({
+							code: SpanStatusCode.ERROR,
+							message: error.message,
+						});
+					}
+				} finally {
+					// A cancelled turn must not read as success. An abort may end
+					// the drain WITHOUT throwing, so this is stamped in finally,
+					// not the catch — mirroring the nested chat spans' own abort
+					// shape (same attribute key + ERROR "cancelled").
+					if (abortController?.signal.aborted) {
+						span.setAttribute("tanstack.ai.completion.reason", "cancelled");
+						span.setStatus({
+							code: SpanStatusCode.ERROR,
+							message: "cancelled",
+						});
+					}
+					span.end();
+				}
+			},
+		);
 }

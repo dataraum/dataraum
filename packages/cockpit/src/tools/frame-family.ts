@@ -26,7 +26,7 @@ import type { z } from "zod";
 
 import { config } from "../config";
 import { linkedAbortController } from "../lib/abort";
-import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
+import { llmOtel } from "../lib/llm-otel";
 import { toolArgsGuardMiddleware } from "../lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { teach } from "./teach";
@@ -74,7 +74,7 @@ export async function induceStructured<R>(opts: {
 	const stream = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
 		middleware: [
-			llmTelemetryMiddleware("frame_family"),
+			...llmOtel("frame_family"),
 			toolArgsGuardMiddleware("frame_family"),
 		],
 		abortController,

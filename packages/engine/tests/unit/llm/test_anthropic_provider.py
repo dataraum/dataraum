@@ -620,3 +620,103 @@ class TestRawContentRoundTrip:
         converted = provider._convert_messages([Message(role="assistant", content="plain")])
 
         assert converted == [{"role": "assistant", "content": [{"type": "text", "text": "plain"}]}]
+
+
+class TestConverseSpans:
+    """converse wraps the client call in a GenAI-semconv span (DAT-706).
+
+    Current conventions (semantic-conventions-genai repo): name
+    "chat {request model}", kind CLIENT, `gen_ai.provider.name` (NOT the
+    retired `gen_ai.system`), usage attrs incl. the cache split, and
+    `error.type` on failure. `dataraum.call_site` mirrors the cockpit
+    enricher's key so call-site attribution is one cross-stack query.
+    """
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> object:
+        """Route the module tracer through an in-memory exporter."""
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        import dataraum.llm.providers.anthropic as module
+
+        exporter = InMemorySpanExporter()
+        tracer_provider = TracerProvider()
+        tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+        monkeypatch.setattr(module, "tracer", tracer_provider.get_tracer("test"))
+        return exporter
+
+    def test_success_span_carries_semconv_attributes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from opentelemetry.trace import SpanKind
+
+        exporter = self._capture(monkeypatch)
+        provider = _provider()
+        _patch_stream(monkeypatch, provider, lambda **_: _ok_response())
+
+        result = provider.converse(
+            ConversationRequest(
+                messages=[Message(role="user", content="hi")],
+                model="claude-sonnet-5",
+                effort="low",
+                label="graph_sql_generation",
+            )
+        )
+        assert result.success
+
+        (span,) = exporter.get_finished_spans()  # type: ignore[attr-defined]
+        assert span.name == "chat claude-sonnet-5"
+        assert span.kind == SpanKind.CLIENT
+        attrs = dict(span.attributes)
+        assert attrs["gen_ai.operation.name"] == "chat"
+        assert attrs["gen_ai.provider.name"] == "anthropic"
+        assert attrs["gen_ai.request.model"] == "claude-sonnet-5"
+        assert attrs["gen_ai.request.max_tokens"] == 4096
+        assert attrs["gen_ai.request.stream"] is True
+        # Sonnet 5 rejects temperature -> omitted from request AND span;
+        # it supports effort -> reasoning level recorded.
+        assert "gen_ai.request.temperature" not in attrs
+        assert attrs["gen_ai.request.reasoning.level"] == "low"
+        assert attrs["dataraum.call_site"] == "graph_sql_generation"
+        assert attrs["gen_ai.response.model"] == "claude-x"
+        assert attrs["gen_ai.response.finish_reasons"] == ("end_turn",)
+        assert attrs["gen_ai.usage.input_tokens"] == 100
+        assert attrs["gen_ai.usage.output_tokens"] == 20
+        assert attrs["gen_ai.usage.cache_read.input_tokens"] == 0
+        assert attrs["gen_ai.usage.cache_creation.input_tokens"] == 0
+        # The provider discriminator is the CURRENT semconv key only.
+        assert "gen_ai.system" not in attrs
+
+    def test_temperature_recorded_when_sent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        exporter = self._capture(monkeypatch)
+        provider = _provider()
+        _patch_stream(monkeypatch, provider, lambda **_: _ok_response())
+
+        provider.converse(_request())  # default model claude-x keeps temperature
+
+        (span,) = exporter.get_finished_spans()  # type: ignore[attr-defined]
+        attrs = dict(span.attributes)
+        assert attrs["gen_ai.request.temperature"] == 0.0
+        # No label on the request -> no call-site attribute.
+        assert "dataraum.call_site" not in attrs
+
+    def test_error_span_records_error_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from opentelemetry.trace import StatusCode
+
+        exporter = self._capture(monkeypatch)
+        provider = _provider()
+
+        def boom(**_: object) -> object:
+            raise _status_error(529)
+
+        _patch_stream(monkeypatch, provider, boom)
+
+        with pytest.raises(TransientProviderError):
+            provider.converse(_request())
+
+        (span,) = exporter.get_finished_spans()  # type: ignore[attr-defined]
+        attrs = dict(span.attributes)
+        assert attrs["error.type"] == "APIStatusError"
+        assert span.status.status_code == StatusCode.ERROR
+        assert any(e.name == "exception" for e in span.events)

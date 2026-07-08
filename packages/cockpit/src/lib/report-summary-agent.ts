@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import { config } from "#/config";
 import type { QueryResult } from "#/duckdb/query-result";
+import { llmOtel } from "#/lib/llm-otel";
 import { STRUCTURED_OUTPUT_MAX_TOKENS, SUMMARY_MODEL } from "#/llm";
 
 const SYSTEM = `You refresh the saved summary of a data report. The report's SQL is unchanged; only the underlying data has moved, so the figures and comparative claims in the previous summary may now be wrong.
@@ -47,6 +48,9 @@ export async function regenerateSummary(
 
 	const { summary } = await chat({
 		adapter: createAnthropicChat(SUMMARY_MODEL, config.anthropicApiKey),
+		// This site had NO telemetry before DAT-706 — a blind spot, not a
+		// deliberate exemption.
+		middleware: [...llmOtel("report_summary")],
 		modelOptions: { max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS },
 		systemPrompts: [{ content: SYSTEM }],
 		messages: [{ role: "user", content: userContent }],

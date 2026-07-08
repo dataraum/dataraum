@@ -92,8 +92,10 @@ export function getOtel(): NodeTracerProvider | null {
 	// otelMiddleware records (`gen_ai.client.token.usage` / `.operation.duration`,
 	// see lib/llm-otel.ts). Registered on the GLOBAL meter provider so
 	// consumers resolve meters via `metrics.getMeter(...)` — same pattern as
-	// the global tracer. Default export interval (60s) is fine: histograms
-	// are aggregated cumulatively, nothing is lost between exports.
+	// the global tracer. Default export interval (60s) + the SIGTERM flush
+	// below cover every orderly stop; a SIGKILL/OOM-kill can drop up to one
+	// interval of not-yet-exported data — accepted, same posture as the
+	// trace-side BatchSpanProcessor (DAT-705).
 	const meterProvider = new MeterProvider({
 		resource,
 		readers: [

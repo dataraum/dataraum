@@ -198,25 +198,49 @@ export async function streamAgentTurnToBus(
 			`turn ${kind}`,
 			{ attributes: { "gen_ai.conversation.id": conversationId } },
 			async (span) => {
-				const stream = chat(
-					buildChatOptions(
-						kind,
-						modelMessages,
-						abortController,
-						workspaceContext,
-					),
-				);
-				const source = persist ? teeAndPersist(stream, conversationId) : stream;
+				// chat() construction sits INSIDE the guard: it validates
+				// middleware/adapter capabilities synchronously, and a throw
+				// there must not leak an unended span.
 				try {
+					const stream = chat(
+						buildChatOptions(
+							kind,
+							modelMessages,
+							abortController,
+							workspaceContext,
+						),
+					);
+					const source = persist
+						? teeAndPersist(stream, conversationId)
+						: stream;
 					for await (const chunk of source) {
 						publish(conversationId, chunk);
 					}
 				} catch (err) {
 					if (!abortController?.signal.aborted) {
 						console.error("[agent-turn] stream failed:", err);
-						span.setStatus({ code: SpanStatusCode.ERROR });
+						// The turn span is the FIRST thing an operator opens on a
+						// red trace — carry the full diagnostic payload, like the
+						// nested chat spans do.
+						const error = err instanceof Error ? err : new Error(String(err));
+						span.recordException(error);
+						span.setStatus({
+							code: SpanStatusCode.ERROR,
+							message: error.message,
+						});
 					}
 				} finally {
+					// A cancelled turn must not read as success. An abort may end
+					// the drain WITHOUT throwing, so this is stamped in finally,
+					// not the catch — mirroring the nested chat spans' own abort
+					// shape (same attribute key + ERROR "cancelled").
+					if (abortController?.signal.aborted) {
+						span.setAttribute("tanstack.ai.completion.reason", "cancelled");
+						span.setStatus({
+							code: SpanStatusCode.ERROR,
+							message: "cancelled",
+						});
+					}
 					span.end();
 				}
 			},

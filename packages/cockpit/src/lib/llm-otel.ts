@@ -26,9 +26,10 @@
 //    live against 0.40.0, same defect class as DAT-663). The companion
 //    accumulates the per-iteration increments and onSpanEnd — which fires
 //    just before rootSpan.end() — overwrites the `gen_ai.usage.*` attrs with
-//    true loop totals. Filed upstream; the canary test in llm-otel.test.ts
-//    fails the day the engine starts rolling up, which is the signal to
-//    delete the companion.
+//    true loop totals. Filed upstream as
+//    https://github.com/TanStack/ai/issues/916; the canary test in
+//    llm-otel.test.ts fails the day the engine starts rolling up, which is
+//    the signal to delete the companion.
 //
 // Telemetry off (getOtel() null) → `[]`: chat() runs with no telemetry
 // middleware at all, keeping the off-path byte-identical. The DAT-600
@@ -76,11 +77,17 @@ export function llmOtel(label: string): ChatMiddleware[] {
 			onSpanEnd: (info, span) => {
 				// Root-span usage correction — see the header. Iteration and
 				// tool spans are already correct; only the root's at-a-glance
-				// totals need the accumulated truth.
+				// totals need the accumulated truth. total_tokens must be
+				// overridden too: the middleware stamps it from the SAME
+				// last-iteration FinishInfo.usage, so leaving it would ship a
+				// self-contradictory span (input+output ≠ total). Derived as
+				// input+output — exactly how the Anthropic adapter builds each
+				// iteration's totalTokens.
 				if (info.kind !== "chat") return;
 				span.setAttributes({
 					"gen_ai.usage.input_tokens": totals.input,
 					"gen_ai.usage.output_tokens": totals.output,
+					"gen_ai.usage.total_tokens": totals.input + totals.output,
 					"gen_ai.usage.cache_read.input_tokens": totals.cacheRead,
 					"gen_ai.usage.cache_creation.input_tokens": totals.cacheWrite,
 				});

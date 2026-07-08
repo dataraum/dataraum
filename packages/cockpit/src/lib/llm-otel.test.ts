@@ -207,8 +207,12 @@ describe("llmOtel", () => {
 		expect(root).toBeDefined();
 		// The companion's rollup — NOT the last iteration's 700/80 (see the
 		// canary below for the raw-middleware behavior this corrects).
+		// total_tokens included: the middleware stamps it from the same stale
+		// FinishInfo.usage, so an uncorrected span would carry 780 next to a
+		// corrected 1200/130.
 		expect(root?.attributes["gen_ai.usage.input_tokens"]).toBe(1200);
 		expect(root?.attributes["gen_ai.usage.output_tokens"]).toBe(130);
+		expect(root?.attributes["gen_ai.usage.total_tokens"]).toBe(1330);
 		expect(root?.attributes["gen_ai.usage.cache_read.input_tokens"]).toBe(400);
 		expect(root?.attributes["gen_ai.usage.cache_creation.input_tokens"]).toBe(
 			100,
@@ -250,9 +254,10 @@ describe("llmOtel", () => {
 	// UPSTREAM CANARY (delete the usage-rollup companion when this fails):
 	// @tanstack/ai's docs say the root span "rolls up usage across all
 	// iterations", but 0.40.0's engine passes FinishInfo.usage = the LAST
-	// iteration's usage only (issue filed upstream). When a bump makes this
-	// test fail, the engine started rolling up — remove the companion from
-	// llmOtel and fold this assertion into the contract test above.
+	// iteration's usage only (https://github.com/TanStack/ai/issues/916).
+	// When a bump makes this test fail, the engine started rolling up —
+	// remove the companion from llmOtel and fold this assertion into the
+	// contract test above.
 	// -------------------------------------------------------------------------
 	it("canary: raw otelMiddleware root span still under-reports multi-iteration usage", async () => {
 		await runScriptedChat([

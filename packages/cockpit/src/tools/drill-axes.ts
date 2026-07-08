@@ -143,9 +143,13 @@ export function temporalKindsFromColumns(
 ): Map<string, TemporalKind> {
 	const kinds = new Map<string, TemporalKind>();
 	const decidedByView = new Set<string>();
-	// View rows decide first — including deciding "not temporal"…
+	// View rows decide first — including deciding "not temporal". First view
+	// row per name WINS (the caller passes rows deterministically ordered), so
+	// two facts' views disagreeing about a shared name can't flip the chip's
+	// presets between loads — the multi-fact axes-union tradeoff, pinned.
 	for (const r of rows) {
 		if (!r.columnName || !r.tableId || !viewTableIds.has(r.tableId)) continue;
+		if (decidedByView.has(r.columnName)) continue;
 		decidedByView.add(r.columnName);
 		const kind = temporalKindOfType(r.resolvedType);
 		if (kind !== null) kinds.set(r.columnName, kind);
@@ -375,7 +379,11 @@ export async function resolveDrillAxes(
 				resolvedType: columns.resolvedType,
 			})
 			.from(columns)
-			.where(inArray(columns.tableId, typeTableIds)),
+			.where(inArray(columns.tableId, typeTableIds))
+			// Deterministic row order — temporalKindsFromColumns is first-wins
+			// per name, so an unordered read would be Postgres row-order
+			// roulette (the same trap the enriched-views read pins above).
+			.orderBy(asc(columns.tableId), asc(columns.columnName)),
 	]);
 
 	// The JS filter mirrors the SQL `inArray` (the belt-over-braces pattern

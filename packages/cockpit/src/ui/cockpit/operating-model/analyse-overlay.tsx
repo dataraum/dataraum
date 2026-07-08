@@ -129,8 +129,14 @@ function narrowNodeCompose(raw: unknown): NodeComposeState {
 export function scopeSentence(steps: DrillStep[]): string {
 	const pins = steps.filter((s) => s.kind === "pin");
 	if (pins.length > 0) {
+		// A grained pin names its bucket width — "2025-01-01 (Month)" is a
+		// month, not a day, and the missing-operand sentence inherits this.
 		return `pinned to ${pins
-			.map((p) => `${String(p.value ?? "∅")}`)
+			.map((p) => {
+				const grain = p.grain ? parseGrainToken(p.grain) : null;
+				const label = String(p.value ?? "∅");
+				return grain ? `${label} (${grainLabel(grain)})` : label;
+			})
 			.join(", ")}`;
 	}
 	const slices = steps.filter((s) => s.kind === "slice");

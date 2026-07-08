@@ -215,6 +215,19 @@ describe("EquationHeader", () => {
 		}
 	});
 
+	it("passes exact big-integer strings through instead of rounding via double", () => {
+		renderHeader({
+			totals: {
+				revenue: "12345678901234567893",
+				cost_of_goods_sold: 200,
+				value: 75,
+			},
+		});
+		expect(
+			screen.getAllByTestId("equation-term-Revenue")[0]?.textContent,
+		).toContain("12345678901234567893");
+	});
+
 	it("renders nothing without an expression (bare measures)", () => {
 		const { container } = renderHeader({
 			shape: shape("a + b", { expression: null }),

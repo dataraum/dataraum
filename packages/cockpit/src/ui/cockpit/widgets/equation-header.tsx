@@ -44,8 +44,9 @@ export interface NodeShapeWire {
 
 /** An operand's role in the formula — what the ledger ink encodes: added
  *  terms credit-green, subtracted terms debit-red, divisors (neither side of
- *  the ledger) indigo. First occurrence wins, matching the additive
- *  flattening's sign algebra. */
+ *  the ledger) indigo. First occurrence wins — ONE hue per operand is the
+ *  point (unlike `flattenAdditive`, which deliberately counts every
+ *  occurrence because it computes arithmetic, not ink). */
 export type OperandRole = "added" | "subtracted" | "divisor";
 
 export function operandRoles(expr: FormulaExpr): Map<string, OperandRole> {
@@ -107,12 +108,15 @@ const labelOf = (stepId: string): string =>
 		.join(" ");
 
 /** Deterministic number rendering (fixed locale — the modal is client-only,
- *  but hydration-safe formatting is the house rule). */
+ *  but hydration-safe formatting is the house rule). DECIMAL/HUGEINT arrive
+ *  as STRINGS on this path; an integer string past Number's exact range
+ *  passes through untouched — rounding it through a double would show wrong
+ *  digits while the grid's formatCell keeps them exact. */
 const formatNumber = (v: unknown): string | null => {
+	if (v === null || v === undefined || v === "") return null;
+	if (typeof v === "string" && /^-?\d{16,}$/.test(v)) return v;
 	const n = typeof v === "number" ? v : Number(v);
-	if (v === null || v === undefined || v === "" || !Number.isFinite(n)) {
-		return null;
-	}
+	if (!Number.isFinite(n)) return null;
 	return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 };
 
@@ -275,8 +279,20 @@ export function EquationHeader({
 				return <span>{String(e.value)}</span>;
 			case "ref":
 				return term(e.name);
-			case "neg":
-				return <span>−{renderExpr(e.operand, 3)}</span>;
+			case "neg": {
+				const inner = <span>−{renderExpr(e.operand, 3)}</span>;
+				// Inside anything tighter than a leftmost `+` chain, a bare unary
+				// minus is ambiguous (`a − −b`) — parenthesize it.
+				return minPrec > 1 ? (
+					<span>
+						<span style={{ opacity: 0.5 }}>(</span>
+						{inner}
+						<span style={{ opacity: 0.5 }}>)</span>
+					</span>
+				) : (
+					inner
+				);
+			}
 			case "bin": {
 				const prec = PREC[e.op];
 				const inner = (

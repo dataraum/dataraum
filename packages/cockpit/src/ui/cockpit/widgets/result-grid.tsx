@@ -255,6 +255,12 @@ export function ResultGridView({
 			store.columns.map((name, c) => [name, store.cell(c, index)]),
 		);
 
+	// The footer's label column: the first column the footer row has no value
+	// for (computed once, not per cell).
+	const footerLabelIndex = footerRow
+		? store.columns.findIndex((n) => footerRow[n] === undefined)
+		: -1;
+
 	// Load-on-scroll (DAT-613): when the virtualized body reaches within an
 	// overscan of the last loaded row, ask the owner for the next page. This is a
 	// scroll-driven side effect (a DOM/measurement signal), so it lives in an
@@ -508,6 +514,21 @@ export function ResultGridView({
 						</Table.Thead>
 						<Table.Tbody
 							onMouseLeave={onRowHover ? () => onRowHover(null) : undefined}
+							// The keyboard counterpart of mouseleave: focus moving OUT of
+							// the body releases the binding (a focused row has no leave
+							// event, and virtualization can unmount it silently).
+							onBlur={
+								onRowHover
+									? (e) => {
+											if (
+												!(e.relatedTarget instanceof Node) ||
+												!e.currentTarget.contains(e.relatedTarget)
+											) {
+												onRowHover(null);
+											}
+										}
+									: undefined
+							}
 						>
 							{/* Spacer rows reserve the off-screen scroll height so only the
 							    visible window carries real <tr> cells. */}
@@ -615,11 +636,7 @@ export function ResultGridView({
 										const value = footerRow[name];
 										// The first column without a total carries the label —
 										// under a slice that's the dimension column.
-										const label =
-											value === undefined &&
-											store.columns.findIndex(
-												(n) => footerRow[n] === undefined,
-											) === c;
+										const label = c === footerLabelIndex;
 										const accent = columnAccents?.[name];
 										return (
 											<Table.Td

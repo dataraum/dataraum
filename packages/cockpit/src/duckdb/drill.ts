@@ -67,8 +67,9 @@ export const sliceColumns = (steps: DrillStep[]): string[] => {
 /** The slice steps themselves (deduped by column, first wins) — the node path
  *  needs the grain riding each slice, not just the column names. A `grain` on
  *  a temporal slice buckets it via `time_bucket` (DAT-712; grain.ts owns the
- *  token grammar). Tier A keeps `sliceColumns`: its wire schema carries no
- *  grain, so one can never be silently dropped there. */
+ *  token grammar). Tier A keeps `sliceColumns` and its route rejects grained
+ *  steps outright (strict zod → 400) — a grain can never be silently dropped
+ *  into raw grouping there. */
 export const sliceSteps = (
 	steps: DrillStep[],
 ): { column: string; grain?: string }[] => {

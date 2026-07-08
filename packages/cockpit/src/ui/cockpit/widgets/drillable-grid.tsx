@@ -150,9 +150,21 @@ function GrainMenu({
 	const commitCustom = () => {
 		const token = custom.trim();
 		if (token === "") return;
-		if (!parseGrainToken(token)) {
+		const grain = parseGrainToken(token);
+		if (!grain) {
 			// The named refusal, client-side: same grammar, same message shape.
 			setCustomError("Not a grain — try 1d, 1w, 1M (m = minutes, M = months)");
+			return;
+		}
+		// The same restriction the presets encode: a DATE column has no hours
+		// to bucket — DuckDB's (INTERVAL, DATE) time_bucket would floor
+		// non-divisor sub-day widths to the PREVIOUS day and no-op divisors,
+		// both silently mislabeled. Refuse by name instead.
+		if (
+			axis.temporal === "date" &&
+			(grain.unit === "s" || grain.unit === "m" || grain.unit === "h")
+		) {
+			setCustomError("This column has day resolution — use 1d or coarser");
 			return;
 		}
 		setCustomError(null);
@@ -335,17 +347,25 @@ export function DrillableGrid({
 		onSuccess: ({ candidate, generation, pinRow, result }) => {
 			if (generation !== generationRef.current) return; // superseded — drop
 			if (result.ok) {
+				const prevPinCount = steps.filter((s) => s.kind === "pin").length;
+				const nextPinCount = candidate.filter((s) => s.kind === "pin").length;
 				setSteps(candidate);
 				setComposed({ sql: result.sql, params: result.params });
 				setRefusal(null);
 				onStepsChange?.(candidate);
+				// The grid remounts on the new composition — a hover observed
+				// under the OLD one must not outlive it (it would shadow the
+				// lock/totals binding; mouse flows only self-heal by DOM-layout
+				// accident, and a keyboard focus row has no leave event at all).
+				onRowHover?.(null);
 				// The lock follows the PINS, not the apply: a row-click pin sets
-				// it, losing the last pin clears it, and a slice-only change
-				// (re-grain, extra slice) leaves an existing lock standing — the
-				// pin's restriction, and therefore its values, didn't move.
+				// it; a slice-only change (re-grain, extra slice) leaves it
+				// standing — the pins' restriction didn't move; but any SHRINK of
+				// the pin set releases it, because the locked row was captured
+				// under a filter the chips no longer represent.
 				if (pinRow !== undefined) {
 					onPinnedRow?.(pinRow);
-				} else if (!candidate.some((s) => s.kind === "pin")) {
+				} else if (nextPinCount < prevPinCount) {
 					onPinnedRow?.(null);
 				}
 			} else {
@@ -370,6 +390,7 @@ export function DrillableGrid({
 			setComposed(null);
 			setRefusal(null);
 			onStepsChange?.([]);
+			onRowHover?.(null);
 			onPinnedRow?.(null);
 			return;
 		}
@@ -415,11 +436,16 @@ export function DrillableGrid({
 				}
 			: undefined;
 
+	// Grain is a NODE-path capability: composeNodeQuery buckets it; the tier-A
+	// route rejects grained steps outright (strict zod). Without a nodeRef the
+	// temporal axis slices raw and no grain control renders.
+	const grainable = nodeRef !== undefined;
+
 	/** Slice a fresh axis — temporal axes start at the default grain. */
 	const slice = (axis: DrillAxis) => {
 		apply([
 			...steps,
-			axis.temporal !== null
+			grainable && axis.temporal !== null
 				? {
 						kind: "slice",
 						column: axis.column,
@@ -465,7 +491,7 @@ export function DrillableGrid({
 								disabled={slicedColumns.has(axis.column)}
 								onClick={() => slice(axis)}
 								rightSection={
-									axis.temporal !== null ? (
+									grainable && axis.temporal !== null ? (
 										<Text size="xs" c="dimmed">
 											{grainName(DEFAULT_TEMPORAL_GRAIN)}
 										</Text>
@@ -506,7 +532,12 @@ export function DrillableGrid({
 				{steps.map((step, i) => {
 					const axis =
 						step.kind === "slice" ? axisByColumn.get(step.column) : undefined;
-					if (step.kind === "slice" && axis && axis.temporal !== null) {
+					if (
+						grainable &&
+						step.kind === "slice" &&
+						axis &&
+						axis.temporal !== null
+					) {
 						// A temporal slice's chip IS the grain control.
 						return (
 							<GrainMenu

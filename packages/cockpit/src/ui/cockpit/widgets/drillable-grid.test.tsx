@@ -223,6 +223,16 @@ const lastSteps = () =>
 		.steps;
 
 describe("DrillableGrid — time grain", () => {
+	it("WITHOUT a nodeRef a temporal axis slices RAW — grain is a node-path capability", async () => {
+		renderGrid(); // tier-A path: /api/drill/compose rejects grained steps
+		await sliceBy("entry_id__date", "SQL_RAW");
+		expect(lastSteps()).toEqual([{ kind: "slice", column: "entry_id__date" }]);
+		// A plain removable pill, not the grain chip.
+		expect(
+			screen.getByTestId("drill-step-slice-entry_id__date").textContent,
+		).not.toContain("Month");
+	});
+
 	it("slices a temporal axis at MONTH grain by default; the chip is the grain control", async () => {
 		renderGrid({ metricKey: "m1" });
 		await sliceBy("entry_id__date", "SQL_M");

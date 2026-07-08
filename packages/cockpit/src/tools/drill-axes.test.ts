@@ -201,6 +201,17 @@ describe("temporalKindsFromColumns", () => {
 		expect(kinds.has("name")).toBe(false);
 	});
 
+	it("is first-wins across view rows — a shared name can't flip between loads", () => {
+		const kinds = temporalKindsFromColumns(
+			[
+				{ tableId: "vt1", columnName: "shared", resolvedType: "DATE" },
+				{ tableId: "vt2", columnName: "shared", resolvedType: "VARCHAR" },
+			],
+			new Set(["vt1", "vt2"]),
+		);
+		expect(kinds.get("shared")).toBe("date");
+	});
+
 	it("lets a view row decide over a same-named fact row — including 'not temporal'", () => {
 		const kinds = temporalKindsFromColumns(
 			[

@@ -22,9 +22,13 @@ const PinValueSchema = z.union([
 ]);
 const ColumnSchema = z.string().min(1).max(256);
 
+// STRICT: tier A has no grain support (time_bucket is a node-path capability,
+// DAT-712) — a step carrying `grain` must 400 loudly here, because z.object
+// would otherwise STRIP the key and group raw values under a chip that
+// claims a bucket width.
 const StepSchema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("slice"), column: ColumnSchema }),
-	z.object({
+	z.strictObject({ kind: z.literal("slice"), column: ColumnSchema }),
+	z.strictObject({
 		kind: z.literal("pin"),
 		column: ColumnSchema,
 		value: PinValueSchema,

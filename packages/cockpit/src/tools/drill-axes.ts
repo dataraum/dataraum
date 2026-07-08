@@ -342,7 +342,8 @@ export async function resolveDrillAxes(
 	const viewTableIds = new Set(
 		viewRows
 			.filter(
-				(v) => Boolean(v.factTableId) && factIds.includes(v.factTableId as string),
+				(v) =>
+					Boolean(v.factTableId) && factIds.includes(v.factTableId as string),
 			)
 			.map((v) => v.viewTableId)
 			.filter((id): id is string => Boolean(id)),

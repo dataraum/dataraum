@@ -137,6 +137,11 @@ export function ResultGridView({
 	sqlParams,
 	toolbarActions,
 	onRowClick,
+	onRowHover,
+	footerRow,
+	footerLabel = "Total",
+	columnAccents,
+	columnUnits,
 }: {
 	store: GridView;
 	fatal?: string | null;
@@ -145,8 +150,24 @@ export function ResultGridView({
 	onReachEnd?: () => void;
 	onFilterCommit?: (column: string, raw: string) => void;
 	/** Row-click action (DAT-672: the drill's row-pin). When set, body rows read
-	 * as clickable and deliver the row as a column→cell object. */
+	 * as clickable and deliver the row as a column→cell object. Rows are also
+	 * keyboard-focusable then — Enter/Space fires the same action (DAT-712 a11y). */
 	onRowClick?: (row: Record<string, Json | null>) => void;
+	/** Row hover/focus tracking (DAT-712: the equation header's rebind). Fired
+	 * with the row object on mouseenter/focus, with null when the pointer leaves
+	 * the body. Purely observational — never changes grid behavior. */
+	onRowHover?: (row: Record<string, Json | null> | null) => void;
+	/** A pinned summary row rendered as a sticky footer under the body (DAT-712's
+	 * total row): cells matched to columns BY NAME and formatted like body cells;
+	 * the first column without a value carries `footerLabel`. */
+	footerRow?: Record<string, Json | null>;
+	footerLabel?: string;
+	/** CSS color per column name, applied to the column's header text and cell
+	 * values (DAT-712's ledger ink — the equation layer owns the assignment; the
+	 * grid only renders it, so equation and columns can never disagree). */
+	columnAccents?: Record<string, string>;
+	/** Unit chip per column name, shown next to the header text (e.g. value → %). */
+	columnUnits?: Record<string, string>;
 	/** How many push-down filters are currently active (drives the funnel toggle's
 	 * active state + count). Owner-tracked; the view only renders the row. */
 	activeFilterCount?: number;
@@ -226,6 +247,13 @@ export function ResultGridView({
 			? totalSize - virtualRows[virtualRows.length - 1].end
 			: 0;
 	const colCount = store.columns.length;
+
+	/** The row at a store index as a column→cell object — what row-level
+	 *  callbacks (click-to-pin, hover-rebind) deliver. */
+	const rowObject = (index: number): Record<string, Json | null> =>
+		Object.fromEntries(
+			store.columns.map((name, c) => [name, store.cell(c, index)]),
+		);
 
 	// Load-on-scroll (DAT-613): when the virtualized body reaches within an
 	// overscan of the last loaded row, ask the owner for the next page. This is a
@@ -372,9 +400,27 @@ export function ResultGridView({
 												wrap="nowrap"
 												justify={alignRight ? "flex-end" : "flex-start"}
 											>
-												{flexRender(
-													header.column.columnDef.header,
-													header.getContext(),
+												<span
+													style={
+														columnAccents?.[name]
+															? { color: columnAccents[name] }
+															: undefined
+													}
+												>
+													{flexRender(
+														header.column.columnDef.header,
+														header.getContext(),
+													)}
+												</span>
+												{columnUnits?.[name] && (
+													<Badge
+														size="xs"
+														variant="light"
+														color="gray"
+														data-testid={`canvas-result-grid-unit-${name}`}
+													>
+														{columnUnits[name]}
+													</Badge>
 												)}
 												{active ? (
 													sort.dir === "asc" ? (
@@ -460,7 +506,9 @@ export function ResultGridView({
 								</Table.Tr>
 							)}
 						</Table.Thead>
-						<Table.Tbody>
+						<Table.Tbody
+							onMouseLeave={onRowHover ? () => onRowHover(null) : undefined}
+						>
 							{/* Spacer rows reserve the off-screen scroll height so only the
 							    visible window carries real <tr> cells. */}
 							{padTop > 0 && (
@@ -483,15 +531,31 @@ export function ResultGridView({
 														// row action — a click that ends a selection is
 														// a copy gesture, not a pin.
 														if (window.getSelection()?.toString()) return;
-														onRowClick(
-															Object.fromEntries(
-																store.columns.map((name, c) => [
-																	name,
-																	store.cell(c, vr.index),
-																]),
-															),
-														);
+														onRowClick(rowObject(vr.index));
 													}
+												: undefined
+										}
+										// Clickable rows are keyboard rows: focus rebinds (same
+										// signal as hover), Enter/Space pins (DAT-712 a11y).
+										tabIndex={onRowClick ? 0 : undefined}
+										onKeyDown={
+											onRowClick
+												? (e) => {
+														if (e.key !== "Enter" && e.key !== " ") return;
+														if (e.target !== e.currentTarget) return;
+														e.preventDefault();
+														onRowClick(rowObject(vr.index));
+													}
+												: undefined
+										}
+										onMouseEnter={
+											onRowHover
+												? () => onRowHover(rowObject(vr.index))
+												: undefined
+										}
+										onFocus={
+											onRowHover
+												? () => onRowHover(rowObject(vr.index))
 												: undefined
 										}
 										style={onRowClick ? { cursor: "pointer" } : undefined}
@@ -499,17 +563,22 @@ export function ResultGridView({
 									>
 										{row.getVisibleCells().map((cell) => {
 											const type = cell.column.columnDef.meta?.duckdbType;
+											const accent =
+												columnAccents?.[
+													String(cell.column.columnDef.header ?? "")
+												];
 											return (
 												<Table.Td
 													key={cell.id}
-													style={
-														cellAlign(type) === "right"
+													style={{
+														...(cellAlign(type) === "right"
 															? {
 																	textAlign: "right",
 																	fontVariantNumeric: "tabular-nums",
 																}
-															: undefined
-													}
+															: {}),
+														...(accent ? { color: accent } : {}),
+													}}
 												>
 													{formatCell(cell.getValue(), type)}
 												</Table.Td>
@@ -527,6 +596,57 @@ export function ResultGridView({
 								</Table.Tr>
 							)}
 						</Table.Tbody>
+						{footerRow && (
+							<Table.Tfoot
+								style={{
+									position: "sticky",
+									bottom: 0,
+									zIndex: 1,
+									backgroundColor: "var(--mantine-color-body)",
+								}}
+								data-testid="canvas-result-grid-footer"
+							>
+								<Table.Tr style={{ fontWeight: 600 }}>
+									{store.columns.map((name, c) => {
+										const typeList = Array.isArray(store.types)
+											? (store.types as Json[])
+											: [];
+										const type = typeList[c];
+										const value = footerRow[name];
+										// The first column without a total carries the label —
+										// under a slice that's the dimension column.
+										const label =
+											value === undefined &&
+											store.columns.findIndex(
+												(n) => footerRow[n] === undefined,
+											) === c;
+										const accent = columnAccents?.[name];
+										return (
+											<Table.Td
+												key={name}
+												style={{
+													borderTop:
+														"2px solid var(--mantine-color-default-border)",
+													...(cellAlign(type) === "right"
+														? {
+																textAlign: "right",
+																fontVariantNumeric: "tabular-nums",
+															}
+														: {}),
+													...(accent ? { color: accent } : {}),
+												}}
+											>
+												{label
+													? footerLabel
+													: value === undefined
+														? ""
+														: formatCell(value, type)}
+											</Table.Td>
+										);
+									})}
+								</Table.Tr>
+							</Table.Tfoot>
+						)}
 					</Table>
 				</div>
 			)}
@@ -608,6 +728,11 @@ export function WindowedGrid({
 	sqlParams,
 	toolbarActions,
 	onRowClick,
+	onRowHover,
+	footerRow,
+	footerLabel,
+	columnAccents,
+	columnUnits,
 }: {
 	endpoint: string;
 	/** The base request body (WITHOUT sort/filters/limit/offset — the grid appends those). */
@@ -619,6 +744,14 @@ export function WindowedGrid({
 	toolbarActions?: ReactNode;
 	/** Forwarded row-click action — see ResultGridView. */
 	onRowClick?: (row: Record<string, Json | null>) => void;
+	/** Forwarded row hover/focus tracking — see ResultGridView (DAT-712). */
+	onRowHover?: (row: Record<string, Json | null> | null) => void;
+	/** Forwarded sticky total row — see ResultGridView (DAT-712). */
+	footerRow?: Record<string, Json | null>;
+	footerLabel?: string;
+	/** Forwarded per-column accents / unit chips — see ResultGridView (DAT-712). */
+	columnAccents?: Record<string, string>;
+	columnUnits?: Record<string, string>;
 }) {
 	const [sort, setSort] = useState<GridSort | null>(null);
 	const [filters, setFilters] = useState<GridFilter[]>([]);
@@ -743,6 +876,11 @@ export function WindowedGrid({
 			sqlParams={sqlParams}
 			toolbarActions={toolbarActions}
 			onRowClick={onRowClick}
+			onRowHover={onRowHover}
+			footerRow={footerRow}
+			footerLabel={footerLabel}
+			columnAccents={columnAccents}
+			columnUnits={columnUnits}
 		/>
 	);
 }

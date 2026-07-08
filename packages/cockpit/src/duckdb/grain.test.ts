@@ -97,10 +97,14 @@ describe("temporalKindOfType", () => {
 		expect(temporalKindOfType(type)).toBe(kind);
 	});
 
-	it.each(["VARCHAR", "BIGINT", "TIME", "", null, undefined])(
-		"non-temporal %j → null",
-		(type) => {
-			expect(temporalKindOfType(type)).toBeNull();
-		},
-	);
+	it.each([
+		"VARCHAR",
+		"BIGINT",
+		"TIME",
+		"",
+		null,
+		undefined,
+	])("non-temporal %j → null", (type) => {
+		expect(temporalKindOfType(type)).toBeNull();
+	});
 });

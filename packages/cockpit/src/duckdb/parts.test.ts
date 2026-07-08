@@ -310,7 +310,10 @@ describe("composeNodeQuery — grouped", () => {
 				true,
 			),
 		];
-		const q = composed(steps, undefined, { slices: [{ column: "region" }], pins: [] });
+		const q = composed(steps, undefined, {
+			slices: [{ column: "region" }],
+			pins: [],
+		});
 		expect(q.sql).toContain("FULL JOIN");
 		expect(q.sql).not.toContain("COALESCE");
 		const byRegion = new Map((await rows(q.sql)).map((r) => [r.region, r]));
@@ -341,7 +344,8 @@ describe("composeNodeQuery — grouped", () => {
 			),
 		];
 		const result = await rows(
-			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] }).sql,
+			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] })
+				.sql,
 		);
 		expect(result).toHaveLength(2); // the union domain still shows the groups…
 		for (const r of result) {
@@ -380,7 +384,8 @@ describe("composeNodeQuery — grouped", () => {
 		];
 		const scalar = num((await rows(composed(steps).sql))[0]?.value);
 		const result = await rows(
-			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] }).sql,
+			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] })
+				.sql,
 		);
 		const byAccount = new Map(result.map((r) => [r.account, num(r.value)]));
 		expect(byAccount.get("depr")).toBe(40);
@@ -409,7 +414,10 @@ describe("composeNodeQuery — grouped", () => {
 		const byAccount = new Map(
 			(
 				await rows(
-					composed(steps, undefined, { slices: [{ column: "account" }], pins: [] }).sql,
+					composed(steps, undefined, {
+						slices: [{ column: "account" }],
+						pins: [],
+					}).sql,
 				)
 			).map((r) => [r.account, num(r.value)]),
 		);
@@ -430,7 +438,8 @@ describe("composeNodeQuery — grouped", () => {
 			formula("out", "revenue + weird", ["revenue", "weird"], true),
 		];
 		const grouped = await rows(
-			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] }).sql,
+			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] })
+				.sql,
 		);
 		expect(grouped).toHaveLength(1); // both carriers observe only 'sales'
 		expect(grouped[0]?.value).toBeNull();
@@ -454,7 +463,8 @@ describe("composeNodeQuery — grouped", () => {
 			),
 		];
 		const result = await rows(
-			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] }).sql,
+			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] })
+				.sql,
 		);
 		expect(result.length).toBeGreaterThan(0); // revenue's groups still appear
 		for (const r of result) expect(r.value).toBeNull();
@@ -462,7 +472,11 @@ describe("composeNodeQuery — grouped", () => {
 
 	it("slices by several dims at once (GROUP BY + USING both)", async () => {
 		const q = composed(GROSS_PROFIT, undefined, {
-			slices: [{ column: "account" }, { column: "region" }, { column: "account" }],
+			slices: [
+				{ column: "account" },
+				{ column: "region" },
+				{ column: "account" },
+			],
 			pins: [],
 		});
 		const result = await rows(q.sql);
@@ -487,7 +501,10 @@ describe("composeNodeQuery — grouped", () => {
 		];
 		const scalar = num((await rows(composed(steps).sql))[0]?.value);
 		expect(scalar).toBe(560); // 800 - 200 - 40
-		const q = composed(steps, undefined, { slices: [{ column: "account" }], pins: [] });
+		const q = composed(steps, undefined, {
+			slices: [{ column: "account" }],
+			pins: [],
+		});
 		expect(q.sql.match(/UNION ALL/g)).toHaveLength(2); // three signed branches
 		const result = await rows(q.sql);
 		expect(result).toHaveLength(3); // union domain across all three sides
@@ -717,7 +734,8 @@ describe("composeNodeQuery — pins", () => {
 			),
 		];
 		const result = await rows(
-			composed(steps, undefined, { slices: [{ column: "region" }], pins: [] }).sql,
+			composed(steps, undefined, { slices: [{ column: "region" }], pins: [] })
+				.sql,
 		);
 		for (const r of result) {
 			expect(Object.keys(r)).toEqual([
@@ -965,9 +983,9 @@ describe("composeNodeTotals", () => {
 		expect(plain.sql.slice(plain.sql.lastIndexOf("SELECT"))).toContain(
 			'"value"',
 		);
-		expect(
-			plain.sql.slice(plain.sql.lastIndexOf("SELECT")),
-		).not.toContain('"revenue"');
+		expect(plain.sql.slice(plain.sql.lastIndexOf("SELECT"))).not.toContain(
+			'"revenue"',
+		);
 	});
 
 	it("a bare measure's totals are just its scalar", async () => {

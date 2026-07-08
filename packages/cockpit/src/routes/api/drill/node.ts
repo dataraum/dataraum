@@ -28,11 +28,7 @@ import { z } from "zod";
 import { pinSteps, sliceSteps } from "#/duckdb/drill";
 import { describeColumns, errorLine } from "#/duckdb/drill-sql";
 import { applyEngineScope, withLakeConnection } from "#/duckdb/lake";
-import {
-	composeNodeQuery,
-	composeNodeTotals,
-	nodeShape,
-} from "#/duckdb/parts";
+import { composeNodeQuery, composeNodeTotals, nodeShape } from "#/duckdb/parts";
 import { resolveNodeSteps } from "#/tools/drill-metric";
 
 // Length bounds follow the grid-query convention (column names 256, values
@@ -50,7 +46,11 @@ const ColumnSchema = z.string().min(1).max(256);
 const GrainSchema = z.string().min(2).max(8).optional();
 
 const StepSchema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("slice"), column: ColumnSchema, grain: GrainSchema }),
+	z.object({
+		kind: z.literal("slice"),
+		column: ColumnSchema,
+		grain: GrainSchema,
+	}),
 	z.object({
 		kind: z.literal("pin"),
 		column: ColumnSchema,
@@ -130,13 +130,16 @@ export const Route = createFileRoute("/api/drill/node")({
 					// `steps` is empty): the equation's node shape + the totals
 					// statement. A shape refusal or totals bind failure only omits the
 					// block — the grid must open regardless.
-					const shape = steps.length === 0 ? nodeShape(resolved.steps, stepId) : null;
+					const shape =
+						steps.length === 0 ? nodeShape(resolved.steps, stepId) : null;
 					const node =
 						shape !== null && !("refusal" in shape)
 							? { name: resolved.name, unit: resolved.unit, ...shape }
 							: undefined;
 					const totalsCandidate =
-						steps.length === 0 ? composeNodeTotals(resolved.steps, stepId) : null;
+						steps.length === 0
+							? composeNodeTotals(resolved.steps, stepId)
+							: null;
 
 					const result = await withLakeConnection(async (conn) => {
 						// Engine scope, matching /api/run-sql: extract parts are

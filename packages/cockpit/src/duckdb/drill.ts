@@ -75,7 +75,11 @@ export const sliceSteps = (
 	const out: { column: string; grain?: string }[] = [];
 	for (const s of steps) {
 		if (s.kind !== "slice" || out.some((d) => d.column === s.column)) continue;
-		out.push(s.grain === undefined ? { column: s.column } : { column: s.column, grain: s.grain });
+		out.push(
+			s.grain === undefined
+				? { column: s.column }
+				: { column: s.column, grain: s.grain },
+		);
 	}
 	return out;
 };

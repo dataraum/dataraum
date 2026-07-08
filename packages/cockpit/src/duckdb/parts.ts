@@ -670,8 +670,7 @@ function composeNode(
 			// engineer. Only the opened node's own operands, never intermediate
 			// CTEs'; skipped on a name collision with a dim or the value alias.
 			const operands =
-				(restricted || projectOperandsOnScalar) &&
-				step.stepId === target.stepId
+				(restricted || projectOperandsOnScalar) && step.stepId === target.stepId
 					? formulaRefs(parsed.expr).filter((r) => {
 							const dep = byId.get(r);
 							return (

@@ -526,10 +526,10 @@ class AnthropicProvider(LLMProvider):
                 elif block.type == "redacted_thinking":
                     raw_content.append({"type": "redacted_thinking", "data": block.data})
 
-            # Per-call telemetry log (DAT-600): elapsed + token usage, tagged by
-            # the caller's agent/phase label. The gen_ai span above is the
-            # analysis path since DAT-706; this line stays until DAT-707 settles
-            # log shipping, then follows it.
+            # Narrative log line — the gen_ai span above is the analysis path
+            # (DAT-706); this ships to Loki with trace correlation like every
+            # structlog event (DAT-707), so it stays a human-readable marker,
+            # not an aggregation surface.
             logger.info(
                 "llm_call",
                 label=request.label,

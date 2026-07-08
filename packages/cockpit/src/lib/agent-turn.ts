@@ -6,6 +6,7 @@
 // Keeping it here (not in the route) lets the watcher reuse it without importing
 // a route module. SERVER-ONLY (pulls the tool registry + the Anthropic adapter).
 
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
 	chat,
 	type chatParamsFromRequest,
@@ -20,7 +21,7 @@ import {
 	type ConversationKind,
 } from "#/db/cockpit/conversations";
 import { publish } from "#/lib/chat-bus";
-import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { llmOtel } from "#/lib/llm-otel";
 import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { getInstructions } from "#/prompts";
@@ -123,12 +124,12 @@ export function buildChatOptions(
 		messages,
 		tools: [...toolsByKind[kind]],
 		abortController,
-		// Per-turn LLM telemetry (DAT-600) + the tool-args guard (DAT-661
-		// coercion/rejection counters). Same label so the lines correlate; tags
+		// Per-run gen_ai spans/metrics (DAT-706) + the tool-args guard (DAT-661
+		// coercion/rejection counters). Same label so the signals correlate; tags
 		// this orchestrator turn distinctly from the nested `answer` sub-agent
 		// (tools/query.ts).
 		middleware: [
-			llmTelemetryMiddleware("orchestrator"),
+			...llmOtel("orchestrator"),
 			toolArgsGuardMiddleware("orchestrator"),
 		],
 	};
@@ -185,17 +186,39 @@ export async function streamAgentTurnToBus(
 	},
 ): Promise<void> {
 	const { kind, workspaceContext, abortController, persist = true } = opts;
-	const stream = chat(
-		buildChatOptions(kind, modelMessages, abortController, workspaceContext),
-	);
-	const source = persist ? teeAndPersist(stream, conversationId) : stream;
-	try {
-		for await (const chunk of source) {
-			publish(conversationId, chunk);
-		}
-	} catch (err) {
-		if (!abortController?.signal.aborted) {
-			console.error("[agent-turn] stream failed:", err);
-		}
-	}
+	// One ACTIVE span per turn (DAT-706): chat() spans parent to context.active(),
+	// and the drain below is where tools — and their NESTED chat() runs (the
+	// `answer` sub-agent, the chart author, the report summary) — execute. With
+	// this span current for the whole create+drain, all of them join ONE trace;
+	// without it each nested run is its own root and the turn's latency picture
+	// fragments. Telemetry off = no-op tracer, the callback just runs.
+	await trace
+		.getTracer("dataraum-cockpit")
+		.startActiveSpan(
+			`turn ${kind}`,
+			{ attributes: { "gen_ai.conversation.id": conversationId } },
+			async (span) => {
+				const stream = chat(
+					buildChatOptions(
+						kind,
+						modelMessages,
+						abortController,
+						workspaceContext,
+					),
+				);
+				const source = persist ? teeAndPersist(stream, conversationId) : stream;
+				try {
+					for await (const chunk of source) {
+						publish(conversationId, chunk);
+					}
+				} catch (err) {
+					if (!abortController?.signal.aborted) {
+						console.error("[agent-turn] stream failed:", err);
+						span.setStatus({ code: SpanStatusCode.ERROR });
+					}
+				} finally {
+					span.end();
+				}
+			},
+		);
 }

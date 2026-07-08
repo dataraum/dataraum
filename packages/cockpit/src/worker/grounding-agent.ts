@@ -25,7 +25,7 @@ import {
 	type GroundingReadinessRow,
 	readGroundingReadiness,
 } from "#/db/metadata/grounding-readiness";
-import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { llmOtel } from "#/lib/llm-otel";
 import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { teach } from "#/tools/teach";
@@ -160,10 +160,7 @@ export async function assessAndGround(
 	const captured = { count: 0 };
 	const verdict = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		middleware: [
-			llmTelemetryMiddleware("grounding"),
-			toolArgsGuardMiddleware("grounding"),
-		],
+		middleware: [...llmOtel("grounding"), toolArgsGuardMiddleware("grounding")],
 		// The verdict rides the streaming tool loop itself (combined
 		// tools+outputSchema request — see llm.ts), so the loop's full budget
 		// applies; there is no separate structured-output call to re-budget.

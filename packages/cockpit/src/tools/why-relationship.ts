@@ -33,7 +33,7 @@ import {
 } from "../db/metadata/schema";
 import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
-import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
+import { llmOtel } from "../lib/llm-otel";
 import { MODEL, STRUCTURED_OUTPUT_MAX_TOKENS } from "../llm";
 import { getWhyInstructions } from "../prompts";
 import {
@@ -208,7 +208,7 @@ export async function synthesizeAnalysis(
 	const toLabel = `${data.to_table_name ?? "?"}.${data.to_column_name ?? data.to_column_id}`;
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		middleware: [llmTelemetryMiddleware("why_relationship")],
+		middleware: [...llmOtel("why_relationship")],
 		abortController: linkedAbortController(signal),
 		modelOptions: {
 			max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS,

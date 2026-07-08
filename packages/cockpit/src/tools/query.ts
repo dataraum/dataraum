@@ -42,7 +42,7 @@ import {
 	validateStepNames,
 } from "../duckdb/run-steps";
 import { linkedAbortController } from "../lib/abort";
-import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
+import { llmOtel } from "../lib/llm-otel";
 import { sqlEquivalent } from "../lib/sql-canonical";
 import { toolArgsGuardMiddleware } from "../lib/tool-args-guard";
 import {
@@ -661,11 +661,11 @@ export async function querySubAgent(
 			makeRunStepsTool(captured, nearUniqueColumns),
 			emitResult,
 		],
-		// Per-turn LLM telemetry (DAT-600) + the tool-args guard (DAT-661 coercion/
-		// rejection counters). Logs this nested sub-agent loop SEPARATELY from the
-		// orchestrator; `iterations` exposes its round-trip depth.
+		// Per-run gen_ai spans/metrics (DAT-706) + the tool-args guard (DAT-661
+		// coercion/rejection counters). Tags this nested sub-agent loop SEPARATELY
+		// from the orchestrator; the iteration spans expose its round-trip depth.
 		middleware: [
-			llmTelemetryMiddleware("answer_subagent"),
+			...llmOtel("answer_subagent"),
 			toolArgsGuardMiddleware("answer_subagent"),
 		],
 	});

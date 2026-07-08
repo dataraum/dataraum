@@ -41,9 +41,9 @@
 // `array`/`object` are candidates; everything else passes through untouched, and
 // zod still validates the parsed value, so the rescue cannot admit bad data.
 //
-// Observe-only beyond that one rescue. Attach next to llmTelemetryMiddleware with
-// the same label at every chat() that passes `tools`. chat({ outputSchema }) has
-// no tool boundary (native structured output) — nothing to guard there.
+// Observe-only beyond that one rescue. Attach next to llmOtel() with the same
+// label at every chat() that passes `tools`. chat({ outputSchema }) has no tool
+// boundary (native structured output) — nothing to guard there.
 
 import type { ChatMiddleware, Tool } from "@tanstack/ai";
 import { z } from "zod";
@@ -170,8 +170,8 @@ function guardTool(label: string, tool: Tool): Tool {
 
 /**
  * Build the tool-args guard middleware for one chat() run. `label` tags the call
- * site, matching the site's llmTelemetryMiddleware label. A fresh instance per
- * chat() invocation, like the telemetry middleware.
+ * site, matching the site's llmOtel label. A fresh instance per chat()
+ * invocation, like the telemetry middleware.
  */
 export function toolArgsGuardMiddleware(label: string): ChatMiddleware {
 	// onConfig re-fires per agent iteration and the transformed tools PERSIST

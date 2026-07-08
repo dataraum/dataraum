@@ -22,7 +22,7 @@ import { chat, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { config } from "#/config";
 import { linkedAbortController } from "#/lib/abort";
-import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
+import { llmOtel } from "#/lib/llm-otel";
 import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import {
@@ -107,7 +107,7 @@ const emitOnce: EmitFn = async (systemPrompts, messages, signal) => {
 	const stream = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
 		middleware: [
-			llmTelemetryMiddleware("chart_author"),
+			...llmOtel("chart_author"),
 			toolArgsGuardMiddleware("chart_author"),
 		],
 		abortController,

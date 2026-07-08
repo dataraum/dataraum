@@ -144,6 +144,7 @@ function OperandTerm({
 	dimmed,
 	missing,
 	transition,
+	title,
 }: {
 	label: string;
 	value: string | null;
@@ -153,10 +154,14 @@ function OperandTerm({
 	/** Observed-NULL: doctrine v2's honest gap. */
 	missing: boolean;
 	transition: boolean;
+	/** The gap's explanation, as a tooltip — never a second line (the
+	 *  equation's height is load-bearing in the modal title). */
+	title?: string;
 }) {
 	return (
 		<span
 			data-testid={`equation-term-${label}`}
+			title={title}
 			style={{
 				display: "inline-flex",
 				flexDirection: "column",
@@ -267,6 +272,11 @@ export function EquationHeader({
 				dimmed={t.dimmed}
 				missing={t.missing}
 				transition={!reducedMotion}
+				title={
+					t.missing
+						? `No ${labelOf(stepId)} booked in ${scope} — ${metricLabel} needs every input.`
+						: undefined
+				}
 			/>
 		);
 	};
@@ -332,10 +342,14 @@ export function EquationHeader({
 
 	// The equation IS the whole header now — identity (name, kind, unit,
 	// scope) lives in the modal's title row (DAT-712 iteration 2: the
-	// upper-left corner was carrying the metric name twice).
+	// upper-left corner was carrying the metric name twice). CONSTANT HEIGHT
+	// is load-bearing (iteration 3): the equation sits in the modal title, so
+	// a rebind must never grow its wrapper — hover-while-scrolling would
+	// jitter the whole surface. Hence nowrap, and the missing-operand
+	// explanation rides the gapped term as a tooltip instead of a second line.
 	return (
 		<div data-testid="equation-header">
-			<Group gap={4} wrap="wrap" align="center" data-testid="equation-body">
+			<Group gap={4} wrap="nowrap" align="center" data-testid="equation-body">
 				{elided ? (
 					// Many-operand formulas elide to named chips — nesting stops
 					// reading as an equation past a handful of terms.
@@ -354,6 +368,11 @@ export function EquationHeader({
 					fw={700}
 					style={{ fontVariantNumeric: "tabular-nums" }}
 					data-testid="equation-result"
+					title={
+						missingTerms.length > 0
+							? `No ${labelOf(missingTerms[0] ?? "")} booked in ${scope} — ${metricLabel} needs every input.`
+							: undefined
+					}
 				>
 					{resultText ?? "—"}
 				</Text>
@@ -364,12 +383,6 @@ export function EquationHeader({
 					</Text>
 				)}
 			</Group>
-			{missingTerms.length > 0 && (
-				<Text size="xs" c="dimmed" mt={2} data-testid="equation-missing">
-					No {labelOf(missingTerms[0] ?? "")} booked in {scope} — {metricLabel}{" "}
-					needs every input.
-				</Text>
-			)}
 		</div>
 	);
 }

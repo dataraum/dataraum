@@ -257,6 +257,7 @@ export function DrillableGrid({
 	onRowHover,
 	onPinnedRow,
 	onStepsChange,
+	fillHeight,
 }: {
 	/** The base query (the node's composed SQL on the canvas path). */
 	sql: string;
@@ -282,6 +283,9 @@ export function DrillableGrid({
 	onPinnedRow?: (row: Record<string, Json | null> | null) => void;
 	/** Fired with the committed step stack after every accepted apply. */
 	onStepsChange?: (steps: DrillStep[]) => void;
+	/** Fill the parent's height (flex column) instead of the grid's default
+	 *  480px body cap — see ResultGridView (DAT-712). */
+	fillHeight?: boolean;
 }) {
 	const baseParams = useMemo<SqlParams>(() => params ?? [], [params]);
 	// The committed stack + its server-composed statement move TOGETHER: steps
@@ -586,7 +590,19 @@ export function DrillableGrid({
 	);
 
 	return (
-		<div data-testid="drillable-grid">
+		<div
+			data-testid="drillable-grid"
+			style={
+				fillHeight
+					? {
+							display: "flex",
+							flexDirection: "column",
+							flex: 1,
+							minHeight: 0,
+						}
+					: undefined
+			}
+		>
 			{refusal && (
 				<Alert
 					color="yellow"
@@ -615,6 +631,7 @@ export function DrillableGrid({
 				columnAccents={columnAccents}
 				columnUnits={columnUnits}
 				toolbarStart={drillControls}
+				fillHeight={fillHeight}
 				toolbarActions={
 					<DrillChartAction
 						key={effectiveKey}

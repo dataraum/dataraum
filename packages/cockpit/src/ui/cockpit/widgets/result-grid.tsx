@@ -136,6 +136,7 @@ export function ResultGridView({
 	sqlParams,
 	toolbarActions,
 	toolbarStart,
+	fillHeight = false,
 	onRowClick,
 	onRowHover,
 	footerRow,
@@ -187,6 +188,11 @@ export function ResultGridView({
 	 * it lives in the status pill now): the drill surface mounts its slice
 	 * controls here (DAT-712 iteration 3). */
 	toolbarStart?: ReactNode;
+	/** Fill the parent's height instead of capping the body at 480px — the
+	 * analyse modal sizes ITSELF and the grid body must be the modal's ONLY
+	 * vertical scroller (double scrollbars otherwise). The parent chain must
+	 * be a flex column with minHeight 0. */
+	fillHeight?: boolean;
 }) {
 	// The filter row is hidden by default (a clean grid) and toggled by the funnel
 	// in the toolbar. An applied-but-hidden filter isn't stranded: the funnel stays
@@ -293,7 +299,19 @@ export function ResultGridView({
 	const status = fatal ? "error" : store.status;
 
 	return (
-		<div data-testid="canvas-result-grid">
+		<div
+			data-testid="canvas-result-grid"
+			style={
+				fillHeight
+					? {
+							display: "flex",
+							flexDirection: "column",
+							flex: 1,
+							minHeight: 0,
+						}
+					: undefined
+			}
+		>
 			<Group justify="space-between" mb="xs" align="flex-start">
 				{/* The row count lives in the status pill (a finished grid IS its
 				    row count) — the left slot hosts the owner's controls (the
@@ -383,7 +401,11 @@ export function ResultGridView({
 			{colCount > 0 && (
 				<div
 					ref={scrollRef}
-					style={{ maxHeight: 480, overflow: "auto" }}
+					style={
+						fillHeight
+							? { flex: 1, minHeight: 0, overflow: "auto" }
+							: { maxHeight: 480, overflow: "auto" }
+					}
 					data-testid="canvas-result-grid-scroll"
 				>
 					<Table striped highlightOnHover stickyHeader>
@@ -754,6 +776,7 @@ export function WindowedGrid({
 	sqlParams,
 	toolbarActions,
 	toolbarStart,
+	fillHeight,
 	onRowClick,
 	onRowHover,
 	footerRow,
@@ -771,6 +794,8 @@ export function WindowedGrid({
 	toolbarActions?: ReactNode;
 	/** Forwarded toolbar LEFT slot — see ResultGridView (DAT-712). */
 	toolbarStart?: ReactNode;
+	/** Forwarded fill-the-parent sizing — see ResultGridView (DAT-712). */
+	fillHeight?: boolean;
 	/** Forwarded row-click action — see ResultGridView. */
 	onRowClick?: (row: Record<string, Json | null>) => void;
 	/** Forwarded row hover/focus tracking — see ResultGridView (DAT-712). */
@@ -905,6 +930,7 @@ export function WindowedGrid({
 			sqlParams={sqlParams}
 			toolbarActions={toolbarActions}
 			toolbarStart={toolbarStart}
+			fillHeight={fillHeight}
 			onRowClick={onRowClick}
 			onRowHover={onRowHover}
 			footerRow={footerRow}

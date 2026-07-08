@@ -174,14 +174,18 @@ describe("EquationHeader", () => {
 		expect(screen.getByTestId("equation-result").textContent).toBe("80");
 	});
 
-	it("an observed-NULL operand is the honest gap: dash + the sentence", () => {
+	it("an observed-NULL operand is the honest gap: dash + tooltip, NEVER a second line", () => {
 		renderHeader({
 			hoverRow: { revenue: null, cost_of_goods_sold: 40, value: null },
 		});
 		expect(screen.getByTestId("equation-result").textContent).toBe("—");
-		expect(screen.getByTestId("equation-missing").textContent).toBe(
-			"No Revenue booked in all data — Gross Margin needs every input.",
-		);
+		// The sentence rides the gapped term (and the result) as a tooltip —
+		// a second line would change the title row's height and jitter the
+		// modal while hover-rebinding (iteration 4).
+		expect(
+			screen.getAllByTestId("equation-term-Revenue")[0]?.getAttribute("title"),
+		).toBe("No Revenue booked in all data — Gross Margin needs every input.");
+		expect(screen.queryByTestId("equation-missing")).toBeNull();
 	});
 
 	it("a constant operand renders its declared value inline", () => {

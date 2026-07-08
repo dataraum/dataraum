@@ -226,10 +226,27 @@ export function AnalyseModal({
 			size="90%"
 			data-testid="node-analyse-modal"
 			// The title stretches so identity (left) and equation (right) share
-			// the header row; pr keeps a fair gap to the close button.
-			styles={{ title: { flex: 1 } }}
+			// the header row; pr keeps a fair gap to the close button. The
+			// content is a FIXED-height flex column and the grid body its only
+			// vertical scroller (`fillHeight`) — otherwise the 480px-capped grid
+			// plus header overflows the modal and a second scrollbar appears on
+			// the modal content.
+			styles={{
+				title: { flex: 1 },
+				content: {
+					display: "flex",
+					flexDirection: "column",
+					height: "calc(100dvh - 10dvh)",
+				},
+				body: {
+					flex: 1,
+					minHeight: 0,
+					display: "flex",
+					flexDirection: "column",
+				},
+			}}
 			title={
-				<Group justify="space-between" wrap="wrap" align="center" pr="lg">
+				<Group justify="space-between" wrap="wrap" align="center" pr="xl">
 					<Group gap="xs" wrap="wrap">
 						<Badge variant="light" tt="uppercase">
 							{node.kind}
@@ -288,6 +305,7 @@ export function AnalyseModal({
 					onRowHover={setHoverRow}
 					onPinnedRow={setLockedRow}
 					onStepsChange={setSteps}
+					fillHeight
 				/>
 			)}
 		</Modal>

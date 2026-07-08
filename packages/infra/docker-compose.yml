@@ -77,6 +77,11 @@ x-engine-worker-env: &engine-worker-env
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
   TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+  # OTLP telemetry sink (ADR-0019/DAT-705). This env var IS the vendor seam:
+  # everything speaks OTLP to whatever it names; unset/empty = telemetry off.
+  # Defaults to the in-stack otel-lgtm collector so composed dev traces work
+  # out of the box.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
   # Password for the cockpit_reader role the bootstrap provisions with SELECT on
   # ws_<id>_read ONLY (ADR-0008/DAT-453); the cockpit's METADATA_DATABASE_URL
   # connects with it.
@@ -263,6 +268,35 @@ services:
     ports:
       - "8080:8080"
 
+  # ── Observability — grafana/otel-lgtm (ADR-0019 / DAT-705) ──────────────
+  # All-in-one dev telemetry backend: OTel collector (OTLP :4317 gRPC /
+  # :4318 HTTP) + Tempo (traces) + Loki (logs) + Prometheus (metrics) +
+  # Grafana. Dev-grade by design (single node, no retention story) — the
+  # production backend is deliberately deferred; swapping it is only an
+  # OTEL_EXPORTER_OTLP_ENDPOINT change (ADR-0019). Nothing depends_on this
+  # service: OTel batch exporters buffer and drop gracefully if it lags, so
+  # app boot never gates on telemetry. (`up -d --wait` DOES wait on this
+  # healthcheck like every service's — that gates the compose command, not
+  # app boot.)
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    ports:
+      # Grafana — host 3001 (3000 is the cockpit).
+      - "3001:3000"
+      # OTLP, bound 0.0.0.0 (compose-ports gotcha) so host-dev processes
+      # (cockpit `bun --bun run dev`, `uv run python -m dataraum.worker.main`)
+      # export to localhost:4318 while in-stack services use otel-lgtm:4318.
+      - "4317:4317"
+      - "4318:4318"
+    healthcheck:
+      # The image touches /tmp/ready once collector + backends are up (the
+      # readiness signal its own examples use).
+      test: ["CMD", "cat", "/tmp/ready"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 30
+
   # Engine Temporal activity worker (DAT-344, parameterized per workspace by
   # DAT-505). The engine is a pure activity worker — no HTTP port. ONE container
   # per workspace: it bootstraps that workspace's ConnectionManager + DuckLake
@@ -391,6 +425,9 @@ services:
       TEMPORAL_HOST: ${TEMPORAL_HOST:-}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
+      # OTLP telemetry sink (ADR-0019/DAT-705) — same seam as the engine
+      # worker's; unset/empty = telemetry off.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
     volumes:
       # No lake volume — the lake is on the object store now (DAT-388).
       # Read-only config (DAT-361) — see DATARAUM_CONFIG_PATH above.

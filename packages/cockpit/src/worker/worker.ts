@@ -20,6 +20,10 @@
 // smoke-tested with no full cockpit env; the boot plugin reads `config` and
 // passes them in.
 
+import {
+	OpenTelemetryActivityInboundInterceptor,
+	OpenTelemetryActivityOutboundInterceptor,
+} from "@temporalio/interceptors-opentelemetry";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import * as activities from "./activities";
 
@@ -30,6 +34,11 @@ export interface OrchestrationWorkerOptions {
 	namespace: string;
 	/** The cockpit activity task queue (config.cockpitOrchestrationTaskQueue). */
 	taskQueue: string;
+	/** Attach the OTel activity interceptors (ADR-0019/DAT-705). The boot
+	 * plugin passes `getOtel() !== null` — an explicit flag rather than a
+	 * config read keeps this module pure of `config` (smoke-testable with no
+	 * full cockpit env). Off = the worker is byte-identical to before. */
+	traced: boolean;
 }
 
 export interface RunningOrchestrationWorker {
@@ -68,6 +77,26 @@ export function startOrchestrationWorker(
 			namespace: opts.namespace,
 			taskQueue: opts.taskQueue,
 			activities,
+			// Tracing (ADR-0019/DAT-705): the engine-hosted orchestration
+			// workflows schedule these activities with the OTel context on the
+			// `_tracer-data` header; the inbound interceptor extracts it and wraps
+			// each execution in a span parented to the workflow's — the cockpit's
+			// run writers + teach agent join the run's ONE trace. The outbound
+			// half stamps trace ids onto activity log/metric attributes. Plain
+			// main-isolate worker options — no bundle, no vm sandbox (the reason
+			// this worker is activity-only; see ADR-0020).
+			...(opts.traced
+				? {
+						interceptors: {
+							activity: [
+								(ctx) => ({
+									inbound: new OpenTelemetryActivityInboundInterceptor(ctx),
+									outbound: new OpenTelemetryActivityOutboundInterceptor(ctx),
+								}),
+							],
+						},
+					}
+				: {}),
 		});
 
 		// run() resolves only when the worker stops; let it poll in the background.

@@ -27,10 +27,15 @@ const config = defineConfig({
 		// default — the sanctioned shape for a Bun deployment (DAT-451).
 		// The co-located activity-only worker (DAT-529, slimmed DAT-708) boots
 		// here: a Nitro plugin runs once at server startup and starts the
-		// singleton worker.
+		// singleton worker. The OTel bootstrap (ADR-0019/DAT-705) is a plugin
+		// too and MUST run first — the worker's interceptors and the Temporal
+		// client resolve the global tracer provider it registers.
 		nitro({
 			preset: "bun",
-			plugins: ["./src/server/plugins/orchestration-worker.ts"],
+			plugins: [
+				"./src/server/plugins/otel.ts",
+				"./src/server/plugins/orchestration-worker.ts",
+			],
 			rollupConfig: {
 				external: [
 					/^@duckdb\/node-bindings-/,
@@ -43,6 +48,14 @@ const config = defineConfig({
 					// sandbox — the runtime uses only the slim worker core + core-bridge.
 					/^@temporalio\//,
 					/^@swc\//,
+					// Rolldown's CJS→ESM interop breaks @opentelemetry's class
+					// inheritance across package boundaries (OTLPTraceExporter extends
+					// OTLPExporterBase → "Cannot call a class constructor without new"
+					// at boot — DAT-705, same failure family as the duckdb binary).
+					// Externalize the scope; the runner's prod node_modules carries it,
+					// and @temporalio/interceptors-opentelemetry (already external)
+					// resolves the SAME copies, so no split module instances either.
+					/^@opentelemetry\//,
 				],
 			},
 		}),

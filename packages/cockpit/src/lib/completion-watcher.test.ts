@@ -82,12 +82,15 @@ vi.mock("#/lib/completion-note", () => ({
 vi.mock("#/prompts/workspace-context", () => ({
 	buildWorkspaceContext: async () => null,
 }));
-vi.mock("#/temporal/progress", () => ({
-	// The completion-watcher awaits handle.result() via this client; getHandle returns
-	// a handle whose result() is the controllable mock.
+// The completion-watcher awaits handle.result() via the shared client
+// (temporal/client.ts since DAT-705); getHandle returns a handle whose result()
+// is the controllable mock.
+vi.mock("#/temporal/client", () => ({
 	getTemporalClient: vi.fn(async () => ({
 		workflow: { getHandle: (...args: unknown[]) => h.getHandle(...args) },
 	})),
+}));
+vi.mock("#/temporal/progress", () => ({
 	getWorkflowProgress: vi.fn(async () => ({
 		done: true,
 		status: "COMPLETED",
@@ -96,7 +99,8 @@ vi.mock("#/temporal/progress", () => ({
 }));
 
 import { streamAgentTurnToBus } from "#/lib/agent-turn";
-import { getTemporalClient, getWorkflowProgress } from "#/temporal/progress";
+import { getTemporalClient } from "#/temporal/client";
+import { getWorkflowProgress } from "#/temporal/progress";
 import { awaitCompletion, pollOnce } from "./completion-watcher";
 
 beforeEach(() => {

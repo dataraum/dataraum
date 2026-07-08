@@ -47,8 +47,8 @@ import { buildModelMessages } from "#/lib/model-messages";
 import { runWithConversation } from "#/lib/run-context";
 import { WORKFLOW_PROGRESS_EVENT } from "#/lib/workflow-progress-event";
 import { buildWorkspaceContext } from "#/prompts/workspace-context";
+import { getTemporalClient } from "#/temporal/client";
 import {
-	getTemporalClient,
 	getWorkflowProgress,
 	type WorkflowProgress,
 } from "#/temporal/progress";

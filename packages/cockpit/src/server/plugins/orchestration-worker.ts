@@ -10,6 +10,7 @@
 
 import { definePlugin } from "nitro";
 import { config } from "#/config";
+import { getOtel } from "#/otel";
 import { startOrchestrationWorker } from "#/worker/worker";
 
 export default definePlugin(() => {
@@ -24,6 +25,10 @@ export default definePlugin(() => {
 		address: config.temporalHost,
 		namespace: config.temporalNamespace,
 		taskQueue: config.cockpitOrchestrationTaskQueue,
+		// The worker stays pure of `config` — the telemetry gate is resolved
+		// here (the otel plugin ran first, so this is a cache hit, never a
+		// second bootstrap).
+		traced: getOtel() !== null,
 	}).catch((err) => {
 		console.error("[orchestration-worker] failed to start:", err);
 	});

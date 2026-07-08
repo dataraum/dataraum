@@ -38,7 +38,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "networkx>=3.6",
     "anthropic>=0.76.0",
-    "temporalio>=1.27",
+    # [opentelemetry] pulls the contrib TracingInterceptor's otel-api/sdk deps
+    # (ADR-0019/DAT-705); the OTLP/HTTP exporter ships separately.
+    "temporalio[opentelemetry]>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
     "polars>=1.41.2",
     "pyarrow>=24.0.0",
 ]

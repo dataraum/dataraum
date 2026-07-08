@@ -1,7 +1,9 @@
 // Unit tests for the orchestration trigger seam (DAT-609). The singleton journey is
 // gone: each trigger `start`s a workflow by its deterministic per-workspace id with
-// the single-flight reuse/conflict policy. Mock #/config, @temporalio/client, and the
-// cockpit_db run writers at the seam (no Temporal / no DB in units).
+// the single-flight reuse/conflict policy. Mock #/config, #/otel, @temporalio/client,
+// and the cockpit_db run writers at the seam (no Temporal / no DB in units). The
+// triggers go through the process-shared client (temporal/client.ts, DAT-705), so
+// each case resets its cache to re-exercise the config guard.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -41,7 +43,11 @@ vi.mock("@temporalio/client", () => ({
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: h.recordRun,
 }));
+// getOtel: null = telemetry off — the client factory constructs no interceptor
+// and the OTel SDK never loads in units.
+vi.mock("#/otel", () => ({ getOtel: () => null }));
 
+import { resetTemporalClient } from "./client";
 import {
 	RunAlreadyRunningError,
 	startDirectRun,
@@ -50,6 +56,10 @@ import {
 } from "./orchestration-trigger";
 
 beforeEach(() => {
+	// The shared client is process-cached; drop it so the unconfigured-guard
+	// cases re-check config instead of reusing a client built under a prior
+	// case's configured mock.
+	resetTemporalClient();
 	h.config = {
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
@@ -99,7 +109,9 @@ describe("startGroundingLoop (DAT-609/708)", () => {
 				...SINGLE_FLIGHT,
 			}),
 		);
-		expect(h.close).toHaveBeenCalled();
+		// The shared client's connection stays OPEN (temporal/client.ts, DAT-705)
+		// — the per-call open/close churn went with withClient().
+		expect(h.close).not.toHaveBeenCalled();
 	});
 
 	it("translates an already-running conflict into an actionable error", async () => {

@@ -21,6 +21,7 @@ function fluent(rows: unknown[]) {
 		where: () => q,
 		orderBy: () => q,
 		limit: () => q,
+		leftJoin: () => q,
 		// biome-ignore lint/suspicious/noThenProperty: drizzle query builders ARE thenables — the double must be awaitable mid-chain
 		then: (
 			resolve: (v: unknown[]) => unknown,
@@ -37,6 +38,24 @@ vi.mock("#/db/metadata/client", () => ({
 	},
 }));
 
+// The AST read (real DuckDB) is integration-tested in sql-ast.integration.test;
+// here a thin regex stub extracts the aggregated column so the GATE logic is
+// tested in this pure-metadata unit.
+vi.mock("#/duckdb/sql-ast", () => ({
+	aggregatedColumns: async (expr: string) => {
+		// Mirror the real fail-closed-on-WINDOW: the aggregate walk can't read a
+		// WINDOW node, so a windowed aggregate yields NO columns (sql-ast.ts).
+		if (/\bOVER\s*\(/i.test(expr)) return new Set<string>();
+		const cols = new Set<string>();
+		for (const m of expr.matchAll(
+			/\b(?:SUM|COUNT|AVG|MIN|MAX)\s*\(\s*(\w+)/gi,
+		)) {
+			if (m[1]) cols.add(m[1]);
+		}
+		return cols;
+	},
+}));
+
 import {
 	columns,
 	currentDriverRankings,
@@ -49,10 +68,13 @@ import type { DrillAxis } from "#/duckdb/drill";
 import {
 	applyTemporalKinds,
 	axesFromSliceRows,
+	describeTemporalGate,
 	driverGains,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
 	resolveDrillAxes,
+	type TemporalBehavior,
+	temporalGate,
 	temporalKindsFromColumns,
 	unionSubstrateAxes,
 } from "./drill-axes";
@@ -242,6 +264,127 @@ describe("applyTemporalKinds", () => {
 	});
 });
 
+describe("temporalGate (DAT-673)", () => {
+	const behavior = (
+		entries: [string, string | null, boolean][],
+	): Map<string, TemporalBehavior> =>
+		new Map(
+			entries.map(([col, b, contested]) => [col, { behavior: b, contested }]),
+		);
+
+	it("passes a plain additive (uncontested) flow — grain stays", () => {
+		const gate = temporalGate(
+			new Set(["credit"]),
+			behavior([["credit", "additive", false]]),
+		);
+		expect(gate).toEqual({ safe: true, offending: [] });
+	});
+
+	it("flags a contested additive column with the 'contested' cause", () => {
+		const gate = temporalGate(
+			new Set(["credit"]),
+			behavior([["credit", "additive", true]]),
+		);
+		expect(gate).toEqual({
+			safe: false,
+			offending: [{ column: "credit", cause: "contested" }],
+		});
+	});
+
+	it("distinguishes stock (point_in_time) from unclassified (missing)", () => {
+		const gate = temporalGate(
+			new Set(["balance", "mystery"]),
+			behavior([["balance", "point_in_time", false]]),
+		);
+		expect(gate.safe).toBe(false);
+		expect(gate.offending).toEqual([
+			{ column: "balance", cause: "stock" },
+			{ column: "mystery", cause: "unclassified" },
+		]);
+	});
+
+	it("reports a present-but-null behavior as unclassified", () => {
+		const gate = temporalGate(new Set(["x"]), behavior([["x", null, false]]));
+		expect(gate.offending).toEqual([{ column: "x", cause: "unclassified" }]);
+	});
+
+	it("contested outranks the behavior value in the reported cause", () => {
+		// A point_in_time that is ALSO contested reports as contested — the
+		// higher-order fact (the detectors disagreed).
+		const gate = temporalGate(
+			new Set(["x"]),
+			behavior([["x", "point_in_time", true]]),
+		);
+		expect(gate.offending).toEqual([{ column: "x", cause: "contested" }]);
+	});
+
+	it("is safe only when EVERY aggregated column is a clean flow", () => {
+		expect(
+			temporalGate(
+				new Set(["credit", "debit"]),
+				behavior([
+					["credit", "additive", false],
+					["debit", "additive", false],
+				]),
+			),
+		).toEqual({ safe: true, offending: [] });
+		expect(
+			temporalGate(
+				new Set(["credit", "debit"]),
+				behavior([
+					["credit", "additive", false],
+					["debit", "additive", true],
+				]),
+			),
+		).toEqual({
+			safe: false,
+			offending: [{ column: "debit", cause: "contested" }],
+		});
+	});
+
+	it("fails closed when the aggregated set is empty (unparseable expr)", () => {
+		expect(
+			temporalGate(new Set(), behavior([["credit", "additive", false]])),
+		).toEqual({
+			safe: false,
+			offending: [],
+		});
+	});
+});
+
+describe("describeTemporalGate (DAT-673)", () => {
+	it("phrases each cause honestly — a balance, a dispute, a gap", () => {
+		expect(
+			describeTemporalGate([{ column: "debit_balance", cause: "stock" }]),
+		).toMatch(/debit_balance.*balance.*not a flow/);
+		expect(
+			describeTemporalGate([{ column: "net_position", cause: "contested" }]),
+		).toMatch(/net_position.*contested.*detectors disagreed/);
+		expect(
+			describeTemporalGate([{ column: "mystery", cause: "unclassified" }]),
+		).toMatch(/mystery.*no stock\/flow classification/);
+	});
+
+	it("does NOT call a contested or unclassified column a balance", () => {
+		expect(
+			describeTemporalGate([{ column: "net_position", cause: "contested" }]),
+		).not.toContain("balance");
+		expect(
+			describeTemporalGate([{ column: "mystery", cause: "unclassified" }]),
+		).not.toContain("balance");
+	});
+
+	it("joins multiple offenders and covers the empty (couldn't-confirm) case", () => {
+		const msg = describeTemporalGate([
+			{ column: "a", cause: "stock" },
+			{ column: "b", cause: "unclassified" },
+		]);
+		expect(msg).toContain("a");
+		expect(msg).toContain("b");
+		expect(describeTemporalGate([])).toContain("couldn't confirm");
+	});
+});
+
 describe("driver ordering", () => {
 	it("takes the max gain per dimension across rankings, ignoring malformed entries", () => {
 		const gains = driverGains([
@@ -345,10 +488,19 @@ const seed = () => {
 		},
 	]);
 	// The catalog types behind temporal detection: the VIEW table (vt1) carries
-	// the FK-projected dims; customer__segment is a DATE there.
+	// the FK-projected dims; customer__segment is a DATE there. The FACT (fact1)
+	// carries the aggregated measure `amount` — additive AND uncontested (a clean
+	// flow), so the flow gate leaves the temporal grain on.
 	rowsByTable.set(columns, [
 		{ tableId: "vt1", columnName: "customer__region", resolvedType: "VARCHAR" },
 		{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+		{
+			tableId: "fact1",
+			columnName: "amount",
+			resolvedType: "DOUBLE",
+			temporalBehavior: "additive",
+			temporalBehaviorContested: false,
+		},
 	]);
 };
 
@@ -428,6 +580,194 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect((await resolveDrillAxes({ standardField: "cogs" })).axes).toEqual(
 			[],
 		);
+	});
+
+	it("FLOW GATE: a stock measure keeps the date axis but loses its grain (DAT-673)", async () => {
+		seed();
+		// The extract sums a BALANCE column (point-in-time), not a flow.
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(debit_balance)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "debit_balance",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "point_in_time",
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// Still offered as a raw slice…
+		expect(dateAxis).toBeDefined();
+		// …but the grain is gated off, with a surfaced reason.
+		expect(dateAxis?.temporal).toBeNull();
+		expect(res.temporalGateReason).toContain("debit_balance");
+		expect(res.temporalGateReason).toContain("balance");
+	});
+
+	it("FLOW GATE: an unclassified measure fails closed (no grain)", async () => {
+		seed();
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(mystery)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		// `mystery` has no column_concept → temporalBehavior null → fail closed.
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "mystery",
+				resolvedType: "DOUBLE",
+				temporalBehavior: null,
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		expect(
+			res.axes.find((a) => a.column === "customer__segment")?.temporal,
+		).toBeNull();
+		expect(res.temporalGateReason).toContain("mystery");
+		// Accurate cause: an unclassified column is NOT called a balance.
+		expect(res.temporalGateReason).toContain("no stock/flow classification");
+		expect(res.temporalGateReason).not.toContain("balance");
+	});
+
+	it("FLOW GATE: a CONTESTED additive measure counts as stock — grain stripped (DAT-673)", async () => {
+		seed();
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(net_position)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		// `net_position` is additive, but the detectors CONTESTED it — we can't
+		// stand behind "summable flow", so the grain must fail closed.
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "net_position",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "additive",
+				temporalBehaviorContested: true,
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// Still offered as a raw slice, but the grain is gated off.
+		expect(dateAxis).toBeDefined();
+		expect(dateAxis?.temporal).toBeNull();
+		expect(res.temporalGateReason).toContain("net_position");
+		// Accurate cause: a contested verdict is reported as such, NOT as a balance.
+		expect(res.temporalGateReason).toContain("contested");
+		expect(res.temporalGateReason).not.toContain("balance");
+	});
+
+	it("FLOW GATE: a stale multi-measure snippet does NOT strip a safe measure's grain (scope leak, DAT-673)", async () => {
+		seed();
+		// The metric `gross_margin` names two extracts: `revenue` grounds to a
+		// promoted view and aggregates an additive FLOW; `cogs` is ACCEPTED but
+		// reads an UNPROMOTED relation (not in currentEnrichedViews) and sums a
+		// stock. The stale snippet's `debit_balance` must never reach the gate —
+		// otherwise it would strip grain from the whole node, including the
+		// genuinely-safe `revenue` measure.
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(amount)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+			{
+				standardField: "cogs",
+				parts: {
+					select: [{ expr: "SUM(debit_balance)", alias: "value" }],
+					from: ["enriched_stale_ledger"], // not a promoted view → ungrounded
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		const res = await resolveDrillAxes({ metricKey: "gross_margin" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// The safe measure keeps its grain: the stale snippet contributed nothing.
+		expect(dateAxis?.temporal).toBe("date");
+		expect(res.temporalGateReason).toBeUndefined();
+	});
+
+	it("FLOW GATE: a windowed measure among flows fails the WHOLE gate closed (F3 multi-expr, DAT-673)", async () => {
+		seed();
+		// Two GROUNDED measures on the same node: `revenue` is a normal additive
+		// FLOW; `cogs` is a WINDOW aggregate the AST read can't parse → empty
+		// aggregated set. The windowed measure's stock/flow status can't be
+		// confirmed, so the whole gate must fail closed — even though the flow
+		// sibling makes the aggregated-column total non-empty (the fail-OPEN the
+		// single-expr window guard alone missed).
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(credit)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+			{
+				standardField: "cogs",
+				parts: {
+					select: [
+						{
+							expr: "SUM(running_balance) OVER (PARTITION BY period)",
+							alias: "value",
+						},
+					],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "credit",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "additive",
+				temporalBehaviorContested: false,
+			},
+		]);
+		const res = await resolveDrillAxes({ metricKey: "gross_margin" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// Grain stripped despite the additive-flow sibling — couldn't confirm.
+		expect(dateAxis).toBeDefined();
+		expect(dateAxis?.temporal).toBeNull();
+		expect(res.temporalGateReason).toContain("couldn't confirm");
 	});
 });
 

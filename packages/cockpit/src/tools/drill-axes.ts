@@ -27,6 +27,7 @@ import { config } from "#/config";
 import { metadataDb } from "#/db/metadata/client";
 import {
 	columns,
+	currentColumnConcepts,
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
@@ -36,6 +37,7 @@ import {
 import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
 import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
 import { narrowSnippetParts } from "#/duckdb/parts";
+import { aggregatedColumns } from "#/duckdb/sql-ast";
 
 import { parseMetricDag } from "./operating-model-graph";
 
@@ -231,12 +233,107 @@ async function targetFields(req: DrillAxesRequest): Promise<string[]> {
 	return measureFieldsFromDag(row?.dag ?? null);
 }
 
+/** A column's stock/flow adjudication as the flow gate reads it: the
+ *  `temporal_behavior` verdict plus whether that verdict is CONTESTED (the
+ *  detectors disagreed). A contested or point_in_time input counts as stock. */
+export interface TemporalBehavior {
+	behavior: string | null;
+	contested: boolean;
+}
+
+/** Why an aggregated column disqualifies the node's grain: a point-in-time
+ *  `stock`, a `contested` verdict (detectors disagreed), or `unclassified`
+ *  (no — or a non-flow — stock/flow classification). */
+export type OffendingCause = "stock" | "contested" | "unclassified";
+
+/** An aggregated column that fails the flow gate, with the reason it fails —
+ *  so the caller can phrase an accurate refusal per cause (DAT-673). */
+export interface OffendingColumn {
+	column: string;
+	cause: OffendingCause;
+}
+
+/** Why a non-flow column offends (pure). Contested outranks the behavior value:
+ *  a disputed verdict is reported as such even if the last-written behavior was
+ *  a balance; a plain `point_in_time` is a stock; anything else — null, missing,
+ *  or an unrecognized value — is unclassified. */
+function offendingCause(b: TemporalBehavior | undefined): OffendingCause {
+	if (b?.contested) return "contested";
+	if (b?.behavior === "point_in_time") return "stock";
+	return "unclassified";
+}
+
+/**
+ * The FLOW GATE (DAT-673): a node's measures may be summed into time buckets
+ * only when every base column they aggregate is a summable FLOW —
+ * `temporal_behavior = additive` AND NOT `temporal_behavior_contested`. A stock
+ * (point-in-time balance) summed per period double-counts — arithmetically
+ * consistent, semantically fabricated; a CONTESTED verdict counts as stock too
+ * (we can't stand behind "summable flow" when the detectors disagreed).
+ * Unclassified (null) fails CLOSED for the same reason. Returns the offending
+ * columns WITH their cause so the caller phrases an accurate refusal. Pure →
+ * unit-tested; the aggregated-column extraction is the AST read (`sql-ast.ts`).
+ */
+export function temporalGate(
+	aggregatedCols: ReadonlySet<string>,
+	behaviorByColumn: ReadonlyMap<string, TemporalBehavior>,
+): { safe: boolean; offending: OffendingColumn[] } {
+	if (aggregatedCols.size === 0) {
+		// Couldn't determine what's aggregated (unparseable expr) → fail closed.
+		return { safe: false, offending: [] };
+	}
+	const offending: OffendingColumn[] = [];
+	for (const column of aggregatedCols) {
+		const b = behaviorByColumn.get(column);
+		// A clean flow — additive AND uncontested — is the ONLY safe shape.
+		if (b !== undefined && b.behavior === "additive" && !b.contested) continue;
+		offending.push({ column, cause: offendingCause(b) });
+	}
+	return { safe: offending.length === 0, offending };
+}
+
+/** One offending column's honest phrasing — a contested verdict is NOT a
+ *  "balance", and an unclassified column has no classification at all. */
+function phraseOffender({ column, cause }: OffendingColumn): string {
+	switch (cause) {
+		case "stock":
+			return `${column} is a balance (point-in-time stock), not a flow`;
+		case "contested":
+			return `${column} has a contested stock/flow verdict (the detectors disagreed)`;
+		case "unclassified":
+			return `${column} has no stock/flow classification`;
+	}
+}
+
+/** Phrase the flow-gate refusal from the per-column causes (pure). The empty
+ *  case (nothing aggregated — unparseable or windowed expr, DAT-673) can only
+ *  say it couldn't confirm a flow. */
+export function describeTemporalGate(
+	offending: readonly OffendingColumn[],
+): string {
+	if (offending.length === 0) {
+		return "Time grain is off: couldn't confirm this measure is a summable flow.";
+	}
+	return `Time grain is off: this measure aggregates ${offending
+		.map(phraseOffender)
+		.join(
+			"; ",
+		)}. Only a summable flow can be bucketed by period without double-counting.`;
+}
+
 /** Axes plus — when empty — the WHY, so the UI never shows a dead-end badge:
  *  each empty case names the stage of the resolution chain that yielded
  *  nothing (no extracts / stale relations / bare catalog). */
 export interface DrillAxesResult {
 	axes: DrillAxis[];
 	reason?: string;
+	/** Set when the flow gate stripped time grain from the temporal axes — the
+	 *  node aggregates a stock / contested / unclassified measure that can't be
+	 *  summed into periods (DAT-673). The date axis stays as a raw slice. This is
+	 *  a SERVER-SIDE signal only — no client reads it yet; surfacing it in the
+	 *  drill UI (so the missing grain chip reads as a decision, not a gap) is
+	 *  deferred to DAT-715. */
+	temporalGateReason?: string;
 }
 
 export async function resolveDrillAxes(
@@ -290,6 +387,14 @@ export async function resolveDrillAxes(
 	// SQL `inArray` (belt over braces — the field set defines the node).
 	const wanted = new Set(fields);
 	const relations: string[] = [];
+	// The accepted extracts' (relation, value-expression) pairs. The flow gate
+	// reads the base columns each expr AGGREGATES, but ONLY off snippets that
+	// ground to a promoted view's fact (filtered below against `factIds`).
+	// Pairing keeps every expr tied to its relation so a stale/unpromoted
+	// snippet's columns can never reach the gate — otherwise, on a multi-measure
+	// node, one stale measure's column would strip grain from the whole node,
+	// including its genuinely-safe measures (scope leak, DAT-673).
+	const acceptedExprs: { relation: string; selectExpr: string }[] = [];
 	const decided = new Set<string>();
 	for (const r of snippetRows) {
 		if (!r.standardField || !wanted.has(r.standardField)) continue;
@@ -298,6 +403,11 @@ export async function resolveDrillAxes(
 		if ((r.failureCount ?? 0) !== 0) continue;
 		const parts = narrowSnippetParts(r.parts);
 		if (parts?.relation) relations.push(parts.relation);
+		if (parts?.relation && parts.selectExpr)
+			acceptedExprs.push({
+				relation: parts.relation,
+				selectExpr: parts.selectExpr,
+			});
 	}
 	const viewByName = new Map(
 		viewRows
@@ -377,8 +487,19 @@ export async function resolveDrillAxes(
 				tableId: columns.tableId,
 				columnName: columns.columnName,
 				resolvedType: columns.resolvedType,
+				// The adjudicated stock/flow verdict for the flow gate (DAT-673) —
+				// null when the column has no concept (unclassified → fail closed).
+				temporalBehavior: currentColumnConcepts.temporalBehavior,
+				// …and whether that verdict is CONTESTED: a contested `additive` is
+				// treated as stock (fail closed — the detectors disagreed).
+				temporalBehaviorContested:
+					currentColumnConcepts.temporalBehaviorContested,
 			})
 			.from(columns)
+			.leftJoin(
+				currentColumnConcepts,
+				eq(columns.columnId, currentColumnConcepts.columnId),
+			)
 			.where(inArray(columns.tableId, typeTableIds))
 			// Deterministic row order — temporalKindsFromColumns is first-wins
 			// per name, so an unordered read would be Postgres row-order
@@ -409,6 +530,68 @@ export async function resolveDrillAxes(
 			reason:
 				"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
 		};
+	}
+
+	// FLOW GATE (DAT-673): only run when a temporal axis is actually offered.
+	// Extract the base columns the node's measures aggregate (AST read), then
+	// gate the grain on their stock/flow verdict.
+	if (axes.some((a) => a.temporal !== null)) {
+		const factIdSet = new Set(factIds);
+		const behaviorByColumn = new Map<string, TemporalBehavior>();
+		for (const r of columnRows) {
+			if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
+			// First-wins per name (rows are ordered); an OFFENDING verdict (stock,
+			// unclassified, or contested) is sticky — never overwritten by a later
+			// flow-safe (additive & uncontested) row for the same name, so a shared
+			// column can only lose grain, never regain it across facts.
+			const current = behaviorByColumn.get(r.columnName);
+			const currentFlowSafe =
+				current !== undefined &&
+				current.behavior === "additive" &&
+				!current.contested;
+			if (current === undefined || currentFlowSafe) {
+				behaviorByColumn.set(r.columnName, {
+					behavior: r.temporalBehavior ?? null,
+					contested: r.temporalBehaviorContested ?? false,
+				});
+			}
+		}
+		// Scope the exprs to the SAME grounded facts as behaviorByColumn: only
+		// snippets whose relation resolves to a fact we kept (factIds). Mirrors
+		// the relations→factIds filter above — a stale/unpromoted snippet
+		// contributes NO aggregated column to the gate.
+		const aggCols = new Set<string>();
+		// If ANY grounded expr yields no columns, we couldn't read what it
+		// aggregates (a window aggregate / COUNT(*) / unparseable) — fail the WHOLE
+		// gate closed rather than skip that expr, or a windowed STOCK would slip
+		// through when a non-windowed sibling makes aggCols non-empty (fail-open,
+		// DAT-673). Per-shape handling (COUNT(*)→flow, window bodies) is DAT-715.
+		let couldNotDetermine = false;
+		for (const { relation, selectExpr } of acceptedExprs) {
+			const factId = viewByName.get(relation)?.factTableId;
+			if (!factId || !factIdSet.has(factId)) continue;
+			const cols = await aggregatedColumns(selectExpr);
+			if (cols.size === 0) {
+				couldNotDetermine = true;
+				break;
+			}
+			for (const c of cols) aggCols.add(c);
+		}
+		// An empty set makes temporalGate fail closed with no column to name — the
+		// "could not confirm a summable flow" verdict couldNotDetermine warrants.
+		const gate = temporalGate(
+			couldNotDetermine ? new Set<string>() : aggCols,
+			behaviorByColumn,
+		);
+		if (!gate.safe) {
+			const gated = axes.map((a) =>
+				a.temporal !== null ? { ...a, temporal: null } : a,
+			);
+			return {
+				axes: gated,
+				temporalGateReason: describeTemporalGate(gate.offending),
+			};
+		}
 	}
 	return { axes };
 }

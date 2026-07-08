@@ -8,6 +8,8 @@ from typing import Any, cast
 
 import anthropic
 from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam, ToolUseBlockParam
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from dataraum.core.logging import get_logger
@@ -33,6 +35,10 @@ class AnthropicConfig(BaseModel):
 
 
 logger = get_logger(__name__)
+
+# Resolves against the worker's global TracerProvider (worker/telemetry.py);
+# a no-op tracer when telemetry is off, so the span brackets below cost ~nothing.
+tracer = trace.get_tracer(__name__)
 
 
 # --- Model request-shape capabilities (Claude 4.7+ / Sonnet 5 / Fable 5) ---
@@ -397,6 +403,30 @@ class AnthropicProvider(LLMProvider):
             if request.effort and _supports_effort(model):
                 kwargs["output_config"] = {"effort": request.effort}
 
+            # GenAI-semconv span (DAT-706) around the client call. Current
+            # conventions (the relocated semantic-conventions-genai repo):
+            # name "{operation} {model}", kind CLIENT, provider discriminator
+            # `gen_ai.provider.name` — NOT the retired `gen_ai.system`. The
+            # worker's TracingInterceptor makes the enclosing activity span
+            # current in this thread (temporalio copies contextvars into the
+            # ThreadPoolExecutor), so the span nests into the run trace with
+            # no explicit context plumbing.
+            span_attributes: dict[str, Any] = {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.provider.name": "anthropic",
+                "gen_ai.request.model": model,
+                "gen_ai.request.max_tokens": request.max_tokens,
+                "gen_ai.request.stream": True,
+            }
+            if "temperature" in kwargs:
+                span_attributes["gen_ai.request.temperature"] = request.temperature
+            if "output_config" in kwargs:
+                span_attributes["gen_ai.request.reasoning.level"] = request.effort
+            if request.label:
+                # Same key the cockpit's otelMiddleware enricher stamps, so
+                # "which call site dominates" is one cross-stack query (DAT-599).
+                span_attributes["dataraum.call_site"] = request.label
+
             # Stream + accumulate instead of a one-shot create: the SDK refuses
             # a non-streaming request whose max_tokens it estimates could exceed
             # ~10 minutes (ValueError "Streaming is required…"), and the Sonnet 5
@@ -404,9 +434,47 @@ class AnthropicProvider(LLMProvider):
             # on it in the 2026-07-02 smoke. Streaming lifts the ceiling; callers
             # still receive one final Message via get_final_message().
             start = time.perf_counter()
-            with self.client.messages.stream(**kwargs) as stream:
-                response = stream.get_final_message()
-            elapsed_ms = round((time.perf_counter() - start) * 1000)
+            with tracer.start_as_current_span(
+                f"chat {model}",
+                kind=SpanKind.CLIENT,
+                attributes=span_attributes,
+            ) as span:
+                try:
+                    with self.client.messages.stream(**kwargs) as stream:
+                        response = stream.get_final_message()
+                except Exception as e:
+                    # semconv `error.type` (low-cardinality class name); the
+                    # exception event + ERROR status are recorded by the span
+                    # context manager as the raise propagates through it.
+                    span.set_attribute("error.type", type(e).__qualname__)
+                    raise
+                elapsed_ms = round((time.perf_counter() - start) * 1000)
+
+                # Cache-usage fields are optional on the SDK Usage object (None
+                # when no cache_control is in play); coerce only None to 0 so
+                # telemetry stays numeric while preserving a genuine int(0)
+                # ("caching configured, nothing read").
+                usage = response.usage
+                cache_read = (
+                    usage.cache_read_input_tokens
+                    if usage.cache_read_input_tokens is not None
+                    else 0
+                )
+                cache_creation = (
+                    usage.cache_creation_input_tokens
+                    if usage.cache_creation_input_tokens is not None
+                    else 0
+                )
+                span.set_attributes(
+                    {
+                        "gen_ai.response.model": response.model,
+                        "gen_ai.response.finish_reasons": [response.stop_reason or "end_turn"],
+                        "gen_ai.usage.input_tokens": usage.input_tokens,
+                        "gen_ai.usage.output_tokens": usage.output_tokens,
+                        "gen_ai.usage.cache_read.input_tokens": cache_read,
+                        "gen_ai.usage.cache_creation.input_tokens": cache_creation,
+                    }
+                )
 
             # Extract content and tool calls from response. raw_content keeps
             # the turn's blocks VERBATIM (incl. signed thinking blocks) so a
@@ -458,24 +526,10 @@ class AnthropicProvider(LLMProvider):
                 elif block.type == "redacted_thinking":
                     raw_content.append({"type": "redacted_thinking", "data": block.data})
 
-            # Cache-usage fields are optional on the SDK Usage object (None when
-            # no cache_control is in play — the engine today, until DAT-601);
-            # coerce only None to 0 so telemetry stays numeric while preserving a
-            # genuine int(0) ("caching configured, nothing read") once 601 lands.
-            usage = response.usage
-            cache_read = (
-                usage.cache_read_input_tokens if usage.cache_read_input_tokens is not None else 0
-            )
-            cache_creation = (
-                usage.cache_creation_input_tokens
-                if usage.cache_creation_input_tokens is not None
-                else 0
-            )
-
-            # Per-call telemetry (DAT-600): elapsed + token usage, tagged by the
-            # caller's agent/phase label. Latency is output-decode-dominated, so
-            # output_tokens vs elapsed_ms is the wall-clock signal; the cache
-            # fields are the DAT-601 cost lever (zero until caching lands).
+            # Per-call telemetry log (DAT-600): elapsed + token usage, tagged by
+            # the caller's agent/phase label. The gen_ai span above is the
+            # analysis path since DAT-706; this line stays until DAT-707 settles
+            # log shipping, then follows it.
             logger.info(
                 "llm_call",
                 label=request.label,

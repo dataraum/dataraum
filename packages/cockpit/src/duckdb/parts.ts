@@ -39,6 +39,14 @@
 // (no dims, no pins) stays byte-parity with the engine composition, where a
 // whole-domain NULL is the fall-loud grounding flag.
 //
+// TIME GRAIN (DAT-712, the DAT-673 hook): a slice/pin may carry a grain token
+// (grain.ts's closed grammar — the token itself NEVER reaches SQL). The
+// extract CTE projects `time_bucket(INTERVAL '…', col)` under the column's
+// own name and groups by the expression; everything downstream — union
+// branches, join spine, pins, outCols — consumes the bucket start as an
+// ordinary dim column, so both doctrine modes and pin ≡ group hold at every
+// grain unchanged.
+//
 // mosaic-sql gotchas (pinned by the spikes, commit cacb0174): computed select
 // items MUST be `{alias: expr}` objects — bare expressions auto-alias with
 // their own text; no bare `*` in the final select; multiple `where()` exprs
@@ -58,6 +66,7 @@ import {
 } from "@uwdata/mosaic-sql";
 
 import type { DrillPinValue } from "./drill";
+import { type Grain, grainIntervalBody, parseGrainToken } from "./grain";
 import { quoteIdentifier } from "./grid-query";
 import {
 	type FormulaExpr,
@@ -128,13 +137,32 @@ export interface NodeStep {
 	outputStep: boolean;
 }
 
+/** One slice dimension of a drill. A `grain` token (`1M`, `15m` — grain.ts's
+ *  closed grammar) buckets a temporal column via `time_bucket` INSIDE every
+ *  extract CTE, so the dim the whole composition groups/joins/pins on IS the
+ *  bucket start, under the column's own name. */
+export interface NodeSlice {
+	column: string;
+	grain?: string;
+}
+
 /** A drill over the composed node: slice dims become GROUP BY appends on every
  *  dim-carrying extract; pins are row-level filters pushed into every
  *  extract's WHERE, pre-aggregation — pins without a slice re-evaluate the
- *  scalar under the filter, in the same mode as the grouped view. */
+ *  scalar under the filter, in the same mode as the grouped view. A pin
+ *  carries the grain it was CREATED under (pin ≡ the grouped row it came
+ *  from): its predicate buckets the raw column with the same `time_bucket`
+ *  before comparing, and a later grain change on the slice never re-scopes an
+ *  existing pin. */
+export interface NodePin {
+	column: string;
+	value: DrillPinValue;
+	grain?: string;
+}
+
 export interface NodeDrill {
-	slices: string[];
-	pins: { column: string; value: DrillPinValue }[];
+	slices: NodeSlice[];
+	pins: NodePin[];
 }
 
 export interface ComposedNodeQuery {
@@ -232,6 +260,72 @@ export function flattenAdditive(
 	return visitStep(target, 1) ? out : null;
 }
 
+/** One operand term of the composed node's OWN formula — what the equation
+ *  header renders and (non-constant, non-additive views) what the component
+ *  breakdown projects as columns. */
+export interface NodeOperand {
+	stepId: string;
+	kind: "extract" | "formula" | "constant";
+	/** A constant operand's resolved value, for inline rendering. */
+	value: string | null;
+}
+
+/** The composed node's header shape (DAT-712's equation layer): the target's
+ *  formula, its operand terms, and the doctrine classification. Pure — the
+ *  route ships it once per open; signs/pretty-printing derive client-side
+ *  from `expression` via the same closed grammar (metric-formula.ts). */
+export interface NodeShape {
+	targetStepId: string;
+	/** The target's formula expression — null for a bare extract node. */
+	expression: string | null;
+	/** Doctrine v2 classification of the target's reachable tree: additive
+	 *  nodes decompose grouped views via signed contributions (their grid rows
+	 *  carry NO operand columns); non-additive restricted views project them. */
+	additive: boolean;
+	operands: NodeOperand[];
+}
+
+/** Resolve the node's header shape — the same target resolution the composer
+ *  uses, no SQL. A refusal only when the target itself cannot resolve. */
+export function nodeShape(
+	steps: NodeStep[],
+	requestedStepId: string | undefined,
+): NodeShape | { refusal: string } {
+	const target = targetStep(steps, requestedStepId);
+	if ("refusal" in target) return target;
+	const byId = new Map(steps.map((s) => [s.stepId, s]));
+	const additive = flattenAdditive(target, byId) !== null;
+	if (target.kind !== "formula" || !target.expression) {
+		return {
+			targetStepId: target.stepId,
+			expression: null,
+			additive,
+			operands: [],
+		};
+	}
+	const parsed = parseFormulaExpression(target.expression);
+	if ("refusal" in parsed) {
+		return {
+			targetStepId: target.stepId,
+			expression: null,
+			additive,
+			operands: [],
+		};
+	}
+	const operands: NodeOperand[] = [];
+	for (const ref of formulaRefs(parsed.expr)) {
+		const dep = byId.get(ref);
+		if (!dep) continue; // compose validation refuses phantoms; tolerate here
+		operands.push({ stepId: dep.stepId, kind: dep.kind, value: dep.value });
+	}
+	return {
+		targetStepId: target.stepId,
+		expression: target.expression,
+		additive,
+		operands,
+	};
+}
+
 /**
  * Compose ONE standalone statement for a metric-DAG node from its persisted
  * parts, with the drill applied as clause appends. Deterministic,
@@ -248,6 +342,50 @@ export function composeNodeQuery(
 	steps: NodeStep[],
 	requestedStepId: string | undefined,
 	drill: NodeDrill = { slices: [], pins: [] },
+): ComposedNodeQuery | { refusal: string } {
+	return composeNode(steps, requestedStepId, drill, false);
+}
+
+/**
+ * The TOTALS composition (DAT-712's footer + scalar-bound equation): the
+ * UNRESTRICTED scalar with the target formula's operand components projected
+ * alongside `value` — the same operand set a restricted view carries, so the
+ * footer's columns line up under the grid's. A separate entry point on
+ * purpose: the plain scalar (`composeNodeQuery`, no drill) stays byte-parity
+ * with the engine's persisted render, which this projection would break.
+ */
+export function composeNodeTotals(
+	steps: NodeStep[],
+	requestedStepId: string | undefined,
+): ComposedNodeQuery | { refusal: string } {
+	return composeNode(steps, requestedStepId, { slices: [], pins: [] }, true);
+}
+
+/** One deduped slice dim, its grain parsed: `bucketExpr` is the rendered
+ *  `time_bucket(…)` over the RAW column — only valid in extract-CTE scope;
+ *  every downstream CTE sees the bucketed value as an output column named
+ *  `column`. */
+interface DimSpec {
+	column: string;
+	bucketExpr: string | null;
+}
+
+/** Render the bucket expression for a validated grain — the interval body is
+ *  authored by grain.ts from the parsed token, never user text. */
+const bucketExpr = (grain: Grain, columnName: string): string =>
+	`time_bucket(INTERVAL '${grainIntervalBody(grain)}', ${quoteIdentifier(columnName)})`;
+
+const invalidGrain = (token: string): { refusal: string } => ({
+	refusal:
+		`'${token}' is not a valid grain token — use a count + unit like ` +
+		`1d, 1w, 1M, 1q, 1y (m is minutes, M is months)`,
+});
+
+function composeNode(
+	steps: NodeStep[],
+	requestedStepId: string | undefined,
+	drill: NodeDrill,
+	projectOperandsOnScalar: boolean,
 ): ComposedNodeQuery | { refusal: string } {
 	const target = targetStep(steps, requestedStepId);
 	if ("refusal" in target) return target;
@@ -316,39 +454,65 @@ export function composeNodeQuery(
 	}
 
 	// First slice per column wins, order preserved (the menu disables
-	// re-slicing, but the wire shape is not trusted).
-	const dims: string[] = [];
-	for (const d of drill.slices) {
-		if (!dims.includes(d)) dims.push(d);
+	// re-slicing, but the wire shape is not trusted). Grain tokens parse
+	// against the closed grammar here — an off-grammar token is a refusal,
+	// never interpolated (grain.ts: DuckDB itself would read '1M' as minutes).
+	const dims: DimSpec[] = [];
+	for (const s of drill.slices) {
+		if (dims.some((d) => d.column === s.column)) continue;
+		let expr: string | null = null;
+		if (s.grain !== undefined) {
+			const grain = parseGrainToken(s.grain);
+			if (!grain) return invalidGrain(s.grain);
+			expr = bucketExpr(grain, s.column);
+		}
+		dims.push({ column: s.column, bucketExpr: expr });
 	}
+	const dimColumns = dims.map((d) => d.column);
 	// `value` is the composition's own measure alias in every CTE projection
 	// (`_observed` its additive observation counter) — a dimension with either
 	// literal name would collide (WHERE-level pins are fine: predicates bind
 	// against the relation, pre-projection).
 	for (const reserved of ["value", "_observed"]) {
-		if (dims.includes(reserved)) {
+		if (dimColumns.includes(reserved)) {
 			return {
 				refusal: `cannot slice by a dimension named '${reserved}' — it collides with a composed column`,
 			};
 		}
 	}
 
-	// Pins render once and are appended to EVERY extract CTE below.
+	// Pins render once and are appended to EVERY extract CTE below. A grained
+	// pin buckets the raw column exactly like the slice that produced its row,
+	// so the bound bucket start matches whole buckets, not one raw value.
 	const params: DrillPinValue[] = [];
 	const pinPredicates: string[] = [];
 	for (const p of drill.pins) {
+		let lhs = quoteIdentifier(p.column);
+		if (p.grain !== undefined) {
+			const grain = parseGrainToken(p.grain);
+			if (!grain) return invalidGrain(p.grain);
+			lhs = bucketExpr(grain, p.column);
+		}
 		if (p.value === null) {
-			pinPredicates.push(`${quoteIdentifier(p.column)} IS NULL`);
+			pinPredicates.push(`${lhs} IS NULL`);
 		} else {
 			params.push(p.value);
-			pinPredicates.push(`${quoteIdentifier(p.column)} = $${params.length}`);
+			pinPredicates.push(`${lhs} = $${params.length}`);
 		}
 	}
 
 	/** An extract's CTE under the current drill: dims + GROUP BY when sliced,
 	 *  the persisted predicates plus the pins in WHERE. The additive mode adds
 	 *  `_observed` (the row count) so a pinned-scalar extract can tell "nothing
-	 *  matched" (skip) from "matched but the aggregate is NULL" (poison). */
+	 *  matched" (skip) from "matched but the aggregate is NULL" (poison).
+	 *
+	 *  A grained dim projects its `time_bucket(…)` ALIASED to the column name
+	 *  and — load-bearing — GROUPS BY the expression itself: `GROUP BY "col"`
+	 *  would resolve to the RAW column (source columns shadow select aliases),
+	 *  yielding one group per raw value that merely DISPLAYS the bucket start.
+	 *  Only this CTE sees the raw relation; every downstream CTE (union
+	 *  branches, join spine, outer aggregate) consumes the bucketed value as an
+	 *  ordinary output column. */
 	const extractCte = (
 		parts: SnippetParts,
 		relation: string,
@@ -361,8 +525,21 @@ export function composeNodeQuery(
 		let q =
 			dims.length > 0
 				? Query.from(relation)
-						.select(...dims.map((d) => column(d)), ...valueCols)
-						.groupby(...dims.map((d) => column(d)))
+						.select(
+							...dims.map((d) =>
+								d.bucketExpr === null
+									? column(d.column)
+									: { [d.column]: verbatim(d.bucketExpr) },
+							),
+							...valueCols,
+						)
+						.groupby(
+							...dims.map((d) =>
+								d.bucketExpr === null
+									? column(d.column)
+									: verbatim(d.bucketExpr),
+							),
+						)
 				: Query.from(relation).select(...valueCols);
 		const preds = [...parts.where, ...pinPredicates];
 		if (preds.length > 0) {
@@ -406,7 +583,10 @@ export function composeNodeQuery(
 					: { value: verbatim('-("value")') };
 			const q =
 				dims.length > 0
-					? Query.from(stepId).select(...dims.map((d) => column(d)), value)
+					? Query.from(stepId).select(
+							...dimColumns.map((d) => column(d)),
+							value,
+						)
 					: Query.from(stepId).select(value);
 			return q.where(verbatim('("_observed" > 0)'));
 		});
@@ -421,8 +601,8 @@ export function composeNodeQuery(
 		ctes[target.stepId] =
 			dims.length > 0
 				? Query.from(unioned)
-						.select(...dims.map((d) => column(d)), { value: summed })
-						.groupby(...dims.map((d) => column(d)))
+						.select(...dimColumns.map((d) => column(d)), { value: summed })
+						.groupby(...dimColumns.map((d) => column(d)))
 				: Query.from(unioned).select({ value: summed });
 		targetGrouped = dims.length > 0;
 	} else {
@@ -490,14 +670,14 @@ export function composeNodeQuery(
 			// engineer. Only the opened node's own operands, never intermediate
 			// CTEs'; skipped on a name collision with a dim or the value alias.
 			const operands =
-				restricted && step.stepId === target.stepId
+				(restricted || projectOperandsOnScalar) && step.stepId === target.stepId
 					? formulaRefs(parsed.expr).filter((r) => {
 							const dep = byId.get(r);
 							return (
 								dep !== undefined &&
 								dep.kind !== "constant" &&
 								r !== "value" &&
-								!dims.includes(r)
+								!dimColumns.includes(r)
 							);
 						})
 					: [];
@@ -511,10 +691,10 @@ export function composeNodeQuery(
 				// deps (constants, fall-loud extracts) stay subqueries in the value.
 				let spine: Parameters<typeof join>[0] = first;
 				for (const dep of rest) {
-					spine = join(spine, dep, { type: "FULL", using: dims });
+					spine = join(spine, dep, { type: "FULL", using: dimColumns });
 				}
 				ctes[step.stepId] = Query.from(spine).select(
-					...dims.map((d) => column(d)),
+					...dimColumns.map((d) => column(d)),
 					...operandCols,
 					{
 						value: verbatim(rendered.sql),
@@ -535,7 +715,7 @@ export function composeNodeQuery(
 	// explicitly — dims when the target composed grouped, then the projected
 	// operand components (non-additive restricted views), then the value.
 	const outCols = [
-		...(targetGrouped ? dims.map((d) => column(d)) : []),
+		...(targetGrouped ? dimColumns.map((d) => column(d)) : []),
 		...projectedOperands.map((c) => column(c)),
 		column("value"),
 	];

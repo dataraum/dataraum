@@ -26,6 +26,7 @@ import { and, asc, desc, eq, inArray, like } from "drizzle-orm";
 import { config } from "#/config";
 import { metadataDb } from "#/db/metadata/client";
 import {
+	columns,
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
@@ -33,6 +34,7 @@ import {
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
+import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
 import { narrowSnippetParts } from "#/duckdb/parts";
 
 import { parseMetricDag } from "./operating-model-graph";
@@ -81,6 +83,10 @@ export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
 				: [],
 			valueCount: r.valueCount,
 			businessContext: r.businessContext,
+			// Resolved from the CATALOG's column types afterwards
+			// (`applyTemporalKinds`) — the slicing agent's rows don't carry a
+			// trustworthy type (their column_id FK points at the bare FK column).
+			temporal: null,
 		});
 	}
 	return [...byColumn.values()];
@@ -109,9 +115,64 @@ export function unionSubstrateAxes(
 			values: [],
 			valueCount: null,
 			businessContext: null,
+			temporal: null,
 		});
 	}
 	return out;
+}
+
+/** One catalog `columns` row as the temporal resolver reads it. */
+export interface CatalogColumnInput {
+	tableId: string | null;
+	columnName: string | null;
+	resolvedType: string | null;
+}
+
+/**
+ * Temporal resolution per column name, from the catalog's `resolved_type`
+ * (pure; DAT-712 — type-based, never a name heuristic). The axes bind in the
+ * enriched VIEW's scope, so a row cataloged under a view table (the
+ * FK-projected dims, e.g. `entry_id__date` DATE) wins over a same-named fact
+ * row; bare fact columns only exist on the fact and resolve from there.
+ * `slice_definitions.column_id` is deliberately not consulted — it points at
+ * the bare FK column (BIGINT), not the projected dim.
+ */
+export function temporalKindsFromColumns(
+	rows: CatalogColumnInput[],
+	viewTableIds: ReadonlySet<string>,
+): Map<string, TemporalKind> {
+	const kinds = new Map<string, TemporalKind>();
+	const decidedByView = new Set<string>();
+	// View rows decide first — including deciding "not temporal". First view
+	// row per name WINS (the caller passes rows deterministically ordered), so
+	// two facts' views disagreeing about a shared name can't flip the chip's
+	// presets between loads — the multi-fact axes-union tradeoff, pinned.
+	for (const r of rows) {
+		if (!r.columnName || !r.tableId || !viewTableIds.has(r.tableId)) continue;
+		if (decidedByView.has(r.columnName)) continue;
+		decidedByView.add(r.columnName);
+		const kind = temporalKindOfType(r.resolvedType);
+		if (kind !== null) kinds.set(r.columnName, kind);
+	}
+	// …fact rows only fill names no view row covered (bare fact columns).
+	for (const r of rows) {
+		if (!r.columnName || !r.tableId || viewTableIds.has(r.tableId)) continue;
+		if (decidedByView.has(r.columnName)) continue;
+		const kind = temporalKindOfType(r.resolvedType);
+		if (kind !== null) kinds.set(r.columnName, kind);
+	}
+	return kinds;
+}
+
+/** Stamp resolved temporal kinds onto axes (pure). */
+export function applyTemporalKinds(
+	axes: DrillAxis[],
+	kinds: ReadonlyMap<string, TemporalKind>,
+): DrillAxis[] {
+	return axes.map((a) => {
+		const kind = kinds.get(a.column) ?? null;
+		return kind === a.temporal ? a : { ...a, temporal: kind };
+	});
 }
 
 /** One `current_driver_rankings` row as the resolver reads it
@@ -211,6 +272,7 @@ export async function resolveDrillAxes(
 		metadataDb
 			.select({
 				viewName: currentEnrichedViews.viewName,
+				viewTableId: currentEnrichedViews.viewTableId,
 				factTableId: currentEnrichedViews.factTableId,
 				dimensionColumns: currentEnrichedViews.dimensionColumns,
 				isGrainVerified: currentEnrichedViews.isGrainVerified,
@@ -278,7 +340,21 @@ export async function resolveDrillAxes(
 				: [],
 		);
 
-	const [sliceRows, rankingRows] = await Promise.all([
+	// The catalog tables whose column types can speak for the axes: the node's
+	// facts plus their views' own table entries (the FK-projected dims live
+	// under the VIEW's table_id — see temporalKindsFromColumns).
+	const viewTableIds = new Set(
+		viewRows
+			.filter(
+				(v) =>
+					Boolean(v.factTableId) && factIds.includes(v.factTableId as string),
+			)
+			.map((v) => v.viewTableId)
+			.filter((id): id is string => Boolean(id)),
+	);
+	const typeTableIds = [...factIds, ...viewTableIds];
+
+	const [sliceRows, rankingRows, columnRows] = await Promise.all([
 		metadataDb
 			.select({
 				tableId: currentSliceDefinitions.tableId,
@@ -296,11 +372,36 @@ export async function resolveDrillAxes(
 			.select({ rankedDimensions: currentDriverRankings.rankedDimensions })
 			.from(currentDriverRankings)
 			.where(inArray(currentDriverRankings.measureTableId, factIds)),
+		metadataDb
+			.select({
+				tableId: columns.tableId,
+				columnName: columns.columnName,
+				resolvedType: columns.resolvedType,
+			})
+			.from(columns)
+			.where(inArray(columns.tableId, typeTableIds))
+			// Deterministic row order — temporalKindsFromColumns is first-wins
+			// per name, so an unordered read would be Postgres row-order
+			// roulette (the same trap the enriched-views read pins above).
+			.orderBy(asc(columns.tableId), asc(columns.columnName)),
 	]);
 
-	const axes = orderAxesByDrivers(
-		unionSubstrateAxes(axesFromSliceRows(sliceRows), substrateColumns),
-		driverGains(rankingRows),
+	// The JS filter mirrors the SQL `inArray` (the belt-over-braces pattern
+	// above): a row from any OTHER table must not pose as a fact column in the
+	// temporal fallback pass.
+	const typeTableIdSet = new Set(typeTableIds);
+	const axes = applyTemporalKinds(
+		orderAxesByDrivers(
+			unionSubstrateAxes(axesFromSliceRows(sliceRows), substrateColumns),
+			driverGains(rankingRows),
+		),
+		temporalKindsFromColumns(
+			columnRows.filter(
+				(r): r is typeof r & { tableId: string } =>
+					r.tableId !== null && typeTableIdSet.has(r.tableId),
+			),
+			viewTableIds,
+		),
 	);
 	if (axes.length === 0) {
 		return {

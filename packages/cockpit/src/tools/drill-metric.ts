@@ -26,7 +26,15 @@ import {
 
 import { parseMetricDag } from "./operating-model-graph";
 
-export type NodeDrillSteps = { steps: NodeStep[] } | { missing: string };
+export type NodeDrillSteps =
+	| {
+			steps: NodeStep[];
+			/** Display name (metric DAG metadata / the measure's field) and the
+			 *  metric's output unit — the analyse header's labels (DAT-712). */
+			name: string | null;
+			unit: string | null;
+	  }
+	| { missing: string };
 
 /** The newest graph extract per standard field DECIDES (resolveGrounding's
  *  contract): a failing newest row means the field has no accepted parts — a
@@ -94,6 +102,8 @@ export async function resolveNodeSteps(
 					outputStep: true,
 				},
 			],
+			name: req.standardField,
+			unit: null,
 		};
 	}
 
@@ -144,5 +154,5 @@ export async function resolveNodeSteps(
 					outputStep: s.outputStep,
 				},
 	);
-	return { steps };
+	return { steps, name: dag.name, unit: dag.unit };
 }

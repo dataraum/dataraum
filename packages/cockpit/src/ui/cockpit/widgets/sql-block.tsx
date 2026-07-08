@@ -6,9 +6,23 @@
 // This is the READ-ONLY viewer. The editable probe surface is a different
 // interaction (CodeMirror `SqlEditor`); only the literal-SQL DISPLAY is shared.
 // Plain monospace, no syntax highlighting (deferred — the precedents are plain
-// `<Code>` too); the value is the engine's persisted/agent SQL, shown verbatim.
+// `<Code>` too). The value is pretty-printed for READING (sql-formatter's
+// duckdb dialect — composed statements arrive as one line); a fragment the
+// formatter can't parse falls back verbatim, never a crash (DAT-712).
 
 import { Code, Group, ScrollArea, Stack, Text } from "@mantine/core";
+import { format } from "sql-formatter";
+
+/** Pretty-print for display only — the string shown is NEVER re-executed, so
+ *  formatting can't perturb semantics. `$1`-style binds are DuckDB's numbered
+ *  params. */
+function formatSql(sql: string): string {
+	try {
+		return format(sql, { language: "duckdb", paramTypes: { numbered: ["$"] } });
+	} catch {
+		return sql; // off-dialect fragment — show verbatim
+	}
+}
 
 /** A bound scalar bind-parameter value, as carried on the result-grid state. */
 type BindParam = string | number | boolean | null;
@@ -38,7 +52,7 @@ export function SqlBlock({
 }) {
 	const body = (
 		<ScrollArea.Autosize mah={maxHeight}>
-			<Code block>{sql}</Code>
+			<Code block>{formatSql(sql)}</Code>
 		</ScrollArea.Autosize>
 	);
 

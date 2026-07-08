@@ -17,6 +17,7 @@
 // This module is neo-free so widgets can import the types (grid-query.ts is
 // the precedent).
 
+import type { TemporalKind } from "./grain";
 import { quoteIdentifier } from "./grid-query";
 
 /** A pin carries the clicked cell's JSON value — bigints/dates arrive as
@@ -24,8 +25,8 @@ import { quoteIdentifier } from "./grid-query";
 export type DrillPinValue = string | number | boolean | null;
 
 export type DrillStep =
-	| { kind: "slice"; column: string }
-	| { kind: "pin"; column: string; value: DrillPinValue };
+	| { kind: "slice"; column: string; grain?: string }
+	| { kind: "pin"; column: string; value: DrillPinValue; grain?: string };
 
 /** Axis-resolution request (`/api/drill/axes`, metric path in P1): exactly one
  *  of the two keys. Shared client↔server so the wire contract can't silently
@@ -46,6 +47,10 @@ export interface DrillAxis {
 	values: string[];
 	valueCount: number | null;
 	businessContext: string | null;
+	/** The column's temporal resolution from the catalog's `resolved_type`
+	 *  (never a name heuristic) — non-null makes the slice grain-able and
+	 *  decides which grains the chip offers (DAT-712). */
+	temporal: TemporalKind | null;
 }
 
 export const sliceColumns = (steps: DrillStep[]): string[] => {
@@ -55,6 +60,27 @@ export const sliceColumns = (steps: DrillStep[]): string[] => {
 		if (s.kind !== "slice" || seen.has(s.column)) continue;
 		seen.add(s.column);
 		out.push(s.column);
+	}
+	return out;
+};
+
+/** The slice steps themselves (deduped by column, first wins) — the node path
+ *  needs the grain riding each slice, not just the column names. A `grain` on
+ *  a temporal slice buckets it via `time_bucket` (DAT-712; grain.ts owns the
+ *  token grammar). Tier A keeps `sliceColumns` and its route rejects grained
+ *  steps outright (strict zod → 400) — a grain can never be silently dropped
+ *  into raw grouping there. */
+export const sliceSteps = (
+	steps: DrillStep[],
+): { column: string; grain?: string }[] => {
+	const out: { column: string; grain?: string }[] = [];
+	for (const s of steps) {
+		if (s.kind !== "slice" || out.some((d) => d.column === s.column)) continue;
+		out.push(
+			s.grain === undefined
+				? { column: s.column }
+				: { column: s.column, grain: s.grain },
+		);
 	}
 	return out;
 };

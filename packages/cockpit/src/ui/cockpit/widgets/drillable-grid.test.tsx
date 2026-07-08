@@ -36,7 +36,13 @@ vi.mock("#/ui/cockpit/widgets/result-grid", () => ({
 				<button
 					type="button"
 					data-testid="mock-row"
-					onClick={() => onRowClick({ region: "EU", value: 5 })}
+					onClick={() =>
+						onRowClick({
+							region: "EU",
+							entry_id__date: "2025-08-01",
+							value: 5,
+						})
+					}
 				>
 					row
 				</button>
@@ -50,14 +56,17 @@ vi.mock("#/ui/cockpit/widgets/chart-toolbar-button", () => ({
 
 import { DrillableGrid } from "./drillable-grid";
 
-const axis = (column: string): DrillAxis => ({
+const axis = (
+	column: string,
+	temporal: DrillAxis["temporal"] = null,
+): DrillAxis => ({
 	column,
 	priority: 1,
 	sliceType: "categorical",
 	values: [],
 	valueCount: 3,
 	businessContext: null,
-	temporal: null,
+	temporal,
 });
 
 const jsonResponse = (body: unknown) =>
@@ -80,7 +89,13 @@ function stubFetch() {
 		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
 			const u = String(url);
 			if (u.endsWith("/api/drill/axes")) {
-				return jsonResponse({ axes: [axis("region"), axis("product")] });
+				return jsonResponse({
+					axes: [
+						axis("region"),
+						axis("product"),
+						axis("entry_id__date", "date"),
+					],
+				});
 			}
 			if (u.endsWith("/api/drill/compose") || u.endsWith("/api/drill/node")) {
 				composeBodies.push({
@@ -96,7 +111,10 @@ function stubFetch() {
 
 const BASE_SQL = "SELECT SUM(x) AS value FROM t";
 
-function renderGrid(nodeRef?: { metricKey: string }) {
+function renderGrid(
+	nodeRef?: { metricKey: string },
+	onPinnedRow?: (row: Record<string, unknown> | null) => void,
+) {
 	stubFetch();
 	return render(
 		<TestQueryProvider>
@@ -105,6 +123,7 @@ function renderGrid(nodeRef?: { metricKey: string }) {
 					sql={BASE_SQL}
 					axesRequest={{ metricKey: "m1" }}
 					nodeRef={nodeRef}
+					onPinnedRow={onPinnedRow}
 				/>
 			</MantineProvider>
 		</TestQueryProvider>,
@@ -193,5 +212,124 @@ describe("DrillableGrid", () => {
 				},
 			},
 		]);
+	});
+});
+
+// --- time grain (DAT-712) -----------------------------------------------------
+
+/** The last compose body's steps, for wire-contract assertions. */
+const lastSteps = () =>
+	(composeBodies[composeBodies.length - 1] as { body: { steps: unknown } }).body
+		.steps;
+
+describe("DrillableGrid — time grain", () => {
+	it("slices a temporal axis at MONTH grain by default; the chip is the grain control", async () => {
+		renderGrid({ metricKey: "m1" });
+		await sliceBy("entry_id__date", "SQL_M");
+		expect(lastSteps()).toEqual([
+			{ kind: "slice", column: "entry_id__date", grain: "1M" },
+		]);
+		// The chip names the grain…
+		const chip = screen.getByTestId("drill-step-slice-entry_id__date");
+		expect(chip.textContent).toContain("Month");
+		// …and its menu re-grains in place (preset → Quarter).
+		fireEvent.click(chip);
+		fireEvent.click(await screen.findByTestId("drill-grain-entry_id__date-1q"));
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_Q", params: [] }),
+		);
+		await waitFor(() => expect(gridSql()).toBe("SQL_Q"));
+		expect(lastSteps()).toEqual([
+			{ kind: "slice", column: "entry_id__date", grain: "1q" },
+		]);
+	});
+
+	it("refuses an off-grammar custom token locally — no compose call fires", async () => {
+		renderGrid({ metricKey: "m1" });
+		await sliceBy("entry_id__date", "SQL_M");
+		const before = composeBodies.length;
+		fireEvent.click(screen.getByTestId("drill-step-slice-entry_id__date"));
+		const input = await screen.findByTestId(
+			"drill-grain-entry_id__date-custom",
+		);
+		fireEvent.change(input, { target: { value: "1Q" } });
+		fireEvent.keyDown(input, { key: "Enter" });
+		await screen.findByText(
+			"Not a grain — try 1d, 1w, 1M (m = minutes, M = months)",
+		);
+		expect(composeBodies.length).toBe(before);
+	});
+
+	it("a valid custom token composes (typed power path)", async () => {
+		renderGrid({ metricKey: "m1" });
+		await sliceBy("entry_id__date", "SQL_M");
+		fireEvent.click(screen.getByTestId("drill-step-slice-entry_id__date"));
+		const input = await screen.findByTestId(
+			"drill-grain-entry_id__date-custom",
+		);
+		fireEvent.change(input, { target: { value: "3M" } });
+		fireEvent.keyDown(input, { key: "Enter" });
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_3M", params: [] }),
+		);
+		await waitFor(() => expect(gridSql()).toBe("SQL_3M"));
+		expect(lastSteps()).toEqual([
+			{ kind: "slice", column: "entry_id__date", grain: "3M" },
+		]);
+	});
+
+	it("a row-pin FREEZES the slice's grain; re-graining the slice leaves the pin (and the lock) standing", async () => {
+		const onPinnedRow = vi.fn();
+		renderGrid({ metricKey: "m1" }, onPinnedRow);
+		await sliceBy("entry_id__date", "SQL_M");
+
+		// Pin the bucket row: the pin carries the slice's CURRENT grain.
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: ["2025-08-01"] }),
+		);
+		await screen.findByTestId("drill-step-pin-entry_id__date");
+		expect(lastSteps()).toEqual([
+			{ kind: "slice", column: "entry_id__date", grain: "1M" },
+			{
+				kind: "pin",
+				column: "entry_id__date",
+				value: "2025-08-01",
+				grain: "1M",
+			},
+		]);
+		expect(onPinnedRow).toHaveBeenLastCalledWith({
+			region: "EU",
+			entry_id__date: "2025-08-01",
+			value: 5,
+		});
+
+		// Re-grain the slice to Quarter: the pin keeps ITS month grain, and the
+		// lock is NOT wiped (the pin's restriction didn't move).
+		onPinnedRow.mockClear();
+		fireEvent.click(screen.getByTestId("drill-step-slice-entry_id__date"));
+		fireEvent.click(await screen.findByTestId("drill-grain-entry_id__date-1q"));
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_Q_PINNED", params: ["2025-08-01"] }),
+		);
+		await waitFor(() => expect(gridSql()).toBe("SQL_Q_PINNED"));
+		expect(lastSteps()).toEqual([
+			{ kind: "slice", column: "entry_id__date", grain: "1q" },
+			{
+				kind: "pin",
+				column: "entry_id__date",
+				value: "2025-08-01",
+				grain: "1M",
+			},
+		]);
+		expect(onPinnedRow).not.toHaveBeenCalled();
+
+		// Clearing the drill releases the lock.
+		fireEvent.click(screen.getByTestId("drill-clear"));
+		expect(onPinnedRow).toHaveBeenLastCalledWith(null);
 	});
 });

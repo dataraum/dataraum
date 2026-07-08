@@ -339,7 +339,15 @@ export function DrillableGrid({
 				setComposed({ sql: result.sql, params: result.params });
 				setRefusal(null);
 				onStepsChange?.(candidate);
-				onPinnedRow?.(pinRow ?? null);
+				// The lock follows the PINS, not the apply: a row-click pin sets
+				// it, losing the last pin clears it, and a slice-only change
+				// (re-grain, extra slice) leaves an existing lock standing — the
+				// pin's restriction, and therefore its values, didn't move.
+				if (pinRow !== undefined) {
+					onPinnedRow?.(pinRow);
+				} else if (!candidate.some((s) => s.kind === "pin")) {
+					onPinnedRow?.(null);
+				}
 			} else {
 				setRefusal(result.reason);
 			}

@@ -43,6 +43,9 @@ vi.mock("#/db/metadata/client", () => ({
 // tested in this pure-metadata unit.
 vi.mock("#/duckdb/sql-ast", () => ({
 	aggregatedColumns: async (expr: string) => {
+		// Mirror the real fail-closed-on-WINDOW: the aggregate walk can't read a
+		// WINDOW node, so a windowed aggregate yields NO columns (sql-ast.ts).
+		if (/\bOVER\s*\(/i.test(expr)) return new Set<string>();
 		const cols = new Set<string>();
 		for (const m of expr.matchAll(
 			/\b(?:SUM|COUNT|AVG|MIN|MAX)\s*\(\s*(\w+)/gi,
@@ -714,6 +717,57 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		// The safe measure keeps its grain: the stale snippet contributed nothing.
 		expect(dateAxis?.temporal).toBe("date");
 		expect(res.temporalGateReason).toBeUndefined();
+	});
+
+	it("FLOW GATE: a windowed measure among flows fails the WHOLE gate closed (F3 multi-expr, DAT-673)", async () => {
+		seed();
+		// Two GROUNDED measures on the same node: `revenue` is a normal additive
+		// FLOW; `cogs` is a WINDOW aggregate the AST read can't parse → empty
+		// aggregated set. The windowed measure's stock/flow status can't be
+		// confirmed, so the whole gate must fail closed — even though the flow
+		// sibling makes the aggregated-column total non-empty (the fail-OPEN the
+		// single-expr window guard alone missed).
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(credit)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+			{
+				standardField: "cogs",
+				parts: {
+					select: [
+						{
+							expr: "SUM(running_balance) OVER (PARTITION BY period)",
+							alias: "value",
+						},
+					],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "credit",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "additive",
+				temporalBehaviorContested: false,
+			},
+		]);
+		const res = await resolveDrillAxes({ metricKey: "gross_margin" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// Grain stripped despite the additive-flow sibling — couldn't confirm.
+		expect(dateAxis).toBeDefined();
+		expect(dateAxis?.temporal).toBeNull();
+		expect(res.temporalGateReason).toContain("couldn't confirm");
 	});
 });
 

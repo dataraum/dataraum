@@ -561,12 +561,28 @@ export async function resolveDrillAxes(
 		// the relations→factIds filter above — a stale/unpromoted snippet
 		// contributes NO aggregated column to the gate.
 		const aggCols = new Set<string>();
+		// If ANY grounded expr yields no columns, we couldn't read what it
+		// aggregates (a window aggregate / COUNT(*) / unparseable) — fail the WHOLE
+		// gate closed rather than skip that expr, or a windowed STOCK would slip
+		// through when a non-windowed sibling makes aggCols non-empty (fail-open,
+		// DAT-673). Per-shape handling (COUNT(*)→flow, window bodies) is DAT-715.
+		let couldNotDetermine = false;
 		for (const { relation, selectExpr } of acceptedExprs) {
 			const factId = viewByName.get(relation)?.factTableId;
 			if (!factId || !factIdSet.has(factId)) continue;
-			for (const c of await aggregatedColumns(selectExpr)) aggCols.add(c);
+			const cols = await aggregatedColumns(selectExpr);
+			if (cols.size === 0) {
+				couldNotDetermine = true;
+				break;
+			}
+			for (const c of cols) aggCols.add(c);
 		}
-		const gate = temporalGate(aggCols, behaviorByColumn);
+		// An empty set makes temporalGate fail closed with no column to name — the
+		// "could not confirm a summable flow" verdict couldNotDetermine warrants.
+		const gate = temporalGate(
+			couldNotDetermine ? new Set<string>() : aggCols,
+			behaviorByColumn,
+		);
 		if (!gate.safe) {
 			const gated = axes.map((a) =>
 				a.temporal !== null ? { ...a, temporal: null } : a,

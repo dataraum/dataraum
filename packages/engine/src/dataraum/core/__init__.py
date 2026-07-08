@@ -7,10 +7,8 @@ from dataraum.core.connections import (
     get_connection_manager,
 )
 from dataraum.core.logging import (
-    LogConfig,
     configure_logging,
     get_logger,
-    log_context,
 )
 from dataraum.core.models.base import (
     Cardinality,
@@ -32,10 +30,8 @@ __all__ = [
     "close_default_manager",
     "get_connection_manager",
     # Logging
-    "LogConfig",
     "configure_logging",
     "get_logger",
-    "log_context",
     # Models - enums
     "Cardinality",
     "DataType",

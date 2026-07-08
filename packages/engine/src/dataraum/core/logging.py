@@ -1,44 +1,62 @@
-"""Structured logging infrastructure for cloud-ready instrumentation.
+"""Structured logging for the engine.
 
-This module provides extensible logging that works for:
-- Local development (stderr console output)
-- Cloud deployments (JSON structured logs)
-- Future OpenTelemetry integration
+structlog renders human-readable lines to stderr (the container's docker-logs
+stream). When telemetry is on (``OTEL_EXPORTER_OTLP_ENDPOINT`` set — the worker
+bootstrap calls :func:`enable_otel_logging`), every event additionally ships
+over OTLP to Loki carrying the active span's trace context, and events emitted
+inside a span carry ``trace_id``/``span_id`` on the rendered stderr line too.
+
+Logs are the narrative; analysis lives in traces and metrics (Tempo/Prometheus
+per ADR-0019). The former ``grep llm_call | jq`` aggregation path is retired
+(DAT-707) — token usage and latency are span attributes and histograms now.
 
 Usage:
     from dataraum.core.logging import get_logger, configure_logging
 
-    # Configure at startup
-    configure_logging(log_level="INFO", log_format="console")
+    # Configured at import time with defaults; call again to change the level
+    configure_logging(log_level="DEBUG")
 
-    # Get logger in any module
     logger = get_logger(__name__)
-
-    # Log with structured context
     logger.info("phase_started", phase="import", source_id="abc123")
-
-    # Use context managers for automatic context propagation
-    with logger.context(run_id="run-123", phase="typing"):
-        logger.info("processing_table", table="customers", rows=1000)
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import MutableMapping
-from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import Any, cast
 
 import structlog
+from opentelemetry import trace
+from opentelemetry._logs import Logger, LoggerProvider, SeverityNumber
 from structlog.typing import EventDict, FilteringBoundLogger
 
-# Context variables for correlation
-_run_context: ContextVar[dict[str, Any] | None] = ContextVar("run_context", default=None)
+# The OTel logs-bridge logger; None means OTLP shipping is off and logging
+# behaves exactly as before telemetry existed (no collector needed for tests
+# or host dev). Set via enable_otel_logging() at worker bootstrap.
+_otel_logger: Logger | None = None
+
+_SEVERITY: dict[str, SeverityNumber] = {
+    "debug": SeverityNumber.DEBUG,
+    "info": SeverityNumber.INFO,
+    "warning": SeverityNumber.WARN,
+    "error": SeverityNumber.ERROR,
+    "critical": SeverityNumber.FATAL,
+}
 
 
-_active_log_file: Any | None = None  # file handle for file logging
+def enable_otel_logging(provider: LoggerProvider) -> None:
+    """Ship every structlog event over OTLP in addition to stderr (DAT-707).
+
+    Only structlog events ship — stdlib logging (library output) stays
+    stderr-only, which also keeps the OTel SDK's own error logging out of the
+    export path (no feedback loop on exporter failures).
+
+    Args:
+        provider: The logs provider whose exporter pipeline receives events.
+    """
+    global _otel_logger
+    _otel_logger = provider.get_logger("dataraum")
 
 
 def _fmt_value(v: Any) -> str:
@@ -49,26 +67,17 @@ def _fmt_value(v: Any) -> str:
 
 
 class _ProxyLogger:
-    """Logger that routes structured log events to stderr (and optionally a file).
+    """Logger that renders structured log events to stderr.
 
     structlog dispatches ``dict`` return values from the final processor as
     ``logger.msg(**event_dict)``, so ``msg`` receives keyword arguments.
     """
 
     def msg(self, **kv: Any) -> None:
-        timestamp = kv.pop("timestamp", None)
         level = kv.pop("level", "")
         event = kv.pop("event", "")
         phase = kv.pop("phase", "")
 
-        self._stderr_print(level, event, phase, kv)
-
-        # File logging: also write when enabled (alongside stderr output)
-        if _active_log_file is not None:
-            self._file_print(_active_log_file, timestamp, level, event, phase, kv)
-
-    @staticmethod
-    def _stderr_print(level: str, event: str, phase: str, kv: dict[str, Any]) -> None:
         parts: list[str] = []
         if level and level not in ("info", "debug"):
             parts.append(f"[{level}]")
@@ -79,27 +88,6 @@ class _ProxyLogger:
             pairs = ", ".join(f"{k}: {_fmt_value(v)}" for k, v in kv.items())
             parts.append(f"({pairs})")
         print("  ".join(parts), file=sys.stderr, flush=True)
-
-    @staticmethod
-    def _file_print(
-        f: Any,
-        timestamp: str | None,
-        level: str,
-        event: str,
-        phase: str,
-        kv: dict[str, Any],
-    ) -> None:
-        parts: list[str] = []
-        if timestamp:
-            parts.append(str(timestamp))
-        parts.append(f"[{level.upper()}]" if level else "[INFO]")
-        if phase:
-            parts.append(phase)
-        parts.append(str(event))
-        if kv:
-            pairs = ", ".join(f"{k}: {_fmt_value(v)}" for k, v in kv.items())
-            parts.append(f"({pairs})")
-        print("  ".join(parts), file=f, flush=True)
 
     log = debug = info = warn = warning = msg
     err = error = exception = msg
@@ -115,90 +103,73 @@ def _passthrough_renderer(logger: Any, method_name: str, event_dict: EventDict) 
     return event_dict
 
 
-def enable_file_logging(path: Any) -> None:
-    """Enable file logging alongside stderr output.
+def _add_trace_context(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
+    """Stamp the active span's ids so rendered lines correlate with Tempo.
 
-    Structlog events are written to the file in plain text format.
-    Stdlib logging (library output) also gets a file handler.
-
-    Intended for headless processes where capturing crash tracebacks to a
-    persistent file is useful for postmortem.
-
-    Args:
-        path: Path to the log file (will be opened in append mode).
+    Outside a recording span (telemetry off, or code not under a span) the
+    context is invalid and the event passes through untouched.
     """
-    global _active_log_file
-    _active_log_file = open(path, "a")  # noqa: SIM115
-
-    # Also route stdlib logging to the file (for library output like httpx)
-    file_handler = logging.FileHandler(path)
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s  %(message)s")
-    )
-    logging.getLogger().addHandler(file_handler)
-
-
-@dataclass
-class LogConfig:
-    """Logging configuration."""
-
-    level: str = "INFO"
-    format: str = "console"  # "console" or "json"
-    show_timestamps: bool = True
-    show_caller: bool = False  # Show file:line in console mode
-    color: bool = True
-
-
-def _add_run_context(
-    logger: Any, method_name: str, event_dict: MutableMapping[str, Any]
-) -> MutableMapping[str, Any]:
-    """Processor to add run context to log events."""
-    context = _run_context.get()
-    if context:
-        event_dict.update(context)
+    ctx = trace.get_current_span().get_span_context()
+    if ctx.is_valid:
+        event_dict["trace_id"] = format(ctx.trace_id, "032x")
+        event_dict["span_id"] = format(ctx.span_id, "016x")
     return event_dict
 
 
-def configure_logging(
-    log_level: str = "INFO",
-    log_format: str = "console",
-    show_timestamps: bool = True,
-) -> None:
-    """Configure structured logging for the application.
+def _resolve_exception(exc_info: Any) -> BaseException | None:
+    """Normalize structlog's ``exc_info`` forms to the exception instance."""
+    if exc_info is True:
+        return sys.exc_info()[1]
+    if isinstance(exc_info, BaseException):
+        return exc_info
+    if isinstance(exc_info, tuple) and len(exc_info) == 3:
+        return cast("BaseException | None", exc_info[1])
+    return None
+
+
+def _otel_emit(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
+    """Mirror the event to the OTel logs bridge when shipping is enabled.
+
+    Body is the event name; the remaining kv pairs ride as attributes (Loki
+    structured metadata). ``trace_id``/``span_id`` are skipped — the record's
+    own trace context carries them — and ``exc_info`` becomes a real exception
+    on the record (``exception.*`` attributes) rather than a string attribute.
+    Runs before ``format_exc_info`` so the raw exception is still available.
+    """
+    if _otel_logger is None:
+        return event_dict
+    attributes: dict[str, Any] = {}
+    for key, value in event_dict.items():
+        if key in ("event", "level", "trace_id", "span_id", "exc_info"):
+            continue
+        attributes[key] = value if isinstance(value, str | bool | int | float) else str(value)
+    level = str(event_dict.get("level", "info"))
+    _otel_logger.emit(
+        severity_number=_SEVERITY.get(level, SeverityNumber.INFO),
+        severity_text=level.upper(),
+        body=str(event_dict.get("event", "")),
+        attributes=attributes,
+        exception=_resolve_exception(event_dict.get("exc_info")),
+    )
+    return event_dict
+
+
+def configure_logging(log_level: str = "INFO") -> None:
+    """Configure structured logging for the process.
 
     Args:
-        log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        log_format: Output format ("console" for development, "json" for production/cloud)
-        show_timestamps: Whether to show timestamps in console mode
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
     """
-    # Shared processors for all formats
-    shared_processors: list[structlog.types.Processor] = [
-        structlog.contextvars.merge_contextvars,
-        _add_run_context,
-        structlog.processors.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.UnicodeDecoder(),
-    ]
-
-    if show_timestamps:
-        shared_processors.insert(0, structlog.processors.TimeStamper(fmt="iso", utc=True))
-
-    if log_format == "json":
-        # JSON format for cloud/production
-        processors = shared_processors + [
-            structlog.processors.format_exc_info,
-            structlog.processors.JSONRenderer(),
-        ]
-    else:
-        # Console format — pass structured dict to _ProxyLogger for rendering
-        processors = shared_processors + [
+    structlog.configure(
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.UnicodeDecoder(),
+            _add_trace_context,
+            _otel_emit,
             structlog.processors.format_exc_info,
             _passthrough_renderer,
-        ]
-
-    # Configure structlog
-    structlog.configure(
-        processors=processors,
+        ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, log_level.upper())),
         context_class=dict,
         logger_factory=_ProxyLoggerFactory(),
@@ -229,37 +200,6 @@ def get_logger(name: str | None = None) -> FilteringBoundLogger:
         Bound structlog logger
     """
     return cast(FilteringBoundLogger, structlog.get_logger(name))
-
-
-class LogContext:
-    """Context manager for adding context to logs within a scope."""
-
-    def __init__(self, **context: Any):
-        """Initialize with context key-value pairs."""
-        self.context = context
-        self.token: Any = None
-
-    def __enter__(self) -> LogContext:
-        """Enter context, adding values to log context."""
-        current = _run_context.get() or {}
-        new_context = {**current, **self.context}
-        self.token = _run_context.set(new_context)
-        return self
-
-    def __exit__(self, *_args: Any) -> None:
-        """Exit context, restoring previous values."""
-        if self.token:
-            _run_context.reset(self.token)
-
-
-def log_context(**context: Any) -> LogContext:
-    """Create a context manager for scoped logging context.
-
-    Usage:
-        with log_context(run_id="abc", phase="import"):
-            logger.info("processing")  # Will include run_id and phase
-    """
-    return LogContext(**context)
 
 
 # Initialize with default configuration

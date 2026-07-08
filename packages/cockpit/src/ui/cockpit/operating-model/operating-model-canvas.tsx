@@ -45,7 +45,7 @@ import {
 	type OperatingModelGraph,
 } from "#/tools/operating-model-graph";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
-import { AnalyseAction } from "./analyse-overlay";
+import { AnalyseModal, analyseTarget } from "./analyse-overlay";
 import { layoutGraph } from "./layout";
 import { type OMRfData, omNodeTypes } from "./nodes";
 
@@ -70,6 +70,10 @@ export function OperatingModelCanvas({
 	// (React idiom rule 1), so the detail panel never goes stale and auto-closes when a
 	// filter/collapse removes the node.
 	const [selectedId, setSelectedId] = useState<string | null>(null);
+	// The analyse modal's node id (DAT-712 iteration 2: a runnable node click
+	// opens the analysis DIRECTLY). Derived from the FULL graph, not the
+	// filtered view — an overlay must not close because a filter changed.
+	const [analyseId, setAnalyseId] = useState<string | null>(null);
 	const [enabledKinds, setEnabledKinds] = useState<ReadonlySet<OMNodeKind>>(
 		() => new Set(OM_NODE_KINDS),
 	);
@@ -91,6 +95,10 @@ export function OperatingModelCanvas({
 	const selected =
 		selectedId != null
 			? (filtered.nodes.find((n) => n.id === selectedId) ?? null)
+			: null;
+	const analyseNode =
+		analyseId != null
+			? (graph.nodes.find((n) => n.id === analyseId) ?? null)
 			: null;
 
 	const { nodes, edges } = useMemo(() => {
@@ -124,6 +132,13 @@ export function OperatingModelCanvas({
 		}
 		// Base tables are leaf grounding nodes — nothing to detail; ignore the click.
 		if (om.kind === "table") return;
+		// A runnable node answers directly (DAT-712 iteration 2): straight to the
+		// analyse modal. The side panel stays for what can't run — constants and
+		// failed/ungrounded nodes, where the state reason and attempted SQL live.
+		if (analyseTarget(om)) {
+			setAnalyseId(om.id);
+			return;
+		}
 		setSelectedId(om.id);
 	}, []);
 
@@ -168,6 +183,15 @@ export function OperatingModelCanvas({
 			) : null}
 			{selected ? (
 				<NodeDetail node={selected} onClose={() => setSelectedId(null)} />
+			) : null}
+			{analyseNode ? (
+				// Keyed by node id + mounted only while open: drill/scope state
+				// resets per node without a reset effect (React rule 5).
+				<AnalyseModal
+					key={analyseNode.id}
+					node={analyseNode}
+					onClose={() => setAnalyseId(null)}
+				/>
 			) : null}
 		</Box>
 	);
@@ -296,7 +320,6 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 		case "metric":
 			return (
 				<Stack gap="xs">
-					<AnalyseAction node={node} />
 					<Field label="State" value={d.state} />
 					{d.unit ? <Field label="Unit" value={d.unit} /> : null}
 					{d.stateReason ? (
@@ -315,7 +338,6 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 		case "measure":
 			return (
 				<Stack gap="xs">
-					<AnalyseAction node={node} />
 					{d.statement ? <Field label="Statement" value={d.statement} /> : null}
 					{d.aggregation ? (
 						<Field label="Aggregation" value={d.aggregation} />

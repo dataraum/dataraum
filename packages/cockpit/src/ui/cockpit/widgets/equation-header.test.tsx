@@ -136,10 +136,11 @@ function renderHeader(props: Partial<Parameters<typeof EquationHeader>[0]>) {
 afterEach(cleanup);
 
 describe("EquationHeader", () => {
-	it("binds to the totals on open — terms, result, unit, scope", () => {
+	it("binds to the totals on open — terms, result, unit symbol", () => {
 		renderHeader({});
 		expect(screen.getByTestId("equation-result").textContent).toBe("75");
-		expect(screen.getByTestId("equation-scope").textContent).toBe("all data");
+		// Unit renders as its symbol next to the result ("75 %", not a word).
+		expect(screen.getByTestId("equation-body").textContent).toContain("%");
 		// revenue appears TWICE (numerator + divisor) — both bind.
 		for (const revenue of screen.getAllByTestId("equation-term-Revenue")) {
 			expect(revenue.textContent).toContain("800");
@@ -171,7 +172,6 @@ describe("EquationHeader", () => {
 			lockedRow: { revenue: 50, cost_of_goods_sold: 10, value: 80 },
 		});
 		expect(screen.getByTestId("equation-result").textContent).toBe("80");
-		expect(screen.getByText("pinned")).toBeDefined();
 	});
 
 	it("an observed-NULL operand is the honest gap: dash + the sentence", () => {

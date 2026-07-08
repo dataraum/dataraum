@@ -2,13 +2,15 @@
 // UX re-cut DAT-712): run a metric/measure node in the SHARED result grid,
 // with the live equation header, drill + chart on top.
 //
-// UX shape (decided in implementation, per the ticket's two options): the
-// affordance lives in the NodeDetail panel — an "Analyse" button opening a
-// large modal — rather than a second icon on the graph node. The 380px detail
-// panel cannot hold a grid, and NodeDetail is already the node's "expand"
-// surface, so the modal keeps one interaction path: click node → detail →
-// analyse. Nothing here is canvas-local: the modal mounts the same
-// DrillableGrid the answer surface inherits later (DAT-678).
+// UX shape (iteration 2, lead direction 2026-07-08): clicking a RUNNABLE
+// node (metric with a DAG, grounded measure) opens this modal DIRECTLY — the
+// side panel remains only for what can't run (constants, tables, failed/
+// ungrounded nodes, where the state reason and attempted SQL matter). The
+// modal's TITLE row is the node's one identity line: kind, name, unit,
+// statement/aggregation, and the live drill scope — the equation carries only
+// the math, right of the slice controls. Nothing here is canvas-local: the
+// modal mounts the same DrillableGrid the answer surface inherits later
+// (DAT-678).
 //
 // BOTH node kinds compose AD HOC on open from their persisted clause parts
 // (`/api/drill/node`, parts-at-source): a metric rebuilds its DAG subtree, a
@@ -27,9 +29,16 @@
 // response carries a structured shape", so answer-agent results (DAT-678)
 // join by shipping the same block, not by being canvas nodes.
 
-import { Alert, Button, Center, Group, Loader, Modal } from "@mantine/core";
+import {
+	Alert,
+	Badge,
+	Center,
+	Group,
+	Loader,
+	Modal,
+	Text,
+} from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { Play } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useChartData } from "#/charts/use-chart-data";
@@ -41,6 +50,7 @@ import {
 	EquationHeader,
 	type NodeShapeWire,
 	operandAccents,
+	unitSymbol,
 } from "#/ui/cockpit/widgets/equation-header";
 
 /** The node's compose target — the same ref shape the axes route resolves —
@@ -154,8 +164,17 @@ export function scopeSentence(steps: DrillStep[]): string {
 /** Compose-on-open: fetch the node's ad-hoc composed SQL (+ the DAT-712
  *  header block) from its parts, then mount the equation layer over the
  *  shared grid. Loading/refusal states are part of the surface — a refusal
- *  names the missing part, never a dead end. */
-function NodeGrid({ nodeRef }: { nodeRef: DrillAxesRequest }) {
+ *  names the missing part, never a dead end. Drill steps report UP
+ *  (`onStepsChange`) so the modal's title row carries the live scope. */
+function NodeGrid({
+	nodeRef,
+	scope,
+	onStepsChange,
+}: {
+	nodeRef: DrillAxesRequest;
+	scope: string;
+	onStepsChange: (steps: DrillStep[]) => void;
+}) {
 	const compose = useQuery({
 		queryKey: ["drill-node", nodeRef],
 		queryFn: async (): Promise<NodeComposeState> => {
@@ -177,7 +196,6 @@ function NodeGrid({ nodeRef }: { nodeRef: DrillAxesRequest }) {
 	const [lockedRow, setLockedRow] = useState<Record<string, unknown> | null>(
 		null,
 	);
-	const [steps, setSteps] = useState<DrillStep[]>([]);
 
 	const data = compose.data;
 	const ok: Extract<NodeComposeState, { ok: true }> | null =
@@ -220,63 +238,80 @@ function NodeGrid({ nodeRef }: { nodeRef: DrillAxesRequest }) {
 		);
 	}
 	return (
-		<div>
-			{shape?.expression && (
-				<EquationHeader
-					shape={shape}
-					totals={totalsRow}
-					hoverRow={hoverRow}
-					lockedRow={lockedRow}
-					scope={scopeSentence(steps)}
-				/>
-			)}
-			<DrillableGrid
-				sql={ok.sql}
-				axesRequest={nodeRef}
-				nodeRef={nodeRef}
-				footerCells={totalsRow ?? undefined}
-				columnAccents={accents}
-				columnUnits={shape?.unit ? { value: shape.unit } : undefined}
-				onRowHover={setHoverRow}
-				onPinnedRow={setLockedRow}
-				onStepsChange={setSteps}
-			/>
-		</div>
+		<DrillableGrid
+			sql={ok.sql}
+			axesRequest={nodeRef}
+			nodeRef={nodeRef}
+			footerCells={totalsRow ?? undefined}
+			columnAccents={accents}
+			columnUnits={shape?.unit ? { value: unitSymbol(shape.unit) } : undefined}
+			onRowHover={setHoverRow}
+			onPinnedRow={setLockedRow}
+			onStepsChange={onStepsChange}
+			toolbarEnd={
+				shape?.expression ? (
+					<EquationHeader
+						shape={shape}
+						totals={totalsRow}
+						hoverRow={hoverRow}
+						lockedRow={lockedRow}
+						scope={scope}
+					/>
+				) : undefined
+			}
+		/>
 	);
 }
 
-/** The "Analyse" button + modal for a metric/measure node; renders nothing for
- *  nodes without a runnable target (no affordance on ungrounded measures or
- *  DAG-less metrics — AC). */
-export function AnalyseAction({ node }: { node: OMNode }) {
-	const [opened, setOpened] = useState(false);
+/** The analyse modal for a RUNNABLE metric/measure node — opened directly by
+ *  the canvas node click (iteration 2). Mount it keyed on the node id and
+ *  only while open, so drill/scope state resets per node. The title row is
+ *  the node's ONE identity line: kind chip, name, unit, the measure's
+ *  statement + aggregation, and the live drill scope. */
+export function AnalyseModal({
+	node,
+	onClose,
+}: {
+	node: OMNode;
+	onClose: () => void;
+}) {
+	const [steps, setSteps] = useState<DrillStep[]>([]);
 	const target = analyseTarget(node);
 	if (!target) return null;
-	// The Group keeps the button intrinsic-width inside NodeDetail's stretching
-	// Stack; the Modal portals out, so it is the Group's only real child.
+	const d = node.data;
 	return (
-		<Group>
-			<Button
-				variant="light"
-				size="compact-sm"
-				leftSection={<Play size={13} />}
-				onClick={() => setOpened(true)}
-				data-testid="node-analyse-button"
-			>
-				Analyse
-			</Button>
-			<Modal
-				opened={opened}
-				onClose={() => setOpened(false)}
-				title={node.label}
-				size="90%"
-				data-testid="node-analyse-modal"
-			>
-				{/* Mounted only while open (Mantine default) — the compose fetch, the
-				    grid query, and the axes fetch fire on first open, not on node
-				    selection. */}
-				<NodeGrid nodeRef={target} />
-			</Modal>
-		</Group>
+		<Modal
+			opened
+			onClose={onClose}
+			size="90%"
+			data-testid="node-analyse-modal"
+			title={
+				<Group gap="xs" wrap="wrap">
+					<Badge variant="light" tt="uppercase">
+						{node.kind}
+					</Badge>
+					<Text fw={600}>{node.label}</Text>
+					{d.kind === "metric" && d.unit && (
+						<Badge size="sm" variant="light" color="gray">
+							{unitSymbol(d.unit)}
+						</Badge>
+					)}
+					{d.kind === "measure" && (d.statement || d.aggregation) && (
+						<Text size="xs" c="dimmed">
+							{[d.statement, d.aggregation].filter(Boolean).join(" · ")}
+						</Text>
+					)}
+					<Text size="xs" c="dimmed" data-testid="analyse-scope">
+						{scopeSentence(steps)}
+					</Text>
+				</Group>
+			}
+		>
+			<NodeGrid
+				nodeRef={target}
+				scope={scopeSentence(steps)}
+				onStepsChange={setSteps}
+			/>
+		</Modal>
 	);
 }

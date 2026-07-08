@@ -17,7 +17,7 @@
 // project no operand columns) keeps its total, dimmed. An operand observed
 // as NULL is the honest gap — rendered as `—` plus one sentence naming it.
 
-import { Badge, Group, Text } from "@mantine/core";
+import { Group, Text } from "@mantine/core";
 import { useReducedMotion } from "@mantine/hooks";
 import type { ReactNode } from "react";
 
@@ -97,6 +97,12 @@ export function operandAccents(shape: NodeShapeWire): Record<string, string> {
 		accents[name] = ROLE_COLOR[role];
 	}
 	return accents;
+}
+
+/** Engine unit strings → display symbols. Only symbols users actually read as
+ *  symbols get one; everything else shows its own word. */
+export function unitSymbol(unit: string): string {
+	return unit === "percentage" ? "%" : unit;
 }
 
 /** `cost_of_goods_sold` → `Cost Of Goods Sold`. */
@@ -324,26 +330,11 @@ export function EquationHeader({
 
 	const elided = roles.size > ELISION_THRESHOLD;
 
+	// The equation IS the whole header now — identity (name, kind, unit,
+	// scope) lives in the modal's title row (DAT-712 iteration 2: the
+	// upper-left corner was carrying the metric name twice).
 	return (
-		<div data-testid="equation-header" style={{ marginBottom: 8 }}>
-			<Group gap="xs" mb={2}>
-				<Text size="sm" fw={700}>
-					{metricLabel}
-				</Text>
-				{shape.unit && (
-					<Badge size="xs" variant="light" color="gray">
-						{shape.unit}
-					</Badge>
-				)}
-				<Text size="xs" c="dimmed" data-testid="equation-scope">
-					{scope}
-				</Text>
-				{lockedRow !== null && (
-					<Badge size="xs" variant="light" color="blue">
-						pinned
-					</Badge>
-				)}
-			</Group>
+		<div data-testid="equation-header">
 			<Group gap={4} wrap="wrap" align="center" data-testid="equation-body">
 				{elided ? (
 					// Many-operand formulas elide to named chips — nesting stops
@@ -367,8 +358,9 @@ export function EquationHeader({
 					{resultText ?? "—"}
 				</Text>
 				{shape.unit && resultText !== null && (
-					<Text component="span" size="sm" c="dimmed">
-						{shape.unit}
+					// Same size as the number — "49.91 %", not a fine-print word.
+					<Text component="span" size="lg" c="dimmed">
+						{unitSymbol(shape.unit)}
 					</Text>
 				)}
 			</Group>

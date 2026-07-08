@@ -49,7 +49,7 @@ import {
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown, Layers, X } from "lucide-react";
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
 import type {
 	DrillAxesRequest,
@@ -257,7 +257,6 @@ export function DrillableGrid({
 	onRowHover,
 	onPinnedRow,
 	onStepsChange,
-	toolbarEnd,
 }: {
 	/** The base query (the node's composed SQL on the canvas path). */
 	sql: string;
@@ -283,9 +282,6 @@ export function DrillableGrid({
 	onPinnedRow?: (row: Record<string, Json | null> | null) => void;
 	/** Fired with the committed step stack after every accepted apply. */
 	onStepsChange?: (steps: DrillStep[]) => void;
-	/** Rendered right-aligned on the drill-controls row — the layer above
-	 *  mounts its equation here (DAT-712 iteration 2: the busy corner). */
-	toolbarEnd?: ReactNode;
 }) {
 	const baseParams = useMemo<SqlParams>(() => params ?? [], [params]);
 	// The committed stack + its server-composed statement move TOGETHER: steps
@@ -472,132 +468,125 @@ export function DrillableGrid({
 		);
 	};
 
+	// The drill controls live in the GRID's toolbar-left slot (where the row
+	// count used to sit — iteration 3), not on their own row above it.
+	const drillControls = (
+		<>
+			<Menu shadow="md" width={280} position="bottom-start">
+				<Menu.Target>
+					<Button
+						variant="light"
+						size="compact-xs"
+						leftSection={<Layers size={13} />}
+						loading={compose.isPending}
+						disabled={axesQuery.isPending || axes.length === 0}
+						data-testid="drill-slice-button"
+					>
+						Slice
+					</Button>
+				</Menu.Target>
+				<Menu.Dropdown>
+					{axes.map((axis) => (
+						<Menu.Item
+							key={axis.column}
+							disabled={slicedColumns.has(axis.column)}
+							onClick={() => slice(axis)}
+							rightSection={
+								grainable && axis.temporal !== null ? (
+									<Text size="xs" c="dimmed">
+										{grainName(DEFAULT_TEMPORAL_GRAIN)}
+									</Text>
+								) : axis.valueCount !== null ? (
+									<Text size="xs" c="dimmed">
+										{axis.valueCount}
+									</Text>
+								) : undefined
+							}
+						>
+							<Text size="sm">{axis.column}</Text>
+							{axis.businessContext && (
+								<Text size="xs" c="dimmed" lineClamp={1}>
+									{axis.businessContext}
+								</Text>
+							)}
+						</Menu.Item>
+					))}
+				</Menu.Dropdown>
+			</Menu>
+			{axes.length === 0 && !axesQuery.isPending && (
+				// The resolver names WHY it came back empty (stale snippet, bare
+				// catalog, no extracts) — a dead-end badge with no reason reads
+				// as a bug (2026-07-06 review).
+				<Tooltip
+					label={
+						axesQuery.data?.reason ??
+						"No cataloged dimensions for this metric's facts"
+					}
+					maw={360}
+					multiline
+				>
+					<Badge color="gray" variant="light" size="sm">
+						no axes
+					</Badge>
+				</Tooltip>
+			)}
+			{steps.map((step, i) => {
+				const axis =
+					step.kind === "slice" ? axisByColumn.get(step.column) : undefined;
+				if (
+					grainable &&
+					step.kind === "slice" &&
+					axis &&
+					axis.temporal !== null
+				) {
+					// A temporal slice's chip IS the grain control.
+					return (
+						<GrainMenu
+							key={`slice:${step.column}`}
+							axis={axis}
+							grain={step.grain}
+							onGrain={(token) => regrain(step.column, token)}
+							onRemove={() => apply(steps.filter((_, j) => j !== i))}
+						/>
+					);
+				}
+				return (
+					<Pill
+						// Value-identity key: slices are unique per column (menu disables
+						// re-slicing) and pins per column+value (row-click dedupes).
+						key={
+							step.kind === "slice"
+								? `slice:${step.column}`
+								: `pin:${step.column}:${pinLabel(step.value)}`
+						}
+						withRemoveButton
+						onRemove={() => apply(steps.filter((_, j) => j !== i))}
+						data-testid={`drill-step-${step.kind}-${step.column}`}
+					>
+						{step.kind === "slice"
+							? `by ${step.column}`
+							: `${step.column} = ${pinLabel(step.value)}${
+									step.grain !== undefined ? ` · ${grainName(step.grain)}` : ""
+								}`}
+					</Pill>
+				);
+			})}
+			{steps.length > 0 && (
+				<Button
+					variant="subtle"
+					color="gray"
+					size="compact-xs"
+					onClick={() => apply([])}
+					data-testid="drill-clear"
+				>
+					Clear
+				</Button>
+			)}
+		</>
+	);
+
 	return (
 		<div data-testid="drillable-grid">
-			<Group
-				gap="xs"
-				mb="xs"
-				wrap="wrap"
-				justify={toolbarEnd ? "space-between" : undefined}
-				align="flex-start"
-			>
-				<Group gap="xs" wrap="wrap">
-					<Menu shadow="md" width={280} position="bottom-start">
-						<Menu.Target>
-							<Button
-								variant="light"
-								size="compact-xs"
-								leftSection={<Layers size={13} />}
-								loading={compose.isPending}
-								disabled={axesQuery.isPending || axes.length === 0}
-								data-testid="drill-slice-button"
-							>
-								Slice
-							</Button>
-						</Menu.Target>
-						<Menu.Dropdown>
-							{axes.map((axis) => (
-								<Menu.Item
-									key={axis.column}
-									disabled={slicedColumns.has(axis.column)}
-									onClick={() => slice(axis)}
-									rightSection={
-										grainable && axis.temporal !== null ? (
-											<Text size="xs" c="dimmed">
-												{grainName(DEFAULT_TEMPORAL_GRAIN)}
-											</Text>
-										) : axis.valueCount !== null ? (
-											<Text size="xs" c="dimmed">
-												{axis.valueCount}
-											</Text>
-										) : undefined
-									}
-								>
-									<Text size="sm">{axis.column}</Text>
-									{axis.businessContext && (
-										<Text size="xs" c="dimmed" lineClamp={1}>
-											{axis.businessContext}
-										</Text>
-									)}
-								</Menu.Item>
-							))}
-						</Menu.Dropdown>
-					</Menu>
-					{axes.length === 0 && !axesQuery.isPending && (
-						// The resolver names WHY it came back empty (stale snippet, bare
-						// catalog, no extracts) — a dead-end badge with no reason reads
-						// as a bug (2026-07-06 review).
-						<Tooltip
-							label={
-								axesQuery.data?.reason ??
-								"No cataloged dimensions for this metric's facts"
-							}
-							maw={360}
-							multiline
-						>
-							<Badge color="gray" variant="light" size="sm">
-								no axes
-							</Badge>
-						</Tooltip>
-					)}
-					{steps.map((step, i) => {
-						const axis =
-							step.kind === "slice" ? axisByColumn.get(step.column) : undefined;
-						if (
-							grainable &&
-							step.kind === "slice" &&
-							axis &&
-							axis.temporal !== null
-						) {
-							// A temporal slice's chip IS the grain control.
-							return (
-								<GrainMenu
-									key={`slice:${step.column}`}
-									axis={axis}
-									grain={step.grain}
-									onGrain={(token) => regrain(step.column, token)}
-									onRemove={() => apply(steps.filter((_, j) => j !== i))}
-								/>
-							);
-						}
-						return (
-							<Pill
-								// Value-identity key: slices are unique per column (menu disables
-								// re-slicing) and pins per column+value (row-click dedupes).
-								key={
-									step.kind === "slice"
-										? `slice:${step.column}`
-										: `pin:${step.column}:${pinLabel(step.value)}`
-								}
-								withRemoveButton
-								onRemove={() => apply(steps.filter((_, j) => j !== i))}
-								data-testid={`drill-step-${step.kind}-${step.column}`}
-							>
-								{step.kind === "slice"
-									? `by ${step.column}`
-									: `${step.column} = ${pinLabel(step.value)}${
-											step.grain !== undefined
-												? ` · ${grainName(step.grain)}`
-												: ""
-										}`}
-							</Pill>
-						);
-					})}
-					{steps.length > 0 && (
-						<Button
-							variant="subtle"
-							color="gray"
-							size="compact-xs"
-							onClick={() => apply([])}
-							data-testid="drill-clear"
-						>
-							Clear
-						</Button>
-					)}
-				</Group>
-				{toolbarEnd}
-			</Group>
-
 			{refusal && (
 				<Alert
 					color="yellow"
@@ -625,6 +614,7 @@ export function DrillableGrid({
 				footerLabel={footerLabel}
 				columnAccents={columnAccents}
 				columnUnits={columnUnits}
+				toolbarStart={drillControls}
 				toolbarActions={
 					<DrillChartAction
 						key={effectiveKey}

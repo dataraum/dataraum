@@ -26,11 +26,16 @@ vi.mock("#/ui/cockpit/widgets/result-grid", () => ({
 	WindowedGrid: ({
 		sql,
 		onRowClick,
+		toolbarStart,
 	}: {
 		sql?: string;
 		onRowClick?: (row: Record<string, unknown>) => void;
+		toolbarStart?: React.ReactNode;
 	}) => (
 		<div>
+			{/* The drill controls render through the grid's toolbar-left slot
+			    (iteration 3) — the mock must mount them like the real grid. */}
+			{toolbarStart}
 			<div data-testid="mock-grid-sql">{sql}</div>
 			{onRowClick && (
 				<button

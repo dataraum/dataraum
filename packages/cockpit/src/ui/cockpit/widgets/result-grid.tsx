@@ -35,7 +35,6 @@ import {
 	Indicator,
 	Modal,
 	Table,
-	Text,
 	TextInput,
 } from "@mantine/core";
 import { useInfiniteQuery } from "@tanstack/react-query";
@@ -136,6 +135,7 @@ export function ResultGridView({
 	sql,
 	sqlParams,
 	toolbarActions,
+	toolbarStart,
 	onRowClick,
 	onRowHover,
 	footerRow,
@@ -183,6 +183,10 @@ export function ResultGridView({
 	 * mounts its mint-to-Report button here so it sits with the grid's own actions
 	 * instead of floating above the grid. Omitted for plain run_sql / probe grids. */
 	toolbarActions?: ReactNode;
+	/** Rendered in the toolbar's LEFT slot (where the row count used to sit —
+	 * it lives in the status pill now): the drill surface mounts its slice
+	 * controls here (DAT-712 iteration 3). */
+	toolbarStart?: ReactNode;
 }) {
 	// The filter row is hidden by default (a clean grid) and toggled by the funnel
 	// in the toolbar. An applied-but-hidden filter isn't stranded: the funnel stays
@@ -290,10 +294,13 @@ export function ResultGridView({
 
 	return (
 		<div data-testid="canvas-result-grid">
-			<Group justify="space-between" mb="xs">
-				<Text size="sm" fw={500}>
-					{store.rowCount} row{store.rowCount === 1 ? "" : "s"}
-				</Text>
+			<Group justify="space-between" mb="xs" align="flex-start">
+				{/* The row count lives in the status pill (a finished grid IS its
+				    row count) — the left slot hosts the owner's controls (the
+				    drill's slice chips, DAT-712 iteration 3). */}
+				<Group gap="xs" wrap="wrap" style={{ flex: 1, minWidth: 0 }}>
+					{toolbarStart}
+				</Group>
 				<Group gap="xs">
 					{toolbarActions}
 					{sql && (
@@ -338,7 +345,9 @@ export function ResultGridView({
 						</Indicator>
 					)}
 					<Badge color={STATUS_COLOR[status]} variant="light" size="sm">
-						{status}
+						{status === "done"
+							? `${store.rowCount} row${store.rowCount === 1 ? "" : "s"}`
+							: status}
 					</Badge>
 				</Group>
 			</Group>
@@ -744,6 +753,7 @@ export function WindowedGrid({
 	sql,
 	sqlParams,
 	toolbarActions,
+	toolbarStart,
 	onRowClick,
 	onRowHover,
 	footerRow,
@@ -759,6 +769,8 @@ export function WindowedGrid({
 	sqlParams?: (string | number | boolean | null)[];
 	/** Forwarded to the grid toolbar (left of "View SQL") — see ResultGridView. */
 	toolbarActions?: ReactNode;
+	/** Forwarded toolbar LEFT slot — see ResultGridView (DAT-712). */
+	toolbarStart?: ReactNode;
 	/** Forwarded row-click action — see ResultGridView. */
 	onRowClick?: (row: Record<string, Json | null>) => void;
 	/** Forwarded row hover/focus tracking — see ResultGridView (DAT-712). */
@@ -892,6 +904,7 @@ export function WindowedGrid({
 			sql={sql}
 			sqlParams={sqlParams}
 			toolbarActions={toolbarActions}
+			toolbarStart={toolbarStart}
 			onRowClick={onRowClick}
 			onRowHover={onRowHover}
 			footerRow={footerRow}

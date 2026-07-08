@@ -88,8 +88,10 @@ describe("ResultGridView (DAT-385 P2)", () => {
 		expect(screen.getByTestId("canvas-result-grid-scroll")).toBeTruthy();
 		expect(screen.getByText("id")).toBeTruthy();
 		expect(screen.getByText("name")).toBeTruthy();
+		// The row count IS the done-status pill (DAT-712 iteration 3) — no
+		// separate "done" text, no separate count text.
 		expect(screen.getByText("3 rows")).toBeTruthy();
-		expect(screen.getByText("done")).toBeTruthy();
+		expect(screen.queryByText("done")).toBeNull();
 	});
 
 	it("shows the truncation banner when the store hit the cap", () => {

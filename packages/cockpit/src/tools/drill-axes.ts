@@ -27,6 +27,7 @@ import { config } from "#/config";
 import { metadataDb } from "#/db/metadata/client";
 import {
 	columns,
+	currentColumnConcepts,
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
@@ -36,6 +37,7 @@ import {
 import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
 import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
 import { narrowSnippetParts } from "#/duckdb/parts";
+import { aggregatedColumns } from "#/duckdb/sql-ast";
 
 import { parseMetricDag } from "./operating-model-graph";
 
@@ -231,12 +233,40 @@ async function targetFields(req: DrillAxesRequest): Promise<string[]> {
 	return measureFieldsFromDag(row?.dag ?? null);
 }
 
+/**
+ * The FLOW GATE (DAT-673): a node's measures may be summed into time buckets
+ * only when every base column they aggregate is a FLOW (`temporal_behavior =
+ * additive`). A stock (point-in-time balance) summed per period double-counts —
+ * arithmetically consistent, semantically fabricated. Unclassified (null) fails
+ * CLOSED: we can't assert "summable flow", so we don't offer the grain.
+ * Pure → unit-tested; the aggregated-column extraction is the AST read
+ * (`sql-ast.ts`).
+ */
+export function temporalGate(
+	aggregatedCols: ReadonlySet<string>,
+	behaviorByColumn: ReadonlyMap<string, string | null>,
+): { safe: boolean; offending: string[] } {
+	if (aggregatedCols.size === 0) {
+		// Couldn't determine what's aggregated (unparseable expr) → fail closed.
+		return { safe: false, offending: [] };
+	}
+	const offending = [...aggregatedCols].filter(
+		(c) => behaviorByColumn.get(c) !== "additive",
+	);
+	return { safe: offending.length === 0, offending };
+}
+
 /** Axes plus — when empty — the WHY, so the UI never shows a dead-end badge:
  *  each empty case names the stage of the resolution chain that yielded
  *  nothing (no extracts / stale relations / bare catalog). */
 export interface DrillAxesResult {
 	axes: DrillAxis[];
 	reason?: string;
+	/** Set when the flow gate stripped time grain from the temporal axes — the
+	 *  node aggregates a stock/unclassified measure that can't be summed into
+	 *  periods (DAT-673). The date axis stays as a raw slice; the UI surfaces
+	 *  this so the missing grain chip reads as a decision, not a gap. */
+	temporalGateReason?: string;
 }
 
 export async function resolveDrillAxes(
@@ -290,6 +320,9 @@ export async function resolveDrillAxes(
 	// SQL `inArray` (belt over braces — the field set defines the node).
 	const wanted = new Set(fields);
 	const relations: string[] = [];
+	// The accepted extracts' value expressions — the flow gate reads the base
+	// columns they AGGREGATE off these (DAT-673).
+	const selectExprs: string[] = [];
 	const decided = new Set<string>();
 	for (const r of snippetRows) {
 		if (!r.standardField || !wanted.has(r.standardField)) continue;
@@ -298,6 +331,7 @@ export async function resolveDrillAxes(
 		if ((r.failureCount ?? 0) !== 0) continue;
 		const parts = narrowSnippetParts(r.parts);
 		if (parts?.relation) relations.push(parts.relation);
+		if (parts?.selectExpr) selectExprs.push(parts.selectExpr);
 	}
 	const viewByName = new Map(
 		viewRows
@@ -377,8 +411,15 @@ export async function resolveDrillAxes(
 				tableId: columns.tableId,
 				columnName: columns.columnName,
 				resolvedType: columns.resolvedType,
+				// The adjudicated stock/flow verdict for the flow gate (DAT-673) —
+				// null when the column has no concept (unclassified → fail closed).
+				temporalBehavior: currentColumnConcepts.temporalBehavior,
 			})
 			.from(columns)
+			.leftJoin(
+				currentColumnConcepts,
+				eq(columns.columnId, currentColumnConcepts.columnId),
+			)
 			.where(inArray(columns.tableId, typeTableIds))
 			// Deterministic row order — temporalKindsFromColumns is first-wins
 			// per name, so an unordered read would be Postgres row-order
@@ -409,6 +450,42 @@ export async function resolveDrillAxes(
 			reason:
 				"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
 		};
+	}
+
+	// FLOW GATE (DAT-673): only run when a temporal axis is actually offered.
+	// Extract the base columns the node's measures aggregate (AST read), then
+	// gate the grain on their stock/flow verdict.
+	if (axes.some((a) => a.temporal !== null)) {
+		const factIdSet = new Set(factIds);
+		const behaviorByColumn = new Map<string, string | null>();
+		for (const r of columnRows) {
+			if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
+			// First-wins per name (rows are ordered); a stock verdict is never
+			// overwritten by a later additive one for the same name.
+			if (
+				!behaviorByColumn.has(r.columnName) ||
+				behaviorByColumn.get(r.columnName) === "additive"
+			) {
+				behaviorByColumn.set(r.columnName, r.temporalBehavior ?? null);
+			}
+		}
+		const aggCols = new Set<string>();
+		for (const expr of selectExprs) {
+			for (const c of await aggregatedColumns(expr)) aggCols.add(c);
+		}
+		const gate = temporalGate(aggCols, behaviorByColumn);
+		if (!gate.safe) {
+			const gated = axes.map((a) =>
+				a.temporal !== null ? { ...a, temporal: null } : a,
+			);
+			return {
+				axes: gated,
+				temporalGateReason:
+					gate.offending.length > 0
+						? `Time grain is off: this measure aggregates ${gate.offending.join(", ")}, which the catalog reads as a balance (point-in-time), not a flow. Summing a balance into time periods double-counts.`
+						: "Time grain is off: could not confirm this measure is a summable flow.",
+			};
+		}
 	}
 	return { axes };
 }

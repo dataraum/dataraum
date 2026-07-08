@@ -217,7 +217,9 @@ export function canonicalKey(tree: unknown, sql: string): string {
 // reachability. `@duckdb/node-api` is a native binding, imported lazily so the pure
 // `canonicalKey` path (and its unit test) never load it or `#/config`.
 let parserInstance: Promise<DuckDBInstance> | null = null;
-function getParser(): Promise<DuckDBInstance> {
+/** The shared memoized in-memory parser instance (no lake). Exported so the
+ *  AST-read module (`sql-ast.ts`) reuses one native binding, not a second. */
+export function getParser(): Promise<DuckDBInstance> {
 	if (!parserInstance) {
 		parserInstance = import("@duckdb/node-api")
 			.then(({ DuckDBInstance }) => DuckDBInstance.create(":memory:"))
@@ -263,6 +265,21 @@ async function serialize(
 		return JSON.parse(raw);
 	} catch {
 		return null;
+	}
+}
+
+/**
+ * Parse a SQL string to DuckDB's JSON AST via the shared memoized parser — the
+ * one home for "SQL as structure" (canonicalization here, the DAT-673 flow-gate
+ * column read + the DAT-678 drill mutation in `sql-ast.ts`). Returns null when
+ * the parse is unusable (fail-soft; the JSON's own `error` survives otherwise).
+ */
+export async function parseSqlToJson(sql: string): Promise<unknown> {
+	const conn = await (await getParser()).connect();
+	try {
+		return await serialize(conn, sql);
+	} finally {
+		conn.closeSync();
 	}
 }
 

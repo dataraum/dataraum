@@ -21,6 +21,7 @@ function fluent(rows: unknown[]) {
 		where: () => q,
 		orderBy: () => q,
 		limit: () => q,
+		leftJoin: () => q,
 		// biome-ignore lint/suspicious/noThenProperty: drizzle query builders ARE thenables — the double must be awaitable mid-chain
 		then: (
 			resolve: (v: unknown[]) => unknown,
@@ -34,6 +35,21 @@ vi.mock("#/db/metadata/client", () => ({
 		select: () => ({
 			from: (table: unknown) => fluent(rowsByTable.get(table) ?? []),
 		}),
+	},
+}));
+
+// The AST read (real DuckDB) is integration-tested in sql-ast.integration.test;
+// here a thin regex stub extracts the aggregated column so the GATE logic is
+// tested in this pure-metadata unit.
+vi.mock("#/duckdb/sql-ast", () => ({
+	aggregatedColumns: async (expr: string) => {
+		const cols = new Set<string>();
+		for (const m of expr.matchAll(
+			/\b(?:SUM|COUNT|AVG|MIN|MAX)\s*\(\s*(\w+)/gi,
+		)) {
+			if (m[1]) cols.add(m[1]);
+		}
+		return cols;
 	},
 }));
 
@@ -345,10 +361,18 @@ const seed = () => {
 		},
 	]);
 	// The catalog types behind temporal detection: the VIEW table (vt1) carries
-	// the FK-projected dims; customer__segment is a DATE there.
+	// the FK-projected dims; customer__segment is a DATE there. The FACT (fact1)
+	// carries the aggregated measure `amount` — additive (a flow), so the flow
+	// gate leaves the temporal grain on.
 	rowsByTable.set(columns, [
 		{ tableId: "vt1", columnName: "customer__region", resolvedType: "VARCHAR" },
 		{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+		{
+			tableId: "fact1",
+			columnName: "amount",
+			resolvedType: "DOUBLE",
+			temporalBehavior: "additive",
+		},
 	]);
 };
 
@@ -428,6 +452,69 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect((await resolveDrillAxes({ standardField: "cogs" })).axes).toEqual(
 			[],
 		);
+	});
+
+	it("FLOW GATE: a stock measure keeps the date axis but loses its grain (DAT-673)", async () => {
+		seed();
+		// The extract sums a BALANCE column (point-in-time), not a flow.
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(debit_balance)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "debit_balance",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "point_in_time",
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// Still offered as a raw slice…
+		expect(dateAxis).toBeDefined();
+		// …but the grain is gated off, with a surfaced reason.
+		expect(dateAxis?.temporal).toBeNull();
+		expect(res.temporalGateReason).toContain("debit_balance");
+		expect(res.temporalGateReason).toContain("balance");
+	});
+
+	it("FLOW GATE: an unclassified measure fails closed (no grain)", async () => {
+		seed();
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(mystery)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		// `mystery` has no column_concept → temporalBehavior null → fail closed.
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "mystery",
+				resolvedType: "DOUBLE",
+				temporalBehavior: null,
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		expect(
+			res.axes.find((a) => a.column === "customer__segment")?.temporal,
+		).toBeNull();
+		expect(res.temporalGateReason).toContain("mystery");
 	});
 });
 

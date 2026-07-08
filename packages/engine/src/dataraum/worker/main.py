@@ -126,8 +126,8 @@ async def run_worker() -> None:
     namespace = settings.temporal_namespace
     task_queue = settings.temporal_task_queue
 
-    # OTel tracing (ADR-0019/DAT-705) — no-op unless OTEL_EXPORTER_OTLP_ENDPOINT
-    # is set. On the Client, TracingInterceptor covers BOTH directions: outbound
+    # OTel tracing + log shipping (ADR-0019/DAT-705/707) — no-op unless
+    # OTEL_EXPORTER_OTLP_ENDPOINT is set. On the Client, TracingInterceptor covers BOTH directions: outbound
     # client calls AND this worker's workflow/activity spans. Every workflow
     # start arrives from the traced cockpit client (ADR-0020 — the orchestration
     # workflows run HERE and the cockpit is the only starter), so each run is
@@ -139,7 +139,7 @@ async def run_worker() -> None:
     # `always_create_workflow_spans`: it exists for client-context-LESS starts
     # (CLI/schedules/smoke scripts), which stay untraced rather than minting
     # orphan-parented trace shards.
-    tracer_provider = init_telemetry(settings)
+    telemetry = init_telemetry(settings)
 
     # Substrate bootstrap strictly precedes worker.run() — the worker must not
     # advertise itself as polling until its DuckLake anchor + ConnectionManager
@@ -150,7 +150,7 @@ async def run_worker() -> None:
             host,
             namespace=namespace,
             data_converter=pydantic_data_converter,  # PhaseActivity{Input,Result} are Pydantic
-            interceptors=[TracingInterceptor()] if tracer_provider else [],
+            interceptors=[TracingInterceptor()] if telemetry else [],
         )
         phase_activities = PhaseActivities(manager)
         activities = worker_activities(phase_activities)
@@ -228,8 +228,8 @@ async def run_worker() -> None:
             logger.info("worker_stopping")
     finally:
         shutdown_worker_substrate(manager)
-        if tracer_provider:
-            tracer_provider.shutdown()  # flush buffered spans before exit
+        if telemetry:
+            telemetry.shutdown()  # flush buffered spans + log records before exit
 
 
 def main() -> None:

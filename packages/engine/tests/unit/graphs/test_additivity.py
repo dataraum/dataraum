@@ -68,11 +68,19 @@ def test_parse_stock_measure(con):
     }
 
 
-def test_parse_count_distinct_and_avg(con):
+def test_parse_distinct_flag(con):
     assert parse_aggregate_calls("COUNT(DISTINCT customer_id)", con) == [
-        AggregateCall("count_distinct", ("customer_id",))
+        AggregateCall("count", ("customer_id",), distinct=True)
+    ]
+    assert parse_aggregate_calls("SUM(DISTINCT amount)", con) == [
+        AggregateCall("sum", ("amount",), distinct=True)
     ]
     assert parse_aggregate_calls("AVG(amount)", con) == [AggregateCall("avg", ("amount",))]
+
+
+def test_parse_window_function_yields_no_calls(con):
+    """A window aggregate is not an aggregate FUNCTION node — no calls (refused downstream, F3)."""
+    assert parse_aggregate_calls("SUM(x) OVER ()", con) == []
 
 
 def test_parse_ignores_non_aggregate_functions(con):
@@ -124,9 +132,9 @@ def test_avg_and_distinct_and_minmax_never_reconcile():
     assert classify_extract([AggregateCall("avg", ("x",))], {}, False) == AxisClass(
         False, False, AVERAGE, AVERAGE
     )
-    assert classify_extract([AggregateCall("count_distinct", ("x",))], {}, False) == AxisClass(
-        False, False, DISTINCT_COUNT, DISTINCT_COUNT
-    )
+    assert classify_extract(
+        [AggregateCall("count", ("x",), distinct=True)], {}, False
+    ) == AxisClass(False, False, DISTINCT_COUNT, DISTINCT_COUNT)
     assert classify_extract([AggregateCall("min", ("x",))], {}, False) == AxisClass(
         False, False, MIN_MAX, MIN_MAX
     )
@@ -263,6 +271,15 @@ def test_rollup_sum_of_flow_and_stock_is_semi_additive():
     assert verdict.time_reason == STOCK
 
 
+def test_rollup_without_output_step_is_refused():
+    """A graph missing its output marker can't reveal ratio-vs-sum structure → refuse (F5)."""
+    graph = _graph({"e": _extract("e")})  # no step marked output_step
+    verdict = roll_up_metric(graph, {"e": ADDITIVE})
+    assert verdict.categorical_additive is False
+    assert verdict.time_additive is False
+    assert verdict.time_reason == UNKNOWN_AGGREGATE
+
+
 # --- 4. conservatism when a signal is missing (reviewer findings) ------------
 
 
@@ -301,6 +318,27 @@ def test_count_star_alone_is_the_measure():
     cls = classify_extract([AggregateCall("count_star", ())], {}, fact_is_snapshot=True)
     assert cls.time_additive is False
     assert cls.time_reason == SNAPSHOT_COUNT
+
+
+def test_sum_distinct_never_reconciles():
+    """SUM(DISTINCT) is non-additive — the distinct set overlaps across slices (F1)."""
+    cls = classify_extract([AggregateCall("sum", ("amount",), distinct=True)], FLOW, False)
+    assert cls == AxisClass(False, False, DISTINCT_COUNT, DISTINCT_COUNT)
+
+
+def test_count_1_guard_also_excluded():
+    """A COUNT(1) NULL-guard (parses as count/no-columns) is dropped like COUNT(*) (F2)."""
+    calls = [AggregateCall("count", ()), AggregateCall("sum", ("debit_balance",))]
+    cls = classify_extract(calls, STOCKCOLS, fact_is_snapshot=True)
+    assert cls.time_additive is False
+    assert cls.time_reason == STOCK  # not tainted with snapshot_count by the guard
+
+
+def test_no_aggregate_is_refused():
+    """No aggregate call (bare passthrough / unparsed window) → refused, never additive (F3)."""
+    assert classify_extract([], {}, False) == AxisClass(
+        False, False, UNKNOWN_AGGREGATE, UNKNOWN_AGGREGATE
+    )
 
 
 # --- 5. intra-extract ratio detection (select_expr_is_ratio) -----------------

@@ -470,7 +470,10 @@ def _persist_additivity_verdicts(
 
     rows: list[dict[str, object]] = []
     measure_classes: dict[str, AxisClass] = {}
-    for graph_id in executed_keys:
+    # sorted(): the measure fold below merges a shared field's class across metrics
+    # `most_restrictive` (order-dependent reason), so a deterministic iteration order
+    # is required — a set's is PYTHONHASHSEED-salted.
+    for graph_id in sorted(executed_keys):
         graph = graphs.get(graph_id)
         if graph is None:
             continue

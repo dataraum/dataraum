@@ -53,14 +53,16 @@ FLOW = "additive"  # temporal_behavior value marking a flow column
 class AggregateCall:
     """One aggregate application inside an extract's ``select_expr``.
 
-    ``function`` is normalized to the doctrine's vocabulary
-    (``sum``/``count``/``count_star``/``count_distinct``/``avg``/``min``/``max``
-    or the raw lowercase name for anything else). ``columns`` are the base
-    columns aggregated (empty for ``COUNT(*)``).
+    ``function`` is the lowercase DuckDB name (``sum`` / ``count`` / ``count_star``
+    / ``avg`` / ``min`` / ``max`` / …). ``columns`` are the base columns aggregated
+    (empty for ``COUNT(*)``). ``distinct`` is the DISTINCT qualifier — it breaks
+    additivity for ANY aggregate (the distinct set overlaps across slices), so
+    ``SUM(DISTINCT x)`` is as non-additive as ``COUNT(DISTINCT x)``.
     """
 
     function: str
     columns: tuple[str, ...]
+    distinct: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,8 +208,9 @@ def _collect_aggregates(node: Any, agg_names: frozenset[str], out: list[Aggregat
         if node.get("class") == "FUNCTION" and node.get("function_name") in agg_names:
             out.append(
                 AggregateCall(
-                    function=_normalize_function(node),
+                    function=str(node.get("function_name", "")).lower(),
                     columns=tuple(_column_refs(node.get("children", []))),
+                    distinct=bool(node.get("distinct")),
                 )
             )
             return
@@ -216,17 +219,6 @@ def _collect_aggregates(node: Any, agg_names: frozenset[str], out: list[Aggregat
     elif isinstance(node, list):
         for item in node:
             _collect_aggregates(item, agg_names, out)
-
-
-def _normalize_function(node: dict[str, Any]) -> str:
-    """Map a FUNCTION node to the doctrine vocabulary.
-
-    ``count`` + ``distinct`` → ``count_distinct``; everything else its lowercase name.
-    """
-    name = str(node.get("function_name", "")).lower()
-    if name == "count" and node.get("distinct"):
-        return "count_distinct"
-    return name
 
 
 def _column_refs(node: Any) -> list[str]:
@@ -275,18 +267,23 @@ def classify_extract(
     unknown — both snapshot and unknown deny ``COUNT`` the time axis.
     ``is_ratio`` marks an extract whose measures are combined by division/product
     inline in one ``select_expr`` (a ratio) — non-additive on every axis. An
-    extract with no aggregate (a bare passthrough) is treated as additive.
+    extract that yielded NO aggregate calls (a bare passthrough, or an unparsed
+    window function) is refused conservatively — we can't confirm it reconciles.
     """
     if is_ratio:
         return AxisClass(False, False, RATIO, RATIO)
-    # A bare COUNT(*) alongside a column-bearing aggregate is a NULL-presence guard
+    if not calls:
+        # No aggregate to classify (a bare column, or a window function that didn't
+        # parse to an aggregate FUNCTION) — never assume it sums.
+        return AxisClass(False, False, UNKNOWN_AGGREGATE, UNKNOWN_AGGREGATE)
+    # A column-less COUNT alongside a real measure aggregate is a NULL-presence guard
     # (``CASE WHEN COUNT(*)=0 THEN NULL ELSE <measure> END``), not the measure — the
     # value is the other aggregate. Drop it so the guard can't strip time or taint
-    # the reason (a stock balance reads ``stock``, not ``snapshot_count``). A
-    # COUNT(*) ALONE is a genuine count measure and is kept. This targets the one
-    # guard idiom the grounding prompt emits (COUNT(*)); a COUNT(1)/COUNT(col) guard
-    # would not be recognized, but the prompt never produces those.
-    measures = [c for c in calls if not (c.function == "count_star" and not c.columns)]
+    # the reason (a stock balance reads ``stock``, not ``snapshot_count``). Covers
+    # ``COUNT(*)`` (``count_star``) and ``COUNT(1)`` (``count`` with no columns), both
+    # of which are row counts; a DISTINCT count or ``COUNT(col)`` is a real measure.
+    # A row-count ALONE (no co-occurring measure) is a genuine count and is kept.
+    measures = [c for c in calls if not _is_row_count(c)]
     result = ADDITIVE
     for call in measures or calls:
         result = most_restrictive(
@@ -295,9 +292,18 @@ def classify_extract(
     return result
 
 
+def _is_row_count(call: AggregateCall) -> bool:
+    """A plain count of rows — ``COUNT(*)`` / ``COUNT(1)`` (no columns, not DISTINCT)."""
+    return call.function in ("count_star", "count") and not call.columns and not call.distinct
+
+
 def _classify_call(
     call: AggregateCall, temporal_by_column: dict[str, str | None], fact_is_snapshot: bool | None
 ) -> AxisClass:
+    if call.distinct:
+        # DISTINCT breaks additivity for EVERY aggregate (SUM/AVG/MIN/MAX/COUNT) —
+        # the distinct set overlaps across slices, so a breakdown never reconciles.
+        return AxisClass(False, False, DISTINCT_COUNT, DISTINCT_COUNT)
     fn = call.function
     if fn == "sum":
         behaviors = [temporal_by_column.get(c) for c in call.columns]
@@ -317,8 +323,6 @@ def _classify_call(
         return AxisClass(
             True, False, None, SNAPSHOT_COUNT if fact_is_snapshot else UNKNOWN_TEMPORAL
         )
-    if fn == "count_distinct":
-        return AxisClass(False, False, DISTINCT_COUNT, DISTINCT_COUNT)
     if fn == "avg":
         return AxisClass(False, False, AVERAGE, AVERAGE)
     if fn in ("min", "max"):
@@ -368,11 +372,10 @@ def roll_up_metric(graph: Any, extract_class_by_step: dict[str, AxisClass]) -> M
     """
     output = graph.get_output_step()
     if output is None:
-        # No output marker — fall to the most-restrictive over whatever we classified.
-        result = ADDITIVE
-        for cls in extract_class_by_step.values():
-            result = most_restrictive(result, cls)
-        return _to_verdict(result)
+        # No output marker — the formula structure (ratio vs sum) is unknown, so a
+        # ratio can't be told from an additive combination; refuse conservatively
+        # rather than fold the leaves as if they were additive.
+        return MetricVerdict(False, False, UNKNOWN_AGGREGATE, UNKNOWN_AGGREGATE)
     return _to_verdict(_step_class(output.step_id, graph, extract_class_by_step, frozenset()))
 
 

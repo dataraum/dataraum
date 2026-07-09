@@ -34,8 +34,8 @@ class MetricAdditivity(Base):
     resolves a canvas node to. ``*_additive`` say whether a breakdown by that
     axis class reconciles to the unsliced total; ``*_reason`` names the cause
     when it does not (``stock`` / ``average`` / ``distinct_count`` /
-    ``snapshot_count`` / ``min_max`` / ``ratio`` / ``unknown_aggregate``), NULL
-    when it reconciles.
+    ``snapshot_count`` / ``min_max`` / ``ratio`` / ``unknown_aggregate`` /
+    ``unknown_temporal``), NULL when it reconciles.
     """
 
     __tablename__ = "metric_additivity"

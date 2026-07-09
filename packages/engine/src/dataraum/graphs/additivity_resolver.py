@@ -116,7 +116,11 @@ def _fact_table_id(session: Session, relation: str) -> str | None:
     by construction via the `enriched_{duckdb_path}` naming convention, not a DB
     constraint). A fact with no confirmed dimensions has no enriched view, so the
     extract reads the typed table directly (the schema fallback in
-    `GraphAgent._build_schema_info`) — resolve that by table name / duckdb_path.
+    `GraphAgent._build_schema_info`) — resolve that by table name / duckdb_path,
+    scoped to `layer == "typed"`: a fact's raw and typed rows carry the SAME
+    `table_name` AND `duckdb_path` (DAT-639 dropped layer-prefixing), so without
+    the layer filter `.first()` would pick between them arbitrarily; metrics run
+    on the typed layer (as `BasePhase.table_ids_for_ctx` scopes).
     """
     row = session.execute(
         select(EnrichedView.fact_table_id).where(EnrichedView.view_name == relation)
@@ -125,7 +129,8 @@ def _fact_table_id(session: Session, relation: str) -> str | None:
         return str(row[0])
     row = session.execute(
         select(Table.table_id).where(
-            (Table.table_name == relation) | (Table.duckdb_path == relation)
+            Table.layer == "typed",
+            (Table.table_name == relation) | (Table.duckdb_path == relation),
         )
     ).first()
     return str(row[0]) if row else None

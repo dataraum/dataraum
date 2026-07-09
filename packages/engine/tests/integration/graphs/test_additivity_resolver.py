@@ -67,7 +67,7 @@ def _seed(
         source_id=source.source_id,
         table_name=fact_name,
         layer="typed",
-        duckdb_path=f"typed_{fact_name}",
+        duckdb_path=fact_name,  # DAT-639: duckdb_path == table_name (no layer prefix)
         row_count=100,
     )
     session.add(fact)
@@ -228,10 +228,15 @@ def test_unresolved_temporal_strips_time(
     assert verdict.time_reason == UNKNOWN_TEMPORAL
 
 
-def test_dimensionless_fact_resolves_by_table_name(
+def test_dimensionless_fact_resolves_to_typed_layer(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection
 ) -> None:
-    """A fact with no enriched view is resolved directly by table name, not dropped."""
+    """A fact with no enriched view resolves to its TYPED row, not the raw sibling.
+
+    The typed and raw rows for a fact share the same table_name + duckdb_path
+    (DAT-639), so the fallback must pin `layer == "typed"` — the raw row carries
+    no ColumnConcept/TableEntity, and landing on it would wrongly strip time.
+    """
     graph = _seed(
         session,
         fact_name="journal_lines",
@@ -244,11 +249,90 @@ def test_dimensionless_fact_resolves_by_table_name(
         aggregation="sum",
         create_view=False,
     )
+    # The raw-layer sibling: identical name AND duckdb_path, no concepts.
+    raw_src = Source(name="raw_src", source_type="csv")
+    session.add(raw_src)
+    session.flush()
+    session.add(
+        Table(
+            table_id=str(uuid4()),
+            source_id=raw_src.source_id,
+            table_name="journal_lines",
+            layer="raw",
+            duckdb_path="journal_lines",
+            row_count=100,
+        )
+    )
+    session.commit()
+
     verdict = compute_metric_verdict(
         session, duckdb_conn, graph=graph, workspace_id=WS, catalogue_run_id=RUN
     )
     assert verdict is not None
+    # Additive only if we resolved the TYPED row (which has the flow concepts);
+    # the raw row would yield UNKNOWN_TEMPORAL and strip time.
     assert verdict.time_additive is True
+
+
+def test_persist_is_fault_isolated(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """One metric's compute failure is skipped, never rolling back the phase session.
+
+    The verdict is a best-effort annotation on the shared phase session; a bug in
+    one metric must not discard another metric's row or unrelated pending work.
+    """
+    from unittest.mock import patch
+
+    from dataraum.graphs.additivity import MetricVerdict
+
+    def _bare_graph(graph_id: str) -> TransformationGraph:
+        return TransformationGraph(
+            graph_id=graph_id,
+            version="1",
+            metadata=GraphMetadata(
+                name=graph_id, description="", category="c", source=GraphSource.SYSTEM
+            ),
+            output=OutputDef(output_type=OutputType.SCALAR),
+            steps={},
+        )
+
+    # An unrelated pending write already on the phase session (a prior metric's row).
+    session.add(
+        MetricAdditivity(
+            run_id=RUN, metric_key="prior", categorical_additive=True, time_additive=True
+        )
+    )
+    session.flush()
+
+    def fake_verdict(_session, _conn, *, graph, **_kw):
+        if graph.graph_id == "bad":
+            raise RuntimeError("boom - simulated resolver bug")
+        return MetricVerdict(categorical_additive=True, time_additive=True)
+
+    with patch(
+        "dataraum.graphs.additivity_resolver.compute_metric_verdict", side_effect=fake_verdict
+    ):
+        _persist_additivity_verdicts(
+            session,
+            duckdb_conn,
+            graphs={"good": _bare_graph("good"), "bad": _bare_graph("bad")},
+            executed_keys={"good", "bad"},
+            workspace_id=WS,
+            run_id=RUN,
+            catalogue_run_id=RUN,
+        )
+    session.commit()  # the session is not poisoned by the caught failure
+
+    keys = {
+        r.metric_key
+        for r in session.execute(select(MetricAdditivity).where(MetricAdditivity.run_id == RUN))
+        .scalars()
+        .all()
+    }
+    assert "good" in keys  # the healthy metric persisted
+    assert "bad" not in keys  # the failed one was skipped, not written
+    assert "prior" in keys  # unrelated pending work survived the nested rollback
 
 
 def test_persist_upserts_idempotently(

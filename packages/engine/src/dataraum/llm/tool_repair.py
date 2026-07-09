@@ -82,7 +82,6 @@ def repair_tool_output[T: BaseModel](
         tool_choice={"type": "tool", "name": tool.name},
         label=f"{label}_repair",
         max_tokens=max_tokens,
-        temperature=0.0,
         model=model,
     )
     logger.warning("tool_output_schema_repair", tool=tool.name, error=str(error)[:200])

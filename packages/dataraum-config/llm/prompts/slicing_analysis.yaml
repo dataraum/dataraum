@@ -78,10 +78,12 @@ system_prompt: |
   - When a table's context already lists "time_columns" (one or more axes,
     each {column, aspect, note}), INHERIT them — the axes are already decided,
     do not re-judge that table.
-  - Only when "time_columns" is EMPTY, look at the enriched columns: one flagged
-    "is_dimension_time_column": true is the joined header's event date (e.g. journal
-    lines dated by their journal entry) — name that enriched column.
-  - Omit a table only when it genuinely has no time axis.
+  - When "time_columns" is EMPTY, look at the enriched columns. If one is flagged
+    "is_dimension_time_column": true, name it — it is the table's event date,
+    joined from its header (e.g. journal lines dated by their journal entry, via
+    entry_id__date). A table with such a flag HAS a time axis; report it.
+  - Only skip a table whose "time_columns" is empty AND that has no
+    is_dimension_time_column candidate.
   </time_axis>
 
   <output_rules>

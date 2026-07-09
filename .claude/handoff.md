@@ -33,6 +33,41 @@ a semantic shape flake that used to kill a calibration run's `begin_session` now
 self-repairs, so wide / real-LLM eval runs see one fewer spurious failure. Nothing to
 recalibrate.
 
+## DAT-720 — structural stock/flow witness restored (enriched time-axis backfill)
+
+**Branch:** `fix/lineage-enriched-time-axis`. **Re-run stock/flow calibration — the
+data-grounded witness now fires; some labels change (correctly).**
+
+DAT-536's inline-aggregation re-point silently disabled the DAT-491 structural
+reconciliation witness on the finance corpus: a fact whose event date is a JOINED
+column (`journal_lines.entry_id__date`, the header date) had empty
+`TableEntity.time_columns`, so the inline lineage path dropped it → 0
+`measure_aggregation_lineage` rows → the witness abstained on **every** column →
+stock/flow was decided by the two name-based witnesses only.
+`trial_balance.debit_balance/credit_balance` (per-period FLOWS) were mislabeled
+`point_in_time` (stock) by the "balance" name. Found by the DAT-685 eval oracle.
+
+### What changed
+- **Slicing agent** — `slicing_analysis` `effort: low → medium`, prompt/schema
+  framing tightened (dropped the "fallback"/"omit … or genuinely has none" escape).
+  At `effort: low` Sonnet 5 scoped to the literal ask and dropped the secondary
+  enriched time-axis backfill (it's the SLICING agent — not semantic_per_table —
+  that names the enriched `is_dimension_time_column` axis for facts with no own date).
+- **Deterministic backstop** (`slicing_phase.py`) — `TableEntity.time_columns` is
+  now backfilled straight from the deterministic `is_dimension_time_column` flag for
+  any analyzed fact the agent (and semantic) left empty. The witness can no longer
+  go inert on an LLM miss. Fixes every consumer at the source: lineage, drivers,
+  and the drill's time grain.
+
+### For eval (calibration to run)
+- **Stock/flow recall CHANGES, correctly:** the structural witness now fires;
+  `trial_balance.debit_balance/credit_balance` should resolve **`additive` (flow)**,
+  not `point_in_time`. Re-baseline the DAT-685 stock/flow oracle — the trial_balance
+  known-miss should FLIP to correct. Add a **witness-liveness guard** (structural
+  witness fired on ≥1 column); a 0/N is the regression signature.
+- Additivity verdicts on trial_balance measures change accordingly (flow → not
+  time-stripped). No score-threshold change — this restores an inert data witness.
+
 ---
 
 ## DAT-718 — activity metrics + `count_distinct` grounding vocabulary

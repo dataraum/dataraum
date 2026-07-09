@@ -138,6 +138,9 @@ system_prompt: |
   <aggregation_types>
   The graph step specifies an aggregation that determines HOW to extract the value:
   - "sum" / "avg" / "count" / "min" / "max": aggregate all matching rows.
+  - "count_distinct": COUNT(DISTINCT <the grounded column>) — the number of DISTINCT values of
+    the concept (e.g. distinct accounts transacted, distinct customers). Emit exactly
+    `COUNT(DISTINCT "<column>")`, never a plain COUNT.
   - "end_of_period": point-in-time snapshot — take the value from the LATEST period only; DO NOT
     SUM across periods (these are stock measures: balances, levels at a moment).
     Pattern: a where predicate `"<period>" = (SELECT MAX("<period>") FROM <view>)` alongside

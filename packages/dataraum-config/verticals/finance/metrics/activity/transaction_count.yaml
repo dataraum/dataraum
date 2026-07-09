@@ -1,0 +1,34 @@
+graph_id: transaction_count
+version: '1.0'
+metadata:
+  name: Transaction Count
+  description: Number of ledger transactions recorded in the period
+  category: activity
+  source: system
+  tags:
+  - activity
+  - volume
+output:
+  type: scalar
+  metric_id: transaction_count
+  unit: count
+  decimal_places: 0
+dependencies:
+  transaction_count:
+    level: 1
+    type: extract
+    source:
+      standard_field: transaction_amount
+      statement: income_statement
+    aggregation: count
+    output_step: true
+interpretation:
+  ranges:
+  - min: 0
+    max: 0
+    label: NONE
+    description: No transactions recorded
+  - min: 1
+    max: 999999999
+    label: ACTIVE
+    description: Transactions recorded in the period

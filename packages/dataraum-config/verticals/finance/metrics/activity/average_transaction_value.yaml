@@ -1,0 +1,30 @@
+graph_id: average_transaction_value
+version: '1.0'
+metadata:
+  name: Average Transaction Value
+  description: Mean monetary value per ledger transaction
+  category: activity
+  source: system
+  tags:
+  - activity
+  - averages
+output:
+  type: scalar
+  metric_id: average_transaction_value
+  unit: currency
+  decimal_places: 2
+dependencies:
+  average_transaction_value:
+    level: 1
+    type: extract
+    source:
+      standard_field: transaction_amount
+      statement: income_statement
+    aggregation: avg
+    output_step: true
+interpretation:
+  ranges:
+  - min: 0
+    max: 999999999
+    label: POSITIVE
+    description: Average transaction value in the period

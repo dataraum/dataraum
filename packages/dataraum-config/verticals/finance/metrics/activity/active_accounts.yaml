@@ -1,0 +1,34 @@
+graph_id: active_accounts
+version: '1.0'
+metadata:
+  name: Active Accounts
+  description: Number of distinct ledger accounts transacted in the period
+  category: activity
+  source: system
+  tags:
+  - activity
+  - distinct
+output:
+  type: scalar
+  metric_id: active_accounts
+  unit: count
+  decimal_places: 0
+dependencies:
+  active_accounts:
+    level: 1
+    type: extract
+    source:
+      standard_field: account
+      statement: income_statement
+    aggregation: count_distinct
+    output_step: true
+interpretation:
+  ranges:
+  - min: 0
+    max: 0
+    label: NONE
+    description: No accounts transacted
+  - min: 1
+    max: 999999999
+    label: ACTIVE
+    description: Distinct accounts transacted in the period

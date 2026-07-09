@@ -41,9 +41,11 @@ Correctness over speed. The product is **analytical correctness** — the system
 uv run pytest tests/unit/path/to/test_file.py -v   # during dev
 uv run pytest --testmon tests/unit -q              # after a change
 uv run pytest --testmon tests -q                   # before declaring done
+uv run pytest tests/unit -q -n auto                # full unit suite, parallel (~37s vs ~90s)
 ```
 
-- Never run the full suite without `--testmon` (2+ min). Run specific integration files only when you touched integration code.
+- `--testmon` re-runs only affected tests — keep those runs **serial** (no `-n`). testmon already runs the few tests a change touched; xdist's per-worker startup (~1.4s each) makes a testmon run *slower*, so the end-of-turn hook and every `--testmon` flow stay single-process.
+- For a **full-suite or whole-directory** run (no `--testmon`), add `-n auto` — pytest-xdist fans it across cores (~2.5× on the unit suite; `--dist loadscope` in `pyproject.toml` keeps module-scoped fixtures + per-worker testcontainers correct). Run specific integration files only when you touched integration code.
 - **Calibration tests live in `dataraum-eval`** and are the ultimate measure of detector correctness.
 - **e2e tests make real LLM calls — never run them without asking.**
 - The end-of-turn hook runs ruff + mypy + vulture + testmon automatically; don't duplicate it.

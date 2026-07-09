@@ -70,6 +70,36 @@ stock/flow was decided by the two name-based witnesses only.
 
 ---
 
+## DAT-721 — lineage key-exclusion weighs relationship confidence
+
+**Branch:** `fix/dat-721-lineage-confidence-gate`. The SECOND regression behind the
+same witness (independent of DAT-720). Even with the time axis restored,
+`trial_balance.debit_balance` still would not reconcile: the lineage key-exclusion
+(`discover_aggregation_lineage`) treats every endpoint of a *defined* relationship
+as a key (never SUMmed, dropped as a convention term). DAT-699 deliberately removed
+the confidence floor from `load_defined_relationships`, so a judge-DECLINED
+`journal_lines.debit → payments.amount` at **confidence 0.05** (the LLM's own
+"coincidental numeric overlap; decline" verdict) now reaches this consumer and
+stripped `debit`'s only reconciliation convention → `debit_balance` silently
+dropped (only `credit_balance` reconciled → 1/20 witness firing).
+
+### What changed
+- **Consumer-local confidence gate** (`processor.py`, `KEY_CONFIDENCE_MIN = 0.7`):
+  a MEASURED (`llm`/`keeper`) relationship endpoint is a key only at `>= 0.7`
+  (the relationships phase's high-confidence band); `manual` (user-asserted)
+  bypasses the number. Does NOT re-add a global gate to `load_defined_relationships`
+  (that contradicts DAT-699 — confidence is evidence for consumers to weigh).
+
+### For eval (calibration to run)
+- **Both** `trial_balance` measures should now reconcile (debit AND credit), not
+  just credit. Extend the DAT-685 structural check to assert coverage of both, not
+  only the label-correctness of whatever fired.
+- Open follow-up (not this fix): a judge-DECLINED relationship is still persisted
+  as `detection_method='llm'` (defined). Consumers that don't weigh confidence stay
+  exposed — a broader DAT-699 question (honor the verdict vs. every consumer weighs).
+
+---
+
 ## DAT-718 — activity metrics + `count_distinct` grounding vocabulary
 
 **Branch:** `feat/dat-718-matrix-metrics`. Extends the finance metric catalogue +

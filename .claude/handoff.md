@@ -5,6 +5,48 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-716 — metric additivity verdict (new `metric_additivity` read-view)
+
+**Branch:** `feat/dat-716-additivity-verdict`. Engine-internal, **no detector or
+calibration change** — the metric grounding numbers are untouched.
+
+### What changed
+
+- **New artifact `metric_additivity`** (read-view `current_metric_additivity`,
+  operating_model stage): one row per **drill target**, keyed
+  `(target_kind, target_key, run_id)` — `'metric'` (graph_id) for a formula node,
+  `'measure'` (standard_field) for a grounded-extract node (both are drillable).
+  Payload `{categorical_additive, time_additive, categorical_reason, time_reason}`.
+  The operating_model `metrics` phase computes it (deterministically, no LLM)
+  after metrics execute: each extract is classified (function symmetry × stock/flow
+  × periodic-snapshot grain), rolled up through the DAG for the metric verdict and
+  mapped by standard_field for the measure verdicts. An unresolved target gets no
+  row.
+- **No response-shape change to existing artifacts.** The drill (cockpit) consumes
+  this in DAT-717 (reading by `target_kind`); the eval-relevant work is **DAT-718**
+  — extending the finance vertical + `dataraum-testdata` with `AVG` / `COUNT(*)` /
+  `COUNT(DISTINCT)` metrics and a ground-truth oracle so the full additivity matrix
+  is exercised on real metrics. That is where testdata + a new calibration/eval
+  check land.
+
+### Confirmed for DAT-717 (drill axes)
+
+A fact's own bare date/period column DOES reach the drill axis set today: the
+enriched view selects `f.*` for fact columns (`analysis/views/builder.py`),
+unfiltered by role/type — so `trial_balance.period` survives into the view as a
+usable categorical axis. No engine fix was needed for the DAT-716 AC7 check;
+surfacing it as a *time grain* (vs a categorical slice) is DAT-717's call.
+
+### For testdata (directional, lands in DAT-718)
+
+The current finance corpus already exercises `SUM(flow)` (→ additive), `SUM(stock)`
+(→ semi-additive — fires live now via the **measure** verdicts, e.g. `current_assets`),
+and ratios (→ non-additive). To cover the rest of the matrix, DAT-718 needs induced
+metrics using `COUNT(*)` (event fact → time-additive), `COUNT(DISTINCT)`
+(→ non-additive), and `AVG` (→ non-additive), plus the ground-truth oracle.
+
+---
+
 ## DAT-699 — flag-and-surface over fabricated determinism (metric grounding + enrichment)
 
 **Branch:** `feat/dat-699-flag-and-surface`. Seven changes from the the bookkeeping smoke corpus

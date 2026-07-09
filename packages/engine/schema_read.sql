@@ -229,6 +229,16 @@ DROP VIEW IF EXISTS __READ__.metadata_snapshot_head;
 CREATE VIEW __READ__.metadata_snapshot_head AS
 SELECT * FROM __WS__.metadata_snapshot_head;
 
+DROP VIEW IF EXISTS __READ__.current_metric_additivity;
+CREATE VIEW __READ__.current_metric_additivity AS
+SELECT r.* FROM __WS__.metric_additivity r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_relationships;
 CREATE VIEW __READ__.current_relationships AS
 SELECT r.* FROM __WS__.relationships r

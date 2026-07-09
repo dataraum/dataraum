@@ -66,6 +66,24 @@ CREATE TABLE metadata_snapshot_head (
 	CONSTRAINT uq_snapshot_head_target_stage UNIQUE (target, stage)
 );
 
+CREATE TABLE metric_additivity (
+	additivity_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	target_kind VARCHAR NOT NULL, 
+	target_key VARCHAR NOT NULL, 
+	categorical_additive BOOLEAN NOT NULL, 
+	time_additive BOOLEAN NOT NULL, 
+	categorical_reason VARCHAR, 
+	time_reason VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_metric_additivity PRIMARY KEY (additivity_id), 
+	CONSTRAINT uq_metric_additivity_target UNIQUE (target_kind, target_key, run_id)
+);
+
+CREATE INDEX ix_metric_additivity_run_id ON metric_additivity (run_id);
+
+CREATE INDEX ix_metric_additivity_target_key ON metric_additivity (target_key);
+
 CREATE TABLE sources (
 	source_id VARCHAR NOT NULL, 
 	name VARCHAR NOT NULL, 

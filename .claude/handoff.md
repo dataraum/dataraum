@@ -5,6 +5,40 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-699 follow-up — judge-declined relationships cut at the source
+
+**Branch:** `fix/dat-699-cut-declined-rels-at-source`. The systemic version of the
+DAT-721 lineage gate. The semantic judge encodes its verdict in `confidence`
+(no explicit field); on the finance corpus it lands bimodally — declines ≤ 0.40,
+accepts ≥ 0.85, wide dead zone. Persistence wrote **every** returned rel as
+`detection_method='llm'` (defined), so ~6/13 judge-DECLINED relationships (date/
+amount value-coincidences the LLM itself rejected) polluted the "defined" catalog
+that every consumer reads (lineage, cycles, enriched_views, validation, graphs).
+DAT-699 had removed the read-path floor, exposing them.
+
+### What changed
+- `semantic/processor.py` — a relationship is persisted as `llm` (confirmed) only
+  at `confidence >= REL_CONFIRM_MIN` (0.7, the judge's own decision boundary in
+  its dead zone); below that it's persisted as `candidate` with the judge's
+  evidence/reasoning kept (auditable), so `load_defined_relationships`
+  (`!= 'candidate'`) is now truthfully "judge-confirmed". Both write paths are
+  gated: single-column, AND the composite/surrogate-intent path (a declined
+  composite falls through to the gated single-column persist instead of minting a
+  confirmed `llm` row). No consumer re-weighs confidence; the source is the single
+  contract.
+- `lineage/processor.py` — the DAT-721 per-consumer confidence gate
+  (`KEY_CONFIDENCE_MIN`) is **removed**. With declines cut at the source it was
+  redundant, and a second threshold that must track `REL_CONFIRM_MIN` is a drift
+  trap (lower the source and lineage would silently strip confirmed FKs). One
+  threshold, at the source; the lineage key-exclusion trusts the catalog.
+
+### For eval (calibration to run)
+- "Defined" relationship counts DROP to confirmed-only (declines are now
+  candidates). Relationship-recall assertions that expected a declined value-
+  coincidence to be "defined" should now (correctly) not see it.
+
+---
+
 ## DAT-710 — `semantic_per_table` schema-repair turn (begin_session survives a shape flake)
 
 **Branch:** `fix/dat-710-semantic-repair-turn`. **No calibration action required — a

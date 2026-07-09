@@ -589,6 +589,21 @@ def _build_surrogate_intent(
     }
 
 
+# Confirm/decline threshold for the semantic judge's relationship verdict. The
+# judge encodes its verdict in ``confidence`` (there is no explicit accept/decline
+# field): on the finance corpus it lands bimodally — declines ≤ 0.40 ("coincidental
+# overlap; not a real FK") and accepts ≥ 0.85, with a wide empty dead zone between.
+# 0.7 sits squarely in that dead zone, so it is the judge's own decision boundary,
+# not an imposed floor. A relationship the judge did NOT confirm is persisted as a
+# ``candidate`` (its evidence/reasoning kept), NOT as ``llm`` — so it never enters
+# the "defined" catalog (``detection_method != 'candidate'``) that every downstream
+# consumer reads. This cuts judge-declined relationships at the source instead of
+# making each consumer re-weigh confidence (DAT-699 dropped the read-path gate;
+# "defined" must mean judge-confirmed again). Mirrors the relationships phase's
+# high-confidence band (``>= 0.7``).
+REL_CONFIRM_MIN = 0.7
+
+
 def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
@@ -672,9 +687,13 @@ def synthesize_and_store_tables(
 
         # LLM-confirmed composite (DAT-277): persist as a surrogate-key INTENT for
         # the mint phase, never as a plain llm row — the single-column anchor is a
-        # half-key and would fan out at every consumer. An unbuildable intent
-        # falls through to the ordinary single-column persist below.
-        if rel.key_columns:
+        # half-key and would fan out at every consumer. A composite the judge did
+        # NOT confirm (confidence below REL_CONFIRM_MIN) is a decline like any
+        # other — it falls through to the gated single-column persist (→
+        # ``candidate``), so no write path routes a declined verdict into the
+        # "defined" catalog (DAT-722). An unbuildable/non-collapsing intent also
+        # falls through.
+        if rel.key_columns and rel.confidence >= REL_CONFIRM_MIN:
             intent = _build_surrogate_intent(
                 rel=rel,
                 from_table_id=from_table_id,
@@ -754,7 +773,10 @@ def synthesize_and_store_tables(
                 "relationship_type": rel.relationship_type.value,
                 "cardinality": cardinality,
                 "confidence": rel.confidence,
-                "detection_method": "llm",
+                # Confirmed only at or above the judge's own decision boundary; a
+                # declined verdict stays a ``candidate`` (evidence kept) so it never
+                # reaches the "defined" catalog. See REL_CONFIRM_MIN (DAT-722).
+                "detection_method": "llm" if rel.confidence >= REL_CONFIRM_MIN else "candidate",
                 "evidence": evidence,
             }
         )

@@ -54,18 +54,6 @@ logger = get_logger(__name__)
 # names, deterministic) — and the cap is LOGGED, never silent.
 MAX_CONVENTION_COLUMNS = 8
 
-# A MEASURED relationship's endpoint counts as a key (never SUMmed, and dropped
-# as a convention term) only when it clears the engine's high-confidence band
-# (the relationships phase gates high confidence at ``>= 0.7``). DAT-699 dropped
-# the read-path confidence gate, so low-confidence and judge-DECLINED
-# relationships now reach this consumer — a coincidental conf≈0.05 amount↔amount
-# "FK" (the LLM itself declined it) would otherwise flag a real measure like
-# ``journal_lines.debit`` as a key and strip its only reconciliation convention,
-# silently killing ``trial_balance.debit_balance``. Gating here is the consumer
-# weighing confidence-as-evidence (DAT-699's own contract); it restores the
-# stock/flow witness without re-adding a global gate (DAT-721). User-asserted
-# (``manual``) relationships bypass the number (see the loop below).
-KEY_CONFIDENCE_MIN = 0.7
 
 # DuckDB ``date_trunc`` unit + ``strftime`` label per grain — the cross-fact
 # alignment key (ISO semantics; stable across facts of the same grain). Mirrors
@@ -286,21 +274,15 @@ def discover_aggregation_lineage(
 
     # Key/identifier columns are not quantities: a SUM over a key has no
     # meaning, and identical key sets reconcile trivially (identity noise).
-    # Grounded in the catalog: every endpoint of a HIGH-CONFIDENCE defined
-    # relationship is a key — excluded from measure columns AND convention terms.
-    # The ``KEY_CONFIDENCE_MIN`` gate weighs the relationship's evidence so a
-    # low-confidence / judge-declined "FK" cannot strip a real measure (DAT-721).
+    # Grounded in the catalog: every endpoint of a defined relationship is a key
+    # — excluded from measure columns AND convention terms. "Defined" is now
+    # judge-CONFIRMED at the source (DAT-722: a declined verdict is persisted as a
+    # ``candidate``, never ``llm``), so this consumer trusts the catalog and does
+    # NOT re-weigh confidence — one threshold lives at the source, not mirrored here.
     key_columns_by_table: dict[str, set[str]] = {}
     for rel in load_defined_relationships(
         session, table_ids, run_id=run_id, both_tables=False, eager_columns=True
     ):
-        # A user-asserted key (``manual``) is a key regardless of any confidence
-        # number — decoupled from how ``manual`` rows are materialized. Only
-        # MEASURED endpoints (``llm``/``keeper``) must clear the evidence bar; a
-        # low-confidence keeper is a silently-kept relationship the LLM had scored
-        # weak, not an explicit assertion, so it is correctly NOT treated as a key.
-        if rel.detection_method != "manual" and rel.confidence < KEY_CONFIDENCE_MIN:
-            continue
         key_columns_by_table.setdefault(rel.from_table_id, set()).add(rel.from_column.column_name)
         key_columns_by_table.setdefault(rel.to_table_id, set()).add(rel.to_column.column_name)
 

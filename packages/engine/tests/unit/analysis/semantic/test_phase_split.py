@@ -311,6 +311,222 @@ class TestSynthesizeAndStoreTables:
         assert len(rels) == 1 and rels[0].cardinality is None  # no duckdb → unresolved
         assert anns == []  # per-table synthesis never writes column annotations
 
+    def test_declined_relationship_persists_as_candidate_not_llm(self, session) -> None:
+        """DAT-699 follow-up: a judge-DECLINED relationship (confidence below the
+        judge's own decision boundary, REL_CONFIRM_MIN) is persisted as
+        ``candidate`` with its evidence/reasoning kept — NOT as ``llm`` — so it
+        never enters the "defined" catalog (``detection_method != 'candidate'``)
+        that every downstream consumer reads. Cuts declines at the source instead
+        of making each consumer re-weigh confidence.
+        """
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+
+        agent = MagicMock()
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-accept",
+                            from_table="orders",
+                            from_column="customer_id",
+                            to_table="customers",
+                            to_column="id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.9,  # >= 0.7 → confirmed (defined)
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis", "reasoning": "clean FK"},
+                        ),
+                        Relationship(
+                            relationship_id="rel-decline",
+                            from_table="orders",
+                            from_column="order_id",
+                            to_table="customers",
+                            to_column="id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.3,  # < 0.7 → judge declined
+                            detection_method="llm_tool",
+                            evidence={
+                                "source": "table_synthesis",
+                                "reasoning": "coincidental overlap; decline",
+                            },
+                        ),
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [orders.table_id, customers.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+        assert result.success
+
+        llm_rels = (
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .all()
+        )
+        cand_rels = (
+            session.execute(
+                select(RelationshipDB).where(RelationshipDB.detection_method == "candidate")
+            )
+            .scalars()
+            .all()
+        )
+        # Only the accepted FK is "defined" (llm); the declined one is a candidate.
+        assert len(llm_rels) == 1 and llm_rels[0].confidence == 0.9
+        assert len(cand_rels) == 1 and cand_rels[0].confidence == 0.3
+        # The judge's reasoning is preserved on the candidate row.
+        assert (cand_rels[0].evidence or {}).get("reasoning") == "coincidental overlap; decline"
+
+    def test_declined_composite_does_not_become_confirmed_intent(self, session) -> None:
+        """A composite (``key_columns``) the judge did NOT confirm (confidence below
+        REL_CONFIRM_MIN) must not slip into the "defined" catalog via the surrogate-
+        intent → mint path (DAT-722). It falls through to the gated single-column
+        persist (→ ``candidate``), like any other declined verdict — no confirmed
+        intent, no ``llm`` row.
+        """
+        from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
+
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+
+        agent = MagicMock()
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-composite-decline",
+                            from_table="orders",
+                            from_column="customer_id",
+                            to_table="customers",
+                            to_column="id",
+                            key_columns=[("order_id", "id")],  # composite proposal
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.3,  # < 0.7 → judge declined
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis", "reasoning": "weak; decline"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [orders.table_id, customers.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+        assert result.success
+
+        confirmed_intents = [
+            i
+            for i in session.execute(select(SurrogateKeyIntent)).scalars().all()
+            if i.status == "confirmed"
+        ]
+        llm_rels = (
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .all()
+        )
+        cand_rels = (
+            session.execute(
+                select(RelationshipDB).where(RelationshipDB.detection_method == "candidate")
+            )
+            .scalars()
+            .all()
+        )
+        assert confirmed_intents == []
+        assert llm_rels == []
+        assert len(cand_rels) == 1 and cand_rels[0].confidence == 0.3
+
+    def test_declined_relationship_merges_onto_structural_candidate(self, session) -> None:
+        """A declined semantic rel upserts onto the PRE-EXISTING structural
+        ``candidate`` row for the same oriented pair (DAT-722) — replacing it with
+        the judge's confidence/reasoning, one row not two, still not "defined".
+        """
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+        cust_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(
+                Column.table_id == customers.table_id, Column.column_name == "id"
+            )
+        ).scalar_one()
+        # The structural detector's prior candidate row for this pair.
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=cust_col.column_id,
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality=None,
+                confidence=1.0,
+                detection_method="candidate",
+                evidence={"source": "structural"},
+            )
+        )
+        session.flush()
+
+        agent = MagicMock()
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-decline",
+                            from_table="orders",
+                            from_column="customer_id",
+                            to_table="customers",
+                            to_column="id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.3,  # < 0.7 → judge declined
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis", "reasoning": "coincidental"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [orders.table_id, customers.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+        assert result.success
+
+        cand_rels = (
+            session.execute(
+                select(RelationshipDB).where(RelationshipDB.detection_method == "candidate")
+            )
+            .scalars()
+            .all()
+        )
+        # One merged candidate row (not two), now carrying the judge's verdict.
+        assert len(cand_rels) == 1
+        assert cand_rels[0].confidence == 0.3
+        assert (cand_rels[0].evidence or {}).get("reasoning") == "coincidental"
+        assert (
+            session.execute(
+                select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
+            ).scalars().all()
+            == []
+        )
+
     def test_synthesized_relationship_gets_fan_trap_flag_from_data(self, session) -> None:
         """Regression: a synthesized (table_synthesis) relationship with NO structural
         candidate must still get introduces_duplicates computed EMPIRICALLY from the lake.

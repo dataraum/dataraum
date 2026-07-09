@@ -20,9 +20,11 @@ class TestGetMetricDefinitionsProduction:
     def teardown_method(self) -> None:
         reset_overlay_resolver_for_tests()
 
-    def test_returns_all_13_finance_metrics(self) -> None:
+    def test_returns_all_finance_metrics(self) -> None:
         defs = get_metric_definitions("finance")
-        assert len(defs) == 13
+        # 13 P&L / working-capital / liquidity metrics + 3 activity metrics
+        # (transaction_count, average_transaction_value, active_accounts — DAT-718).
+        assert len(defs) == 16
 
     def test_keyed_by_graph_id_with_known_metrics(self) -> None:
         defs = get_metric_definitions("finance")
@@ -67,7 +69,7 @@ class TestGetMetricsConfigOverlay:
         )
         defs = get_metric_definitions("finance")
         assert "custom_kpi" in defs
-        assert len(defs) == 14  # the 13 shipped + the taught one
+        assert len(defs) == 17  # the 16 shipped + the taught one
         assert "vertical" not in defs["custom_kpi"]
 
     def test_overlay_row_replaces_shipped_metric_by_graph_id(self) -> None:
@@ -85,7 +87,7 @@ class TestGetMetricsConfigOverlay:
             ]
         )
         defs = get_metric_definitions("finance")
-        assert len(defs) == 13  # replace, not append
+        assert len(defs) == 16  # replace, not append
         assert defs["dso"]["metadata"]["name"] == "DSO (taught)"
 
 

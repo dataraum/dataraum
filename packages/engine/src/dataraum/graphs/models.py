@@ -109,7 +109,7 @@ class GraphStep:
 
     # For extract steps
     source: StepSource | None = None
-    aggregation: str | None = None  # sum, avg, min, max, count, end_of_period
+    aggregation: str | None = None  # sum, avg, min, max, count, count_distinct, end_of_period
 
     # For constant steps
     value: Any | None = None

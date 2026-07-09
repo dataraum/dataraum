@@ -5,6 +5,41 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-718 — activity metrics + `count_distinct` grounding vocabulary
+
+**Branch:** `feat/dat-718-matrix-metrics`. Extends the finance metric catalogue +
+the grounding vocabulary so the DAT-716 additivity matrix fires on real metrics.
+
+### What changed
+
+- **Three new finance metrics** (`packages/dataraum-config/verticals/finance/metrics/activity/`):
+  `transaction_count` (`COUNT` → additive flow), `average_transaction_value`
+  (`AVG` → non-additive), `active_accounts` (`COUNT(DISTINCT)` → non-additive).
+  Single-extract graphs; grounded over the `journal_lines` event fact.
+- **New aggregation `count_distinct`** in the grounding vocabulary
+  (`graph_sql_generation.yaml` `<aggregation_types>` → emit `COUNT(DISTINCT "<col>")`;
+  `GraphStep.aggregation` doc). The DAT-716 classifier already handles the DISTINCT
+  shape; this lets a metric *declare* it.
+
+### For eval (the validation this needs — run in eval / `/smoke`)
+
+- **Grounding recall on the new metrics**: confirm the agent grounds
+  `transaction_count`/`average_transaction_value` over `journal_lines`, and
+  `active_accounts` as `COUNT(DISTINCT account_id)` (the new vocabulary entry).
+  `count`/`avg` are validated by unit test at the config level; the actual SQL the
+  LLM emits is the e2e question.
+- **The additivity oracle** (the DAT-718 core): once grounded, assert the
+  `metric_additivity` per-target verdicts — `transaction_count` → additive,
+  `average_transaction_value`/`active_accounts` → non-additive — against ground truth.
+
+### For testdata
+
+The current corpus already carries `journal_lines` (an event fact) with per-line
+amounts + account FKs, so these should ground without new fixtures — confirm at
+e2e; add fixtures only if the agent can't ground `active_accounts`.
+
+---
+
 ## DAT-716 — metric additivity verdict (new `metric_additivity` read-view)
 
 **Branch:** `feat/dat-716-additivity-verdict`. Engine-internal, **no detector or

@@ -80,8 +80,9 @@ system_prompt: |
     do not re-judge that table.
   - When "time_columns" is EMPTY, look at the enriched columns. If one is flagged
     "is_dimension_time_column": true, name it — it is the table's event date,
-    joined from its header (e.g. journal lines dated by their journal entry, via
-    entry_id__date). A table with such a flag HAS a time axis; report it.
+    joined from its parent/header record (e.g. a line-item table dated by its
+    parent document via a joined `<fk>__<date>` column). A table with such a flag
+    HAS a time axis; report it.
   - Only skip a table whose "time_columns" is empty AND that has no
     is_dimension_time_column candidate.
   </time_axis>

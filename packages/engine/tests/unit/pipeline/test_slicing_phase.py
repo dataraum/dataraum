@@ -551,6 +551,56 @@ class TestRunTimeAxisFill:
             for e in logs
         )
 
+    def test_deterministic_backstop_reads_prefilter_stash_not_filtered_columns(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """DAT-720: the backstop must read the pre-filter axis stash, not the
+        prompt-filtered columns. A real date axis is high-cardinality, so
+        ``_pre_filter_columns`` drops it from ``context_data["tables"]`` (the
+        ``distinct_count > 200`` slice-dimension cut). The FIRST fix read those
+        filtered columns and fired 0×; the stash (``dimension_time_axes``, built
+        before the filter) is what makes the deterministic fill survive. With the
+        agent returning empty AND the axis pre-filtered, the backstop must still
+        fill it — this guards against a regression to reading the filtered list.
+        """
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        date_col = session.execute(
+            select(Column).where(Column.column_name == "invoice_id__date")
+        ).scalar_one()
+        session.add(
+            StatisticalProfile(
+                column_id=date_col.column_id,
+                total_count=300,
+                null_count=0,
+                distinct_count=300,  # > 200 → dropped from context_data["tables"]
+                null_ratio=0.0,
+                cardinality_ratio=1.0,
+                profile_data={},
+            )
+        )
+        session.flush()
+
+        with capture_logs() as logs:
+            result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id]))
+
+        assert result.status == PhaseStatus.COMPLETED
+        assert not any(e["event"] == "time_axis_filled" for e in logs)
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
+        assert any(
+            e["event"] == "time_axis_filled_deterministic" and e["table"] == "invoices"
+            for e in logs
+        )
+
 
 @patch("dataraum.pipeline.phases.slicing_phase.SlicingAgent")
 @patch("dataraum.pipeline.phases.slicing_phase.PromptRenderer")

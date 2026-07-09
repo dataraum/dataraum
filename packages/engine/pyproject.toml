@@ -82,11 +82,19 @@ packages = ["src/dataraum"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 # --dist loadscope: inert without -n, but when a parallel run is requested
-# (e.g. `uv run pytest -n auto`) it keeps every module's tests on one worker.
-# Module-scoped read-only fixtures (e.g. analyzed_small_finance) depend on
-# this — splitting a module across workers would rebuild the shared dataset
-# per worker and defeat the optimization. Parallelism stays opt-in (-n) so CI
-# / unit runs don't each spin up a per-worker Postgres testcontainer.
+# (`-n auto` — used by CI and full-suite / whole-directory dev runs) it keeps
+# every module's tests on one worker. Module-scoped read-only fixtures (e.g.
+# analyzed_small_finance) depend on this — splitting a module across workers
+# would rebuild the shared dataset per worker and defeat the optimization; and
+# each xdist worker boots its OWN Postgres/Temporal testcontainer, so loadscope
+# also bounds container fan-out to one set per module-worker.
+#
+# Parallelism stays OPT-IN (deliberately NOT in addopts): the end-of-turn hook
+# and every `--testmon` flow run serially. testmon selects only the FEW tests a
+# change touched, and xdist's per-worker startup (~1.4s each) dwarfs that — a
+# no-op `--testmon` run measured 0.05s serial vs 1.45s under `-n auto`. xdist
+# pays off only when running MANY tests, i.e. the non-testmon full-suite/CI path
+# (measured: tests/unit 90.9s serial → 36.6s under `-n auto`, a 2.5× win).
 addopts = "-v --tb=short --dist loadscope"
 markers = [
     "integration: marks tests as integration tests (may be slower)",

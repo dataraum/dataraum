@@ -326,7 +326,8 @@ export const currentMetricAdditivity = metadataSchema
 	.view("current_metric_additivity", {
 		additivityId: varchar("additivity_id"),
 		runId: varchar("run_id"),
-		metricKey: varchar("metric_key"),
+		targetKind: varchar("target_kind"),
+		targetKey: varchar("target_key"),
 		categoricalAdditive: boolean("categorical_additive"),
 		timeAdditive: boolean("time_additive"),
 		categoricalReason: varchar("categorical_reason"),
@@ -334,7 +335,7 @@ export const currentMetricAdditivity = metadataSchema
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	})
 	.as(
-		sql`SELECT additivity_id, run_id, metric_key, categorical_additive, time_additive, categorical_reason, time_reason, created_at FROM ws_00000000_0000_0000_0000_000000000001.metric_additivity r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT additivity_id, run_id, target_kind, target_key, categorical_additive, time_additive, categorical_reason, time_reason, created_at FROM ws_00000000_0000_0000_0000_000000000001.metric_additivity r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentRelationships = metadataSchema

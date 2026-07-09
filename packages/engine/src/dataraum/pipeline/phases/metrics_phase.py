@@ -94,6 +94,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
+    from dataraum.graphs.additivity import AxisClass, MetricVerdict
     from dataraum.graphs.agent import ExecutionContext as _ExecutionContext
     from dataraum.graphs.agent import GraphAgent
     from dataraum.graphs.models import GraphExecution, TransformationGraph
@@ -440,23 +441,27 @@ def _persist_additivity_verdicts(
     run_id: str,
     catalogue_run_id: str | None,
 ) -> None:
-    """Persist one additivity verdict per executed, classifiable metric.
+    """Persist additivity verdicts for the executed metrics AND their measures.
 
-    Idempotent per run — ``(metric_key, run_id)`` UPSERTed (ADR-0010 form-(a)).
-    A metric whose verdict can't be computed (an extract without healthy grounded
-    parts) is skipped: no row is better than a misleading one. The catalogue run
-    pins ``temporal_behavior``/grain; without it (a wiring gap) nothing is written.
+    A drill target is either a **metric** node (a formula, keyed by ``graph_id``)
+    or a **measure** node (a grounded extract, keyed by ``standard_field``) — both
+    are drillable, so both get a verdict. A metric's verdict rolls its extract
+    classes up through the DAG; a measure's verdict IS its single extract's class
+    (deduped most-restrictive across the metrics that share it). Idempotent per run
+    — ``(target_kind, target_key, run_id)`` UPSERTed (ADR-0010 form-(a)). A target
+    that can't be classified is skipped: no row is better than a misleading one.
 
     **Fault-isolated (best-effort annotation).** This runs on the shared phase
     session AFTER every metric's execute bookkeeping is already recorded there; an
     unhandled failure here would surface as a phase failure and roll that session
     back — discarding every metric's ``executed`` state and forcing a full Temporal
-    retry of already-successful work. So each verdict computation and the upsert
-    run inside their own SAVEPOINT: a bug (a parse error, a bad query) rolls back
-    only its own annotation, never the metric bookkeeping.
+    retry of already-successful work. So each classification and the upsert run
+    inside their own SAVEPOINT: a bug (a parse error, a bad query) rolls back only
+    its own annotation, never the metric bookkeeping.
     """
+    from dataraum.graphs.additivity import most_restrictive, roll_up_metric
     from dataraum.graphs.additivity_db_models import MetricAdditivity
-    from dataraum.graphs.additivity_resolver import compute_metric_verdict
+    from dataraum.graphs.additivity_resolver import classify_metric_extracts
     from dataraum.storage.upsert import upsert
 
     if not catalogue_run_id:
@@ -464,13 +469,14 @@ def _persist_additivity_verdicts(
         return
 
     rows: list[dict[str, object]] = []
+    measure_classes: dict[str, AxisClass] = {}
     for graph_id in executed_keys:
         graph = graphs.get(graph_id)
         if graph is None:
             continue
         try:
             with session.begin_nested():
-                verdict = compute_metric_verdict(
+                classes = classify_metric_extracts(
                     session,
                     duckdb_conn,
                     graph=graph,
@@ -480,29 +486,57 @@ def _persist_additivity_verdicts(
         except Exception as exc:  # noqa: BLE001 - best-effort; never fail the phase
             _log.warning("metric_additivity_compute_error", graph_id=graph_id, error=str(exc))
             continue
-        if verdict is None:
+        if classes is None:
             continue
-        rows.append(
-            {
-                "run_id": run_id,
-                "metric_key": graph_id,
-                "categorical_additive": verdict.categorical_additive,
-                "time_additive": verdict.time_additive,
-                "categorical_reason": verdict.categorical_reason,
-                "time_reason": verdict.time_reason,
-            }
-        )
+        rows.append(_verdict_row(run_id, "metric", graph_id, roll_up_metric(graph, classes)))
+        # A measure node is one extract; the same standard_field is shared across
+        # metrics (same snippet → same class), deduped most-restrictive defensively.
+        for step_id, cls in classes.items():
+            source = graph.steps[step_id].source
+            field = source.standard_field if source else None
+            if field:
+                prior = measure_classes.get(field)
+                measure_classes[field] = cls if prior is None else most_restrictive(prior, cls)
+
+    rows.extend(
+        _verdict_row(run_id, "measure", field, cls) for field, cls in measure_classes.items()
+    )
 
     if not rows:
         _log.info("metric_additivity_persisted", count=0, executed=len(executed_keys))
         return
     try:
         with session.begin_nested():
-            upsert(session, MetricAdditivity, rows, index_elements=["metric_key", "run_id"])
+            upsert(
+                session,
+                MetricAdditivity,
+                rows,
+                index_elements=["target_kind", "target_key", "run_id"],
+            )
     except Exception as exc:  # noqa: BLE001 - isolate the write from phase bookkeeping
         _log.warning("metric_additivity_upsert_error", error=str(exc), count=len(rows))
         return
-    _log.info("metric_additivity_persisted", count=len(rows), executed=len(executed_keys))
+    _log.info(
+        "metric_additivity_persisted",
+        count=len(rows),
+        measures=len(measure_classes),
+        executed=len(executed_keys),
+    )
+
+
+def _verdict_row(
+    run_id: str, kind: str, key: str, v: MetricVerdict | AxisClass
+) -> dict[str, object]:
+    """One ``metric_additivity`` row from a verdict/AxisClass (both share the fields)."""
+    return {
+        "run_id": run_id,
+        "target_kind": kind,
+        "target_key": key,
+        "categorical_additive": v.categorical_additive,
+        "time_additive": v.time_additive,
+        "categorical_reason": v.categorical_reason,
+        "time_reason": v.time_reason,
+    }
 
 
 # ---------------------------------------------------------------------------

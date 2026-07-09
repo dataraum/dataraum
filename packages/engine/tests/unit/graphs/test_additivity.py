@@ -287,6 +287,22 @@ def test_is_ratio_flag_overrides_to_non_additive():
     assert cls == AxisClass(False, False, RATIO, RATIO)
 
 
+def test_count_star_guard_does_not_taint_stock_reason():
+    """The CASE COUNT(*)=0 guard alongside SUM(stock): time stripped for STOCK, not snapshot_count."""
+    calls = [AggregateCall("count_star", ()), AggregateCall("sum", ("debit_balance",))]
+    cls = classify_extract(calls, STOCKCOLS, fact_is_snapshot=True)
+    assert cls.categorical_additive is True
+    assert cls.time_additive is False
+    assert cls.time_reason == STOCK  # the measure's reason, not the guard's
+
+
+def test_count_star_alone_is_the_measure():
+    """A COUNT(*) with no co-occurring measure IS the measure — snapshot rule applies."""
+    cls = classify_extract([AggregateCall("count_star", ())], {}, fact_is_snapshot=True)
+    assert cls.time_additive is False
+    assert cls.time_reason == SNAPSHOT_COUNT
+
+
 # --- 5. intra-extract ratio detection (select_expr_is_ratio) -----------------
 
 

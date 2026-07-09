@@ -284,9 +284,9 @@ def test_persist_is_fault_isolated(
     """
     from unittest.mock import patch
 
-    from dataraum.graphs.additivity import MetricVerdict
+    from dataraum.graphs.additivity import ADDITIVE
 
-    def _bare_graph(graph_id: str) -> TransformationGraph:
+    def _graph(graph_id: str, field: str) -> TransformationGraph:
         return TransformationGraph(
             graph_id=graph_id,
             version="1",
@@ -294,29 +294,41 @@ def test_persist_is_fault_isolated(
                 name=graph_id, description="", category="c", source=GraphSource.SYSTEM
             ),
             output=OutputDef(output_type=OutputType.SCALAR),
-            steps={},
+            steps={
+                "e": GraphStep(
+                    step_id="e",
+                    step_type=StepType.EXTRACT,
+                    source=StepSource(standard_field=field),
+                    aggregation="sum",
+                    output_step=True,
+                )
+            },
         )
 
-    # An unrelated pending write already on the phase session (a prior metric's row).
+    # An unrelated pending write already on the phase session (a prior verdict row).
     session.add(
         MetricAdditivity(
-            run_id=RUN, metric_key="prior", categorical_additive=True, time_additive=True
+            run_id=RUN,
+            target_kind="metric",
+            target_key="prior",
+            categorical_additive=True,
+            time_additive=True,
         )
     )
     session.flush()
 
-    def fake_verdict(_session, _conn, *, graph, **_kw):
+    def fake_classify(_session, _conn, *, graph, **_kw):
         if graph.graph_id == "bad":
             raise RuntimeError("boom - simulated resolver bug")
-        return MetricVerdict(categorical_additive=True, time_additive=True)
+        return {"e": ADDITIVE}
 
     with patch(
-        "dataraum.graphs.additivity_resolver.compute_metric_verdict", side_effect=fake_verdict
+        "dataraum.graphs.additivity_resolver.classify_metric_extracts", side_effect=fake_classify
     ):
         _persist_additivity_verdicts(
             session,
             duckdb_conn,
-            graphs={"good": _bare_graph("good"), "bad": _bare_graph("bad")},
+            graphs={"good": _graph("good", "good_measure"), "bad": _graph("bad", "bad_measure")},
             executed_keys={"good", "bad"},
             workspace_id=WS,
             run_id=RUN,
@@ -325,20 +337,22 @@ def test_persist_is_fault_isolated(
     session.commit()  # the session is not poisoned by the caught failure
 
     keys = {
-        r.metric_key
+        (r.target_kind, r.target_key)
         for r in session.execute(select(MetricAdditivity).where(MetricAdditivity.run_id == RUN))
         .scalars()
         .all()
     }
-    assert "good" in keys  # the healthy metric persisted
-    assert "bad" not in keys  # the failed one was skipped, not written
-    assert "prior" in keys  # unrelated pending work survived the nested rollback
+    assert ("metric", "good") in keys  # the healthy metric persisted...
+    assert ("measure", "good_measure") in keys  # ...and its measure
+    assert ("metric", "bad") not in keys  # the failed one was skipped, not written
+    assert ("measure", "bad_measure") not in keys
+    assert ("metric", "prior") in keys  # unrelated pending work survived the nested rollback
 
 
 def test_persist_upserts_idempotently(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection
 ) -> None:
-    """_persist_additivity_verdicts writes one row per (metric_key, run_id); a re-run re-derives it."""
+    """A re-run re-derives the same ``(target_kind, target_key, run_id)`` row (upsert)."""
     graph = _seed(
         session,
         fact_name="journal_lines",
@@ -351,9 +365,13 @@ def test_persist_upserts_idempotently(
         aggregation="sum",
     )
 
-    def rows() -> list[MetricAdditivity]:
+    def metric_rows() -> list[MetricAdditivity]:
         return list(
-            session.execute(select(MetricAdditivity).where(MetricAdditivity.metric_key == "m"))
+            session.execute(
+                select(MetricAdditivity).where(
+                    MetricAdditivity.target_kind == "metric", MetricAdditivity.target_key == "m"
+                )
+            )
             .scalars()
             .all()
         )
@@ -370,7 +388,48 @@ def test_persist_upserts_idempotently(
         )
         session.commit()
 
-    persisted = rows()
+    persisted = metric_rows()
     assert len(persisted) == 1  # upsert, not a duplicate
     assert persisted[0].categorical_additive is True
     assert persisted[0].time_additive is True
+
+
+def test_persist_writes_measure_verdicts(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """A stock measure gets its own semi-additive MEASURE verdict (the live AC5 cell).
+
+    `current_assets` is a drillable `measure:` node; its verdict is the extract's
+    own class — categorical-additive (sums across accounts) but time-stripped.
+    """
+    graph = _seed(
+        session,
+        fact_name="trial_balance",
+        view_name="enriched_trial_balance",
+        columns={"debit_balance": "point_in_time", "credit_balance": "point_in_time"},
+        grain_columns=["account_id", "period"],
+        time_columns=["period"],
+        field="current_assets",
+        select_expr="SUM(debit_balance) - SUM(credit_balance)",
+        aggregation="sum",
+    )
+    _persist_additivity_verdicts(
+        session,
+        duckdb_conn,
+        graphs={"m": graph},
+        executed_keys={"m"},
+        workspace_id=WS,
+        run_id=RUN,
+        catalogue_run_id=RUN,
+    )
+    session.commit()
+
+    measure = session.execute(
+        select(MetricAdditivity).where(
+            MetricAdditivity.target_kind == "measure",
+            MetricAdditivity.target_key == "current_assets",
+        )
+    ).scalar_one()
+    assert measure.categorical_additive is True
+    assert measure.time_additive is False
+    assert measure.time_reason == "stock"

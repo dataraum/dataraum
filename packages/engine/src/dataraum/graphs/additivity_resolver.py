@@ -58,6 +58,33 @@ def compute_metric_verdict(
     the current analysis; a metric with an unresolved extract (or none at all)
     yields ``None`` so the caller persists nothing.
     """
+    classes = classify_metric_extracts(
+        session,
+        duckdb_conn,
+        graph=graph,
+        workspace_id=workspace_id,
+        catalogue_run_id=catalogue_run_id,
+    )
+    if classes is None:
+        return None
+    return roll_up_metric(graph, classes)
+
+
+def classify_metric_extracts(
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    graph: TransformationGraph,
+    workspace_id: str,
+    catalogue_run_id: str,
+) -> dict[str, AxisClass] | None:
+    """Classify each EXTRACT leaf of a metric, keyed by ``step_id``.
+
+    Returns ``None`` if any extract is unresolved (no healthy grounded parts / a
+    relation outside the analysis) — the caller then persists nothing. The caller
+    rolls these up for the metric verdict AND maps them by ``standard_field`` for
+    the per-measure verdicts (a measure node is one extract, classified directly).
+    """
     library = SnippetLibrary(session, workspace_id=workspace_id)
     extract_classes: dict[str, AxisClass] = {}
     for step_id, step in graph.steps.items():
@@ -78,7 +105,7 @@ def compute_metric_verdict(
         extract_classes[step_id] = classify_extract(calls, temporal, snapshot, is_ratio=is_ratio)
     if not extract_classes:
         return None
-    return roll_up_metric(graph, extract_classes)
+    return extract_classes
 
 
 def _grounded_select(

@@ -279,9 +279,15 @@ def classify_extract(
     """
     if is_ratio:
         return AxisClass(False, False, RATIO, RATIO)
+    # A bare COUNT(*) alongside a column-bearing aggregate is a NULL-presence guard
+    # (``CASE WHEN COUNT(*)=0 THEN NULL ELSE <measure> END``), not the measure — the
+    # value is the other aggregate. Drop it so the guard can't strip time or taint
+    # the reason (a stock balance reads ``stock``, not ``snapshot_count``). A
+    # COUNT(*) ALONE is a genuine count measure and is kept.
+    measures = [c for c in calls if not (c.function == "count_star" and not c.columns)]
     result = ADDITIVE
-    for call in calls:
-        result = _most_restrictive(
+    for call in measures or calls:
+        result = most_restrictive(
             result, _classify_call(call, temporal_by_column, fact_is_snapshot)
         )
     return result
@@ -319,7 +325,7 @@ def _classify_call(
     return AxisClass(False, False, UNKNOWN_AGGREGATE, UNKNOWN_AGGREGATE)
 
 
-def _most_restrictive(a: AxisClass, b: AxisClass) -> AxisClass:
+def most_restrictive(a: AxisClass, b: AxisClass) -> AxisClass:
     """Combine two classes conservatively.
 
     An axis is additive only if both are; a reason is carried from whichever side
@@ -363,7 +369,7 @@ def roll_up_metric(graph: Any, extract_class_by_step: dict[str, AxisClass]) -> M
         # No output marker — fall to the most-restrictive over whatever we classified.
         result = ADDITIVE
         for cls in extract_class_by_step.values():
-            result = _most_restrictive(result, cls)
+            result = most_restrictive(result, cls)
         return _to_verdict(result)
     return _to_verdict(_step_class(output.step_id, graph, extract_class_by_step, frozenset()))
 
@@ -425,7 +431,7 @@ def _expr_class(
                 return left
             return AxisClass(False, False, RATIO, RATIO)
         # Add / Sub: additive combination — reconciles only where both operands do.
-        combined = _most_restrictive(left, right)
+        combined = most_restrictive(left, right)
         return AxisClass(
             combined.categorical_additive,
             combined.time_additive,

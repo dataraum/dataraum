@@ -451,11 +451,18 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_columns == []
+        # The hallucinated agent pick is rejected by the RI check (never lands)...
         assert any(
             e["event"] == "time_axis_unknown_column" and e["table"] == "invoices" for e in logs
         )
         assert not any(e["event"] == "time_axis_filled" for e in logs)
+        # ...but the deterministic is_dimension_time_column backstop (DAT-720) still
+        # fills the real axis, so a flagged fact never silently goes empty.
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
+        assert any(
+            e["event"] == "time_axis_filled_deterministic" and e["table"] == "invoices"
+            for e in logs
+        )
 
     def test_existing_time_column_is_inherited_never_overridden(
         self,
@@ -503,9 +510,46 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_columns == []
+        # The phantom-table judgment lands nowhere (no agent fill, no RI reject)...
         assert not any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
+        # ...and the deterministic backstop (DAT-720) still fills invoices' flagged axis.
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
+        assert any(
+            e["event"] == "time_axis_filled_deterministic" and e["table"] == "invoices"
+            for e in logs
+        )
+
+
+    def test_deterministic_backstop_fills_when_agent_returns_empty(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """DAT-720: the slice agent returned empty time_columns (the Sonnet 5
+        effort:low degradation that silently disabled the structural stock/flow
+        witness). The deterministic is_dimension_time_column backstop fills the
+        axis anyway — the witness can no longer go inert on an LLM miss."""
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+
+        with capture_logs() as logs:
+            result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id]))
+
+        assert result.status == PhaseStatus.COMPLETED
+        mock_agent_cls.return_value.analyze.assert_called_once()
+        # No agent judgment landed, yet the flagged axis is filled deterministically.
+        assert not any(e["event"] == "time_axis_filled" for e in logs)
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
+        assert any(
+            e["event"] == "time_axis_filled_deterministic" and e["table"] == "invoices"
+            for e in logs
+        )
 
 
 @patch("dataraum.pipeline.phases.slicing_phase.SlicingAgent")

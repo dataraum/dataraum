@@ -123,10 +123,13 @@ class SlicingAnalysisOutput(BaseModel):
     time_columns: list[TableTimeColumnOutput] = Field(
         default_factory=list,
         description=(
-            "A fallback time axis ONLY for analyzed tables whose context "
-            "'time_columns' is empty — pick the enriched column flagged "
-            "is_dimension_time_column. Omit any table that already lists axes "
-            "or genuinely has none."
+            "The event-time axis for each analyzed table whose context "
+            "'time_columns' is empty. Rule: whenever such a table has an enriched "
+            "column flagged is_dimension_time_column, name that column here — it is "
+            "the table's event date, joined from its header (e.g. journal_lines "
+            "dated by its journal_entry via entry_id__date). Skip a table only when "
+            "it already lists axes (kept as-is) or has no is_dimension_time_column "
+            "candidate at all."
         ),
     )
 

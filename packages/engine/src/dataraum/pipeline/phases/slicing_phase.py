@@ -265,6 +265,52 @@ class SlicingPhase(BasePhase):
                     ]
                     logger.info("time_axis_filled", table=table_name, column=chosen)
 
+        # Deterministic backstop (DAT-720): naming the enriched time axis above is
+        # an LLM step, and at effort:low Sonnet 5 silently returned it empty —
+        # disabling the structural stock/flow witness for header-dated facts
+        # (journal_lines ← entry_id__date). But is_dimension_time_column is computed
+        # deterministically (the joined header's own event date), so fill
+        # TableEntity.time_columns straight from the flag for any analyzed table
+        # the agent AND semantic left empty. Never overrides an existing axis;
+        # fixes every consumer at the source — lineage, drivers, and the drill.
+        from dataraum.analysis.semantic.db_models import TableEntity
+
+        # Read the flag from the pre-filter snapshot, NOT context_data["tables"]:
+        # _pre_filter_columns already dropped the high-cardinality date columns, so
+        # the flag is only preserved in this captured map (DAT-720).
+        flagged_by_table = {
+            name: cols
+            for name, cols in (context_data.get("dimension_time_axes") or {}).items()
+            if cols
+        }
+        if flagged_by_table:
+            id_by_name = {t.table_name: t.table_id for t in unsliced_tables}
+            target_ids = [id_by_name[n] for n in flagged_by_table if n in id_by_name]
+            if target_ids:
+                name_by_id = {tid: n for n, tid in id_by_name.items()}
+                for entity in ctx.session.execute(
+                    select(TableEntity).where(
+                        TableEntity.table_id.in_(target_ids),
+                        TableEntity.run_id == ctx.run_id,
+                    )
+                ).scalars():
+                    if entity.time_columns:
+                        continue  # semantic or the agent already set it — never override
+                    name = name_by_id.get(entity.table_id, "")
+                    cols = flagged_by_table.get(name, [])
+                    entity.time_columns = [
+                        {
+                            "column": col,
+                            "aspect": "event",
+                            "note": (
+                                "Event-time axis from the deterministic "
+                                "is_dimension_time_column flag (DAT-720 backstop)."
+                            ),
+                        }
+                        for col in cols
+                    ]
+                    logger.info("time_axis_filled_deterministic", table=name, columns=cols)
+
         # Store slice definitions — form-(a) idempotent writer (DAT-502):
         # in-batch dedup on ``uq_slice_def_table_column_run`` (the agent can
         # emit a dimension twice; propagation adds more), then UPSERT so a
@@ -619,7 +665,31 @@ class SlicingPhase(BasePhase):
                 }
             )
 
+        # Flagged enriched time axes per table, captured BEFORE _pre_filter_columns
+        # drops high-cardinality columns (a date is exactly that) — the deterministic
+        # backstop in _run reads this so the is_dimension_time_column flag survives
+        # the filter (DAT-720; the filter is why the agent's write-back also has to
+        # validate against the unfiltered col_id_by_name).
+        dimension_time_axes: dict[str, list[str]] = {}
+        for t in tables_data:
+            cols = t["columns"]
+            name = t["table_name"]
+            if not isinstance(cols, list) or not isinstance(name, str):
+                continue
+            axes = sorted(
+                {
+                    c["column_name"]
+                    for c in cols
+                    if isinstance(c, dict)
+                    and c.get("is_dimension_time_column")
+                    and c.get("column_name")
+                }
+            )
+            if axes:
+                dimension_time_axes[name] = axes
+
         return {
             "tables": tables_data,
             "column_count": column_count,
+            "dimension_time_axes": dimension_time_axes,
         }

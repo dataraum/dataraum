@@ -32,7 +32,11 @@ features:
   slicing_analysis:
     enabled: true
     model_tier: balanced
-    effort: low
+    # medium, not low (DAT-720): at effort:low Sonnet 5 scopes to the literal ask
+    # and drops the secondary enriched time-axis backfill (a form-fill field it's
+    # motivated enough to complete at medium). Thinking stays off — the data is in
+    # the prompt; it just has to fill the field.
+    effort: medium
 
   validation:
     enabled: true

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -52,6 +53,7 @@ from dataraum.llm.providers.base import (
     Message,
     ToolDefinition,
 )
+from dataraum.llm.tool_repair import repair_tool_output
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
@@ -205,10 +207,33 @@ class SemanticAgent(LLMFeature):
         if not response.tool_calls or response.tool_calls[0].name != "analyze_tables":
             return Result.fail("LLM did not use the analyze_tables tool")
 
+        tool_input = response.tool_calls[0].input
         try:
-            return self._parse_table_synthesis_output(response.tool_calls[0].input, response.model)
-        except Exception as e:
-            return Result.fail(f"Failed to parse table synthesis response: {e}")
+            synthesis = TableSynthesisOutput.model_validate(tool_input)
+        except ValidationError as e:
+            # One lazy relationship entry (a missing `to_column`, a `"placeholder"`
+            # reasoning) must not fail begin_session whole (DAT-710): enforce the
+            # schema with a repair turn — the DAT-699 pattern — instead of a
+            # non-retryable PhaseFailed with whole-cascade blast radius. strict
+            # grammar is the WRONG lever here: analyze_tables is a large batched
+            # extraction (every table's entity + all relationships), exactly the
+            # shape where strict makes the model legally under-produce (see
+            # `ToolDefinition.strict`), so repair, never strict.
+            repaired = repair_tool_output(
+                self.provider,
+                tool,
+                tool_input,
+                e,
+                TableSynthesisOutput,
+                model=model,
+                label="semantic_per_table",
+                max_tokens=self.config.limits.max_output_tokens_per_request,
+            )
+            if not repaired.success:
+                return Result.fail(f"Failed to parse table synthesis response: {repaired.error}")
+            synthesis = repaired.unwrap()
+
+        return self._build_enrichment_result(synthesis)
 
     @staticmethod
     def _format_persisted_annotations(annotations: list[dict[str, Any]]) -> str:
@@ -239,14 +264,15 @@ class SemanticAgent(LLMFeature):
                 )
         return "\n".join(lines)
 
-    def _parse_table_synthesis_output(
+    def _build_enrichment_result(
         self,
-        tool_output: dict[str, Any],
-        model_name: str,
+        synthesis: TableSynthesisOutput,
     ) -> Result[SemanticEnrichmentResult]:
-        """Parse ``analyze_tables`` output into entities + relationships (no annotations)."""
-        synthesis = TableSynthesisOutput.model_validate(tool_output)
+        """Build entities + relationships from a validated ``analyze_tables`` output.
 
+        Validation (with a DAT-710 repair turn on failure) happens at the call
+        site; this transforms the validated model into the enrichment result.
+        """
         entity_detections = [
             EntityDetection(
                 table_id="",  # Filled by caller

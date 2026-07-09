@@ -5,6 +5,36 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-710 — `semantic_per_table` schema-repair turn (begin_session survives a shape flake)
+
+**Branch:** `fix/dat-710-semantic-repair-turn`. **No calibration action required — a
+robustness fix; recall/precision unchanged.**
+
+One malformed `analyze_tables` relationship entry (a missing `to_column`, a literal
+`"placeholder"` reasoning) used to fail `begin_session` WHOLE: strict Pydantic
+validation → non-retryable `PhaseFailed`, whole-cascade blast radius (a manual re-run
+passed clean — a pure LLM shape flake). `semantic_per_table` now gets the same one-turn
+schema repair `generate_sql` got in DAT-699 — on a `TableSynthesisOutput` validation
+failure the model fixes its own tool output under a forced tool choice, and only a
+SECOND failure fails loud.
+
+- The repair turn is now a shared helper (`llm/tool_repair.py::repair_tool_output`,
+  generic over the output model); both `graphs/agent.py` (grounding) and
+  `analysis/semantic/agent.py` (synthesis) call it. `GraphAgent._repair_tool_output`
+  was inlined + deleted — behavior byte-identical (`test_tool_repair.py` unchanged, green).
+- **Not `strict`:** `analyze_tables` is a large batched extraction, exactly the shape
+  where `ToolDefinition.strict` makes the model legally under-produce (the
+  column_annotation 1-of-8-tables collapse); the repair turn, not strict, is the
+  recall-safe lever.
+
+### For eval
+No detector or response-shape change. The only observable delta is on the FAILURE path:
+a semantic shape flake that used to kill a calibration run's `begin_session` now
+self-repairs, so wide / real-LLM eval runs see one fewer spurious failure. Nothing to
+recalibrate.
+
+---
+
 ## DAT-718 — activity metrics + `count_distinct` grounding vocabulary
 
 **Branch:** `feat/dat-718-matrix-metrics`. Extends the finance metric catalogue +

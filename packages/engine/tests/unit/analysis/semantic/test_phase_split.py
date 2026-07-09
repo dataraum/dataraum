@@ -24,6 +24,7 @@ from dataraum.analysis.semantic.models import (
     Relationship,
     SemanticEnrichmentResult,
     TableColumnAnnotation,
+    TableSynthesisOutput,
     TimeColumn,
 )
 from dataraum.analysis.semantic.processor import (
@@ -479,9 +480,11 @@ class TestSynthesizeAndStoreTables:
 
 
 class TestTableSynthesisHelpers:
-    def test_parse_table_synthesis_output_yields_no_annotations(self) -> None:
+    def test_build_enrichment_result_yields_no_annotations(self) -> None:
         agent = SemanticAgent.__new__(SemanticAgent)  # no LLM init needed
-        result = agent._parse_table_synthesis_output(
+        # Validation (with the DAT-710 repair turn on failure) is the call site's
+        # job; _build_enrichment_result transforms an already-validated output.
+        synthesis = TableSynthesisOutput.model_validate(
             {
                 "tables": [
                     {
@@ -493,9 +496,9 @@ class TestTableSynthesisHelpers:
                     }
                 ],
                 "relationships": [],
-            },
-            "test-model",
+            }
         )
+        result = agent._build_enrichment_result(synthesis)
         enrichment = result.unwrap()
         assert enrichment.annotations == []
         assert len(enrichment.entity_detections) == 1

@@ -474,6 +474,9 @@ def _persist_additivity_verdicts(
         graph = graphs.get(graph_id)
         if graph is None:
             continue
+        # ALL fallible work (classify, roll-up, the extract→standard_field access)
+        # runs inside the SAVEPOINT; only the in-memory bookkeeping happens after,
+        # so a bug here rolls back its own annotation, never the phase session.
         try:
             with session.begin_nested():
                 classes = classify_metric_extracts(
@@ -483,20 +486,26 @@ def _persist_additivity_verdicts(
                     workspace_id=workspace_id,
                     catalogue_run_id=catalogue_run_id,
                 )
+                if classes is None:
+                    continue
+                metric_verdict = roll_up_metric(graph, classes)
+                # A measure node is one extract, keyed by standard_field (the drill's
+                # node identity — see analyseTarget); the same field is shared across
+                # metrics via the concept-keyed snippet cache (same class).
+                metric_measures = [
+                    (source.standard_field, cls)
+                    for step_id, cls in classes.items()
+                    if (source := graph.steps[step_id].source) and source.standard_field
+                ]
         except Exception as exc:  # noqa: BLE001 - best-effort; never fail the phase
             _log.warning("metric_additivity_compute_error", graph_id=graph_id, error=str(exc))
             continue
-        if classes is None:
-            continue
-        rows.append(_verdict_row(run_id, "metric", graph_id, roll_up_metric(graph, classes)))
-        # A measure node is one extract; the same standard_field is shared across
-        # metrics (same snippet → same class), deduped most-restrictive defensively.
-        for step_id, cls in classes.items():
-            source = graph.steps[step_id].source
-            field = source.standard_field if source else None
-            if field:
-                prior = measure_classes.get(field)
-                measure_classes[field] = cls if prior is None else most_restrictive(prior, cls)
+        rows.append(_verdict_row(run_id, "metric", graph_id, metric_verdict))
+        for field, cls in metric_measures:
+            # Deduped most-restrictive: identical today (shared snippet), conservative
+            # if a field is ever grounded two ways across metrics — never optimistic.
+            prior = measure_classes.get(field)
+            measure_classes[field] = cls if prior is None else most_restrictive(prior, cls)
 
     rows.extend(
         _verdict_row(run_id, "measure", field, cls) for field, cls in measure_classes.items()

@@ -283,7 +283,9 @@ def classify_extract(
     # (``CASE WHEN COUNT(*)=0 THEN NULL ELSE <measure> END``), not the measure — the
     # value is the other aggregate. Drop it so the guard can't strip time or taint
     # the reason (a stock balance reads ``stock``, not ``snapshot_count``). A
-    # COUNT(*) ALONE is a genuine count measure and is kept.
+    # COUNT(*) ALONE is a genuine count measure and is kept. This targets the one
+    # guard idiom the grounding prompt emits (COUNT(*)); a COUNT(1)/COUNT(col) guard
+    # would not be recognized, but the prompt never produces those.
     measures = [c for c in calls if not (c.function == "count_star" and not c.columns)]
     result = ADDITIVE
     for call in measures or calls:

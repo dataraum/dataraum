@@ -349,6 +349,83 @@ def test_persist_is_fault_isolated(
     assert ("metric", "prior") in keys  # unrelated pending work survived the nested rollback
 
 
+def test_persist_isolates_rollup_failure(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """A roll-up (or measure-mapping) bug is caught inside the savepoint too.
+
+    Regression: the roll_up_metric call + the extract→standard_field mapping must
+    run INSIDE the per-metric savepoint, not after it — else an exception escapes
+    `_persist_additivity_verdicts` and rolls back the whole phase session.
+    """
+    from unittest.mock import patch
+
+    from dataraum.graphs.additivity import ADDITIVE, MetricVerdict
+
+    def _graph(graph_id: str, field: str) -> TransformationGraph:
+        return TransformationGraph(
+            graph_id=graph_id,
+            version="1",
+            metadata=GraphMetadata(
+                name=graph_id, description="", category="c", source=GraphSource.SYSTEM
+            ),
+            output=OutputDef(output_type=OutputType.SCALAR),
+            steps={
+                "e": GraphStep(
+                    step_id="e",
+                    step_type=StepType.EXTRACT,
+                    source=StepSource(standard_field=field),
+                    aggregation="sum",
+                    output_step=True,
+                )
+            },
+        )
+
+    session.add(
+        MetricAdditivity(
+            run_id=RUN,
+            target_kind="metric",
+            target_key="prior",
+            categorical_additive=True,
+            time_additive=True,
+        )
+    )
+    session.flush()
+
+    def fake_rollup(graph, _classes):  # noqa: ANN001, ANN202
+        if graph.graph_id == "bad":
+            raise RuntimeError("boom - simulated roll_up bug")
+        return MetricVerdict(categorical_additive=True, time_additive=True)
+
+    with (
+        patch(
+            "dataraum.graphs.additivity_resolver.classify_metric_extracts",
+            return_value={"e": ADDITIVE},
+        ),
+        patch("dataraum.graphs.additivity.roll_up_metric", side_effect=fake_rollup),
+    ):
+        _persist_additivity_verdicts(
+            session,
+            duckdb_conn,
+            graphs={"good": _graph("good", "gf"), "bad": _graph("bad", "bf")},
+            executed_keys={"good", "bad"},
+            workspace_id=WS,
+            run_id=RUN,
+            catalogue_run_id=RUN,
+        )
+    session.commit()  # not poisoned by the roll-up failure
+
+    keys = {
+        (r.target_kind, r.target_key)
+        for r in session.execute(select(MetricAdditivity).where(MetricAdditivity.run_id == RUN))
+        .scalars()
+        .all()
+    }
+    assert ("metric", "good") in keys
+    assert ("metric", "bad") not in keys  # the roll-up bug was caught, not escaped
+    assert ("metric", "prior") in keys
+
+
 def test_persist_upserts_idempotently(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection
 ) -> None:

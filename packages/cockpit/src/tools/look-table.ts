@@ -574,9 +574,15 @@ async function loadTableBand(
 		})
 		.from(currentEntropyReadiness)
 		.where(eq(currentEntropyReadiness.target, tableTargetKey(tableName)))
-		// Safe without a grain pick: `table:{name}` targets are written only by
-		// catalog-grain runs (add_source persists column targets only), and the
-		// view's latest-promoted-wins dedup leaves ≤1 catalog-grain row per target.
+		// `table:{name}` targets are written only by catalog-grain runs (add_source
+		// persists column targets only), and the view's latest-promoted-wins dedup
+		// leaves ≤1 catalog-grain row per target. But entropy_readiness alone among
+		// the run-versioned tables carries NO (target, run_id) unique constraint, so
+		// that ≤1 rests on a view dedup (strict promoted_at `>`, ties possible), not
+		// a hard invariant — the `computed_at desc` order is the defensive tiebreak,
+		// matching loadTableEntity above and keeping the pick deterministic should the
+		// dedup ever surface two rows for one target.
+		.orderBy(desc(currentEntropyReadiness.computedAt))
 		.limit(1);
 	return row ? projectTableBand(row) : null;
 }

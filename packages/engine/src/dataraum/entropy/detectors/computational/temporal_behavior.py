@@ -6,8 +6,11 @@ structural reconciliation (DAT-491). Stock/flow is data-determined — the ontol
 longer votes (DAT-657): the same concept materializes as flow or stock, a format the
 ontology can't declare. High conflict = the LLM read and the reconciliation disagree;
 high ignorance = the behaviour is undetermined. Emits one witnessed ``EntropyObject``
-per column carrying the resolved behaviour, the conflict, and a ``rebind`` teach
-suggestion.
+per column carrying the resolved behaviour and the conflict — and NO teach suggestion:
+stock/flow is data-determined, so the structural witness already wins; there is no
+format for a human to teach here. A genuinely mis-grounded column is corrected on the
+grounding path (bind/relationship), which owns that teach — not manufactured into a
+second, misplaced ``rebind`` button off a temporal conflict.
 
 No data-trajectory witness: the DAT-459 spike falsified the time-series statistic,
 and the DAT-445 kill-gate showed an LLM reading a column's own trajectory is
@@ -20,8 +23,6 @@ It abstains on every add_source detect (lineage rows are exact-run).
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import Dimension, Layer, SubDimension
@@ -96,10 +97,9 @@ class TemporalBehaviorDetector(EntropyDetector):
 
         label, contested = resolved_behaviour(adj.result)
         posterior = dict(zip(CLAIM_SPACE, adj.result.posterior, strict=True))
-        # Stock/flow is data-determined (DAT-657) — a concept can't be taught a
-        # format. The surviving lever is a rebind: re-ground the column so its
-        # aggregation reconciles against the right event table.
-        teach: dict[str, Any] = {"type": "rebind", "column": context.column_name}
+        # No teach_suggestion (DAT-657): stock/flow is data-determined, so the
+        # structural witness already wins — nothing for a human to teach. A wrong
+        # grounding is corrected on the grounding path, which owns that teach.
         evidence = [
             {
                 "_table_name": context.table_name,
@@ -113,7 +113,6 @@ class TemporalBehaviorDetector(EntropyDetector):
                 "llm_claim": semantic.get("temporal_behavior_claim"),
                 "structural_pattern": structural.get("pattern"),
                 "structural_match_rate": structural.get("match_rate"),
-                "teach_suggestion": teach,
             }
         ]
         obj = EntropyObject(

@@ -26,8 +26,9 @@ no longer votes; the live ``debit_balance`` case — the LLM reads the periodic
 ``trial_balance`` movement column as flow and the structural reconciliation agrees —
 resolves to flow with no manufactured conflict. A lone or weak witness routes to
 ``U`` (ignorance about the column's behaviour), not low entropy (the doc-trap) — an
-opaque column whose behaviour can't be determined is surfaced for teach (a
-``rebind``), not silently resolved.
+opaque column whose behaviour can't be determined is surfaced as ignorance, not
+silently resolved. There is no teach for stock/flow itself (data-determined, DAT-657);
+a mis-grounding is corrected on the grounding path, not by teaching a format here.
 
 There is deliberately NO data-trajectory witness: the DAT-459 spike falsified the
 time-series persistence statistic, and the DAT-445 kill-gate showed an LLM reading a

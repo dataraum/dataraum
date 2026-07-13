@@ -190,12 +190,13 @@ def duckdb_conn():
 
 @pytest.fixture(scope="session")
 def pg_container() -> Generator[PostgresContainer]:
-    """Boot one Postgres 17 container for the whole pytest invocation.
+    """Boot one Postgres 19beta1 container for the whole pytest invocation.
 
-    Pinned to the same image L1's docker-compose runs so any dialect quirk
-    surfaces here too. Cleaned up at session end.
+    Pinned to the same image docker-compose runs (DAT-726) so any dialect quirk
+    surfaces here too — and so SQL/PGQ property-graph tests (ADR-0021) run on the
+    core-Postgres-19 feature they target. Cleaned up at session end.
     """
-    with PostgresContainer("postgres:17") as pg:
+    with PostgresContainer("postgres:19beta1") as pg:
         yield pg
 
 

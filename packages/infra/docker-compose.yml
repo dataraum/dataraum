@@ -89,7 +89,11 @@ x-engine-worker-env: &engine-worker-env
 
 services:
   postgres:
-    image: postgres:18
+    # PG19 for SQL/PGQ property graphs (DAT-726 / ADR-0021) — the operating-model
+    # knowledge graph is `CREATE PROPERTY GRAPH` over the ws_<id>_read views, which
+    # is core-Postgres only from 19. On 19beta1 until GA (a version bump); verified
+    # drop-in for everything else we run.
+    image: postgres:19beta1
     # max_connections raised from the default 100: this single instance backs
     # ~four pooled consumers — Temporal (server + visibility ≈ 40 at rest),
     # cockpit_db, the engine ORM, and the DuckLake catalog pool. A live
@@ -115,11 +119,12 @@ services:
       # engine's metadata schema.
       COCKPIT_DB: ${COCKPIT_DB}
     volumes:
-      # PG18 stores data in a major-version-specific subdir and now declares its
+      # PG18+ stores data in a major-version-specific subdir and declares its
       # VOLUME at /var/lib/postgresql (NOT .../data). The image refuses to boot
       # if a volume is mounted at the old .../data path (docker-library #1259),
-      # so the mount is the parent and PGDATA defaults to .../18/docker. A future
-      # major bump lands in .../19/docker beside it (we sweep with `down -v`).
+      # so the mount is the parent and PGDATA defaults to .../19/docker (18→19
+      # bump, DAT-726). A stale 18/docker dir in the volume is inert; sweep a
+      # dev/CI volume with `down -v` on the major bump (data is re-seeded).
       - postgres_data:/var/lib/postgresql
       - ../engine/docker/postgres-init/:/docker-entrypoint-initdb.d/:ro
     ports:

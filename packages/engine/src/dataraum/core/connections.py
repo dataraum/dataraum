@@ -341,18 +341,33 @@ class ConnectionManager:
         # SQLite test substrate has no read surface.
         if self._engine.dialect.name == "postgresql":
             from dataraum.core.settings import get_settings
+            from dataraum.storage.property_graph import (
+                drop_property_graph,
+                grant_reader_on_graph,
+                materialize_property_graph,
+            )
             from dataraum.storage.read_views import (
                 ensure_reader_role,
                 materialize_read_schema,
             )
 
             with self._engine.begin() as conn:
+                # The operating-model property graph (ADR-0021) binds the current_*
+                # views through its element views; both MUST be torn down before the
+                # read-view refresh (Postgres refuses to drop a view a graph/view
+                # depends on) and rebuilt after it.
+                drop_property_graph(conn, schema_name)
                 materialize_read_schema(conn, schema_name)
+                materialize_property_graph(conn, schema_name)
                 ensure_reader_role(
                     conn,
                     schema_name,
                     get_settings().metadata_reader_password.get_secret_value(),
                 )
+                # The graph is a distinct privilege object — ensure_reader_role's
+                # table grants don't reach GRAPH_TABLE. Grant it after the role exists
+                # (and re-grant every boot, since the graph is recreated above).
+                grant_reader_on_graph(conn, schema_name)
 
         # autoflush=False keeps writes batched; commit happens at scope close.
         self._session_factory = sessionmaker(

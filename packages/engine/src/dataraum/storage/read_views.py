@@ -493,6 +493,12 @@ _CONTROL_WRITE_GRANTS: dict[str, str] = {
         "UPDATE (source_type, connection_config, status, stage, backend, updated_at)"
     ),
     "config_overlay": "SELECT, INSERT, UPDATE",
+    # concepts (DAT-728, config→DB): the typed concept vocabulary. `frame`
+    # declares/edits concepts as an edit = supersede active (UPDATE superseded_at)
+    # + INSERT a new active row; the readiness count SELECTs active rows. Identity
+    # (concept_id) and the seed's rows are written engine-side; the cockpit's writes
+    # ride the same narrow surface as config_overlay did before the cut.
+    "concepts": "SELECT, INSERT, UPDATE",
     # save-on-clean (DAT-486): the cockpit query tool saves learned `query:`
     # snippets. SELECT for the IS-NULL-aware key lookup (the unique key has
     # nullable columns and Postgres is NULLS DISTINCT, so dedup is app-level,

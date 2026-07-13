@@ -28,25 +28,6 @@ Registered teach types
   the column-scoped unit teach. Shares the file with ``type_pattern`` but a disjoint
   key, so both compose. The reader (``typing_phase._apply_unit_overrides``) has always
   existed; this applier is the write half that was missing.
-* ``concept`` — ``verticals/<vertical>/ontology.yaml``, upsert-replace
-  by ``name`` into ``concepts:``; routed via :func:`apply_overlay`'s
-  vertical-path detection. Used both by user teach and by the engine's
-  cold-start ``_adhoc`` induction (DAT-371) which writes one row per
-  induced concept instead of a YAML file.
-* ``concept_property`` — ``verticals/<vertical>/ontology.yaml``,
-  patching a field on a named concept entry; routed via
-  :func:`apply_overlay`'s vertical-path detection. Concept rows are
-  applied first (define / replace), then concept_property rows patch on
-  top.
-* ``rebind`` — ``verticals/<vertical>/ontology.yaml``, the COLUMN-grain
-  re-grounding teach (the ``temporal_behavior`` measurement's ignorance-branch
-  suggestion): appends the taught column name to the named concept's
-  ``indicators`` so the next run's grounding LLM (which reads indicators via
-  ``OntologyLoader.format_concepts_for_prompt``) pulls the column to that
-  concept. Teach-as-witness, never an override: it steers the grounding
-  input; ``ColumnConcept.business_concept`` (DAT-637) stays an LLM judgment.
-  Applied after ``concept`` / ``concept_property`` so it patches the final
-  concept state; last rebind per column wins (a later row MOVES the column).
 * ``validation`` — the logical collection ``verticals/<vertical>/validations``
   (a *directory* of per-id YAML files, merged to a ``validations:`` list by
   ``load_all_validation_specs`` before the overlay applies); upsert-replace
@@ -225,114 +206,6 @@ def _apply_unit(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
     return out
 
 
-def _apply_concept(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
-    """Upsert-replace concept rows into a vertical ontology's ``concepts:`` list.
-
-    Payload shape mirrors :class:`OntologyConcept`:
-    ``{vertical, name, description?, indicators?, exclude_patterns?,
-    temporal_behavior?, typical_role?, typical_values?, unit_from_concept?,
-    is_unit_dimension?}``. ``vertical`` is matched by the caller (this
-    applier only sees rows already filtered to the loading vertical).
-
-    Merge semantics: one row = one concept. Same ``name`` replaces — the
-    last row for a given concept name wins (rows are pre-sorted ASC by
-    ``created_at``). Used by user teach AND by ``_adhoc`` cold-start
-    induction (DAT-371) — induction writes N concept rows instead of a
-    YAML file, and the layered read materializes them as if they were in
-    the base file.
-    """
-    out = dict(base)
-    concepts = [dict(c) for c in (out.get("concepts") or [])]
-    by_name = {c.get("name"): i for i, c in enumerate(concepts) if c.get("name")}
-    for row in rows:
-        payload = {k: v for k, v in row.payload.items() if k != "vertical"}
-        name = payload.get("name")
-        if not name:
-            continue
-        if name in by_name:
-            concepts[by_name[name]] = payload
-        else:
-            by_name[name] = len(concepts)
-            concepts.append(payload)
-    out["concepts"] = concepts
-    return out
-
-
-def _apply_concept_property(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
-    """Patch a property on a named concept in a vertical ontology.
-
-    Payload shape: ``{vertical, concept, property, value}``. The
-    ``vertical`` field is matched by the caller (this applier only sees
-    rows already filtered to the loading vertical). Missing concept = row
-    ignored (defensive — a teach against a stale ontology shouldn't
-    crash the loader).
-    """
-    out = dict(base)
-    concepts = [dict(c) for c in (out.get("concepts") or [])]
-    by_name = {c.get("name"): c for c in concepts if c.get("name")}
-    for row in rows:
-        concept_name = row.payload.get("concept")
-        prop = row.payload.get("property")
-        if not concept_name or not prop:
-            continue
-        target = by_name.get(concept_name)
-        if target is None:
-            continue
-        target[prop] = row.payload.get("value")
-    out["concepts"] = concepts
-    return out
-
-
-def _apply_rebind(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
-    """Re-ground a column: append its name to the target concept's ``indicators``.
-
-    Payload shape: ``{vertical, concept, column, table?}`` — ``vertical`` is
-    matched by the caller (this applier only sees rows already filtered to the
-    loading vertical); ``concept`` names the rebind target; ``column`` is the
-    column name to pull. ``table`` is advisory context only — indicators are a
-    vertical-wide name vocabulary, so the merge key is the column name.
-
-    This is the column-grain teach closing the ``temporal_behavior``
-    measurement's ignorance branch (ADR-0009 pack piece 6): the appended
-    indicator reaches the next run's grounding prompt
-    (``OntologyLoader.format_concepts_for_prompt``), so the LLM re-grounds the
-    column and the concept's declared behaviour re-enters the pool as the
-    ontology-prior witness. The teach steers a witness INPUT — it never writes
-    ``business_concept`` directly (the no-override firewall).
-
-    Merge semantics: last rebind per column wins — a later row for the same
-    column MOVES it to the new concept (the column is appended only to its
-    final target among rebind rows; rows are pre-sorted ASC by ``created_at``).
-    Base indicators are never removed — an indicator may be a pattern serving
-    other columns, so un-pulling from the old concept is not the teach's job.
-    Unknown concept = row ignored (defensive — a teach against a stale ontology
-    must not crash the loader); duplicate rebinds are idempotent (dedup).
-    """
-    out = dict(base)
-    concepts = [dict(c) for c in (out.get("concepts") or [])]
-    by_name = {c.get("name"): c for c in concepts if c.get("name")}
-    # Last-write-wins per column: resolve the final binding first so a
-    # re-taught column lands only on its newest target.
-    binding: dict[str, str] = {}
-    for row in rows:
-        column = row.payload.get("column")
-        concept_name = row.payload.get("concept")
-        if not column or not concept_name:
-            continue
-        binding[column] = concept_name
-    for column, concept_name in binding.items():
-        target = by_name.get(concept_name)
-        if target is None:
-            continue
-        # Fresh list — the shallow concept copies still alias the base lists.
-        indicators = list(target.get("indicators") or [])
-        if column not in indicators:
-            indicators.append(column)
-        target["indicators"] = indicators
-    out["concepts"] = concepts
-    return out
-
-
 def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
     """Upsert-replace validation rows into a vertical's ``validations:`` list.
 
@@ -477,11 +350,11 @@ class _VerticalFamily:
     """A vertical overlay family: path suffix + ordered (teach_type, applier) pairs.
 
     Rows are filtered to a pair's ``teach_type`` AND the path's vertical, then
-    merged in order. ``ontology.yaml`` has three pairs — ``concept`` defines /
-    replaces a whole entry, then ``concept_property`` patches one field on the
-    (possibly just-replaced) concept, then ``rebind`` appends column-name
-    indicators onto the final concept state — so order matters; the others
-    have one.
+    merged in order. Each surviving family has a single pair; the ordered-pair
+    shape remains because ``/validations`` and ``/metrics`` may grow multi-step
+    merges. (The concept family — ``concept``/``concept_property``/``rebind`` on
+    ``ontology.yaml`` — was retired in DAT-728: the concept vocabulary is now a
+    typed ``concepts`` table the cockpit writes directly, not YAML⊕overlay.)
     """
 
     suffix: str
@@ -489,14 +362,6 @@ class _VerticalFamily:
 
 
 _VERTICAL_REGISTRY: Final[tuple[_VerticalFamily, ...]] = (
-    _VerticalFamily(
-        "/ontology.yaml",
-        (
-            ("concept", _apply_concept),
-            ("concept_property", _apply_concept_property),
-            ("rebind", _apply_rebind),
-        ),
-    ),
     _VerticalFamily("/validations", (("validation", _apply_validation),)),
     _VerticalFamily("/cycles.yaml", (("cycle", _apply_cycle),)),
     _VerticalFamily("/metrics", (("metric", _apply_metric),)),
@@ -526,14 +391,6 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
     registered or no row targets this path.
 
     Dispatch:
-        * ``verticals/<v>/ontology.yaml`` — apply ``concept`` rows whose
-          payload ``vertical`` matches ``<v>`` (upsert-replace the list),
-          then ``concept_property`` rows for the same vertical patch on
-          top, then ``rebind`` rows append column-name indicators. The
-          order matters: concept defines / replaces a whole concept entry;
-          concept_property patches one field on the (possibly
-          just-replaced) concept; rebind pulls a column onto the final
-          concept state.
         * ``verticals/<v>/validations`` — the logical validation collection
           (DAT-438): apply ``validation`` rows whose payload ``vertical``
           matches ``<v>`` (upsert-replace by ``validation_id``).

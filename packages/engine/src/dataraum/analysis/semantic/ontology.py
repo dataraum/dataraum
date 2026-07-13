@@ -120,9 +120,9 @@ class OntologyLoader:
         """
         self.verticals_dir = verticals_dir
         # No cache: the overlay-aware production path must reflect newly
-        # inserted overlay rows on the next call (e.g. _adhoc induction
-        # inserts rows then re-reads in the same phase). Per-load latency
-        # is one filesystem read + dict copies; not a hotspot.
+        # inserted overlay rows on the next call (a validation/cycle/metric
+        # teach lands then re-reads in the same phase). Per-load latency is one
+        # filesystem read + dict copies; not a hotspot.
 
     def load(self, vertical: str) -> OntologyDefinition | None:
         """Load an ontology definition for a vertical.
@@ -136,12 +136,16 @@ class OntologyLoader:
             vertical: Vertical name (e.g. ``'finance'`` or ``'_adhoc'``).
 
         Returns:
-            The (overlay-merged) ontology definition — a builtin resolves its
-            baked-in YAML, a framed vertical resolves overlay-only. ``None`` only
-            on the production path for an UNKNOWN vertical (a typo or one never
-            framed) — the single ``None`` case, owned by ``resolve_vertical``
-            (DAT-480); every known/placeholder/framed name resolves to a
-            (possibly empty) definition.
+            The (overlay-merged) ontology definition. A builtin resolves its
+            baked-in YAML ⊕ surviving overlay families (validation/cycle/metric).
+            Concepts moved config→DB (DAT-728): a framed vertical has no on-disk
+            YAML and concepts are no longer overlay rows, so this resolves its
+            concepts as EMPTY — the framed concept vocabulary lives in the typed
+            ``concepts`` table and is read via ``concept_store`` at runtime, not
+            here. ``None`` only on the production path for an UNKNOWN vertical (a
+            typo or one never framed) — the single ``None`` case, owned by
+            ``resolve_vertical`` (DAT-480); every known/placeholder/framed name
+            resolves to a (possibly empty) definition.
         """
         # DAT-480: an UNKNOWN production vertical is the only None case. The test
         # path is deterministic (no overlay), so the guard is production-only.

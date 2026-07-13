@@ -64,19 +64,6 @@ class TestFramed:
         metrics = VerticalLoader("sales").collection(Family.METRICS)["metrics"]
         assert [m["graph_id"] for m in metrics] == ["win_rate"]
 
-    def test_concept_row_resolves(self) -> None:
-        set_overlay_resolver(
-            lambda: [
-                OverlayRow(
-                    type="concept",
-                    payload={"vertical": "sales", "name": "deal_value"},
-                )
-            ]
-        )
-        ontology = VerticalLoader("sales").collection(Family.CONCEPTS)
-        assert ontology["name"] == "sales"
-        assert [c["name"] for c in ontology["concepts"]] == ["deal_value"]
-
     def test_validation_row_resolves(self) -> None:
         set_overlay_resolver(
             lambda: [

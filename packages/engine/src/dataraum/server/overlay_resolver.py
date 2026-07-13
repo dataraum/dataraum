@@ -30,7 +30,10 @@ logger = get_logger(__name__)
 # Only user-declared concept rows mark a *framed* vertical; a shipped vertical's
 # seeded rows (source='seed') are classified from its on-disk dir (shipped-first
 # in ``resolve_vertical``), so excluding them here keeps ``_framed_verticals``
-# semantically precise — a vertical here has no on-disk ontology.
+# semantically precise — a vertical here has no on-disk ontology. ``'teach'`` is
+# forward-declared: no writer emits it yet — it reserves the source for DAT-738's
+# conversational concept-authoring surface (harmless in the meantime, it just
+# matches no rows).
 _FRAMED_CONCEPT_SOURCES: tuple[str, ...] = ("frame", "teach")
 
 

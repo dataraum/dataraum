@@ -154,4 +154,6 @@ def test_known_emissions_are_seen_by_the_scanner() -> None:
     emissions = _collect_emissions()
     tb = emissions.get("entropy/detectors/computational/temporal_behavior.py")
     assert tb is not None, "temporal_behavior teach_suggestion emission no longer detected"
-    assert set(tb) == {"concept_property", "rebind"}
+    # DAT-657: stock/flow is data-determined — a concept can't be taught a format, so
+    # the concept_property teach is gone; the surviving lever is a rebind.
+    assert set(tb) == {"rebind"}

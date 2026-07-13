@@ -72,8 +72,12 @@ witnesses:
   # detection-stockflow-cal-v1 — 40 probe columns (24 clear / 16 ambiguous), Laplace-
   # smoothed accuracy over opinionated votes (abstentions excluded), the same estimator
   # as null_semantics. Stratified clear vs ambiguous (the hard, conflicting-cue regime):
-  #   ontology_prior: clear 92% (n=24) | ambiguous 56% (n=16)  → blended 0.762
   #   llm_claim:      clear 100% (n=24) | ambiguous 55% (n=11)  → blended 0.838
+  # ontology_prior was DROPPED (DAT-657): stock/flow is a data-format property the
+  # ontology cannot declare — a concept-seeded prior asserts a format it can't know.
+  # The data-grounded structural witness is the authority; the pool is now
+  # llm_claim + structural_reconciliation. Recall re-validation is a dataraum-eval
+  # follow-up (a witness removal is a calibration change).
   # The ambiguous stratum is where the name-anchored LLM falls to ~chance — so these are
   # FAITHFUL (not the best-case ~1.0 the clear-only corpus measured), NOT tuned to a metric.
   # Small first sample; re-measure over more seeds before treating as final.
@@ -86,11 +90,10 @@ witnesses:
   # rate cleanly separated, 1.000 reconciling vs 0.20-0.40 broken), abstained on
   # every unbacked/flow slot; Laplace over the 7 opinions → 0.889. Small n —
   # widen the corpus before treating as final. Slicing picked series_id on both
-  # tables (the lane-F1 e2e dependency held). ontology_prior/llm_claim re-read
-  # 0.955 here but that is the CLEAR-cue best case — the shipped 0.762/0.838
-  # keep the ambiguous-stratified faithful blend (detection-stockflow-cal-v1).
+  # tables (the lane-F1 e2e dependency held). llm_claim re-read 0.955 here but that
+  # is the CLEAR-cue best case — the shipped 0.838 keeps the ambiguous-stratified
+  # faithful blend (detection-stockflow-cal-v1).
   temporal_behavior:
-    ontology_prior: 0.762
     llm_claim: 0.838
     structural_reconciliation: 0.889
   # relationship_discovery: value_overlap + llm_judgment MEASURED IN CONTRACT

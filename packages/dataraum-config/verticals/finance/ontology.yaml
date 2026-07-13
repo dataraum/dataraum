@@ -23,7 +23,6 @@ concepts:
     exclude_patterns:
       - cost
       - expense
-    temporal_behavior: additive  # Can be summed over periods
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -35,7 +34,6 @@ concepts:
       - cost_of_goods
       - cost_of_sales
       - direct_cost
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     
@@ -47,7 +45,6 @@ concepts:
       - operating_cost
       - sga
       - overhead
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     
@@ -58,7 +55,6 @@ concepts:
       - depr
       - amortization
       - amort
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     
@@ -69,7 +65,6 @@ concepts:
       - interest_expense
       - interest_income
       - finance_cost
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     
@@ -80,7 +75,6 @@ concepts:
       - income_tax
       - tax_expense
       - tax_provision
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     
@@ -150,7 +144,6 @@ concepts:
       - customer_balance
       - ar_paid
       - a/r_paid
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -166,7 +159,6 @@ concepts:
       - vendor_balance
       - ap_paid
       - a/p_paid
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -180,7 +172,6 @@ concepts:
       - wip
       - work_in_progress
       - finished_goods
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
 
@@ -190,7 +181,6 @@ concepts:
       - current_assets
       - short_term_assets
       - liquid_assets
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
 
@@ -200,7 +190,6 @@ concepts:
       - current_liabilities
       - short_term_liabilities
       - current_debt
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
 
@@ -211,7 +200,6 @@ concepts:
       - bank_balance
       - cash_balance
       - cash_equivalents
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -224,7 +212,6 @@ concepts:
       - balance_due
       - remaining_balance
       - unpaid
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -246,7 +233,6 @@ concepts:
       - closing_balance
       - ending_balance
       - beginning_balance
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -259,7 +245,6 @@ concepts:
       - total
       - value
       - price
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -269,7 +254,6 @@ concepts:
     indicators:
       - debit
       - dr
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -279,7 +263,6 @@ concepts:
     indicators:
       - credit
       - cr
-    temporal_behavior: additive
     typical_role: measure
     kind: measure
     unit_from_concept: currency
@@ -294,7 +277,6 @@ concepts:
       - capital
       - retained_earnings
       - net_assets
-    temporal_behavior: point_in_time
     typical_role: measure
     kind: measure
     unit_from_concept: currency

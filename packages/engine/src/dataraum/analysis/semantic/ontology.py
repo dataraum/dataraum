@@ -30,7 +30,6 @@ class OntologyConcept(BaseModel):
     description: str | None = None
     indicators: list[str] = Field(default_factory=list)
     exclude_patterns: list[str] = Field(default_factory=list)
-    temporal_behavior: str | None = None
     typical_role: str | None = None
     typical_values: list[str] = Field(default_factory=list)
     unit_from_concept: str | None = None  # Which concept provides this measure's unit

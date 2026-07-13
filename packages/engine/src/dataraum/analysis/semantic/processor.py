@@ -220,25 +220,22 @@ def persist_column_concepts(
     table_ids: list[str],
     *,
     annotated_by: str,
-    ontology_def: Any = None,
     run_id: str,
 ) -> int:
     """Persist the table agent's catalogue-grain per-column semantics (DAT-637).
 
     Writes ``ColumnConcept`` rows under the begin_session (catalogue head) run.
-    ``temporal_behavior`` is the ontology concept's stock/flow, derived from the
-    authored ``business_concept`` exactly as the legacy per-column path did — but
-    now at catalogue grain, where the concept is authoritative. Run-scoped upsert
-    on ``(column_id, run_id)``; a column the table agent did not bind this run has
-    no row (absent = no concept), and run-scoped reads never see a prior run's.
+    ``temporal_behavior`` is NOT seeded here (DAT-657): stock/flow is a data-format
+    property the ontology cannot declare, so it is left NULL at authoring and
+    written only by the data-grounded resolve pass (``entropy.resolve``). Run-scoped
+    upsert on ``(column_id, run_id)``; a column the table agent did not bind this
+    run has no row (absent = no concept), and run-scoped reads never see a prior
+    run's.
 
     Returns:
         Number of concept rows persisted.
     """
     column_map = load_column_mappings(session, table_ids)
-    concept_temporal = (
-        {c.name: c.temporal_behavior for c in ontology_def.concepts} if ontology_def else {}
-    )
 
     rows: list[dict[str, Any]] = []
     for cc in column_concepts:
@@ -250,9 +247,6 @@ def persist_column_concepts(
                 "column_id": column_id,
                 "run_id": run_id,
                 "business_concept": cc.business_concept,
-                "temporal_behavior": concept_temporal.get(cc.business_concept)
-                if cc.business_concept
-                else None,
                 "unit_source_column": cc.unit_source_column,
                 "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
                 "derived_formula_confidence": cc.derived_formula_confidence,
@@ -840,7 +834,6 @@ def synthesize_and_store_tables(
             enrichment.column_concepts,
             table_ids,
             annotated_by=annotated_by,
-            ontology_def=agent._ontology_loader.load(ontology),
             run_id=run_id,
         )
 

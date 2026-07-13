@@ -1,11 +1,11 @@
-"""Resolved layer for temporal_behavior — ADR-0009 / DAT-445.
+"""Resolved layer for temporal_behavior — ADR-0009 / DAT-445 / DAT-657.
 
 ``resolve_temporal_behavior`` collapses each column's stock/flow adjudication onto
-its ``SemanticAnnotation`` row: ``temporal_behavior`` becomes the pooled-resolved
-value (the ontology prior reconciled with the LLM claim) and
-``temporal_behavior_contested`` records the disagreement. Total ignorance (no
-witness) leaves the ontology backfill untouched. In-memory SQLite, FKs off so we
-skip parent rows — same pattern as the loader tests.
+its ``ColumnConcept`` row: ``temporal_behavior`` becomes the pooled-resolved value
+(the LLM claim reconciled with the data-grounded structural witness — the ontology
+prior was dropped, DAT-657) and ``temporal_behavior_contested`` records the
+disagreement. Total ignorance (no witness) leaves any prior value untouched.
+In-memory SQLite, FKs off so we skip parent rows — same pattern as the loader tests.
 """
 
 from __future__ import annotations
@@ -56,14 +56,14 @@ def _seed_annotation(
     column_id: str,
     run_id: str = _RUN,
     *,
-    ontology_behaviour: str = "point_in_time",
+    behaviour: str = "point_in_time",
 ) -> None:
-    """The ColumnConcept the table agent wrote, carrying the ONTOLOGY prior (DAT-637)."""
+    """The ColumnConcept the table agent wrote; seed a prior temporal_behavior value."""
     session.add(
         ColumnConcept(
             column_id=column_id,
             run_id=run_id,
-            temporal_behavior=ontology_behaviour,
+            temporal_behavior=behaviour,
         )
     )
     session.flush()
@@ -106,7 +106,7 @@ def _read(session: Session, column_id: str, run_id: str = _RUN) -> ColumnConcept
 
 def test_conflict_overwrites_behaviour_and_flags_contested(real_session: Session) -> None:
     """concept said stock, the pool resolved to flow under contest → write both."""
-    _seed_annotation(real_session, "col-a", ontology_behaviour="point_in_time")
+    _seed_annotation(real_session, "col-a", behaviour="point_in_time")
     _seed_object(real_session, "col-a", resolved="additive", contested=True)
 
     updated = resolve_temporal_behavior(real_session, _RUN)
@@ -118,7 +118,7 @@ def test_conflict_overwrites_behaviour_and_flags_contested(real_session: Session
 
 
 def test_uncontested_agreement_writes_behaviour_quietly(real_session: Session) -> None:
-    _seed_annotation(real_session, "col-b", ontology_behaviour="point_in_time")
+    _seed_annotation(real_session, "col-b", behaviour="point_in_time")
     _seed_object(real_session, "col-b", resolved="point_in_time", contested=False)
 
     assert resolve_temporal_behavior(real_session, _RUN) == 1
@@ -127,9 +127,9 @@ def test_uncontested_agreement_writes_behaviour_quietly(real_session: Session) -
     assert row.temporal_behavior_contested is False
 
 
-def test_total_ignorance_leaves_ontology_backfill_untouched(real_session: Session) -> None:
-    """resolved=None (no witness opined) → the ontology prior is preserved, no write."""
-    _seed_annotation(real_session, "col-c", ontology_behaviour="point_in_time")
+def test_total_ignorance_leaves_prior_value_untouched(real_session: Session) -> None:
+    """resolved=None (no witness opined) → any prior value is preserved, no write."""
+    _seed_annotation(real_session, "col-c", behaviour="point_in_time")
     _seed_object(real_session, "col-c", resolved=None, contested=False)
 
     assert resolve_temporal_behavior(real_session, _RUN) == 0
@@ -140,7 +140,7 @@ def test_total_ignorance_leaves_ontology_backfill_untouched(real_session: Sessio
 
 def test_only_this_runs_objects_resolve(real_session: Session) -> None:
     """Run-versioned (DAT-413): an object from another run does not touch this row."""
-    _seed_annotation(real_session, "col-d", run_id=_RUN, ontology_behaviour="point_in_time")
+    _seed_annotation(real_session, "col-d", run_id=_RUN, behaviour="point_in_time")
     _seed_object(real_session, "col-d", resolved="additive", contested=True, run_id="run-other")
 
     assert resolve_temporal_behavior(real_session, _RUN) == 0

@@ -59,11 +59,6 @@ class TestActivityMetricsLoad:
         assert extracts[0].aggregation == aggregation
         assert extracts[0].output_step is True
 
-    def test_standard_fields_resolve(self, loader: GraphLoader) -> None:
-        """account + transaction_amount resolve against the finance ontology (no warnings)."""
-        assert loader.validate_standard_fields("finance") == []
-
-
 class TestActivityMetricsAdditivity:
     """Each aggregation's grounded SQL shape classifies per the DAT-716 doctrine."""
 

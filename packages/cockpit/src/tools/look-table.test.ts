@@ -181,8 +181,9 @@ describe("projectColumnSemantic (DAT-476)", () => {
 function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 	return {
 		detectedEntityType: "transaction",
-		isFactTable: true,
-		isDimensionTable: false,
+		// Raw row carries only the engine's role string now (DAT-728); the
+		// projection derives is_fact_table:true / is_dimension_table:false from "fact".
+		tableRole: "fact",
 		// The engine ALWAYS persists grain as the DICT shape `{"columns": [...]}`
 		// (`analysis/semantic/processor.py`), NOT a bare array — fixture it that way
 		// so the projection's real-shape parse is exercised (the bare-array form

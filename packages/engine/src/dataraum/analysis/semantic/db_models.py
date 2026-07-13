@@ -138,7 +138,11 @@ class Concept(Base):
     typical_role: Mapped[str | None] = mapped_column(String)
     typical_values: Mapped[list[str] | None] = mapped_column(JSON)
     unit_from_concept: Mapped[str | None] = mapped_column(String)
-    is_unit_dimension: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # server_default so the NOT-NULL invariant is DB-enforced, not left to every
+    # write path remembering to set it (a bare INSERT omitting it still lands false).
+    is_unit_dimension: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'frame' | 'teach'
@@ -233,10 +237,12 @@ class ColumnConcept(Base):
             (revenue, accounts_receivable). Cross-cutting — a property of the
             composed catalogue, not one table. None when the column is not a
             genuine discriminator for any concept (grounds via value-sets).
-        temporal_behavior: the ontology concept's stock/flow ('additive' /
-            'point_in_time'), a function of ``business_concept``.
-        temporal_behavior_contested: set by the resolved-layer pass when the
-            object-grain ``temporal_behavior_claim`` and this ontology behavior
+        temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
+            for this column — data-determined (DAT-657), NOT a function of
+            ``business_concept``: the resolved-layer pass writes the LLM claim
+            reconciled with the data-grounded structural witness.
+        temporal_behavior_contested: set by the resolved-layer pass when the LLM's
+            ``temporal_behavior_claim`` and the data-grounded structural witness
             pool to a non-trivial conflict.
         unit_source_column: the column (possibly ``table.column`` via a confirmed
             FK) that defines this measure's unit.

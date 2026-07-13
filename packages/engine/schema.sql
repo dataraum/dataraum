@@ -13,7 +13,7 @@ CREATE TABLE concepts (
 	typical_role VARCHAR, 
 	typical_values JSON, 
 	unit_from_concept VARCHAR, 
-	is_unit_dimension BOOLEAN NOT NULL, 
+	is_unit_dimension BOOLEAN DEFAULT false NOT NULL, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 

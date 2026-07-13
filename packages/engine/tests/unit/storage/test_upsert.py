@@ -13,13 +13,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from dataraum.analysis.semantic.db_models import Concept
 from dataraum.analysis.typing.db_models import TypeDecision
 from dataraum.storage import init_database
-from dataraum.storage.upsert import upsert
+from dataraum.storage.upsert import insert_if_absent, upsert
 
 
 @pytest.fixture
@@ -162,3 +163,48 @@ def test_upsert_multi_row_insert_then_retry(session_factory: Any) -> None:
             r.column_id: r.decided_type for r in session.execute(select(TypeDecision)).scalars()
         }
     assert rows == {"c1": "BIGINT", "c2": "DOUBLE"}
+
+
+def test_insert_if_absent_skips_conflict_on_partial_index(session_factory: Any) -> None:
+    """``insert_if_absent`` skips an active-row conflict (partial index), keeps the
+    incumbent, and reports only the rows it actually inserted (DAT-728 seed contract)."""
+    active_only = text("superseded_at IS NULL")
+    with session_factory() as session:
+        first = insert_if_absent(
+            session,
+            Concept,
+            [
+                {"vertical": "finance", "name": "revenue", "kind": "measure", "source": "seed"},
+                {"vertical": "finance", "name": "cash", "kind": "measure", "source": "seed"},
+            ],
+            index_elements=["vertical", "name"],
+            index_where=active_only,
+        )
+        assert first == 2  # both inserted
+        # Re-insert 'revenue' (active conflict) + a NEW 'cost' → only 'cost' lands;
+        # 'revenue' is skipped, never raises, and the incumbent (source='seed') stays.
+        second = insert_if_absent(
+            session,
+            Concept,
+            [
+                {"vertical": "finance", "name": "revenue", "kind": "entity", "source": "frame"},
+                {"vertical": "finance", "name": "cost", "kind": "measure", "source": "seed"},
+            ],
+            index_elements=["vertical", "name"],
+            index_where=active_only,
+        )
+        assert second == 1  # only 'cost' inserted; 'revenue' skipped
+        session.commit()
+
+    with session_factory() as session:
+        rows = {
+            r.name: (r.kind, r.source)
+            for r in session.execute(
+                select(Concept).where(Concept.superseded_at.is_(None))
+            ).scalars()
+        }
+    assert rows == {
+        "revenue": ("measure", "seed"),  # incumbent kept, NOT overwritten by the frame row
+        "cash": ("measure", "seed"),
+        "cost": ("measure", "seed"),
+    }

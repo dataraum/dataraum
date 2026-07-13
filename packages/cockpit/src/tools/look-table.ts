@@ -297,15 +297,36 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
 /** One `current_table_entities` row, as Drizzle returns it. grainColumns is the
  * persisted grain — the engine writes the DICT shape `{"columns": [...]}`
  * (`semantic/processor.py`), so the parser below accepts that (and tolerates a
- * bare `string[]` for safety). */
+ * bare `string[]` for safety). `tableRole` is the engine's single role string
+ * (DAT-728) — the fact/dimension booleans are derived from it, never stored. */
 export interface TableEntityRow {
 	detectedEntityType: string | null;
-	isFactTable: boolean | null;
-	isDimensionTable: boolean | null;
+	tableRole: string | null;
 	grainColumns: unknown;
 	timeColumns: unknown;
 	identityColumns: unknown;
 	description: string | null;
+}
+
+/**
+ * Derive `is_fact_table` from the engine's `table_role` (DAT-728). The engine
+ * dropped the two `is_fact_table`/`is_dimension_table` booleans for a single role
+ * string ∈ {"fact", "periodic_snapshot", "dimension"} (or NULL = unclassified).
+ * A periodic snapshot IS a fact subtype, so both roles read as a fact; a NULL
+ * role stays null (the tool output keeps the nullable-boolean shape unchanged).
+ */
+export function isFactTableRole(tableRole: string | null): boolean | null {
+	return tableRole == null
+		? null
+		: tableRole === "fact" || tableRole === "periodic_snapshot";
+}
+
+/**
+ * Derive `is_dimension_table` from the engine's `table_role` (DAT-728). Only the
+ * "dimension" role reads as a dimension; a NULL role stays null (unclassified).
+ */
+export function isDimensionTableRole(tableRole: string | null): boolean | null {
+	return tableRole == null ? null : tableRole === "dimension";
 }
 
 // The persisted time-axis shape (DAT-565): the engine writes a JSON list of
@@ -348,8 +369,8 @@ export function projectTableEntity(row: TableEntityRow): TableEntity {
 	const identities = IdentityColumns.safeParse(row.identityColumns);
 	return {
 		entity_type: row.detectedEntityType ?? null,
-		is_fact_table: row.isFactTable ?? null,
-		is_dimension_table: row.isDimensionTable ?? null,
+		is_fact_table: isFactTableRole(row.tableRole),
+		is_dimension_table: isDimensionTableRole(row.tableRole),
 		grain: grain.success ? grain.data.map(stripSrcDigests) : [],
 		// Strip src_<digest> from each axis column; aspect/note pass through.
 		time_columns: times.success
@@ -544,8 +565,7 @@ async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
 	const [row] = await metadataDb
 		.select({
 			detectedEntityType: currentTableEntities.detectedEntityType,
-			isFactTable: currentTableEntities.isFactTable,
-			isDimensionTable: currentTableEntities.isDimensionTable,
+			tableRole: currentTableEntities.tableRole,
 			grainColumns: currentTableEntities.grainColumns,
 			timeColumns: currentTableEntities.timeColumns,
 			identityColumns: currentTableEntities.identityColumns,

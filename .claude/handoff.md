@@ -5,6 +5,80 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-728 — typed concept vocabulary (config→DB) + `ontology_prior` witness drop + 4-way table role
+
+**Branch:** `feat/dat-728-typed-concept-vocabulary`. Three eval-facing changes: a
+`temporal_behavior` witness removal (**re-calibrate stock/flow**), a persisted
+table-role taxonomy (**new `table_roles` oracle surface**), and a concept `kind`
+field (**new `metadata_truth` report surface**). The config→DB move itself is
+structure, not a detector-score change.
+
+### What changed
+
+- **`ontology_prior` witness DROPPED from `temporal_behavior` pooling (DAT-657).**
+  Stock/flow is data-determined — a concept cannot declare a format — so the
+  concept-seeded prior is gone. The pool is now **`llm_claim` + `structural_reconciliation`**
+  only (`entropy/measurements/temporal_behavior.py`; `reliabilities.yaml` lost the
+  `ontology_prior: 0.762` entry). `OntologyConcept.temporal_behavior` and all 18
+  finance-measure `temporal_behavior:` lines are removed. The `debit_balance` case
+  resolves to **flow** via LLM+structural agreement, with **no manufactured conflict**
+  (the prior used to fight the data here). The `temporal_behavior` detector now emits
+  **NO teach suggestion** (the `rebind` teach was redundant with the grounding path —
+  and was the only `rebind` emitter).
+- **4-way table role, PERSISTED.** `TableEntity.is_fact_table`/`is_dimension_table`
+  booleans → one `table_role` column, `TableRole` ∈ {`fact`, `periodic_snapshot`,
+  `dimension`} (`analysis/semantic/db_models.py::derive_table_role`, computed at
+  classification from is-fact ∧ grain∩time, persisted by `processor.py`). The
+  additivity COUNT rule (`graphs/additivity_resolver.py::_fact_is_snapshot`) reads the
+  **persisted** subtype now, not a re-derivation. (Bridge is DEFERRED to DAT-747 — not
+  in this enum.)
+- **Concept vocabulary is a typed `concepts` table (config→DB).** The shipped
+  `ontology.yaml` is the SEED (normalized to rows at connect via
+  `ensure_concepts_seeded`); runtime reads the typed table (`load_workspace_concepts`),
+  not YAML⊕overlay. The `config_overlay(type='concept'/'concept_property'/'rebind')`
+  family is retired READ+WRITE. New required concept field **`kind`** (`ConceptKind` ∈
+  {measure, entity, dimension, unit}) — declared in `finance/ontology.yaml` (22
+  concepts) and produced by the cockpit frame induction.
+
+### For eval (calibration to run)
+
+- **Re-calibrate stock/flow — a witness was removed, so this is a real calibration
+  change, not a re-baseline.** Recall must be re-validated on the generative
+  stock/flow corpus (`detection-stockflow-*`): the two surviving witnesses
+  (`llm_claim` 0.838, `structural_reconciliation` 0.889) now carry the full pool.
+  `trial_balance.debit_balance/credit_balance` must STILL resolve **`additive` (flow)**
+  — but now via structural+LLM agreement, not a prior override. Keep the
+  **witness-liveness guard** (structural fired on ≥1 column); a 0/N is the regression
+  signature. Confirm no stock/flow label REGRESSES from dropping the prior (the prior
+  was a name-anchored vote; its removal should only remove name-anchoring errors).
+- **New `table_roles` oracle.** `table_role` is now a first-class persisted verdict
+  (`fact` / `periodic_snapshot` / `dimension`). Add/point the oracle at it:
+  `trial_balance` → `periodic_snapshot`, `journal_lines` → `fact`, the dimension
+  tables → `dimension`. The additivity matrix's semi-additive (stock-over-snapshot)
+  verdicts now trace to this persisted subtype.
+- **New concept `kind` surface for `metadata_truth`.** Each grounded concept carries a
+  `kind`; a `metadata_truth.yaml` concept-kind report can assert the seeded finance
+  kinds (revenue → measure, account → entity, fiscal_period → dimension, currency →
+  unit). This is the config→DB seed's ground truth.
+
+### testdata hints
+
+No new fixtures required — the finance corpus already exercises all three (the
+`trial_balance` periodic snapshot, the stock/flow measures, the seeded finance
+concepts). Directional: a periodic-snapshot fact with a clear grain∩time is what
+distinguishes `periodic_snapshot` from `fact`; a concept-only framed vertical (no
+validations/cycles/metrics) is the fixture that would exercise the new typed-concept
+framed-vertical detection (`core/vertical.py`), though that path is finance-agnostic.
+
+### Cross-package / schema
+
+`schema.sql` gained the `concepts` table + `og_concepts` graph element and changed
+`table_entities` (dropped the two booleans, added `table_role`); the cockpit drizzle
+mirror is regenerated (`schema-drift` CI enforces). The cockpit `frame` stage writes
+`concepts` rows directly (a granted control-write surface).
+
+---
+
 ## DAT-699 follow-up — judge-declined relationships cut at the source
 
 **Branch:** `fix/dat-699-cut-declined-rels-at-source`. The systemic version of the

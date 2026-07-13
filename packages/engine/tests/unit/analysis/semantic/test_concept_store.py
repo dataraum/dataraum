@@ -55,6 +55,43 @@ def test_seed_is_idempotent(session: Session) -> None:
     assert len(_kinds(session, "finance")) == 22
 
 
+def test_seed_does_not_clobber_a_frame_edit(session: Session) -> None:
+    """A frame edit (supersede + insert a new active row) survives a re-seed.
+
+    The re-seed's ``ON CONFLICT DO NOTHING`` skips the concept whose active row is
+    the frame edit — the seed never overwrites a user's declared concept, and never
+    RAISES on the collision. This is the race-safety contract (the old read-then-
+    insert would ``IntegrityError`` here under concurrency)."""
+    assert ensure_concepts_seeded(session, "finance") == 22
+    # Simulate a frame edit of 'revenue': supersede the seed row, insert a new
+    # active row (a different concept_id, source='frame', an edited description).
+    session.execute(
+        update(Concept)
+        .where(
+            Concept.vertical == "finance",
+            Concept.name == "revenue",
+            Concept.superseded_at.is_(None),
+        )
+        .values(superseded_at=datetime.now(UTC))
+    )
+    session.add(
+        Concept(
+            vertical="finance",
+            name="revenue",
+            kind="measure",
+            description="user-edited revenue",
+            source="frame",
+        )
+    )
+    session.flush()
+    # Re-seed: 'revenue' collides on the active partial-unique index → skipped, no
+    # error; every other concept already present is likewise skipped.
+    assert ensure_concepts_seeded(session, "finance") == 0
+    active = {c.name: c for c in load_workspace_concepts(session, "finance").concepts}
+    assert active["revenue"].description == "user-edited revenue"  # frame edit kept
+    assert len(active) == 22
+
+
 def test_seed_born_loud_on_missing_kind(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     bad = OntologyDefinition(name="x", concepts=[OntologyConcept(name="foo")])  # no kind
     loader = MagicMock()

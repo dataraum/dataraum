@@ -15,7 +15,9 @@ both write.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from typing import Any
+
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import Concept, ConceptKind
@@ -25,6 +27,7 @@ from dataraum.analysis.semantic.ontology import (
     OntologyLoader,
 )
 from dataraum.core.logging import get_logger
+from dataraum.storage.upsert import insert_if_absent
 
 logger = get_logger(__name__)
 
@@ -35,10 +38,14 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
     """Idempotently seed the shipped vertical's concepts as typed rows.
 
     Reads the vertical's YAML definition (the seed source) and inserts a typed
-    :class:`Concept` row for every concept that has no active row yet — so a
-    re-run is a no-op and a ``frame`` edit (which supersedes) is never clobbered.
-    Born-loud when a seeded concept declares no valid ``kind``: the config is
-    wrong, not the data. Returns the number of rows seeded.
+    :class:`Concept` row for every concept with no active row yet, via
+    ``INSERT … ON CONFLICT DO NOTHING`` on the active-row partial-unique index —
+    so a re-run is a no-op, a ``frame`` edit (which supersedes) is never clobbered,
+    AND it is race-safe: a concurrent seed (a Temporal at-least-once retry landing
+    beside its still-running original) or a concurrent ``frame`` write can no longer
+    collide on the index (the old read-then-insert had a TOCTOU window). Born-loud
+    when a seeded concept declares no valid ``kind``: the config is wrong, not the
+    data. Returns the number of rows actually inserted (conflicts skipped).
 
     A framed vertical (no on-disk YAML) seeds nothing here — its concepts arrive
     through ``frame``'s typed writes, not the shipped seed.
@@ -46,40 +53,37 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
     definition = OntologyLoader().load(vertical)
     if definition is None:
         return 0
-    existing = {
-        name
-        for (name,) in session.execute(
-            select(Concept.name).where(
-                Concept.vertical == vertical, Concept.superseded_at.is_(None)
-            )
-        )
-    }
-    seeded = 0
+    rows: list[dict[str, Any]] = []
     for c in definition.concepts:
-        if c.name in existing:
-            continue
         if not c.kind or c.kind not in _VALID_KINDS:
             raise ValueError(
                 f"concept '{c.name}' in vertical '{vertical}' declares no valid kind "
                 f"(got {c.kind!r}); one of {sorted(_VALID_KINDS)} is required to seed."
             )
-        session.add(
-            Concept(
-                vertical=vertical,
-                name=c.name,
-                kind=c.kind,
-                description=c.description,
-                indicators=c.indicators or None,
-                exclude_patterns=c.exclude_patterns or None,
-                typical_role=c.typical_role,
-                typical_values=c.typical_values or None,
-                unit_from_concept=c.unit_from_concept,
-                is_unit_dimension=c.is_unit_dimension,
-                source="seed",
-            )
+        rows.append(
+            {
+                "vertical": vertical,
+                "name": c.name,
+                "kind": c.kind,
+                "description": c.description,
+                "indicators": c.indicators or None,
+                "exclude_patterns": c.exclude_patterns or None,
+                "typical_role": c.typical_role,
+                "typical_values": c.typical_values or None,
+                "unit_from_concept": c.unit_from_concept,
+                "is_unit_dimension": c.is_unit_dimension,
+                "source": "seed",
+            }
         )
-        seeded += 1
-    session.flush()
+    if not rows:
+        return 0
+    seeded = insert_if_absent(
+        session,
+        Concept,
+        rows,
+        index_elements=["vertical", "name"],
+        index_where=text("superseded_at IS NULL"),
+    )
     if seeded:
         logger.info("concepts_seeded", vertical=vertical, count=seeded)
     return seeded

@@ -208,7 +208,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 			{
 				tableId: "t_orders",
 				detectedEntityType: "transaction",
-				isFactTable: true,
+				tableRole: "fact",
 				detectedAt: new Date("2026-06-01T00:00:00Z"),
 			},
 		];
@@ -222,13 +222,13 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 			{
 				tableId: "t_orders",
 				detectedEntityType: "transaction",
-				isFactTable: true,
+				tableRole: "fact",
 				detectedAt: new Date("2026-06-01T00:00:00Z"),
 			},
 			{
 				tableId: "t_items",
 				detectedEntityType: "reference",
-				isFactTable: false,
+				tableRole: "dimension",
 				detectedAt: new Date("2026-06-01T00:00:00Z"),
 			},
 		];
@@ -337,7 +337,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 			{
 				tableId: "t_orders",
 				detectedEntityType: "transaction",
-				isFactTable: true,
+				tableRole: "fact",
 				detectedAt: new Date("2026-06-01T00:00:00Z"),
 			},
 		];
@@ -382,13 +382,13 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 				{
 					tableId: "t_orders",
 					detectedEntityType: "reference",
-					isFactTable: false,
+					tableRole: "dimension",
 					detectedAt: t1,
 				},
 				{
 					tableId: "t_orders",
 					detectedEntityType: "transaction",
-					isFactTable: true,
+					tableRole: "fact",
 					detectedAt: t2,
 				},
 			];
@@ -403,13 +403,13 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 				{
 					tableId: "t_orders",
 					detectedEntityType: "transaction",
-					isFactTable: true,
+					tableRole: "fact",
 					detectedAt: t2,
 				},
 				{
 					tableId: "t_orders",
 					detectedEntityType: "reference",
-					isFactTable: false,
+					tableRole: "dimension",
 					detectedAt: t1,
 				},
 			];

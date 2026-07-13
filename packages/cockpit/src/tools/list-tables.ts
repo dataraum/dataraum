@@ -33,6 +33,7 @@ import {
 } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
 import { fileName } from "../lib/file-uri";
+import { isFactTableRole } from "./look-table";
 import { pickCurrentRow } from "./readiness-grain";
 
 // The calibrated bands the engine emits (entropy_readiness.band). A column with
@@ -182,7 +183,9 @@ export interface ColumnBandRow {
 export interface TableEntityRow {
 	tableId: string;
 	detectedEntityType: string | null;
-	isFactTable: boolean | null;
+	// The engine's single role string (DAT-728) — `is_fact` is derived from it via
+	// isFactTableRole; the two booleans no longer exist on the row.
+	tableRole: string | null;
 	detectedAt: Date | null;
 }
 
@@ -323,7 +326,7 @@ export function buildInventory(
 			// classified this table (pre-session, or a table the session didn't
 			// reach).
 			entity_type: entity?.detectedEntityType ?? null,
-			is_fact: entity?.isFactTable ?? null,
+			is_fact: isFactTableRole(entity?.tableRole ?? null),
 			enriched_views: {
 				count: view_names.length,
 				view_names,
@@ -438,7 +441,7 @@ export async function listTables(
 		.select({
 			tableId: currentTableEntities.tableId,
 			detectedEntityType: currentTableEntities.detectedEntityType,
-			isFactTable: currentTableEntities.isFactTable,
+			tableRole: currentTableEntities.tableRole,
 			detectedAt: currentTableEntities.detectedAt,
 		})
 		.from(currentTableEntities)

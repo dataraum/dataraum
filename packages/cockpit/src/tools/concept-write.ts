@@ -53,6 +53,13 @@ export interface ConceptWriteInput {
  * workspace-stable surrogate minted here). `source='frame'` marks it user-declared
  * (vs the engine's `source='seed'`), which is how a concept-only framed vertical is
  * recognized (core.vertical's framed-concept resolver).
+ *
+ * Concurrency: the supersede + insert is ONE transaction, so the partial-unique
+ * index (≤1 active row per (vertical, name)) is the invariant. If a concurrent
+ * write (another edit, or the engine's first-run seed) races the same key, one
+ * transaction's INSERT hits the index and the WHOLE transaction rolls back — the
+ * incumbent active row is preserved, never a partial supersede-with-no-replacement.
+ * The loser surfaces a transient error to retry; there is no corruption.
  */
 export async function writeConcept(
 	input: ConceptWriteInput,

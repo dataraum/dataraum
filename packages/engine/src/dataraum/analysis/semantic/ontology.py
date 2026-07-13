@@ -2,9 +2,12 @@
 
 Loads ontology definitions from config/verticals/<vertical>/ontology.yaml
 through the shared :class:`~dataraum.core.vertical_loader.VerticalLoader`
-(DAT-481), so the workspace's active overlay rows (DAT-343; ``concept`` and
-``concept_property`` types per DAT-371) are merged onto the baked-in YAML.
-Custom ``verticals_dir`` (test fixtures) bypasses the overlay — deterministic.
+(DAT-481). The concept vocabulary moved config→DB (DAT-728): concepts are no
+longer overlay rows — the shipped YAML is the seed for the typed ``concepts``
+table (``concept_store``), which the runtime reads. This loader resolves the
+baked-in YAML ⊕ the surviving overlay families (validation/cycle/metric); a
+framed vertical resolves its concepts as EMPTY here (they live in the typed
+table). Custom ``verticals_dir`` (test fixtures) bypasses the overlay.
 """
 
 from __future__ import annotations

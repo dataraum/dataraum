@@ -174,8 +174,7 @@ describe("TableReadinessWidget (DAT-350)", () => {
 	// alongside grain / time, with the per-item note on hover.
 	const entity: NonNullable<LookTableResult["entity"]> = {
 		entity_type: "transaction",
-		is_fact_table: true,
-		is_dimension_table: false,
+		table_role: "fact",
 		grain: ["order_id", "line_no"],
 		time_columns: [],
 		identity_columns: [

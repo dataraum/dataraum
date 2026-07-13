@@ -450,8 +450,7 @@ describe("formatDrivers", () => {
 function entity(overrides: Partial<TableEntity> = {}): TableEntity {
 	return {
 		entity_type: "transaction",
-		is_fact_table: true,
-		is_dimension_table: false,
+		table_role: "fact",
 		grain: ["OrderID"],
 		time_columns: [{ column: "OrderDate", aspect: "order", note: "Placed." }],
 		identity_columns: [
@@ -486,8 +485,7 @@ describe("formatEntities (DAT-607)", () => {
 				address: entAddr("wwi_suppliers"),
 				entity: entity({
 					entity_type: "suppliers",
-					is_fact_table: false,
-					is_dimension_table: true,
+					table_role: "dimension",
 					grain: ["SupplierID"],
 					time_columns: [],
 					identity_columns: [],
@@ -506,14 +504,34 @@ describe("formatEntities (DAT-607)", () => {
 				address: entAddr("t"),
 				entity: entity({
 					entity_type: "thing",
-					is_fact_table: false,
-					is_dimension_table: false,
+					table_role: null,
 					time_columns: [],
 					identity_columns: [],
 				}),
 			},
 		]);
 		expect(noKind).toContain("Table lake.typed.t — thing:");
+	});
+
+	it("surfaces a periodic_snapshot verbatim (DAT-728) — not flattened to 'fact'", () => {
+		// The additivity-critical distinction the answer agent needs: a period-end
+		// snapshot (e.g. trial_balance) must not be summed across periods like an
+		// event fact. The role is rendered with the underscore spaced for reading.
+		const snap = formatEntities([
+			{
+				address: entAddr("trial_balance"),
+				entity: entity({
+					entity_type: "balance",
+					table_role: "periodic_snapshot",
+					grain: ["account_id", "period"],
+					time_columns: [],
+					identity_columns: [],
+				}),
+			},
+		]);
+		expect(snap).toContain(
+			"Table lake.typed.trial_balance — balance (periodic snapshot):",
+		);
 	});
 
 	it("drops a table with no grain/time/identity signal", () => {

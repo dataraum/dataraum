@@ -732,11 +732,12 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 			);
 		// A table with no grain/time/identity is noise for SQL grounding — drop it.
 		if (lines.length === 0) continue;
-		const kind = entity.is_fact_table
-			? "fact"
-			: entity.is_dimension_table
-				? "dimension"
-				: null;
+		// The engine's full role, verbatim (DAT-728): "fact" | "periodic snapshot"
+		// | "dimension". A periodic snapshot is a period-end level the agent must
+		// NOT sum across periods (unlike an event fact) — surfaced, not flattened.
+		const kind = entity.table_role
+			? entity.table_role.replace(/_/g, " ")
+			: null;
 		const head = entity.entity_type
 			? `Table ${address} — ${entity.entity_type}${kind ? ` (${kind})` : ""}:`
 			: `Table ${address}${kind ? ` (${kind})` : ""}:`;

@@ -123,8 +123,12 @@ const IdentityColumn = z.object({
 
 const TableEntity = z.object({
 	entity_type: z.string().nullable(),
-	is_fact_table: z.boolean().nullable(),
-	is_dimension_table: z.boolean().nullable(),
+	// The engine's single role string (DAT-728) ∈ {"fact", "periodic_snapshot",
+	// "dimension"} or null (unclassified). Surfaced verbatim — NOT flattened to a
+	// fact/dimension boolean — so the answer agent sees "periodic_snapshot" (a
+	// period-end snapshot that must not be summed across periods, unlike a plain
+	// event fact), the additivity-relevant distinction IP2 added.
+	table_role: z.string().nullable(),
 	// The column names that uniquely identify a row (the table's grain).
 	grain: z.array(z.string()),
 	// Every event-time axis the table records, each labelled + described.
@@ -298,7 +302,7 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
  * persisted grain — the engine writes the DICT shape `{"columns": [...]}`
  * (`semantic/processor.py`), so the parser below accepts that (and tolerates a
  * bare `string[]` for safety). `tableRole` is the engine's single role string
- * (DAT-728) — the fact/dimension booleans are derived from it, never stored. */
+ * (DAT-728), surfaced verbatim on the tool output. */
 export interface TableEntityRow {
 	detectedEntityType: string | null;
 	tableRole: string | null;
@@ -309,24 +313,17 @@ export interface TableEntityRow {
 }
 
 /**
- * Derive `is_fact_table` from the engine's `table_role` (DAT-728). The engine
- * dropped the two `is_fact_table`/`is_dimension_table` booleans for a single role
- * string ∈ {"fact", "periodic_snapshot", "dimension"} (or NULL = unclassified).
- * A periodic snapshot IS a fact subtype, so both roles read as a fact; a NULL
- * role stays null (the tool output keeps the nullable-boolean shape unchanged).
+ * Coarse `is_fact` from the engine's `table_role` (DAT-728) — for the workspace
+ * inventory's fact/dim grouping only. The engine role string ∈ {"fact",
+ * "periodic_snapshot", "dimension"} (or NULL = unclassified); a periodic snapshot
+ * IS a fact subtype, so both read as a fact, a NULL role stays null. Agent-facing
+ * surfaces (look_table, the answer-agent entities block) carry the full role
+ * string instead of this flattened boolean.
  */
 export function isFactTableRole(tableRole: string | null): boolean | null {
 	return tableRole == null
 		? null
 		: tableRole === "fact" || tableRole === "periodic_snapshot";
-}
-
-/**
- * Derive `is_dimension_table` from the engine's `table_role` (DAT-728). Only the
- * "dimension" role reads as a dimension; a NULL role stays null (unclassified).
- */
-export function isDimensionTableRole(tableRole: string | null): boolean | null {
-	return tableRole == null ? null : tableRole === "dimension";
 }
 
 // The persisted time-axis shape (DAT-565): the engine writes a JSON list of
@@ -369,8 +366,7 @@ export function projectTableEntity(row: TableEntityRow): TableEntity {
 	const identities = IdentityColumns.safeParse(row.identityColumns);
 	return {
 		entity_type: row.detectedEntityType ?? null,
-		is_fact_table: isFactTableRole(row.tableRole),
-		is_dimension_table: isDimensionTableRole(row.tableRole),
+		table_role: row.tableRole ?? null,
 		grain: grain.success ? grain.data.map(stripSrcDigests) : [],
 		// Strip src_<digest> from each axis column; aspect/note pass through.
 		time_columns: times.success

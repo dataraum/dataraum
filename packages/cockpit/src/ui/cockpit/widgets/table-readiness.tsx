@@ -66,16 +66,25 @@ function TableBandSummary({ band }: { band: TableReadiness }) {
 
 // The table descriptive header (DAT-476) — the cockpit analog of MCP
 // `look(target="table")`'s entity block: what kind of table this is (fact /
-// dimension), its grain, its time column, and a short description. Rendered above
-// the per-column grid; only present once a begin_session detect run has promoted
-// (else `entity` is null and this is skipped). Additive — it colors/labels the
-// engine-persisted values, never recomputes them.
+// periodic snapshot / dimension), its grain, its time column, and a short
+// description. Rendered above the per-column grid; only present once a
+// begin_session detect run has promoted (else `entity` is null and this is
+// skipped). Additive — it colors/labels the engine-persisted values, never
+// recomputes them.
+const TABLE_ROLE_LABEL: Record<string, string> = {
+	fact: "Fact table",
+	periodic_snapshot: "Periodic snapshot",
+	dimension: "Dimension table",
+};
+
 function TableEntityHeader({ entity }: { entity: TableEntity }) {
-	// The kind chips read straight from the persisted flags; an entity with neither
-	// flag set (a plain table) shows no kind chip rather than a misleading one.
+	// The kind chip reads straight from the persisted role (DAT-728); an
+	// unclassified table (null role) shows no kind chip rather than a misleading one.
 	const kinds: string[] = [];
-	if (entity.is_fact_table) kinds.push("Fact table");
-	if (entity.is_dimension_table) kinds.push("Dimension table");
+	const roleLabel = entity.table_role
+		? TABLE_ROLE_LABEL[entity.table_role]
+		: undefined;
+	if (roleLabel) kinds.push(roleLabel);
 	return (
 		<Stack gap={4} data-testid="canvas-table-readiness-entity">
 			<Group gap="xs" align="center" wrap="wrap">

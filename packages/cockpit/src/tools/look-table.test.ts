@@ -181,8 +181,8 @@ describe("projectColumnSemantic (DAT-476)", () => {
 function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 	return {
 		detectedEntityType: "transaction",
-		// Raw row carries only the engine's role string now (DAT-728); the
-		// projection derives is_fact_table:true / is_dimension_table:false from "fact".
+		// Raw row carries the engine's role string (DAT-728); the projection
+		// surfaces it verbatim as table_role, never flattened to a boolean.
 		tableRole: "fact",
 		// The engine ALWAYS persists grain as the DICT shape `{"columns": [...]}`
 		// (`analysis/semantic/processor.py`), NOT a bare array — fixture it that way
@@ -208,8 +208,7 @@ describe("projectTableEntity (DAT-476)", () => {
 	it("maps the descriptive header through, grain from the engine's {columns:[…]} dict", () => {
 		expect(projectTableEntity(entityRow())).toEqual({
 			entity_type: "transaction",
-			is_fact_table: true,
-			is_dimension_table: false,
+			table_role: "fact",
 			grain: ["order_id", "line_no"],
 			time_columns: [
 				{
@@ -411,7 +410,7 @@ describe("projectLookTable (DAT-433)", () => {
 		expect(out.pending_teaches).toBe(2);
 		// The entity header carries straight through (DAT-476).
 		expect(out.entity?.entity_type).toBe("transaction");
-		expect(out.entity?.is_fact_table).toBe(true);
+		expect(out.entity?.table_role).toBe("fact");
 		expect(out.entity?.grain).toEqual(["order_id", "line_no"]);
 		// The digest appears ONLY in the sanctioned physical_name (the run_sql
 		// round-trip key) — nowhere else in the projection.

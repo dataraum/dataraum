@@ -16,7 +16,10 @@ from types import ModuleType
 
 from sqlalchemy import func, select
 
-from dataraum.analysis.semantic.ontology import OntologyLoader
+from dataraum.analysis.semantic.concept_store import (
+    ensure_concepts_seeded,
+    load_workspace_concepts,
+)
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
 from dataraum.core.vertical import VerticalKind, available_verticals, resolve_vertical
@@ -147,18 +150,19 @@ class SemanticPerColumnPhase(BasePhase):
                 "Frame this vertical (cockpit `frame`) or pick an existing one."
             )
 
-        # Cold-start fail-loud (DAT-382, generalized for framed verticals): a
-        # vertical whose concepts come only from the cockpit frame stage's
-        # overlay rows — `_adhoc` or any framed vertical — grounds against zero
-        # concepts (a silent no-op) if frame never ran. Curated builtins like
-        # finance ship concepts on disk and pass. Load the configured vertical
-        # and refuse when it resolves to no concepts, naming the missing step.
-        resolved = OntologyLoader().load(ontology)
-        if resolved is None or not resolved.concepts:
+        # Config→DB (DAT-728): seed the shipped vertical's concepts into the typed
+        # `concepts` table (idempotent — a re-run or a frame edit is never
+        # clobbered), then read the workspace vocabulary from it. A builtin like
+        # finance seeds from its shipped ontology; a framed vertical seeds nothing
+        # here and relies on frame's typed writes.
+        ensure_concepts_seeded(ctx.session, ontology)
+        # Cold-start fail-loud (DAT-382, generalized): grounding against zero
+        # concepts is a silent no-op. Refuse it, naming the missing step.
+        if not load_workspace_concepts(ctx.session, ontology).concepts:
             return PhaseResult.failed(
-                f"No concepts found for vertical '{ontology}' — grounding requires the "
-                "frame stage to declare concepts first (cockpit `frame` writes them as "
-                "`concept` overlay rows). Run frame before add_source."
+                f"No concepts for vertical '{ontology}' — grounding requires concepts in "
+                "the typed `concepts` table. A builtin seeds from its shipped ontology; a "
+                "framed vertical needs the cockpit `frame` stage to declare them first."
             )
 
         grounding = ground_columns(

@@ -59,6 +59,10 @@ DROP VIEW IF EXISTS __READ__.columns;
 CREATE VIEW __READ__.columns AS
 SELECT * FROM __WS__.columns;
 
+DROP VIEW IF EXISTS __READ__.concepts;
+CREATE VIEW __READ__.concepts AS
+SELECT * FROM __WS__.concepts;
+
 DROP VIEW IF EXISTS __READ__.config_overlay;
 CREATE VIEW __READ__.config_overlay AS
 SELECT * FROM __WS__.config_overlay;

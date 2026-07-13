@@ -826,12 +826,14 @@ def build_execution_context(
     conventions: str = ""
     if vertical:
         try:
+            from dataraum.analysis.semantic.concept_store import load_workspace_concepts
             from dataraum.analysis.semantic.ontology import OntologyLoader
 
-            loader = OntologyLoader()
-            ontology = loader.load(vertical)
+            # Concepts from the typed vocabulary table (DAT-728, config→DB);
+            # conventions still come from YAML (not config→DB in this phase).
+            ontology = load_workspace_concepts(session, vertical)
             concept_vocabulary = _format_concept_vocabulary(ontology)
-            conventions = loader.format_conventions_for_prompt(ontology, "extraction")
+            conventions = OntologyLoader().format_conventions_for_prompt(ontology, "extraction")
         except Exception as e:
             logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
 

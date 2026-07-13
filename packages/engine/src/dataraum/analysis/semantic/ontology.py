@@ -22,6 +22,11 @@ class OntologyConcept(BaseModel):
     """A concept within an ontology."""
 
     name: str
+    # The ontological kind (DAT-728): measure|entity|dimension|unit. The seed
+    # normalizes this into the typed ``concepts`` table; a seeded concept without a
+    # kind is a config error (validated born-loud at seed time, not here — an empty
+    # framed vertical parses fine and declares its kinds through ``frame``).
+    kind: str | None = None
     description: str | None = None
     indicators: list[str] = Field(default_factory=list)
     exclude_patterns: list[str] = Field(default_factory=list)

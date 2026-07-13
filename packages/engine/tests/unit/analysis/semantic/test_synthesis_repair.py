@@ -75,8 +75,15 @@ def _agent_with(provider: MagicMock, monkeypatch) -> SemanticAgent:
     config.limits.max_output_tokens_per_request = 4000
     agent.config = config  # type: ignore[attr-defined]
 
+    # Concepts now come from the typed table via load_workspace_concepts (DAT-728);
+    # stub it non-empty so synthesis proceeds. The loader survives only as the
+    # prompt formatter.
+    ontology_def = MagicMock()
+    ontology_def.concepts = [MagicMock()]
+    monkeypatch.setattr(
+        "dataraum.analysis.semantic.agent.load_workspace_concepts", lambda s, v: ontology_def
+    )
     ontology_loader = MagicMock()
-    ontology_loader.load.return_value = object()
     ontology_loader.format_concepts_for_prompt.return_value = ""
     agent._ontology_loader = ontology_loader  # type: ignore[attr-defined]
 

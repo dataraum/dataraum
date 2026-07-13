@@ -2,6 +2,26 @@
 -- Source of truth: the SQLAlchemy models (storage.base.load_all_models).
 -- Schema-less on purpose: apply with search_path set to the target ws_<id>.
 
+CREATE TABLE concepts (
+	concept_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	kind VARCHAR NOT NULL, 
+	description TEXT, 
+	indicators JSON, 
+	exclude_patterns JSON, 
+	typical_role VARCHAR, 
+	typical_values JSON, 
+	unit_from_concept VARCHAR, 
+	is_unit_dimension BOOLEAN NOT NULL, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_concepts PRIMARY KEY (concept_id)
+);
+
+CREATE UNIQUE INDEX uq_concept_active ON concepts (vertical, name) WHERE superseded_at IS NULL;
+
 CREATE TABLE config_overlay (
 	overlay_id VARCHAR NOT NULL, 
 	type VARCHAR NOT NULL, 

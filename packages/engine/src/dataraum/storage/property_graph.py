@@ -69,6 +69,7 @@ PROPERTY_GRAPH_NAME = "operating_model"
 _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_tables",
     "og_columns",
+    "og_concepts",
     "og_references",
     "og_has_dimension",
     "og_derived_from",
@@ -120,6 +121,17 @@ def _element_view_sql(name: str) -> str:
             f"LEFT JOIN {READ_TOKEN}.current_column_concepts cc ON cc.column_id = c.column_id\n"
             f"LEFT JOIN {READ_TOKEN}.current_measure_aggregation_lineage mal\n"
             f"       ON mal.measure_column_id = c.column_id;"
+        )
+    if name == "og_concepts":
+        # Concept vertex: the workspace's typed vocabulary (DAT-728). Active rows
+        # only (superseded_at IS NULL) — the partial-unique index makes concept_id
+        # unique among them, so it is a valid KEY. The vocabulary edges
+        # (grounded_by, part_of) arrive in later phases; the vertex stands alone here.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_concepts AS\n"
+            f"SELECT concept_id::text AS concept_id, vertical, name, kind\n"
+            f"FROM {READ_TOKEN}.concepts\n"
+            f"WHERE superseded_at IS NULL;"
         )
     if name == "og_references":
         # refs edge (table → table): the detected FK topology. relationship_id is
@@ -185,7 +197,9 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (table_id, table_name, layer, is_fact_table,\n"
         f"                  is_dimension_table, detected_entity_type),\n"
         f"    {READ_TOKEN}.og_columns KEY (column_id) LABEL column_node\n"
-        f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization)\n"
+        f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),\n"
+        f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
+        f"      PROPERTIES (concept_id, vertical, name, kind)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"

@@ -23,6 +23,7 @@ from dataraum.analysis.relationships.graph_topology import (
     GraphStructure,
     analyze_graph_topology,
 )
+from dataraum.analysis.semantic.concept_store import load_workspace_concepts
 from dataraum.analysis.semantic.models import (
     EntityDetection,
     Relationship,
@@ -136,12 +137,9 @@ class SemanticAgent(LLMFeature):
         samples = sampler.prepare_samples(profiles)
         tables_json = self._build_tables_json(profiles, samples)
 
-        ontology_def = self._ontology_loader.load(ontology)
-        if ontology_def is None:
-            available = self._ontology_loader.list_verticals()
-            return Result.fail(
-                f"Vertical '{ontology}' not found. Available verticals: {available}."
-            )
+        ontology_def = load_workspace_concepts(session, ontology)
+        if not ontology_def.concepts:
+            return Result.fail(f"Vertical '{ontology}' has no concepts.")
 
         graph_structure: GraphStructure | None = None
         if relationship_candidates:

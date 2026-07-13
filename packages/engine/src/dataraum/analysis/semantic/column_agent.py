@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.semantic.concept_store import load_workspace_concepts
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
 )
@@ -106,11 +107,11 @@ class ColumnAnnotationAgent(LLMFeature):
         # Build tables JSON (reuse SemanticAgent's method)
         tables_json = self._build_tables_json(profiles, samples)
 
-        # Load ontology
-        ontology_def = self._ontology_loader.load(ontology)
-        if ontology_def is None:
-            available = self._ontology_loader.list_verticals()
-            return Result.fail(f"Vertical '{ontology}' not found. Available: {available}")
+        # Concepts from the typed vocabulary table (DAT-728, config→DB); the
+        # loader below is retained only as the prompt formatter.
+        ontology_def = load_workspace_concepts(session, ontology)
+        if not ontology_def.concepts:
+            return Result.fail(f"Vertical '{ontology}' has no concepts to ground against.")
 
         context = {
             "tables_json": json.dumps(tables_json),

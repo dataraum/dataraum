@@ -6,6 +6,7 @@ Contains database models for semantic annotations and entity detection.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -15,9 +16,11 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,6 +28,85 @@ from dataraum.storage import Base
 
 if TYPE_CHECKING:
     from dataraum.storage import Column, Table
+
+
+class ConceptKind(StrEnum):
+    """The ontological kind of a concept (DAT-728).
+
+    The typed vocabulary axis the flat ``config_overlay`` JSON lacked. Distinct
+    from a column's ``semantic_role`` (a data-detected per-column property) and
+    from ``typical_role`` (a grounding-prompt hint): ``kind`` is the concept's own
+    type, authored in the vertical and seeded into the ``concepts`` table.
+
+    - ``MEASURE`` — is aggregated (revenue, debit, account_balance).
+    - ``ENTITY`` — names a table's grain (account, entity, customer).
+    - ``DIMENSION`` — slices measures (fiscal_period, region, account_type).
+    - ``UNIT`` — units other measures (currency).
+    """
+
+    MEASURE = "measure"
+    ENTITY = "entity"
+    DIMENSION = "dimension"
+    UNIT = "unit"
+
+
+class Concept(Base):
+    """The workspace's typed concept vocabulary — one home (DAT-728).
+
+    Replaces the opaque ``config_overlay(type='concept')`` JSON + the runtime read
+    of the shipped ``ontology.yaml`` as the single home for a workspace's concept
+    vocabulary (config→DB). The shipped vertical is the *seed* (normalized into
+    typed rows at connect); the pipeline enriches these rows; ``frame`` writes
+    declared/edited rows through the same table (the cockpit's Drizzle mirror).
+
+    **Identity contract — NOT run-versioned.** A concept is a stable node keyed by
+    ``(vertical, name)``; ``concept_id`` is a workspace-stable surrogate minted
+    once at seed, NOT a fresh per-run uuid. The run-versioned groundings
+    (:class:`ColumnConcept`) reference a concept by its stable ``(vertical, name)``
+    key — the run axis lives on the grounding, never on the concept node. Edits
+    supersede rather than collide: an edit writes a new row and stamps the prior
+    ``superseded_at``; the partial-unique index keeps at most one *active* row per
+    ``(vertical, name)`` so a head-free read is unambiguous (no
+    ``MultipleResultsFound``). Workspace identity is the ``ws_<id>`` schema itself,
+    as with ``config_overlay`` — no ``workspace_id`` column.
+    """
+
+    __tablename__ = "concepts"
+    __table_args__ = (
+        # At most one ACTIVE row per (vertical, name); superseded history rows are
+        # exempt (superseded_at IS NOT NULL). Postgres partial unique index — the
+        # deterministic-single-active-row guarantee the head-free reads rely on.
+        Index(
+            "uq_concept_active",
+            "vertical",
+            "name",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+    )
+
+    concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # ConceptKind
+
+    description: Mapped[str | None] = mapped_column(Text)
+    indicators: Mapped[list[str] | None] = mapped_column(JSON)
+    exclude_patterns: Mapped[list[str] | None] = mapped_column(JSON)
+    # A grounding-prompt hint (measure|dimension|timestamp|key) — the concept's
+    # typical column role, distinct from the ontological ``kind`` above.
+    typical_role: Mapped[str | None] = mapped_column(String)
+    typical_values: Mapped[list[str] | None] = mapped_column(JSON)
+    unit_from_concept: Mapped[str | None] = mapped_column(String)
+    is_unit_dimension: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'frame' | 'teach'
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class SemanticAnnotation(Base):
@@ -201,6 +283,8 @@ class TableEntity(Base):
 
 
 __all__ = [
+    "Concept",
+    "ConceptKind",
     "SemanticAnnotation",
     "TableEntity",
 ]

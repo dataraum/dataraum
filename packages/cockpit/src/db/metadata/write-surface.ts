@@ -2,10 +2,11 @@
 //
 // The generated mirror (./schema.ts) introspects the promoted-READ schema —
 // views only, by design: the cockpit_reader role cannot SELECT raw run-stamped
-// tables. But three un-versioned CONTROL tables are deliberate cockpit writes:
+// tables. But four un-versioned CONTROL tables are deliberate cockpit writes:
 //
 //   sources         — register a data source before addSourceWorkflow
 //   config_overlay  — the teach vocabulary IS overlay rows
+//   concepts        — the typed concept vocabulary `frame` declares/edits (DAT-728)
 //   sql_snippets    — save-on-clean grows the snippet library (DAT-486)
 //
 // (DAT-506 removed `investigation_sessions` — the engine dropped the table + its
@@ -18,7 +19,9 @@
 // stay the source of truth for the full shapes.
 
 import {
+	boolean,
 	integer,
+	json,
 	jsonb,
 	pgSchema,
 	text,
@@ -65,6 +68,29 @@ export const configOverlayWrite = rawSchema.table("config_overlay", {
 	overlayId: varchar("overlay_id").primaryKey(),
 	type: varchar("type").notNull(),
 	payload: jsonb("payload").notNull(),
+	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+	supersededAt: timestamp("superseded_at", { mode: "date" }),
+});
+
+/** Raw `concepts` — the typed concept vocabulary (DAT-728, config→DB). `frame`
+ * declares/edits concepts as an edit = supersede active (UPDATE superseded_at) +
+ * INSERT a new active row; the readiness count SELECTs active rows. Only the
+ * columns the cockpit writes/reads — the engine SQLAlchemy `Concept` model owns
+ * the full shape (identity `concept_id` minted here as a uuid; `source='frame'`).
+ * The list columns are engine `JSON` (not JSONB); `is_unit_dimension` is NOT NULL. */
+export const conceptsWrite = rawSchema.table("concepts", {
+	conceptId: varchar("concept_id").primaryKey(),
+	vertical: varchar("vertical").notNull(),
+	name: varchar("name").notNull(),
+	kind: varchar("kind").notNull(),
+	description: text("description"),
+	indicators: json("indicators").$type<string[]>(),
+	excludePatterns: json("exclude_patterns").$type<string[]>(),
+	typicalRole: varchar("typical_role"),
+	typicalValues: json("typical_values").$type<string[]>(),
+	unitFromConcept: varchar("unit_from_concept"),
+	isUnitDimension: boolean("is_unit_dimension").notNull(),
+	source: varchar("source"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 	supersededAt: timestamp("superseded_at", { mode: "date" }),
 });

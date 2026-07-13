@@ -5,9 +5,11 @@
 // This is where induction LEAVES the engine (per the agent-tier boundary,
 // DD/27688962): the cockpit `frame` stage runs induction on the connect schema
 // + samples (DAT-381's `ConnectSchema`) via the TanStack AI SDK +
-// `@tanstack/ai-anthropic`, co-designs the user's model with them, and writes
-// the declared model as `config_overlay` rows — the same seam `teach` writes
-// through (Drizzle metadata client).
+// `@tanstack/ai-anthropic`, co-designs the user's model with them, and writes the
+// declared model to the engine-owned ws_<id> schema (Drizzle metadata client).
+// Concepts go to the typed `concepts` table (DAT-728, config→DB — a supersede +
+// insert per concept); validations/cycles/metrics still write `config_overlay`
+// rows through the `teach` seam.
 //
 // `frame` frames the WHOLE model in ONE call: the business
 // `concepts` AND the executable knowledge over them — `validations` (DAT-469),
@@ -37,6 +39,7 @@ import {
 	getFrameValidationsInstructions,
 } from "../prompts";
 import { AgentActionableError } from "./agent-error";
+import { CONCEPT_KINDS, writeConcept } from "./concept-write";
 import { CycleSpecSchema, type ShippedCycleSpec } from "./cycle-spec";
 import {
 	formatSeedExamples,
@@ -82,14 +85,23 @@ function resolveVertical(name?: string | null): string {
 }
 
 // One induced/declared business concept. Mirrors the engine's `OntologyConcept`
-// (packages/engine/.../analysis/semantic/ontology.py) and the `concept` teach
-// payload (teach.validation.ts) MINUS `vertical`, which `frame` fixes to the
-// resolved vertical on write. The model fills this via the structured-output call.
+// (packages/engine/.../analysis/semantic/ontology.py) MINUS `vertical`, which
+// `frame` fixes to the resolved vertical on write. The model fills this via the
+// structured-output call, and frame writes it as a typed `concepts` row (DAT-728,
+// config→DB — no longer a `concept` overlay teach). `temporal_behavior` was dropped
+// (DAT-657): stock/flow is data-determined, not a concept-declared format.
 export const ProposedConcept = z.object({
 	name: z
 		.string()
 		.min(1)
 		.describe("lowercase_snake_case identifier, e.g. revenue, customer_id"),
+	kind: z
+		.enum(CONCEPT_KINDS)
+		.describe(
+			'the concept\'s ontological kind: "measure" (a summable/aggregatable ' +
+				'quantity), "entity" (a business object like account or customer), ' +
+				'"dimension" (a descriptive axis), or "unit" (defines units for measures)',
+		),
 	description: z
 		.string()
 		.optional()
@@ -102,10 +114,6 @@ export const ProposedConcept = z.object({
 		.array(z.string())
 		.optional()
 		.describe("substrings that should NOT match this concept"),
-	temporal_behavior: z
-		.string()
-		.optional()
-		.describe('"additive" or "point_in_time"'),
 	typical_role: z
 		.string()
 		.optional()
@@ -166,9 +174,10 @@ const InducedMetrics = z.object({
 	metrics: z.array(ProposedMetric),
 });
 
-// One written concept + the overlay row id it landed as.
+// One written concept + the typed `concepts` row id it landed as (DAT-728 — a
+// concept_id, not an overlay_id, now that concepts are typed rows).
 const FrameConceptResult = ProposedConcept.extend({
-	overlay_id: z.string(),
+	concept_id: z.string(),
 });
 export type FrameConceptResult = z.infer<typeof FrameConceptResult>;
 
@@ -385,23 +394,27 @@ export async function frame(
 	const vertical = resolveVertical(input.vertical_name);
 
 	// Concepts are the vocabulary the rest of the model is framed over, so they
-	// resolve first. Mirror teach's concept write: type="concept", vertical-tagged
-	// payload — the engine's _apply_concept (core/overlay.py) materializes these
-	// onto the named vertical's ontology, keyed/replaced by `name`.
-	const concepts = await frameFamily<ProposedConcept>({
-		teachType: "concept",
-		itemSchema: ProposedConcept,
-		induce: (sig) => induceConcepts(schema, sig),
-		toPayload: (c) => ({ vertical, ...stripUndefined(c) }),
-		edited: input.concepts,
-		signal,
-	});
+	// resolve first. Config→DB (DAT-728): concepts are written as typed `concepts`
+	// rows (an edit = supersede active + insert new), NOT `concept` overlay teaches
+	// — the engine seeds/reads the same table. Each row's `concept_id` returns for
+	// the ModelFrame widget.
+	const conceptItems =
+		input.concepts !== undefined
+			? input.concepts.map((c) => ProposedConcept.parse(c))
+			: await induceConcepts(schema, signal);
 
-	if (concepts.items.length === 0) {
+	if (conceptItems.length === 0) {
 		throw new AgentActionableError(
 			"Frame induction returned no concepts — nothing to declare.",
 		);
 	}
+
+	const writtenConcepts: FrameConceptResult[] = [];
+	for (const c of conceptItems) {
+		const { concept_id } = await writeConcept({ vertical, ...c });
+		writtenConcepts.push({ ...c, concept_id });
+	}
+	const concepts = { items: conceptItems, written: writtenConcepts };
 
 	// Acquire the workspace's vertical (DAT-523) as soon as the concepts are
 	// confirmed — BEFORE the optional validation/cycle/metric families — so the

@@ -106,123 +106,14 @@ const UnitPayload = z
 	})
 	.passthrough();
 
-const ConceptPropertyPayload = z
-	.object({
-		vertical: z
-			.string()
-			.min(1)
-			.describe(
-				"The vertical the concept lives in, e.g. 'finance' or '_adhoc'.",
-			),
-		concept: z
-			.string()
-			.min(1)
-			.describe("The concept name to patch, e.g. 'revenue'."),
-		property: z
-			.string()
-			.min(1)
-			.describe("The concept field to set, e.g. 'temporal_behavior'."),
-		value: z.unknown().describe("The new value for that property."),
-	})
-	.passthrough();
-
-// `rebind` re-grounds a single COLUMN onto a different concept (DAT-517): the
-// engine (_apply_rebind, core/overlay.py) appends the column NAME to the target
-// concept's `indicators`, so the next run's grounding prompt re-grounds it. It's
-// the column-grain sibling of concept_property (which patches the concept itself):
-// concept_property fixes a concept's attribute for ALL its columns; rebind moves
-// ONE column to the right concept. It's the lever for the `temporal_behavior`
-// detector's ignorance branch (it emits a `rebind` suggestion when a column is
-// bound to the wrong concept). The merge key is the column NAME: last rebind per
-// column wins, so a re-taught column lands only on its newest target concept.
-// `vertical` scopes the row to the loading vertical; `table` is advisory only.
-const RebindPayload = z
-	.object({
-		vertical: z
-			.string()
-			.min(1)
-			.describe(
-				"The vertical the target concept lives in, e.g. 'finance' or '_adhoc'.",
-			),
-		concept: z
-			.string()
-			.min(1)
-			.describe("The concept to re-ground the column onto, e.g. 'revenue'."),
-		column: z
-			.string()
-			.min(1)
-			.describe("The column NAME to re-ground (not a column id)."),
-		table: z
-			.string()
-			.optional()
-			.describe(
-				"Advisory context — the table the column lives in (not used as a key).",
-			),
-	})
-	.passthrough();
-
-// Mirrors OntologyConcept (packages/engine/.../analysis/semantic/ontology.py).
-// Used both by user teach AND by the engine's cold-start _adhoc induction
-// (DAT-371), which inserts one `concept` row per induced concept instead of
-// writing YAML. Required: vertical + name; the rest mirrors the OntologyConcept
-// fields and is optional. passthrough() lets the applier accept new optional
-// fields without lock-step cockpit edits.
-const ConceptPayload = z
-	.object({
-		vertical: z
-			.string()
-			.min(1)
-			.describe(
-				"The vertical to define the concept under, e.g. 'finance' or '_adhoc'.",
-			),
-		name: z
-			.string()
-			.min(1)
-			.describe(
-				"lowercase_snake_case identifier, e.g. 'revenue', 'customer_id'.",
-			),
-		description: z
-			.string()
-			.optional()
-			.describe(
-				"One sentence: what this concept represents in business terms.",
-			),
-		indicators: z
-			.array(z.string())
-			.optional()
-			.describe(
-				"Column-name substrings that suggest this concept, e.g. ['revenue','sales'].",
-			),
-		exclude_patterns: z
-			.array(z.string())
-			.optional()
-			.describe("Substrings that should NOT match this concept."),
-		temporal_behavior: z
-			.string()
-			.optional()
-			.describe(
-				"'additive' (summable over time) or 'point_in_time' (snapshot).",
-			),
-		typical_role: z
-			.string()
-			.optional()
-			.describe("'measure' | 'dimension' | 'timestamp' | 'key'."),
-		typical_values: z
-			.array(z.string())
-			.optional()
-			.describe("Example values this concept's columns hold."),
-		unit_from_concept: z
-			.string()
-			.optional()
-			.describe(
-				"Name of the concept providing this measure's unit, e.g. 'currency'.",
-			),
-		is_unit_dimension: z
-			.boolean()
-			.optional()
-			.describe("True if this concept defines units for other measures."),
-	})
-	.passthrough();
+// Concept declaration/editing is NO LONGER a teach type (DAT-728, config→DB): the
+// concept vocabulary is a typed `concepts` table the `frame` stage writes directly
+// (tools/concept-write.ts), not `config_overlay` rows. The retired trio —
+// `concept` (declare), `concept_property` (patch a field, e.g. the DAT-657-removed
+// temporal_behavior), and `rebind` (append a column to a concept's indicators) —
+// all collapse into a typed concept write (declare = insert; edit = supersede +
+// insert). DAT-738 rebuilds the conversational/agent concept-authoring surface on
+// that typed path.
 
 // validation/cycle/metric overlays ARE applied — the engine's overlay
 // appliers (_apply_validation/_apply_cycle/_apply_metric, DAT-438..466) feed
@@ -306,9 +197,6 @@ const TYPE_SCHEMAS = {
 	type_pattern: TypePatternPayload,
 	null_value: NullValuePayload,
 	unit: UnitPayload,
-	concept: ConceptPayload,
-	concept_property: ConceptPropertyPayload,
-	rebind: RebindPayload,
 	relationship: RelationshipPayload,
 	hierarchy: HierarchyPayload,
 	// validation/cycle/metric are NOT advertised to the agent (see
@@ -327,19 +215,16 @@ export type TeachType = keyof typeof TYPE_SCHEMAS;
 
 export const TEACH_TYPES = Object.keys(TYPE_SCHEMAS) as readonly TeachType[];
 
-// What STAGE's generic `teach` TOOL advertises to the agent (narrowed DAT-647):
-// the CATALOGUE-grain corrections a begin_session re-run realizes — column MEANING
-// (concept / concept_property / rebind) + topology (relationship / hierarchy). The
-// MECHANICAL, typing-grain teaches (type_pattern / null_value / unit) live on
-// CONNECT (CONNECT_TEACH_TYPES), whose add_source `replay` is what realizes them —
-// STAGE's begin_session does not re-run typing, so advertising them here would
-// invite teaches this chat cannot re-ground (the same grain mismatch DAT-647 fixed
-// on the detector side). validation/cycle/metric stay excluded — the typed teach_*
+// What STAGE's generic `teach` TOOL advertises to the agent (narrowed DAT-647,
+// DAT-728): the CATALOGUE-grain corrections a begin_session re-run realizes —
+// topology (relationship / hierarchy). Column MEANING (the concept vocabulary) is
+// no longer taught here: config→DB (DAT-728) moved it to the typed `concepts` table
+// the `frame` stage writes; DAT-738 rebuilds the conversational concept-authoring
+// surface on that typed path. The MECHANICAL, typing-grain teaches (type_pattern /
+// null_value / unit) live on CONNECT (CONNECT_TEACH_TYPES), whose add_source
+// `replay` realizes them. validation/cycle/metric stay excluded — the typed teach_*
 // tools own those. One way to teach each thing; one surface per grain.
 export const AGENT_TEACH_TYPES = [
-	"concept",
-	"concept_property",
-	"rebind",
 	"relationship",
 	"hierarchy",
 ] as const satisfies readonly TeachType[];
@@ -347,11 +232,9 @@ export const AGENT_TEACH_TYPES = [
 // What CONNECT advertises (DAT-597; narrowed DAT-647): the add_source grounding
 // layer ONLY — the teaches whose effect an add_source `replay` can actually
 // realize. That is the MECHANICAL, typing-grain set: type_pattern, null_value,
-// and the value-carried `unit` (all land at the typing phase). The CATALOGUE-grain
-// teaches (concept / concept_property / rebind) author `ColumnConcept` at
-// begin_session, so an add_source replay cannot re-ground them — they live on
-// STAGE (which runs begin_session → operating_model), the same grain-mismatch
-// DAT-647 fixed on the detector side. Column MEANING is taught in STAGE, not here.
+// and the value-carried `unit` (all land at the typing phase). Column MEANING (the
+// concept vocabulary) is not taught here either — config→DB (DAT-728) moved it to
+// the typed `concepts` table the `frame` stage writes, not an add_source replay.
 export const CONNECT_TEACH_TYPES = [
 	"type_pattern",
 	"null_value",
@@ -369,9 +252,9 @@ export const CONNECT_TEACH_TYPES = [
 //   type_pattern → type_fidelity   (a value-format regex)
 //   null_value   → null_semantics   (a null token)
 //   unit         → unit_entropy      (a column's unit)
-// Everything else (concept/concept_property/relationship/hierarchy + the
-// operating-model declarations) stays human-surfaced. The grounding-teach activity
-// offers the agent ONLY these via the constrained grounding-teach tool.
+// Everything else (relationship/hierarchy + the operating-model declarations, and
+// the concept vocabulary now on the typed frame path) stays human-surfaced. The
+// grounding-teach activity offers the agent ONLY these via the constrained tool.
 export const AGENT_AUTOAPPLY_TEACH_TYPES = [
 	"type_pattern",
 	"null_value",
@@ -381,20 +264,18 @@ export const AGENT_AUTOAPPLY_TEACH_TYPES = [
 export type AutoApplyTeachType = (typeof AGENT_AUTOAPPLY_TEACH_TYPES)[number];
 
 // The payload shape surfaced in the teach TOOL's input schema — a union of ONLY
-// the agent-advertised (AGENT_TEACH_TYPES) payloads, so `toJSONSchema` dumps each
-// type's exact fields into the schema the model sees. Anthropic's tool
-// input_schema must be a top-level object, so this rides inside the `payload`
-// property (not a top-level discriminated union). No GenericPayload branch: the
-// agent only sends the five typed shapes; validation/cycle/metric reach the
-// write primitive via their typed tools, never through this schema.
+// the agent-advertised payloads across both tools (STAGE: relationship/hierarchy;
+// CONNECT: type_pattern/null_value/unit), so `toJSONSchema` dumps each type's exact
+// fields into the schema the model sees. Anthropic's tool input_schema must be a
+// top-level object, so this rides inside the `payload` property (not a top-level
+// discriminated union). No GenericPayload branch: the agent only sends these typed
+// shapes; validation/cycle/metric reach the write primitive via their typed tools,
+// and the concept vocabulary is written via the typed frame path (DAT-728).
 export const TeachPayloadSchema = z
 	.union([
 		TypePatternPayload,
 		NullValuePayload,
 		UnitPayload,
-		ConceptPayload,
-		ConceptPropertyPayload,
-		RebindPayload,
 		RelationshipPayload,
 		HierarchyPayload,
 	])
@@ -403,10 +284,6 @@ export const TeachPayloadSchema = z
 			"type_pattern: {name, pattern, inferred_type?, …}; " +
 			"null_value: {category, value}; " +
 			"unit: {table, column, unit} (column identified by NAME); " +
-			"concept: {vertical, name, indicators?, …}; " +
-			"concept_property: {vertical, concept, property, value}; " +
-			"rebind: {vertical, concept, column, table?} (re-ground ONE column onto a " +
-			"different concept, by column NAME); " +
 			"relationship: {action: confirm|reject|add, from_column_id, to_column_id} " +
 			"(keep is engine-internal, not a user action); " +
 			"hierarchy: {action: add|reject|alias, table_id, members}.",

@@ -145,184 +145,6 @@ describe("validateTeach", () => {
 		});
 	});
 
-	describe("concept", () => {
-		it("accepts vertical+name (minimal)", () => {
-			const out = validateTeach({
-				type: "concept",
-				payload: { vertical: "_adhoc", name: "revenue" },
-			});
-			expect(out.vertical).toBe("_adhoc");
-			expect(out.name).toBe("revenue");
-		});
-
-		it("accepts the full OntologyConcept shape", () => {
-			const out = validateTeach({
-				type: "concept",
-				payload: {
-					vertical: "_adhoc",
-					name: "revenue",
-					description: "Total income",
-					indicators: ["revenue", "sales", "income"],
-					exclude_patterns: ["cost", "expense"],
-					temporal_behavior: "additive",
-					typical_role: "measure",
-					typical_values: ["10000", "20000"],
-					unit_from_concept: "currency",
-					is_unit_dimension: false,
-				},
-			});
-			expect(out.indicators).toEqual(["revenue", "sales", "income"]);
-			expect(out.typical_role).toBe("measure");
-			expect(out.is_unit_dimension).toBe(false);
-		});
-
-		it("rejects missing vertical", () => {
-			expect(() =>
-				validateTeach({
-					type: "concept",
-					payload: { name: "revenue" },
-				}),
-			).toThrow(TeachValidationError);
-		});
-
-		it("rejects missing name", () => {
-			expect(() =>
-				validateTeach({
-					type: "concept",
-					payload: { vertical: "_adhoc" },
-				}),
-			).toThrow(TeachValidationError);
-		});
-
-		it("rejects empty vertical", () => {
-			expect(() =>
-				validateTeach({
-					type: "concept",
-					payload: { vertical: "", name: "revenue" },
-				}),
-			).toThrow(TeachValidationError);
-		});
-
-		it("rejects a non-object payload (must be a dict)", () => {
-			expect(() =>
-				validateTeach({ type: "concept", payload: "just a string" }),
-			).toThrow(TeachValidationError);
-		});
-
-		it("passes through extra optional fields", () => {
-			// Mirrors passthrough() — the applier can accept new fields without
-			// a code change in the cockpit.
-			const out = validateTeach({
-				type: "concept",
-				payload: {
-					vertical: "_adhoc",
-					name: "revenue",
-					some_future_field: "ok",
-				},
-			});
-			expect(out.some_future_field).toBe("ok");
-		});
-	});
-
-	describe("concept_property", () => {
-		it("accepts vertical+concept+property+value", () => {
-			const out = validateTeach({
-				type: "concept_property",
-				payload: {
-					vertical: "finance",
-					concept: "revenue",
-					property: "typical_role",
-					value: "measure",
-				},
-			});
-			expect(out.vertical).toBe("finance");
-			expect(out.property).toBe("typical_role");
-		});
-
-		it("accepts a non-string value (the property is JSON)", () => {
-			const out = validateTeach({
-				type: "concept_property",
-				payload: {
-					vertical: "finance",
-					concept: "revenue",
-					property: "indicators",
-					value: ["rev", "revenue", "total_revenue"],
-				},
-			});
-			expect(out.value).toEqual(["rev", "revenue", "total_revenue"]);
-		});
-
-		it("rejects missing vertical", () => {
-			expect(() =>
-				validateTeach({
-					type: "concept_property",
-					payload: {
-						concept: "revenue",
-						property: "typical_role",
-						value: "measure",
-					},
-				}),
-			).toThrow(TeachValidationError);
-		});
-	});
-
-	describe("rebind", () => {
-		it("accepts {vertical, concept, column} (DAT-517 column re-grounding)", () => {
-			// Engine consumer: _apply_rebind keys on {column, concept} and appends
-			// the column to the target concept's indicators (last rebind per column wins).
-			const out = validateTeach({
-				type: "rebind",
-				payload: {
-					vertical: "finance",
-					concept: "revenue",
-					column: "net_sales",
-				},
-			});
-			expect(out.concept).toBe("revenue");
-			expect(out.column).toBe("net_sales");
-		});
-
-		it("accepts an optional advisory table", () => {
-			const out = validateTeach({
-				type: "rebind",
-				payload: {
-					vertical: "finance",
-					concept: "revenue",
-					column: "net_sales",
-					table: "income_statement",
-				},
-			});
-			expect(out.table).toBe("income_statement");
-		});
-
-		it("rejects a missing column", () => {
-			expect(() =>
-				validateTeach({
-					type: "rebind",
-					payload: { vertical: "finance", concept: "revenue" },
-				}),
-			).toThrow(TeachValidationError);
-		});
-
-		it("rejects a missing concept", () => {
-			expect(() =>
-				validateTeach({
-					type: "rebind",
-					payload: { vertical: "finance", column: "net_sales" },
-				}),
-			).toThrow(TeachValidationError);
-		});
-
-		it("rejects a missing vertical", () => {
-			expect(() =>
-				validateTeach({
-					type: "rebind",
-					payload: { concept: "revenue", column: "net_sales" },
-				}),
-			).toThrow(TeachValidationError);
-		});
-	});
-
 	describe("relationship", () => {
 		it("accepts {action, from_column_id, to_column_id} (DAT-409 directional pair)", () => {
 			// Engine consumer: load_suppressed_relationship_pairs +
@@ -429,16 +251,15 @@ describe("validateTeach", () => {
 
 	describe("dispatch", () => {
 		it("TEACH_TYPES exposes every wired type (incl. internal-only delegated types)", () => {
+			// The concept family (concept/concept_property/rebind) was retired in
+			// DAT-728 — the concept vocabulary is a typed table the frame stage writes.
 			expect(new Set(TEACH_TYPES)).toEqual(
 				new Set([
 					"type_pattern",
 					"null_value",
 					"unit",
-					"concept_property",
-					"rebind",
 					"relationship",
 					"hierarchy",
-					"concept",
 					"validation",
 					"cycle",
 					"metric",
@@ -447,25 +268,25 @@ describe("validateTeach", () => {
 		});
 
 		it("AGENT_TEACH_TYPES advertises only STAGE's catalogue-grain corrections", () => {
-			// STAGE (begin_session) teaches column MEANING + topology. The mechanical
-			// typing-grain teaches (type_pattern/null_value/unit) moved to CONNECT
-			// (add_source replay realizes them, DAT-647); the operating-model
-			// declarations (validation/cycle/metric) are owned by the typed teach_*
-			// tools. One way to teach each thing; one surface per grain.
+			// STAGE (begin_session) teaches TOPOLOGY (relationship/hierarchy). Column
+			// MEANING moved off teach entirely — the concept vocabulary is declared in
+			// the frame stage's typed write (DAT-728), rebuilt conversationally by
+			// DAT-738. The mechanical typing-grain teaches (type_pattern/null_value/unit)
+			// are CONNECT's (add_source replay realizes them, DAT-647); the
+			// operating-model declarations (validation/cycle/metric) are owned by the
+			// typed teach_* tools. One way to teach each thing; one surface per grain.
 			expect(new Set(AGENT_TEACH_TYPES)).toEqual(
-				new Set([
-					"concept",
-					"concept_property",
-					"rebind",
-					"relationship",
-					"hierarchy",
-				]),
+				new Set(["relationship", "hierarchy"]),
 			);
 			// Mechanical typing teaches are CONNECT's, not STAGE's (DAT-647).
 			for (const t of ["type_pattern", "null_value", "unit"]) {
 				expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(t);
 			}
 			for (const t of ["validation", "cycle", "metric", "explanation"]) {
+				expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(t);
+			}
+			// The retired concept family is no longer a teach type at all.
+			for (const t of ["concept", "concept_property", "rebind"]) {
 				expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(t);
 			}
 		});

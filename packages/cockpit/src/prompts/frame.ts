@@ -10,7 +10,7 @@
 // second-person, `<tag>`-structured sections. The frame agent forces a single
 // structured-output call (a Zod `outputSchema`) so the model returns proposed
 // concepts directly; the user accepts/edits them in the ModelFrame widget
-// before they are written as `concept` overlay rows.
+// before they are written as typed `concepts` rows (DAT-728, config→DB).
 
 /**
  * The frame induction instructions. Describes the OntologyConcept field set the
@@ -26,16 +26,17 @@ Identify the business domain and propose concepts that capture what exists in th
 
 <concept_fields>
 - name: lowercase_snake_case identifier (e.g. "revenue", "customer_id", "order_date")
+- kind (REQUIRED): the concept's ontological kind — one of "measure" (a summable/aggregatable quantity, e.g. revenue, cost), "entity" (a business object, e.g. account, customer, product), "dimension" (a descriptive/categorical axis, e.g. region, fiscal_period), or "unit" (defines units for measures, e.g. currency). Distinct from typical_role below.
 - description: one sentence explaining what this concept represents in business terms
 - indicators: column name substrings that suggest this concept (e.g. ["revenue", "sales", "income"])
-- temporal_behavior: "additive" (can be summed over time, e.g. revenue) or "point_in_time" (snapshot, e.g. balance), otherwise omit
-- typical_role: "measure" (numeric for aggregation), "dimension" (categorical for grouping), "timestamp" (temporal), or "key" (identifier), otherwise omit
+- typical_role: the typical COLUMN role — "measure" (numeric for aggregation), "dimension" (categorical for grouping), "timestamp" (temporal), or "key" (identifier), otherwise omit
 - unit_from_concept: name of another concept that provides the unit for this measure (e.g. "currency" for monetary values), otherwise omit
 - is_unit_dimension: true if this concept defines units for other measures (e.g. currency, unit_of_measure)
 </concept_fields>
 
 <guidelines>
 - Propose 8-25 concepts depending on data complexity
+- Every concept MUST declare a kind (measure / entity / dimension / unit)
 - Cover all tables — every table should have at least one concept match
 - Include both measures (what we count/sum) and dimensions (how we group)
 - Include temporal concepts if date/time columns exist

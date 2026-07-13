@@ -16,14 +16,14 @@ import { runTeachTool } from "./teach";
 
 describe("runTeachTool error surface (review-batch)", () => {
 	it("returns a structured {error} on a TeachValidationError (malformed payload)", async () => {
-		// `concept` requires a vertical — omitting it throws TeachValidationError
+		// `null_value` requires a category — omitting it throws TeachValidationError
 		// inside validateTeach, before any DB call.
 		const out = await runTeachTool({
-			type: "concept",
-			payload: { name: "revenue" },
+			type: "null_value",
+			payload: { value: "N/A" },
 		});
 		expect(out).toHaveProperty("error");
-		expect((out as { error: string }).error).toMatch(/vertical/i);
+		expect((out as { error: string }).error).toMatch(/category/i);
 	});
 
 	it("rethrows a non-validation error (e.g. DB failure) instead of masking it", async () => {
@@ -32,8 +32,8 @@ describe("runTeachTool error surface (review-batch)", () => {
 		// that must propagate, not be swallowed into {error}.
 		await expect(
 			runTeachTool({
-				type: "concept",
-				payload: { vertical: "_adhoc", name: "revenue" },
+				type: "null_value",
+				payload: { category: "standard_nulls", value: "N/A" },
 			}),
 		).rejects.toThrow();
 	});

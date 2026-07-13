@@ -341,13 +341,23 @@ class ConnectionManager:
         # SQLite test substrate has no read surface.
         if self._engine.dialect.name == "postgresql":
             from dataraum.core.settings import get_settings
+            from dataraum.storage.property_graph import (
+                drop_property_graph,
+                materialize_property_graph,
+            )
             from dataraum.storage.read_views import (
                 ensure_reader_role,
                 materialize_read_schema,
             )
 
             with self._engine.begin() as conn:
+                # The operating-model property graph (ADR-0021) binds the current_*
+                # views through its element views; both MUST be torn down before the
+                # read-view refresh (Postgres refuses to drop a view a graph/view
+                # depends on) and rebuilt after it.
+                drop_property_graph(conn, schema_name)
                 materialize_read_schema(conn, schema_name)
+                materialize_property_graph(conn, schema_name)
                 ensure_reader_role(
                     conn,
                     schema_name,

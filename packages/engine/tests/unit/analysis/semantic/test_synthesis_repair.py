@@ -48,9 +48,7 @@ def _response(tool_input: dict | None) -> MagicMock:
 def _provider(*responses: MagicMock) -> MagicMock:
     provider = MagicMock()
     provider.get_model_for_tier.side_effect = lambda tier: "model-x"
-    provider.converse.side_effect = [
-        MagicMock(unwrap=MagicMock(return_value=r)) for r in responses
-    ]
+    provider.converse.side_effect = [MagicMock(unwrap=MagicMock(return_value=r)) for r in responses]
     return provider
 
 

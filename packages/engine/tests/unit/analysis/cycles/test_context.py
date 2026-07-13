@@ -103,7 +103,7 @@ def two_tables_two_runs(session):
                 run_id=run_id,
                 detected_entity_type="fact" if is_fact else "dimension",
                 description=desc,
-                is_fact_table=is_fact,
+                table_role="fact" if is_fact else "dimension",
             )
         )
     session.commit()
@@ -151,7 +151,7 @@ def test_scopes_to_pinned_run(session, two_tables_two_runs) -> None:
 
     entities = ctx["entity_classifications"]
     assert len(entities) == 1
-    assert entities[0]["is_fact_table"] is True
+    assert entities[0]["table_role"] == "fact"
     assert entities[0]["description"] == "CURRENT classification"
 
 

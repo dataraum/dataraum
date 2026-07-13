@@ -30,7 +30,7 @@ from dataraum.analysis.relationships.graph_topology import (
     format_graph_structure_for_context,
 )
 from dataraum.analysis.relationships.utils import load_defined_relationships
-from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -181,8 +181,7 @@ def build_cycle_detection_context(
             "table_name": table_name,
             "entity_type": ent.detected_entity_type,
             "description": ent.description,
-            "is_fact_table": ent.is_fact_table,
-            "is_dimension_table": ent.is_dimension_table,
+            "table_role": ent.table_role,
             "grain_columns": ent.grain_columns,
         }
         for ent, table_name in entities
@@ -376,9 +375,13 @@ def build_cycle_detection_context(
         "derived_relationships_found": len(derived_list),
         "temporal_columns": len(context["temporal_profiles"]),
         "enriched_views": len(enriched_list),
-        "fact_tables": sum(1 for e in context["entity_classifications"] if e["is_fact_table"]),
+        "fact_tables": sum(
+            1
+            for e in context["entity_classifications"]
+            if e["table_role"] in (TableRole.FACT, TableRole.PERIODIC_SNAPSHOT)
+        ),
         "dimension_tables": sum(
-            1 for e in context["entity_classifications"] if e["is_dimension_table"]
+            1 for e in context["entity_classifications"] if e["table_role"] == TableRole.DIMENSION
         ),
         "graph_pattern": graph_structure.pattern,
     }
@@ -525,13 +528,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     # Entity classifications
     lines.append("## TABLE CLASSIFICATIONS")
     for ent in context.get("entity_classifications", []):
-        table_type = (
-            "FACT"
-            if ent["is_fact_table"]
-            else "DIMENSION"
-            if ent["is_dimension_table"]
-            else "OTHER"
-        )
+        table_type = (ent.get("table_role") or "other").upper()
         table_info = context["tables"]
         row_count = next(
             (t["row_count"] for t in table_info if t["table_name"] == ent["table_name"]),

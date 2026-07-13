@@ -259,8 +259,7 @@ class TestSynthesizeAndStoreTables:
                             entity_type="orders",
                             confidence=0.9,
                             grain_columns=["order_id"],
-                            is_fact_table=True,
-                            is_dimension_table=False,
+                            table_role="fact",
                             time_columns=[
                                 TimeColumn(column="order_date", aspect="order", note="Placed."),
                                 TimeColumn(column="ship_date", aspect="ship", note="Shipped."),
@@ -303,7 +302,7 @@ class TestSynthesizeAndStoreTables:
             .all()
         )
         anns = session.execute(select(AnnotationDB)).scalars().all()
-        assert len(entities) == 1 and entities[0].is_fact_table is True
+        assert len(entities) == 1 and entities[0].table_role == "fact"
         # DAT-565: all event-time axes + identities persisted run-versioned (JSON).
         assert [tc["column"] for tc in entities[0].time_columns] == ["order_date", "ship_date"]
         assert entities[0].time_columns[1]["aspect"] == "ship"
@@ -459,9 +458,7 @@ class TestSynthesizeAndStoreTables:
             )
         ).scalar_one()
         id_col = session.execute(
-            select(Column).where(
-                Column.table_id == customers.table_id, Column.column_name == "id"
-            )
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
         ).scalar_one()
         # The structural detector's prior candidate row for this pair.
         session.add(
@@ -521,9 +518,9 @@ class TestSynthesizeAndStoreTables:
         assert cand_rels[0].confidence == 0.3
         assert (cand_rels[0].evidence or {}).get("reasoning") == "coincidental"
         assert (
-            session.execute(
-                select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
-            ).scalars().all()
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .all()
             == []
         )
 
@@ -605,8 +602,7 @@ class TestSynthesizeAndStoreTables:
                             entity_type="orders",
                             confidence=0.9,
                             grain_columns=["order_id"],
-                            is_fact_table=True,
-                            is_dimension_table=False,
+                            table_role="fact",
                             time_columns=[
                                 TimeColumn(column="order_date", aspect="order", note="Placed."),
                                 TimeColumn(column="ship_date", aspect="ship", note="Shipped."),
@@ -718,7 +714,7 @@ class TestTableSynthesisHelpers:
         enrichment = result.unwrap()
         assert enrichment.annotations == []
         assert len(enrichment.entity_detections) == 1
-        assert enrichment.entity_detections[0].is_dimension_table is False
+        assert enrichment.entity_detections[0].table_role == "fact"
 
     def test_format_persisted_annotations_groups_by_table(self) -> None:
         formatted = SemanticAgent._format_persisted_annotations(

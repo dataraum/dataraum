@@ -16,7 +16,7 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
+from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity, derive_table_role
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.graphs.additivity import UNKNOWN_TEMPORAL
 from dataraum.graphs.additivity_db_models import MetricAdditivity
@@ -93,7 +93,7 @@ def _seed(
             table_id=fact.table_id,
             run_id=RUN,
             detected_entity_type="event",
-            is_fact_table=True,
+            table_role=derive_table_role(True, grain_columns, time_columns),
             grain_columns={"columns": grain_columns},
             time_columns=[{"column": c, "aspect": "t", "note": ""} for c in time_columns],
         )

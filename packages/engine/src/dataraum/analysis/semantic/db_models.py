@@ -5,6 +5,7 @@ Contains database models for semantic annotations and entity detection.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -48,6 +49,44 @@ class ConceptKind(StrEnum):
     ENTITY = "entity"
     DIMENSION = "dimension"
     UNIT = "unit"
+
+
+class TableRole(StrEnum):
+    """The table's role in the operating model (DAT-728).
+
+    Replaces the two booleans (``is_fact_table`` / ``is_dimension_table``, which
+    carried a single bit — a dimension was just ``not fact``). ``PeriodicSnapshot``
+    is now a first-class subtype (``trial_balance``-shaped: a time column sits in
+    the grain, so a ``COUNT`` re-states the same population each period and is
+    non-additive across time) — persisted here instead of re-derived on demand.
+
+    ``BridgeTable`` (the m:n resolver) is deliberately absent: it needs a detection
+    signal and an eval fixture that don't exist yet (DAT-747), so shipping the enum
+    value unpopulated would be dead vocabulary.
+    """
+
+    FACT = "fact"
+    PERIODIC_SNAPSHOT = "periodic_snapshot"
+    DIMENSION = "dimension"
+
+
+def derive_table_role(
+    is_fact: bool,
+    grain_columns: Sequence[str],
+    time_column_names: Sequence[str],
+) -> TableRole:
+    """Classify a table's role from the LLM's fact/dimension bit + its grain.
+
+    The LLM answers one question (fact vs dimension); the PeriodicSnapshot subtype
+    is structural, not asked: a fact whose grain contains a time column re-states
+    the same population each period. Non-fact → ``DIMENSION``; fact with a time
+    column in its grain → ``PERIODIC_SNAPSHOT``; otherwise ``FACT``.
+    """
+    if not is_fact:
+        return TableRole.DIMENSION
+    if set(grain_columns) & set(time_column_names):
+        return TableRole.PERIODIC_SNAPSHOT
+    return TableRole.FACT
 
 
 class Concept(Base):
@@ -263,8 +302,11 @@ class TableEntity(Base):
     grain_columns: Mapped[dict[str, Any] | None] = mapped_column(
         JSON
     )  # List of column IDs that define grain
-    is_fact_table: Mapped[bool | None] = mapped_column(Boolean)
-    is_dimension_table: Mapped[bool | None] = mapped_column(Boolean)
+    # The table's operating-model role (DAT-728): fact | periodic_snapshot |
+    # dimension (see :class:`TableRole`). Replaces the two booleans; the
+    # PeriodicSnapshot subtype is derived from grain∩time at classification and
+    # feeds the additivity COUNT rule. Nullable: an unclassified stub has no role.
+    table_role: Mapped[str | None] = mapped_column(String)
     # DAT-565: all event-time axes (multi-temporal) and recurring identity columns,
     # each carrying a one-line note. JSON list[dict]; run-versioned like the rest.
     #   time_columns:     [{"column": str, "aspect": str, "note": str}, ...]
@@ -287,4 +329,6 @@ __all__ = [
     "ConceptKind",
     "SemanticAnnotation",
     "TableEntity",
+    "TableRole",
+    "derive_table_role",
 ]

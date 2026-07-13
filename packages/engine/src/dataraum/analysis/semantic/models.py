@@ -413,8 +413,10 @@ class EntityDetection(BaseModel):
     confidence: float
 
     grain_columns: list[str] = Field(default_factory=list)
-    is_fact_table: bool = False
-    is_dimension_table: bool = False
+    # The operating-model role (DAT-728): fact | periodic_snapshot | dimension
+    # (``TableRole``). Derived at classification from the LLM's fact/dimension bit
+    # + grain∩time; replaces the two booleans.
+    table_role: str
     time_columns: list[TimeColumn] = Field(default_factory=list)  # all event-time axes (DAT-565)
     identity_columns: list[IdentityColumn] = Field(default_factory=list)  # recurring identities
 

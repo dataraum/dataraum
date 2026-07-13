@@ -24,6 +24,7 @@ from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
 )
 from dataraum.analysis.semantic.concept_store import load_workspace_concepts
+from dataraum.analysis.semantic.db_models import derive_table_role
 from dataraum.analysis.semantic.models import (
     EntityDetection,
     Relationship,
@@ -279,8 +280,11 @@ class SemanticAgent(LLMFeature):
                 description=table.description,
                 confidence=0.9,
                 grain_columns=table.grain,
-                is_fact_table=table.is_fact_table,
-                is_dimension_table=not table.is_fact_table,
+                table_role=derive_table_role(
+                    table.is_fact_table,
+                    table.grain,
+                    [tc.column for tc in table.time_columns],
+                ),
                 time_columns=table.time_columns,
                 identity_columns=table.identity_columns,
             )

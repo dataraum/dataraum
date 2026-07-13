@@ -129,7 +129,7 @@ class SemanticPerTablePhase(BasePhase):
 
         previews: list[str] = []
         for ent in enrichment.entity_detections:
-            kind = "FACT" if ent.is_fact_table else "DIMENSION" if ent.is_dimension_table else ""
+            kind = ent.table_role.upper() if ent.table_role else ""
             label = f"{ent.table_name}: {ent.entity_type}"
             if kind:
                 label += f" ({kind})"

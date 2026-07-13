@@ -15,7 +15,7 @@ DROP VIEW IF EXISTS __READ__.og_derived_from;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
-       te.is_fact_table, te.is_dimension_table, te.detected_entity_type
+       te.table_role, te.detected_entity_type
 FROM __READ__.current_tables t
 LEFT JOIN __READ__.current_table_entities te ON te.table_id = t.table_id;
 
@@ -68,8 +68,7 @@ WHERE ev.view_table_id IS NOT NULL;
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
-      PROPERTIES (table_id, table_name, layer, is_fact_table,
-                  is_dimension_table, detected_entity_type),
+      PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),
     __READ__.og_columns KEY (column_id) LABEL column_node
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node

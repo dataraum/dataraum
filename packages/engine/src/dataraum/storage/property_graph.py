@@ -21,7 +21,7 @@ and ``Table``; the vocabulary ``Concept`` vertices are P3. Edges/props carried:
 
     column_node  (KEY column_id)  props: semantic_role (has_role),
                                           materialization (materializes_as)
-    table_node   (KEY table_id)   props: is_fact_table / is_dimension_table
+    table_node   (KEY table_id)   props: table_role (fact/periodic_snapshot/dimension)
     refs          table → table   [relationships]      FK topology + cardinality
     has_dimension table → column  [slice_definitions]  a fact's slice columns
     derived_from  table → table   [enriched_views]     view → fact + dim bases
@@ -86,13 +86,14 @@ def _element_view_sql(name: str) -> str:
     comparison; the cast is free (the values are already textual ids).
     """
     if name == "og_tables":
-        # Table vertex: the analyzed-representative table + its entity subtype
-        # (FactTable / DimensionTable). current_table_entities is (table_id, run)
-        # unique post-head, so the LEFT JOIN stays 1:1 and table_id is a valid KEY.
+        # Table vertex: the analyzed-representative table + its role
+        # (table_role: fact / periodic_snapshot / dimension). current_table_entities
+        # is (table_id, run) unique post-head, so the LEFT JOIN stays 1:1 and
+        # table_id is a valid KEY.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_tables AS\n"
             f"SELECT t.table_id::text AS table_id, t.table_name, t.layer,\n"
-            f"       te.is_fact_table, te.is_dimension_table, te.detected_entity_type\n"
+            f"       te.table_role, te.detected_entity_type\n"
             f"FROM {READ_TOKEN}.current_tables t\n"
             f"LEFT JOIN {READ_TOKEN}.current_table_entities te ON te.table_id = t.table_id;"
         )
@@ -194,8 +195,7 @@ def _property_graph_sql() -> str:
         f"CREATE PROPERTY GRAPH {READ_TOKEN}.{PROPERTY_GRAPH_NAME}\n"
         f"  VERTEX TABLES (\n"
         f"    {READ_TOKEN}.og_tables KEY (table_id) LABEL table_node\n"
-        f"      PROPERTIES (table_id, table_name, layer, is_fact_table,\n"
-        f"                  is_dimension_table, detected_entity_type),\n"
+        f"      PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),\n"
         f"    {READ_TOKEN}.og_columns KEY (column_id) LABEL column_node\n"
         f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"

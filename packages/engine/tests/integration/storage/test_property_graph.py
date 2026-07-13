@@ -148,12 +148,11 @@ def _seed(engine: Engine) -> None:
         " slice_type, detection_source, created_at) "
         f"VALUES ('sl_1', '{RUN}', 't1', 'c_k1', 'account_id', 1, 'categorical', 'llm', '{TS}')"
     )
-    for eid, tid, fact, dim in [("e_j", "t1", "true", "false"), ("e_a", "t2", "false", "true")]:
+    for eid, tid, role in [("e_j", "t1", "fact"), ("e_a", "t2", "dimension")]:
         stmts.append(
             "INSERT INTO table_entities "
-            "(entity_id, table_id, run_id, detected_entity_type, is_fact_table, "
-            " is_dimension_table, detected_at) "
-            f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', {fact}, {dim}, '{TS}')"
+            "(entity_id, table_id, run_id, detected_entity_type, table_role, detected_at) "
+            f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', '{role}', '{TS}')"
         )
     # derived_from: journal_enriched view over the journal fact + the accounts dim.
     stmts.append(

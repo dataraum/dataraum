@@ -229,8 +229,7 @@ class TestSemanticModels:
             description="Daily sales transactions",
             confidence=0.88,
             grain_columns=["sale_id"],
-            is_fact_table=True,
-            is_dimension_table=False,
+            table_role="fact",
             detection_source="llm",
         )
         session.add(entity)
@@ -240,7 +239,7 @@ class TestSemanticModels:
         saved = result.scalar_one()
 
         assert saved.detected_entity_type == "transaction"
-        assert saved.is_fact_table is True
+        assert saved.table_role == "fact"
         assert saved.grain_columns == ["sale_id"]
 
 

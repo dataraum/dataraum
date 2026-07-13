@@ -48,7 +48,12 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
-from dataraum.storage.read_views import READ_TOKEN, WS_TOKEN, read_schema_name_for
+from dataraum.storage.read_views import (
+    READ_TOKEN,
+    READER_ROLE,
+    WS_TOKEN,
+    read_schema_name_for,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy import Connection
@@ -92,14 +97,24 @@ def _element_view_sql(name: str) -> str:
         )
     if name == "og_columns":
         # Column vertex: the physical column with its semantic role (has_role) and
-        # materialization (materializes_as = the witness pattern, else the concept's
-        # temporal_behavior claim). Each LEFT-joined table is (column_id, run) unique
-        # after head resolution, so the join is 1:1 and column_id is a valid KEY.
+        # materialization (materializes_as → flow | stock). The two source columns
+        # carry DIFFERENT raw vocabularies and must be normalized, NOT COALESCEd raw:
+        #   measure_aggregation_lineage.pattern ∈ {per_period, cumulative}  (DAT-491
+        #     witness posterior — per_period ⇒ flow, cumulative ⇒ stock),
+        #   column_concepts.temporal_behavior ∈ {additive, point_in_time}   (ontology
+        #     prior — the canonical drivers map: additive ⇒ flow, point_in_time ⇒ stock).
+        # Prefer the data-reconciled witness posterior over the prior claim; NULL when
+        # neither is present. Each LEFT-joined table is (column_id, run) unique after
+        # head resolution, so the join is 1:1 and column_id is a valid KEY.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_columns AS\n"
             f"SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_name,\n"
             f"       sa.semantic_role,\n"
-            f"       COALESCE(mal.pattern, cc.temporal_behavior) AS materialization\n"
+            f"       COALESCE(\n"
+            f"         CASE mal.pattern WHEN 'per_period' THEN 'flow' WHEN 'cumulative' THEN 'stock' END,\n"
+            f"         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'\n"
+            f"                                   WHEN 'point_in_time' THEN 'stock' END\n"
+            f"       ) AS materialization\n"
             f"FROM {READ_TOKEN}.current_columns c\n"
             f"LEFT JOIN {READ_TOKEN}.current_semantic_annotations sa ON sa.column_id = c.column_id\n"
             f"LEFT JOIN {READ_TOKEN}.current_column_concepts cc ON cc.column_id = c.column_id\n"
@@ -136,13 +151,13 @@ def _element_view_sql(name: str) -> str:
         # view_table_id is nullable (a non-materialized view has no vertex) → skip.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_derived_from AS\n"
-            f"SELECT ev.view_id || '_fact' AS edge_key,\n"
+            f"SELECT (ev.view_id || '_fact')::text AS edge_key,\n"
             f"       ev.view_table_id::text AS view_table_id,\n"
             f"       ev.fact_table_id::text AS base_table_id, 'fact' AS base_role\n"
             f"FROM {READ_TOKEN}.current_enriched_views ev\n"
             f"WHERE ev.view_table_id IS NOT NULL\n"
             f"UNION ALL\n"
-            f"SELECT ev.view_id || '_dim_' || dt.value AS edge_key,\n"
+            f"SELECT (ev.view_id || '_dim_' || dt.value)::text AS edge_key,\n"
             f"       ev.view_table_id::text AS view_table_id,\n"
             f"       dt.value AS base_table_id, 'dimension' AS base_role\n"
             f"FROM {READ_TOKEN}.current_enriched_views ev\n"
@@ -158,7 +173,10 @@ def _property_graph_sql() -> str:
 
     Vertex ``KEY`` clauses are explicit (a view has no primary key); edge
     ``SOURCE/DESTINATION KEY ... REFERENCES`` name the vertex element table (no
-    schema qualifier — the reference resolves within the graph definition).
+    schema qualifier — the reference resolves within the graph definition). The
+    references edge is labelled ``refs``, not ``references`` — ``REFERENCES`` is a
+    reserved keyword in the PGQ edge grammar (``SOURCE KEY ... REFERENCES ...``),
+    so ``LABEL references`` is a syntax error.
     """
     return (
         f"CREATE PROPERTY GRAPH {READ_TOKEN}.{PROPERTY_GRAPH_NAME}\n"
@@ -258,3 +276,22 @@ def materialize_property_graph(connection: Connection, workspace_schema: str) ->
             )
         )
     return len(statements)
+
+
+def grant_reader_on_graph(connection: Connection, workspace_schema: str) -> None:
+    """Grant the ``cockpit_reader`` role SELECT on the property graph (ADR-0008).
+
+    A property graph is a distinct privilege-checked object: ``GRANT SELECT ON ALL
+    TABLES`` (what ``ensure_reader_role`` does for the ``og_*`` views) does NOT cover
+    ``GRAPH_TABLE`` access — without this the reader can plain-SELECT the element
+    views but the one query form the graph exists for is ``permission denied``. The
+    graph is dropped+recreated every boot, so the grant is re-applied here every
+    boot too. Runs AFTER ``ensure_reader_role`` (which creates the role) and after
+    the graph is (re)created. Postgres-only.
+    """
+    read_schema = read_schema_name_for(workspace_schema)
+    connection.execute(
+        text(
+            f'GRANT SELECT ON PROPERTY GRAPH "{read_schema}".{PROPERTY_GRAPH_NAME} TO {READER_ROLE}'
+        )
+    )

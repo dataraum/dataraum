@@ -21,7 +21,11 @@ LEFT JOIN __READ__.current_table_entities te ON te.table_id = t.table_id;
 CREATE VIEW __READ__.og_columns AS
 SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_name,
        sa.semantic_role,
-       COALESCE(mal.pattern, cc.temporal_behavior) AS materialization
+       COALESCE(
+         CASE mal.pattern WHEN 'per_period' THEN 'flow' WHEN 'cumulative' THEN 'stock' END,
+         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
+                                   WHEN 'point_in_time' THEN 'stock' END
+       ) AS materialization
 FROM __READ__.current_columns c
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = c.column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = c.column_id
@@ -41,13 +45,13 @@ SELECT slice_id::text AS slice_id, table_id::text AS table_id,
 FROM __READ__.current_slice_definitions;
 
 CREATE VIEW __READ__.og_derived_from AS
-SELECT ev.view_id || '_fact' AS edge_key,
+SELECT (ev.view_id || '_fact')::text AS edge_key,
        ev.view_table_id::text AS view_table_id,
        ev.fact_table_id::text AS base_table_id, 'fact' AS base_role
 FROM __READ__.current_enriched_views ev
 WHERE ev.view_table_id IS NOT NULL
 UNION ALL
-SELECT ev.view_id || '_dim_' || dt.value AS edge_key,
+SELECT (ev.view_id || '_dim_' || dt.value)::text AS edge_key,
        ev.view_table_id::text AS view_table_id,
        dt.value AS base_table_id, 'dimension' AS base_role
 FROM __READ__.current_enriched_views ev

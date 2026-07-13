@@ -343,6 +343,7 @@ class ConnectionManager:
             from dataraum.core.settings import get_settings
             from dataraum.storage.property_graph import (
                 drop_property_graph,
+                grant_reader_on_graph,
                 materialize_property_graph,
             )
             from dataraum.storage.read_views import (
@@ -363,6 +364,10 @@ class ConnectionManager:
                     schema_name,
                     get_settings().metadata_reader_password.get_secret_value(),
                 )
+                # The graph is a distinct privilege object — ensure_reader_role's
+                # table grants don't reach GRAPH_TABLE. Grant it after the role exists
+                # (and re-grant every boot, since the graph is recreated above).
+                grant_reader_on_graph(conn, schema_name)
 
         # autoflush=False keeps writes batched; commit happens at scope close.
         self._session_factory = sessionmaker(

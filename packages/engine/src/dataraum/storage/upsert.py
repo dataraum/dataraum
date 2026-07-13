@@ -61,7 +61,7 @@ def insert_if_absent(
         kwargs["index_where"] = index_where
     # Session.execute is typed Result[Any]; a DML statement yields a CursorResult
     # (the .rowcount carrier) at runtime.
-    result = cast("CursorResult[Any]", session.execute(stmt.on_conflict_do_nothing(**kwargs)))
+    result = cast(CursorResult[Any], session.execute(stmt.on_conflict_do_nothing(**kwargs)))
     return result.rowcount
 
 

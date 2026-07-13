@@ -59,6 +59,7 @@ class TestActivityMetricsLoad:
         assert extracts[0].aggregation == aggregation
         assert extracts[0].output_step is True
 
+
 class TestActivityMetricsAdditivity:
     """Each aggregation's grounded SQL shape classifies per the DAT-716 doctrine."""
 

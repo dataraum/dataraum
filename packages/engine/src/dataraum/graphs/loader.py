@@ -266,4 +266,3 @@ class GraphLoader:
                 if step.source and step.source.standard_field:
                     fields.add(step.source.standard_field)
         return fields
-

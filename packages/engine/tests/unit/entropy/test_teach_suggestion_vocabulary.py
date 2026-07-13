@@ -158,9 +158,9 @@ def test_known_emissions_are_seen_by_the_scanner() -> None:
     derived_values ``validation`` teach is now the stable single-type baseline.
     """
     emissions = _collect_emissions()
-    assert (
-        "entropy/detectors/computational/temporal_behavior.py" not in emissions
-    ), "temporal_behavior must emit NO teach_suggestion (DAT-657 — stock/flow is data-determined)"
+    assert "entropy/detectors/computational/temporal_behavior.py" not in emissions, (
+        "temporal_behavior must emit NO teach_suggestion (DAT-657 — stock/flow is data-determined)"
+    )
     dv = emissions.get("entropy/detectors/computational/derived_values.py")
     assert dv is not None, "derived_values teach_suggestion emission no longer detected"
     assert set(dv) == {"validation"}

@@ -40,6 +40,9 @@ axes — collapsing them was the BILLTO↔PAYER over-merge the role check revers
 
 from __future__ import annotations
 
+import hashlib
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -100,8 +103,30 @@ MIN_SAMPLE_ROWS = 50_000
 
 # Fixed seed: the permutation null must be identical across Temporal
 # success-redeliveries so the run-versioned upsert converges (the row sample is
-# deterministic by construction — bottom-k-by-hash, see _pull_sample).
+# deterministic by construction — bottom-k-by-hash, see _pull_sample). Each
+# candidate derives its OWN generator from this seed + a stable digest of the
+# pair (see _pair_rng), so results are independent of iteration order and of
+# the permutation pool's worker count.
 _PERM_SEED = 20260714
+
+# The screened candidates' permutation tests are pure numpy (no session, no
+# DuckDB) and embarrassingly parallel; numpy's sort kernels release the GIL.
+# Bounded modestly — the Temporal worker already runs phases concurrently.
+_PERM_WORKERS = max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
+def _pair_rng(arm: str, a: str, b: str) -> np.random.Generator:
+    """A per-candidate generator seeded from a stable digest of the pair.
+
+    ``hash()`` is process-salted (PYTHONHASHSEED), so a keyed digest is used —
+    the draw sequence for a candidate is a pure function of the module seed and
+    the (arm, a, b) identity, never of scheduling.
+    """
+    digest = int.from_bytes(
+        hashlib.blake2b(f"{arm}:{a}->{b}".encode(), digest_size=8).digest(), "big"
+    )
+    return np.random.default_rng((_PERM_SEED, digest))
+
 
 # COUNT(DISTINCT (a, b)) aggregates per scan statement — wide views chunk the
 # pair family across several single-scan queries instead of one giant SELECT.
@@ -520,7 +545,6 @@ def _view_structures(
     functions bind these parameters, not loop variables.
     """
     cand_names = sorted(by_name)
-    rng = np.random.default_rng(_PERM_SEED)
 
     # -- 1. null policy + eligibility (born-loud on every drop) --------------
     eligible: list[str] = []
@@ -642,24 +666,33 @@ def _view_structures(
 
     # -- 4. permutation p + BH over the view's screened family ----------------
     # Edge tests run on the pairwise-complete rows their screen used; alias
-    # tests on the full null-as-category codes (pair-count semantics).
-    p_cache: dict[tuple[str, str, str], float] = {}
+    # tests on the full null-as-category codes (pair-count semantics). The
+    # candidates fan across a bounded thread pool: each task derives its own
+    # generator (_pair_rng) and only READS the pre-warmed caches (edge_arrays
+    # was populated for every cand_edge pair during screening), so the results
+    # are byte-identical at any worker count.
+    tasks: list[tuple[str, str, str]] = [("e", a, b) for a, b in cand_edge]
+    for a, b in cand_alias:
+        tasks += [("a", a, b), ("a", b, a)]
 
-    def perm_p(arm: str, a: str, b: str) -> float:
-        if (arm, a, b) not in p_cache:
-            if arm == "e":
-                ca, cb, _, _ = edge_arrays(a, b)
-            else:
-                ca, cb = codes[a], codes[b]
-            p_cache[(arm, a, b)] = stats.perm_pvalue(ca, cb, rng)
-        return p_cache[(arm, a, b)]
+    def perm_task(task: tuple[str, str, str]) -> tuple[tuple[str, str, str], float]:
+        arm, a, b = task
+        if arm == "e":
+            ca, cb, _, _ = edge_arrays(a, b)
+        else:
+            ca, cb = codes[a], codes[b]
+        return task, stats.perm_pvalue(ca, cb, _pair_rng(arm, a, b))
 
-    pvals: dict[tuple[str, str, str], float] = {}
-    for a, b in cand_edge:
-        pvals[("e", a, b)] = perm_p("e", a, b)
+    p_by_task: dict[tuple[str, str, str], float] = {}
+    if tasks:
+        with ThreadPoolExecutor(max_workers=_PERM_WORKERS) as pool:
+            for task, p in pool.map(perm_task, tasks):
+                p_by_task[task] = p
+
+    pvals: dict[tuple[str, str, str], float] = {t: p_by_task[t] for t in p_by_task if t[0] == "e"}
     for a, b in cand_alias:
         # A 1:1 claim needs significant dependence in BOTH directions.
-        pvals[("a", a, b)] = max(perm_p("a", a, b), perm_p("a", b, a))
+        pvals[("a", a, b)] = max(p_by_task[("a", a, b)], p_by_task[("a", b, a)])
     accepted = stats.bh_reject(pvals, m_family=max(1, len(pvals)), q=Q_FDR)
     acc_edges = {(a, b) for k, a, b in accepted if k == "e"}
     acc_alias = {(a, b) for k, a, b in accepted if k == "a"}
@@ -689,7 +722,7 @@ def _view_structures(
             merged.append((a, b))
             continue
         contexts = {c: codes[c] for c in eligible if c not in (a, b)}
-        result = stats.role_verdict(dis, contexts, codes[b], rng)
+        result = stats.role_verdict(dis, contexts, codes[b], _pair_rng("role", a, b))
         logger.info(
             "hierarchy_role_check",
             a=a,

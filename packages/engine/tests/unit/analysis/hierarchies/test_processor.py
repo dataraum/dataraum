@@ -1,12 +1,15 @@
-"""g3 dimension-hierarchy / alias discovery — DAT-537.
+"""Stack-v4 dimension-identity discovery — DAT-761 (gate stack from DAT-757).
 
 Deterministic FD pass over a fact's grain-verified enriched view. The shared
 ``seed_sales`` fixture (conftest) encodes a known ``zip → city → state`` chain, two
-1:1 aliases, a constant, and a near-key id, so the verdicts (chain, alias collapse,
-guards) are checkable.
+1:1 aliases, a constant, and a near-key id; the ``TestStackV4`` fixtures encode
+the DAT-757 matrix cells the old distinct-ratio g3 could not decide (vacuous
+skew, dirty-true edges, role pairs, null-coded columns, measure exclusion).
 """
 
 from __future__ import annotations
+
+from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
@@ -14,9 +17,11 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
 from dataraum.analysis.hierarchies.processor import discover_dimension_hierarchies
+from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
+from dataraum.storage import Column
 
-from .conftest import RUN, seed_sales
+from .conftest import RUN, seed_sales, seed_view
 
 
 def _rows(session: Session, table_id: str, kind: str) -> list[DimensionHierarchy]:
@@ -124,6 +129,145 @@ class TestDiscoverDimensionHierarchies:
         )
 
 
+class TestStackV4:
+    """The DAT-757 cells the distinct-ratio g3 could not decide (DAT-761)."""
+
+    def test_vacuous_skew_killed_true_skew_edge_kept(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """λ ≥ 0.5 kills the vacuous-skew edge; the exact FD onto a skewed flag survives.
+
+        ``vacuous`` is 99.5%-dominant with its minority spread evenly across
+        ``det`` groups: row-g3 = 0.005 passes the effect screen vacuously, but
+        λ ≈ 0 (no reduction over the majority baseline). ``flag`` is 98%-dominant
+        but an exact FD of ``det`` — λ = 1, the edge must survive (the naive
+        "skip skewed dependents" rule would have killed it).
+        """
+        n = 10_000
+        det = [f"d{i % 50}" for i in range(n)]
+        vacuous = ["1" if (i // 50) % 200 == 0 else "0" for i in range(n)]
+        flag = ["1" if i % 50 == 0 else "0" for i in range(n)]
+        tid = seed_view(
+            real_session, duck, "skewed", {"det": det, "vacuous": vacuous, "flag": flag}
+        )
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        chains = [_members(r) for r in _rows(real_session, tid, "drilldown")]
+        assert ["det", "flag"] in chains
+        assert all("vacuous" not in c for c in chains)
+
+    def test_dirty_true_edge_kept(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A true hierarchy with 0.2% dirty rows stays asserted (row-g3 tolerance)."""
+        n = 5_000
+        city = [f"c{i % 40}" for i in range(n)]
+        state = [f"s{((i % 40) // 5 + 1) % 8}" if i % 500 == 0 else f"s{(i % 40) // 5}" for i in range(n)]
+        tid = seed_view(real_session, duck, "dirty_geo", {"city": city, "state": state})
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        drills = _rows(real_session, tid, "drilldown")
+        assert [_members(r) for r in drills] == [["city", "state"]]
+        assert 0.0 < drills[0].score <= 0.01
+
+    def test_role_pair_kept_apart(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A role-playing near-copy (bill-to ≠ sold-to on dropship rows) is persisted
+        as ``kind='role'`` — never merged as an alias, never stacked as an edge.
+
+        Pairwise, ``soldto``/``billto`` agree on 99.25% of rows and pass the alias
+        screen; the disagreement set is fully driven by ``channel`` (T1), which is
+        exactly the SAP SALT BILLTO↔PAYER over-merge the round caught and reversed.
+        """
+        n_cust, rows_per = 800, 10
+        soldto, billto, channel = [], [], []
+        for r in range(n_cust * rows_per):
+            c = r % n_cust
+            drop = c < 6
+            soldto.append(f"c{c}")
+            billto.append("hub" if drop else f"c{c}")
+            channel.append("dropship" if drop else "standard")
+        tid = seed_view(
+            real_session, duck, "orders",
+            {"soldto": soldto, "billto": billto, "channel": channel},
+        )
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        roles = _rows(real_session, tid, "role")
+        assert [_members(r) for r in roles] == [["billto", "soldto"]]
+        assert roles[0].needs_confirmation is False
+        # Not merged, and no drilldown stacks the two role siblings as levels.
+        for r in _rows(real_session, tid, "alias") + _rows(real_session, tid, "drilldown"):
+            assert not {"soldto", "billto"} <= set(_members(r))
+
+    def test_null_coded_columns_alias(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The null-policy lane: ``{1, NULL}`` columns are axes, not constants.
+
+        SQL ``COUNT(DISTINCT)`` sees 1 distinct value and the old pass dropped
+        them silently (the rel-hm FN/Active lesson); null-as-category keeps them
+        eligible and the exact copy merges as an alias.
+        """
+        n = 3_000
+        fn = ["1" if i % 7 < 2 else None for i in range(n)]
+        city = [f"c{i % 30}" for i in range(n)]
+        tid = seed_view(
+            real_session, duck, "customers", {"fn": fn, "active": list(fn), "city": city}
+        )
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        aliases = [_members(r) for r in _rows(real_session, tid, "alias")]
+        assert ["active", "fn"] in aliases
+
+    def test_measure_columns_excluded(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The additivity lane: a ``semantic_role='measure'`` column never enters
+        FD discovery, even when it would form a perfect structure."""
+        n = 600
+        zips = [f"z{i % 6}" for i in range(n)]
+        amount = [str((i % 6) * 100) for i in range(n)]
+        city = [f"c{i % 3}" for i in range(n)]
+        tid = seed_view(
+            real_session, duck, "billing", {"zip": zips, "amount": amount, "city": city}
+        )
+        amount_id = real_session.execute(
+            select(Column.column_id).where(Column.table_id == tid, Column.column_name == "amount")
+        ).scalar_one()
+        real_session.add(
+            SemanticAnnotation(
+                annotation_id=str(uuid4()), column_id=amount_id, run_id=RUN,
+                semantic_role="measure",
+            )
+        )
+        real_session.flush()
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        all_members = {
+            m
+            for kind in ("drilldown", "alias", "role")
+            for r in _rows(real_session, tid, kind)
+            for m in _members(r)
+        }
+        assert "amount" not in all_members
+        assert "zip" in all_members  # the zip → city structure itself is found
+
+    def test_unregistered_column_participates(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A view column with no catalog ``Column`` row still participates —
+        provenance is metadata (``column_id=''``), not a gate (the widened
+        candidate universe is the view, not the slice catalog)."""
+        n = 500
+        state = [f"s{i % 8}" for i in range(n)]
+        tid = seed_view(
+            real_session, duck, "wide", {"state": state, "mystery": list(state)},
+            register={"state"},
+        )
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        aliases = _rows(real_session, tid, "alias")
+        assert [_members(r) for r in aliases] == [["mystery", "state"]]
+        by_name = {m["column_name"]: m["column_id"] for m in aliases[0].members}
+        assert by_name["mystery"] == "" and by_name["state"] != ""
+
+
 class TestDimensionHierarchiesPhaseSkip:
     """The phase's should_skip preconditions (deterministic re-run discipline)."""
 
@@ -138,14 +282,14 @@ class TestDimensionHierarchiesPhaseSkip:
             config={},
         )
 
-    def test_skips_when_no_slice_definitions(
+    def test_skips_when_no_enriched_view(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         from dataraum.pipeline.phases.dimension_hierarchies_phase import DimensionHierarchiesPhase
 
-        # A table id with no SliceDefinition rows for this run → nothing to relate.
+        # A table id with no grain-verified enriched view → no substrate.
         reason = DimensionHierarchiesPhase().should_skip(self._ctx(real_session, duck, ["nope"]))
-        assert reason is not None and "slice definitions" in reason
+        assert reason is not None and "enriched views" in reason
 
     def test_does_not_skip_with_catalog(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

@@ -31,6 +31,9 @@ from dataraum.storage import Column, Table, init_database
 
 _RUN = "session-run-1"
 _DIM = "account_id__account_type"
+# The persisted ``slice_dimension`` is now the conformed-identity label
+# (``<dim table>.<attribute>``), not the per-fact physical column name (DAT-756).
+_DIM_LABEL = "chart_of_accounts.account_type"
 _VALUES = ("assets", "liabilities")
 _MONTHS = list(range(1, 13))
 
@@ -81,6 +84,9 @@ def _seed(
     junk_column: bool = False,
     key_column: bool = False,
     multi_axis: bool = False,
+    tb_dim_col: str = _DIM,
+    jl_dim_col: str = _DIM,
+    folded: bool = False,
 ) -> dict[str, str]:
     """Seed Tables/Columns/SliceDefinitions/TableEntity + the DuckDB rows.
 
@@ -90,8 +96,26 @@ def _seed(
     cell vs 1) so the direction gate orders it as the event side. Both facts
     sliced by the same dimension. The DuckDB rows are authored so the inline
     ``GROUP BY`` reproduces the canonical per-period sums.
+
+    Dimension identity (DAT-756): each fact's slice carries its referenced identity
+    ``(dimension_table_id -> chart_of_accounts, attribute = the ``fk__attr`` suffix,
+    fk_role = the prefix)`` — so the pairing keys on the SHARED dim table + attribute,
+    not the physical column name. ``tb_dim_col`` / ``jl_dim_col`` set each fact's
+    physical slice column (default equal): differing FK names with the same suffix
+    still pair (the false-negative). ``folded=True`` nulls the identity on both
+    slices — an own-column dimension with no dim table (the false-positive: same
+    name, no cross-table identity, must NOT pair).
     """
     ids: dict[str, str] = {}
+    dim_table = Table(
+        table_id=str(uuid4()),
+        source_id="src-1",
+        table_name="chart_of_accounts",
+        layer="typed",
+        duckdb_path="chart_of_accounts",
+    )
+    session.add(dim_table)
+    ids["chart_of_accounts"] = dim_table.table_id
     extra = ["account_key"] if key_column else []
     for name, cols in (
         ("trial_balance", ["balance", "net_change", *extra]),
@@ -132,13 +156,26 @@ def _seed(
         )
 
     sliced_tables = ["trial_balance", "journal_lines"] if shared_dimension else ["trial_balance"]
+    dim_col_by_fact = {"trial_balance": tb_dim_col, "journal_lines": jl_dim_col}
     for name in sliced_tables:
+        dim_col = dim_col_by_fact[name]
+        if folded:
+            dim_table_id: str | None = None
+            attribute: str | None = None
+            role: str | None = None
+        else:
+            dim_table_id = ids["chart_of_accounts"]
+            role, _, attribute = dim_col.partition("__")
+            attribute = attribute or None
         session.add(
             SliceDefinition(
                 run_id=_RUN,
                 table_id=ids[name],
                 column_id=ids[f"{name}.{'balance' if name == 'trial_balance' else 'debit'}"],
-                column_name=_DIM,
+                column_name=dim_col,
+                dimension_table_id=dim_table_id,
+                dimension_attribute=attribute,
+                fk_role=role,
                 slice_priority=1,
                 distinct_values=list(_VALUES),
                 value_count=len(_VALUES),
@@ -148,18 +185,19 @@ def _seed(
     session.flush()
 
     # DuckDB sources — one table per fact (typed-fact fallback). Columns mirror
-    # the metadata above; the dimension is an enriched-style "fk__attr" name.
+    # the metadata above; the dimension is an enriched-style "fk__attr" name and may
+    # differ between facts (DAT-756 — the identity is the dim table, not the name).
     tb_extra_cols = ", account_key DOUBLE" if key_column else ""
     tb_axis_col = ", ship_date DATE" if multi_axis else ""
     jl_extra_cols = (", account_key DOUBLE" if key_column else "") + (
         ", line_id DOUBLE" if junk_column else ""
     )
     duck.execute(
-        f'CREATE TABLE trial_balance ("{_DIM}" VARCHAR, period_date DATE,'
+        f'CREATE TABLE trial_balance ("{tb_dim_col}" VARCHAR, period_date DATE,'
         f" balance DOUBLE, net_change DOUBLE{tb_extra_cols}{tb_axis_col})"
     )
     duck.execute(
-        f'CREATE TABLE journal_lines ("{_DIM}" VARCHAR, period_date DATE,'
+        f'CREATE TABLE journal_lines ("{jl_dim_col}" VARCHAR, period_date DATE,'
         f" debit DOUBLE, credit DOUBLE{jl_extra_cols})"
     )
 
@@ -215,7 +253,7 @@ class TestDiscoverAggregationLineage:
         assert row is not None
         assert row.pattern == "cumulative"
         assert row.event_table_id == ids["journal_lines"]
-        assert row.slice_dimension == _DIM
+        assert row.slice_dimension == _DIM_LABEL
         assert row.match_rate > 0.99
         assert row.run_id == _RUN
         # The winning convention reproduces the movement exactly: the single
@@ -305,6 +343,34 @@ class TestDiscoverAggregationLineage:
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         ids = _seed(real_session, duck, shared_dimension=False)
+        assert _discover(real_session, duck, ids) == 0
+
+    def test_differently_named_fks_pair_via_dim_identity(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """False-negative closes (DAT-756): two facts joining ONE dim table through
+        DIFFERENTLY-NAMED FK columns (``gl_account__type`` / ``account_no__type``)
+        share the dimension by referenced identity (chart_of_accounts.type), so the
+        stock/flow witness runs. Under the old ``column_name`` grouping the pair was
+        never formed and the witness was silently inert."""
+        ids = _seed(
+            real_session, duck, tb_dim_col="gl_account__type", jl_dim_col="account_no__type"
+        )
+        assert _discover(real_session, duck, ids) > 0
+        row = _row_for(real_session, ids["trial_balance.balance"])
+        assert row is not None
+        assert row.pattern == "cumulative"
+        assert row.event_table_id == ids["journal_lines"]
+        assert row.slice_dimension == "chart_of_accounts.type"
+
+    def test_folded_same_named_columns_do_not_pair(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """False-positive closes (DAT-756): two unrelated same-named FOLDED columns
+        (own ``status`` column, no dim table -> null identity) are NOT paired. The
+        bare name collision that would have fired a spurious witness now abstains —
+        a folded dimension has no cross-table identity in Phase A (DAT-757)."""
+        ids = _seed(real_session, duck, tb_dim_col="status", jl_dim_col="status", folded=True)
         assert _discover(real_session, duck, ids) == 0
 
     def test_rerun_is_idempotent(

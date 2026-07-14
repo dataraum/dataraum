@@ -69,6 +69,7 @@ _COLUMNS = [
     ("c_k2", "t2", "account_id", 1),
     ("c_k3", "t3", "group_id", 1),
     ("c_k4", "t4", "statement_id", 1),
+    ("c_k4b", "t4", "account_id", 2),  # t4's own account_id — a 2nd fact→accounts slice
     ("c_k5", "t5", "division_id", 1),
     ("c_k6", "t6", "root_id", 1),
 ]
@@ -141,12 +142,29 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
             f"'foreign_key', 'many_to_one', 0.9, true, '{TS}')"
         )
-    # has_dimension: journal's account_id slice.
+    # has_dimension: two facts (journal t1, statement t4) each sliced by their own
+    # account_id, BOTH resolving the referenced identity dimension_table_id='t2'
+    # (the accounts dim) at a NULL attribute (grouping by the FK key itself) — a
+    # CONFORMED dimension (DAT-756). fk_role is the FK column name, carried but not
+    # a Phase-A identity key.
+    for sid, tid, cid in [("sl_1", "t1", "c_k1"), ("sl_2", "t4", "c_k4b")]:
+        stmts.append(
+            "INSERT INTO slice_definitions "
+            "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
+            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', 'account_id', 't2', "
+            f"NULL, 'account_id', 1, 'categorical', 'llm', '{TS}')"
+        )
+    # A SPURIOUS fact↔fact relationship between the two account_id slice columns
+    # (the DAT-723 fan trap): both endpoints resolve dimension_table_id='t2', so it
+    # is a conformed dimension, NOT an FK — og_references must drop it and
+    # og_conformed_dimension must carry the pair.
     stmts.append(
-        "INSERT INTO slice_definitions "
-        "(slice_id, run_id, table_id, column_id, column_name, slice_priority, "
-        " slice_type, detection_source, created_at) "
-        f"VALUES ('sl_1', '{RUN}', 't1', 'c_k1', 'account_id', 1, 'categorical', 'llm', '{TS}')"
+        "INSERT INTO relationships "
+        "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
+        " to_column_id, relationship_type, cardinality, confidence, is_confirmed, detected_at) "
+        f"VALUES ('r_fan', '{RUN}', 't1', 'c_k1', 't4', 'c_k4b', "
+        f"'foreign_key', 'many_to_one', 0.9, true, '{TS}')"
     )
     for eid, tid, role in [("e_j", "t1", "fact"), ("e_a", "t2", "dimension")]:
         stmts.append(
@@ -278,15 +296,49 @@ def test_derived_from_edges_enumerable(graph_engine: Engine) -> None:
 
 
 def test_has_dimension_edge(graph_engine: Engine) -> None:
-    """has_dimension: a fact table points at its slice (dimension) columns."""
+    """has_dimension: each fact points at its slice column, CARRYING the referenced
+    identity (DAT-756) — dimension_table_id resolves to the shared accounts dim."""
     sql = (
-        f"SELECT tname, cname FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT tname, cname, dim FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (t IS table_node)-[e IS has_dimension]->(c IS column_node) "
-        "COLUMNS (t.table_name AS tname, c.column_name AS cname))"
+        "COLUMNS (t.table_name AS tname, c.column_name AS cname, "
+        "e.dimension_table_id AS dim))"
     )
     with graph_engine.connect() as conn:
-        rows = {(r.tname, r.cname) for r in conn.execute(text(sql))}
-    assert rows == {("journal", "account_id")}
+        rows = {(r.tname, r.cname, r.dim) for r in conn.execute(text(sql))}
+    # Both facts slice their own account_id, each bound to the accounts dim (t2).
+    assert rows == {("journal", "account_id", "t2"), ("statement", "account_id", "t2")}
+
+
+def test_conformed_dimension_pairs_facts_sharing_a_dim(graph_engine: Engine) -> None:
+    """conformed_dimension (DAT-756): the two facts sharing the accounts dim are
+    typed as a conformed pair — derived from the SHARED dimension identity, both
+    directions of the symmetric edge, carrying the dim table it conforms over."""
+    sql = (
+        f"SELECT src, dst, dim FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst, "
+        "e.dimension_table_id AS dim))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst, r.dim) for r in conn.execute(text(sql))}
+    assert rows == {("journal", "statement", "t2"), ("statement", "journal", "t2")}
+
+
+def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:
+    """The DAT-723 fan trap: the spurious fact↔fact relationship whose endpoints both
+    resolve the accounts dim is NOT surfaced as a reference — it is a conformed
+    dimension. The genuine fact→dim FK (journal→accounts) survives (a dim key is
+    never a slice column, so the exclusion cannot fire on it)."""
+    sql = (
+        f"SELECT src, dst FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS refs]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst) for r in conn.execute(text(sql))}
+    assert ("journal", "statement") not in rows, "conformed pair leaked into refs"
+    assert ("journal", "accounts") in rows, "genuine fact→dim FK was wrongly excluded"
 
 
 def test_concept_edge_disjoint_with_matches(graph_engine: Engine) -> None:
@@ -337,7 +389,7 @@ def _part_of_closure(conn, read: str, start: str) -> list[tuple[str, int]]:
         f"  FROM \"{read}\".og_concept_edges WHERE predicate = 'part_of' "
         "  UNION ALL "
         "  SELECT r.src, e.to_concept_id, r.depth + 1, r.path || e.to_concept_id "
-        f"  FROM reach r JOIN \"{read}\".og_concept_edges e "
+        f'  FROM reach r JOIN "{read}".og_concept_edges e '
         "    ON e.from_concept_id = r.dst AND e.predicate = 'part_of' "
         "  WHERE r.depth < 4 AND NOT e.to_concept_id = ANY(r.path)"
         ") SELECT dst, depth FROM reach WHERE src = :s ORDER BY depth, dst"

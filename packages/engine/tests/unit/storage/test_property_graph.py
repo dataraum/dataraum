@@ -41,9 +41,10 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Four edges: refs, has_dimension, derived_from (P1) + concept_edge (DAT-729).
-    assert graph_sql.count("SOURCE KEY") == 4
-    assert graph_sql.count("DESTINATION KEY") == 4
+    # Five edges: refs, has_dimension, derived_from (P1), concept_edge (DAT-729),
+    # conformed_dimension (DAT-756).
+    assert graph_sql.count("SOURCE KEY") == 5
+    assert graph_sql.count("DESTINATION KEY") == 5
     # The measure→materialization MATCH (the P1 AC) reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -52,6 +53,10 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)" in graph_sql
     assert "LABEL concept_edge" in graph_sql
     assert "PROPERTIES (predicate, tolerance)" in graph_sql
+    # The conformed_dimension edge binds fact → fact over the shared dim identity.
+    assert "SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)" in graph_sql
+    assert "LABEL conformed_dimension" in graph_sql
+    assert "PROPERTIES (dimension_table_id, dimension_attribute)" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

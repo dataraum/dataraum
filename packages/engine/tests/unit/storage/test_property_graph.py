@@ -53,11 +53,11 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)" in graph_sql
     assert "LABEL concept_edge" in graph_sql
     assert "PROPERTIES (predicate, tolerance)" in graph_sql
-    # The conformed_dimension edge binds fact → fact over the shared dim identity,
-    # carrying each side's slice level (table-grain complement of the refs exclusion).
+    # The conformed_dimension edge binds fact → fact over the shared dim AXIS
+    # (attribute grain — the alignable drill-across GROUP BY the SQL agents author).
     assert "SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)" in graph_sql
     assert "LABEL conformed_dimension" in graph_sql
-    assert "PROPERTIES (dimension_table_id, from_attribute, to_attribute)" in graph_sql
+    assert "PROPERTIES (dimension_table_id, dimension_attribute)" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

@@ -31,20 +31,24 @@ reverted for name-matching, rebuilt on the identity.
   now a `<dim table>.<attribute>` label, not a physical column name.
 - **`og_conformed_dimension` edge (NEW) + `og_has_dimension` identity props + a changed
   `og_references`.** `og_has_dimension` carries `dimension_table_id`/`dimension_attribute`/
-  `fk_role`. `og_conformed_dimension` (table→table, TABLE grain, carrying
-  `from_attribute`/`to_attribute`) types two facts sharing a dim table. `og_references`
+  `fk_role`. `og_conformed_dimension` (table→table, ATTRIBUTE grain — same
+  `(dimension_table_id, dimension_attribute)`) types two facts sharing a dimension
+  AXIS (the alignable drill-across GROUP BY the SQL agents author over). `og_references`
   now EXCLUDES the DAT-723 fan trap (a relationship whose both endpoints are slice
-  columns resolving one dim table) — the exact complement of the conformed edge.
+  columns resolving one dim TABLE) — TABLE grain, deliberately DECOUPLED from the
+  attribute-grain edge (a cross-level fan trap is excluded from refs yet correctly has
+  no conformed edge).
 
 ### For eval (oracle surfaces)
 
 - **`og_conformed_dimension` — new graph-edge truth section.** Assert the finance
-  conformed pairs (facts sharing a dim table — e.g. `trial_balance` ↔ `balance_sheet` on
-  the shared account dim) are typed via the shared `dimension_table_id`, both directions,
-  carrying each side's slice attribute. Graded absolutely (generator-known pairs). Note a
-  single fact-table PAIR can emit MULTIPLE edges — one per matching slice-row pair (a fact
-  with several role-playing FKs to one dim) — so assert on the table pair + dim, not a
-  single-edge count.
+  conformed pairs (facts sharing a dimension AXIS — e.g. `trial_balance` ↔ `balance_sheet`
+  both sliced on the accounts dim at the SAME attribute) are typed via the shared
+  `(dimension_table_id, dimension_attribute)`, both directions. Graded absolutely
+  (generator-known pairs). Two caveats: (a) it is ATTRIBUTE grain — two facts sharing the
+  dim TABLE but sliced at DIFFERENT attributes do NOT conform (no alignable axis); (b) a
+  single fact-table PAIR can emit MULTIPLE edges (role-playing FKs at one axis) — assert
+  on the table pair + `(dim, attribute)`, not a single-edge count.
 - **`og_references` — CHANGED surface.** Fan-trap fact↔fact edges between shared-dimension
   slice columns no longer appear as `refs`. Any truth assertion enumerating references
   must expect these excluded (a genuine fact→dim FK still appears — a dim key is never a

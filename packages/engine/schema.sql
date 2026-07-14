@@ -608,6 +608,9 @@ CREATE TABLE slice_definitions (
 	table_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
 	column_name VARCHAR, 
+	dimension_table_id VARCHAR, 
+	dimension_attribute VARCHAR, 
+	fk_role VARCHAR, 
 	slice_priority INTEGER NOT NULL, 
 	slice_type VARCHAR NOT NULL, 
 	distinct_values JSON, 
@@ -620,10 +623,13 @@ CREATE TABLE slice_definitions (
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 
 	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
 	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
-	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
+	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id), 
+	CONSTRAINT fk_slice_definitions_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)
 );
 
 CREATE INDEX idx_slice_definitions_column ON slice_definitions (column_id);
+
+CREATE INDEX idx_slice_definitions_dim_table ON slice_definitions (dimension_table_id);
 
 CREATE INDEX idx_slice_definitions_table ON slice_definitions (table_id);
 

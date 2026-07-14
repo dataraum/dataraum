@@ -181,6 +181,25 @@ def _seed(engine: Engine) -> None:
             "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
             f"VALUES ('{eid}', 'finance', 'disjoint_with', '{frm}', '{to}', 'seed', '{TS}')"
         )
+    # A part_of concept spine (DAT-729): a 3-level chain comp_a → comp_b → comp_c PLUS a
+    # back edge comp_c → comp_a (a pathological cycle bad authoring could introduce). The
+    # concept_ids are the readable 'cmp_*' so the closure can assert on them; the
+    # og_concept_edges view resolves the (vertical, name) endpoints to exactly these ids.
+    for cid, cname in [("cmp_a", "comp_a"), ("cmp_b", "comp_b"), ("cmp_c", "comp_c")]:
+        stmts.append(
+            "INSERT INTO concepts (concept_id, vertical, name, kind, created_at) "
+            f"VALUES ('{cid}', 'finance', '{cname}', 'measure', '{TS}')"
+        )
+    for eid, frm, to in [
+        ("pe_1", "comp_a", "comp_b"),
+        ("pe_2", "comp_b", "comp_c"),
+        ("pe_3", "comp_c", "comp_a"),  # back edge → cycle comp_a→comp_b→comp_c→comp_a
+    ]:
+        stmts.append(
+            "INSERT INTO concept_edges "
+            "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
+            f"VALUES ('{eid}', 'finance', 'part_of', '{frm}', '{to}', 'seed', '{TS}')"
+        )
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
@@ -289,6 +308,54 @@ def test_concept_edge_disjoint_with_matches(graph_engine: Engine) -> None:
         ("accounts_payable", "accounts_receivable"),
         ("accounts_receivable", "accounts_payable"),
     }
+
+
+def test_concept_edge_part_of_matches(graph_engine: Engine) -> None:
+    """part_of is a directed 1-hop concept→concept edge, selected by the predicate filter."""
+    sql = (
+        f"SELECT a, b FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS concept_node)-[e IS concept_edge WHERE e.predicate = 'part_of']"
+        "->(b IS concept_node) "
+        "COLUMNS (a.name AS a, b.name AS b))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.a, r.b) for r in conn.execute(text(sql))}
+    # The 3-level spine + its back edge, and NOTHING from the disjoint_with edges.
+    assert rows == {("comp_a", "comp_b"), ("comp_b", "comp_c"), ("comp_c", "comp_a")}
+
+
+def _part_of_closure(conn, read: str, start: str) -> list[tuple[str, int]]:
+    """Bounded recursive-CTE ancestor closure over the part_of concept edges.
+
+    The P1 mechanism (test_property_graph ``_closure_from``) applied to the concept_edge
+    view: depth < 4 caps traversal, ``NOT to_concept_id = ANY(path)`` is the cycle guard,
+    ``predicate = 'part_of'`` selects the one relation. Returns (ancestor_id, depth).
+    """
+    sql = (
+        "WITH RECURSIVE reach(src, dst, depth, path) AS ("
+        "  SELECT from_concept_id, to_concept_id, 1, ARRAY[from_concept_id, to_concept_id] "
+        f"  FROM \"{read}\".og_concept_edges WHERE predicate = 'part_of' "
+        "  UNION ALL "
+        "  SELECT r.src, e.to_concept_id, r.depth + 1, r.path || e.to_concept_id "
+        f"  FROM reach r JOIN \"{read}\".og_concept_edges e "
+        "    ON e.from_concept_id = r.dst AND e.predicate = 'part_of' "
+        "  WHERE r.depth < 4 AND NOT e.to_concept_id = ANY(r.path)"
+        ") SELECT dst, depth FROM reach WHERE src = :s ORDER BY depth, dst"
+    )
+    return [(r.dst, r.depth) for r in conn.execute(text(sql), {"s": start})]
+
+
+def test_part_of_closure_walks_ancestors_and_guards_cycle(graph_engine: Engine) -> None:
+    """part_of ancestry via the recursive CTE: transitive ancestors, cycle-guarded (P4 AC).
+
+    From comp_a the closure reaches its transitive wholes comp_b (depth 1) and comp_c
+    (depth 2); the back edge comp_c→comp_a does NOT re-enter comp_a — the cycle guard
+    fires and the walk terminates.
+    """
+    with graph_engine.connect() as conn:
+        rows = _part_of_closure(conn, _read_schema(), "cmp_a")
+    assert rows == [("cmp_b", 1), ("cmp_c", 2)]
+    assert "cmp_a" not in {dst for dst, _ in rows}  # cycle guard blocked the back edge
 
 
 def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:

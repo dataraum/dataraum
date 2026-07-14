@@ -8,13 +8,20 @@ phases derive more edges (``reconciles_with`` from the aggregation-lineage witne
 and ``frame`` authors them for novel datasets (P13); this module owns the SEED
 authoring from the vertical's own declarations.
 
-``disjoint_with`` is read straight off convention ``concept_groups``: a convention
-partitions concepts into named, mutually-exclusive sets (finance's
-``sign_natural_balance`` splits measures credit- vs debit-normal), and two concepts
-in DIFFERENT groups of one convention cannot co-classify — an account is an asset xor
-a liability. That is exactly ``disjoint_with``, over the partition the engine already
-parses and lint-validates (:class:`~dataraum.analysis.semantic.ontology.OntologyConvention`)
-— no new authoring surface, the config→DB lever again.
+``disjoint_with`` is read off convention ``concept_groups``: a convention partitions
+concepts into named, mutually-exclusive sets (finance's ``sign_natural_balance`` splits
+measures credit- vs debit-normal), and two concepts in DIFFERENT groups of one
+convention cannot co-classify — an account is an asset xor a liability. That is exactly
+``disjoint_with``.
+
+``part_of`` is read off the vertical's ``compositions`` (DAT-729): each ``whole ←
+parts`` declaration promotes ``part → whole`` mereological edges (``cash`` part_of
+``current_assets``) — concept-grain composition, distinct from the account-instance
+chart-of-accounts tree (that is the physical ``references`` topology). Both read off
+declarations the engine already parses + lint-validates
+(:class:`~dataraum.analysis.semantic.ontology.OntologyConvention` /
+:class:`~dataraum.analysis.semantic.ontology.OntologyComposition`) — no new authoring
+surface, the config→DB lever again.
 """
 
 from __future__ import annotations
@@ -52,7 +59,7 @@ def ensure_concept_edges_seeded(session: Session, vertical: str) -> int:
     definition = OntologyLoader().load(vertical)
     if definition is None:
         return 0
-    rows = _disjoint_with_rows(vertical, definition)
+    rows = _disjoint_with_rows(vertical, definition) + _part_of_rows(vertical, definition)
     if not rows:
         return 0
     seeded = insert_if_absent(
@@ -98,6 +105,29 @@ def _disjoint_with_rows(vertical: str, definition: OntologyDefinition) -> list[d
                             }
                         )
     return rows
+
+
+def _part_of_rows(vertical: str, definition: OntologyDefinition) -> list[dict[str, Any]]:
+    """``part_of`` edge rows from the vertical's concept ``compositions``.
+
+    Each declared composition (``whole`` ← ``parts``) promotes one directed
+    ``part → whole`` edge per part — mereological containment at the concept grain
+    (``cash`` part_of ``current_assets``). Directed and single-row (unlike the
+    symmetric ``disjoint_with``): the transitive ancestry is walked by the bounded
+    recursive CTE, never materialized. Endpoints are declared concepts (lint-checked
+    at load), so the ``og_concept_edges`` JOIN always resolves them.
+    """
+    return [
+        {
+            "vertical": vertical,
+            "predicate": ConceptEdgePredicate.PART_OF.value,
+            "from_concept": part,
+            "to_concept": comp.whole,
+            "source": "seed",
+        }
+        for comp in definition.compositions
+        for part in comp.parts
+    ]
 
 
 __all__ = ["ensure_concept_edges_seeded"]

@@ -530,25 +530,34 @@ def _view_structures(
         c: frame.get_column(c).is_null().to_numpy() for c in eligible if c not in null_coded
     }
 
-    pair_arrays_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+    pair_arrays_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, int, int]] = {}
 
-    def edge_arrays(s: str, t: str) -> tuple[np.ndarray, np.ndarray]:
-        """(codes_s, codes_t) over the pairwise-complete rows for the edge arm."""
+    def edge_arrays(s: str, t: str) -> tuple[np.ndarray, np.ndarray, int, int]:
+        """(codes_s, codes_t, d_s, d_t) over the pairwise-complete rows (edge arm).
+
+        The distinct counts are taken on the SAME rows the statistics run on —
+        full-view null-aware counts would let a null-degraded copy of a level
+        read as strictly finer (its NULL category inflates the count by one) and
+        interpose as a fake level between its base and the base's determinant.
+        """
         key = (s, t)
         if key not in pair_arrays_cache:
             masks = [null_mask[c] for c in (s, t) if c in null_mask]
             if masks and (drop := np.logical_or.reduce(masks)).any():
                 keep = ~drop
-                pair_arrays_cache[key] = (codes[s][keep], codes[t][keep])
+                cs, ct = codes[s][keep], codes[t][keep]
+                d_s = len(np.unique(cs)) if len(cs) else 0
+                d_t = len(np.unique(ct)) if len(ct) else 0
+                pair_arrays_cache[key] = (cs, ct, d_s, d_t)
             else:
-                pair_arrays_cache[key] = (codes[s], codes[t])
+                pair_arrays_cache[key] = (codes[s], codes[t], scan.d2[s], scan.d2[t])
         return pair_arrays_cache[key]
 
     g3_cache: dict[tuple[str, str], float] = {}
 
     def row_g3(a: str, b: str) -> float:
         if (a, b) not in g3_cache:
-            ca, cb = edge_arrays(a, b)
+            ca, cb, _, _ = edge_arrays(a, b)
             g3_cache[(a, b)] = stats.row_g3(ca, cb) if len(ca) else 1.0
         return g3_cache[(a, b)]
 
@@ -582,9 +591,11 @@ def _view_structures(
             if fwd <= FD_MAX_G3 and bwd <= FD_MAX_G3:
                 cand_alias.append((a, b))
             for s, t in ((a, b), (b, a)):
-                if scan.d2[s] <= scan.d2[t] or s in bad_det:
+                if s in bad_det:
                     continue
-                cs, ct = edge_arrays(s, t)
+                cs, ct, d_s, d_t = edge_arrays(s, t)
+                if d_s <= d_t:  # finest → coarsest, on the rows the stats see
+                    continue
                 if len(cs) < MIN_SUPPORT_ROWS and len(cs) < n_sample:
                     logger.info(
                         "hierarchy_edge_excluded",
@@ -616,7 +627,10 @@ def _view_structures(
 
     def perm_p(arm: str, a: str, b: str) -> float:
         if (arm, a, b) not in p_cache:
-            ca, cb = edge_arrays(a, b) if arm == "e" else (codes[a], codes[b])
+            if arm == "e":
+                ca, cb, _, _ = edge_arrays(a, b)
+            else:
+                ca, cb = codes[a], codes[b]
             p_cache[(arm, a, b)] = stats.perm_pvalue(ca, cb, rng)
         return p_cache[(arm, a, b)]
 

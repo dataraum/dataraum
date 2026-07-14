@@ -162,6 +162,25 @@ def _seed(engine: Engine) -> None:
         f"VALUES ('v_1', 't1', 't_enr', 'journal_enriched', '{RUN}', "
         f"'[\"t2\"]'::json, true, '{TS}')"
     )
+    # Concept vertices + a disjoint_with concept edge (DAT-729): the vocabulary graph.
+    # Concepts/edges are workspace-persistent (NOT run-versioned) — plain active rows,
+    # no head to promote. The og_concept_edges view resolves the edge's (vertical, name)
+    # endpoints to these concepts' ids for the concept→concept PGQ binding.
+    for cid, cname in [("con_ap", "accounts_payable"), ("con_ar", "accounts_receivable")]:
+        stmts.append(
+            "INSERT INTO concepts (concept_id, vertical, name, kind, created_at) "
+            f"VALUES ('{cid}', 'finance', '{cname}', 'measure', '{TS}')"
+        )
+    # disjoint_with is symmetric → both directions, so a directed MATCH finds it either way.
+    for eid, frm, to in [
+        ("ce_1", "accounts_payable", "accounts_receivable"),
+        ("ce_2", "accounts_receivable", "accounts_payable"),
+    ]:
+        stmts.append(
+            "INSERT INTO concept_edges "
+            "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
+            f"VALUES ('{eid}', 'finance', 'disjoint_with', '{frm}', '{to}', 'seed', '{TS}')"
+        )
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
@@ -249,6 +268,27 @@ def test_has_dimension_edge(graph_engine: Engine) -> None:
     with graph_engine.connect() as conn:
         rows = {(r.tname, r.cname) for r in conn.execute(text(sql))}
     assert rows == {("journal", "account_id")}
+
+
+def test_concept_edge_disjoint_with_matches(graph_engine: Engine) -> None:
+    """DAT-729: the concept→concept binding — a disjoint_with edge is enumerable via PGQ.
+
+    This is the P4 de-risk: P1 bound only table→table and table→column edges; a concept
+    edge over the og_concepts vertex is a new element shape. A directed MATCH filtering on
+    the predicate property must return both stored directions of the symmetric edge.
+    """
+    sql = (
+        f"SELECT a, b FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS concept_node)-[e IS concept_edge WHERE e.predicate = 'disjoint_with']"
+        "->(b IS concept_node) "
+        "COLUMNS (a.name AS a, b.name AS b))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.a, r.b) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("accounts_payable", "accounts_receivable"),
+        ("accounts_receivable", "accounts_payable"),
+    }
 
 
 def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:

@@ -16,6 +16,7 @@ from types import ModuleType
 
 from sqlalchemy import func, select
 
+from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_seeded
 from dataraum.analysis.semantic.concept_store import (
     ensure_concepts_seeded,
     load_workspace_concepts,
@@ -156,6 +157,10 @@ class SemanticPerColumnPhase(BasePhase):
         # finance seeds from its shipped ontology; a framed vertical seeds nothing
         # here and relies on frame's typed writes.
         ensure_concepts_seeded(ctx.session, ontology)
+        # Concept edges (DAT-729): seed the vertical's typed vocabulary edges
+        # (disjoint_with from the convention partitions) into `concept_edges` right
+        # after the concepts they reference — same idempotent config→DB seed.
+        ensure_concept_edges_seeded(ctx.session, ontology)
         # Cold-start fail-loud (DAT-382, generalized): grounding against zero
         # concepts is a silent no-op. Refuse it, naming the missing step.
         if not load_workspace_concepts(ctx.session, ontology).concepts:

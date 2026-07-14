@@ -12,6 +12,7 @@ DROP VIEW IF EXISTS __READ__.og_concepts;
 DROP VIEW IF EXISTS __READ__.og_references;
 DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
+DROP VIEW IF EXISTS __READ__.og_concept_edges;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -65,6 +66,20 @@ CROSS JOIN LATERAL json_array_elements_text(
      COALESCE(ev.dimension_table_ids, '[]'::json)) AS dt(value)
 WHERE ev.view_table_id IS NOT NULL;
 
+CREATE VIEW __READ__.og_concept_edges AS
+SELECT e.edge_id::text AS edge_id,
+       cf.concept_id::text AS from_concept_id,
+       ct.concept_id::text AS to_concept_id,
+       e.predicate, e.tolerance
+FROM __READ__.concept_edges e
+JOIN __READ__.concepts cf
+  ON cf.vertical = e.vertical AND cf.name = e.from_concept
+ AND cf.superseded_at IS NULL
+JOIN __READ__.concepts ct
+  ON ct.vertical = e.vertical AND ct.name = e.to_concept
+ AND ct.superseded_at IS NULL
+WHERE e.superseded_at IS NULL;
+
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
@@ -90,5 +105,10 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (view_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (base_table_id) REFERENCES og_tables (table_id)
       LABEL derived_from
-      PROPERTIES (base_role)
+      PROPERTIES (base_role),
+    __READ__.og_concept_edges KEY (edge_id)
+      SOURCE KEY (from_concept_id) REFERENCES og_concepts (concept_id)
+      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)
+      LABEL concept_edge
+      PROPERTIES (predicate, tolerance)
   );

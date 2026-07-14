@@ -22,12 +22,15 @@ and ``Table``; the vocabulary ``Concept`` vertices are P3. Edges/props carried:
     column_node  (KEY column_id)  props: semantic_role (has_role),
                                           materialization (materializes_as)
     table_node   (KEY table_id)   props: table_role (fact/periodic_snapshot/dimension)
-    refs          table → table   [relationships]      FK topology + cardinality
-    has_dimension table → column  [slice_definitions]  a fact's slice columns
-    derived_from  table → table   [enriched_views]     view → fact + dim bases
+    refs          table → table     [relationships]      FK topology + cardinality
+    has_dimension table → column    [slice_definitions]  a fact's slice columns
+    derived_from  table → table     [enriched_views]     view → fact + dim bases
+    concept_edge  concept → concept [concept_edges]      part_of/disjoint/reconciles (P4)
 
 ``rolls_up_to`` (dimension_hierarchies' JSON members) lands in P5 where its
-consumer does; concept edges (part_of / disjoint_with / reconciles_with) in P4.
+consumer does. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
+``part_of`` / ``disjoint_with`` / ``reconciles_with`` as a ``predicate`` property;
+its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 
 **Bootstrap ordering is load-bearing.** A property graph *depends on* its element
 views, and an element view depends on the ``current_*`` views. Postgres refuses to
@@ -73,6 +76,7 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_references",
     "og_has_dimension",
     "og_derived_from",
+    "og_concept_edges",
 )
 
 
@@ -126,13 +130,36 @@ def _element_view_sql(name: str) -> str:
     if name == "og_concepts":
         # Concept vertex: the workspace's typed vocabulary (DAT-728). Active rows
         # only (superseded_at IS NULL) — the partial-unique index makes concept_id
-        # unique among them, so it is a valid KEY. The vocabulary edges
-        # (grounded_by, part_of) arrive in later phases; the vertex stands alone here.
+        # unique among them, so it is a valid KEY. Its vocabulary edges are the
+        # `concept_edge` edge below (DAT-729); `grounded_by` arrives with P2.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_concepts AS\n"
             f"SELECT concept_id::text AS concept_id, vertical, name, kind\n"
             f"FROM {READ_TOKEN}.concepts\n"
             f"WHERE superseded_at IS NULL;"
+        )
+    if name == "og_concept_edges":
+        # concept_edge (concept → concept): the vocabulary relations part_of /
+        # disjoint_with / reconciles_with (DAT-729), predicate carried as a property.
+        # concept_edges stores endpoints by the stable (vertical, name) key — the P3
+        # identity contract — so each endpoint JOINs to its ACTIVE concept to resolve
+        # the concept_id the PGQ vertex KEY needs. The INNER JOINs drop an edge whose
+        # endpoint concept is superseded/absent (the graph never dangles). edge_id is
+        # the per-edge local key (unique among active rows via the partial index).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_concept_edges AS\n"
+            f"SELECT e.edge_id::text AS edge_id,\n"
+            f"       cf.concept_id::text AS from_concept_id,\n"
+            f"       ct.concept_id::text AS to_concept_id,\n"
+            f"       e.predicate, e.tolerance\n"
+            f"FROM {READ_TOKEN}.concept_edges e\n"
+            f"JOIN {READ_TOKEN}.concepts cf\n"
+            f"  ON cf.vertical = e.vertical AND cf.name = e.from_concept\n"
+            f" AND cf.superseded_at IS NULL\n"
+            f"JOIN {READ_TOKEN}.concepts ct\n"
+            f"  ON ct.vertical = e.vertical AND ct.name = e.to_concept\n"
+            f" AND ct.superseded_at IS NULL\n"
+            f"WHERE e.superseded_at IS NULL;"
         )
     if name == "og_references":
         # refs edge (table → table): the detected FK topology. relationship_id is
@@ -217,7 +244,12 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (view_table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (base_table_id) REFERENCES og_tables (table_id)\n"
         f"      LABEL derived_from\n"
-        f"      PROPERTIES (base_role)\n"
+        f"      PROPERTIES (base_role),\n"
+        f"    {READ_TOKEN}.og_concept_edges KEY (edge_id)\n"
+        f"      SOURCE KEY (from_concept_id) REFERENCES og_concepts (concept_id)\n"
+        f"      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)\n"
+        f"      LABEL concept_edge\n"
+        f"      PROPERTIES (predicate, tolerance)\n"
         f"  );"
     )
 

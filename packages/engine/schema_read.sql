@@ -59,6 +59,10 @@ DROP VIEW IF EXISTS __READ__.columns;
 CREATE VIEW __READ__.columns AS
 SELECT * FROM __WS__.columns;
 
+DROP VIEW IF EXISTS __READ__.concept_edges;
+CREATE VIEW __READ__.concept_edges AS
+SELECT * FROM __WS__.concept_edges;
+
 DROP VIEW IF EXISTS __READ__.concepts;
 CREATE VIEW __READ__.concepts AS
 SELECT * FROM __WS__.concepts;

@@ -98,10 +98,10 @@ MIN_SUPPORT_ROWS = 100
 MAX_SAMPLE_CELLS = 40_000_000
 MIN_SAMPLE_ROWS = 50_000
 
-# Fixed seeds: the permutation null and the row sample must be identical across
-# Temporal success-redeliveries so the run-versioned upsert converges.
+# Fixed seed: the permutation null must be identical across Temporal
+# success-redeliveries so the run-versioned upsert converges (the row sample is
+# deterministic by construction — bottom-k-by-hash, see _pull_sample).
 _PERM_SEED = 20260714
-_SAMPLE_SEED = 757
 
 # COUNT(DISTINCT (a, b)) aggregates per scan statement — wide views chunk the
 # pair family across several single-scan queries instead of one giant SELECT.
@@ -273,17 +273,21 @@ def _pull_sample(
 ) -> pl.DataFrame | None:
     """An aligned VARCHAR sample of the candidate columns for the row statistics.
 
-    Full view when it fits ``MAX_SAMPLE_CELLS``; else a seeded reservoir sample
-    (row-level statistics are sample-honest — g3 exactness is subset-invariant —
-    while every guard reads the full-view scan, so a sampled fold key can never
-    trip the near-key guard: the rel-hm lesson).
+    Full view when it fits ``MAX_SAMPLE_CELLS``; else a bottom-k-by-hash sketch
+    (the DAT-571 drivers idiom: ``ORDER BY hash(cols) LIMIT n`` is a uniform
+    per-row sample that stays deterministic on the multi-threaded worker
+    connection, where ``USING SAMPLE … REPEATABLE`` only holds single-threaded).
+    Row-level statistics are sample-honest — g3 exactness is subset-invariant,
+    the permutation null is recomputed on the sample — while every guard reads
+    the full-view scan, so a sampled fold key can never trip the near-key guard
+    (the rel-hm lesson).
     """
     n_sample = max(MIN_SAMPLE_ROWS, MAX_SAMPLE_CELLS // max(len(cols), 1))
-    sample = (
-        f" USING SAMPLE reservoir({n_sample} ROWS) REPEATABLE ({_SAMPLE_SEED})"
-        if n_rows > n_sample
-        else ""
-    )
+    sample = ""
+    if n_rows > n_sample:
+        hash_cols = ", ".join(f'"{c}"' for c in cols)
+        sample = f" ORDER BY hash({hash_cols}) LIMIT {n_sample}"
+        logger.info("hierarchy_view_sampled", view=view_name, full_n=n_rows, sample_n=n_sample)
     select_cols = ", ".join(f'CAST("{c}" AS VARCHAR) AS "{c}"' for c in cols)
     try:
         table = duckdb_conn.execute(

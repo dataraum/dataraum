@@ -5,6 +5,64 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-729 — concept edges (`disjoint_with` / `part_of`)
+
+**Branch:** `feat/dat-729-concept-edges`. **New graph-edge oracle surfaces — no
+detector-score change.** Phase 4 of the operating-model graph (DAT-725): the concept
+vocabulary gains typed edges. Both are **seed structure**, not a detector
+recalibration — the eval work is **new `metadata_truth.yaml` sections + oracle
+assertions**, graded absolutely. (Conformed-dimension typing was pulled from this phase
+— it needs a real dimension-identity design, tracked separately; see the DAT-725 thread.)
+
+### What changed
+
+- **`disjoint_with` concept edges (seed).** A new `concept_edges` table (workspace-
+  persistent, supersede-on-edit — same identity contract as `concepts`) seeded from
+  convention `concept_groups`: concepts in DIFFERENT groups of one convention are
+  disjoint (an account is an asset xor a liability). Finance's `sign_natural_balance`
+  (credit-normal 4 × debit-normal 8) yields **32 unordered = 64 directed** edges,
+  including the DD's named examples `accounts_payable ⊥ accounts_receivable` and
+  `current_assets ⊥ current_liabilities`. Bound into the property graph as the
+  `concept_edge` edge (predicate property).
+- **`part_of` concept edges (seed).** A new `compositions` ontology block (`whole ←
+  parts`, lint-validated) seeds directed `part → whole` edges: finance authors
+  `current_assets ← {cash, accounts_receivable, inventory}` and `current_liabilities ←
+  {accounts_payable}` (4 edges). Concept-grain composition ONLY — the account-instance
+  chart-of-accounts tree stays the physical `references` topology (P1) / `rolls_up_to`
+  (P5). Transitive ancestry is a bounded recursive-CTE (max-depth 4 + cycle guard).
+- **`reconciles_with` DEFERRED to P2 (DAT-727).** Its producers are all Grounding-node-
+  dependent (the aggregation-lineage witness reconciles a measure against its event
+  aggregation = two groundings of ONE concept; the "4 generator pairs" are dataset-level,
+  not Concept↔Concept). The `ConceptEdge` model carries the `reconciles_with` predicate
+  + `tolerance` for P2 to populate — see the DAT-727 note.
+
+### For eval (new oracle surfaces to add)
+
+- **`disjoint_with` truth section.** Assert the finance disjoint set against the sign
+  partition RULE (any credit-normal concept ⊥ any debit-normal concept), not a hand-
+  picked list — the engine emits the full cross-product, both directions. Named
+  anchors: `accounts_payable ↔ accounts_receivable`, `current_assets ↔ current_liabilities`.
+- **`part_of` truth section.** Assert the composition edges (`cash`/`accounts_receivable`/
+  `inventory` part_of `current_assets`; `accounts_payable` part_of `current_liabilities`),
+  directed (whole is NOT part_of its part), and that the recursive-CTE ancestor closure
+  is transitive + cycle-guarded (the graph query, not a stored transitive edge).
+- **No stock/flow, additivity, or grounding recalibration** — no detector inputs, scores,
+  or thresholds changed. `reconciles_with` is NOT in this truth set (lands with P2).
+
+### testdata hints
+
+None. The finance corpus already carries the disjoint/compose partitions in the shipped
+ontology, so both edge types are exercised without new fixtures.
+
+### Cross-package / schema
+
+`schema.sql` gained the `concept_edges` table; `schema_graph.sql` gained the
+`og_concept_edges` graph element; the cockpit drizzle mirror gained the `conceptEdges`
+view (`schema-drift` CI enforces). No read-view (`current_*`) shape change beyond the new
+`concept_edges` passthrough.
+
+---
+
 ## DAT-728 — typed concept vocabulary (config→DB) + `ontology_prior` witness drop + 4-way table role
 
 **Branch:** `feat/dat-728-typed-concept-vocabulary`. Three eval-facing changes: a

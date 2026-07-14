@@ -251,3 +251,56 @@ def test_convention_model_defaults() -> None:
     """A convention needs only id + statement; groups/targets default empty."""
     conv = OntologyConvention(id="c", statement="s")
     assert conv.targets == [] and conv.concept_groups == {}
+
+
+class TestCompositions:
+    """Concept compositions → part_of edges (DAT-729)."""
+
+    @staticmethod
+    def _ontology(compositions: list[dict]) -> dict:
+        return {
+            "name": "t",
+            "concepts": [
+                {"name": "current_assets", "typical_role": "measure"},
+                {"name": "cash", "typical_role": "measure"},
+                {"name": "inventory", "typical_role": "measure"},
+            ],
+            "compositions": compositions,
+        }
+
+    def test_finance_ships_compositions(self) -> None:
+        """The shipped finance vertical declares the balance-sheet compositions."""
+        ontology = OntologyLoader().load("finance")
+        wholes = {c.whole for c in ontology.compositions}
+        assert {"current_assets", "current_liabilities"} <= wholes
+        current_assets = next(c for c in ontology.compositions if c.whole == "current_assets")
+        assert set(current_assets.parts) == {"cash", "accounts_receivable", "inventory"}
+
+    def test_valid_composition_resolves(self) -> None:
+        ont = OntologyDefinition(
+            **self._ontology([{"whole": "current_assets", "parts": ["cash", "inventory"]}])
+        )
+        assert len(ont.compositions) == 1
+
+    def test_lint_rejects_unknown_part(self) -> None:
+        """A part that is not a declared concept fails loud at load."""
+        with pytest.raises(ValueError, match="not a declared concept"):
+            OntologyDefinition(
+                **self._ontology([{"whole": "current_assets", "parts": ["nonexistent"]}])
+            )
+
+    def test_lint_rejects_unknown_whole(self) -> None:
+        """The whole must also be a declared concept."""
+        with pytest.raises(ValueError, match="not a declared concept"):
+            OntologyDefinition(**self._ontology([{"whole": "nonexistent", "parts": ["cash"]}]))
+
+    def test_lint_rejects_self_part(self) -> None:
+        """A concept cannot be part_of itself — a self-loop the graph must never carry."""
+        with pytest.raises(ValueError, match="cannot be part_of itself"):
+            OntologyDefinition(
+                **self._ontology([{"whole": "current_assets", "parts": ["cash", "current_assets"]}])
+            )
+
+    def test_no_compositions_is_valid(self) -> None:
+        ont = OntologyDefinition(name="t", concepts=[OntologyConcept(name="x")])
+        assert ont.compositions == []

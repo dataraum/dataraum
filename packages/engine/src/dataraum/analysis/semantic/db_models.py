@@ -70,6 +70,32 @@ class TableRole(StrEnum):
     DIMENSION = "dimension"
 
 
+class ConceptEdgePredicate(StrEnum):
+    """The typed relation a concept edge asserts (DAT-729).
+
+    The operating-model graph's *vocabulary* edges — concept → concept, distinct
+    from the physical ``references`` / ``has_dimension`` edges over tables/columns.
+
+    - ``PART_OF`` — mereological composition, DIRECTED: the source concept is a
+      component that rolls up into the target (``accounts_payable`` part_of
+      ``current_liabilities``). Its transitive closure (all ancestors of a concept)
+      is walked by the bounded recursive CTE, never a PGQ path quantifier.
+    - ``DISJOINT_WITH`` — SYMMETRIC: no instance classifies as both (an account is
+      an asset xor a liability). Derived from a convention's ``concept_groups``
+      partition — concepts in different groups of one convention are disjoint.
+    - ``RECONCILES_WITH`` — SYMMETRIC: two measures/groundings must tie out within a
+      ``tolerance`` (trial-balance ↔ general-ledger). Declared, or witnessed by the
+      aggregation-lineage reconciliation, or free from a concept's two groundings.
+
+    Symmetric predicates are materialized in BOTH directions (see
+    :class:`ConceptEdge`) so a directed PGQ ``MATCH`` from either endpoint finds them.
+    """
+
+    PART_OF = "part_of"
+    DISJOINT_WITH = "disjoint_with"
+    RECONCILES_WITH = "reconciles_with"
+
+
 def derive_table_role(
     is_fact: bool,
     grain_columns: Sequence[str],
@@ -146,6 +172,73 @@ class Concept(Base):
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'frame' | 'teach'
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ConceptEdge(Base):
+    """A typed edge between two concepts — the operating-model graph's vocabulary (DAT-729).
+
+    The concept-level relations ``part_of`` / ``disjoint_with`` / ``reconciles_with``
+    (:class:`ConceptEdgePredicate`), promoted to typed rows the same way concepts were
+    (config→DB): the shipped vertical seeds them, the pipeline derives more, ``frame``
+    authors them for novel datasets (P13). Bound into the property graph as the
+    ``concept_edge`` edge over the ``og_concepts`` vertex.
+
+    **Same identity contract as :class:`Concept` (P3) — NOT run-versioned.** An edge
+    is a stable node keyed over ACTIVE rows by
+    ``(vertical, predicate, from_concept, to_concept)`` (the ``uq_concept_edge_active``
+    partial-unique index); an edit supersedes (stamp ``superseded_at`` + insert a new
+    active row) rather than colliding. Endpoints are the concepts' stable
+    ``name`` within ``vertical`` — NEVER ``concept_id`` (a per-seed surrogate the
+    grounding contract already forbids keying on). The ``og_concept_edges`` element
+    view resolves those names to the active concepts' ids for the PGQ vertex binding,
+    so a superseded/absent endpoint drops the edge from the graph automatically.
+
+    Rename caveat (future): keying endpoints by ``name`` means a concept RENAME (a new
+    ``(vertical, name)`` identity, not a supersede-in-place) would orphan its edges —
+    they'd silently vanish from the graph. No rename path exists today; when ``frame``
+    adds one (P13) it must re-point or supersede the affected edges, not just the concept.
+
+    Symmetric predicates (``disjoint_with``, ``reconciles_with``) are stored in BOTH
+    directions — the graph is directed and PG19 SQL/PGQ ``MATCH`` is directed, so two
+    rows let a walk from either endpoint enumerate the relation. ``part_of`` is
+    directed (one row, source → target). ``tolerance`` is set only for
+    ``reconciles_with`` (the tie-out band); NULL otherwise.
+    """
+
+    __tablename__ = "concept_edges"
+    __table_args__ = (
+        # At most one ACTIVE edge per (vertical, predicate, from, to) — the concept-
+        # edge analogue of Concept.uq_concept_active, so a head-free read of the
+        # active graph is unambiguous and the seed's ON CONFLICT DO NOTHING is
+        # race-safe against a concurrent seed / frame write.
+        Index(
+            "uq_concept_edge_active",
+            "vertical",
+            "predicate",
+            "from_concept",
+            "to_concept",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+    )
+
+    edge_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    predicate: Mapped[str] = mapped_column(String, nullable=False)  # ConceptEdgePredicate
+    # Endpoints are concept NAMES within `vertical` (the stable (vertical, name) key),
+    # NOT concept_id — the element view joins them to the active concepts for the graph.
+    from_concept: Mapped[str] = mapped_column(String, nullable=False)
+    to_concept: Mapped[str] = mapped_column(String, nullable=False)
+    # reconciles_with tie-out band (e.g. 0.01 = 1%); NULL for part_of / disjoint_with.
+    tolerance: Mapped[float | None] = mapped_column(Float)
+
+    # Lifecycle: workspace-persistent with supersession (mirrors Concept).
+    source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'derived' | 'frame'
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -332,6 +425,8 @@ class TableEntity(Base):
 
 __all__ = [
     "Concept",
+    "ConceptEdge",
+    "ConceptEdgePredicate",
     "ConceptKind",
     "SemanticAnnotation",
     "TableEntity",

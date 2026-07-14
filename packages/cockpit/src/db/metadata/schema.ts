@@ -29,6 +29,22 @@ export const columns = metadataSchema
 		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type FROM ws_00000000_0000_0000_0000_000000000001.columns`,
 	);
 
+export const conceptEdges = metadataSchema
+	.view("concept_edges", {
+		edgeId: varchar("edge_id"),
+		vertical: varchar(),
+		predicate: varchar(),
+		fromConcept: varchar("from_concept"),
+		toConcept: varchar("to_concept"),
+		tolerance: doublePrecision(),
+		source: varchar(),
+		createdAt: timestamp("created_at"),
+		supersededAt: timestamp("superseded_at"),
+	})
+	.as(
+		sql`SELECT edge_id, vertical, predicate, from_concept, to_concept, tolerance, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concept_edges`,
+	);
+
 export const concepts = metadataSchema
 	.view("concepts", {
 		conceptId: varchar("concept_id"),

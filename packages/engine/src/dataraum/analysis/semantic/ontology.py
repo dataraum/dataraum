@@ -58,6 +58,23 @@ class OntologyConvention(BaseModel):
     concept_groups: dict[str, list[str]] = Field(default_factory=dict)  # label -> concept names
 
 
+class OntologyComposition(BaseModel):
+    """A concept-composition declaration → ``part_of`` edges (DAT-729).
+
+    Mereological composition at the CONCEPT grain: a ``whole`` concept is composed of
+    its ``parts`` (``current_assets`` = cash + receivables + inventory). The seed
+    promotes each ``part → whole`` into a typed ``part_of`` :class:`ConceptEdge`; the
+    transitive closure (all ancestors of a concept) is a bounded recursive CTE.
+
+    This is the concept-grain composition ONLY — the account-instance chart-of-accounts
+    tree is the physical ``references`` topology (P1) and the dimension-member roll-up
+    is ``rolls_up_to`` (P5); neither is re-expressed here.
+    """
+
+    whole: str  # the composite concept
+    parts: list[str] = Field(default_factory=list)  # concepts that compose the whole
+
+
 class OntologyDefinition(BaseModel):
     """A complete ontology definition from YAML."""
 
@@ -66,6 +83,7 @@ class OntologyDefinition(BaseModel):
     description: str | None = None
     concepts: list[OntologyConcept] = Field(default_factory=list)
     conventions: list[OntologyConvention] = Field(default_factory=list)
+    compositions: list[OntologyComposition] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_conventions(self) -> OntologyDefinition:
@@ -102,6 +120,32 @@ class OntologyDefinition(BaseModel):
                             f"'{placed[member]}' and '{group}' — groups must be disjoint"
                         )
                     placed[member] = group
+        return self
+
+    @model_validator(mode="after")
+    def _validate_compositions(self) -> OntologyDefinition:
+        """Lint composition declarations against the vocabulary (DAT-729), born-loud.
+
+        A ``part_of`` edge is only meaningful between declared concepts, so both the
+        ``whole`` and every ``part`` must resolve; a concept cannot be part of itself
+        (a trivial self-loop the graph must never carry). Deeper cycles are guarded by
+        the closure traversal at read time, not here.
+        """
+        if not self.compositions:
+            return self
+        concept_names = {c.name for c in self.concepts}
+        for comp in self.compositions:
+            for name in (comp.whole, *comp.parts):
+                if name not in concept_names:
+                    raise ValueError(
+                        f"composition of '{comp.whole}' references '{name}', "
+                        f"which is not a declared concept"
+                    )
+            if comp.whole in comp.parts:
+                raise ValueError(
+                    f"composition of '{comp.whole}' lists itself as a part — "
+                    f"a concept cannot be part_of itself"
+                )
         return self
 
 
@@ -240,6 +284,7 @@ class OntologyLoader:
 
 
 __all__ = [
+    "OntologyComposition",
     "OntologyConcept",
     "OntologyConvention",
     "OntologyDefinition",

@@ -2,6 +2,21 @@
 -- Source of truth: the SQLAlchemy models (storage.base.load_all_models).
 -- Schema-less on purpose: apply with search_path set to the target ws_<id>.
 
+CREATE TABLE concept_edges (
+	edge_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	predicate VARCHAR NOT NULL, 
+	from_concept VARCHAR NOT NULL, 
+	to_concept VARCHAR NOT NULL, 
+	tolerance FLOAT, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_concept_edges PRIMARY KEY (edge_id)
+);
+
+CREATE UNIQUE INDEX uq_concept_edge_active ON concept_edges (vertical, predicate, from_concept, to_concept) WHERE superseded_at IS NULL;
+
 CREATE TABLE concepts (
 	concept_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 

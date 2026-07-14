@@ -372,3 +372,18 @@ conventions:
       current_liability_family:
         - current_liabilities
         - accounts_payable
+
+# Concept composition (DAT-729) → part_of edges. Mereological roll-up at the CONCEPT
+# grain: a balance-sheet aggregate is composed of its constituent measures. The seed
+# promotes each `part → whole` into a typed part_of ConceptEdge, and the transitive
+# closure walks the bounded recursive CTE. Concept-grain ONLY — the account-instance
+# chart-of-accounts tree is the physical `references` topology, not re-authored here.
+compositions:
+  - whole: current_assets
+    parts:
+      - cash
+      - accounts_receivable
+      - inventory
+  - whole: current_liabilities
+    parts:
+      - accounts_payable

@@ -251,7 +251,7 @@ def discover_aggregation_lineage(
         t.table_id: t
         for t in session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars()
     }
-    # This run's slice dimensions, grouped by dimension column name.
+    # This run's slice dimensions (grouped by referenced identity below).
     defs = (
         session.execute(
             select(SliceDefinition).where(
@@ -262,15 +262,48 @@ def discover_aggregation_lineage(
         .scalars()
         .all()
     )
-    defs_by_dim: dict[str, dict[str, SliceDefinition]] = {}
+    # Group by the slice's REFERENCED-dimension identity (DAT-756), not its
+    # ``column_name``. Two facts share a dimension iff they reference the SAME
+    # dim table at the SAME attribute — so the same conformed dimension reached
+    # via differently-named FK columns is paired (the false-negative that
+    # silently disabled this witness), and two unrelated same-named FOLDED columns
+    # are not (the false-positive). A folded slice (null ``dimension_table_id``)
+    # has no cross-table identity in Phase A and abstains (DAT-757).
+    # ``{table -> [slices]}`` per identity: one fact can carry MULTIPLE slices at the
+    # same identity — role-playing FKs to one dim (``kontonummer`` vs
+    # ``kontonummer_des_gegenkontos``, both -> accounts at ``land``). Keep them all
+    # (a list, not last-write-wins): each is a distinct bucketing lens the search
+    # competes; dropping one would silently lose a reconciliation candidate. Role
+    # disambiguation itself (bill-to vs ship-to as SEPARATE dimensions) is DAT-757 —
+    # here they share the Phase-A identity and are simply both tried.
+    defs_by_dim: dict[tuple[str, str], dict[str, list[SliceDefinition]]] = {}
     for sd in defs:
-        name = sd.column_name or ""
-        if name:
-            defs_by_dim.setdefault(name, {})[sd.table_id] = sd
-    shared_dims = {d: by_table for d, by_table in defs_by_dim.items() if len(by_table) >= 2}
+        if not sd.dimension_table_id:
+            continue
+        identity = (sd.dimension_table_id, sd.dimension_attribute or "")
+        defs_by_dim.setdefault(identity, {}).setdefault(sd.table_id, []).append(sd)
+    shared_dims = {ident: by_table for ident, by_table in defs_by_dim.items() if len(by_table) >= 2}
     if not shared_dims:
-        logger.info("lineage_no_shared_dimension", dimensions=sorted(defs_by_dim))
+        logger.info("lineage_no_shared_dimension", identities=sorted(defs_by_dim))
         return 0
+
+    # Readable label per identity for the persisted ``slice_dimension`` + logs:
+    # ``<dim table>.<attribute>`` (the conformed axis), not a per-fact column name
+    # (which now differs across the paired facts).
+    dim_names = {
+        t.table_id: t.table_name
+        for t in session.execute(
+            select(Table).where(Table.table_id.in_({ident[0] for ident in shared_dims}))
+        ).scalars()
+    }
+    labels = {
+        ident: (
+            f"{dim_names.get(ident[0], ident[0])}.{ident[1]}"
+            if ident[1]
+            else dim_names.get(ident[0], ident[0])
+        )
+        for ident in shared_dims
+    }
 
     # Key/identifier columns are not quantities: a SUM over a key has no
     # meaning, and identical key sets reconcile trivially (identity noise).
@@ -328,33 +361,39 @@ def discover_aggregation_lineage(
     # Best verdict per measure column across dimensions, event tables, conventions.
     best_by_measure: dict[str, tuple[_Best, Table, str, str]] = {}
 
-    for dim_col in sorted(shared_dims):
+    for identity in sorted(shared_dims):
+        slice_label = labels[identity]
         # One series per (table, time-axis): each event-time column the catalog
         # named for the table is a distinct lens to bucket by (DAT-565). A table
         # contributes a series for every axis; the search below competes them.
+        # Each fact groups by its OWN physical slice column (``sd.column_name``) —
+        # the shared identity may be reached via differently-named columns (DAT-756),
+        # while the VALUE domain is common, so ``_aligned_series`` still pairs them.
         series_by_table: dict[str, list[tuple[str, _SliceSeries]]] = {}
-        for tid, sd in shared_dims[dim_col].items():
+        for tid, sds in shared_dims[identity].items():
             t = tables.get(tid)
             if t is None:
                 continue
+            # Every (role-playing slice × time axis) is a distinct lens to bucket by.
             axis_series: list[tuple[str, _SliceSeries]] = []
-            for axis in time_cols_by_table.get(tid, []):
-                s = _slice_series(
-                    duckdb_conn,
-                    t,
-                    sd,
-                    dim_col,
-                    source_name=source_by_table.get(tid),
-                    time_col=axis,
-                    numeric_cols=numeric_cols_by_table.get(tid, []),
-                    grain=period_grain,
-                )
-                if s is not None:
-                    axis_series.append((axis, s))
+            for sd in sds:
+                for axis in time_cols_by_table.get(tid, []):
+                    s = _slice_series(
+                        duckdb_conn,
+                        t,
+                        sd,
+                        sd.column_name or "",
+                        source_name=source_by_table.get(tid),
+                        time_col=axis,
+                        numeric_cols=numeric_cols_by_table.get(tid, []),
+                        grain=period_grain,
+                    )
+                    if s is not None:
+                        axis_series.append((axis, s))
             if axis_series:
                 series_by_table[tid] = axis_series
         if len(series_by_table) < 2:
-            logger.info("lineage_no_slice_series", dimension=dim_col)
+            logger.info("lineage_no_slice_series", dimension=slice_label)
             continue
 
         for m_tid, m_axis_series in sorted(series_by_table.items()):
@@ -383,7 +422,7 @@ def discover_aggregation_lineage(
                         if e_rows <= m_rows:
                             logger.info(
                                 "lineage_direction_gate",
-                                dimension=dim_col,
+                                dimension=slice_label,
                                 measure_table=measure.table.table_name,
                                 event_table=event.table.table_name,
                                 measure_rows=m_rows,
@@ -418,20 +457,20 @@ def discover_aggregation_lineage(
                                         ),
                                         measure.table,
                                         measure_col,
-                                        dim_col,
+                                        slice_label,
                                     )
 
     # ``best_by_measure`` is keyed by measure_column_id, so the batch is
     # dedup'd by construction; PK omitted so the model's default applies.
     rows: list[dict[str, object]] = []
-    for measure_column_id, (best, m_table, m_col, dim_col) in best_by_measure.items():
+    for measure_column_id, (best, m_table, m_col, slice_label) in best_by_measure.items():
         rows.append(
             {
                 "run_id": run_id,
                 "measure_table_id": m_table.table_id,
                 "measure_column_id": measure_column_id,
                 "event_table_id": best.event_table.table_id,
-                "slice_dimension": dim_col,
+                "slice_dimension": slice_label,
                 "convention_sql": best.convention_sql,
                 "period_grain": period_grain,
                 "pattern": best.verdict.pattern,
@@ -446,7 +485,7 @@ def discover_aggregation_lineage(
             "lineage_reconciled",
             measure=f"{m_table.table_name}.{m_col}",
             event_table=best.event_table.table_name,
-            dimension=dim_col,
+            dimension=slice_label,
             convention=best.convention_sql,
             pattern=best.verdict.pattern,
             match_rate=round(best.verdict.match_rate, 3),

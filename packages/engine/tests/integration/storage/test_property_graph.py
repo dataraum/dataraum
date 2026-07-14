@@ -68,7 +68,9 @@ _COLUMNS = [
     ("c_k1", "t1", "account_id", 2),
     ("c_k2", "t2", "account_id", 1),
     ("c_k3", "t3", "group_id", 1),
+    ("c_k3b", "t3", "account_id", 2),  # t3's own account_id — a cross-LEVEL accounts slice
     ("c_k4", "t4", "statement_id", 1),
+    ("c_k4b", "t4", "account_id", 2),  # t4's own account_id — a 2nd fact→accounts slice
     ("c_k5", "t5", "division_id", 1),
     ("c_k6", "t6", "root_id", 1),
 ]
@@ -141,13 +143,42 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
             f"'foreign_key', 'many_to_one', 0.9, true, '{TS}')"
         )
-    # has_dimension: journal's account_id slice.
-    stmts.append(
-        "INSERT INTO slice_definitions "
-        "(slice_id, run_id, table_id, column_id, column_name, slice_priority, "
-        " slice_type, detection_source, created_at) "
-        f"VALUES ('sl_1', '{RUN}', 't1', 'c_k1', 'account_id', 1, 'categorical', 'llm', '{TS}')"
-    )
+    # has_dimension: three facts each sliced by their own account_id FK, all resolving
+    # the referenced identity dimension_table_id='t2' (the accounts dim). journal (t1)
+    # and statement (t4) slice the SAME attribute (account_type) → a CONFORMED pair
+    # (an alignable drill-across axis). account_group (t3) slices a DIFFERENT attribute
+    # (region) → shares the dim TABLE but NOT the axis, so it does NOT conform (the
+    # conformed edge is ATTRIBUTE grain). fk_role is the FK column name, carried but not
+    # a Phase-A identity key.
+    for sid, tid, cid, colname, attr in [
+        ("sl_1", "t1", "c_k1", "account_id__account_type", "account_type"),
+        ("sl_2", "t4", "c_k4b", "account_id__account_type", "account_type"),
+        ("sl_3", "t3", "c_k3b", "account_id__region", "region"),
+    ]:
+        stmts.append(
+            "INSERT INTO slice_definitions "
+            "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
+            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', '{colname}', 't2', "
+            f"'{attr}', 'account_id', 1, 'categorical', 'llm', '{TS}')"
+        )
+    # SPURIOUS fact↔fact relationships between account_id slice columns (the DAT-723
+    # fan trap): both endpoints resolve dimension_table_id='t2', so each is a conformed
+    # dimension, NOT an FK — og_references must drop BOTH (table grain, regardless of
+    # slice attribute). r_fan links the same-attribute pair (t1↔t4, which DOES get a
+    # conformed edge); r_fan_xlevel links the cross-level pair (t1↔t3, which does NOT —
+    # proving the exclusion and the edge are decoupled: excluded yet unedged is correct).
+    for rid, ft, fc, tt, tc in [
+        ("r_fan", "t1", "c_k1", "t4", "c_k4b"),
+        ("r_fan_xlevel", "t1", "c_k1", "t3", "c_k3b"),
+    ]:
+        stmts.append(
+            "INSERT INTO relationships "
+            "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
+            " to_column_id, relationship_type, cardinality, confidence, is_confirmed, detected_at) "
+            f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
+            f"'foreign_key', 'many_to_one', 0.9, true, '{TS}')"
+        )
     for eid, tid, role in [("e_j", "t1", "fact"), ("e_a", "t2", "dimension")]:
         stmts.append(
             "INSERT INTO table_entities "
@@ -278,15 +309,64 @@ def test_derived_from_edges_enumerable(graph_engine: Engine) -> None:
 
 
 def test_has_dimension_edge(graph_engine: Engine) -> None:
-    """has_dimension: a fact table points at its slice (dimension) columns."""
+    """has_dimension: each fact points at its slice column, CARRYING the referenced
+    identity (DAT-756) — dimension_table_id resolves to the shared accounts dim."""
     sql = (
-        f"SELECT tname, cname FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT tname, cname, dim FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (t IS table_node)-[e IS has_dimension]->(c IS column_node) "
-        "COLUMNS (t.table_name AS tname, c.column_name AS cname))"
+        "COLUMNS (t.table_name AS tname, c.column_name AS cname, "
+        "e.dimension_table_id AS dim))"
     )
     with graph_engine.connect() as conn:
-        rows = {(r.tname, r.cname) for r in conn.execute(text(sql))}
-    assert rows == {("journal", "account_id")}
+        rows = {(r.tname, r.cname, r.dim) for r in conn.execute(text(sql))}
+    # All three facts slice their own account_id, each bound to the accounts dim (t2).
+    assert rows == {
+        ("journal", "account_id", "t2"),
+        ("statement", "account_id", "t2"),
+        ("account_group", "account_id", "t2"),
+    }
+
+
+def test_conformed_dimension_is_attribute_grain(graph_engine: Engine) -> None:
+    """conformed_dimension (DAT-756): ATTRIBUTE grain — two facts conform iff they
+    share the same AXIS (dim table + attribute), the alignable drill-across GROUP BY
+    a SQL author needs. journal and statement both slice accounts by account_type →
+    they conform (both directions, carrying the shared attribute). account_group slices
+    accounts by REGION — same dim table, different axis — so it conforms with NEITHER
+    (a shared table is not an alignable axis)."""
+    sql = (
+        f"SELECT src, dst, dim, attr FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst, "
+        "e.dimension_table_id AS dim, e.dimension_attribute AS attr))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst, r.dim, r.attr) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("journal", "statement", "t2", "account_type"),
+        ("statement", "journal", "t2", "account_type"),
+    }
+
+
+def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:
+    """The DAT-723 fan trap: a spurious fact↔fact relationship whose endpoints both
+    resolve the accounts dim is NOT surfaced as a reference. The exclusion is TABLE
+    grain — it fires on BOTH the same-attribute pair (journal↔statement) and the
+    cross-level pair (journal↔account_group), regardless of slice attribute. This is
+    deliberately DECOUPLED from the attribute-grain conformed edge: the cross-level
+    pair is excluded from refs yet has no conformed edge, and that is correct. The
+    genuine fact→dim FK (journal→accounts) survives (a dim key is never a slice
+    column, so the exclusion cannot fire on it)."""
+    sql = (
+        f"SELECT src, dst FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS refs]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst) for r in conn.execute(text(sql))}
+    assert ("journal", "statement") not in rows, "same-attribute fan trap leaked into refs"
+    assert ("journal", "account_group") not in rows, "cross-level fan trap leaked into refs"
+    assert ("journal", "accounts") in rows, "genuine fact→dim FK was wrongly excluded"
 
 
 def test_concept_edge_disjoint_with_matches(graph_engine: Engine) -> None:
@@ -337,7 +417,7 @@ def _part_of_closure(conn, read: str, start: str) -> list[tuple[str, int]]:
         f"  FROM \"{read}\".og_concept_edges WHERE predicate = 'part_of' "
         "  UNION ALL "
         "  SELECT r.src, e.to_concept_id, r.depth + 1, r.path || e.to_concept_id "
-        f"  FROM reach r JOIN \"{read}\".og_concept_edges e "
+        f'  FROM reach r JOIN "{read}".og_concept_edges e '
         "    ON e.from_concept_id = r.dst AND e.predicate = 'part_of' "
         "  WHERE r.depth < 4 AND NOT e.to_concept_id = ANY(r.path)"
         ") SELECT dst, depth FROM reach WHERE src = :s ORDER BY depth, dst"

@@ -317,13 +317,37 @@ class SlicingPhase(BasePhase):
         # Temporal success-redelivery (same run_id) converges. PK omitted so
         # the model's Python-side default applies.
         run_id = ctx.require_run_id()
+        # Referenced-dimension identity (DAT-756): the slice's ``column_id`` is the
+        # fact's FK column; resolve its FK-target dim table from the enriched view's
+        # relationship provenance. An enriched slice name is ``fk__attr`` — the prefix
+        # is the FK column (``fk_role``), the suffix is the dim attribute/level. A
+        # slice with no grain-safe FK resolves a null identity (folded — DAT-757).
+        dim_table_by_fk_col: dict[str, str] = context_data.get("dim_table_by_fk_col", {})
         rows: dict[tuple[str, str | None, str], dict[str, Any]] = {}
         for rec in slicing.recommendations:
+            dimension_table_id = dim_table_by_fk_col.get(rec.column_id)
+            dimension_attribute: str | None = None
+            fk_role: str | None = None
+            if dimension_table_id:
+                name = rec.column_name or ""
+                if "__" in name:
+                    # The enriched dim column is ``{fk_column}__{attr}`` (builder.py):
+                    # the FK column is the segment before the FIRST ``__``, matching
+                    # the codebase convention (``_propagate_enriched_dimensions``,
+                    # ``_build_context_data``). Assumes the FK column name itself has
+                    # no ``__`` — the same assumption every other split site makes.
+                    fk_role, dimension_attribute = name.split("__", 1)
+                else:
+                    # Slicing directly by the FK key itself — no enriched attribute.
+                    fk_role = name or None
             rows[(rec.table_id, rec.column_name, run_id)] = {
                 "run_id": run_id,
                 "table_id": rec.table_id,
                 "column_id": rec.column_id,
                 "column_name": rec.column_name,
+                "dimension_table_id": dimension_table_id,
+                "dimension_attribute": dimension_attribute,
+                "fk_role": fk_role,
                 "slice_priority": rec.slice_priority,
                 "slice_type": "categorical",
                 "distinct_values": rec.distinct_values,
@@ -531,7 +555,12 @@ class SlicingPhase(BasePhase):
             e.table_id: (e.time_columns or []) for e in ctx.session.execute(entity_stmt).scalars()
         }
         # FK column -> joined dimension table, from the enriched views' own
-        # relationship provenance (never name-inferred).
+        # relationship provenance (never name-inferred). This is also the referenced-
+        # dimension identity source (DAT-756): the slice's ``column_id`` is the fact's
+        # FK column, so this map resolves ``FK column -> dim table``. The relationships
+        # an enriched view references are grain-safe BY CONSTRUCTION — a view is only
+        # built from grain-verified many-to-one joins — so a fan-out join can never
+        # mint a dimension identity here; no extra cardinality filter is needed.
         rel_ids = [rid for ev in ev_by_fact.values() if ev for rid in (ev.relationship_ids or [])]
         dim_table_by_fk_col: dict[str, str] = {}
         if rel_ids:
@@ -692,4 +721,7 @@ class SlicingPhase(BasePhase):
             "tables": tables_data,
             "column_count": column_count,
             "dimension_time_axes": dimension_time_axes,
+            # FK column_id -> dim table_id (DAT-756): the referenced-dimension
+            # identity source, consumed at slice-write time in ``_run``.
+            "dim_table_by_fk_col": dim_table_by_fk_col,
         }

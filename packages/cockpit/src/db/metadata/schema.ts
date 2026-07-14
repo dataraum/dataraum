@@ -427,6 +427,9 @@ export const currentSliceDefinitions = metadataSchema
 		tableId: varchar("table_id"),
 		columnId: varchar("column_id"),
 		columnName: varchar("column_name"),
+		dimensionTableId: varchar("dimension_table_id"),
+		dimensionAttribute: varchar("dimension_attribute"),
+		fkRole: varchar("fk_role"),
 		slicePriority: integer("slice_priority"),
 		sliceType: varchar("slice_type"),
 		distinctValues: json("distinct_values"),
@@ -438,7 +441,7 @@ export const currentSliceDefinitions = metadataSchema
 		createdAt: timestamp("created_at"),
 	})
 	.as(
-		sql`SELECT slice_id, run_id, table_id, column_id, column_name, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, detection_source, created_at FROM ws_00000000_0000_0000_0000_000000000001.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT slice_id, run_id, table_id, column_id, column_name, dimension_table_id, dimension_attribute, fk_role, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, detection_source, created_at FROM ws_00000000_0000_0000_0000_000000000001.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentStatisticalProfiles = metadataSchema

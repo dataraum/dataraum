@@ -31,9 +31,9 @@ class UnitSourceEntropyDetector(EntropyDetector):
 
     A measure whose unit is resolved by cross-column inference (a ``currency``
     dimension) or that is dimensionless has no unit-source entropy (→ 0). A
-    measure with no determinable unit source is unsafe to aggregate (→ 1.0);
-    the resolution is the semantic teach (``unit_from_concept`` / ``rebind``),
-    never a deterministic override.
+    measure with no determinable unit source is unsafe to aggregate (→ 1.0); the
+    resolution is the concept vocabulary's ``unit_from_concept`` (declared via the
+    ``frame`` stage's typed concepts, DAT-728), never a deterministic override.
     """
 
     detector_id = "unit_source"

@@ -163,7 +163,7 @@ class TestEnrichedViewsPhaseProperties:
 
         ctx = PhaseContext(session=session, duckdb_conn=None, table_ids=[table.table_id])
 
-        # No TableEntity marked is_fact_table → nothing to enrich.
+        # No fact-role TableEntity → nothing to enrich.
         reason = EnrichedViewsPhase().should_skip(ctx)
         assert reason == "No fact tables identified"
 
@@ -302,7 +302,7 @@ class TestEnrichedViewsPhaseDuckLake:
                 table_id=table_id,
                 run_id=run_id,
                 detected_entity_type="fact",
-                is_fact_table=True,
+                table_role="fact",
             )
         )
         session.flush()
@@ -860,7 +860,7 @@ class TestVersionedGrainConstraints:
                     table_id=fact_id,
                     run_id="run-1",
                     detected_entity_type="fact",
-                    is_fact_table=True,
+                    table_role="fact",
                 )
             )
         with pytest.raises(IntegrityError):
@@ -883,7 +883,7 @@ class TestVersionedGrainConstraints:
                     table_id=fact_id,
                     run_id=run_id,
                     detected_entity_type="fact",
-                    is_fact_table=True,
+                    table_role="fact",
                 )
             )
         session.flush()

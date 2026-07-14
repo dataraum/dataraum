@@ -33,7 +33,7 @@ from dataraum.analysis.relationships.utils import (
     load_defined_relationships,
     load_suppressed_relationship_pairs,
 )
-from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
 from dataraum.analysis.typing.db_models import MaterializationRecipe
@@ -142,7 +142,7 @@ class EnrichedViewsPhase(BasePhase):
 
         fact_stmt = select(TableEntity.table_id).where(
             TableEntity.table_id.in_(ctx.table_ids),
-            TableEntity.is_fact_table.is_(True),
+            TableEntity.table_role.in_([TableRole.FACT, TableRole.PERIODIC_SNAPSHOT]),
         )
         if ctx.run_id is not None:
             fact_stmt = fact_stmt.where(TableEntity.run_id == ctx.run_id)
@@ -178,7 +178,7 @@ class EnrichedViewsPhase(BasePhase):
         # ``scalar_one_or_none``.
         fact_stmt = select(TableEntity).where(
             TableEntity.table_id.in_(table_ids),
-            TableEntity.is_fact_table.is_(True),
+            TableEntity.table_role.in_([TableRole.FACT, TableRole.PERIODIC_SNAPSHOT]),
         )
         if ctx.run_id is not None:
             fact_stmt = fact_stmt.where(TableEntity.run_id == ctx.run_id)

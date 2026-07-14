@@ -76,15 +76,6 @@ class TestProfitabilityOutputUnits:
         assert graph.output.unit == "percentage"
 
 
-class TestProfitabilityStandardFields:
-    """All standard_field values resolve against the finance ontology."""
-
-    def test_no_warnings_from_validate(self, loader: GraphLoader) -> None:
-        """validate_standard_fields returns no warnings for finance graphs."""
-        warnings = loader.validate_standard_fields("finance")
-        assert warnings == [], f"Unexpected warnings: {warnings}"
-
-
 class TestProfitabilityFormulaDependencies:
     """Formula depends_on references exist as sibling steps."""
 

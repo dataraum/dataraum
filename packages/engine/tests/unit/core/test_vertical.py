@@ -16,22 +16,39 @@ from dataraum.core.vertical import (
     available_verticals,
     require_known_vertical,
     resolve_vertical,
+    set_framed_concept_resolver,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clean_resolver() -> Iterator[None]:
-    """Every test starts (and ends) with no overlay resolver registered."""
+    """Every test starts (and ends) with no overlay / framed-concept resolver."""
     reset_overlay_resolver_for_tests()
+    set_framed_concept_resolver(None)
     yield
     reset_overlay_resolver_for_tests()
+    set_framed_concept_resolver(None)
 
 
-def _frame(vertical: str, *, row_type: str = "concept") -> None:
-    """Register a resolver exposing one vertical-scoped overlay row."""
+def _frame(vertical: str, *, row_type: str = "validation") -> None:
+    """Register a resolver exposing one vertical-scoped overlay row.
+
+    Concepts moved config→DB (DAT-728) — they no longer frame via overlay rows;
+    use :func:`_frame_concepts` for the typed-concept footprint. This covers the
+    surviving overlay families (validation/cycle/metric).
+    """
     set_overlay_resolver(
         lambda: [OverlayRow(type=row_type, payload={"vertical": vertical, "name": "x"})]
     )
+
+
+def _frame_concepts(vertical: str) -> None:
+    """Register a framed-concept resolver exposing one typed-concept vertical.
+
+    The only footprint of a concept-only framed vertical (DAT-728) — mirrors what
+    the worker substrate installs from the typed ``concepts`` table.
+    """
+    set_framed_concept_resolver(lambda: {vertical})
 
 
 class TestResolveVertical:
@@ -53,11 +70,20 @@ class TestResolveVertical:
         _frame("sales")
         assert resolve_vertical("sales") is VerticalKind.FRAMED
 
-    @pytest.mark.parametrize("row_type", ["concept", "validation", "cycle", "metric"])
+    @pytest.mark.parametrize("row_type", ["validation", "cycle", "metric"])
     def test_framed_by_any_family_row(self, row_type: str) -> None:
-        """Any vertical-scoped family row (not just concept) makes a vertical framed."""
+        """Any surviving vertical-scoped family row makes a vertical framed."""
         _frame("ops", row_type=row_type)
         assert resolve_vertical("ops") is VerticalKind.FRAMED
+
+    def test_framed_by_typed_concept_rows(self) -> None:
+        """A concept-only framed vertical (config→DB) frames via the typed table.
+
+        Its only footprint is active typed ``concepts`` rows — no overlay row — so
+        the framed-concept resolver is what makes it resolve as framed (DAT-728).
+        """
+        _frame_concepts("retail")
+        assert resolve_vertical("retail") is VerticalKind.FRAMED
 
     def test_unknown_typo(self) -> None:
         """A typo with no on-disk dir and no overlay rows is unknown."""

@@ -3,16 +3,17 @@ import { TEACH_TYPES } from "#/tools/teach.validation";
 import { affectedStage } from "#/tools/teach-routing";
 
 describe("affectedStage (DAT-531 teach → stage map)", () => {
-	it("routes grounding teaches (incl. concept_property + rebind) to add_source", () => {
-		for (const t of [
-			"type_pattern",
-			"null_value",
-			"unit",
-			"concept",
-			"concept_property",
-			"rebind",
-		]) {
+	it("routes the mechanical grounding teaches to add_source", () => {
+		// The concept family (concept/concept_property/rebind) is no longer a teach
+		// type — config→DB (DAT-728) moved the concept vocabulary to the typed table.
+		for (const t of ["type_pattern", "null_value", "unit"]) {
 			expect(affectedStage(t)).toBe("add_source");
+		}
+	});
+
+	it("throws on the retired concept teach types (DAT-728)", () => {
+		for (const t of ["concept", "concept_property", "rebind"]) {
+			expect(() => affectedStage(t)).toThrow(/no stage mapped/);
 		}
 	});
 

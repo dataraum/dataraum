@@ -72,17 +72,16 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
     Reads the ``temporal_behavior`` EntropyObject rows written this run (ADR-0009 /
     DAT-445) and, for each column whose adjudication resolved to a behaviour, UPDATEs
     the matching ``(column_id, run_id)`` annotation: ``temporal_behavior`` becomes the
-    pooled-resolved value (the ontology prior reconciled with the LLM stock/flow
-    claim) and ``temporal_behavior_contested`` records whether the witnesses disagreed.
+    pooled-resolved value (the LLM stock/flow claim reconciled with the data-grounded
+    structural witness — the ontology prior was dropped, DAT-657) and
+    ``temporal_behavior_contested`` records whether the witnesses disagreed.
     The contested flag is DELIBERATELY NOT rendered to the SQL-authoring agents
     (decision 2026-07-07): the adjudication outperforms an LLM reading stock/flow
     from metadata alone, so the agents get the resolved verdict as settled fact —
     a "(contested)" tag would invite second-guessing by the weaker judge. The
-    flag's consumers are the teach/readiness lane (the entropy object already
-    carries the ranked teach suggestion). Columns that resolved to total
-    ignorance (no witness)
-    are left untouched, preserving the ontology backfill. Idempotent on retry (same
-    run_id → same UPDATE). Returns the number of annotations updated.
+    flag's consumers are the teach/readiness lane. Columns that resolved to total
+    ignorance (no witness) are left untouched, preserving any prior value. Idempotent
+    on retry (same run_id → same UPDATE). Returns the number of annotations updated.
     """
     # temporal_behavior + contested are catalogue-grain (DAT-637): on ColumnConcept,
     # authored by the table agent and resolved here at session_detect (the run that
@@ -107,7 +106,7 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
             continue
         resolved = first.get("resolved")
         if resolved is None:
-            continue  # total ignorance — leave the ontology backfill in place
+            continue  # total ignorance — leave any prior value in place
         result: CursorResult[Any] = session.execute(  # type: ignore[assignment]
             update(ColumnConcept)
             .where(

@@ -177,7 +177,7 @@ class TestBuilderExtractsTableEntity:
                 identity_columns=[
                     {"column": "customer_id", "note": "Recurring customer identity."}
                 ],
-                is_fact_table=True,
+                table_role="fact",
             )
         )
         session.add(
@@ -215,7 +215,7 @@ class TestBuilderExtractsTableEntity:
                     run_id=rid,
                     detected_entity_type="fact",
                     description=f"{rid} classification",
-                    is_fact_table=True,
+                    table_role="fact",
                 )
             )
         session.flush()
@@ -257,7 +257,7 @@ class TestBuilderExtractsTableEntity:
                     run_id=run_id,
                     detected_entity_type="fact" if is_fact else "dimension",
                     description=desc,
-                    is_fact_table=is_fact,
+                    table_role="fact" if is_fact else "dimension",
                 )
             )
         head = MetadataSnapshotHead(
@@ -269,7 +269,7 @@ class TestBuilderExtractsTableEntity:
         # Head → run-2: context reflects run-2's classification.
         ctx2 = build_execution_context(session, [table_id])
         assert ctx2.tables[0].table_description == "RUN TWO classification"
-        assert ctx2.tables[0].is_fact_table is True
+        assert ctx2.tables[0].table_role == "fact"
 
         # Flip head → run-1: same data, the context must follow the promoted run.
         head.run_id = "run-1"
@@ -277,7 +277,7 @@ class TestBuilderExtractsTableEntity:
         assert head_run_id(session, catalog_head_target(), "catalog") == "run-1"
         ctx1 = build_execution_context(session, [table_id])
         assert ctx1.tables[0].table_description == "RUN ONE classification"
-        assert ctx1.tables[0].is_fact_table is False
+        assert ctx1.tables[0].table_role == "dimension"
 
 
 class TestBuilderRecomputesValidationVerdict:

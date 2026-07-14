@@ -64,6 +64,7 @@ Each step becomes a CTE named after its business concept, and final_sql referenc
 Generate valid DuckDB SQL:
 - Address every table as lake.<layer>.<name> exactly as the schema shows; quote column names with special characters in double quotes ("Betrag").
 - JOIN only on a column pair listed in <relationships> (the confirmed join paths) — never invent a join key (e.g. matching a code column to a name column). If the join you need isn't listed, do not fabricate one: abstain and state the limitation. Heed a ⚠ fan-out edge — pre-aggregate (or COUNT DISTINCT) before SUMming an additive measure across it.
+- A table marked (periodic snapshot) in <entities> records period-end LEVELS (a stock, e.g. a trial balance), not per-period flows — NEVER SUM its measures across periods (that double-counts). Aggregate WITHIN one period, or take the latest period's value; SUM across time only for a plain (fact) table's additive measures.
 - GROUP BY strictness: every non-aggregated column in SELECT/ORDER BY/HAVING must appear in GROUP BY (or use ANY_VALUE).
 - Never use a reserved word as an alias (DATE, MONTH, YEAR, TIME, CURRENT_DATE …) — use descriptive names (period_month, calculation_date).
 - Case-insensitive matching: ILIKE, not LOWER(col) = '…'. Dates: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'.

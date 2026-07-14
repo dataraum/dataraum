@@ -2,9 +2,12 @@
 
 Loads ontology definitions from config/verticals/<vertical>/ontology.yaml
 through the shared :class:`~dataraum.core.vertical_loader.VerticalLoader`
-(DAT-481), so the workspace's active overlay rows (DAT-343; ``concept`` and
-``concept_property`` types per DAT-371) are merged onto the baked-in YAML.
-Custom ``verticals_dir`` (test fixtures) bypasses the overlay — deterministic.
+(DAT-481). The concept vocabulary moved config→DB (DAT-728): concepts are no
+longer overlay rows — the shipped YAML is the seed for the typed ``concepts``
+table (``concept_store``), which the runtime reads. This loader resolves the
+baked-in YAML ⊕ the surviving overlay families (validation/cycle/metric); a
+framed vertical resolves its concepts as EMPTY here (they live in the typed
+table). Custom ``verticals_dir`` (test fixtures) bypasses the overlay.
 """
 
 from __future__ import annotations
@@ -22,10 +25,14 @@ class OntologyConcept(BaseModel):
     """A concept within an ontology."""
 
     name: str
+    # The ontological kind (DAT-728): measure|entity|dimension|unit. The seed
+    # normalizes this into the typed ``concepts`` table; a seeded concept without a
+    # kind is a config error (validated born-loud at seed time, not here — an empty
+    # framed vertical parses fine and declares its kinds through ``frame``).
+    kind: str | None = None
     description: str | None = None
     indicators: list[str] = Field(default_factory=list)
     exclude_patterns: list[str] = Field(default_factory=list)
-    temporal_behavior: str | None = None
     typical_role: str | None = None
     typical_values: list[str] = Field(default_factory=list)
     unit_from_concept: str | None = None  # Which concept provides this measure's unit
@@ -116,9 +123,9 @@ class OntologyLoader:
         """
         self.verticals_dir = verticals_dir
         # No cache: the overlay-aware production path must reflect newly
-        # inserted overlay rows on the next call (e.g. _adhoc induction
-        # inserts rows then re-reads in the same phase). Per-load latency
-        # is one filesystem read + dict copies; not a hotspot.
+        # inserted overlay rows on the next call (a validation/cycle/metric
+        # teach lands then re-reads in the same phase). Per-load latency is one
+        # filesystem read + dict copies; not a hotspot.
 
     def load(self, vertical: str) -> OntologyDefinition | None:
         """Load an ontology definition for a vertical.
@@ -132,12 +139,16 @@ class OntologyLoader:
             vertical: Vertical name (e.g. ``'finance'`` or ``'_adhoc'``).
 
         Returns:
-            The (overlay-merged) ontology definition — a builtin resolves its
-            baked-in YAML, a framed vertical resolves overlay-only. ``None`` only
-            on the production path for an UNKNOWN vertical (a typo or one never
-            framed) — the single ``None`` case, owned by ``resolve_vertical``
-            (DAT-480); every known/placeholder/framed name resolves to a
-            (possibly empty) definition.
+            The (overlay-merged) ontology definition. A builtin resolves its
+            baked-in YAML ⊕ surviving overlay families (validation/cycle/metric).
+            Concepts moved config→DB (DAT-728): a framed vertical has no on-disk
+            YAML and concepts are no longer overlay rows, so this resolves its
+            concepts as EMPTY — the framed concept vocabulary lives in the typed
+            ``concepts`` table and is read via ``concept_store`` at runtime, not
+            here. ``None`` only on the production path for an UNKNOWN vertical (a
+            typo or one never framed) — the single ``None`` case, owned by
+            ``resolve_vertical`` (DAT-480); every known/placeholder/framed name
+            resolves to a (possibly empty) definition.
         """
         # DAT-480: an UNKNOWN production vertical is the only None case. The test
         # path is deterministic (no overlay), so the guard is production-only.

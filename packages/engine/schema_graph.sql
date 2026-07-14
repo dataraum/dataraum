@@ -8,13 +8,14 @@
 DROP PROPERTY GRAPH IF EXISTS __READ__.operating_model;
 DROP VIEW IF EXISTS __READ__.og_tables;
 DROP VIEW IF EXISTS __READ__.og_columns;
+DROP VIEW IF EXISTS __READ__.og_concepts;
 DROP VIEW IF EXISTS __READ__.og_references;
 DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
-       te.is_fact_table, te.is_dimension_table, te.detected_entity_type
+       te.table_role, te.detected_entity_type
 FROM __READ__.current_tables t
 LEFT JOIN __READ__.current_table_entities te ON te.table_id = t.table_id;
 
@@ -31,6 +32,11 @@ LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = c.column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = c.column_id
 LEFT JOIN __READ__.current_measure_aggregation_lineage mal
        ON mal.measure_column_id = c.column_id;
+
+CREATE VIEW __READ__.og_concepts AS
+SELECT concept_id::text AS concept_id, vertical, name, kind
+FROM __READ__.concepts
+WHERE superseded_at IS NULL;
 
 CREATE VIEW __READ__.og_references AS
 SELECT relationship_id::text AS relationship_id,
@@ -62,10 +68,11 @@ WHERE ev.view_table_id IS NOT NULL;
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
-      PROPERTIES (table_id, table_name, layer, is_fact_table,
-                  is_dimension_table, detected_entity_type),
+      PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),
     __READ__.og_columns KEY (column_id) LABEL column_node
-      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization)
+      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),
+    __READ__.og_concepts KEY (concept_id) LABEL concept_node
+      PROPERTIES (concept_id, vertical, name, kind)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)

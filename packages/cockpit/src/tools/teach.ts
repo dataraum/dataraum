@@ -116,33 +116,33 @@ function makeTeachTool(types: readonly TeachType[], description: string) {
 	}).server(runTeachTool);
 }
 
-/** STAGE's teach: catalogue-grain MEANING (concept/concept_property/rebind) +
- * topology (relationship/hierarchy) — the corrections a begin_session re-run
- * realizes. Mechanical typing-grain teaches live on CONNECT (add_source replay). */
+/** STAGE's teach: catalogue-grain TOPOLOGY (relationship/hierarchy) — the
+ * corrections a begin_session re-run realizes. The concept vocabulary is declared
+ * via the frame stage's typed write (DAT-728), not here; mechanical typing-grain
+ * teaches live on CONNECT (add_source replay). */
 export const teachTool = makeTeachTool(
 	AGENT_TEACH_TYPES,
-	"Record a catalogue-grain correction about the data — what a column MEANS " +
-		"(the ontology concept it binds to, a concept property, or rebinding a " +
-		"column to a different concept), or a table relationship / hierarchy. " +
-		"Writes a config_overlay row; re-run begin_session to apply it. Mechanical " +
-		"typing corrections (typing pattern, null token, column unit) are taught in " +
-		"a CONNECT chat; for operating-model declarations use the dedicated tools: " +
+	"Record a catalogue-grain correction about the data's TOPOLOGY — a table " +
+		"relationship or a hierarchy / drill-down. Writes a config_overlay row; " +
+		"re-run begin_session to apply it. The business concept vocabulary is " +
+		"declared in the frame stage (not taught here); mechanical typing " +
+		"corrections (typing pattern, null token, column unit) are taught in a " +
+		"CONNECT chat; for operating-model declarations use the dedicated tools: " +
 		"teach_validation, teach_cycle, teach_metric.",
 );
 
 /** CONNECT's teach (DAT-597; narrowed DAT-647): the add_source grounding layer
  * ONLY — the MECHANICAL, typing-grain teaches an add_source `replay` can realize:
- * a typing pattern, a null token, or a value-carried column unit. Column MEANING
- * (concept/concept_property/rebind) is catalogue-grain — it authors ColumnConcept
- * at begin_session, which this chat's add_source replay does not run — so it is
- * taught in the Stage chat, along with topology and the operating model. */
+ * a typing pattern, a null token, or a value-carried column unit. The concept
+ * vocabulary is declared via the frame stage's typed write (DAT-728); topology and
+ * the operating model are taught in the Stage chat. */
 export const connectTeachTool = makeTeachTool(
 	CONNECT_TEACH_TYPES,
 	"Record a MECHANICAL add_source grounding correction the import got wrong — a " +
 		"typing pattern, a null token, or a value-carried column unit. Writes a " +
-		"config_overlay row; follow with `replay` to re-ground the source. Column " +
-		"MEANING (which concept a column binds to), relationships, hierarchies, and " +
-		"validations are taught in the Stage chat.",
+		"config_overlay row; follow with `replay` to re-ground the source. The " +
+		"business concept vocabulary, relationships, hierarchies, and validations " +
+		"are declared/taught in the Stage chat.",
 );
 
 /**

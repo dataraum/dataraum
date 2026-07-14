@@ -2,15 +2,10 @@
 
 Is a measure column a STOCK (a carried-forward point-in-time level, like a balance —
 must NOT be summed across periods) or a FLOW (a per-period movement, like a
-transaction amount — summable)? Up to three pooled witnesses over the claim space
+transaction amount — summable)? Up to two pooled witnesses over the claim space
 {stock, flow}; the pooling engine returns the posterior plus conflict ``C`` and
 ignorance ``U``:
 
-* **ontology prior (grounding-conditional)** — the column's concept temporal_behavior
-  (``point_in_time`` → stock, ``additive`` → flow), with strength scaled by the
-  GROUNDING CONFIDENCE: a contested or weak grounding collapses the prior toward
-  ``0.5`` (→ ``U``; contests propagate, never hide). Abstains when no behaviour is
-  declared.
 * **LLM claim** — the LLM's INDEPENDENT stock/flow read of the column (name + table
   context + sample values), produced in ``semantic_per_column``. Abstains on
   ``unsure``/absent.
@@ -24,13 +19,16 @@ ignorance ``U``:
   when both name-readers are wrong together (the ambiguous-name regime where
   measured accuracy of prior+claim falls to ~chance, correlated).
 
-The live ``debit_balance`` case is the disagreement: the concept claims a balance
-(stock) but the LLM, reading the periodic ``trial_balance`` context + values, reads
-flow → ``C`` rises → ``investigate`` + a ranked ``concept_property`` / ``rebind``
-teach suggestion. A lone or weak witness routes to ``U`` (ignorance about the
-column's behaviour), not low entropy (the doc-trap) — an opaque column whose
-behaviour can't be determined is surfaced for teach, not silently resolved. The
-teach enters as the dominant prior → next run → ``C`` → ε.
+Stock/flow is DATA-DETERMINED — the ontology cannot declare it (DAT-657): the same
+concept (e.g. ``account_balance``) materializes as a FLOW (per-period movement) or a
+STOCK (period-end level), a modelling choice the ontology can't know. So the concept
+no longer votes; the live ``debit_balance`` case — the LLM reads the periodic
+``trial_balance`` movement column as flow and the structural reconciliation agrees —
+resolves to flow with no manufactured conflict. A lone or weak witness routes to
+``U`` (ignorance about the column's behaviour), not low entropy (the doc-trap) — an
+opaque column whose behaviour can't be determined is surfaced as ignorance, not
+silently resolved. There is no teach for stock/flow itself (data-determined, DAT-657);
+a mis-grounding is corrected on the grounding path, not by teaching a format here.
 
 There is deliberately NO data-trajectory witness: the DAT-459 spike falsified the
 time-series persistence statistic, and the DAT-445 kill-gate showed an LLM reading a
@@ -70,8 +68,6 @@ CONTESTED_MIN_CONFLICT = 0.3
 # with no confidence still leans, just not at full strength).
 _DEFAULT_CONFIDENCE = 0.7
 
-# Ontology temporal_behavior vocabulary → P(stock) extreme. Unknown/None → abstain.
-_BEHAVIOUR_PSTOCK: dict[str, float] = {"point_in_time": 1.0, "additive": 0.0}
 # LLM claim label → P(stock) extreme. "unsure"/None → abstain.
 _CLAIM_PSTOCK: dict[str, float] = {"stock": 1.0, "flow": 0.0}
 # Reconciliation pattern → P(stock) extreme (DAT-491). Unknown/None → abstain.
@@ -83,7 +79,6 @@ _PATTERN_PSTOCK: dict[str, float] = {"cumulative": 1.0, "per_period": 0.0}
 # are passed via ``reliabilities=``. Per ADR-0009 the shipped r are
 # estimated-with-provenance, never inline constants.
 DEFAULT_RELIABILITIES: dict[str, float] = {
-    "ontology_prior": 0.7,
     "llm_claim": 0.6,
     "structural_reconciliation": 0.8,
 }
@@ -133,17 +128,6 @@ def _leaning(p_stock_extreme: float | None, confidence: float | None) -> dict[st
     return _distribution(0.5 + (p_stock_extreme - 0.5) * conf)
 
 
-def ontology_prior_distribution(
-    temporal_behavior: str | None, grounding_confidence: float | None
-) -> dict[str, float]:
-    """The concept's declared temporal behaviour as a grounding-conditional claim.
-
-    ``point_in_time`` → stock, ``additive`` → flow, scaled by how confidently the
-    column is grounded to that concept; an unrecognised/absent behaviour abstains.
-    """
-    return _leaning(_BEHAVIOUR_PSTOCK.get((temporal_behavior or "").strip()), grounding_confidence)
-
-
 def llm_claim_distribution(claim: str | None, confidence: float | None) -> dict[str, float]:
     """The LLM's independent stock/flow read as a claim-space distribution."""
     return _leaning(_CLAIM_PSTOCK.get((claim or "").strip()), confidence)
@@ -186,8 +170,6 @@ def measure_temporal_behavior(
     table: str,
     column: str,
     *,
-    ontology_behaviour: str | None,
-    grounding_confidence: float | None = None,
     llm_claim: str | None = None,
     llm_confidence: float | None = None,
     structural_pattern: str | None = None,
@@ -198,10 +180,6 @@ def measure_temporal_behavior(
 
     Args:
         table, column: identity for the claim slot.
-        ontology_behaviour: the concept's ``temporal_behavior`` (``point_in_time`` /
-            ``additive`` / None).
-        grounding_confidence: how confidently the column is grounded to that concept
-            (weakens the prior; None → default lean).
         llm_claim: the LLM's independent read (``stock`` / ``flow`` / ``unsure`` / None).
         llm_confidence: the LLM's confidence in that read.
         structural_pattern: the reconciled aggregation pattern (``per_period`` /
@@ -211,18 +189,14 @@ def measure_temporal_behavior(
             :data:`DEFAULT_RELIABILITIES`.
 
     Returns:
-        A :class:`ColumnTemporalAdjudication`. High ``result.conflict`` means the
-        declared behaviour and the LLM read disagree (the live ``debit_balance``
-        case); high ``ignorance`` means the column's behaviour is undetermined
-        (→ ``investigate`` + teach).
+        A :class:`ColumnTemporalAdjudication`. High ``result.conflict`` means the LLM
+        read and the data-grounded structural reconciliation disagree; high
+        ``ignorance`` means the column's behaviour is undetermined (→ ``investigate``
+        + teach). Stock/flow is data-determined — the ontology no longer votes
+        (DAT-657).
     """
     rel = reliabilities or DEFAULT_RELIABILITIES
     candidates = (
-        _witness(
-            "ontology_prior",
-            ontology_prior_distribution(ontology_behaviour, grounding_confidence),
-            rel["ontology_prior"],
-        ),
         _witness(
             "llm_claim",
             llm_claim_distribution(llm_claim, llm_confidence),

@@ -150,8 +150,17 @@ def test_every_emitted_teach_suggestion_names_an_appliable_type() -> None:
 
 
 def test_known_emissions_are_seen_by_the_scanner() -> None:
-    """Pin the temporal_behavior emission so scanner regressions surface loudly."""
+    """Pin the derived_values emission so scanner regressions surface loudly.
+
+    Canary was temporal_behavior until DAT-657 dropped its teach: stock/flow is
+    data-determined (the structural witness wins), a wrong grounding is corrected on
+    the grounding path — so the temporal detector emits NO teach_suggestion. The
+    derived_values ``validation`` teach is now the stable single-type baseline.
+    """
     emissions = _collect_emissions()
-    tb = emissions.get("entropy/detectors/computational/temporal_behavior.py")
-    assert tb is not None, "temporal_behavior teach_suggestion emission no longer detected"
-    assert set(tb) == {"concept_property", "rebind"}
+    assert "entropy/detectors/computational/temporal_behavior.py" not in emissions, (
+        "temporal_behavior must emit NO teach_suggestion (DAT-657 — stock/flow is data-determined)"
+    )
+    dv = emissions.get("entropy/detectors/computational/derived_values.py")
+    assert dv is not None, "derived_values teach_suggestion emission no longer detected"
+    assert set(dv) == {"validation"}

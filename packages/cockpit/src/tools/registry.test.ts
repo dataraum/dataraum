@@ -183,16 +183,12 @@ describe("tool registry (DAT-353)", () => {
 		expect(CONNECT_TEACH_TYPES).not.toContain("rebind");
 		expect(CONNECT_TEACH_TYPES).not.toContain("relationship");
 		expect(CONNECT_TEACH_TYPES).not.toContain("hierarchy");
-		// Stage owns the catalogue-grain meaning teaches + topology, and NONE of the
-		// mechanical typing-grain teaches (those are CONNECT's — begin_session can't
-		// re-run typing to realize them, DAT-647). No overlap between the two chats.
-		expect([...AGENT_TEACH_TYPES]).toEqual([
-			"concept",
-			"concept_property",
-			"rebind",
-			"relationship",
-			"hierarchy",
-		]);
+		// Stage owns the catalogue-grain TOPOLOGY teaches, and NONE of the mechanical
+		// typing-grain teaches (those are CONNECT's — begin_session can't re-run typing
+		// to realize them, DAT-647). Column MEANING moved off teach: the concept
+		// vocabulary is declared in the frame stage's typed write (DAT-728). No overlap
+		// between the two chats.
+		expect([...AGENT_TEACH_TYPES]).toEqual(["relationship", "hierarchy"]);
 		for (const mechanical of ["type_pattern", "null_value", "unit"]) {
 			expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(mechanical);
 		}

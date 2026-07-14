@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
+from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity, TableRole
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.graphs.additivity import (
     MetricVerdict,
@@ -181,23 +181,25 @@ def _temporal_by_column(
 
 
 def _fact_is_snapshot(session: Session, fact_table_id: str, run_id: str) -> bool | None:
-    """Whether a time column sits in the fact's grain (a periodic snapshot).
+    """Whether the fact is a periodic snapshot — read from the persisted table role.
 
-    ``grain_columns`` is ``{"columns": [name, ...]}``; ``time_columns`` is a list
-    of ``{"column": name, ...}``. A snapshot fact re-states the same population
-    each period, so a ``COUNT`` over it is non-additive across time. Returns
-    ``None`` when the fact has no ``TableEntity`` for this run — the grain is
-    unknown, and the classifier denies ``COUNT`` the time axis rather than
-    assuming an event fact.
+    A snapshot fact re-states the same population each period, so a ``COUNT`` over
+    it is non-additive across time. The grain∩time derivation now lives at
+    classification (``derive_table_role``, DAT-728); this reads the persisted
+    ``PeriodicSnapshot`` subtype. Returns ``None`` when the fact has no
+    ``TableEntity`` for this run (grain unknown) — the classifier then denies
+    ``COUNT`` the time axis rather than assuming an event fact.
     """
     row = session.execute(
-        select(TableEntity.grain_columns, TableEntity.time_columns).where(
+        select(TableEntity.table_role).where(
             TableEntity.table_id == fact_table_id, TableEntity.run_id == run_id
         )
     ).first()
     if row is None:
         return None
-    grain_columns, time_columns = row
-    grain = set((grain_columns or {}).get("columns", []))
-    times = {tc.get("column") for tc in (time_columns or []) if isinstance(tc, dict)}
-    return bool(grain & times)
+    role = row[0]
+    if role == TableRole.PERIODIC_SNAPSHOT:
+        return True
+    if role == TableRole.FACT:
+        return False
+    return None

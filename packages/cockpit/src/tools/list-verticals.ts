@@ -23,13 +23,13 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { and, count, eq, isNull, sql } from "drizzle-orm";
+import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
-import { countActiveConcepts } from "../db/metadata/concept-overlays";
-import { configOverlay } from "../db/metadata/schema";
+import { countActiveConcepts } from "../db/metadata/concept-count";
+import { conceptsWrite } from "../db/metadata/write-surface";
 
 const Vertical = z.object({
 	// The key to pass to `frame` (and the workflow `vertical`) — the directory
@@ -41,10 +41,10 @@ const Vertical = z.object({
 	// framed vertical (it has no curated description).
 	description: z.string().nullable(),
 	// Concepts available for the vertical: a builtin's curated ontology.yaml
-	// concepts PLUS any active concept overlay rows naming it (so `_adhoc` and
-	// framed verticals report their induced/taught concepts). An UPPER BOUND: the
-	// engine's _apply_concept upserts by name, so a teach that overrides an
-	// on-disk concept is double-counted here (rare; a richness hint, not exact).
+	// concepts PLUS any active typed `concepts` rows naming it (so framed verticals
+	// report their declared concepts; DAT-728, config→DB). An UPPER BOUND: a shipped
+	// vertical's seeded rows double-count its on-disk concepts (a richness hint, not
+	// exact).
 	concept_count: z.number(),
 	// Whether the builtin ships the richer operating-model objects. Always false
 	// for framed verticals (concepts only).
@@ -54,21 +54,17 @@ const Vertical = z.object({
 });
 export type Vertical = z.infer<typeof Vertical>;
 
-/** Active `concept` overlay rows grouped by their `payload.vertical`. */
+/** Active typed `concepts` rows grouped by `vertical` (DAT-728, config→DB — the
+ * concept vocabulary is a typed table, not `concept` overlay rows). Includes a
+ * shipped vertical's seeded rows once its pipeline has run; the framed listing
+ * filters those out by builtin-name, and the builtin count uses it only as an
+ * upper-bound richness hint. */
 async function conceptCountsByVertical(): Promise<Map<string, number>> {
 	const rows = await metadataDb
-		.select({
-			vertical: sql<string>`${configOverlay.payload}->>'vertical'`,
-			n: count(),
-		})
-		.from(configOverlay)
-		.where(
-			and(
-				isNull(configOverlay.supersededAt),
-				eq(configOverlay.type, "concept"),
-			),
-		)
-		.groupBy(sql`${configOverlay.payload}->>'vertical'`);
+		.select({ vertical: conceptsWrite.vertical, n: count() })
+		.from(conceptsWrite)
+		.where(isNull(conceptsWrite.supersededAt))
+		.groupBy(conceptsWrite.vertical);
 	return new Map(rows.map((r) => [r.vertical, Number(r.n)]));
 }
 
@@ -103,22 +99,23 @@ async function readOntology(
 }
 
 /** How many concepts a SINGLE vertical resolves to — its builtin ontology.yaml
- * concepts (zero for a framed/directory-less vertical) plus active concept
- * overlay rows naming it. The add_source pre-flight guard uses this to refuse a
- * vertical that would ground against nothing. An UPPER BOUND (overlay overrides
- * of on-disk concepts are double-counted) — safe for the guard's `=== 0` test,
- * which over-count can never make falsely zero. */
+ * concepts (zero for a framed/directory-less vertical) plus active typed
+ * `concepts` rows naming it (DAT-728; the frame stage's writes, and any seeded
+ * rows once the pipeline has run). The add_source pre-flight guard uses this to
+ * refuse a vertical that would ground against nothing. An UPPER BOUND (a shipped
+ * vertical's seed rows double-count its on-disk concepts) — safe for the guard's
+ * `=== 0` test, which over-count can never make falsely zero. */
 export async function verticalConceptCount(vertical: string): Promise<number> {
 	const onto = await readOntology(
 		join(config.dataraumConfigPath, "verticals", vertical, "ontology.yaml"),
 	);
-	const overlay = await countActiveConcepts(vertical);
-	return (onto?.concepts?.length ?? 0) + overlay;
+	const typed = await countActiveConcepts(vertical);
+	return (onto?.concepts?.length ?? 0) + typed;
 }
 
 /** The builtin verticals — every directory under `<config>/verticals/`. */
 async function builtinVerticals(
-	overlayCounts: Map<string, number>,
+	typedCounts: Map<string, number>,
 ): Promise<Vertical[]> {
 	const root = join(config.dataraumConfigPath, "verticals");
 	let entries: Dirent<string>[];
@@ -142,7 +139,7 @@ async function builtinVerticals(
 			kind: "builtin",
 			description: onto?.description?.trim() ?? null,
 			concept_count:
-				(onto?.concepts?.length ?? 0) + (overlayCounts.get(entry.name) ?? 0),
+				(onto?.concepts?.length ?? 0) + (typedCounts.get(entry.name) ?? 0),
 			has_cycles: await pathExists(join(dir, "cycles.yaml")),
 			has_validations: await pathExists(join(dir, "validations")),
 			has_metrics: await pathExists(join(dir, "metrics")),
@@ -154,12 +151,12 @@ async function builtinVerticals(
 /** All verticals available to frame with: builtin directories ∪ framed names
  * (overlay verticals without a directory). Sorted builtins-first, then by name. */
 export async function listVerticals(): Promise<Vertical[]> {
-	const overlayCounts = await conceptCountsByVertical();
-	const builtins = await builtinVerticals(overlayCounts);
+	const typedCounts = await conceptCountsByVertical();
+	const builtins = await builtinVerticals(typedCounts);
 	const builtinNames = new Set(builtins.map((v) => v.name));
 
-	const framed: Vertical[] = [...overlayCounts.entries()]
-		// Same hide rule as builtins: `_adhoc` carries concept overlay rows, so
+	const framed: Vertical[] = [...typedCounts.entries()]
+		// Same hide rule as builtins: `_adhoc` can carry typed concept rows, so
 		// without this it would reappear here as a "framed" vertical.
 		.filter(
 			([vertical]) =>

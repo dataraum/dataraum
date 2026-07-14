@@ -123,8 +123,12 @@ const IdentityColumn = z.object({
 
 const TableEntity = z.object({
 	entity_type: z.string().nullable(),
-	is_fact_table: z.boolean().nullable(),
-	is_dimension_table: z.boolean().nullable(),
+	// The engine's single role string (DAT-728) ∈ {"fact", "periodic_snapshot",
+	// "dimension"} or null (unclassified). Surfaced verbatim — NOT flattened to a
+	// fact/dimension boolean — so the answer agent sees "periodic_snapshot" (a
+	// period-end snapshot that must not be summed across periods, unlike a plain
+	// event fact), the additivity-relevant distinction IP2 added.
+	table_role: z.string().nullable(),
 	// The column names that uniquely identify a row (the table's grain).
 	grain: z.array(z.string()),
 	// Every event-time axis the table records, each labelled + described.
@@ -297,11 +301,11 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
 /** One `current_table_entities` row, as Drizzle returns it. grainColumns is the
  * persisted grain — the engine writes the DICT shape `{"columns": [...]}`
  * (`semantic/processor.py`), so the parser below accepts that (and tolerates a
- * bare `string[]` for safety). */
+ * bare `string[]` for safety). `tableRole` is the engine's single role string
+ * (DAT-728), surfaced verbatim on the tool output. */
 export interface TableEntityRow {
 	detectedEntityType: string | null;
-	isFactTable: boolean | null;
-	isDimensionTable: boolean | null;
+	tableRole: string | null;
 	grainColumns: unknown;
 	timeColumns: unknown;
 	identityColumns: unknown;
@@ -348,8 +352,7 @@ export function projectTableEntity(row: TableEntityRow): TableEntity {
 	const identities = IdentityColumns.safeParse(row.identityColumns);
 	return {
 		entity_type: row.detectedEntityType ?? null,
-		is_fact_table: row.isFactTable ?? null,
-		is_dimension_table: row.isDimensionTable ?? null,
+		table_role: row.tableRole ?? null,
 		grain: grain.success ? grain.data.map(stripSrcDigests) : [],
 		// Strip src_<digest> from each axis column; aspect/note pass through.
 		time_columns: times.success
@@ -544,8 +547,7 @@ async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
 	const [row] = await metadataDb
 		.select({
 			detectedEntityType: currentTableEntities.detectedEntityType,
-			isFactTable: currentTableEntities.isFactTable,
-			isDimensionTable: currentTableEntities.isDimensionTable,
+			tableRole: currentTableEntities.tableRole,
 			grainColumns: currentTableEntities.grainColumns,
 			timeColumns: currentTableEntities.timeColumns,
 			identityColumns: currentTableEntities.identityColumns,

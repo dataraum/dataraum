@@ -520,7 +520,6 @@ class TestRunTimeAxisFill:
             for e in logs
         )
 
-
     def test_deterministic_backstop_fills_when_agent_returns_empty(
         self,
         mock_load_config: MagicMock,

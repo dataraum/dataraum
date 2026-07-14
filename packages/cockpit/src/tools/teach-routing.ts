@@ -17,18 +17,12 @@ import { TEACH_TYPES, type TeachType } from "#/tools/teach.validation";
  * stage here fails to type-check. */
 const TEACH_STAGE: Record<TeachType, RunStage> = {
 	// Grounding teaches re-ground typed columns — applied by re-running add_source.
-	// (A concept change re-grounds here too; operating_model going stale off it
-	// falls out of the head log downstream, not this map.)
 	type_pattern: "add_source",
 	null_value: "add_source",
 	unit: "add_source",
-	concept: "add_source",
-	// A concept-property patch re-grounds the semantic binding too (add_source);
-	// operating_model going stale off a concept change derives downstream.
-	concept_property: "add_source",
-	// A rebind appends the column to the target concept's indicators → it only
-	// takes effect through the next run's grounding prompt (add_source).
-	rebind: "add_source",
+	// (The concept vocabulary is no longer a teach type — config→DB (DAT-728) moved
+	// it to the typed `concepts` table the frame stage writes; a concept edit
+	// re-grounds via the next run, tracked by the head log, not this map.)
 	// Relationships + dimension hierarchies are begin_session products
 	// (`run_relationships` / `run_dimension_hierarchies`).
 	relationship: "begin_session",

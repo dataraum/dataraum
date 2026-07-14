@@ -23,8 +23,8 @@ concepts:
     exclude_patterns:
       - cost
       - expense
-    temporal_behavior: additive  # Can be summed over periods
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
     
   - name: cost_of_goods_sold
@@ -34,8 +34,8 @@ concepts:
       - cost_of_goods
       - cost_of_sales
       - direct_cost
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     
   - name: operating_expense
     description: Expenses from normal business operations
@@ -45,8 +45,8 @@ concepts:
       - operating_cost
       - sga
       - overhead
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     
   - name: depreciation
     description: Allocation of asset cost over useful life
@@ -55,8 +55,8 @@ concepts:
       - depr
       - amortization
       - amort
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     
   - name: interest
     description: Interest income or expense
@@ -65,8 +65,8 @@ concepts:
       - interest_expense
       - interest_income
       - finance_cost
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     
   - name: tax
     description: Tax expense or benefit
@@ -75,10 +75,11 @@ concepts:
       - income_tax
       - tax_expense
       - tax_provision
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     
   - name: fiscal_period
+    kind: dimension
     description: Time period for financial reporting
     indicators:
       - period
@@ -92,6 +93,7 @@ concepts:
     typical_role: timestamp
 
   - name: entity
+    kind: entity
     description: Business entity or cost center
     indicators:
       - entity
@@ -104,6 +106,7 @@ concepts:
     typical_role: dimension
     
   - name: account
+    kind: entity
     description: Chart of accounts entry
     indicators:
       - account
@@ -114,6 +117,7 @@ concepts:
     typical_role: dimension
     
   - name: currency
+    kind: unit
     description: Currency of monetary values
     indicators:
       - currency
@@ -140,8 +144,8 @@ concepts:
       - customer_balance
       - ar_paid
       - a/r_paid
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   - name: accounts_payable
@@ -155,8 +159,8 @@ concepts:
       - vendor_balance
       - ap_paid
       - a/p_paid
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   - name: inventory
@@ -168,8 +172,8 @@ concepts:
       - wip
       - work_in_progress
       - finished_goods
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
 
   - name: current_assets
     description: Assets expected to be converted to cash within one year
@@ -177,8 +181,8 @@ concepts:
       - current_assets
       - short_term_assets
       - liquid_assets
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
 
   - name: current_liabilities
     description: Obligations due within one year
@@ -186,8 +190,8 @@ concepts:
       - current_liabilities
       - short_term_liabilities
       - current_debt
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
 
   - name: cash
     description: Cash and cash equivalents
@@ -196,8 +200,8 @@ concepts:
       - bank_balance
       - cash_balance
       - cash_equivalents
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   - name: open_balance
@@ -208,8 +212,8 @@ concepts:
       - balance_due
       - remaining_balance
       - unpaid
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   # Trial-balance / ledger period balances (DAT-405). Without this concept,
@@ -229,8 +233,8 @@ concepts:
       - closing_balance
       - ending_balance
       - beginning_balance
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   - name: transaction_amount
@@ -241,8 +245,8 @@ concepts:
       - total
       - value
       - price
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   - name: debit
@@ -250,8 +254,8 @@ concepts:
     indicators:
       - debit
       - dr
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   - name: credit
@@ -259,8 +263,8 @@ concepts:
     indicators:
       - credit
       - cr
-    temporal_behavior: additive
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
   - name: equity
@@ -273,8 +277,8 @@ concepts:
       - capital
       - retained_earnings
       - net_assets
-    temporal_behavior: point_in_time
     typical_role: measure
+    kind: measure
     unit_from_concept: currency
 
 # Domain conventions, piped VERBATIM to any SQL-authoring agent (extraction +

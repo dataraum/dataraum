@@ -26,18 +26,32 @@ constructing per-file paths, so a path-resolver had no remaining caller.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 
 from dataraum.core.config import get_config_dir
 from dataraum.core.overlay import get_overlay_rows
 
-# Overlay row types that DECLARE a *vertical's* model (concepts + the
-# validation/cycle/metric families, DAT-371/438/455/456) — the presence of any
-# one for a name is what makes it a framed vertical. ``concept_property`` is
-# deliberately excluded: it patches a field on an existing concept, so it can
-# never establish a vertical on its own (it always rides alongside a ``concept``
-# row for the same vertical).
-_VERTICAL_SCOPED_TYPES: frozenset[str] = frozenset({"concept", "validation", "cycle", "metric"})
+# Overlay row types that DECLARE a *vertical's* model (the validation/cycle/metric
+# families, DAT-438/455/456) — the presence of any one for a name is what makes it
+# a framed vertical. Concepts moved config→DB (DAT-728): they are no longer overlay
+# rows, so a vertical framed via its concept vocabulary is detected through the
+# typed-``concepts`` resolver below, not this set.
+_VERTICAL_SCOPED_TYPES: frozenset[str] = frozenset({"validation", "cycle", "metric"})
+
+# A concept-only framed vertical declares no validation/cycle/metric overlay row —
+# its only footprint is active typed ``concepts`` rows. The worker substrate
+# registers a resolver (querying that table for distinct user-declared verticals)
+# so ``_framed_verticals`` stays session-free at its call sites, mirroring the
+# overlay resolver. Unset (CLI / tests that never bootstrap a workspace) → no
+# typed-concept verticals contribute.
+_framed_concept_resolver: Callable[[], set[str]] | None = None
+
+
+def set_framed_concept_resolver(resolver: Callable[[], set[str]] | None) -> None:
+    """Register (or clear, with ``None``) the typed-concept framed-vertical source."""
+    global _framed_concept_resolver  # noqa: PLW0603
+    _framed_concept_resolver = resolver
 
 
 class VerticalKind(StrEnum):
@@ -75,11 +89,14 @@ def _shipped_verticals() -> set[str]:
 
 
 def _framed_verticals() -> set[str]:
-    """Vertical names that exist purely as overlay rows (declared via frame).
+    """Vertical names declared via frame — typed concept rows and/or overlay rows.
 
-    Distinct ``payload.vertical`` over the workspace's active vertical-scoped
-    overlay rows. Workspace scope is implicit in the resolver (its rows already
-    come from the ``ws_<id>`` schema); multi-workspace defers to DAT-357.
+    Two footprints, unioned: distinct ``payload.vertical`` over the workspace's
+    active validation/cycle/metric overlay rows, plus the verticals with active
+    user-declared typed ``concepts`` rows (via the registered resolver, DAT-728) —
+    the latter is the only footprint of a concept-only framed vertical. Workspace
+    scope is implicit in both sources (they read the ``ws_<id>`` schema);
+    multi-workspace defers to DAT-357.
     """
     names: set[str] = set()
     for row in get_overlay_rows():
@@ -87,6 +104,8 @@ def _framed_verticals() -> set[str]:
             vertical = row.payload.get("vertical")
             if vertical:
                 names.add(vertical)
+    if _framed_concept_resolver is not None:
+        names |= _framed_concept_resolver()
     return names
 
 
@@ -148,4 +167,5 @@ __all__ = [
     "available_verticals",
     "require_known_vertical",
     "resolve_vertical",
+    "set_framed_concept_resolver",
 ]

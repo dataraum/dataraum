@@ -102,8 +102,7 @@ class TableContext:
     column_count: int = 0
 
     # Classification
-    is_fact_table: bool | None = None
-    is_dimension_table: bool | None = None
+    table_role: str | None = None  # TableRole: fact | periodic_snapshot | dimension
     entity_type: str | None = None
 
     # From TableEntity
@@ -826,12 +825,14 @@ def build_execution_context(
     conventions: str = ""
     if vertical:
         try:
+            from dataraum.analysis.semantic.concept_store import load_workspace_concepts
             from dataraum.analysis.semantic.ontology import OntologyLoader
 
-            loader = OntologyLoader()
-            ontology = loader.load(vertical)
+            # Concepts from the typed vocabulary table (DAT-728, config→DB);
+            # conventions still come from YAML (not config→DB in this phase).
+            ontology = load_workspace_concepts(session, vertical)
             concept_vocabulary = _format_concept_vocabulary(ontology)
-            conventions = loader.format_conventions_for_prompt(ontology, "extraction")
+            conventions = OntologyLoader().format_conventions_for_prompt(ontology, "extraction")
         except Exception as e:
             logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
 
@@ -1048,11 +1049,8 @@ def build_execution_context(
 
         # Generate table flags
         table_flags: list[str] = []
-        if table_entity:
-            if table_entity.is_fact_table:
-                table_flags.append("fact_table")
-            if table_entity.is_dimension_table:
-                table_flags.append("dimension_table")
+        if table_entity and table_entity.table_role:
+            table_flags.append(table_entity.table_role)
 
         # Get table entropy data
         tbl_entropy = table_entropy_lookup.get(table.table_name)
@@ -1074,8 +1072,7 @@ def build_execution_context(
                 duckdb_name=table.duckdb_path,
                 row_count=row_count,
                 column_count=len(column_contexts),
-                is_fact_table=table_entity.is_fact_table if table_entity else None,
-                is_dimension_table=table_entity.is_dimension_table if table_entity else None,
+                table_role=table_entity.table_role if table_entity else None,
                 entity_type=table_entity.detected_entity_type if table_entity else None,
                 table_description=table_entity.description if table_entity else None,
                 grain_columns=grain_cols,
@@ -1300,11 +1297,7 @@ def format_metadata_document(
     lines.append("## Tables")
 
     for table in context.tables:
-        table_type = ""
-        if table.is_fact_table:
-            table_type = "FACT"
-        elif table.is_dimension_table:
-            table_type = "DIMENSION"
+        table_type = table.table_role.upper() if table.table_role else ""
 
         display_name = table.duckdb_name or table.table_name
         type_label = f" ({table_type})" if table_type else ""

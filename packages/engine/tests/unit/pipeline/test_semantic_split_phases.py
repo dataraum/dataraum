@@ -169,8 +169,9 @@ class TestPerColumnShouldSkip:
 
 class TestPerColumnAdhocFailLoud:
     """Grounding-only ``_run`` fails loud on a cold-start ``_adhoc`` workspace
-    with no frame-declared concepts (DAT-382). Induction has left the engine;
-    the cockpit ``frame`` stage must write ``concept`` overlay rows first.
+    with no concepts (DAT-382). Induction has left the engine; concepts come from
+    the seed (builtin YAML) or the cockpit ``frame`` stage's typed writes (DAT-728,
+    config→DB) — an empty ``concepts`` table means neither ran.
     """
 
     def _adhoc_ctx(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> PhaseContext:
@@ -181,7 +182,6 @@ class TestPerColumnAdhocFailLoud:
             run_id=baseline_run_id(),
         )
 
-    @patch("dataraum.pipeline.phases.semantic_per_column_phase.OntologyLoader")
     @patch("dataraum.pipeline.phases.semantic_per_column_phase.PromptRenderer")
     @patch("dataraum.pipeline.phases.semantic_per_column_phase.create_provider")
     @patch("dataraum.pipeline.phases.semantic_per_column_phase.load_llm_config")
@@ -190,7 +190,6 @@ class TestPerColumnAdhocFailLoud:
         mock_load_config: MagicMock,
         mock_create_provider: MagicMock,
         mock_renderer_cls: MagicMock,
-        mock_loader_cls: MagicMock,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
     ) -> None:
@@ -198,8 +197,8 @@ class TestPerColumnAdhocFailLoud:
         config.active_provider = "anthropic"
         config.providers = {"anthropic": MagicMock()}
         mock_load_config.return_value = config
-        # _adhoc ontology resolves to no concepts → fail loud, never ground.
-        mock_loader_cls.return_value.load.return_value = None
+        # _adhoc ships no concepts and none were framed/seeded → the typed
+        # `concepts` table is empty for it → fail loud, never ground.
 
         src = _source(session)
         _typed_table(session, src.source_id, "t1", ["a"])
@@ -207,11 +206,10 @@ class TestPerColumnAdhocFailLoud:
         result = SemanticPerColumnPhase()._run(self._adhoc_ctx(session, duckdb_conn))
 
         assert result.status == PhaseStatus.FAILED
-        assert "No concepts found for vertical '_adhoc'" in (result.error or "")
+        assert "No concepts for vertical '_adhoc'" in (result.error or "")
         # Grounded nothing — no annotations written.
         assert session.execute(select(SemanticAnnotation)).scalars().all() == []
 
-    @patch("dataraum.pipeline.phases.semantic_per_column_phase.OntologyLoader")
     @patch("dataraum.pipeline.phases.semantic_per_column_phase.PromptRenderer")
     @patch("dataraum.pipeline.phases.semantic_per_column_phase.create_provider")
     @patch("dataraum.pipeline.phases.semantic_per_column_phase.load_llm_config")
@@ -220,13 +218,12 @@ class TestPerColumnAdhocFailLoud:
         mock_load_config: MagicMock,
         mock_create_provider: MagicMock,
         mock_renderer_cls: MagicMock,
-        mock_loader_cls: MagicMock,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
     ) -> None:
         """A typo'd / never-framed vertical fails born-loud naming what exists
-        (DAT-480) — distinct from the _adhoc 'run frame first' message, and it
-        never reaches OntologyLoader."""
+        (DAT-480) — distinct from the _adhoc message, and it never reaches the
+        seed (the resolve_vertical guard fires first)."""
         config = MagicMock()
         config.active_provider = "anthropic"
         config.providers = {"anthropic": MagicMock()}
@@ -246,7 +243,6 @@ class TestPerColumnAdhocFailLoud:
         assert result.status == PhaseStatus.FAILED
         assert "Unknown vertical 'finanace'" in (result.error or "")
         assert "finance" in (result.error or "")  # names what DOES exist
-        mock_loader_cls.return_value.load.assert_not_called()
         assert session.execute(select(SemanticAnnotation)).scalars().all() == []
 
 

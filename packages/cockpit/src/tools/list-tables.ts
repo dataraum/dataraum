@@ -2,7 +2,7 @@
 // table inventory: every table across all (non-archived) sources with its
 // provenance, shape, a per-table readiness rollup, and (DAT-477) the dataset-
 // grain descriptive orientation the cockpit analog of MCP `look()` no-target
-// surfaces: each table's detected entity type / fact-ness plus the enriched
+// surfaces: each table's detected entity type / table role plus the enriched
 // fact/dimension views built for it.
 //
 // Pure reads via the Drizzle metadata client. A few small queries — tables ⟕
@@ -101,14 +101,17 @@ const InventoryTable = z.object({
 	readiness: ReadinessRollup,
 	// --- Dataset-grain descriptive orientation (DAT-477) — session/detect grain.
 	// The entity classification begin_session's detect assigns this table: its
-	// detected entity type and whether it's a fact table. Null pre-session (no
-	// promoted detect run carries a `current_table_entities` row for this table).
-	// `.optional()` is a TYPE-boundary affordance only: buildInventory ALWAYS sets
-	// these (the server never omits them), but pre-DAT-477 `InventoryTable`
-	// fixtures in sibling widget tests predate the fields — optional lets them
-	// typecheck unchanged while the live projection stays exhaustive.
+	// detected entity type and its table role (fact / periodic_snapshot /
+	// dimension, DAT-728 — surfaced verbatim, never folded to a boolean so the
+	// snapshot/fact distinction survives into the inventory chip). Null pre-session
+	// (no promoted detect run carries a `current_table_entities` row for this
+	// table). `.optional()` is a TYPE-boundary affordance only: buildInventory
+	// ALWAYS sets these (the server never omits them), but pre-DAT-477
+	// `InventoryTable` fixtures in sibling widget tests predate the fields —
+	// optional lets them typecheck unchanged while the live projection stays
+	// exhaustive.
 	entity_type: z.string().nullable().optional(),
-	is_fact: z.boolean().nullable().optional(),
+	table_role: z.string().nullable().optional(),
 	// The enriched fact/dimension views built for this table (count + names);
 	// empty pre-session.
 	enriched_views: EnrichedViewsSummary.optional(),
@@ -122,7 +125,9 @@ export type InventoryTable = z.infer<typeof InventoryTable>;
  * always exhaustive, which the tests rely on.
  */
 export type ProjectedInventoryTable = InventoryTable &
-	Required<Pick<InventoryTable, "entity_type" | "is_fact" | "enriched_views">>;
+	Required<
+		Pick<InventoryTable, "entity_type" | "table_role" | "enriched_views">
+	>;
 
 /** One table ⟕ source provenance row, as the Drizzle select returns it. */
 export interface InventoryTableRow {
@@ -182,7 +187,9 @@ export interface ColumnBandRow {
 export interface TableEntityRow {
 	tableId: string;
 	detectedEntityType: string | null;
-	isFactTable: boolean | null;
+	// The engine's single role string (DAT-728) — surfaced verbatim onto the
+	// inventory row's `table_role`; the two `is_*` booleans no longer exist.
+	tableRole: string | null;
 	detectedAt: Date | null;
 }
 
@@ -212,9 +219,9 @@ export interface EnrichedViewRow {
  * readiness scoped per table, DAT-410) — NOT a DB unique constraint — and is the
  * same contract `look_table` relies on.
  *
- * The entity facts (entity_type / is_fact) and enriched_views summary are
+ * The entity facts (entity_type / table_role) and enriched_views summary are
  * session/detect grain: absent any promoted detect run the entity rows / view
- * rows are empty, so entity_type / is_fact stay null and enriched_views is an
+ * rows are empty, so entity_type / table_role stay null and enriched_views is an
  * empty summary — never invented pre-session. The current_* views are
  * `session:{id}`-head-scoped, so in a MULTI-SESSION workspace one table carries
  * several entity rows / view sets (one per session). The pick is made
@@ -323,7 +330,7 @@ export function buildInventory(
 			// classified this table (pre-session, or a table the session didn't
 			// reach).
 			entity_type: entity?.detectedEntityType ?? null,
-			is_fact: entity?.isFactTable ?? null,
+			table_role: entity?.tableRole ?? null,
 			enriched_views: {
 				count: view_names.length,
 				view_names,
@@ -346,8 +353,8 @@ export interface ListTablesInput {
 /** The workspace table inventory (optionally one source), oldest source first.
  * Returns `ProjectedInventoryTable[]` — buildInventory ALWAYS sets the DAT-477
  * fields, so callers never face a `string | null | undefined` for entity_type/
- * is_fact/enriched_views (the `.optional()` on `InventoryTable` is a fixture-only
- * type affordance, not a runtime maybe). */
+ * table_role/enriched_views (the `.optional()` on `InventoryTable` is a fixture-
+ * only type affordance, not a runtime maybe). */
 export async function listTables(
 	input: ListTablesInput = {},
 ): Promise<ProjectedInventoryTable[]> {
@@ -425,7 +432,7 @@ export async function listTables(
 	// Session/detect-grain orientation (DAT-477). The current_* views resolve the
 	// promoted detect run server-side (the head join lives in the DB, ADR-0008),
 	// so a workspace with no sealed session yields zero rows here → entity_type/
-	// is_fact stay null and enriched_views stays empty. Read inline (no shared
+	// table_role stay null and enriched_views stays empty. Read inline (no shared
 	// reader — trivial duplication is intentional, DRY'd up later). Short selects;
 	// no source filter (these views carry no source_id — the table_id / fact_table_id
 	// keys join back to the source-filtered tableRows in buildInventory, so a
@@ -438,7 +445,7 @@ export async function listTables(
 		.select({
 			tableId: currentTableEntities.tableId,
 			detectedEntityType: currentTableEntities.detectedEntityType,
-			isFactTable: currentTableEntities.isFactTable,
+			tableRole: currentTableEntities.tableRole,
 			detectedAt: currentTableEntities.detectedAt,
 		})
 		.from(currentTableEntities)
@@ -482,7 +489,8 @@ export const listTablesTool = toolDefinition({
 		"count, its source (name/type/backend), and a readiness rollup — how " +
 		"many of its columns are ready / investigate / blocked / unanalyzed plus " +
 		"the worst band. After a begin_session run it also carries each table's " +
-		"detected entity_type and is_fact classification, and an enriched_views " +
+		"detected entity_type and table_role (fact / periodic_snapshot / " +
+		"dimension) classification, and an enriched_views " +
 		"summary (count + view_names of the fact/dimension views built off that " +
 		"table); these stay null/empty before a session has been run.",
 	inputSchema: z.object({

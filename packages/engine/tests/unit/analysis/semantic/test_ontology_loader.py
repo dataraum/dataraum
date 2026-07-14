@@ -10,11 +10,7 @@ from dataraum.analysis.semantic.ontology import (
     OntologyConvention,
     OntologyDefinition,
 )
-from dataraum.core.overlay import (
-    OverlayRow,
-    reset_overlay_resolver_for_tests,
-    set_overlay_resolver,
-)
+from dataraum.core.vertical import set_framed_concept_resolver
 
 
 class TestOntologyLoader:
@@ -27,31 +23,22 @@ class TestOntologyLoader:
 
         assert ontology is None
 
-    def test_load_framed_vertical_resolves_overlay_only(self) -> None:
-        """A framed vertical has no on-disk directory (the config tree is
-        read-only); its concepts live only as `concept` overlay rows. load()
-        resolves it by layering those rows over an empty base — so the engine
-        grounds against a cockpit-declared vertical that never touched disk.
+    def test_load_framed_vertical_resolves_to_empty_concepts(self) -> None:
+        """A framed vertical has no on-disk directory and, post-DAT-728, no concept
+        overlay rows — its concept vocabulary lives in the typed ``concepts`` table,
+        read via ``concept_store`` at runtime, not this loader. ``load()`` still
+        resolves it to a (non-None) definition: the vertical is KNOWN (framed via
+        the typed-concept resolver), it simply carries EMPTY concepts through this
+        path — grounding reads the real vocabulary from the table.
         """
-        set_overlay_resolver(
-            lambda: [
-                OverlayRow(
-                    type="concept",
-                    payload={
-                        "vertical": "sales",
-                        "name": "deal_value",
-                        "indicators": ["amount", "value"],
-                    },
-                )
-            ]
-        )
+        set_framed_concept_resolver(lambda: {"sales"})
         try:
             ontology = OntologyLoader().load("sales")
             assert ontology is not None
             assert ontology.name == "sales"
-            assert [c.name for c in ontology.concepts] == ["deal_value"]
+            assert ontology.concepts == []
         finally:
-            reset_overlay_resolver_for_tests()
+            set_framed_concept_resolver(None)
 
     def test_format_concepts_for_prompt(self):
         """Test formatting concepts for LLM prompt."""

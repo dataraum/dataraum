@@ -29,6 +29,27 @@ export const columns = metadataSchema
 		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type FROM ws_00000000_0000_0000_0000_000000000001.columns`,
 	);
 
+export const concepts = metadataSchema
+	.view("concepts", {
+		conceptId: varchar("concept_id"),
+		vertical: varchar(),
+		name: varchar(),
+		kind: varchar(),
+		description: text(),
+		indicators: json(),
+		excludePatterns: json("exclude_patterns"),
+		typicalRole: varchar("typical_role"),
+		typicalValues: json("typical_values"),
+		unitFromConcept: varchar("unit_from_concept"),
+		isUnitDimension: boolean("is_unit_dimension"),
+		source: varchar(),
+		createdAt: timestamp("created_at"),
+		supersededAt: timestamp("superseded_at"),
+	})
+	.as(
+		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, typical_role, typical_values, unit_from_concept, is_unit_dimension, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
+	);
+
 export const configOverlay = metadataSchema
 	.view("config_overlay", {
 		overlayId: varchar("overlay_id"),
@@ -468,15 +489,14 @@ export const currentTableEntities = metadataSchema
 		confidence: doublePrecision(),
 		evidence: json(),
 		grainColumns: json("grain_columns"),
-		isFactTable: boolean("is_fact_table"),
-		isDimensionTable: boolean("is_dimension_table"),
+		tableRole: varchar("table_role"),
 		timeColumns: json("time_columns"),
 		identityColumns: json("identity_columns"),
 		detectionSource: varchar("detection_source"),
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, is_fact_table, is_dimension_table, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, table_role, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTables = metadataSchema

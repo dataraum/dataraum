@@ -41,7 +41,10 @@ reverted for name-matching, rebuilt on the identity.
 - **`og_conformed_dimension` — new graph-edge truth section.** Assert the finance
   conformed pairs (facts sharing a dim table — e.g. `trial_balance` ↔ `balance_sheet` on
   the shared account dim) are typed via the shared `dimension_table_id`, both directions,
-  carrying each side's slice attribute. Graded absolutely (generator-known pairs).
+  carrying each side's slice attribute. Graded absolutely (generator-known pairs). Note a
+  single fact-table PAIR can emit MULTIPLE edges — one per matching slice-row pair (a fact
+  with several role-playing FKs to one dim) — so assert on the table pair + dim, not a
+  single-edge count.
 - **`og_references` — CHANGED surface.** Fan-trap fact↔fact edges between shared-dimension
   slice columns no longer appear as `refs`. Any truth assertion enumerating references
   must expect these excluded (a genuine fact→dim FK still appears — a dim key is never a

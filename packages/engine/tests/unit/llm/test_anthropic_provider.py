@@ -513,14 +513,10 @@ class TestStringifiedArgCoercion:
         )
         assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
 
-    def test_single_real_property_key_not_unwrapped(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_single_real_property_key_not_unwrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A single-key input whose sole key is a real PROPERTY (not the tool name)
         # is NOT an envelope — leave it (the list value passes coercion untouched).
-        coerced = self._converse_with_tool_use(
-            monkeypatch, {"tables": [{"table_name": "t"}]}
-        )
+        coerced = self._converse_with_tool_use(monkeypatch, {"tables": [{"table_name": "t"}]})
         assert coerced == {"tables": [{"table_name": "t"}]}
 
 

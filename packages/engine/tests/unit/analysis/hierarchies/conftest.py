@@ -114,9 +114,7 @@ def seed_view(
     session.flush()
 
     names = list(columns)
-    duck.execute(
-        f'CREATE TABLE "{view_name}" (' + ", ".join(f'"{n}" VARCHAR' for n in names) + ")"
-    )
+    duck.execute(f'CREATE TABLE "{view_name}" (' + ", ".join(f'"{n}" VARCHAR' for n in names) + ")")
     rows = list(zip(*columns.values(), strict=True))
     duck.executemany(
         f'INSERT INTO "{view_name}" VALUES ({", ".join("?" for _ in names)})',  # noqa: S608

@@ -568,9 +568,7 @@ def _view_structures(
     for c in eligible:
         d = scan.d2[c]
         if d < MIN_DISTINCT_DETERMINANT:
-            logger.info(
-                "hierarchy_determinant_excluded", column=c, reason="too_coarse", distinct=d
-            )
+            logger.info("hierarchy_determinant_excluded", column=c, reason="too_coarse", distinct=d)
             bad_det.add(c)
         elif scan.n and d >= NEAR_KEY_FRAC * scan.n:
             logger.info(

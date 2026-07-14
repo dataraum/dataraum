@@ -60,9 +60,7 @@ def codes_of(series: pl.Series) -> np.ndarray:
     """
     import polars as pl  # noqa: PLC0415 — keep the module importable without polars typing
 
-    return (
-        series.cast(pl.Utf8).fill_null("␀").rank("dense").cast(pl.Int64).to_numpy() - 1
-    )
+    return series.cast(pl.Utf8).fill_null("␀").rank("dense").cast(pl.Int64).to_numpy() - 1
 
 
 def _grouped_sorted(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

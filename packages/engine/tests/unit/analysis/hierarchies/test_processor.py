@@ -161,7 +161,9 @@ class TestStackV4:
         """A true hierarchy with 0.2% dirty rows stays asserted (row-g3 tolerance)."""
         n = 5_000
         city = [f"c{i % 40}" for i in range(n)]
-        state = [f"s{((i % 40) // 5 + 1) % 8}" if i % 500 == 0 else f"s{(i % 40) // 5}" for i in range(n)]
+        state = [
+            f"s{((i % 40) // 5 + 1) % 8}" if i % 500 == 0 else f"s{(i % 40) // 5}" for i in range(n)
+        ]
         tid = seed_view(real_session, duck, "dirty_geo", {"city": city, "state": state})
         discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
         drills = _rows(real_session, tid, "drilldown")
@@ -187,7 +189,9 @@ class TestStackV4:
             billto.append("hub" if drop else f"c{c}")
             channel.append("dropship" if drop else "standard")
         tid = seed_view(
-            real_session, duck, "orders",
+            real_session,
+            duck,
+            "orders",
             {"soldto": soldto, "billto": billto, "channel": channel},
         )
         discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
@@ -248,7 +252,9 @@ class TestStackV4:
         ).scalar_one()
         real_session.add(
             SemanticAnnotation(
-                annotation_id=str(uuid4()), column_id=amount_id, run_id=RUN,
+                annotation_id=str(uuid4()),
+                column_id=amount_id,
+                run_id=RUN,
                 semantic_role="measure",
             )
         )
@@ -272,7 +278,10 @@ class TestStackV4:
         n = 500
         state = [f"s{i % 8}" for i in range(n)]
         tid = seed_view(
-            real_session, duck, "wide", {"state": state, "mystery": list(state)},
+            real_session,
+            duck,
+            "wide",
+            {"state": state, "mystery": list(state)},
             register={"state"},
         )
         discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)

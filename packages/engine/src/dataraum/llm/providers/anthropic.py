@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any, cast
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
+from dataraum.llm.prompt_log import dump_prompt, dump_response
 from dataraum.llm.providers.base import (
     ConversationRequest,
     ConversationResponse,
@@ -503,10 +505,29 @@ class AnthropicProvider(LLMProvider):
                         }
                     )
                     coerced = original_input
+                    # Envelope unwrap (Sonnet 5 under a forced tool_choice): the model
+                    # intermittently wraps the WHOLE argument object under a single key
+                    # equal to the tool name — {"analyze_slicing": {<the real args>}}.
+                    # It is a valid tool call, but schema-validation at the call site
+                    # then finds no known top-level field and silently defaults every
+                    # field to empty (an empty ``recommendations`` list is
+                    # indistinguishable from "model declined"). This silently zeroed
+                    # slicing on a sampling-dependent fraction of runs → no slices →
+                    # dimension_hierarchies/aggregation_lineage/drivers all skipped, and
+                    # it hits EVERY forced-tool extractor (relationship judge,
+                    # reconciliation). Unwrap it here, once, for all of them.
+                    enveloped = coerced.get(block.name)
+                    if len(coerced) == 1 and isinstance(enveloped, dict):
+                        logger.warning(
+                            "tool_output_envelope_unwrapped",
+                            label=request.label,
+                            tool=block.name,
+                        )
+                        coerced = dict(enveloped)
                     tool_schema = schemas_by_name.get(block.name)
                     if tool_schema is not None:
                         coerced = _coerce_stringified_args(
-                            original_input, tool_schema, label=request.label
+                            coerced, tool_schema, label=request.label
                         )
                     tool_calls.append(
                         ToolCall(
@@ -539,6 +560,34 @@ class AnthropicProvider(LLMProvider):
                 output_tokens=usage.output_tokens,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_creation,
+            )
+
+            # Dump the ACTUAL rendered prompt + the model's raw response (incl. the
+            # tool-call input) for EVERY call at the provider chokepoint — not just
+            # the graph agent (DAT-758/759 diag). Gated by settings.prompt_dump_dir
+            # (no-op otherwise); best-effort. This is the only way to see what a
+            # forced-tool extractor really returned: an EMPTY tool call is invisible
+            # in the token log (it reads the same as a rich one).
+            _label = request.label or "unlabeled"
+            _user = "\n\n".join(m.content for m in request.messages if isinstance(m.content, str))
+            _phash = hashlib.sha256(_user.encode("utf-8")).hexdigest()[:16]
+            dump_prompt(
+                label=_label,
+                key=_label,
+                prompt_hash=_phash,
+                system=request.system,
+                user=_user,
+                model=response.model,
+            )
+            _resp_body = text_content + "".join(
+                f"\n[tool_use {tc.name}]\n{json.dumps(tc.input, indent=2, default=str)}"
+                for tc in tool_calls
+            )
+            dump_response(
+                label=_label,
+                key=_label,
+                prompt_hash=_phash,
+                body=f"stop_reason={response.stop_reason}\n{_resp_body}",
             )
 
             return Result.ok(

@@ -494,6 +494,35 @@ class TestStringifiedArgCoercion:
         )
         assert coerced == {"tables": [{"table_name": "t"}], "note": "n"}
 
+    def test_tool_name_envelope_is_unwrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Sonnet 5 under a forced tool_choice intermittently wraps the WHOLE
+        # argument object under a single key equal to the TOOL NAME
+        # ({"emit": {<real args>}}). Left alone, schema-validation at the call
+        # site finds no known field and silently defaults every field to empty
+        # (the slicing "0 recommendations" flake). Unwrap it.
+        coerced = self._converse_with_tool_use(
+            monkeypatch, {"emit": {"tables": [{"table_name": "t"}], "note": "ok"}}
+        )
+        assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
+
+    def test_envelope_unwrap_then_coerces_inner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Unwrap composes with stringified-arg coercion: an enveloped inner whose
+        # container was itself stringified is still parsed.
+        coerced = self._converse_with_tool_use(
+            monkeypatch, {"emit": {"tables": '[{"table_name": "t"}]', "note": "ok"}}
+        )
+        assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
+
+    def test_single_real_property_key_not_unwrapped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A single-key input whose sole key is a real PROPERTY (not the tool name)
+        # is NOT an envelope — leave it (the list value passes coercion untouched).
+        coerced = self._converse_with_tool_use(
+            monkeypatch, {"tables": [{"table_name": "t"}]}
+        )
+        assert coerced == {"tables": [{"table_name": "t"}]}
+
 
 class TestPromptCaching:
     """The system prompt ships as a cached block (DAT-601): tools render before

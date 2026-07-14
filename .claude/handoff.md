@@ -5,14 +5,14 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
-## DAT-729 — concept edges (`disjoint_with` / `part_of`) + conformed-dimension typing (DAT-723 fan-trap)
+## DAT-729 — concept edges (`disjoint_with` / `part_of`)
 
 **Branch:** `feat/dat-729-concept-edges`. **New graph-edge oracle surfaces — no
 detector-score change.** Phase 4 of the operating-model graph (DAT-725): the concept
-vocabulary gains typed edges, and two facts sharing a dimension are typed as a
-drill-across path instead of a false-positive FK. All three are **seed/derivation
-structure**, not a detector recalibration — the eval work is **new `metadata_truth.yaml`
-sections + oracle assertions**, graded absolutely.
+vocabulary gains typed edges. Both are **seed structure**, not a detector
+recalibration — the eval work is **new `metadata_truth.yaml` sections + oracle
+assertions**, graded absolutely. (Conformed-dimension typing was pulled from this phase
+— it needs a real dimension-identity design, tracked separately; see the DAT-725 thread.)
 
 ### What changed
 
@@ -30,14 +30,6 @@ sections + oracle assertions**, graded absolutely.
   {accounts_payable}` (4 edges). Concept-grain composition ONLY — the account-instance
   chart-of-accounts tree stays the physical `references` topology (P1) / `rolls_up_to`
   (P5). Transitive ancestry is a bounded recursive-CTE (max-depth 4 + cycle guard).
-- **`conformed_dimension` graph edge + DAT-723 fan-trap fix (graph-level, NO detector
-  change).** Two facts sharing a same-named slice (dimension) column now surface as a
-  derived `conformed_dimension` edge (e.g. `trial_balance.period ↔ balance_sheet.period`),
-  and `og_references` EXCLUDES those pairs — the shared dimension is typed conformed,
-  never a reference. Purely graph views over existing `slice_definitions`; the
-  relationship detector, evaluator, and `relationships` table are **untouched** (zero
-  calibration risk). A real fact→dimension FK survives (the dimension key is not a fact
-  slice, so at most one endpoint is a slice — the exclusion cannot match).
 - **`reconciles_with` DEFERRED to P2 (DAT-727).** Its producers are all Grounding-node-
   dependent (the aggregation-lineage witness reconciles a measure against its event
   aggregation = two groundings of ONE concept; the "4 generator pairs" are dataset-level,
@@ -54,25 +46,19 @@ sections + oracle assertions**, graded absolutely.
   `inventory` part_of `current_assets`; `accounts_payable` part_of `current_liabilities`),
   directed (whole is NOT part_of its part), and that the recursive-CTE ancestor closure
   is transitive + cycle-guarded (the graph query, not a stored transitive edge).
-- **`conformed_dimension` truth section (the DAT-723 acceptance).** `trial_balance.period ↔
-  balance_sheet.period` must appear as a `conformed_dimension` edge and must **NOT** appear
-  as a `refs` (references) edge. This is the fan-trap fix, gradable directly off the graph.
 - **No stock/flow, additivity, or grounding recalibration** — no detector inputs, scores,
   or thresholds changed. `reconciles_with` is NOT in this truth set (lands with P2).
 
 ### testdata hints
 
-None. The finance corpus already carries the disjoint/compose partitions (in the shipped
-ontology) and two period-sliced facts (`trial_balance`, `balance_sheet`) — the
-conformed-dimension + fan-trap case is exercised without new fixtures. (Per the ticket:
-reconciliation pairs read from existing generator code; no export needed for v1.)
+None. The finance corpus already carries the disjoint/compose partitions in the shipped
+ontology, so both edge types are exercised without new fixtures.
 
 ### Cross-package / schema
 
 `schema.sql` gained the `concept_edges` table; `schema_graph.sql` gained the
-`og_concept_edges` + `og_conformed_dimension` graph elements and the `og_references`
-conformed-dim exclusion; the cockpit drizzle mirror gained the `conceptEdges` view
-(`schema-drift` CI enforces). No read-view (`current_*`) shape change beyond the new
+`og_concept_edges` graph element; the cockpit drizzle mirror gained the `conceptEdges`
+view (`schema-drift` CI enforces). No read-view (`current_*`) shape change beyond the new
 `concept_edges` passthrough.
 
 ---

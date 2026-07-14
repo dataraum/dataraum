@@ -22,18 +22,15 @@ and ``Table``; the vocabulary ``Concept`` vertices are P3. Edges/props carried:
     column_node  (KEY column_id)  props: semantic_role (has_role),
                                           materialization (materializes_as)
     table_node   (KEY table_id)   props: table_role (fact/periodic_snapshot/dimension)
-    refs               table → table     [relationships]      FK topology (conformed dims excluded)
-    has_dimension      table → column    [slice_definitions]  a fact's slice columns
-    derived_from       table → table     [enriched_views]     view → fact + dim bases
-    concept_edge       concept → concept [concept_edges]      part_of / disjoint_with (P4)
-    conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (P4)
+    refs          table → table     [relationships]      FK topology + cardinality
+    has_dimension table → column    [slice_definitions]  a fact's slice columns
+    derived_from  table → table     [enriched_views]     view → fact + dim bases
+    concept_edge  concept → concept [concept_edges]      part_of/disjoint/reconciles (P4)
 
 ``rolls_up_to`` (dimension_hierarchies' JSON members) lands in P5 where its
 consumer does. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
-``part_of`` / ``disjoint_with`` as a ``predicate`` property; its transitive closure
-(``part_of`` ancestry) is walked by the bounded recursive CTE. ``conformed_dimension``
-(DAT-729) types two facts sharing a dimension as a drill-across path — NOT a fact-to-fact
-FK (the DAT-723 fan trap), which is why those pairs are excluded from ``refs``.
+``part_of`` / ``disjoint_with`` / ``reconciles_with`` as a ``predicate`` property;
+its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 
 **Bootstrap ordering is load-bearing.** A property graph *depends on* its element
 views, and an element view depends on the ``current_*`` views. Postgres refuses to
@@ -80,7 +77,6 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_has_dimension",
     "og_derived_from",
     "og_concept_edges",
-    "og_conformed_dimension",
 )
 
 
@@ -170,44 +166,13 @@ def _element_view_sql(name: str) -> str:
         # per-run and unique within one head-resolved view — a fine LOCAL edge key
         # inside one promoted state (never keyed on across runs). Self-referential
         # and multi-hop chains here are what the recursive-CTE closure walks.
-        #
-        # DAT-723 fan-trap fix (DAT-729): a relationship whose BOTH endpoints are
-        # same-named slice (dimension) columns of DIFFERENT tables is not an FK — it
-        # is a CONFORMED DIMENSION (two facts sharing a dimension, e.g.
-        # trial_balance.period ↔ balance_sheet.period), typed as the og_conformed_dimension
-        # edge below. Excluded here so the shared dimension is never ALSO presented as a
-        # reference (a real fact→dimension FK survives: the dimension table's key is not a
-        # fact slice column, so at most one endpoint is a slice — the filter cannot match).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_references AS\n"
             f"SELECT relationship_id::text AS relationship_id,\n"
             f"       from_table_id::text AS from_table_id, to_table_id::text AS to_table_id,\n"
             f"       from_column_id, to_column_id, cardinality, relationship_type,\n"
             f"       confidence, is_confirmed\n"
-            f"FROM {READ_TOKEN}.current_relationships r\n"
-            f"WHERE NOT EXISTS (\n"
-            f"  SELECT 1 FROM {READ_TOKEN}.current_slice_definitions s1\n"
-            f"  JOIN {READ_TOKEN}.current_slice_definitions s2 ON s1.column_name = s2.column_name\n"
-            f"  WHERE s1.column_id = r.from_column_id AND s2.column_id = r.to_column_id\n"
-            f"    AND s1.table_id <> s2.table_id\n"
-            f");"
-        )
-    if name == "og_conformed_dimension":
-        # conformed_dimension edge (table → table): two facts sharing a dimension
-        # (DAT-729). Derived from paired slice (has_dimension) columns of the same name
-        # on DIFFERENT tables — the drill-across path (compare over the shared dim),
-        # explicitly NOT a fact-to-fact FK (that would be the DAT-723 fan trap). Symmetric,
-        # so both directions are emitted (edge_key = the ordered slice-id pair, '_'-joined
-        # — NOT ':', a bind-param sigil to text()). A fact partitioned by N shared
-        # dimensions yields one edge per shared dimension.
-        return (
-            f"CREATE VIEW {READ_TOKEN}.og_conformed_dimension AS\n"
-            f"SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,\n"
-            f"       s1.table_id::text AS from_table_id, s2.table_id::text AS to_table_id,\n"
-            f"       s1.column_name AS dimension\n"
-            f"FROM {READ_TOKEN}.current_slice_definitions s1\n"
-            f"JOIN {READ_TOKEN}.current_slice_definitions s2\n"
-            f"  ON s1.column_name = s2.column_name AND s1.table_id <> s2.table_id;"
+            f"FROM {READ_TOKEN}.current_relationships;"
         )
     if name == "og_has_dimension":
         # has_dimension edge (table → column): a fact table's slice (dimension)
@@ -284,12 +249,7 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (from_concept_id) REFERENCES og_concepts (concept_id)\n"
         f"      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)\n"
         f"      LABEL concept_edge\n"
-        f"      PROPERTIES (predicate, tolerance),\n"
-        f"    {READ_TOKEN}.og_conformed_dimension KEY (edge_key)\n"
-        f"      SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)\n"
-        f"      DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)\n"
-        f"      LABEL conformed_dimension\n"
-        f"      PROPERTIES (dimension)\n"
+        f"      PROPERTIES (predicate, tolerance)\n"
         f"  );"
     )
 

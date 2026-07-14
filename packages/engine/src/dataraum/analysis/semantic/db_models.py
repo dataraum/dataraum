@@ -197,6 +197,11 @@ class ConceptEdge(Base):
     view resolves those names to the active concepts' ids for the PGQ vertex binding,
     so a superseded/absent endpoint drops the edge from the graph automatically.
 
+    Rename caveat (future): keying endpoints by ``name`` means a concept RENAME (a new
+    ``(vertical, name)`` identity, not a supersede-in-place) would orphan its edges —
+    they'd silently vanish from the graph. No rename path exists today; when ``frame``
+    adds one (P13) it must re-point or supersede the affected edges, not just the concept.
+
     Symmetric predicates (``disjoint_with``, ``reconciles_with``) are stored in BOTH
     directions — the graph is directed and PG19 SQL/PGQ ``MATCH`` is directed, so two
     rows let a walk from either endpoint enumerate the relation. ``part_of`` is

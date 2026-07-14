@@ -174,6 +174,13 @@ class RoleResult:
     alpha: float  # the Bonferroni-corrected threshold both tests were held to
 
 
+# Below this many disagreement rows, the achievable permutation p-floor is
+# α-sensitive (ties dominate: with k=2 the floor sits near 0.02, see the DAT-757
+# gate-#2 probe) — any verdict would be a coin flip, so the honest outcome is
+# ABSTAIN. The probe's measured power boundary starts at k ≈ 10 (n = 20k).
+ROLE_K_FLOOR = 10
+
+
 def role_verdict(
     dis: np.ndarray,
     contexts: dict[str, np.ndarray],
@@ -182,18 +189,30 @@ def role_verdict(
     *,
     reps: int = PERM_REPS,
     alpha_family: float = 0.05,
+    k_floor: int = ROLE_K_FLOOR,
 ) -> RoleResult:
     """Classify one near-copy pair from its disagreement set (DAT-757 gate #2).
 
     ``dis`` is ``1{A≠B}`` per row; ``contexts`` are the other candidate columns'
-    codes. Bonferroni m = n_contexts + 1 (the T1 family plus T2). T1 significant →
-    ROLE; else T2 significant → VALUE_SYSTEMATIC (escalate, never merge-block on
-    its own semantics: real dirt is rarely marginal-random, so T2 alone cannot
-    separate role from concentrated dirt); else if the permutation p-floor cannot
-    reach α the honest verdict is ABSTAIN; else DIRT.
+    codes. Bonferroni m = n_contexts + 1 (the T1 family plus T2). Fewer than
+    ``k_floor`` disagreements → ABSTAIN (the p-floor is α-sensitive there — any
+    decision would be a coin flip). T1 significant → ROLE; else T2 significant →
+    VALUE_SYSTEMATIC (escalate, never merge on its own: real dirt is rarely
+    marginal-random, so T2 alone cannot separate role from concentrated dirt);
+    else if the permutation p-floor cannot reach α → ABSTAIN; else DIRT.
     """
     m = len(contexts) + 1
     alpha = alpha_family / m
+    k = int(dis.sum())
+    if k < k_floor:
+        return RoleResult(
+            verdict=RoleVerdict.ABSTAIN,
+            t1_p=1.0,
+            t1_context=None,
+            t2_p=1.0,
+            k_disagree=k,
+            alpha=alpha,
+        )
     t1_ctx: str | None = None
     t1_p = 1.0
     for name, ctx in contexts.items():

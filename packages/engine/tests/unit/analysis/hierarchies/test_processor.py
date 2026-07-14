@@ -198,6 +198,20 @@ class TestStackV4:
         for r in _rows(real_session, tid, "alias") + _rows(real_session, tid, "drilldown"):
             assert not {"soldto", "billto"} <= set(_members(r))
 
+    def test_partial_null_edge_rescued_by_pairwise_deletion(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The null-policy lane, edge arm: 10% join-miss NULLs in the dependent
+        used to cost the whole edge (row-g3 = 0.10 under null-as-category);
+        pairwise deletion recovers the exact FD over the complete rows."""
+        n = 5_000
+        city = [f"c{i % 40}" for i in range(n)]
+        state = [None if i % 10 == 0 else f"s{(i % 40) // 5}" for i in range(n)]
+        tid = seed_view(real_session, duck, "null_geo", {"city": city, "state": state})
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        drills = _rows(real_session, tid, "drilldown")
+        assert [_members(r) for r in drills] == [["city", "state"]]
+
     def test_null_coded_columns_alias(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:

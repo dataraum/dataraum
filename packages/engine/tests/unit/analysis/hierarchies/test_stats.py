@@ -104,12 +104,26 @@ def test_role_verdict_random_disagreement_is_dirt() -> None:
     assert res.verdict is RoleVerdict.DIRT
 
 
-def test_role_verdict_abstains_when_floor_exceeds_alpha() -> None:
-    # A tiny permutation budget cannot resolve the Bonferroni α: the honest
-    # verdict is ABSTAIN, never a coin-flip DIRT.
+def test_role_verdict_abstains_below_k_floor() -> None:
+    # With 2 disagreement rows the achievable p-floor is α-sensitive (ties
+    # dominate the permutation null): the honest verdict is ABSTAIN, never a
+    # coin-flip DIRT — the DAT-757 f6-role-dup cell.
     n = 2_000
     dis = np.zeros(n, dtype=np.int64)
     dis[:2] = 1
+    contexts = {f"c{i}": np.arange(n) % (i + 2) for i in range(4)}
+    res = role_verdict(dis, contexts, np.arange(n) % 7, np.random.default_rng(0))
+    assert res.verdict is RoleVerdict.ABSTAIN
+    assert res.k_disagree == 2
+
+
+def test_role_verdict_abstains_when_floor_exceeds_alpha() -> None:
+    # Above the k-floor but with a tiny permutation budget the p-floor cannot
+    # resolve the Bonferroni α: still ABSTAIN.
+    n = 2_000
+    rng_data = np.random.default_rng(3)
+    dis = np.zeros(n, dtype=np.int64)
+    dis[rng_data.choice(n, 15, replace=False)] = 1
     contexts = {f"c{i}": np.arange(n) % (i + 2) for i in range(4)}
     res = role_verdict(dis, contexts, np.arange(n) % 7, np.random.default_rng(0), reps=30)
     assert res.verdict is RoleVerdict.ABSTAIN

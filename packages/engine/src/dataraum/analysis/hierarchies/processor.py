@@ -520,11 +520,36 @@ def _view_structures(
     strs = {c: frame.get_column(c).fill_null("␀").to_numpy() for c in eligible}
     n_sample = frame.height
 
+    # Null policy, edge arm (DAT-757 lane): a NULL is DATA when the column is
+    # null-coded (its value domain is degenerate — nullness carries the signal)
+    # and MISSINGNESS otherwise (join-miss / ragged rows) — edge statistics then
+    # use pairwise deletion, which rescues true edges under partial nulls
+    # without letting a sparse dependent assert from nothing (support floor).
+    null_coded = {c for c in eligible if scan.d_sql[c] <= 1 < scan.d2[c]}
+    null_mask = {
+        c: frame.get_column(c).is_null().to_numpy() for c in eligible if c not in null_coded
+    }
+
+    pair_arrays_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+
+    def edge_arrays(s: str, t: str) -> tuple[np.ndarray, np.ndarray]:
+        """(codes_s, codes_t) over the pairwise-complete rows for the edge arm."""
+        key = (s, t)
+        if key not in pair_arrays_cache:
+            masks = [null_mask[c] for c in (s, t) if c in null_mask]
+            if masks and (drop := np.logical_or.reduce(masks)).any():
+                keep = ~drop
+                pair_arrays_cache[key] = (codes[s][keep], codes[t][keep])
+            else:
+                pair_arrays_cache[key] = (codes[s], codes[t])
+        return pair_arrays_cache[key]
+
     g3_cache: dict[tuple[str, str], float] = {}
 
     def row_g3(a: str, b: str) -> float:
         if (a, b) not in g3_cache:
-            g3_cache[(a, b)] = stats.row_g3(codes[a], codes[b])
+            ca, cb = edge_arrays(a, b)
+            g3_cache[(a, b)] = stats.row_g3(ca, cb) if len(ca) else 1.0
         return g3_cache[(a, b)]
 
     # Full-scan determinant guards (a column may still be a dependent/coarsest
@@ -559,10 +584,20 @@ def _view_structures(
             for s, t in ((a, b), (b, a)):
                 if scan.d2[s] <= scan.d2[t] or s in bad_det:
                     continue
+                cs, ct = edge_arrays(s, t)
+                if len(cs) < MIN_SUPPORT_ROWS and len(cs) < n_sample:
+                    logger.info(
+                        "hierarchy_edge_excluded",
+                        determinant=s,
+                        dependent=t,
+                        reason="null_support",
+                        complete_rows=len(cs),
+                    )
+                    continue
                 if row_g3(s, t) > FD_MAX_G3:
                     continue
                 # -- 3. λ floor: the vacuous-skew kill (edge arm only) --------
-                lam = stats.gk_lambda(codes[s], codes[t])
+                lam = stats.gk_lambda(cs, ct)
                 if lam < LAMBDA_MIN:
                     logger.info(
                         "hierarchy_edge_excluded",
@@ -575,19 +610,22 @@ def _view_structures(
                 cand_edge.append((s, t))
 
     # -- 4. permutation p + BH over the view's screened family ----------------
-    p_cache: dict[tuple[str, str], float] = {}
+    # Edge tests run on the pairwise-complete rows their screen used; alias
+    # tests on the full null-as-category codes (pair-count semantics).
+    p_cache: dict[tuple[str, str, str], float] = {}
 
-    def perm_p(a: str, b: str) -> float:
-        if (a, b) not in p_cache:
-            p_cache[(a, b)] = stats.perm_pvalue(codes[a], codes[b], rng)
-        return p_cache[(a, b)]
+    def perm_p(arm: str, a: str, b: str) -> float:
+        if (arm, a, b) not in p_cache:
+            ca, cb = edge_arrays(a, b) if arm == "e" else (codes[a], codes[b])
+            p_cache[(arm, a, b)] = stats.perm_pvalue(ca, cb, rng)
+        return p_cache[(arm, a, b)]
 
     pvals: dict[tuple[str, str, str], float] = {}
     for a, b in cand_edge:
-        pvals[("e", a, b)] = perm_p(a, b)
+        pvals[("e", a, b)] = perm_p("e", a, b)
     for a, b in cand_alias:
         # A 1:1 claim needs significant dependence in BOTH directions.
-        pvals[("a", a, b)] = max(perm_p(a, b), perm_p(b, a))
+        pvals[("a", a, b)] = max(perm_p("a", a, b), perm_p("a", b, a))
     accepted = stats.bh_reject(pvals, m_family=max(1, len(pvals)), q=Q_FDR)
     acc_edges = {(a, b) for k, a, b in accepted if k == "e"}
     acc_alias = {(a, b) for k, a, b in accepted if k == "a"}

@@ -775,3 +775,99 @@ class TestSliceDefinitionWriterIdempotent:
         assert set(by_run) == {"run-A", "run-B"}
         assert by_run["run-A"].confidence == 0.8, "prior run untouched"
         assert by_run["run-B"].confidence == 0.7
+
+
+@patch("dataraum.pipeline.phases.slicing_phase.SlicingAgent")
+@patch("dataraum.pipeline.phases.slicing_phase.PromptRenderer")
+@patch("dataraum.pipeline.phases.slicing_phase.create_provider")
+@patch("dataraum.pipeline.phases.slicing_phase.load_llm_config")
+class TestReferencedDimensionIdentity:
+    """DAT-756: each slice resolves its referenced-dimension identity at write.
+
+    An enriched slice (``column_id`` is the fact's FK column) resolves
+    ``(dimension_table_id, dimension_attribute, fk_role)`` from the enriched view's
+    grain-safe relationship provenance — NOT from ``column_name``. A folded slice
+    (an own categorical column with no grain-safe FK) resolves a null identity: it
+    has no cross-table dimension identity in Phase A and abstains from conformed
+    pairing (that residual is DAT-757).
+    """
+
+    @staticmethod
+    def _rec(table_id: str, column_id: str, column_name: str) -> Result[SlicingAnalysisResult]:
+        from dataraum.analysis.slicing.models import SliceRecommendation
+
+        rec = SliceRecommendation(
+            table_id=table_id,
+            table_name="invoices",
+            column_id=column_id,
+            column_name=column_name,
+            slice_priority=1,
+            distinct_values=["a", "b"],
+            value_count=2,
+            reasoning="partitions",
+            confidence=0.9,
+        )
+        return Result.ok(SlicingAnalysisResult(recommendations=[rec], time_columns={}))
+
+    def test_enriched_slice_resolves_dim_table_identity(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """The FK-backed slice resolves (dim table, attribute=suffix, fk_role=prefix)."""
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+        mock_agent_cls.return_value.analyze.return_value = self._rec(
+            seeded["fact"].table_id, seeded["fk_col"].column_id, "invoice_id__status"
+        )
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        mock_agent_cls.return_value.analyze.assert_called_once()
+        session.commit()
+
+        row = session.execute(
+            select(SliceDefinition).where(SliceDefinition.column_name == "invoice_id__status")
+        ).scalar_one()
+        assert row.dimension_table_id == seeded["dim"].table_id
+        assert row.dimension_attribute == "status"
+        assert row.fk_role == "invoice_id"
+
+    def test_folded_slice_resolves_null_identity(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """An own categorical column with no grain-safe FK resolves no identity."""
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+        region = Column(
+            table_id=seeded["fact"].table_id,
+            column_name="region",
+            column_position=9,
+            resolved_type="VARCHAR",
+        )
+        session.add(region)
+        session.flush()
+        mock_agent_cls.return_value.analyze.return_value = self._rec(
+            seeded["fact"].table_id, region.column_id, "region"
+        )
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        row = session.execute(
+            select(SliceDefinition).where(SliceDefinition.column_name == "region")
+        ).scalar_one()
+        assert row.dimension_table_id is None
+        assert row.dimension_attribute is None
+        assert row.fk_role is None

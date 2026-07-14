@@ -86,6 +86,7 @@ def _seed(
     multi_axis: bool = False,
     tb_dim_col: str = _DIM,
     jl_dim_col: str = _DIM,
+    tb_role_play_col: str | None = None,
     folded: bool = False,
 ) -> dict[str, str]:
     """Seed Tables/Columns/SliceDefinitions/TableEntity + the DuckDB rows.
@@ -105,6 +106,13 @@ def _seed(
     still pair (the false-negative). ``folded=True`` nulls the identity on both
     slices — an own-column dimension with no dim table (the false-positive: same
     name, no cross-table identity, must NOT pair).
+
+    ``tb_role_play_col`` adds a SECOND trial_balance slice at the SAME identity (a
+    role-playing FK to the same dim + attribute) whose DuckDB values are degenerate
+    (``'other'`` — outside ``_VALUES``, so its own series is empty). The witness must
+    still fire off the primary slice: the two role slices must BOTH be tried, never
+    collapsed to one (DAT-756 — the identity key groups a list per fact, not a
+    last-write-wins single).
     """
     ids: dict[str, str] = {}
     dim_table = Table(
@@ -182,6 +190,26 @@ def _seed(
                 detection_source="llm",
             )
         )
+    # A second trial_balance slice at the SAME identity (role-playing FK): must NOT
+    # collapse the primary slice (DAT-756). Its DuckDB values are degenerate so only
+    # the primary reconciles — proving both are tried, not one arbitrarily kept.
+    if tb_role_play_col:
+        rp_role, _, rp_attr = tb_role_play_col.partition("__")
+        session.add(
+            SliceDefinition(
+                run_id=_RUN,
+                table_id=ids["trial_balance"],
+                column_id=ids["trial_balance.balance"],
+                column_name=tb_role_play_col,
+                dimension_table_id=ids["chart_of_accounts"],
+                dimension_attribute=rp_attr or None,
+                fk_role=rp_role,
+                slice_priority=2,
+                distinct_values=list(_VALUES),
+                value_count=len(_VALUES),
+                detection_source="llm",
+            )
+        )
     session.flush()
 
     # DuckDB sources — one table per fact (typed-fact fallback). Columns mirror
@@ -189,12 +217,13 @@ def _seed(
     # differ between facts (DAT-756 — the identity is the dim table, not the name).
     tb_extra_cols = ", account_key DOUBLE" if key_column else ""
     tb_axis_col = ", ship_date DATE" if multi_axis else ""
+    tb_role_col = f', "{tb_role_play_col}" VARCHAR' if tb_role_play_col else ""
     jl_extra_cols = (", account_key DOUBLE" if key_column else "") + (
         ", line_id DOUBLE" if junk_column else ""
     )
     duck.execute(
         f'CREATE TABLE trial_balance ("{tb_dim_col}" VARCHAR, period_date DATE,'
-        f" balance DOUBLE, net_change DOUBLE{tb_extra_cols}{tb_axis_col})"
+        f" balance DOUBLE, net_change DOUBLE{tb_extra_cols}{tb_axis_col}{tb_role_col})"
     )
     duck.execute(
         f'CREATE TABLE journal_lines ("{jl_dim_col}" VARCHAR, period_date DATE,'
@@ -213,7 +242,12 @@ def _seed(
             # Degenerate second axis: every row shares one ship_date, collapsing
             # the per-period series to a single bucket so this axis cannot win.
             tb_axis_val = ", DATE '2025-01-15'" if multi_axis else ""
-            tb_rows.append(f"('{value}', {d}, {running}, {net}{tb_extra}{tb_axis_val})")
+            # Degenerate role-play value: 'other' is outside _VALUES, so this second
+            # same-identity slice contributes no series — only the primary reconciles.
+            tb_role_val = ", 'other'" if tb_role_play_col else ""
+            tb_rows.append(
+                f"('{value}', {d}, {running}, {net}{tb_extra}{tb_axis_val}{tb_role_val})"
+            )
             # Two finer-grained event rows summing to the movement.
             for half in (net / 2, net - net / 2):
                 jl_extra = f", {float(k * 100)}" if key_column else ""
@@ -372,6 +406,21 @@ class TestDiscoverAggregationLineage:
         a folded dimension has no cross-table identity in Phase A (DAT-757)."""
         ids = _seed(real_session, duck, tb_dim_col="status", jl_dim_col="status", folded=True)
         assert _discover(real_session, duck, ids) == 0
+
+    def test_role_playing_slices_are_all_kept(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-756: a fact carrying TWO slices at the SAME identity (role-playing FKs
+        to one dim — ``account_id__account_type`` + ``counter_account_id__account_type``)
+        must keep BOTH as bucketing lenses, never collapse to one. The role-play slice
+        here is degenerate (values outside _VALUES); the witness must still fire off the
+        primary. A last-write-wins grouping could drop the primary and silence it."""
+        ids = _seed(real_session, duck, tb_role_play_col="counter_account_id__account_type")
+        assert _discover(real_session, duck, ids) > 0
+        row = _row_for(real_session, ids["trial_balance.balance"])
+        assert row is not None
+        assert row.pattern == "cumulative"
+        assert row.event_table_id == ids["journal_lines"]
 
     def test_rerun_is_idempotent(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

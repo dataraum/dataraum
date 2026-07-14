@@ -5,6 +5,62 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-756 — referenced-dimension identity + `shared_dims` fix + conformed-dimension
+
+**Branch:** `feat/dat-756-dimension-identity`. **A detector-grouping-key fix (closes a
+live stock/flow false-negative AND false-positive) + a new graph-edge oracle surface +
+one changed graph surface.** Foundation tier of the operating-model graph (DAT-725): a
+dimension now has an IDENTITY (the FK-target dim table), so every consumer keys off it
+instead of the column name. Restores the DAT-729 conformed-dimension capability that was
+reverted for name-matching, rebuilt on the identity.
+
+### What changed
+
+- **Referenced-dimension identity persisted on `slice_definitions` (`slicing` phase).**
+  Three new columns — `dimension_table_id` (FK-target dim table, NULL for a folded
+  slice), `dimension_attribute` (the enriched `fk__attr` level), `fk_role` (the FK
+  column) — resolved at slice-write from the enriched view's grain-safe relationship
+  provenance, never from the column name.
+- **`shared_dims` / stock-flow witness (`aggregation_lineage` phase) regrouped by
+  identity.** `analysis/lineage/processor.py` now pairs two facts iff they reference the
+  SAME dim table at the SAME attribute (was: same `column_name`). **Closes a live bug in
+  both directions:** the same dimension reached via differently-named FK columns was
+  never paired (the witness silently never ran); two unrelated same-named FOLDED columns
+  were paired. Role-playing FKs to one dim on a single fact are all kept (list per
+  fact), not collapsed. The persisted `measure_aggregation_lineage.slice_dimension` is
+  now a `<dim table>.<attribute>` label, not a physical column name.
+- **`og_conformed_dimension` edge (NEW) + `og_has_dimension` identity props + a changed
+  `og_references`.** `og_has_dimension` carries `dimension_table_id`/`dimension_attribute`/
+  `fk_role`. `og_conformed_dimension` (table→table, TABLE grain, carrying
+  `from_attribute`/`to_attribute`) types two facts sharing a dim table. `og_references`
+  now EXCLUDES the DAT-723 fan trap (a relationship whose both endpoints are slice
+  columns resolving one dim table) — the exact complement of the conformed edge.
+
+### For eval (oracle surfaces)
+
+- **`og_conformed_dimension` — new graph-edge truth section.** Assert the finance
+  conformed pairs (facts sharing a dim table — e.g. `trial_balance` ↔ `balance_sheet` on
+  the shared account dim) are typed via the shared `dimension_table_id`, both directions,
+  carrying each side's slice attribute. Graded absolutely (generator-known pairs).
+- **`og_references` — CHANGED surface.** Fan-trap fact↔fact edges between shared-dimension
+  slice columns no longer appear as `refs`. Any truth assertion enumerating references
+  must expect these excluded (a genuine fact→dim FK still appears — a dim key is never a
+  slice column, so the exclusion cannot fire on it).
+- **Stock/flow witness may FLIP on existing fixtures.** The `shared_dims` fix can now
+  fire the witness on previously-silent differently-named-FK pairs, and now correctly
+  abstains on previously-firing same-named-folded pairs. Re-run the stock/flow oracle on
+  the finance corpus and check whether any currently passing/failing case flips.
+
+### testdata hints
+
+- A fixture with **two facts joining ONE dim table via differently-named FK columns**
+  (e.g. `gl_account` in one, `account_no` in another, both → `chart_of_accounts`)
+  exercises the false-negative that finance's consistent naming currently hides.
+- A **role-playing** fact (two FKs to one dim — `kontonummer` + `kontonummer_des_gegenkontos`
+  → accounts) exercises the multi-slice-per-identity path.
+
+---
+
 ## DAT-729 — concept edges (`disjoint_with` / `part_of`)
 
 **Branch:** `feat/dat-729-concept-edges`. **New graph-edge oracle surfaces — no

@@ -269,12 +269,19 @@ def discover_aggregation_lineage(
     # silently disabled this witness), and two unrelated same-named FOLDED columns
     # are not (the false-positive). A folded slice (null ``dimension_table_id``)
     # has no cross-table identity in Phase A and abstains (DAT-757).
-    defs_by_dim: dict[tuple[str, str], dict[str, SliceDefinition]] = {}
+    # ``{table -> [slices]}`` per identity: one fact can carry MULTIPLE slices at the
+    # same identity — role-playing FKs to one dim (``kontonummer`` vs
+    # ``kontonummer_des_gegenkontos``, both -> accounts at ``land``). Keep them all
+    # (a list, not last-write-wins): each is a distinct bucketing lens the search
+    # competes; dropping one would silently lose a reconciliation candidate. Role
+    # disambiguation itself (bill-to vs ship-to as SEPARATE dimensions) is DAT-757 —
+    # here they share the Phase-A identity and are simply both tried.
+    defs_by_dim: dict[tuple[str, str], dict[str, list[SliceDefinition]]] = {}
     for sd in defs:
         if not sd.dimension_table_id:
             continue
         identity = (sd.dimension_table_id, sd.dimension_attribute or "")
-        defs_by_dim.setdefault(identity, {})[sd.table_id] = sd
+        defs_by_dim.setdefault(identity, {}).setdefault(sd.table_id, []).append(sd)
     shared_dims = {ident: by_table for ident, by_table in defs_by_dim.items() if len(by_table) >= 2}
     if not shared_dims:
         logger.info("lineage_no_shared_dimension", identities=sorted(defs_by_dim))
@@ -363,24 +370,26 @@ def discover_aggregation_lineage(
         # the shared identity may be reached via differently-named columns (DAT-756),
         # while the VALUE domain is common, so ``_aligned_series`` still pairs them.
         series_by_table: dict[str, list[tuple[str, _SliceSeries]]] = {}
-        for tid, sd in shared_dims[identity].items():
+        for tid, sds in shared_dims[identity].items():
             t = tables.get(tid)
             if t is None:
                 continue
+            # Every (role-playing slice × time axis) is a distinct lens to bucket by.
             axis_series: list[tuple[str, _SliceSeries]] = []
-            for axis in time_cols_by_table.get(tid, []):
-                s = _slice_series(
-                    duckdb_conn,
-                    t,
-                    sd,
-                    sd.column_name or "",
-                    source_name=source_by_table.get(tid),
-                    time_col=axis,
-                    numeric_cols=numeric_cols_by_table.get(tid, []),
-                    grain=period_grain,
-                )
-                if s is not None:
-                    axis_series.append((axis, s))
+            for sd in sds:
+                for axis in time_cols_by_table.get(tid, []):
+                    s = _slice_series(
+                        duckdb_conn,
+                        t,
+                        sd,
+                        sd.column_name or "",
+                        source_name=source_by_table.get(tid),
+                        time_col=axis,
+                        numeric_cols=numeric_cols_by_table.get(tid, []),
+                        grain=period_grain,
+                    )
+                    if s is not None:
+                        axis_series.append((axis, s))
             if axis_series:
                 series_by_table[tid] = axis_series
         if len(series_by_table) < 2:

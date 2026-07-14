@@ -33,9 +33,11 @@ consumer does. The ``concept_edge`` edge (DAT-729) carries the vocabulary relati
 ``part_of`` / ``disjoint_with`` / ``reconciles_with`` as a ``predicate`` property;
 its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 ``conformed_dimension`` (DAT-756) types two facts sharing a dimension (the same
-resolved ``(dimension_table_id, attribute)`` identity — NOT a column name) as a
-drill-across path, explicitly NOT a fact-to-fact FK (the DAT-723 fan trap), which is
-why those pairs are excluded from ``refs``.
+resolved ``dimension_table_id`` — NOT a column name) as a drill-across path,
+explicitly NOT a fact-to-fact FK (the DAT-723 fan trap), which is why those pairs are
+excluded from ``refs`` — the edge is the exact table-grain complement of that
+exclusion (every excluded pair is explained here), with each side's slice level
+carried as ``from_attribute`` / ``to_attribute``.
 
 **Bootstrap ordering is load-bearing.** A property graph *depends on* its element
 views, and an element view depends on the ``current_*`` views. Postgres refuses to
@@ -238,28 +240,31 @@ def _element_view_sql(name: str) -> str:
     if name == "og_conformed_dimension":
         # conformed_dimension edge (table → table): two facts sharing a dimension
         # (DAT-756, rebuilding the reverted DAT-729 edge on referenced identity).
-        # Derived by self-joining slice (has_dimension) rows on the SAME resolved
-        # identity — (dimension_table_id, dimension_attribute), NEVER column names —
-        # of DIFFERENT tables. Attribute grain: the same dim table AT the same level,
-        # so it is the EXACT identity the lineage stock/flow witness groups on (one
-        # identity, two consumers). This is the drill-across path (compare over the
-        # shared conformed axis), explicitly NOT a fact-to-fact FK (the DAT-723 fan
-        # trap, excluded from og_references above). Folded slices (NULL
-        # dimension_table_id) have no dim table to conform over and are excluded.
-        # COALESCE pairs the slice-by-FK-key case (NULL attribute) with itself.
-        # Symmetric, so both directions are emitted (edge_key = the ordered slice-id
-        # pair, '_'-joined — NOT ':', a bind-param sigil to text()). A fact partitioned
-        # by N shared dimensions yields one edge per shared dimension.
+        # Derived by self-joining slice (has_dimension) rows on the SAME
+        # dimension_table_id — the resolved identity, NEVER column names — of
+        # DIFFERENT tables. TABLE grain deliberately: a conformed dimension is the
+        # shared dim TABLE (Kimball), and this must be the EXACT complement of the
+        # og_references fan-trap exclusion (also table grain) — every pair excluded
+        # there is explained by an edge here, none vanish from the graph. Each side's
+        # slice attribute (the level it is sliced at) rides along as from_/to_attribute
+        # so a consumer can tell a same-axis pair (from_attribute = to_attribute) from
+        # a cross-level one; the lineage stock/flow witness does its OWN finer
+        # attribute-grain grouping (value-domain reconciliation needs it). Folded
+        # slices (NULL dimension_table_id) have no dim table to conform over and are
+        # excluded. Symmetric — both directions emitted (edge_key = the ordered
+        # slice-id pair, '_'-joined, NOT ':' a bind-param sigil to text()). A fact with
+        # multiple role-playing FKs to one dim yields one edge PER slice-row pair, so a
+        # table pair can carry several conformed edges (one per shared axis/role).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_conformed_dimension AS\n"
             f"SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,\n"
             f"       s1.table_id::text AS from_table_id, s2.table_id::text AS to_table_id,\n"
             f"       s1.dimension_table_id::text AS dimension_table_id,\n"
-            f"       s1.dimension_attribute AS dimension_attribute\n"
+            f"       s1.dimension_attribute AS from_attribute,\n"
+            f"       s2.dimension_attribute AS to_attribute\n"
             f"FROM {READ_TOKEN}.current_slice_definitions s1\n"
             f"JOIN {READ_TOKEN}.current_slice_definitions s2\n"
             f"  ON s1.dimension_table_id = s2.dimension_table_id\n"
-            f" AND COALESCE(s1.dimension_attribute, '') = COALESCE(s2.dimension_attribute, '')\n"
             f" AND s1.table_id <> s2.table_id\n"
             f"WHERE s1.dimension_table_id IS NOT NULL;"
         )
@@ -313,7 +318,7 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)\n"
         f"      LABEL conformed_dimension\n"
-        f"      PROPERTIES (dimension_table_id, dimension_attribute)\n"
+        f"      PROPERTIES (dimension_table_id, from_attribute, to_attribute)\n"
         f"  );"
     )
 

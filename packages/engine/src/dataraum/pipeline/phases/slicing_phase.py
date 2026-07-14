@@ -331,6 +331,11 @@ class SlicingPhase(BasePhase):
             if dimension_table_id:
                 name = rec.column_name or ""
                 if "__" in name:
+                    # The enriched dim column is ``{fk_column}__{attr}`` (builder.py):
+                    # the FK column is the segment before the FIRST ``__``, matching
+                    # the codebase convention (``_propagate_enriched_dimensions``,
+                    # ``_build_context_data``). Assumes the FK column name itself has
+                    # no ``__`` — the same assumption every other split site makes.
                     fk_role, dimension_attribute = name.split("__", 1)
                 else:
                     # Slicing directly by the FK key itself — no enriched attribute.

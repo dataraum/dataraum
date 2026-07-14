@@ -94,11 +94,11 @@ CREATE VIEW __READ__.og_conformed_dimension AS
 SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,
        s1.table_id::text AS from_table_id, s2.table_id::text AS to_table_id,
        s1.dimension_table_id::text AS dimension_table_id,
-       s1.dimension_attribute AS dimension_attribute
+       s1.dimension_attribute AS from_attribute,
+       s2.dimension_attribute AS to_attribute
 FROM __READ__.current_slice_definitions s1
 JOIN __READ__.current_slice_definitions s2
   ON s1.dimension_table_id = s2.dimension_table_id
- AND COALESCE(s1.dimension_attribute, '') = COALESCE(s2.dimension_attribute, '')
  AND s1.table_id <> s2.table_id
 WHERE s1.dimension_table_id IS NOT NULL;
 
@@ -138,5 +138,5 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
       LABEL conformed_dimension
-      PROPERTIES (dimension_table_id, dimension_attribute)
+      PROPERTIES (dimension_table_id, from_attribute, to_attribute)
   );

@@ -871,3 +871,32 @@ class TestReferencedDimensionIdentity:
         assert row.dimension_table_id is None
         assert row.dimension_attribute is None
         assert row.fk_role is None
+
+    def test_slice_by_fk_key_itself_has_null_attribute(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """Slicing directly by the FK key (no ``__`` enriched suffix) resolves the dim
+        table with a NULL attribute and fk_role = the column name — not a folded slice
+        (it still carries a referenced identity)."""
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+        mock_agent_cls.return_value.analyze.return_value = self._rec(
+            seeded["fact"].table_id, seeded["fk_col"].column_id, "invoice_id"
+        )
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        row = session.execute(
+            select(SliceDefinition).where(SliceDefinition.column_name == "invoice_id")
+        ).scalar_one()
+        assert row.dimension_table_id == seeded["dim"].table_id
+        assert row.dimension_attribute is None
+        assert row.fk_role == "invoice_id"

@@ -312,20 +312,6 @@ export interface TableEntityRow {
 	description: string | null;
 }
 
-/**
- * Coarse `is_fact` from the engine's `table_role` (DAT-728) — for the workspace
- * inventory's fact/dim grouping only. The engine role string ∈ {"fact",
- * "periodic_snapshot", "dimension"} (or NULL = unclassified); a periodic snapshot
- * IS a fact subtype, so both read as a fact, a NULL role stays null. Agent-facing
- * surfaces (look_table, the answer-agent entities block) carry the full role
- * string instead of this flattened boolean.
- */
-export function isFactTableRole(tableRole: string | null): boolean | null {
-	return tableRole == null
-		? null
-		: tableRole === "fact" || tableRole === "periodic_snapshot";
-}
-
 // The persisted time-axis shape (DAT-565): the engine writes a JSON list of
 // `{column, aspect, note}` (`analysis/semantic/processor.py`); null/malformed
 // degrades to []. Anything else is dropped rather than thrown.

@@ -21,6 +21,7 @@ import {
 	INTENT_LABEL,
 	INTENTS,
 } from "#/ui/cockpit/widgets/band-badge";
+import { TABLE_ROLE_LABEL } from "#/ui/cockpit/widgets/table-role";
 import { PendingTeachAlert, stageLabel } from "#/ui/cockpit/widgets/why-detail";
 
 // The begin_session whole-table band (DAT-415): the `dimension_coverage` rollup
@@ -71,12 +72,8 @@ function TableBandSummary({ band }: { band: TableReadiness }) {
 // begin_session detect run has promoted (else `entity` is null and this is
 // skipped). Additive — it colors/labels the engine-persisted values, never
 // recomputes them.
-const TABLE_ROLE_LABEL: Record<string, string> = {
-	fact: "Fact table",
-	periodic_snapshot: "Periodic snapshot",
-	dimension: "Dimension table",
-};
-
+// The role→label map is shared with the workspace inventory
+// (`widgets/table-role`) so the two role chips never drift.
 function TableEntityHeader({ entity }: { entity: TableEntity }) {
 	// The kind chip reads straight from the persisted role (DAT-728); an
 	// unclassified table (null role) shows no kind chip rather than a misleading one.

@@ -179,16 +179,16 @@ describe("buildInventory (DAT-349)", () => {
 });
 
 // DAT-477: the session/detect-grain orientation buildInventory attaches per table
-// — entity classification (entity_type / is_fact) + the enriched fact/dimension
+// — entity classification (entity_type / table_role) + the enriched fact/dimension
 // views built off the table. The two new row arrays default to empty, so the
 // pre-session state (no entity rows, no view rows) yields null entity facts + an
 // empty enriched_views summary on every table.
 describe("buildInventory entity + enriched_views (DAT-477)", () => {
-	it("leaves entity_type/is_fact null and enriched_views empty pre-session", () => {
+	it("leaves entity_type/table_role null and enriched_views empty pre-session", () => {
 		// Two-arg call (the legacy add_source path) — no session has run.
 		const [out] = buildInventory([tableRow()], []);
 		expect(out.entity_type).toBeNull();
-		expect(out.is_fact).toBeNull();
+		expect(out.table_role).toBeNull();
 		expect(out.enriched_views).toEqual({
 			count: 0,
 			view_names: [],
@@ -199,7 +199,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 	it("treats an explicitly empty entity/view set as the pre-session state", () => {
 		const [out] = buildInventory([tableRow()], [], [], []);
 		expect(out.entity_type).toBeNull();
-		expect(out.is_fact).toBeNull();
+		expect(out.table_role).toBeNull();
 		expect(out.enriched_views.count).toBe(0);
 	});
 
@@ -214,7 +214,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 		];
 		const [out] = buildInventory([tableRow()], [], entities, []);
 		expect(out.entity_type).toBe("transaction");
-		expect(out.is_fact).toBe(true);
+		expect(out.table_role).toBe("fact");
 	});
 
 	it("scopes the entity classification to its own table", () => {
@@ -244,11 +244,11 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 		const byId = new Map(out.map((t) => [t.table_id, t]));
 		expect(byId.get("t_orders")).toMatchObject({
 			entity_type: "transaction",
-			is_fact: true,
+			table_role: "fact",
 		});
 		expect(byId.get("t_items")).toMatchObject({
 			entity_type: "reference",
-			is_fact: false,
+			table_role: "dimension",
 		});
 	});
 
@@ -395,7 +395,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 			// Newest-last in the array — the wrong row would win without the dedup.
 			const [out] = buildInventory([tableRow()], [], entities, []);
 			expect(out.entity_type).toBe("transaction");
-			expect(out.is_fact).toBe(true);
+			expect(out.table_role).toBe("fact");
 		});
 
 		it("is order-independent — the latest entity wins newest-first too", () => {
@@ -415,7 +415,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 			];
 			const [out] = buildInventory([tableRow()], [], newestFirst, []);
 			expect(out.entity_type).toBe("transaction");
-			expect(out.is_fact).toBe(true);
+			expect(out.table_role).toBe("fact");
 		});
 
 		it("keeps only the latest session's enriched views, not a cross-session pile", () => {

@@ -7,7 +7,7 @@
 // modal; Refresh re-lists.
 //
 // Bands are the engine's PERSISTED, calibrated values — this widget only colors
-// and title-cases them, it never recomputes readiness. The entity_type / is_fact
+// and title-cases them, it never recomputes readiness. The entity_type / table_role
 // classification and the enriched_views summary (DAT-477) are likewise PERSISTED,
 // session-grain values: the widget surfaces them as-is and shows nothing for the
 // pre-session null/empty state, never inventing a classification. Reads theme
@@ -35,6 +35,7 @@ import {
 	type SourceGroup,
 	sourceGroup,
 } from "#/ui/cockpit/widgets/inventory-grouping";
+import { TABLE_ROLE_LABEL } from "#/ui/cockpit/widgets/table-role";
 
 // Cap the rows rendered into the DOM (a DB source can register 100s of tables).
 // The inventory is a navigation surface, not a result set — past the cap we show
@@ -49,26 +50,31 @@ const ENRICHED_VIEW_NAMES_SHOWN = 2;
 
 /** Does a table carry any entity facts to show — an entity classification or a
  * materialized enriched view? Shared by EntityFacts + the detail modal so their
- * two show/hide conditions never drift (the is_fact-true / entity_type-null case
- * must show in both). */
+ * two show/hide conditions never drift (the role-classified / entity_type-null
+ * case must show in both). */
 function hasEntityFacts(t: InventoryTable): boolean {
 	return (
 		(t.entity_type ?? null) !== null ||
-		(t.is_fact ?? null) !== null ||
+		(t.table_role ?? null) !== null ||
 		(t.enriched_views?.count ?? 0) > 0
 	);
 }
 
 /**
  * The session-grain entity orientation for one table (DAT-477): its detected
- * entity type + a fact marker + the count of enriched fact/dimension views built
- * off it. Renders a neutral dash when nothing is classified yet (pre-session) so
- * the column reads as "not analyzed", never as a blank that implies "not a fact".
- * Pure render of PERSISTED values — colors/labels only, no recomputation.
+ * entity type + its table role + the count of enriched fact/dimension views built
+ * off it. The role chip reads the engine's persisted `table_role` VERBATIM (fact /
+ * periodic snapshot / dimension, DAT-728) — never folded to a boolean, so a
+ * periodic snapshot reads as itself, not as a plain fact. Renders a neutral dash
+ * when nothing is classified yet (pre-session) so the column reads as "not
+ * analyzed", never as a blank. Pure render of PERSISTED values — colors/labels
+ * only, no recomputation.
  */
 function EntityFacts({ table }: { table: InventoryTable }) {
 	const entity_type = table.entity_type ?? null;
-	const is_fact = table.is_fact ?? null;
+	const roleLabel = table.table_role
+		? TABLE_ROLE_LABEL[table.table_role]
+		: undefined;
 	// `enriched_views` is optional at the type boundary (pre-DAT-477 fixtures) —
 	// the server always sets it; default to the empty summary defensively.
 	const enriched_views = table.enriched_views ?? {
@@ -90,9 +96,9 @@ function EntityFacts({ table }: { table: InventoryTable }) {
 					{entity_type}
 				</Badge>
 			)}
-			{is_fact && (
-				<Badge variant="light" color="grape" size="sm" tt="none">
-					fact
+			{roleLabel && (
+				<Badge variant="outline" color="gray" size="sm" tt="none">
+					{roleLabel}
 				</Badge>
 			)}
 			{enriched_views.count > 0 && (
@@ -265,8 +271,8 @@ function TableDetailModal({
 					    the enriched fact/dimension views built off this table. Rendered
 					    only once a session has classified the table — pre-session there's
 					    nothing to show (entity null, no views). The show condition mirrors
-					    `EntityFacts`'s own (entity_type OR is_fact OR a view) so the
-					    is_fact-true / entity_type-null case isn't silently hidden here. */}
+					    `EntityFacts`'s own (entity_type OR table_role OR a view) so the
+					    role-classified / entity_type-null case isn't silently hidden here. */}
 					{hasEntityFacts(table.representative) && (
 						<Stack gap={4} data-testid="modal-entity">
 							<Text size="sm" fw={600}>

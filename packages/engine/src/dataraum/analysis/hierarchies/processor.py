@@ -123,11 +123,19 @@ class _ViewScan:
     n: int
     d2: dict[str, int]  # null-aware distinct counts (NULL = one category)
     d_sql: dict[str, int]  # SQL COUNT(DISTINCT) (null-blind; display metadata)
-    joints: dict[tuple[str, str], int]  # row-literal pair distincts, (a < b) key order
+    # Row-literal pair distincts, (a < b) key order. Only ALIAS-SATISFIABLE pairs
+    # are scanned: d_ab ≥ max(d2) always, so bidirectional pair-g3 ≤ 0.01 forces
+    # the two distinct counts within 1% of each other — every other pair is
+    # pruned from the O(k²) joint family without changing any decision.
+    joints: dict[tuple[str, str], int]
 
     def pair_g3(self, a: str, b: str) -> tuple[float, float]:
-        """Pair-count g3 for (a → b, b → a), null-aware numerators."""
-        d_ab = self.joints[(a, b) if (a, b) in self.joints else (b, a)]
+        """Pair-count g3 for (a → b, b → a), null-aware numerators.
+
+        A pair pruned from the joint scan cannot satisfy the alias screen —
+        it reads as (1.0, 1.0), never an alias.
+        """
+        d_ab = self.joints.get((a, b) if (a, b) in self.joints else (b, a), 0)
         if d_ab == 0:
             return 1.0, 1.0
         return 1.0 - self.d2[a] / d_ab, 1.0 - self.d2[b] / d_ab
@@ -231,7 +239,17 @@ def _scan_view(
         non_null = {c: int(row[1 + len(cols) + i]) for i, c in enumerate(cols)}
         d2 = {c: d_sql[c] + (1 if non_null[c] < n else 0) for c in cols}
 
-        pairs = [(cols[i], cols[j]) for i in range(len(cols)) for j in range(i + 1, len(cols))]
+        # Joint distincts serve ONLY the alias screen, and d_ab ≥ max(d2_a, d2_b)
+        # makes bidirectional g3 ≤ FD_MAX_G3 impossible unless the two distinct
+        # counts sit within that tolerance of each other — prune the rest (on
+        # wide/large views this cuts the O(k²) aggregate family by orders of
+        # magnitude with zero semantic change).
+        pairs = [
+            (cols[i], cols[j])
+            for i in range(len(cols))
+            for j in range(i + 1, len(cols))
+            if max(d2[cols[i]], d2[cols[j]]) <= min(d2[cols[i]], d2[cols[j]]) / (1.0 - FD_MAX_G3)
+        ]
         joints: dict[tuple[str, str], int] = {}
         for start in range(0, len(pairs), _MAX_PAIR_AGGS):
             chunk = pairs[start : start + _MAX_PAIR_AGGS]

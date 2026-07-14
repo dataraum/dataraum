@@ -200,6 +200,42 @@ def _seed(engine: Engine) -> None:
             "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
             f"VALUES ('{eid}', 'finance', 'part_of', '{frm}', '{to}', 'seed', '{TS}')"
         )
+    # Two facts sharing a 'period' dimension (DAT-729 conformed dim / DAT-723 fan trap):
+    # trial_balance + balance_sheet both slice by period. The period↔period link the
+    # detector emits must type as conformed_dimension, NOT references.
+    for tid, name in [("tb", "trial_balance"), ("bs", "balance_sheet")]:
+        stmts.append(
+            "INSERT INTO tables (table_id, source_id, table_name, layer, created_at) "
+            f"VALUES ('{tid}', '{SRC}', '{name}', 'typed', '{TS}')"
+        )
+        stmts.append(
+            "INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at) "
+            f"VALUES ('h_{tid}', 'table:{tid}', 'generation', '{RUN}', '{TS}')"
+        )
+        stmts.append(
+            "INSERT INTO columns (column_id, table_id, column_name, column_position) "
+            f"VALUES ('c_{tid}_p', '{tid}', 'period', 1)"
+        )
+        stmts.append(
+            "INSERT INTO table_entities "
+            "(entity_id, table_id, run_id, detected_entity_type, table_role, detected_at) "
+            f"VALUES ('e_{tid}', '{tid}', '{RUN}', 'transaction', 'periodic_snapshot', '{TS}')"
+        )
+        stmts.append(
+            "INSERT INTO slice_definitions "
+            "(slice_id, run_id, table_id, column_id, column_name, slice_priority, "
+            " slice_type, detection_source, created_at) "
+            f"VALUES ('sl_{tid}_p', '{RUN}', '{tid}', 'c_{tid}_p', 'period', 1, "
+            f"'categorical', 'llm', '{TS}')"
+        )
+    # The DAT-723 false positive: period↔period detected as a fan-trap FK between two facts.
+    stmts.append(
+        "INSERT INTO relationships "
+        "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
+        " to_column_id, relationship_type, cardinality, confidence, is_confirmed, detected_at) "
+        f"VALUES ('r_period', '{RUN}', 'tb', 'c_tb_p', 'bs', 'c_bs_p', "
+        f"'foreign_key', 'many_to_many', 0.8, true, '{TS}')"
+    )
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
@@ -286,7 +322,12 @@ def test_has_dimension_edge(graph_engine: Engine) -> None:
     )
     with graph_engine.connect() as conn:
         rows = {(r.tname, r.cname) for r in conn.execute(text(sql))}
-    assert rows == {("journal", "account_id")}
+    # journal's account_id slice + the two facts' shared period slice (DAT-729 seed).
+    assert rows == {
+        ("journal", "account_id"),
+        ("trial_balance", "period"),
+        ("balance_sheet", "period"),
+    }
 
 
 def test_concept_edge_disjoint_with_matches(graph_engine: Engine) -> None:
@@ -356,6 +397,47 @@ def test_part_of_closure_walks_ancestors_and_guards_cycle(graph_engine: Engine) 
         rows = _part_of_closure(conn, _read_schema(), "cmp_a")
     assert rows == [("cmp_b", 1), ("cmp_c", 2)]
     assert "cmp_a" not in {dst for dst, _ in rows}  # cycle guard blocked the back edge
+
+
+def test_conformed_dimension_edge_pairs_facts_on_shared_dim(graph_engine: Engine) -> None:
+    """DAT-729: two facts sharing a dimension surface as a conformed_dimension edge.
+
+    trial_balance and balance_sheet both slice by period → a drill-across edge both ways,
+    carrying the shared dimension name. Only THIS pair (not the CoA account_id slice, which
+    no second fact shares) is conformed.
+    """
+    sql = (
+        f"SELECT a, b, dim FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (a.table_name AS a, b.table_name AS b, e.dimension AS dim))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.a, r.b, r.dim) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("trial_balance", "balance_sheet", "period"),
+        ("balance_sheet", "trial_balance", "period"),
+    }
+
+
+def test_shared_dimension_excluded_from_references(graph_engine: Engine) -> None:
+    """The DAT-723 fan-trap fix: the period↔period link is a conformed dim, NOT a reference.
+
+    The false-positive FK between the two facts' period columns is filtered out of refs,
+    while every real CoA fact→dimension FK (only one endpoint is a slice column) survives.
+    """
+    sql = (
+        f"SELECT a, b FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS refs]->(b IS table_node) "
+        "COLUMNS (a.table_name AS a, b.table_name AS b))"
+    )
+    with graph_engine.connect() as conn:
+        refs = {(r.a, r.b) for r in conn.execute(text(sql))}
+    # The conformed-dimension pair is NOT a reference edge.
+    assert ("trial_balance", "balance_sheet") not in refs
+    # The real FK topology is untouched — the CoA chain still resolves.
+    assert ("journal", "accounts") in refs
+    assert ("accounts", "account_group") in refs
+    assert len(refs) == 6  # the six CoA edges only; the period link is excluded
 
 
 def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:

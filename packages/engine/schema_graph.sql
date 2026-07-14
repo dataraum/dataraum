@@ -13,6 +13,7 @@ DROP VIEW IF EXISTS __READ__.og_references;
 DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
 DROP VIEW IF EXISTS __READ__.og_concept_edges;
+DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -44,7 +45,13 @@ SELECT relationship_id::text AS relationship_id,
        from_table_id::text AS from_table_id, to_table_id::text AS to_table_id,
        from_column_id, to_column_id, cardinality, relationship_type,
        confidence, is_confirmed
-FROM __READ__.current_relationships;
+FROM __READ__.current_relationships r
+WHERE NOT EXISTS (
+  SELECT 1 FROM __READ__.current_slice_definitions s1
+  JOIN __READ__.current_slice_definitions s2 ON s1.column_name = s2.column_name
+  WHERE s1.column_id = r.from_column_id AND s2.column_id = r.to_column_id
+    AND s1.table_id <> s2.table_id
+);
 
 CREATE VIEW __READ__.og_has_dimension AS
 SELECT slice_id::text AS slice_id, table_id::text AS table_id,
@@ -80,6 +87,14 @@ JOIN __READ__.concepts ct
  AND ct.superseded_at IS NULL
 WHERE e.superseded_at IS NULL;
 
+CREATE VIEW __READ__.og_conformed_dimension AS
+SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,
+       s1.table_id::text AS from_table_id, s2.table_id::text AS to_table_id,
+       s1.column_name AS dimension
+FROM __READ__.current_slice_definitions s1
+JOIN __READ__.current_slice_definitions s2
+  ON s1.column_name = s2.column_name AND s1.table_id <> s2.table_id;
+
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
@@ -110,5 +125,10 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_concept_id) REFERENCES og_concepts (concept_id)
       DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)
       LABEL concept_edge
-      PROPERTIES (predicate, tolerance)
+      PROPERTIES (predicate, tolerance),
+    __READ__.og_conformed_dimension KEY (edge_key)
+      SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)
+      DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
+      LABEL conformed_dimension
+      PROPERTIES (dimension)
   );

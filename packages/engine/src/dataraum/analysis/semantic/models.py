@@ -329,22 +329,22 @@ class TableSynthesisOutput(BaseModel):
     )
 
     relationships: list[RelationshipOutput] = Field(
-        default_factory=list,
         description=(
-            "Relationships between tables. Evaluate the pre-computed candidates "
-            "and include only confirmed relationships. Add any additional "
-            "relationships you detect that weren't in the candidates."
+            "Relationships between tables — REQUIRED, always emit this field (use [] "
+            "only when there are genuinely none). Evaluate the pre-computed candidates "
+            "and include only confirmed relationships. Add any additional relationships "
+            "you detect that weren't in the candidates."
         ),
     )
 
     column_concepts: list[ColumnConceptOutput] = Field(
-        default_factory=list,
         description=(
             "Catalogue-grain per-column semantics (ontology concept, unit source, "
-            "derived-formula hypothesis). Emit an entry for EVERY column that carries "
-            "at least one concept — measure columns always do. Omit only columns that "
-            "genuinely carry none; returning this empty when the schema has measures "
-            "is an error, not a shortcut."
+            "derived-formula hypothesis) — REQUIRED, always emit this field. Include "
+            "an entry for EVERY column that carries at least one concept — measure "
+            "columns always do. Use [] only when NO column in the batch carries any "
+            "concept; returning [] when the schema has measures is an error, not a "
+            "shortcut."
         ),
     )
 

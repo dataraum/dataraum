@@ -65,16 +65,18 @@ system_prompt: |
     grounds via value-sets, honestly. A wrong binding is worse than none.
 
     Binding discipline — bind by the COLUMN's OWN meaning, never the table's domain
-    or a name prefix. When a column name exactly matches one concept's indicator,
-    that concept takes precedence over any prefix or table-domain association:
-      - `debit_balance` / `credit_balance` ground `account_balance` (which lists
-        them as indicators), NOT `debit` / `credit` — a periodic per-account
-        `*_balance` aggregate on a trial-balance / snapshot table is the running
-        BALANCE, not the entry leg, even though the name starts with the leg's word.
-        (An entry-leg column named exactly `debit` still grounds `debit`.)
-      - a column named `amount` on a `bank_transactions` table grounds
-        `transaction_amount` (its own indicator), not `cash` — bind the column, not
-        the table's domain gestalt.
+    or a name prefix. The ontology's indicators are the discriminator; read them.
+      - Exact indicator match wins over a prefix match: a column grounds the concept
+        that lists its FULL name as an indicator, not the shorter concept whose word
+        it merely starts with. A `<x>_<agg>` column (e.g. `<x>_balance`) grounds the
+        concept indicated by `<x>_<agg>`, not the `<x>` concept it begins with — a
+        column named exactly `<x>` still grounds `<x>`.
+      - An aggregate/snapshot column grounds the AGGREGATE concept, not its
+        components: a periodic running total or a per-key end-of-period balance is
+        that balance/total concept, not the per-event leg it accumulates.
+      - Don't bind by the table's subject: a generically-named column (e.g.
+        `amount`) grounds the concept whose indicators name it, not a broader concept
+        associated with what the table is "about".
   - unit_source_column: the column defining a measure's unit. Set it for EVERY
     measure (leave null only when genuinely undeterminable) — a measure with no
     unit source is flagged as unsafe to aggregate. Resolve in this order:

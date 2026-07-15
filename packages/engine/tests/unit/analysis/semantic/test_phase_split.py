@@ -792,6 +792,7 @@ class TestTableSynthesisHelpers:
                     }
                 ],
                 "relationships": [],
+                "column_concepts": [],
             }
         )
         result = agent._build_enrichment_result(synthesis)

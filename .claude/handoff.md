@@ -8,28 +8,40 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 ## DAT-768 / DAT-769 — semantic_per_table: fall loud on empty concepts + binding discipline
 
 **Branch:** `fix/dat-768-769-semantic-grounding-robustness`. Changes the
-`semantic_per_table` phase (`analysis/semantic/{agent,processor,utils,models}.py`)
-and its prompt (`dataraum-config/llm/prompts/semantic_per_table.yaml`).
+`semantic_per_table` phase (`analysis/semantic/{agent,processor,utils,models}.py`),
+its prompt (`dataraum-config/llm/prompts/semantic_per_table.yaml`), and the feature
+effort (`dataraum-config/llm/config.yaml`).
 
 ### What changed
 
-- **DAT-768 — an empty `column_concepts` surface no longer reports success.** The
-  field is `default_factory=list`, so the DAT-710 schema-repair turn never fired on
-  a whole-field omission; one call could yield **0** `column_concepts` and the phase
-  went green while every measure→concept binding downstream collapsed. Now:
-  - the agent **re-prompts once** when it emits zero concepts *and* the batch has
-    measure-role columns (schema-legal emptiness the repair turn can't catch);
-  - `synthesize_and_store_tables` **fails begin_session loud** (non-retryable
-    `PhaseFailed`) when concepts resolve to **0** with measure columns present —
-    covers both the empty-emission path and the name-resolution-wipeout path;
-  - `persist_column_concepts` now returns/logs a `column_concepts_persisted`
-    breakdown (`emitted` / `resolved` / `dropped_unresolved`) — a naming drift
-    (case, enriched prefix, display name) is now a visible count, not silence.
+- **DAT-768 — an empty `column_concepts` surface no longer reports success.** Root
+  cause: `column_concepts` is a secondary form-fill field on the big batched
+  `analyze_tables` call, and it was `default_factory=list` (optional) — so the model
+  could **crowd it out entirely** on a long batch, the omission was schema-legal, the
+  DAT-710 repair never fired, and begin_session went green with every downstream
+  measure→concept binding collapsed (the DAT-672 class). The **primary "make it
+  emit" fixes**:
+  - **`column_concepts` (and `relationships`) are now REQUIRED** on the
+    `TableSynthesisOutput` tool schema (dropped `default_factory`). A crowded-out
+    omission is now a `ValidationError` the existing DAT-710 repair turn catches — the
+    model must emit the key (`[]` still allowed, but it can't silently vanish).
+  - **`semantic_analysis.effort` is pinned explicitly to `high`** — the Anthropic
+    server-side default is already `high` (this feature was the only one leaving it
+    unset), so behavior is unchanged, but the hidden dependency on the API default is
+    gone. (It runs at `high`, the *highest* of the extraction agents; a bump to
+    `xhigh` was considered and rejected — the schema-required fix, not more effort, is
+    the lever.)
+  - **Secondary safety nets:** the agent re-prompts once on an empty-with-measures
+    emission; `synthesize_and_store_tables` **fails begin_session loud**
+    (non-retryable `PhaseFailed`) if concepts still resolve to **0** with measures
+    present (covers the name-resolution-wipeout path too); and
+    `persist_column_concepts` logs a `column_concepts_persisted` breakdown
+    (`emitted` / `resolved` / `dropped_unresolved`).
   - **Behavior change for eval:** a corpus that legitimately produces zero concepts
     *with a measure present* will now FAIL the run instead of passing empty. That is
     the intended fall-loud; if any calibration corpus trips it as a false positive,
-    that's a signal (either a real grounding gap or a too-broad measure annotation),
-    not a regression to paper over.
+    that's a signal (a real grounding gap or a too-broad measure annotation), not a
+    regression to paper over.
 
 - **DAT-769 — binding discipline added to the prompt** (no override, the LLM still
   judges): bind by the column's OWN meaning, not the table domain or a name prefix;

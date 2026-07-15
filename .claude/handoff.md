@@ -64,6 +64,66 @@ effort (`dataraum-config/llm/config.yaml`).
 - Watch the new `column_concepts_persisted` log line for `dropped_unresolved > 0` —
   that is DAT-768 path #2 (the agent bound names that didn't resolve) surfacing.
 
+## DAT-759 — aggregation-lineage convention selection is support-first (Wilson LCB)
+
+**Branch:** `fix/dat-759-convention-selection`. `discover_aggregation_lineage`
+no longer selects the reconciliation convention by minimum median residual —
+that criterion is monotone under the ordered-difference search family, so
+collinear artifacts (`debit − net_amount ≡ credit`) out-raced true singles on
+half-entity subsets and persisted **value-wrong `convention_sql`** into the
+property-graph grounding (the 0.50/0.75 match rates eval surfaced).
+
+### What changed
+
+- **Selection order:** Wilson score LCB (95%) of the vote rate over the
+  pairing's **common entity denominator** → on LCB ties, lower arity unless the
+  difference wins by ΔBIC > 10 (Kass–Raftery) → median residual. Grounded in
+  the eval probe `scripts/probes/dat759-convention-selection` (truth 3/3,
+  LCB margins 0.345–0.620; min-residual was value-wrong on 2/3 real measures).
+- **No schema change.** Persisted `MeasureAggregationLineage` fields are
+  unchanged; only which candidate wins changed. `lineage_reconciled` log lines
+  now also carry `support_lcb` + `n_entities_fired`.
+- `reconcile.py` gains `wilson_lcb`, `classify_series`, `dispose_classified`
+  (pure refactor of `dispose`; `FIRE_RESIDUAL_MAX` vote gate unchanged — the
+  min-over-family permutation-null replacement for it is a follow-up ticket).
+
+### What eval should see
+
+- `trial_balance.debit_balance` / `credit_balance` reconcile with conventions
+  `"debit"` / `"credit"` at match_rate 1.0 (was `debit − net_amount` at 0.50 /
+  `credit` at 0.75) → `test_reconciliation_covers_expected_rollup_measures`
+  goes 3/3. `balance_sheet.ending_balance` may report `"net_amount"` instead of
+  the value-identical `"debit" - "credit"` (arity preference).
+
+## DAT-766 — addSource re-run: typing no longer deletes minted `_sk__*` (FK crash fixed)
+
+**Branch:** `fix/dat-766-typing-preserve-surrogate-columns`. Typing-phase behavior
+change on **re-runs only** (a fresh run is unaffected).
+
+### What changed
+
+- `reconcile_typed_columns` (`analysis/typing/resolution.py`) now **never deletes a
+  minted surrogate** (`_sk__*`, DAT-277). `resolve_types` builds its `desired` set
+  from the RAW source's columns only, so a surrogate minted onto the typed table by
+  a prior run looked "dropped" and was DELETEd — violating the FK from the surrogate
+  relationship that still referenced it (`ForeignKeyViolation` → `PhaseFailed: No
+  tables were successfully typed` → the whole sibling-table cascade cancelled). The
+  surrogate mint owns the `_sk__*` lifecycle; typing leaves those columns alone.
+
+### For eval
+
+- **The DAT-766 repro is fixed:** `python -m calibration.run -s clean` twice without
+  `--reset` (any corpus that mints a surrogate) now proceeds **past typing** on the
+  re-run instead of dying at the FK violation. Re-running addSource over an
+  already-completed (minted) workspace is now safe.
+- **Sibling DAT-767 is still open:** the `detection-v1` re-run can still fail typing
+  with a DuckDB binder error (`"…" cannot be referenced before it is defined`) on a
+  mixed-case noise column. That mechanism is NOT closed — the engine loaders all
+  normalize physical raw columns to lowercase, so the reported "physical column is
+  mixed-case" doesn't hold against the loader code; closing it needs a trace of the
+  exact failing SQL + the raw table's true physical column case from a failing
+  workspace. Until then, expect `detection-v1` re-run (no `--reset`) to still break.
+
 ---
 
 ## DAT-761 — stack v4 dimension identity: DAT-757 gate stack replaces distinct-ratio g3

@@ -29,6 +29,7 @@ are separation-derived from the probe (provenance above), not fitted to a metric
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from statistics import median
@@ -106,6 +107,38 @@ def classify_entity(y: Sequence[float], m: Sequence[float]) -> EntityReconciliat
     return EntityReconciliation(r_flow=r_flow, r_stock=r_stock, label=label)
 
 
+def classify_series(
+    series: Mapping[str, tuple[Sequence[float], Sequence[float]]],
+) -> dict[str, EntityReconciliation]:
+    """Classify every entity's aligned ``(y, m)`` series (DAT-759 split).
+
+    Exposed separately from :func:`dispose` so the selection layer can read the
+    per-entity residuals (support counting, ΔBIC arity tie-break) without
+    re-running the arithmetic.
+    """
+    return {k: classify_entity(y, m) for k, (y, m) in series.items()}
+
+
+def wilson_lcb(successes: int, n: int, z: float = 1.96) -> float:
+    """Wilson score interval lower bound for a ``successes / n`` rate (DAT-759).
+
+    The support statistic for convention selection: because the reconciliation
+    residual carries no fitted per-entity coefficient, leave-one-entity-out CV
+    degenerates to the vote count — the vote RATE is an out-of-sample
+    generalization estimate, and its Wilson lower bound (Wilson 1927) is the
+    parameter-free way to rank it under small n. ``n`` MUST be the common
+    entity denominator of the pairing, never a convention's own aligned subset
+    (the support-gameability trap — DAT-759 probe leg b2).
+    """
+    if n <= 0:
+        return 0.0
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = p + z * z / (2 * n)
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return max(0.0, (centre - margin) / denom)
+
+
 def dispose(
     series: Mapping[str, tuple[Sequence[float], Sequence[float]]],
 ) -> CandidateDisposal | None:
@@ -119,9 +152,15 @@ def dispose(
         (``match_rate`` = voting fraction × agreement), else ``None`` — the
         candidate did not reconcile and the witness must abstain.
     """
-    if not series:
+    return dispose_classified(classify_series(series))
+
+
+def dispose_classified(
+    results: Mapping[str, EntityReconciliation],
+) -> CandidateDisposal | None:
+    """:func:`dispose` over pre-classified entities (see :func:`classify_series`)."""
+    if not results:
         return None
-    results = {k: classify_entity(y, m) for k, (y, m) in series.items()}
     voted = [r for r in results.values() if r.label is not None]
     if len(voted) < MIN_ENTITIES_FIRED:
         return None

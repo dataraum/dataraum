@@ -340,11 +340,13 @@ export interface CatalogAxisRow {
 }
 
 /** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
- * drill-down chain. `members` is the engine's JSON array of `{column_name}`. */
+ * drill-down chain. `members` is the engine's JSON array; order is carried by each
+ * member's `level` (the engine's HierarchyMember contract, DAT-779), NOT by array
+ * position — read ascending by level. */
 export interface CatalogHierarchyRow {
 	tableId: string;
 	kind: string;
-	members: Array<{ column_name?: string | null }>;
+	members: Array<{ column_name?: string | null; level?: number | null }>;
 	canonicalLabel: string | null;
 }
 
@@ -359,8 +361,15 @@ function hierarchyLine(h: CatalogHierarchyRow): string | null {
 		if (others.length === 0) return null;
 		return `  alias: "${canonical}" ≡ ${others.map((n) => `"${n}"`).join(", ")} (group by the canonical only)`;
 	}
-	// Drill-down / FD chain — members are ordered coarse→fine by the engine.
-	return `  drill-down: ${names.map((n) => `"${n}"`).join(" → ")}`;
+	// Drill-down / FD chain. Order is `level`, not array position (DAT-779) — sort
+	// ascending by level before joining; fall back to the array index only if a
+	// level is somehow absent.
+	const ordered = h.members
+		.map((m, i) => ({ name: m.column_name, level: m.level ?? i }))
+		.sort((a, b) => a.level - b.level)
+		.map((m) => m.name)
+		.filter((n): n is string => typeof n === "string" && n.length > 0);
+	return `  drill-down: ${ordered.map((n) => `"${n}"`).join(" → ")}`;
 }
 
 /**

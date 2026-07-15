@@ -16,9 +16,11 @@ accepting business-reality ambiguity. **Re-point every eval read of
 ### What changed
 
 - `ColumnConcept.business_concept` → **`meaning`** (free-text business-model
-  characterization, catalogue-grain, authored per column — EVERY column) +
-  **`ontology_hints`** (0..n related concepts, non-authoritative, never a
-  binding, never graded). Schema clean-cut, `schema.sql` regenerated.
+  characterization, catalogue-grain, authored per column — EVERY column). ONE
+  field: the initially-planned `ontology_hints` list was CUT before merge
+  (consumers must never need exact token matches — resolution is by meaning in
+  context; the ontology grounds as SERVED CONTEXT, never as tokens attached to
+  columns). Schema clean-cut, `schema.sql` regenerated.
 - `semantic_per_table` prompt authors characterization, not classification;
   the object-grain `business_concept` transient field and BOTH its prompt asks
   (system `<business_concept_mapping>` + the user-prompt "EXACT concept name"
@@ -29,10 +31,10 @@ accepting business-reality ambiguity. **Re-point every eval read of
 - The grounding feed (`graphs/field_mapping.py`) is rewritten:
   `load_column_meanings`/`format_meanings_for_prompt` render each column's
   meaning + measured facts (aggregation-lineage pattern/convention/match from
-  DAT-759, unit source, temporal behavior, role) + hints. Consumed unchanged
+  DAT-759, unit source, temporal behavior, role). Consumed unchanged
   by the metric graph agent and cycles context; validation resolver, cockpit
   context lines, and the `business_meaning` detector evidence carry
-  meaning/hints instead of a concept string.
+  meaning instead of a concept string.
 - The DAT-768 fall-loud gate widens: zero resolved `column_concepts` rows for
   a non-empty schema ALWAYS fails begin_session (every column carries meaning
   by contract; the old gate was measure-conditional).
@@ -50,7 +52,7 @@ accepting business-reality ambiguity. **Re-point every eval read of
   the `## COLUMN MEANINGS` prompt block.
 
 Cockpit: drizzle mirror regenerated; look tools / query-context / widgets
-swept to `meaning` (+hints); vitest unit suite green (1672).
+swept to `meaning`; vitest unit suite green (1672).
 
 ---
 

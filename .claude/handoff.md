@@ -61,6 +61,53 @@ exercises the `role` kind end-to-end.
 
 ---
 
+## DAT-763 — deterministic self-referential FK candidate detection
+
+**Branch:** `fix/dat-763-self-fk-candidate`. **Re-run relationship recall — a
+self-referential FK is now a DETERMINISTIC Layer-A candidate (was LLM-draw-dependent).**
+The finder (`relationships/finder.py`) iterated `table_names[i+1:]` — distinct
+cross-table pairs only — since the v1 restructure, so a self-FK
+(`chart_of_accounts.parent_id -> account_id`, both endpoints in ONE table) was never a
+structural candidate; it reached the judge only when the LLM spontaneously proposed it
+(the DAT-761 Tier-3 run caught it missing — recall 8/9).
+
+### What changed
+
+- **`relationships/finder.py`** — the finder now probes each table against ITSELF
+  (`table_names[i:]`, the diagonal), not just distinct pairs.
+- **`relationships/joins.py`** — `find_join_columns` gained `same_table: bool`
+  (default False, cross-table unchanged): the self-probe is restricted to the upper
+  triangle (i < j) so a column is never matched to itself (trivial identity) and each
+  unordered pair is tried once. Direction is normalized downstream at persist (DAT-758).
+- **`relationships/graph_topology.py`** — the undirected structure graph now SKIPS
+  self-loops: a NetworkX self-loop double-counts degree (+2) and lists a table as its
+  own neighbor, which would misclassify a dimension carrying one external FK + a self-FK
+  as a `hub` and corrupt the ContextDocument. (Cycle detection already skipped self-loops
+  via `len >= 2`.) A single-table workspace can now detect its own self-FK
+  (`detector.py` no longer early-returns below 2 tables). The evaluator needs no change
+  (self-joins already alias `t1`/`t2` on one path); the persist keys on the column pair,
+  so a `(table, table)` candidate stores correctly.
+
+### For eval (calibration to run)
+
+- **Relationship recall now includes self-FKs every run.** `chart_of_accounts.parent_id
+  -> account_id` (the DAT-763 miss) should be a confirmed `llm` relationship on the
+  finance corpus deterministically. Verified at Layer-A grain: the finder emits it at
+  join_confidence 1.0 (containment), so it always reaches the judge — the remaining
+  variance is only the judge's confirm/decline, not candidate existence.
+- **Expect MORE intra-table candidates reaching the judge** on wide tables (any two
+  same-table columns whose values overlap). The DEFINED catalog is unaffected — a
+  spurious self-pair the judge declines persists as `candidate` (below REL_CONFIRM_MIN),
+  never `llm`. Precision on the defined catalog is unchanged; the judge is the filter.
+
+### testdata hints
+
+A dimension table with a genuine hierarchy column (`parent_id`, `manager_id`,
+`reports_to`) referencing its own PK is the fixture; the finance `chart_of_accounts`
+already carries `parent_id`. A negative — two same-table columns that overlap in values
+but are NOT a FK (two user-id audit columns) — exercises the judge-declines-to-candidate
+path.
+
 ## DAT-764 — structural reconciliation is authoritative for stock/flow
 
 **Branch:** `fix/dat-764-structural-authoritative`. **Re-run Tier-3 stock/flow — this

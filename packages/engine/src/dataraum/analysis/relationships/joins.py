@@ -613,6 +613,7 @@ def find_join_columns(
     max_workers: int = 8,
     column_types1: dict[str, str | None] | None = None,
     column_types2: dict[str, str | None] | None = None,
+    same_table: bool = False,
 ) -> list[dict[str, Any]]:
     """Find join columns using adaptive algorithm selection.
 
@@ -635,6 +636,14 @@ def find_join_columns(
         max_workers: Number of parallel workers
         column_types1: Optional dict mapping column name -> resolved type for table1
         column_types2: Optional dict mapping column name -> resolved type for table2
+        same_table: True when table1 and table2 are the SAME table (a self-
+            referential FK probe, e.g. ``chart_of_accounts.parent_id -> account_id``).
+            Restricts the pairs to the upper triangle (index i < j): a column never
+            references itself (the diagonal is trivial identity), and each unordered
+            pair is tried once — direction is normalized downstream at persist
+            (DAT-758). Cross-table detection is unaffected. Assumes ``columns1 ==
+            columns2`` (the caller passes one table's columns as both sides); the
+            upper-triangle index guard and the Phase-1 stats reuse both rely on it.
 
     Returns:
         List of dicts with:
@@ -646,15 +655,26 @@ def find_join_columns(
     """
     # Phase 1: Pre-compute column statistics (with type info for filtering)
     stats1 = _precompute_column_stats(conn, table1_path, columns1, column_types1)
-    stats2 = _precompute_column_stats(conn, table2_path, columns2, column_types2)
+    # A self-probe (same_table) passes the identical table/columns as both sides —
+    # reuse the stats instead of recomputing the same distinct-count queries.
+    stats2 = (
+        stats1
+        if same_table
+        else _precompute_column_stats(conn, table2_path, columns2, column_types2)
+    )
 
     # Phase 2: Filter column pairs
     pairs_to_check = []
-    for col1 in columns1:
+    for i, col1 in enumerate(columns1):
         if col1 not in stats1:
             continue
-        for col2 in columns2:
+        for j, col2 in enumerate(columns2):
             if col2 not in stats2:
+                continue
+            # Self-referential probe: only the upper triangle. i == j is a column
+            # matched to itself (trivial identity); i > j is the reverse of a pair
+            # already queued (direction is normalized at persist, DAT-758).
+            if same_table and i >= j:
                 continue
             if _should_compare_columns(stats1[col1], stats2[col2]):
                 pairs_to_check.append((col1, col2))

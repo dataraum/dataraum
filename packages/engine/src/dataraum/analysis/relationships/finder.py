@@ -41,8 +41,15 @@ def find_relationships(
     # every table-pair it participates in, and the ratio doesn't depend on the pair.
     uniqueness_cache: dict[tuple[str, str], float] = {}
 
+    # ``table_names[i:]`` includes the DIAGONAL (name1 == name1): a self-referential
+    # FK (``chart_of_accounts.parent_id -> account_id``) lives inside ONE table, so it
+    # is only ever a candidate when the finder probes a table against itself. The
+    # ``same_table`` flag restricts the self-probe to distinct-column pairs (the
+    # upper triangle) — deterministic Layer-A detection, no LLM needed to propose it
+    # (DAT-763).
     for i, name1 in enumerate(table_names):
-        for name2 in table_names[i + 1 :]:
+        for name2 in table_names[i:]:
+            same = name1 == name2
             path1, cols1, types1 = tables[name1]
             path2, cols2, types2 = tables[name2]
 
@@ -56,6 +63,7 @@ def find_relationships(
                 min_score=min_confidence,
                 column_types1=types1,
                 column_types2=types2,
+                same_table=same,
             )
 
             # Enrich with uniqueness ratios (SQL, sampled)

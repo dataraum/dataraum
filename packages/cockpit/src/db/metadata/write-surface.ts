@@ -19,7 +19,6 @@
 // stay the source of truth for the full shapes.
 
 import {
-	boolean,
 	integer,
 	json,
 	jsonb,
@@ -77,7 +76,7 @@ export const configOverlayWrite = rawSchema.table("config_overlay", {
  * INSERT a new active row; the readiness count SELECTs active rows. Only the
  * columns the cockpit writes/reads — the engine SQLAlchemy `Concept` model owns
  * the full shape (identity `concept_id` minted here as a uuid; `source='frame'`).
- * The list columns are engine `JSON` (not JSONB); `is_unit_dimension` is NOT NULL. */
+ * The list columns are engine `JSON` (not JSONB). */
 export const conceptsWrite = rawSchema.table("concepts", {
 	conceptId: varchar("concept_id").primaryKey(),
 	vertical: varchar("vertical").notNull(),
@@ -86,10 +85,8 @@ export const conceptsWrite = rawSchema.table("concepts", {
 	description: text("description"),
 	indicators: json("indicators").$type<string[]>(),
 	excludePatterns: json("exclude_patterns").$type<string[]>(),
-	typicalRole: varchar("typical_role"),
 	typicalValues: json("typical_values").$type<string[]>(),
 	unitFromConcept: varchar("unit_from_concept"),
-	isUnitDimension: boolean("is_unit_dimension").notNull(),
 	source: varchar("source"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 	supersededAt: timestamp("superseded_at", { mode: "date" }),

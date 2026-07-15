@@ -23,7 +23,6 @@ concepts:
     exclude_patterns:
       - cost
       - expense
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
     
@@ -34,7 +33,6 @@ concepts:
       - cost_of_goods
       - cost_of_sales
       - direct_cost
-    typical_role: measure
     kind: measure
     
   - name: operating_expense
@@ -45,7 +43,6 @@ concepts:
       - operating_cost
       - sga
       - overhead
-    typical_role: measure
     kind: measure
     
   - name: depreciation
@@ -55,7 +52,6 @@ concepts:
       - depr
       - amortization
       - amort
-    typical_role: measure
     kind: measure
     
   - name: interest
@@ -65,7 +61,6 @@ concepts:
       - interest_expense
       - interest_income
       - finance_cost
-    typical_role: measure
     kind: measure
     
   - name: tax
@@ -75,7 +70,6 @@ concepts:
       - income_tax
       - tax_expense
       - tax_provision
-    typical_role: measure
     kind: measure
     
   - name: fiscal_period
@@ -90,7 +84,6 @@ concepts:
       - fy
       - month
       - date
-    typical_role: timestamp
 
   - name: entity
     kind: entity
@@ -103,7 +96,6 @@ concepts:
       - cost_center
       - department
       - business_unit
-    typical_role: dimension
     
   - name: account
     kind: entity
@@ -114,7 +106,6 @@ concepts:
       - account_code
       - account_number
       - coa
-    typical_role: dimension
     
   - name: currency
     kind: unit
@@ -123,8 +114,6 @@ concepts:
       - currency
       - ccy
       - curr
-    typical_role: dimension
-    is_unit_dimension: true
     typical_values:
       - USD
       - EUR
@@ -144,7 +133,6 @@ concepts:
       - customer_balance
       - ar_paid
       - a/r_paid
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -159,7 +147,6 @@ concepts:
       - vendor_balance
       - ap_paid
       - a/p_paid
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -172,7 +159,6 @@ concepts:
       - wip
       - work_in_progress
       - finished_goods
-    typical_role: measure
     kind: measure
 
   - name: current_assets
@@ -181,7 +167,6 @@ concepts:
       - current_assets
       - short_term_assets
       - liquid_assets
-    typical_role: measure
     kind: measure
 
   - name: current_liabilities
@@ -190,7 +175,6 @@ concepts:
       - current_liabilities
       - short_term_liabilities
       - current_debt
-    typical_role: measure
     kind: measure
 
   - name: cash
@@ -200,7 +184,6 @@ concepts:
       - bank_balance
       - cash_balance
       - cash_equivalents
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -212,7 +195,6 @@ concepts:
       - balance_due
       - remaining_balance
       - unpaid
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -233,7 +215,6 @@ concepts:
       - closing_balance
       - ending_balance
       - beginning_balance
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -245,7 +226,6 @@ concepts:
       - total
       - value
       - price
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -254,7 +234,6 @@ concepts:
     indicators:
       - debit
       - dr
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -263,7 +242,6 @@ concepts:
     indicators:
       - credit
       - cr
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 
@@ -277,7 +255,6 @@ concepts:
       - capital
       - retained_earnings
       - net_assets
-    typical_role: measure
     kind: measure
     unit_from_concept: currency
 

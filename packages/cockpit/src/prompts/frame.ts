@@ -26,12 +26,10 @@ Identify the business domain and propose concepts that capture what exists in th
 
 <concept_fields>
 - name: lowercase_snake_case identifier (e.g. "revenue", "customer_id", "order_date")
-- kind (REQUIRED): the concept's ontological kind — one of "measure" (a summable/aggregatable quantity, e.g. revenue, cost), "entity" (a business object, e.g. account, customer, product), "dimension" (a descriptive/categorical axis, e.g. region, fiscal_period), or "unit" (defines units for measures, e.g. currency). Distinct from typical_role below.
+- kind (REQUIRED): the concept's ontological kind — one of "measure" (a summable/aggregatable quantity, e.g. revenue, cost), "entity" (a business object, e.g. account, customer, product), "dimension" (a descriptive/categorical axis, e.g. region, fiscal_period), or "unit" (defines units for measures, e.g. currency).
 - description: one sentence explaining what this concept represents in business terms
 - indicators: column name substrings that suggest this concept (e.g. ["revenue", "sales", "income"])
-- typical_role: the typical COLUMN role — "measure" (numeric for aggregation), "dimension" (categorical for grouping), "timestamp" (temporal), or "key" (identifier), otherwise omit
 - unit_from_concept: name of another concept that provides the unit for this measure (e.g. "currency" for monetary values), otherwise omit
-- is_unit_dimension: true if this concept defines units for other measures (e.g. currency, unit_of_measure)
 </concept_fields>
 
 <guidelines>

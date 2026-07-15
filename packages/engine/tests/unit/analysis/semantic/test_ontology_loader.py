@@ -119,8 +119,8 @@ class TestConventions:
         return {
             "name": "t",
             "concepts": [
-                {"name": "revenue", "typical_role": "measure"},
-                {"name": "cost_of_goods_sold", "typical_role": "measure"},
+                {"name": "revenue"},
+                {"name": "cost_of_goods_sold"},
             ],
             "conventions": conventions,
         }
@@ -261,9 +261,9 @@ class TestCompositions:
         return {
             "name": "t",
             "concepts": [
-                {"name": "current_assets", "typical_role": "measure"},
-                {"name": "cash", "typical_role": "measure"},
-                {"name": "inventory", "typical_role": "measure"},
+                {"name": "current_assets"},
+                {"name": "cash"},
+                {"name": "inventory"},
             ],
             "compositions": compositions,
         }

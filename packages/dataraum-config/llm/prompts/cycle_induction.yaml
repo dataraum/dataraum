@@ -31,7 +31,7 @@ system_prompt: |
     - name: stage label
     - order: numeric position (1-based)
     - indicators: column values that suggest this stage (e.g. status values)
-  - participating_entities: entity types involved (e.g. invoice, payment, customer)
+  - participating_entities: entity types involved (e.g. request, fulfilment, customer)
   - completion_indicators: values that mean the cycle is complete (e.g. "paid", "closed")
   - feeds_into: names of downstream cycles this feeds into
   </cycle_fields>
@@ -40,7 +40,7 @@ system_prompt: |
   - Propose 1-5 cycles depending on data complexity
   - Only propose cycles you can ground in actual tables and columns
   - Use status columns and temporal columns to identify stage progression
-  - If tables link via foreign keys (invoice → payment), that suggests a process flow
+  - If tables link via foreign keys (request → fulfilment), that suggests a process flow
   - Use the semantic annotations to understand what each table represents
   - If no clear cycles exist in the data, return an empty cycle_types dict
   </guidelines>

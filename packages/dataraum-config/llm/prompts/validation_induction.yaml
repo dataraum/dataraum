@@ -41,12 +41,13 @@ system_prompt: |
   <guidelines>
   - Propose 3-8 validations depending on data complexity
   - Ground every check in actual tables and columns — reference real names
-  - Prioritize: referential integrity (FK consistency), balance checks (debits=credits),
-    temporal ordering (due_date after invoice_date), and value constraints
+  - Prioritize: referential integrity (FK consistency), balance checks (paired
+    movement columns that must net out), temporal ordering (a later process
+    stage's date after its earlier stage's), and value constraints
   - Use semantic annotations to understand what columns mean
   - Use relationships to identify FK constraints worth checking
-  - If the data has debit/credit columns, always check double-entry balance
-  - Severity: "critical" for fundamental accounting rules, "error" for FK integrity,
+  - If the domain vocabulary declares paired movement columns, check they net out
+  - Severity: "critical" for fundamental domain identities, "error" for FK integrity,
     "warning" for business rules, "info" for data quality observations
   </guidelines>
 

@@ -30,14 +30,14 @@ system_prompt: |
   The confidence field (0.0–1.0) must reflect how READABLE the column name
   is — not just whether you can guess the content from the data.
 
-  A column named "vendor_id" is self-documenting: anyone reading the schema
+  A column named "customer_id" is self-documenting: anyone reading the schema
   knows what it contains. Confidence should be high (0.85–1.0).
 
   A column named "amt" is an abbreviation — recognizable in context but not
   self-documenting. Confidence should be moderate (0.6–0.8).
 
   A column named "xq_v7kl" or "rrflp_11_zp00" is gibberish. Even if you
-  can tell from the data that it contains payment terms or vendor codes,
+  can tell from the data that it contains term codes or counterparty identifiers,
   the NAME communicates nothing. A human reading the schema cannot understand
   this column without inspecting the data. Confidence MUST be low (0.2–0.4).
 
@@ -66,7 +66,7 @@ system_prompt: |
     are not added). A periodic snapshot reported each period (e.g. a
     trial-balance line, a month-end balance) is STILL a stock.
   - flow: a per-period MOVEMENT that accumulates over time — a transaction
-    amount, payment, sale, quantity sold, or change. Flows ARE summable across
+    amount, quantity delivered, or change. Flows ARE summable across
     periods to get a total.
   - unsure: the column is not a numeric measure (keys, dimensions, free text,
     timestamps), or name + role + values give no clear stock/flow signal.
@@ -75,7 +75,7 @@ system_prompt: |
   values), not from the column's value trajectory — a trending series can be
   either. This is an INDEPENDENT read: report what the column actually is even
   if it conflicts with the concept you mapped. Set temporal_behavior_claim_confidence
-  to how clearly name + role communicate it (high for 'balance'/'payment',
+  to how clearly name + role communicate it (high for 'quantity'/'start_date',
   low when guessing); use 'unsure' with low confidence rather than guessing.
 
   Report this stock/flow determination ONLY here, via temporal_behavior_claim.
@@ -110,8 +110,8 @@ system_prompt: |
   <unit_detection>
   For measure columns, determine the column that defines their unit and set
   unit_source_column. You can see every column in the table, so reason across
-  columns: e.g. a 'currency_code' dimension defines the unit for 'amount',
-  'debit', and 'credit' measures. Use just the column name for same-table
+  columns: e.g. a 'currency_code' or 'unit' dimension defines the unit for its
+  sibling measure columns. Use just the column name for same-table
   references. For measures that are inherently dimensionless (ratios, rates,
   indices, percentages, scores), set unit_source_column to 'dimensionless'.
   Only set it when there is a concrete dimension column — never guess a unit.

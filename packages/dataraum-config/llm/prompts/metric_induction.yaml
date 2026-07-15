@@ -29,14 +29,14 @@ system_prompt: |
   - parameters: named parameters with type, default, description (optional)
   - dependencies: named steps that form the computation graph:
     - extract: pull a value from a table
-      - source.standard_field: abstract business concept (e.g. "revenue")
+      - source.standard_field: an ontology concept name from the vocabulary provided
       - source.statement: optional grouping (e.g. "income_statement")
       - aggregation: how to aggregate (sum, avg, min, max, count, end_of_period)
     - constant: a fixed value or parameter reference
       - parameter: name of a parameter defined above
       - default: fallback value
     - formula: compute from other steps
-      - expression: arithmetic using step names (e.g. "(revenue / cost) * 100")
+      - expression: arithmetic using step names (e.g. "(step_a / step_b) * 100")
       - depends_on: list of step names this formula uses
       - output_step: true for the final result
     - validation: optional conditions to check (condition, severity, message)

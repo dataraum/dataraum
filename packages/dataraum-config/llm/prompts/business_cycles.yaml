@@ -17,12 +17,7 @@ system_prompt: |
   </role>
 
   <task>
-  Analyze pre-computed metadata about a dataset and identify business cycles — the recurring patterns of transactions that represent business processes like:
-  - Order-to-Cash (revenue cycle)
-  - Procure-to-Pay (expense cycle)
-  - Accounts Receivable / Accounts Payable cycles
-  - Inventory cycles
-  - Payroll cycles
+  Analyze pre-computed metadata about a dataset and identify business cycles — the recurring patterns of transactions that represent business processes: order/fulfilment loops, request/approval flows, replenishment loops, periodic close-and-summarize routines. The DOMAIN KNOWLEDGE section carries the active vertical's declared cycle vocabulary — detect against it, plus any real cycles beyond it.
   - Any other domain-specific cycles
   </task>
 
@@ -32,7 +27,7 @@ system_prompt: |
   1. **Domain Vocabulary** — Known business cycle types with typical stages, completion indicators, and aliases. Use this as a reference framework for classifying detected cycles.
   2. **Dataset Summary** — Table counts, relationship counts, fact/dimension counts, and overall graph pattern.
   3. **Entity Classifications** — Fact vs dimension table types with grain columns.
-  4. **Categorical Dimensions** — Pre-identified status/type columns with their values and counts. These are strong cycle indicators (e.g., invoice status: paid/open/cancelled).
+  4. **Categorical Dimensions** — Pre-identified status/type columns with their values and counts. These are strong cycle indicators (e.g., a status column: open/complete/cancelled).
   5. **Derived Numeric Relationships** — Arithmetic relationships the pipeline found to hold between columns, each with a match rate (how often it holds). A cycle that completes on a NUMERIC condition rather than a status value grounds on one of these.
   6. **Column Meanings** — every column's authored business meaning with measured facts and related ontology concepts. Use these to ground a cycle's completion concepts on real columns instead of guessing column names.
   7. **Enriched Views** — Pre-joined tables showing confirmed relationships between facts and dimensions.
@@ -48,15 +43,15 @@ system_prompt: |
   status-column shape.
 
   <methodology>
-  1. **Status-completion cycles.** A column like `invoices.status` with values (paid, open, cancelled, overdue) directly shows cycle states; the "completed" state (e.g., "paid") marks the endpoint. Completion rate = completed count / total, computed from the provided value counts.
+  1. **Status-completion cycles.** A status column with values like (open, complete, cancelled, overdue) directly shows cycle states; the "completed" state marks the endpoint. Completion rate = completed count / total, computed from the provided value counts.
 
-  2. **Numeric-completion cycles.** A cycle that has no status column can still complete on a numeric condition recorded in DERIVED NUMERIC RELATIONSHIPS — e.g. a ledger whose debits and credits net to zero (a `difference` relationship that holds), or a reconciliation that ties out (a `ratio`). When a declared cycle's completion concept (from DOMAIN KNOWLEDGE) grounds — via the COLUMN MEANINGS — on the columns of a served derived relationship, that relationship IS the cycle's completion signal: use its match rate as the completion_rate. This is how general-ledger and reconciliation cycles ground when no status column exists.
+  2. **Numeric-completion cycles.** A cycle that has no status column can still complete on a numeric condition recorded in DERIVED NUMERIC RELATIONSHIPS — e.g. paired movement columns that net to zero (a `difference` relationship that holds), or a reconciliation that ties out (a `ratio`). When a declared cycle's completion concept (from DOMAIN KNOWLEDGE) grounds — via the COLUMN MEANINGS — on the columns of a served derived relationship, that relationship IS the cycle's completion signal: use its match rate as the completion_rate. This is how balance-and-reconciliation cycles ground when no status column exists.
 
-  3. **Relationships define entity flows.** A FK from `payments.invoice_id → invoices.invoice_id` shows that payments complete invoices. Enriched views materialize these joins.
+  3. **Relationships define entity flows.** A FK from `fulfilments.request_id → requests.request_id` shows that fulfilments complete requests. Enriched views materialize these joins.
 
-  4. **Temporal patterns suggest cycle frequency.** Monthly trial balance vs daily transactions indicates different cycle periods.
+  4. **Temporal patterns suggest cycle frequency.** A monthly summary table vs daily event records indicates different cycle periods.
 
-  5. **Match against domain vocabulary.** When a detected cycle matches a known type from the DOMAIN KNOWLEDGE section, use the exact vocabulary key as `cycle_type` (e.g., `accounts_payable`, `journal_entry_cycle`, `period_close`). For a real cycle outside the vocabulary, use a descriptive snake_case identifier.
+  5. **Match against domain vocabulary.** When a detected cycle matches a known type from the DOMAIN KNOWLEDGE section, use the exact vocabulary key as `cycle_type`. For a real cycle outside the vocabulary, use a descriptive snake_case identifier.
 
   6. **Graph topology reveals cycle scope.** Hub tables participate in multiple cycles. Isolated tables may represent standalone processes.
   </methodology>

@@ -36,8 +36,8 @@ system_prompt: |
   Categorize each recommended dimension by type:
   - geographic: Country, region, city, location hierarchies, addresses
   - category: Product categories, customer segments, classification codes, types
-  - reference: Master data like customer names, product descriptions, account details
-  - temporal: Calendar attributes, fiscal periods, time hierarchies
+  - reference: Master data like customer names, product descriptions, location details
+  - temporal: Calendar attributes, reporting periods, time hierarchies
   - other: Other valuable dimensions not in above categories
   </dimension_types>
 

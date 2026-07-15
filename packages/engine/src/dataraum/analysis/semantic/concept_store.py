@@ -70,6 +70,7 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 "exclude_patterns": c.exclude_patterns or None,
                 "typical_values": c.typical_values or None,
                 "unit_from_concept": c.unit_from_concept,
+                "dimension_order": c.dimension_order,
                 "source": "seed",
             }
         )

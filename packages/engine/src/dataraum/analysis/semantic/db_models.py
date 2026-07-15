@@ -161,6 +161,13 @@ class Concept(Base):
     exclude_patterns: Mapped[list[str] | None] = mapped_column(JSON)
     typical_values: Mapped[list[str] | None] = mapped_column(JSON)
     unit_from_concept: Mapped[str | None] = mapped_column(String)
+    # ordered | nominal (DAT-730): a DimensionConcept's window/comparison kind —
+    # 'ordered' (points on a line → lag/lead/Δ/CAGR) vs 'nominal' (a set →
+    # share/rank/pairwise). Authored in the vertical (a temporal dimension like
+    # fiscal_period is 'ordered'); the ``og_concepts`` graph view defaults an unset
+    # DimensionConcept to 'nominal', so every one carries an order. NULL for
+    # non-dimension kinds. The window/comparison generator (P5) reads it.
+    dimension_order: Mapped[str | None] = mapped_column(String)
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'frame' | 'teach'

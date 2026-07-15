@@ -10,6 +10,7 @@ properties — the graph binding, PGQ ``MATCH`` correctness, recursive-CTE closu
 from __future__ import annotations
 
 from dataraum.storage.property_graph import (
+    _AUX_VIEWS,
     _ELEMENT_VIEWS,
     PROPERTY_GRAPH_NAME,
     READ_TOKEN,
@@ -20,9 +21,9 @@ from dataraum.storage.property_graph import (
 
 
 def test_graph_statements_cover_every_element_view_then_the_graph() -> None:
-    """The generator emits each element view once, with the graph last."""
+    """The generator emits each element view + aux view once, with the graph last."""
     names = [name for name, _ in graph_statements()]
-    assert names == [*_ELEMENT_VIEWS, PROPERTY_GRAPH_NAME]
+    assert names == [*_ELEMENT_VIEWS, *_AUX_VIEWS, PROPERTY_GRAPH_NAME]
 
 
 def test_element_views_and_graph_are_tokenized() -> None:
@@ -36,15 +37,20 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     """CREATE PROPERTY GRAPH references every og_ view and declares explicit keys."""
     graph_sql = dict(graph_statements())[PROPERTY_GRAPH_NAME]
     assert graph_sql.startswith(f"CREATE PROPERTY GRAPH {READ_TOKEN}.{PROPERTY_GRAPH_NAME}")
+    # Only the BOUND element views are referenced by the graph; the aux calendar views
+    # (og_calendar / og_period_grain) ride the lifecycle but are NOT bound.
     for view in _ELEMENT_VIEWS:
         assert f"{READ_TOKEN}.{view}" in graph_sql, view
+    for aux in _AUX_VIEWS:
+        assert f"{READ_TOKEN}.{aux}" not in graph_sql, aux
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Five edges: refs, has_dimension, derived_from (P1), concept_edge (DAT-729),
-    # conformed_dimension (DAT-756).
-    assert graph_sql.count("SOURCE KEY") == 5
-    assert graph_sql.count("DESTINATION KEY") == 5
+    # Eight edges: refs, has_dimension, derived_from (P1), concept_edge (DAT-729),
+    # conformed_dimension (DAT-756), + temporal_coverage / measure_time_axis /
+    # rolls_up_to (DAT-730).
+    assert graph_sql.count("SOURCE KEY") == 8
+    assert graph_sql.count("DESTINATION KEY") == 8
     # The measure→materialization MATCH (the P1 AC) reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -53,11 +59,20 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)" in graph_sql
     assert "LABEL concept_edge" in graph_sql
     assert "PROPERTIES (predicate, tolerance)" in graph_sql
+    # ordered|nominal on the DimensionConcept (DAT-730) rides the concept vertex.
+    assert "kind, dimension_order)" in graph_sql
     # The conformed_dimension edge binds fact → fact over the shared dim AXIS
     # (attribute grain — the alignable drill-across GROUP BY the SQL agents author).
     assert "SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)" in graph_sql
     assert "LABEL conformed_dimension" in graph_sql
     assert "PROPERTIES (dimension_table_id, dimension_attribute)" in graph_sql
+    # DAT-730 temporal edges: coverage (table→time-col), measure_time_axis (measure→
+    # time-col, with the anchor flag), rolls_up_to (dimension level→level).
+    assert "LABEL temporal_coverage" in graph_sql
+    assert "DESTINATION KEY (column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "PROPERTIES (role, is_anchor)" in graph_sql
+    assert "LABEL measure_time_axis" in graph_sql
+    assert "LABEL rolls_up_to" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

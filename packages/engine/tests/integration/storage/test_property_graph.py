@@ -66,7 +66,14 @@ _TABLES = [
 _COLUMNS = [
     ("c_amt", "t1", "amount", 1),
     ("c_k1", "t1", "account_id", 2),
+    # Two role-playing DATE axes on the journal fact (DAT-730): booking vs value date.
+    ("c_bd", "t1", "booking_date", 3),
+    ("c_vd", "t1", "value_date", 4),
     ("c_k2", "t2", "account_id", 1),
+    # A geo drill-down over the accounts dim (DAT-730 rolls_up_to): city → state → country.
+    ("c_city", "t2", "city", 2),
+    ("c_state", "t2", "state", 3),
+    ("c_country", "t2", "country", 4),
     ("c_k3", "t3", "group_id", 1),
     ("c_k3b", "t3", "account_id", 2),  # t3's own account_id — a cross-LEVEL accounts slice
     ("c_k4", "t4", "statement_id", 1),
@@ -179,11 +186,23 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
             f"'foreign_key', 'many_to_one', 0.9, true, '{TS}')"
         )
-    for eid, tid, role in [("e_j", "t1", "fact"), ("e_a", "t2", "dimension")]:
+    # table_entities. journal (e_j) carries its two event-time axes (DAT-565/730):
+    # booking_date FIRST (the primary axis → the measure anchor), value_date second.
+    # accounts (e_a) is a dimension with no time axes.
+    time_cols_json = (
+        '[{"column": "booking_date", "aspect": "booking", "note": "booked"}, '
+        '{"column": "value_date", "aspect": "value", "note": "settled"}]'
+    )
+    for eid, tid, role, tcols in [
+        ("e_j", "t1", "fact", time_cols_json),
+        ("e_a", "t2", "dimension", None),
+    ]:
+        tcols_sql = f"'{tcols}'::json" if tcols else "NULL"
         stmts.append(
             "INSERT INTO table_entities "
-            "(entity_id, table_id, run_id, detected_entity_type, table_role, detected_at) "
-            f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', '{role}', '{TS}')"
+            "(entity_id, table_id, run_id, detected_entity_type, table_role, time_columns, "
+            " detected_at) "
+            f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', '{role}', {tcols_sql}, '{TS}')"
         )
     # derived_from: journal_enriched view over the journal fact + the accounts dim.
     stmts.append(
@@ -231,6 +250,52 @@ def _seed(engine: Engine) -> None:
             "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
             f"VALUES ('{eid}', 'finance', 'part_of', '{frm}', '{to}', 'seed', '{TS}')"
         )
+    # DimensionConcepts (DAT-730 ordered|nominal): fiscal_period is authored 'ordered'
+    # (a temporal dimension); region leaves dimension_order UNSET → the og_concepts
+    # view defaults a dimension to 'nominal'. This exercises both the stored value and
+    # the view's default so every DimensionConcept carries an order (AC7).
+    for cid, cname, order in [("dc_fp", "fiscal_period", "ordered"), ("dc_rg", "region", None)]:
+        order_sql = f"'{order}'" if order else "NULL"
+        stmts.append(
+            "INSERT INTO concepts (concept_id, vertical, name, kind, dimension_order, created_at) "
+            f"VALUES ('{cid}', 'finance', '{cname}', 'dimension', {order_sql}, '{TS}')"
+        )
+    # temporal_column_profiles (DAT-730): the journal's two date axes. booking_date
+    # is a full series (last period complete); value_date spills into a trailing
+    # PARTIAL period (last_period_complete = False) — the two roles are distinct
+    # coverage edges. profile_data is a non-null json payload (the model requires it);
+    # booking_date carries a DETECTED fiscal alignment (March year-end → April start),
+    # so og_calendar derives fiscal_year_start_month = 4 from it (not the default 1).
+    fiscal_json = (
+        '{"fiscal_calendar": {"fiscal_alignment_detected": true, "fiscal_year_end_month": 3}}'
+    )
+    for pid, cid, mn, mx, grain, comp, last_ok, pdata in [
+        ("tp_bd", "c_bd", "2025-01-01", "2025-12-31", "day", 1.0, "true", fiscal_json),
+        ("tp_vd", "c_vd", "2025-01-01", "2026-02-15", "day", 0.9, "false", "{}"),
+    ]:
+        stmts.append(
+            "INSERT INTO temporal_column_profiles "
+            "(profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, "
+            " detected_granularity, completeness_ratio, last_period_complete, is_stale, "
+            " profile_data) "
+            f"VALUES ('{pid}', '{cid}', '{RUN}', '{TS}', '{mn}', '{mx}', '{grain}', "
+            f"{comp}, {last_ok}, false, '{pdata}'::json)"
+        )
+    # dimension_hierarchies (DAT-730 rolls_up_to): a geo drill-down over the accounts
+    # dim, members finest→coarsest. The unnest yields level→level edges city→state,
+    # state→country; the recursive-CTE closure walks the whole chain.
+    geo_members = (
+        '[{"column_name": "city", "column_id": "c_city"}, '
+        '{"column_name": "state", "column_id": "c_state"}, '
+        '{"column_name": "country", "column_id": "c_country"}]'
+    )
+    stmts.append(
+        "INSERT INTO dimension_hierarchies "
+        "(hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, "
+        " score, detection_source, needs_confirmation, created_at) "
+        f"VALUES ('dh_geo', '{RUN}', 't2', 'drilldown', '{geo_members}'::json, "
+        f"'city>state>country', 'drilldown:t2:city|country|state', 0.0, 'g3', false, '{TS}')"
+    )
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
@@ -523,3 +588,221 @@ def test_fixed_depth_unroll_agrees_with_closure_at_depth_four(graph_engine: Engi
         reached = {r.reached for r in conn.execute(text(sql))}
     # t5 = 'division' is the closure's depth-4 node from t1 (see the closure test).
     assert reached == {"division"}
+
+
+# --- Temporal coverage & calendar (DAT-730 / P5) ---
+
+
+def test_temporal_coverage_per_time_column(graph_engine: Engine) -> None:
+    """temporal_coverage is per (relation × time column): the journal's booking_date and
+    value_date each surface as a distinct edge with its own window/grain/last-period flag.
+
+    This is AC1+AC2: role-playing dates are separate coverage edges (the metric basis is
+    choosable), and value_date's trailing partial period flags incomplete."""
+    sql = (
+        f"SELECT tname, cname, gran, last_ok FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[e IS temporal_coverage]->(c IS column_node) "
+        "COLUMNS (t.table_name AS tname, e.column_name AS cname, "
+        "e.detected_granularity AS gran, e.last_period_complete AS last_ok))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.tname, r.cname, r.gran, r.last_ok) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("journal", "booking_date", "day", True),
+        ("journal", "value_date", "day", False),  # trailing partial period → incomplete
+    }
+
+
+def test_measure_time_axis_anchor_and_alternates(graph_engine: Engine) -> None:
+    """Every measure has exactly ONE anchor time axis, with the alternates enumerable and
+    role-labelled (AC3). The journal's amount anchors on booking_date (the primary axis)
+    and carries value_date as a labelled alternate."""
+    sql = (
+        f"SELECT mname, tname, role, is_anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS column_node)-[e IS measure_time_axis]->(a IS column_node) "
+        "COLUMNS (m.column_name AS mname, a.column_name AS tname, "
+        "e.role AS role, e.is_anchor AS is_anchor))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.mname, r.tname, r.role, r.is_anchor) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("amount", "booking_date", "booking", True),
+        ("amount", "value_date", "value", False),
+    }
+    anchors = [r for r in rows if r[3]]
+    assert len(anchors) == 1, "a measure must have exactly one anchor axis"
+
+
+def test_measure_time_axis_empty_time_columns_is_graceful(graph_engine: Engine) -> None:
+    """A measure on a fact with NO time_columns yields no axis edges — not an error.
+
+    The COALESCE(time_columns, '[]') + inner joins degrade to zero rows. Per-test
+    TRUNCATE + re-seed isolates this mutation."""
+    ws_schema = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+    with graph_engine.begin() as conn:
+        conn.execute(
+            text(
+                f'UPDATE "{ws_schema}".table_entities SET time_columns = NULL '
+                "WHERE table_id = 't1'"
+            )
+        )
+    sql = (
+        f"SELECT count(*) AS n FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS column_node)-[e IS measure_time_axis]->(a IS column_node) "
+        "COLUMNS (1 AS one))"
+    )
+    with graph_engine.connect() as conn:
+        assert conn.execute(text(sql)).scalar_one() == 0
+
+
+def test_measure_time_axis_deduplicates_repeated_column(graph_engine: Engine) -> None:
+    """A malformed time_columns naming one column TWICE (two aspects) must not produce a
+    colliding edge KEY — the DISTINCT ON keeps the lowest-ordinality entry (one edge)."""
+    ws_schema = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+    dup = (
+        '[{"column": "booking_date", "aspect": "booking", "note": "a"}, '
+        '{"column": "booking_date", "aspect": "audit", "note": "b"}, '
+        '{"column": "value_date", "aspect": "value", "note": "c"}]'
+    )
+    with graph_engine.begin() as conn:
+        conn.execute(
+            text(
+                f"UPDATE \"{ws_schema}\".table_entities SET time_columns = '{dup}'::json "
+                "WHERE table_id = 't1'"
+            )
+        )
+    sql = (
+        f"SELECT tname, role, is_anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS column_node)-[e IS measure_time_axis]->(a IS column_node) "
+        "COLUMNS (a.column_name AS tname, e.role AS role, e.is_anchor AS is_anchor))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.tname, r.role, r.is_anchor) for r in conn.execute(text(sql))}
+    # booking_date collapses to its first (booking, anchor) entry — the 'audit' dup drops.
+    assert rows == {("booking_date", "booking", True), ("value_date", "value", False)}
+
+
+def test_rolls_up_to_edges_enumerable(graph_engine: Engine) -> None:
+    """rolls_up_to: dimension_hierarchies.members unnests into direct level→level edges,
+    finest→coarsest (AC4, 1-hop PGQ half)."""
+    sql = (
+        f"SELECT frm, to_ FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS column_node)-[e IS rolls_up_to]->(b IS column_node) "
+        "COLUMNS (a.column_name AS frm, b.column_name AS to_))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.frm, r.to_) for r in conn.execute(text(sql))}
+    assert rows == {("city", "state"), ("state", "country")}
+
+
+def _rolls_up_closure(conn, read: str, start: str) -> list[tuple[str, int]]:
+    """Bounded recursive-CTE roll-up closure over og_rolls_up_to (the P1 mechanism).
+
+    depth < 4 caps traversal; ``NOT to_column_id = ANY(path)`` is the cycle guard.
+    Returns (to_column_id, depth) reachable from ``start``, ordered.
+    """
+    sql = (
+        "WITH RECURSIVE reach(src, dst, depth, path) AS ("
+        "  SELECT from_column_id, to_column_id, 1, ARRAY[from_column_id, to_column_id] "
+        f'  FROM "{read}".og_rolls_up_to '
+        "  UNION ALL "
+        "  SELECT r.src, e.to_column_id, r.depth + 1, r.path || e.to_column_id "
+        f'  FROM reach r JOIN "{read}".og_rolls_up_to e ON e.from_column_id = r.dst '
+        "  WHERE r.depth < 4 AND NOT e.to_column_id = ANY(r.path)"
+        ") SELECT dst, depth FROM reach WHERE src = :s ORDER BY depth, dst"
+    )
+    return [(r.dst, r.depth) for r in conn.execute(text(sql), {"s": start})]
+
+
+def test_rolls_up_to_closure_walks_the_drill_chain(graph_engine: Engine) -> None:
+    """The dimension roll-up CHAIN is the recursive-CTE closure (AC4): from city the walk
+    reaches state (depth 1) and country (depth 2)."""
+    with graph_engine.connect() as conn:
+        rows = _rolls_up_closure(conn, _read_schema(), "c_city")
+    assert rows == [("c_state", 1), ("c_country", 2)]
+
+
+def _period_grain_closure(conn, read: str, start: str) -> list[tuple[str, int]]:
+    """Bounded recursive-CTE closure over the period-grain ladder og_period_grain."""
+    sql = (
+        "WITH RECURSIVE reach(src, dst, depth, path) AS ("
+        "  SELECT from_grain, to_grain, 1, ARRAY[from_grain, to_grain] "
+        f'  FROM "{read}".og_period_grain '
+        "  UNION ALL "
+        "  SELECT r.src, e.to_grain, r.depth + 1, r.path || e.to_grain "
+        f'  FROM reach r JOIN "{read}".og_period_grain e ON e.from_grain = r.dst '
+        "  WHERE r.depth < 4 AND NOT e.to_grain = ANY(r.path)"
+        ") SELECT dst, depth FROM reach WHERE src = :s ORDER BY depth, dst"
+    )
+    return [(r.dst, r.depth) for r in conn.execute(text(sql), {"s": start})]
+
+
+def test_period_grain_rollup_via_recursive_cte(graph_engine: Engine) -> None:
+    """Period-grain roll-up is the recursive-CTE traversal (AC5): from month the ladder
+    reaches quarter (depth 1) then year (depth 2) — so last-complete-quarter is derivable
+    from last-complete-month."""
+    with graph_engine.connect() as conn:
+        rows = _period_grain_closure(conn, _read_schema(), "month")
+    assert rows == [("quarter", 1), ("year", 2)]
+
+
+def test_calendar_derived_from_profiles(graph_engine: Engine) -> None:
+    """og_calendar is the workspace calendar (AC5): window = min/max across the profiled
+    time columns, base_grain = the FINEST detected grain (derived, not a config constant),
+    fiscal_year_start DERIVED from the detected fiscal-year end (March end → April = 4)."""
+    with graph_engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT window_start, window_end, base_grain, fiscal_year_start_month "
+                f'FROM "{_read_schema()}".og_calendar'
+            )
+        ).one()
+    assert str(row.window_start) == "2025-01-01 00:00:00"
+    assert str(row.window_end) == "2026-02-15 00:00:00"
+    assert row.base_grain == "day"
+    # booking_date's profile detected a March fiscal-year end → (3 % 12) + 1 = April.
+    assert row.fiscal_year_start_month == 4
+
+
+def test_calendar_defaults_fiscal_start_when_undetected(graph_engine: Engine) -> None:
+    """When no time column detected a fiscal alignment, the calendar falls back to the
+    calendar year (fiscal_year_start_month = 1) — the COALESCE else-branch of og_calendar.
+
+    Per-test TRUNCATE + re-seed isolates this mutation from the other tests."""
+    ws_schema = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+    with graph_engine.begin() as conn:
+        # Blank the one detected fiscal_calendar payload; the mode subquery now finds
+        # no alignment and COALESCE returns the default 1. (The view reads the raw table
+        # live, so no re-boot is needed.)
+        conn.execute(
+            text(
+                f'UPDATE "{ws_schema}".temporal_column_profiles '
+                "SET profile_data = '{}'::json WHERE profile_id = 'tp_bd'"
+            )
+        )
+    with graph_engine.connect() as conn:
+        start = conn.execute(
+            text(f'SELECT fiscal_year_start_month FROM "{_read_schema()}".og_calendar')
+        ).scalar_one()
+    assert start == 1
+
+
+def test_dimension_order_ordered_vs_nominal(graph_engine: Engine) -> None:
+    """Every DimensionConcept carries ordered|nominal (AC7): fiscal_period (timestamp role)
+    is ordered; region is nominal. Non-dimension concepts carry no order."""
+    sql = (
+        f"SELECT name, dord FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node WHERE c.kind = 'dimension') "
+        "COLUMNS (c.name AS name, c.dimension_order AS dord))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.name, r.dord) for r in conn.execute(text(sql))}
+    assert rows == {("fiscal_period", "ordered"), ("region", "nominal")}
+    # Non-dimension kinds carry NO order (measure/entity/unit have no window axis).
+    non_dim_sql = (
+        f"SELECT dord FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node WHERE c.name = 'accounts_payable') "
+        "COLUMNS (c.dimension_order AS dord))"
+    )
+    with graph_engine.connect() as conn:
+        assert conn.execute(text(non_dim_sql)).scalar_one() is None

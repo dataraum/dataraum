@@ -118,6 +118,11 @@ class TemporalAnalysisResult(BaseModel):
 
     # Completeness
     completeness: TemporalCompletenessAnalysis | None = None
+    # Trailing-period coverage (DAT-730): True = the MAX period is a full period,
+    # False = a trailing PARTIAL period (materially fewer records than prior
+    # periods at this grain), None = not decidable. Feeds the operating-model
+    # graph's per-(relation × time column) coverage.
+    last_period_complete: bool | None = None
 
     # Update frequency
     update_frequency: UpdateFrequencyAnalysis | None = None

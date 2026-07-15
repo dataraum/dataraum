@@ -5,6 +5,51 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-730 — temporal coverage & calendar (operating-model graph P5)
+
+**Branch:** `feat/dat-730-temporal-coverage-calendar`. New graph-facing temporal
+substrate + one computed signal. No LLM/pipeline behaviour change beyond the new
+column; the rest is read-side graph views.
+
+### What changed
+
+- New `temporal_column_profiles.last_period_complete` (bool|None), computed in the
+  temporal phase (add_source) by `analyze_last_period_complete` over the FULL table:
+  the MAX period is INCOMPLETE (False) when its record count is < 0.6 × the median of
+  the prior periods (a trailing partial period); None when undecidable (irregular grain
+  or < 2 periods).
+- New property-graph elements (read-only over `current_*`): `og_temporal_coverage`
+  (per relation × time column: window/grain/last_period_complete), `og_measure_time_axis`
+  (measure → time axes, one anchor + role-labelled alternates), `og_rolls_up_to`
+  (dimension level→level from `dimension_hierarchies.members`), `og_calendar` (workspace
+  window + finest grain + fiscal-year start), `og_period_grain` (day→month→quarter→year
+  ladder).
+- New `concepts.dimension_order` (ordered|nominal) — `fiscal_period` seeded 'ordered';
+  the graph view defaults any unset DimensionConcept to 'nominal'.
+
+### What eval should see (deferred `metadata_truth.yaml` work — grading lands P9/P11)
+
+The finance corpus (detection-v1 / clean; from `vendor/dataraum-testdata`) temporal truth,
+verified against the generated CSVs — ready to codify as a new `temporal_coverage:` section
+keyed by table (+ a reader in `calibration/metadata_truth.py`):
+
+- **Window:** 2025-01 → 2026-02 (12 fiscal months + a 2-month vendor-payment spillover;
+  2026-02 is the trailing period).
+- **Last-period-complete (per DATE column):** `journal_entries.date`, `payments.date`,
+  `invoices.due_date` → **incomplete** (trailing 2026 spillover is sparse);
+  `invoices.date` → **complete** (clamped to fiscal_end 2025-12-31).
+- **Trailing-partial mechanism:** a ROW-COUNT collapse in the monthly FLOW table
+  (`trial_balance` 27→4 accounts at 2026-02), NOT NULL measures; `balance_sheet` (stock)
+  stays dense. So `last_period_complete` keys off the flow/event tables, never balance_sheet
+  row-count. (`trial_balance.period` / `balance_sheet.period` are "YYYY-MM" strings, not
+  DATE-typed, so they are NOT profiled — only the DATE event columns get coverage edges.)
+- **Two invoice date roles:** `invoices.date` (booking, ≤ fiscal_end) and `invoices.due_date`
+  (cash basis, spills past fiscal_end) — both are distinct coverage edges; generator truth.
+- **Grain:** journal/invoices/payments/bank = daily event; fx_rates = weekly; trial_balance /
+  balance_sheet = monthly.
+
+---
+
 ## DAT-768 — empty column_concepts falls loud (salvaged from PR #483)
 
 **Branch:** `fix/dat-768-empty-concepts-fall-loud`. The `column_concepts` surface

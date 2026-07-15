@@ -67,6 +67,15 @@ class TemporalColumnProfile(Base):
     detected_granularity: Mapped[str] = mapped_column(String, nullable=False)
     completeness_ratio: Mapped[float | None] = mapped_column(Float)
 
+    # Trailing-period coverage (DAT-730): is the MAX period a full period, or a
+    # trailing PARTIAL one? Distinct from ``completeness_ratio`` (gaps across the
+    # whole series): this flags the last bucket alone — the finance corpus's
+    # 2026-02 snapshot lands short (the AR-NULL-at-MAX-period surprise becomes
+    # queryable knowledge). Computed over the FULL table (not the 20% profiling
+    # sample) by :func:`analyze_last_period_complete`. NULL = not decidable (a
+    # single period, or an irregular/unknown grain with no period boundary).
+    last_period_complete: Mapped[bool | None] = mapped_column(Boolean)
+
     # Flag for filtering (fast queries). Seasonality/trend flags were removed in DAT-524
     # (they were computed from a degenerate constant series); ``is_stale`` is real — it
     # comes from the timestamp-interval analysis, not the value series.

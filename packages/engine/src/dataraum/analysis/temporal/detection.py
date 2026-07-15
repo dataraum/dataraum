@@ -116,6 +116,84 @@ def calculate_expected_periods(
     return int(total_seconds / seconds) + 1
 
 
+# DuckDB ``date_trunc`` accepts these period units directly (1:1 with the detected
+# granularity vocabulary). ``irregular``/``unknown`` have no period boundary → the
+# last-period question is undefined for them.
+_PERIOD_UNITS: frozenset[str] = frozenset(
+    {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
+)
+
+# A trailing period is judged INCOMPLETE when its record count falls below this
+# fraction of the median count across the prior periods. A full period lands near
+# the median; a mid-collection cut-off (the finance snapshot stopping partway through
+# 2026-02) lands well under it. This is a completeness signal in the same family as
+# ``completeness_ratio`` / the gap thresholds — deterministic, not a semantic guess.
+_LAST_PERIOD_COMPLETE_RATIO = 0.6
+
+
+def analyze_last_period_complete(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    column_name: str,
+    granularity: str,
+) -> bool | None:
+    """Is the MAX period of a time column a full period, or a trailing PARTIAL one?
+
+    Buckets the column's non-null timestamps into periods at the detected grain over
+    the FULL table (not the profiling sample — a sampled tail would look partial) and
+    compares the last (max) period's record count against the median of the prior
+    periods'. A trailing period materially short of the typical period is a partial
+    period (``False``); one on par is complete (``True``).
+
+    Distinct from ``completeness_ratio`` (gaps across the whole series): this looks at
+    the last bucket alone, so the AR-NULL-at-MAX-period surprise (the finance corpus's
+    2026-02 snapshot) becomes queryable knowledge rather than a silent tail.
+
+    The prior-period baseline is the median over the periods that HAVE rows — a fully
+    empty interior period is invisible to it (not counted as a zero), by design: this
+    judges the trailing bucket's fullness, and interior gaps are ``completeness_ratio``'s
+    job.
+
+    Returns:
+        ``True``/``False`` per the trailing-period test, or ``None`` when it is not
+        decidable — an irregular/unknown grain (no period boundary) or fewer than two
+        periods (no prior baseline to compare against).
+    """
+    if granularity not in _PERIOD_UNITS:
+        return None
+    try:
+        row = duckdb_conn.execute(
+            f"""
+            WITH per AS (
+                SELECT date_trunc('{granularity}', CAST("{column_name}" AS TIMESTAMP)) AS period,
+                       COUNT(*) AS n
+                FROM {table_name}
+                WHERE "{column_name}" IS NOT NULL
+                GROUP BY 1
+            ),
+            ranked AS (
+                SELECT n, ROW_NUMBER() OVER (ORDER BY period DESC) AS rn FROM per
+            )
+            SELECT
+                (SELECT n FROM ranked WHERE rn = 1) AS last_n,
+                (SELECT median(n) FROM ranked WHERE rn > 1) AS prior_median,
+                (SELECT COUNT(*) FROM ranked) AS n_periods
+            """
+        ).fetchone()
+    except Exception as e:
+        logger.warning(
+            "last_period_complete_failed", table=table_name, column=column_name, error=str(e)
+        )
+        return None
+
+    if not row:
+        return None
+    last_n, prior_median, n_periods = row
+    if n_periods is None or n_periods < 2 or not prior_median:
+        return None
+    return bool(last_n >= prior_median * _LAST_PERIOD_COMPLETE_RATIO)
+
+
 def analyze_basic_temporal(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_name: str,
@@ -290,4 +368,5 @@ __all__ = [
     "infer_granularity",
     "calculate_expected_periods",
     "analyze_basic_temporal",
+    "analyze_last_period_complete",
 ]

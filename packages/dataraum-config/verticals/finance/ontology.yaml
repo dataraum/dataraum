@@ -74,6 +74,8 @@ concepts:
     
   - name: fiscal_period
     kind: dimension
+    # A temporal dimension — periods have a sequence (lag/lead/Δ/CAGR apply).
+    dimension_order: ordered
     description: Time period for financial reporting
     indicators:
       - period

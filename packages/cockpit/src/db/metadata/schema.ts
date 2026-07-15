@@ -56,12 +56,13 @@ export const concepts = metadataSchema
 		excludePatterns: json("exclude_patterns"),
 		typicalValues: json("typical_values"),
 		unitFromConcept: varchar("unit_from_concept"),
+		dimensionOrder: varchar("dimension_order"),
 		source: varchar(),
 		createdAt: timestamp("created_at"),
 		supersededAt: timestamp("superseded_at"),
 	})
 	.as(
-		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, typical_values, unit_from_concept, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
+		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, typical_values, unit_from_concept, dimension_order, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
 	);
 
 export const configOverlay = metadataSchema
@@ -541,11 +542,12 @@ export const currentTemporalColumnProfiles = metadataSchema
 		maxTimestamp: timestamp("max_timestamp"),
 		detectedGranularity: varchar("detected_granularity"),
 		completenessRatio: doublePrecision("completeness_ratio"),
+		lastPeriodComplete: boolean("last_period_complete"),
 		isStale: boolean("is_stale"),
 		profileData: json("profile_data"),
 	})
 	.as(
-		sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, detected_granularity, completeness_ratio, is_stale, profile_data FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, detected_granularity, completeness_ratio, last_period_complete, is_stale, profile_data FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTypeCandidates = metadataSchema

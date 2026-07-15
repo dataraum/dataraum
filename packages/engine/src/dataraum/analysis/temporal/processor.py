@@ -30,6 +30,7 @@ from dataraum.analysis.temporal.db_models import (
 )
 from dataraum.analysis.temporal.detection import (
     analyze_basic_temporal,
+    analyze_last_period_complete,
     infer_granularity,
 )
 from dataraum.analysis.temporal.models import (
@@ -114,6 +115,13 @@ def _profile_temporal_column_parallel(
                 else None
             )
 
+            # Trailing-period coverage (DAT-730): does the MAX period hold a full
+            # period, or a trailing partial one? Over the FULL table (own cursor),
+            # never the profiling sample — a sampled tail always looks short.
+            last_period_complete = analyze_last_period_complete(
+                cursor, table_duckdb_path, column_name, granularity
+            )
+
             # Detect quality issues
             issues = _detect_quality_issues(
                 completeness=completeness,
@@ -142,6 +150,7 @@ def _profile_temporal_column_parallel(
                 detected_granularity=granularity,
                 granularity_confidence=confidence,
                 completeness=completeness,
+                last_period_complete=last_period_complete,
                 update_frequency=update_frequency,
                 fiscal_calendar=fiscal_calendar,
                 quality_issues=issues,
@@ -271,6 +280,7 @@ def profile_temporal(
                                 if profile.completeness
                                 else None
                             ),
+                            "last_period_complete": profile.last_period_complete,
                             "is_stale": profile.update_frequency.is_stale
                             if profile.update_frequency
                             else False,

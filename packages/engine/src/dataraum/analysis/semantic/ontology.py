@@ -35,6 +35,9 @@ class OntologyConcept(BaseModel):
     exclude_patterns: list[str] = Field(default_factory=list)
     typical_values: list[str] = Field(default_factory=list)
     unit_from_concept: str | None = None  # Which concept provides this measure's unit
+    # ordered | nominal (DAT-730): a temporal DimensionConcept (fiscal_period) is
+    # 'ordered'; unset dimensions default to 'nominal' at the graph view.
+    dimension_order: str | None = None
 
 
 class OntologyConvention(BaseModel):

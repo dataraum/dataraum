@@ -14,6 +14,11 @@ DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
 DROP VIEW IF EXISTS __READ__.og_concept_edges;
 DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
+DROP VIEW IF EXISTS __READ__.og_temporal_coverage;
+DROP VIEW IF EXISTS __READ__.og_measure_time_axis;
+DROP VIEW IF EXISTS __READ__.og_rolls_up_to;
+DROP VIEW IF EXISTS __READ__.og_calendar;
+DROP VIEW IF EXISTS __READ__.og_period_grain;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -36,7 +41,9 @@ LEFT JOIN __READ__.current_measure_aggregation_lineage mal
        ON mal.measure_column_id = c.column_id;
 
 CREATE VIEW __READ__.og_concepts AS
-SELECT concept_id::text AS concept_id, vertical, name, kind
+SELECT concept_id::text AS concept_id, vertical, name, kind,
+       CASE WHEN kind = 'dimension' THEN COALESCE(dimension_order, 'nominal')
+            END AS dimension_order
 FROM __READ__.concepts
 WHERE superseded_at IS NULL;
 
@@ -102,6 +109,73 @@ JOIN __READ__.current_slice_definitions s2
  AND s1.table_id <> s2.table_id
 WHERE s1.dimension_table_id IS NOT NULL;
 
+CREATE VIEW __READ__.og_temporal_coverage AS
+SELECT tcp.profile_id::text AS profile_id,
+       c.table_id::text AS table_id, tcp.column_id::text AS column_id,
+       c.column_name, tcp.min_timestamp, tcp.max_timestamp,
+       tcp.detected_granularity, tcp.completeness_ratio, tcp.last_period_complete
+FROM __READ__.current_temporal_column_profiles tcp
+JOIN __READ__.current_columns c ON c.column_id = tcp.column_id;
+
+CREATE VIEW __READ__.og_measure_time_axis AS
+SELECT (mc.column_id || '_' || tc.column_id)::text AS edge_key,
+       mc.column_id::text AS measure_column_id,
+       tc.column_id::text AS time_column_id,
+       tc.role, (tc.ord = 1) AS is_anchor
+FROM (
+  SELECT c.column_id, c.table_id
+  FROM __READ__.current_columns c
+  JOIN __READ__.current_semantic_annotations sa ON sa.column_id = c.column_id
+  WHERE sa.semantic_role = 'measure'
+) mc
+JOIN (
+  SELECT DISTINCT ON (tcol.column_id)
+         te.table_id, tcol.column_id, ax.value->>'aspect' AS role, ax.ord AS ord
+  FROM __READ__.current_table_entities te
+  CROSS JOIN LATERAL json_array_elements(
+       COALESCE(te.time_columns, '[]'::json)) WITH ORDINALITY AS ax(value, ord)
+  JOIN __READ__.current_columns tcol
+    ON tcol.table_id = te.table_id AND tcol.column_name = ax.value->>'column'
+  ORDER BY tcol.column_id, ax.ord
+) tc ON tc.table_id = mc.table_id;
+
+CREATE VIEW __READ__.og_rolls_up_to AS
+SELECT (dh.hierarchy_id || '_' || lo.ord::text)::text AS edge_key,
+       cf.column_id::text AS from_column_id, ct.column_id::text AS to_column_id,
+       lo.value->>'column_name' AS from_level,
+       hi.value->>'column_name' AS to_level, dh.canonical_label
+FROM __READ__.current_dimension_hierarchies dh
+CROSS JOIN LATERAL json_array_elements(dh.members) WITH ORDINALITY AS lo(value, ord)
+CROSS JOIN LATERAL json_array_elements(dh.members) WITH ORDINALITY AS hi(value, ord)
+JOIN __READ__.current_columns cf ON cf.column_id = lo.value->>'column_id'
+JOIN __READ__.current_columns ct ON ct.column_id = hi.value->>'column_id'
+WHERE dh.kind = 'drilldown' AND hi.ord = lo.ord + 1;
+
+CREATE VIEW __READ__.og_calendar AS
+SELECT 'workspace'::text AS calendar_id,
+       MIN(tcp.min_timestamp) AS window_start,
+       MAX(tcp.max_timestamp) AS window_end,
+       (SELECT g.detected_granularity
+        FROM __READ__.current_temporal_column_profiles g
+        ORDER BY CASE g.detected_granularity WHEN 'second' THEN 1 WHEN 'minute' THEN 2 WHEN 'hour' THEN 3 WHEN 'day' THEN 4 WHEN 'week' THEN 5 WHEN 'month' THEN 6 WHEN 'quarter' THEN 7 WHEN 'year' THEN 8 ELSE 99 END
+        LIMIT 1) AS base_grain,
+       COALESCE(
+         (SELECT (CAST(f.profile_data->'fiscal_calendar'->>'fiscal_year_end_month' AS INT)
+                  % 12) + 1
+          FROM __READ__.current_temporal_column_profiles f
+          WHERE (f.profile_data->'fiscal_calendar'->>'fiscal_alignment_detected') = 'true'
+            AND f.profile_data->'fiscal_calendar'->>'fiscal_year_end_month' IS NOT NULL
+          GROUP BY f.profile_data->'fiscal_calendar'->>'fiscal_year_end_month'
+          ORDER BY COUNT(*) DESC
+          LIMIT 1), 1) AS fiscal_year_start_month
+FROM __READ__.current_temporal_column_profiles tcp;
+
+CREATE VIEW __READ__.og_period_grain AS
+SELECT from_grain, to_grain FROM (VALUES
+  ('second', 'minute'), ('minute', 'hour'), ('hour', 'day'),
+  ('day', 'month'), ('month', 'quarter'), ('quarter', 'year')
+) AS ladder(from_grain, to_grain);
+
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
@@ -109,7 +183,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
     __READ__.og_columns KEY (column_id) LABEL column_node
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
-      PROPERTIES (concept_id, vertical, name, kind)
+      PROPERTIES (concept_id, vertical, name, kind, dimension_order)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -138,5 +212,21 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
       LABEL conformed_dimension
-      PROPERTIES (dimension_table_id, dimension_attribute)
+      PROPERTIES (dimension_table_id, dimension_attribute),
+    __READ__.og_temporal_coverage KEY (profile_id)
+      SOURCE KEY (table_id) REFERENCES og_tables (table_id)
+      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
+      LABEL temporal_coverage
+      PROPERTIES (column_name, min_timestamp, max_timestamp,
+                  detected_granularity, completeness_ratio, last_period_complete),
+    __READ__.og_measure_time_axis KEY (edge_key)
+      SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)
+      DESTINATION KEY (time_column_id) REFERENCES og_columns (column_id)
+      LABEL measure_time_axis
+      PROPERTIES (role, is_anchor),
+    __READ__.og_rolls_up_to KEY (edge_key)
+      SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)
+      DESTINATION KEY (to_column_id) REFERENCES og_columns (column_id)
+      LABEL rolls_up_to
+      PROPERTIES (from_level, to_level, canonical_label)
   );

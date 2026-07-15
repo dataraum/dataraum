@@ -419,14 +419,16 @@ class TestBuilderExtractsDimensionHierarchies:
                 run_id="run-1",
                 table_id=table_id,
                 kind="drilldown",
+                # SCRAMBLED array order with explicit ``level`` (0 = coarsest): the
+                # builder must read by level, not position (DAT-779).
                 members=[
-                    {"column_name": "zip", "column_id": column_id, "distinct_count": 6},
-                    {"column_name": "city", "column_id": "", "distinct_count": 4},
-                    {"column_name": "state", "column_id": "", "distinct_count": 2},
+                    {"column_name": "zip", "column_id": column_id, "distinct_count": 6, "level": 2},
+                    {"column_name": "state", "column_id": "", "distinct_count": 2, "level": 0},
+                    {"column_name": "city", "column_id": "", "distinct_count": 4, "level": 1},
                 ],
-                canonical_label="zip → city → state",
+                canonical_label="state → city → zip",
                 signature="drilldown:t:city|state|zip",
-                score=0.0,
+                g3=0.0,
             )
         )
         head = MetadataSnapshotHead(
@@ -439,11 +441,76 @@ class TestBuilderExtractsDimensionHierarchies:
         assert len(ctx.dimension_hierarchies) == 1
         hier = ctx.dimension_hierarchies[0]
         assert hier.kind == "drilldown"
-        assert hier.members == ["zip", "city", "state"]
-        assert hier.canonical_label == "zip → city → state"
+        # Read by level → coarse → fine, regardless of array position.
+        assert hier.members == ["state", "city", "zip"]
+        assert hier.canonical_label == "state → city → zip"
         assert hier.table_name == "invoices"
 
         # Flip the head to a run with no hierarchy rows → fail-closed empty.
         head.run_id = "run-2"
         session.flush()
         assert build_execution_context(session, [table_id]).dimension_hierarchies == []
+
+    def test_role_rows_without_g3_sort_last(self, session: Session) -> None:
+        """The builder orders by ``g3`` ascending with NULLs last (DAT-784): a g3-less
+        role row sorts AFTER a g3-scored drilldown, deterministically (the ordering the
+        prompt reads 'strongest first'). Locks the cross-dialect ``nulls_last``."""
+        from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
+        from dataraum.storage.snapshot_head import (
+            MetadataSnapshotHead,
+            catalog_head_target,
+        )
+
+        _source_id, table_id, column_id = _insert_source_table_column(session)
+        session.add(
+            DimensionHierarchy(
+                run_id="run-1",
+                table_id=table_id,
+                kind="drilldown",
+                members=[
+                    {
+                        "column_name": "state",
+                        "column_id": column_id,
+                        "distinct_count": 2,
+                        "level": 0,
+                    },
+                    {"column_name": "city", "column_id": "", "distinct_count": 4, "level": 1},
+                ],
+                canonical_label="state → city",
+                signature="drilldown:t:city|state",
+                g3=0.005,
+            )
+        )
+        session.add(
+            DimensionHierarchy(
+                run_id="run-1",
+                table_id=table_id,
+                kind="role",
+                members=[
+                    {"column_name": "billto", "column_id": "", "distinct_count": 9, "level": 0},
+                    {"column_name": "soldto", "column_id": "", "distinct_count": 9, "level": 1},
+                ],
+                canonical_label="billto ⇄ soldto",
+                signature="role:t:billto|soldto",
+                g3=None,  # a role pair has no functional dependency
+                role_verdict="role",
+                role_evidence={
+                    "t1_p": 0.001,
+                    "t1_context": "channel",
+                    "t2_p": 0.5,
+                    "k_disagree": 30,
+                    "alpha": 0.01,
+                    "disagree_rate": 0.008,
+                },
+            )
+        )
+        session.add(
+            MetadataSnapshotHead(
+                head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="run-1"
+            )
+        )
+        session.flush()
+
+        ctx = build_execution_context(session, [table_id])
+        # Drilldown (g3=0.005) first; the g3-less role row sorts last (NULLS LAST).
+        assert [h.kind for h in ctx.dimension_hierarchies] == ["drilldown", "role"]

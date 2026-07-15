@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -161,17 +161,18 @@ class HierarchyContext:
     """A discovered drill-down hierarchy, alias group or role pair (DAT-537/761).
 
     The FD pass surfaces these over a fact's enriched view: a ``drilldown``
-    carries ordered levels finest → coarsest (``zip → city → state``), an
-    ``alias`` a redundant-axis group collapsed to one canonical label, a
-    ``role`` (DAT-761) a role-playing near-copy pair (bill-to ⇄ pay-to) that
-    must stay two separate axes. Exposed for the answer agent / GraphAgent to
-    drill and de-duplicate axes; the prompt CONSUMPTION lands in DAT-538 (this
-    is the expose seam, not the use).
+    carries levels in ``level`` order (``state → city → zip``), an ``alias`` a
+    redundant-axis group collapsed to one canonical label, a ``role`` (DAT-761) a
+    role-playing near-copy pair (bill-to ⇄ pay-to) that must stay two separate
+    axes. Exposed for the answer agent / GraphAgent to drill and de-duplicate
+    axes; the prompt CONSUMPTION lands in DAT-538 (this is the expose seam).
     """
 
     kind: str  # 'drilldown' | 'alias' | 'role'
     table_name: str
-    members: list[str]  # ordered levels (drilldown) or the group/pair (alias, role)
+    # ``members`` are read by each member's ``level`` (see the engine's
+    # HierarchyMember contract), NOT by the persisted array position (DAT-779).
+    members: list[str]
     canonical_label: str
     needs_confirmation: bool = False
 
@@ -616,7 +617,9 @@ def build_execution_context(
                 DimensionHierarchy.table_id.in_(table_ids),
                 DimensionHierarchy.run_id == run_id,
             )
-            .order_by(DimensionHierarchy.score)  # strongest (lowest g3) first
+            # Strongest (lowest g3) first; role-check rows have no g3 (NULL) and
+            # sort last, deterministically across Postgres/SQLite (DAT-784).
+            .order_by(DimensionHierarchy.g3.asc().nulls_last())
         )
         for hier in session.execute(hier_stmt).scalars().all():
             hier_tbl = table_map.get(hier.table_id)
@@ -625,7 +628,14 @@ def build_execution_context(
                     HierarchyContext(
                         kind=hier.kind,
                         table_name=hier_tbl.table_name,
-                        members=[str(m.get("column_name", "")) for m in hier.members],
+                        # Read by ``level`` (the HierarchyMember contract), never
+                        # array position (DAT-779).
+                        members=[
+                            str(m.get("column_name", ""))
+                            for m in sorted(
+                                hier.members, key=lambda m: cast("int", m.get("level", 0))
+                            )
+                        ],
                         canonical_label=hier.canonical_label,
                         needs_confirmation=hier.needs_confirmation,
                     )

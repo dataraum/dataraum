@@ -257,21 +257,41 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		expect(block).toContain('alias: "region" ≡ "region_code"');
 	});
 
-	it("renders a non-alias hierarchy as an ordered drill-down chain", () => {
+	it("renders a drill-down chain coarse→fine, ordered by member level", () => {
 		const hierarchies: CatalogHierarchyRow[] = [
 			{
 				tableId: "t1",
-				kind: "functional_dependency",
-				canonicalLabel: null,
+				kind: "drilldown",
+				canonicalLabel: "country → region → city",
 				members: [
-					{ column_name: "city" },
-					{ column_name: "region" },
-					{ column_name: "country" },
+					{ column_name: "country", level: 0 },
+					{ column_name: "region", level: 1 },
+					{ column_name: "city", level: 2 },
 				],
 			},
 		];
 		const block = formatCatalog(axes, hierarchies, addr);
-		expect(block).toContain('drill-down: "city" → "region" → "country"');
+		expect(block).toContain('drill-down: "country" → "region" → "city"');
+	});
+
+	it("orders a drill-down by member level, not array position (DAT-779 contract)", () => {
+		// Mirrors the engine's persisted shape (schema.sql seam): `level` (0 =
+		// coarsest) is the authoritative order. Feed a SCRAMBLED array to prove the
+		// reader sorts by level and never trusts array position.
+		const hierarchies: CatalogHierarchyRow[] = [
+			{
+				tableId: "t1",
+				kind: "drilldown",
+				canonicalLabel: "state → city → zip",
+				members: [
+					{ column_name: "zip", level: 2 },
+					{ column_name: "state", level: 0 },
+					{ column_name: "city", level: 1 },
+				],
+			},
+		];
+		const block = formatCatalog(axes, hierarchies, addr);
+		expect(block).toContain('drill-down: "state" → "city" → "zip"');
 	});
 
 	it("notes an empty catalog", () => {

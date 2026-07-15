@@ -156,6 +156,34 @@ swept to `meaning`; vitest unit suite green (1672).
 
 ---
 
+## DAT-779/784 — dimension_hierarchies persist-contract hardening (response shape)
+
+**Branch:** `fix/dat-779-784-hierarchy-contract`. **Persist-shape change only — no
+detector/verdict logic changed, so calibration numbers do NOT move** (`stats.py`
+untouched; the same structures are found with the same g3/verdicts). A reader that
+queries `dimension_hierarchies` columns by name must update:
+
+- **`score` column is RENAMED → `g3`** (kind-invariant: the g3 evidence for
+  drilldown/alias; NULL for `kind='role'` and value_systematic/abstain aliases,
+  which have no functional dependency). Any eval query selecting `.score` on this
+  table breaks — rename to `.g3`.
+- **New column `role_verdict`** (VARCHAR, nullable, `CHECK IN ('abstain','dirt',
+  'role','value_systematic')`): the stack-v4 role-check outcome; NULL on rows with
+  no role check. VALUE_SYSTEMATIC and ABSTAIN aliases are now distinguishable
+  (they used to collapse to one bare `needs_confirmation` alias — DAT-784).
+- **New column `role_evidence`** (JSON, nullable): `{t1_p, t1_context, t2_p,
+  k_disagree, alpha, disagree_rate}` — the role-check evidence (the disagreement
+  rate that was formerly conflated into `score` now lives here).
+- **`members[]` JSON entries gain a `level` int** (0 = coarsest, increasing =
+  finer) and are stored coarse→fine. Drilldown member order is now read by `level`,
+  not array position (DAT-779) — a testdata/eval assertion on drilldown member
+  order should sort by `level`.
+
+No `--reset`/backfill: test DBs recreate (this is a breaking schema change, by
+design). DAT-762 (conform/role judge) will consume `role_verdict` + `role_evidence`.
+
+---
+
 ## DAT-768 — empty column_concepts falls loud (salvaged from PR #483)
 
 **Branch:** `fix/dat-768-empty-concepts-fall-loud`. The `column_concepts` surface

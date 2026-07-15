@@ -249,12 +249,15 @@ CREATE TABLE dimension_hierarchies (
 	members JSON NOT NULL, 
 	canonical_label VARCHAR NOT NULL, 
 	signature VARCHAR NOT NULL, 
-	score FLOAT NOT NULL, 
+	g3 FLOAT, 
+	role_verdict VARCHAR, 
+	role_evidence JSON, 
 	detection_source VARCHAR NOT NULL, 
 	needs_confirmation BOOLEAN NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	CONSTRAINT pk_dimension_hierarchies PRIMARY KEY (hierarchy_id), 
 	CONSTRAINT uq_dimension_hierarchy_signature_run UNIQUE (signature, run_id), 
+	CONSTRAINT ck_dimension_hierarchies_role_verdict CHECK (role_verdict IN ('abstain', 'dirt', 'role', 'value_systematic')), 
 	CONSTRAINT fk_dimension_hierarchies_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
 );
 

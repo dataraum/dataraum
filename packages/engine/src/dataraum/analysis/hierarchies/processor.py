@@ -51,7 +51,11 @@ import polars as pl
 from sqlalchemy import select
 
 from dataraum.analysis.hierarchies import stats
-from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
+from dataraum.analysis.hierarchies.db_models import (
+    DimensionHierarchy,
+    HierarchyMember,
+    RoleEvidence,
+)
 from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
 from dataraum.analysis.hierarchies.stats import RoleVerdict
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
@@ -535,6 +539,72 @@ def discover_dimension_hierarchies(
     return len(rows)
 
 
+def _validated_members(members: list[HierarchyMember]) -> list[dict[str, object]]:
+    """Validate the level set and dump the members to their JSON form (DAT-779).
+
+    The write-side assertion of the direction contract: ``level`` is the sole
+    carrier of order (see :class:`HierarchyMember`), so it must be a permutation of
+    ``range(len)`` for a consumer to read a total order. Raises on a gap or a
+    duplicate — a writer that mis-numbers the levels fails loud, never silently.
+    """
+    levels = sorted(m.level for m in members)
+    if levels != list(range(len(members))):
+        raise ValueError(
+            f"hierarchy member levels must be a contiguous 0..{len(members) - 1}; got {levels}"
+        )
+    return [m.model_dump() for m in members]
+
+
+def _hierarchy_row(
+    *,
+    run_id: str,
+    table_id: str,
+    kind: str,
+    members: list[dict[str, object]],
+    canonical_label: str,
+    signature: str,
+    detection_source: str,
+    needs_confirmation: bool,
+    g3: float | None = None,
+    role: stats.RoleResult | None = None,
+    disagree_rate: float | None = None,
+) -> dict[str, object]:
+    """One dimension_hierarchies row dict with a HOMOGENEOUS key set (DAT-784).
+
+    Every writer produces the same keys so the multi-values upsert renders one
+    consistent INSERT. The nullable role/g3 columns default to None; when ``role``
+    is given (a role-check-derived row) ``role_verdict`` + the validated
+    ``role_evidence`` are filled and ``disagree_rate`` is required.
+    """
+    role_evidence: dict[str, object] | None = None
+    role_verdict: str | None = None
+    if role is not None:
+        if disagree_rate is None:
+            raise ValueError("disagree_rate is required when a role verdict is persisted")
+        role_verdict = role.verdict.value
+        role_evidence = RoleEvidence(
+            t1_p=role.t1_p,
+            t1_context=role.t1_context,
+            t2_p=role.t2_p,
+            k_disagree=role.k_disagree,
+            alpha=role.alpha,
+            disagree_rate=disagree_rate,
+        ).model_dump()
+    return {
+        "run_id": run_id,
+        "table_id": table_id,
+        "kind": kind,
+        "members": members,
+        "canonical_label": canonical_label,
+        "signature": signature,
+        "g3": g3,
+        "role_verdict": role_verdict,
+        "role_evidence": role_evidence,
+        "detection_source": detection_source,
+        "needs_confirmation": needs_confirmation,
+    }
+
+
 def _apply_teaches(
     session: Session,
     rows: list[dict[str, object]],
@@ -573,7 +643,7 @@ def _apply_teaches(
             if (str(r["table_id"]), _row_member_names(r)) not in rejected
         }
 
-    # add → manual drilldown, alias → manual alias (ordered members preserved).
+    # add → manual drilldown, alias → manual alias.
     for action, kind in (("add", "drilldown"), ("alias", "alias")):
         for spec in specs[action]:
             members = spec.members
@@ -582,20 +652,32 @@ def _apply_teaches(
                 continue
             names = col_ids_by_table.get(spec.table_id, {})
             sig = f"{kind}:{spec.table_id}:" + "|".join(sorted(members))
-            by_sig[sig] = {
-                "run_id": run_id,
-                "table_id": spec.table_id,
-                "kind": kind,
-                "members": [
-                    {"column_name": n, "column_id": names.get(n, ""), "distinct_count": None}
-                    for n in members
-                ],
-                "canonical_label": " → ".join(members) if kind == "drilldown" else members[0],
-                "signature": sig,
-                "score": 0.0,
-                "detection_source": "manual",
-                "needs_confirmation": False,
-            }
+            # The teach INPUT is finest → coarsest for a drilldown (the user-facing
+            # convention); STORAGE is coarse → fine with an explicit ``level`` so
+            # array position never has to be trusted (DAT-779).
+            ordered = list(reversed(members)) if kind == "drilldown" else list(members)
+            by_sig[sig] = _hierarchy_row(
+                run_id=run_id,
+                table_id=spec.table_id,
+                kind=kind,
+                members=_validated_members(
+                    [
+                        HierarchyMember(
+                            column_name=n,
+                            column_id=names.get(n, ""),
+                            distinct_count=None,
+                            level=i,
+                        )
+                        for i, n in enumerate(ordered)
+                    ]
+                ),
+                canonical_label=" → ".join(ordered) if kind == "drilldown" else ordered[0],
+                signature=sig,
+                # A manual assert asserts an exact FD / bijection — g3 = 0 (strongest).
+                g3=0.0,
+                detection_source="manual",
+                needs_confirmation=False,
+            )
             logger.info(
                 "hierarchy_teach_applied", action=action, table_id=spec.table_id, members=members
             )
@@ -785,16 +867,17 @@ def _view_structures(
     # that trivially passes the edge screen) is suppressed at assembly.
     same_domain: set[frozenset[str]] = set()
 
-    def _member(col: str) -> dict[str, object]:
+    def _member(col: str, level: int) -> HierarchyMember:
         c = by_name[col]
-        return {
-            "column_name": c.column_name,
-            "column_id": c.column_id,
+        return HierarchyMember(
+            column_name=c.column_name,
+            column_id=c.column_id,
             # Null-aware d2 (NULL = one category) — deliberately differs from the
             # pre-DAT-761 null-blind SQL count; the null lane made d2 the honest
             # "values this axis distinguishes".
-            "distinct_count": scan.d2[col],
-        }
+            distinct_count=scan.d2[col],
+            level=level,
+        )
 
     # Disagreement vectors are built lazily per BH-accepted pair — an up-front
     # object-array for every eligible column is gigabytes at the cells budget,
@@ -841,36 +924,44 @@ def _view_structures(
             merged.append((a, b))
             continue
         same_domain.add(frozenset((a, b)))
+        # A near-copy pair is a peer set, not a hierarchy: ``level`` is the sorted
+        # ordinal only (no coarse/fine axis). ``g3`` is None — the role check
+        # measures disagreement, not a functional dependency; the rate + p-values
+        # live in ``role_evidence`` (DAT-784), never overloaded into ``g3``.
+        group = sorted((a, b))
+        pair_members = _validated_members([_member(c, level=i) for i, c in enumerate(group)])
         if result.verdict is RoleVerdict.ROLE:
-            group = sorted((a, b))
             out.append(
-                {
-                    "run_id": run_id,
-                    "table_id": fact_table_id,
-                    "kind": "role",
-                    "members": [_member(c) for c in group],
-                    "canonical_label": f"{group[0]} ⇄ {group[1]}",
-                    "signature": f"role:{fact_table_id}:" + "|".join(group),
-                    "score": rate,
-                    "detection_source": "g3",
-                    "needs_confirmation": needs_conf,
-                }
+                _hierarchy_row(
+                    run_id=run_id,
+                    table_id=fact_table_id,
+                    kind="role",
+                    members=pair_members,
+                    canonical_label=f"{group[0]} ⇄ {group[1]}",
+                    signature=f"role:{fact_table_id}:" + "|".join(group),
+                    role=result,
+                    disagree_rate=rate,
+                    detection_source="g3",
+                    needs_confirmation=needs_conf,
+                )
             )
             continue
-        # VALUE_SYSTEMATIC / ABSTAIN: undecidable from data — surface, don't merge.
-        group = sorted((a, b))
+        # VALUE_SYSTEMATIC / ABSTAIN: undecidable from data — surface as an alias to
+        # confirm, but persist the verdict + evidence so the two stay DISTINGUISHABLE
+        # (the DAT-784 bug: both used to collapse to a bare needs_confirmation alias).
         out.append(
-            {
-                "run_id": run_id,
-                "table_id": fact_table_id,
-                "kind": "alias",
-                "members": [_member(c) for c in group],
-                "canonical_label": group[0],
-                "signature": f"alias:{fact_table_id}:" + "|".join(group),
-                "score": rate,
-                "detection_source": "g3",
-                "needs_confirmation": True,
-            }
+            _hierarchy_row(
+                run_id=run_id,
+                table_id=fact_table_id,
+                kind="alias",
+                members=pair_members,
+                canonical_label=group[0],
+                signature=f"alias:{fact_table_id}:" + "|".join(group),
+                role=result,
+                disagree_rate=rate,
+                detection_source="g3",
+                needs_confirmation=True,
+            )
         )
 
     # -- 6. assemble: union-find → edges on reps → reduction → chains ---------
@@ -907,22 +998,26 @@ def _view_structures(
     for chain in _maximal_chains(reduced):
         hops = [(chain[k], chain[k + 1]) for k in range(len(chain) - 1)]
         score = max(edge_g3(x, y) for x, y in hops)
+        # ``_maximal_chains`` yields finest → coarsest; store coarse → fine with
+        # ``level`` = array index (see :class:`HierarchyMember`) so array, level and
+        # label agree (DAT-779). ``signature`` sorts, so the flip never re-dedups.
+        chain_ctf = list(reversed(chain))
         out.append(
-            {
-                "run_id": run_id,
-                "table_id": fact_table_id,
-                "kind": "drilldown",
-                "members": [_member(c) for c in chain],
-                "canonical_label": " → ".join(chain),
-                "signature": f"drilldown:{fact_table_id}:" + "|".join(sorted(chain)),
-                "score": score,
-                "detection_source": "g3",
+            _hierarchy_row(
+                run_id=run_id,
+                table_id=fact_table_id,
+                kind="drilldown",
+                members=_validated_members([_member(c, level=i) for i, c in enumerate(chain_ctf)]),
+                canonical_label=" → ".join(chain_ctf),
+                signature=f"drilldown:{fact_table_id}:" + "|".join(sorted(chain)),
+                g3=score,
+                detection_source="g3",
                 # Surface, don't decide: a chain resting on a sub-floor
                 # pairwise-complete edge is flagged, same as a tiny view.
-                "needs_confirmation": needs_conf or any(h in thin_edges for h in hops),
-            }
+                needs_confirmation=needs_conf or any(h in thin_edges for h in hops),
+            )
         )
-        logger.info("hierarchy_drilldown", view=view_name, chain=chain, score=round(score, 4))
+        logger.info("hierarchy_drilldown", view=view_name, chain=chain_ctf, score=round(score, 4))
 
     for group in groups:
         pair_scores = [
@@ -932,17 +1027,19 @@ def _view_structures(
             if (group[i], group[j]) in scan.joints or (group[j], group[i]) in scan.joints
         ]
         out.append(
-            {
-                "run_id": run_id,
-                "table_id": fact_table_id,
-                "kind": "alias",
-                "members": [_member(c) for c in group],
-                "canonical_label": group[0],
-                "signature": f"alias:{fact_table_id}:" + "|".join(sorted(group)),
-                "score": max(pair_scores) if pair_scores else 0.0,
-                "detection_source": "g3",
-                "needs_confirmation": needs_conf,
-            }
+            _hierarchy_row(
+                run_id=run_id,
+                table_id=fact_table_id,
+                kind="alias",
+                # A redundant-axis group is a peer set: ``level`` is the sorted
+                # ordinal (canonical = group[0] = level 0), no coarse/fine meaning.
+                members=_validated_members([_member(c, level=i) for i, c in enumerate(group)]),
+                canonical_label=group[0],
+                signature=f"alias:{fact_table_id}:" + "|".join(sorted(group)),
+                g3=max(pair_scores) if pair_scores else 0.0,
+                detection_source="g3",
+                needs_confirmation=needs_conf,
+            )
         )
         logger.info("hierarchy_alias", view=view_name, group=group)
 

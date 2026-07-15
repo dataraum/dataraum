@@ -372,39 +372,71 @@ describe("projectColumnProfile — quality JSONB parse + caps", () => {
 });
 
 describe("projectColumnProfile — temporal + derived", () => {
-	it("serializes timestamps to ISO strings", () => {
+	it("serializes timestamps + coverage facts and caps gaps", () => {
 		const min = new Date("2020-01-01T00:00:00.000Z");
 		const max = new Date("2021-12-31T00:00:00.000Z");
+		// More gaps than MAX_SAMPLE (10) — the projection must cap the surface.
+		const gaps = Array.from({ length: 25 }, (_, i) => ({
+			gap_start: "2020-06-01T00:00:00",
+			gap_end: "2020-06-05T00:00:00",
+			gap_length_days: 4 + i,
+			missing_periods: 3,
+			severity: "moderate",
+		}));
 		const out = projectColumnProfile("c_1", "order_date", "orders", null, {
 			...EMPTY_ROWS,
 			temporal: {
 				minTimestamp: min,
 				maxTimestamp: max,
+				spanDays: 730,
 				detectedGranularity: "day",
+				granularityConfidence: 0.9,
 				completenessRatio: 0.97,
+				expectedPeriods: 731,
+				actualPeriods: 709,
+				gapCount: 25,
+				largestGapDays: 28,
+				gaps,
 				isStale: false,
 			},
 		});
 		expect(out.temporal?.min_timestamp).toBe("2020-01-01T00:00:00.000Z");
 		expect(out.temporal?.max_timestamp).toBe("2021-12-31T00:00:00.000Z");
+		expect(out.temporal?.span_days).toBe(730);
 		expect(out.temporal?.granularity).toBe("day");
+		expect(out.temporal?.granularity_confidence).toBe(0.9);
 		expect(out.temporal?.completeness).toBe(0.97);
+		expect(out.temporal?.expected_periods).toBe(731);
+		expect(out.temporal?.actual_periods).toBe(709);
+		expect(out.temporal?.gap_count).toBe(25);
+		expect(out.temporal?.largest_gap_days).toBe(28);
+		// gap_count stays the TRUE count; the gaps sample is bounded.
+		expect(out.temporal?.gaps.length).toBe(10);
+		expect(out.temporal?.gaps[0]?.severity).toBe("moderate");
 		expect(out.temporal?.is_stale).toBe(false);
 	});
 
-	it("tolerates a null timestamp", () => {
+	it("tolerates a null timestamp and a non-array gaps blob", () => {
 		const out = projectColumnProfile("c_1", "order_date", "orders", null, {
 			...EMPTY_ROWS,
 			temporal: {
 				minTimestamp: null,
 				maxTimestamp: null,
+				spanDays: null,
 				detectedGranularity: null,
+				granularityConfidence: null,
 				completenessRatio: null,
+				expectedPeriods: null,
+				actualPeriods: null,
+				gapCount: null,
+				largestGapDays: null,
+				gaps: null,
 				isStale: null,
 			},
 		});
 		expect(out.temporal?.min_timestamp).toBeNull();
 		expect(out.temporal?.max_timestamp).toBeNull();
+		expect(out.temporal?.gaps).toEqual([]);
 	});
 
 	it("projects derived columns (formula + match rate)", () => {

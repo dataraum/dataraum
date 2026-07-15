@@ -11,7 +11,7 @@ These are foundational functions used by the main processor.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
@@ -143,12 +143,14 @@ def analyze_basic_temporal(
     """
     try:
         gap_cfg = config["gaps"]
-        # Get min/max timestamps and count
+        stale_mult = config["staleness"]["stale_multiplier"]
+        # Get min/max timestamps and count. Cast to TIMESTAMP so a DATE column
+        # also yields a datetime (the model + DB column are DateTime-typed).
         result = duckdb_conn.execute(
             f"""
             SELECT
-                MIN("{column_name}") as min_ts,
-                MAX("{column_name}") as max_ts,
+                MIN("{column_name}"::TIMESTAMP) as min_ts,
+                MAX("{column_name}"::TIMESTAMP) as max_ts,
                 COUNT(DISTINCT "{column_name}") as distinct_count,
                 COUNT(*) as total_count
             FROM {table_name}
@@ -268,6 +270,15 @@ def analyze_basic_temporal(
             gaps=gaps,
         )
 
+        # Staleness: is the freshest observation old relative to the detected
+        # cadence? Measured on the DISTINCT-timestamp median gap (robust to
+        # duplicate-per-day fact rows — the corrupted row-interval path that
+        # scored duplicate-heavy columns "always stale" was deleted in DAT-783).
+        last_ts = max_ts if max_ts.tzinfo else max_ts.replace(tzinfo=UTC)
+        freshness_days = (datetime.now(UTC) - last_ts).total_seconds() / 86400
+        expected_interval_days = (median_gap / 86400) if median_gap else 0.0
+        is_stale = freshness_days > (expected_interval_days * stale_mult)
+
         return Result.ok(
             {
                 "min_timestamp": min_ts,
@@ -279,6 +290,7 @@ def analyze_basic_temporal(
                 "granularity_confidence": confidence,
                 "completeness": completeness,
                 "median_gap_seconds": median_gap,
+                "is_stale": is_stale,
             }
         )
 

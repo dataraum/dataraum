@@ -541,13 +541,19 @@ export const currentTemporalColumnProfiles = metadataSchema
 		profiledAt: timestamp("profiled_at"),
 		minTimestamp: timestamp("min_timestamp"),
 		maxTimestamp: timestamp("max_timestamp"),
+		spanDays: doublePrecision("span_days"),
 		detectedGranularity: varchar("detected_granularity"),
+		granularityConfidence: doublePrecision("granularity_confidence"),
 		completenessRatio: doublePrecision("completeness_ratio"),
+		expectedPeriods: integer("expected_periods"),
+		actualPeriods: integer("actual_periods"),
+		gapCount: integer("gap_count"),
+		largestGapDays: doublePrecision("largest_gap_days"),
 		isStale: boolean("is_stale"),
-		profileData: json("profile_data"),
+		gaps: json(),
 	})
 	.as(
-		sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, detected_granularity, completeness_ratio, is_stale, profile_data FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, detected_granularity, granularity_confidence, completeness_ratio, expected_periods, actual_periods, gap_count, largest_gap_days, is_stale, gaps FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTypeCandidates = metadataSchema

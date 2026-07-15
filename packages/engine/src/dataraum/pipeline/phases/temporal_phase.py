@@ -1,10 +1,9 @@
 """Temporal phase implementation.
 
 Analyzes temporal columns for:
-- Granularity detection (daily, weekly, monthly, etc.)
-- Completeness and gap analysis
-- Update frequency + staleness assessment
-- Fiscal calendar alignment
+- Granularity detection (daily, weekly, monthly, etc.) + confidence
+- Span, completeness, and gap analysis (the served coverage substrate)
+- Staleness assessment
 """
 
 from __future__ import annotations
@@ -136,7 +135,7 @@ class TemporalPhase(BasePhase):
 
                 # Count findings
                 for profile in result_data.column_profiles:
-                    if profile.update_frequency and profile.update_frequency.is_stale:
+                    if profile.is_stale:
                         stale_count += 1
 
         return PhaseResult.success(

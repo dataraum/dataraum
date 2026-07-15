@@ -209,12 +209,32 @@ const Quality = z.object({
 });
 export type ProfileQuality = z.infer<typeof Quality>;
 
+// One significant gap in the time series (a JSON-interior entry of
+// `temporal_column_profiles.gaps`, largest-first). `severity` is the engine's
+// closed vocabulary (minor|moderate|severe).
+const TemporalGap = z.object({
+	gap_start: z.string().nullable(),
+	gap_end: z.string().nullable(),
+	gap_length_days: z.number().nullable(),
+	missing_periods: z.number().nullable(),
+	severity: z.string().nullable(),
+});
+
 const Temporal = z.object({
 	// ISO strings — the engine persists these as timestamps; serialized at the edge.
 	min_timestamp: z.string().nullable(),
 	max_timestamp: z.string().nullable(),
+	span_days: z.number().nullable(),
 	granularity: z.string().nullable(),
+	granularity_confidence: z.number().nullable(),
 	completeness: z.number().nullable(),
+	// Raw coverage counts behind `completeness` (= actual / expected periods).
+	expected_periods: z.number().nullable(),
+	actual_periods: z.number().nullable(),
+	// Gap summary + a bounded sample of the largest gaps (capped at MAX_SAMPLE).
+	gap_count: z.number().nullable(),
+	largest_gap_days: z.number().nullable(),
+	gaps: z.array(TemporalGap),
 	is_stale: z.boolean().nullable(),
 });
 
@@ -296,8 +316,16 @@ export interface QualityRow {
 export interface TemporalRow {
 	minTimestamp: Date | string | null;
 	maxTimestamp: Date | string | null;
+	spanDays: number | null;
 	detectedGranularity: string | null;
+	granularityConfidence: number | null;
 	completenessRatio: number | null;
+	expectedPeriods: number | null;
+	actualPeriods: number | null;
+	gapCount: number | null;
+	largestGapDays: number | null;
+	// JSON column — an unknown blob narrowed in projectTemporal.
+	gaps: unknown;
 	isStale: boolean | null;
 }
 
@@ -461,11 +489,34 @@ function projectTemporal(
 	row: TemporalRow | null,
 ): z.infer<typeof Temporal> | null {
 	if (!row) return null;
+	// `gaps` is a JSON column (unknown at the boundary). Narrow each entry
+	// explicitly and cap at MAX_SAMPLE — the engine persists them largest-first,
+	// so the sample is the worst gaps, and the surface stays bounded.
+	const gapsRaw = Array.isArray(row.gaps) ? (row.gaps as unknown[]) : [];
+	const gaps = gapsRaw.slice(0, MAX_SAMPLE).map((g) => {
+		const o = (g ?? {}) as Record<string, unknown>;
+		return {
+			gap_start: typeof o.gap_start === "string" ? o.gap_start : null,
+			gap_end: typeof o.gap_end === "string" ? o.gap_end : null,
+			gap_length_days:
+				typeof o.gap_length_days === "number" ? o.gap_length_days : null,
+			missing_periods:
+				typeof o.missing_periods === "number" ? o.missing_periods : null,
+			severity: typeof o.severity === "string" ? o.severity : null,
+		};
+	});
 	return {
 		min_timestamp: toIso(row.minTimestamp),
 		max_timestamp: toIso(row.maxTimestamp),
+		span_days: row.spanDays ?? null,
 		granularity: row.detectedGranularity ?? null,
+		granularity_confidence: row.granularityConfidence ?? null,
 		completeness: row.completenessRatio ?? null,
+		expected_periods: row.expectedPeriods ?? null,
+		actual_periods: row.actualPeriods ?? null,
+		gap_count: row.gapCount ?? null,
+		largest_gap_days: row.largestGapDays ?? null,
+		gaps,
 		is_stale: row.isStale ?? null,
 	};
 }
@@ -689,8 +740,16 @@ async function loadTemporal(columnId: string): Promise<TemporalRow | null> {
 		.select({
 			minTimestamp: currentTemporalColumnProfiles.minTimestamp,
 			maxTimestamp: currentTemporalColumnProfiles.maxTimestamp,
+			spanDays: currentTemporalColumnProfiles.spanDays,
 			detectedGranularity: currentTemporalColumnProfiles.detectedGranularity,
+			granularityConfidence:
+				currentTemporalColumnProfiles.granularityConfidence,
 			completenessRatio: currentTemporalColumnProfiles.completenessRatio,
+			expectedPeriods: currentTemporalColumnProfiles.expectedPeriods,
+			actualPeriods: currentTemporalColumnProfiles.actualPeriods,
+			gapCount: currentTemporalColumnProfiles.gapCount,
+			largestGapDays: currentTemporalColumnProfiles.largestGapDays,
+			gaps: currentTemporalColumnProfiles.gaps,
 			isStale: currentTemporalColumnProfiles.isStale,
 		})
 		.from(currentTemporalColumnProfiles)
@@ -726,7 +785,8 @@ export const lookProfileTool = toolDefinition({
 		"Show ONE column's full descriptive profile — its semantic annotation, " +
 		"statistical profile (counts, null/cardinality ratios, numeric/string stats, " +
 		"histogram, top values), type candidates + the type decision, statistical " +
-		"quality (outliers + Benford), the temporal profile (if it's a time column), " +
+		"quality (outliers + Benford), the temporal profile — window/span, cadence + " +
+		"confidence, completeness and the largest gaps (if it's a time column), " +
 		"and any derived-column formula targeting it. Read-only; reflects the latest " +
 		"promoted analysis. Identify the column by its column_id (from look_table). " +
 		"A block is null/empty when that stage hasn't run for the column. Use " +

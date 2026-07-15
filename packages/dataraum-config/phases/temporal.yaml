@@ -1,7 +1,9 @@
 # Temporal Analysis Configuration
 #
-# Thresholds and parameters for temporal pattern analysis.
-# These are algorithm tuning parameters — calibrate with test data.
+# Thresholds for the temporal coverage substrate — granularity, gaps, staleness.
+# These are algorithm tuning parameters — calibrate with test data. The fiscal-
+# calendar and update-frequency (regularity) analyzers were deleted in DAT-783
+# after the finance-corpus validation found them WRONG, so their config is gone too.
 
 version: "1.0.0"
 
@@ -33,37 +35,14 @@ gaps:
   severity_severe_multiplier: 10.0
   severity_moderate_multiplier: 5.0
 
-# Update frequency and staleness
+# Staleness: is the freshest observation old relative to the detected cadence?
 staleness:
-  # Multiplier on median interval to define "stale"
+  # Multiplier on the median gap to define "stale"
   stale_multiplier: 2.0
 
-# Fiscal calendar detection
-fiscal_calendar:
-  # Minimum data points (~3 months)
-  min_data_points: 90
-  # Fiscal year end: month count must exceed mean * multiplier
-  activity_spike_multiplier: 1.5
-  # Period-end effects: actual ratio must exceed expected * multiplier
-  period_end_spike_multiplier: 1.5
-  # Expected ratio of end-of-month days (days 28-31 / 30 days)
-  expected_end_of_month_ratio: 0.13
-
-# Quality issue thresholds
-quality_issues:
-  # Completeness thresholds
-  low_completeness: 0.8        # Below this → issue
-  very_low_completeness: 0.5   # Below this → severity "high"
-  # Gap thresholds (days)
-  large_gap_days: 30           # Above this → issue
-  severe_gap_days: 90          # Above this → severity "high"
-
-# Sampling and parallelism
+# Parallelism
 processing:
   # Maximum parallel workers for column profiling. CPU-bound — under
   # PYTHON_GIL=0 (3.14t) threads parallelize; under GIL they serialize
   # but the cap is harmless.
   max_workers: 8
-  # Time series sampling (Bernoulli)
-  sample_percent: 20.0
-  min_sample_rows: 1000

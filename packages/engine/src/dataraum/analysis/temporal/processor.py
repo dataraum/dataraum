@@ -4,10 +4,16 @@ Main entry point for temporal profiling, following the same pattern as statistic
 - profile_temporal(table_id, ...): Profile all temporal columns in a table
 
 This analyzes temporal characteristics like:
-- Granularity (daily, hourly, etc.)
-- Completeness and gaps
-- Update frequency and staleness
-- Fiscal calendar alignment
+- Granularity (daily, hourly, etc.) + confidence
+- Span, completeness, and gaps (the served coverage substrate)
+- Staleness
+
+Every computed fact has a typed home on ``temporal_column_profiles`` (flat columns
+plus the ``gaps`` JSON interior) — there is no write-only ``profile_data`` blob
+(DAT-783). All facts derive from the single DISTINCT-timestamp pass in
+``analyze_basic_temporal`` (robust to duplicate-per-day fact rows); the duplicate-
+corrupted row-interval path and the WRONG fiscal/update-frequency analyzers were
+deleted in DAT-783.
 
 Uses parallel processing for large tables to speed up profiling.
 """
@@ -17,11 +23,10 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import duckdb
-import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -30,17 +35,10 @@ from dataraum.analysis.temporal.db_models import (
 )
 from dataraum.analysis.temporal.detection import (
     analyze_basic_temporal,
-    infer_granularity,
 )
 from dataraum.analysis.temporal.models import (
     TemporalAnalysisResult,
     TemporalProfileResult,
-    TemporalQualityIssue,
-    TemporalTableSummary,
-)
-from dataraum.analysis.temporal.patterns import (
-    analyze_update_frequency,
-    detect_fiscal_calendar,
 )
 from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
@@ -49,6 +47,11 @@ from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
+
+# Persisted gaps are bounded so a pathological high-cardinality timestamp column
+# can't write an unbounded JSON blob. ``gap_count`` keeps the TRUE count; the gaps
+# list keeps the N largest (the detection query orders gaps by size, descending).
+_MAX_PERSISTED_GAPS = 100
 
 
 def _profile_temporal_column_parallel(
@@ -69,60 +72,16 @@ def _profile_temporal_column_parallel(
     """
     with duckdb_conn.cursor() as cursor:
         try:
-            # Load time series
-            proc_cfg = config["processing"]
-            ts_result = _load_time_series(
-                cursor,
-                table_duckdb_path,
-                column_name,
-                sample_percent=proc_cfg["sample_percent"],
-                min_rows=proc_cfg["min_sample_rows"],
-            )
-            if not ts_result.success:
-                return None
-
-            time_series = ts_result.unwrap()
-
-            # Basic temporal info (the series is sorted ascending — loader ORDER BY)
-            min_timestamp = time_series[0]
-            max_timestamp = time_series[-1]
-            span_days = (max_timestamp - min_timestamp).total_seconds() / 86400
-
-            # Infer granularity from the median consecutive interval (seconds)
-            intervals = time_series.diff().drop_nulls().dt.total_seconds()
-            interval_seconds = float(cast(float, intervals.median())) if len(intervals) else 0.0
-
-            granularity, confidence = infer_granularity(interval_seconds, config=config)
-
-            metric_id = str(uuid4())
-
-            # Index-derived pattern analyses (the value-series analyzers were removed in
-            # DAT-524 — they ran on a constant series and produced foregone conclusions).
-            frequency_result = analyze_update_frequency(time_series, config=config)
-            update_frequency = frequency_result.value if frequency_result.success else None
-
-            fiscal_result = detect_fiscal_calendar(time_series, config=config)
-            fiscal_calendar = fiscal_result.value if fiscal_result.success else None
-
-            # Run basic temporal analysis for completeness
+            # Single DISTINCT-timestamp pass: min/max, span, granularity (+ confidence),
+            # completeness/gaps, and staleness. No sampling, no duplicate-corrupted
+            # row-interval path (DAT-783).
             basic_result = analyze_basic_temporal(
                 cursor, table_duckdb_path, column_name, config=config
             )
-            completeness = (
-                basic_result.value.get("completeness")
-                if basic_result.success and basic_result.value
-                else None
-            )
+            if not basic_result.success or not basic_result.value:
+                return None
+            b = basic_result.value
 
-            # Detect quality issues
-            issues = _detect_quality_issues(
-                completeness=completeness,
-                update_frequency=update_frequency,
-                profiled_at=profiled_at,
-                config=config,
-            )
-
-            # Build result
             column_ref = ColumnRef(
                 source_id=source_id,
                 table_name=table_name,
@@ -130,22 +89,19 @@ def _profile_temporal_column_parallel(
             )
 
             return TemporalAnalysisResult(
-                metric_id=metric_id,
+                metric_id=str(uuid4()),
                 column_id=column_id,
                 column_ref=column_ref,
                 column_name=column_name,
                 table_name=table_name,
                 computed_at=profiled_at,
-                min_timestamp=min_timestamp,
-                max_timestamp=max_timestamp,
-                span_days=span_days,
-                detected_granularity=granularity,
-                granularity_confidence=confidence,
-                completeness=completeness,
-                update_frequency=update_frequency,
-                fiscal_calendar=fiscal_calendar,
-                quality_issues=issues,
-                has_issues=len(issues) > 0,
+                min_timestamp=b["min_timestamp"],
+                max_timestamp=b["max_timestamp"],
+                span_days=b["span_days"],
+                detected_granularity=b["granularity"],
+                granularity_confidence=b["granularity_confidence"],
+                is_stale=b["is_stale"],
+                completeness=b["completeness"],
             )
         except Exception as e:
             logger.warning(
@@ -172,7 +128,6 @@ def profile_temporal(
     1. Gets all temporal columns for the table
     2. Analyzes each column for temporal patterns
     3. Stores per-column profiles
-    4. Computes and stores table-level summary
 
     Uses parallel processing for file-based DBs to speed up profiling.
 
@@ -222,7 +177,6 @@ def profile_temporal(
             return Result.ok(
                 TemporalProfileResult(
                     column_profiles=[],
-                    table_summary=None,
                     duration_seconds=0.0,
                 )
             )
@@ -254,34 +208,7 @@ def profile_temporal(
                 profile = future.result()
                 if profile:
                     profiles.append(profile)
-
-                    # Build the row for an idempotent upsert (sequential).
-                    # ``profile_id`` PK is supplied (the model has no default).
-                    rows.append(
-                        {
-                            "profile_id": profile.metric_id,
-                            "column_id": profile.column_id,
-                            "run_id": run_id,
-                            "profiled_at": profiled_at,
-                            "min_timestamp": profile.min_timestamp,
-                            "max_timestamp": profile.max_timestamp,
-                            "detected_granularity": profile.detected_granularity,
-                            "completeness_ratio": (
-                                profile.completeness.completeness_ratio
-                                if profile.completeness
-                                else None
-                            ),
-                            "is_stale": profile.update_frequency.is_stale
-                            if profile.update_frequency
-                            else False,
-                            "profile_data": profile.model_dump(mode="json"),
-                        }
-                    )
-
-        # Compute table-level summary
-        table_summary = None
-        if profiles:
-            table_summary = _compute_table_summary(table, profiles, profiled_at)
+                    rows.append(_profile_row(profile, run_id, profiled_at))
 
         # Upsert on ``(column_id, run_id)`` so a Temporal at-least-once retry
         # (same run_id) updates the row in place instead of duplicating it —
@@ -296,7 +223,6 @@ def profile_temporal(
         return Result.ok(
             TemporalProfileResult(
                 column_profiles=profiles,
-                table_summary=table_summary,
                 duration_seconds=duration,
             )
         )
@@ -305,183 +231,38 @@ def profile_temporal(
         return Result.fail(f"Temporal profiling failed: {e}")
 
 
-def _load_time_series(
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    table_name: str,
-    column_name: str,
-    sample_percent: float = 20.0,
-    min_rows: int = 1000,
-) -> Result[pl.Series]:
-    """Load a column's timestamps from DuckDB using Bernoulli sampling.
-
-    Uses DuckDB's Bernoulli sampling to get a random sample distributed across
-    the full time range, then orders by timestamp for temporal analysis.
-
-    Args:
-        duckdb_conn: DuckDB connection
-        table_name: DuckDB table name
-        column_name: Column name
-        sample_percent: Percentage of rows to sample (default 20%)
-        min_rows: Minimum rows to return (uses higher sample if needed)
-
-    Returns:
-        Result containing a polars Datetime Series, sorted ascending (DAT-580).
-
-    TODO: Revisit sampling strategy for temporal analysis:
-        - Bernoulli sampling creates artificial gaps that affect:
-          - Granularity detection (sees sampled intervals, not true intervals)
-          - Completeness analysis (artificial gaps mask real gaps)
-        - Consider stratified sampling (equal samples from time segments)
-        - Consider adaptive sampling based on detected granularity
-        - For now, use generous 20% sample which balances coverage vs speed
-    """
-    try:
-        # First, get row count to determine if sampling is needed
-        count_query = f"""
-        SELECT COUNT(*) as cnt
-        FROM {table_name}
-        WHERE "{column_name}" IS NOT NULL
-        """
-        count_result = duckdb_conn.execute(count_query).fetchone()
-        total_rows = count_result[0] if count_result else 0
-
-        if total_rows == 0:
-            return Result.fail("No data found")
-
-        # Adjust sample percentage to ensure minimum rows
-        effective_percent = sample_percent
-        if total_rows * (sample_percent / 100) < min_rows:
-            effective_percent = min(100.0, (min_rows / total_rows) * 100)
-
-        # Use Bernoulli sampling for random distribution across time range
-        # Then ORDER BY to restore temporal sequence
-        # Note: In DuckDB, WHERE must come before USING SAMPLE
-        if effective_percent >= 100.0 or total_rows <= min_rows:
-            # No sampling needed for small tables
-            query = f"""
-            SELECT "{column_name}"::TIMESTAMP as ts
-            FROM {table_name}
-            WHERE "{column_name}" IS NOT NULL
-            ORDER BY "{column_name}"
-            """
-        else:
-            query = f"""
-            SELECT "{column_name}"::TIMESTAMP as ts
-            FROM {table_name}
-            WHERE "{column_name}" IS NOT NULL
-            USING SAMPLE {effective_percent:.1f} PERCENT (bernoulli)
-            ORDER BY "{column_name}"
-            """
-
-        df = duckdb_conn.execute(query).pl()
-
-        if df.is_empty():
-            return Result.fail("No data found after sampling")
-
-        # The query ORDER BYs the column, so the Series is already sorted ascending.
-        return Result.ok(df["ts"])
-
-    except Exception as e:
-        return Result.fail(f"Failed to load time series: {e}")
-
-
-def _detect_quality_issues(
-    completeness: object | None,
-    update_frequency: object | None,
+def _profile_row(
+    profile: TemporalAnalysisResult,
+    run_id: str,
     profiled_at: datetime,
-    config: dict[str, Any],
-) -> list[TemporalQualityIssue]:
-    """Detect quality issues from the index-derived analyses (completeness + freshness).
+) -> dict[str, Any]:
+    """Build the idempotent-upsert row for one column profile.
 
-    The change-point and distribution-stability issues were removed in DAT-524 (they were
-    derived from the degenerate constant-series analyzers).
+    Every promoted fact lands in its own typed column — the scalar coverage
+    metrics flat, the ``gaps`` list as a bounded JSON interior of strict
+    ``TemporalGapInfo`` submodels (DAT-783). ``profile_id`` PK is supplied
+    (the model has no default).
     """
-    qi = config["quality_issues"]
-    low_completeness = qi["low_completeness"]
-    very_low_completeness = qi["very_low_completeness"]
-    large_gap_days = qi["large_gap_days"]
-    severe_gap_days = qi["severe_gap_days"]
-
-    issues = []
-
-    if completeness and hasattr(completeness, "completeness_ratio"):
-        if completeness.completeness_ratio < low_completeness:
-            issues.append(
-                TemporalQualityIssue(
-                    issue_type="low_completeness",
-                    severity="high"
-                    if completeness.completeness_ratio < very_low_completeness
-                    else "medium",
-                    description=(
-                        f"Only {completeness.completeness_ratio:.1%} of expected "
-                        "data points present"
-                    ),
-                    evidence={"completeness_ratio": completeness.completeness_ratio},
-                    detected_at=profiled_at,
-                )
-            )
-
-        if hasattr(completeness, "largest_gap_days") and completeness.largest_gap_days:
-            if completeness.largest_gap_days > large_gap_days:
-                issues.append(
-                    TemporalQualityIssue(
-                        issue_type="large_gap",
-                        severity="high"
-                        if completeness.largest_gap_days > severe_gap_days
-                        else "medium",
-                        description=f"Large gap of {completeness.largest_gap_days:.0f} days detected",
-                        evidence={"gap_days": completeness.largest_gap_days},
-                        detected_at=profiled_at,
-                    )
-                )
-
-    if update_frequency and hasattr(update_frequency, "is_stale") and update_frequency.is_stale:
-        freshness_days = getattr(update_frequency, "data_freshness_days", None)
-        if freshness_days is not None:
-            issues.append(
-                TemporalQualityIssue(
-                    issue_type="stale_data",
-                    severity="medium",
-                    description=f"Data is {freshness_days:.0f} days old",
-                    evidence={"freshness_days": freshness_days},
-                    detected_at=profiled_at,
-                )
-            )
-
-    return issues
-
-
-def _compute_table_summary(
-    table: Table,
-    profiles: list[TemporalAnalysisResult],
-    profiled_at: datetime,
-) -> TemporalTableSummary:
-    """Compute table-level summary from column profiles."""
-    total_issues = sum(len(p.quality_issues) for p in profiles)
-    columns_with_fiscal_alignment = sum(
-        1 for p in profiles if p.fiscal_calendar and p.fiscal_calendar.fiscal_alignment_detected
-    )
-
-    stalest_column_days = 0
-    has_stale_columns = False
-    for p in profiles:
-        if p.update_frequency:
-            if p.update_frequency.is_stale:
-                has_stale_columns = True
-            freshness = p.update_frequency.data_freshness_days
-            if freshness is not None and freshness > stalest_column_days:
-                stalest_column_days = int(freshness)
-
-    return TemporalTableSummary(
-        table_id=table.table_id,
-        table_name=table.table_name,
-        temporal_column_count=len(profiles),
-        total_issues=total_issues,
-        columns_with_fiscal_alignment=columns_with_fiscal_alignment,
-        stalest_column_days=stalest_column_days if stalest_column_days > 0 else None,
-        has_stale_columns=has_stale_columns,
-        profiled_at=profiled_at,
-    )
+    comp = profile.completeness
+    gaps = comp.gaps[:_MAX_PERSISTED_GAPS] if comp else []
+    return {
+        "profile_id": profile.metric_id,
+        "column_id": profile.column_id,
+        "run_id": run_id,
+        "profiled_at": profiled_at,
+        "min_timestamp": profile.min_timestamp,
+        "max_timestamp": profile.max_timestamp,
+        "span_days": profile.span_days,
+        "detected_granularity": profile.detected_granularity,
+        "granularity_confidence": profile.granularity_confidence,
+        "is_stale": profile.is_stale,
+        "completeness_ratio": comp.completeness_ratio if comp else None,
+        "expected_periods": comp.expected_periods if comp else None,
+        "actual_periods": comp.actual_periods if comp else None,
+        "gap_count": comp.gap_count if comp else None,
+        "largest_gap_days": comp.largest_gap_days if comp else None,
+        "gaps": [g.model_dump(mode="json") for g in gaps],
+    }
 
 
 __all__ = [

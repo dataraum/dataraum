@@ -79,6 +79,10 @@ class ColumnContext:
     min_timestamp: str | None = None
     max_timestamp: str | None = None
     completeness_ratio: float | None = None
+    # Coverage window + worst discontinuity — promoted from the temporal profile
+    # (DAT-783) so the agent knows a time axis's span and whether it's gappy.
+    span_days: float | None = None
+    largest_gap_days: float | None = None
 
     # Derived column info from correlation analysis
     is_derived: bool = False
@@ -1049,6 +1053,8 @@ def build_execution_context(
                     if temp_profile and temp_profile.max_timestamp
                     else None,
                     completeness_ratio=temp_profile.completeness_ratio if temp_profile else None,
+                    span_days=temp_profile.span_days if temp_profile else None,
+                    largest_gap_days=temp_profile.largest_gap_days if temp_profile else None,
                     is_derived=is_derived,
                     derived_formula=derived_columns.get(col.column_id),
                     flags=flags,
@@ -1345,6 +1351,12 @@ def format_metadata_document(
                     time_parts.append(time_col.detected_granularity)
                 if time_col.min_timestamp and time_col.max_timestamp:
                     time_parts.append(f"{time_col.min_timestamp} to {time_col.max_timestamp}")
+                if time_col.span_days is not None:
+                    time_parts.append(f"{time_col.span_days:.0f}d span")
+                # Flag a discontinuous axis: a large worst-gap warns the agent the
+                # series isn't a clean continuum for period-over-period work.
+                if time_col.largest_gap_days:
+                    time_parts.append(f"largest gap {time_col.largest_gap_days:.0f}d")
                 if time_parts:
                     time_info += f" — {', '.join(time_parts)}"
             if tc.get("note"):

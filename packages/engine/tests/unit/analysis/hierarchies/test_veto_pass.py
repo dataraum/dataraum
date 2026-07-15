@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import polars as pl
 
-from dataraum.analysis.hierarchies.judge import VetoVerdict
+from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge, VetoVerdict
 from dataraum.analysis.hierarchies.processor import (
     _column_evidence,
     _judge_veto_pass,
@@ -152,3 +152,80 @@ def test_column_evidence_is_deterministic() -> None:
     b = _column_evidence(_frame(), "entry_key", n_rows=200, d_sql=_D_SQL)
     assert a == b
     assert a.n_distinct == 200
+
+
+def _account_frame() -> pl.DataFrame:
+    # The clean-flat false-veto shape: an entity's own drill chain
+    # (type -> parent -> id) plus the id's 1:1 label alias (account_name).
+    types = ["Asset", "Liability", "Revenue", "Expense"]
+    return pl.DataFrame(
+        {
+            "account_id": [f"{1000 + i}" for i in range(60) for _ in range(5)],
+            "account_name": [f"Account {1000 + i} Name" for i in range(60) for _ in range(5)],
+            "parent_account_id": [f"{100 + i % 13}" for i in range(60) for _ in range(5)],
+            "account_type": [types[i % 4] for i in range(60) for _ in range(5)],
+        }
+    )
+
+
+_ACCT_D_SQL = {"account_id": 60, "account_name": 60, "parent_account_id": 13, "account_type": 4}
+
+
+def _chain_row() -> dict[str, object]:
+    return {
+        "kind": "drilldown",
+        "signature": "drilldown:t1:account_id|account_type|parent_account_id",
+        "detection_source": "g3",
+        "role_verdict": None,
+        "needs_confirmation": False,
+        "members": [
+            {"column_name": "account_type", "column_id": "c1", "distinct_count": 4, "level": 0},
+            {
+                "column_name": "parent_account_id",
+                "column_id": "c2",
+                "distinct_count": 13,
+                "level": 1,
+            },
+            {"column_name": "account_id", "column_id": "c3", "distinct_count": 60, "level": 2},
+        ],
+    }
+
+
+def _label_alias_row() -> dict[str, object]:
+    return {
+        "kind": "alias",
+        "signature": "alias:t1:account_id|account_name",
+        "detection_source": "g3",
+        "role_verdict": None,
+        "needs_confirmation": False,
+        "members": [
+            {"column_name": "account_id", "column_id": "c3", "distinct_count": 60, "level": 0},
+            {"column_name": "account_name", "column_id": "c4", "distinct_count": 60, "level": 1},
+        ],
+    }
+
+
+def test_entity_anchored_chain_is_never_routed() -> None:
+    """The clean-flat false-veto pin: the account chain skips the judge entirely."""
+    rows = [_chain_row(), _label_alias_row()]
+    judge = MagicMock(spec=DimensionIdentityJudge)
+    stats = _judge_veto_pass(
+        rows, view_name="v", frame=_account_frame(), n_rows=300, d_sql=_ACCT_D_SQL, judge=judge
+    )
+    assert stats.routed == 0
+    judge.veto.assert_not_called()
+    assert rows[0]["needs_confirmation"] is False
+
+
+def test_same_chain_without_label_alias_still_routes() -> None:
+    """No anchor, no protection: a bare id-over-enum chain reaches the judge."""
+    rows = [_chain_row()]
+    stats = _judge_veto_pass(
+        rows,
+        view_name="v",
+        frame=_account_frame(),
+        n_rows=300,
+        d_sql=_ACCT_D_SQL,
+        judge=_judge_returning("uphold"),
+    )
+    assert stats.routed == 1

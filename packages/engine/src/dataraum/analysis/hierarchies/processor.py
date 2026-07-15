@@ -591,9 +591,44 @@ def _column_evidence(
     )
 
 
+def _entity_keys(
+    view_rows: list[dict[str, object]],
+    evidence_of: dict[str, routing.ColumnEvidence],
+) -> set[str]:
+    """Members of stats-asserted alias groups whose partner is a human label.
+
+    The entity-key anchor (DAT-762 clean-flat lesson): ``account_id`` in an
+    alias with ``account_name`` is a dimension's own key — a drill chain it
+    anchors is the entity's internal hierarchy, not a quasi-identifier
+    artifact. Only the stack's confident merges anchor (g3 alias, no role
+    verdict, not surfaced-undecided); the shape/scale half of the predicate is
+    :func:`routing.is_entity_label_pair`.
+    """
+    keys: set[str] = set()
+    for row in view_rows:
+        if (
+            row["kind"] != "alias"
+            or row["detection_source"] != "g3"
+            or row["role_verdict"] is not None
+            or row["needs_confirmation"]
+        ):
+            continue
+        cols = [str(m["column_name"]) for m in cast("list[dict[str, object]]", row["members"])]
+        for m in cols:
+            if m in evidence_of and any(
+                p != m
+                and p in evidence_of
+                and routing.is_entity_label_pair(evidence_of[m], evidence_of[p])
+                for p in cols
+            ):
+                keys.add(m)
+    return keys
+
+
 def _route_row(
     row: dict[str, object],
     evidence_of: dict[str, routing.ColumnEvidence],
+    entity_keys: frozenset[str] | set[str] = frozenset(),
 ) -> str | None:
     """The veto class for one assembled structure row, or None (not judged).
 
@@ -601,7 +636,9 @@ def _route_row(
     role-check outcomes (``role_verdict`` set — the conform/role machinery's
     territory, DAT-494) never reach the veto. Drilldown chains route per hop
     (members are stored coarse→fine, so the determinant is the finer member);
-    alias groups route per unordered pair.
+    alias groups route per unordered pair. A chain containing an entity key
+    (``entity_keys``, from :func:`_entity_keys`) routes with
+    ``entity_anchored=True`` — its id-shaped hops are the entity's own levels.
     """
     if row["detection_source"] != "g3" or row["role_verdict"] is not None:
         return None
@@ -610,8 +647,11 @@ def _route_row(
     if any(c not in evidence_of for c in cols):
         return None
     if row["kind"] == "drilldown":
+        anchored = any(c in entity_keys for c in cols)
         for coarse, fine in zip(cols, cols[1:], strict=False):
-            klass = routing.route_edge(evidence_of[fine], evidence_of[coarse])
+            klass = routing.route_edge(
+                evidence_of[fine], evidence_of[coarse], entity_anchored=anchored
+            )
             if klass is not None:
                 return klass
         return None
@@ -690,10 +730,11 @@ def _judge_veto_pass(
     if not view_rows:
         return stats_out
     evidence_of = {c: _column_evidence(frame, c, n_rows=n_rows, d_sql=d_sql) for c in frame.columns}
+    entity_keys = _entity_keys(view_rows, evidence_of)
     routed: list[dict[str, object]] = []
     by_ref: dict[str, dict[str, object]] = {}
     for row in view_rows:
-        klass = _route_row(row, evidence_of)
+        klass = _route_row(row, evidence_of, entity_keys)
         if klass is None:
             continue
         ref = str(row["signature"])

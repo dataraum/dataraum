@@ -98,6 +98,26 @@ def classify_shape(ev: ColumnEvidence) -> str:
     return "code"
 
 
+def is_entity_label_pair(key: ColumnEvidence, partner: ColumnEvidence) -> bool:
+    """Value-evidence half of the entity-key anchor (DAT-762 clean-flat lesson).
+
+    A column whose stats-asserted 1:1 alias partner is a human label
+    (name/label shape) at real cardinality is an ENTITY KEY — a dimension's own
+    key with its display name (account_id ⇄ account_name), not a transaction
+    identifier. The 1:1-ness itself is the alias row's claim (the producer
+    checks membership); this predicate checks only shapes and scale. The
+    tiny-enum floor on BOTH sides fences degenerate domains — constants are
+    trivially "bijective" with anything (the probe's currency/status noise).
+    A prose partner never anchors: description ⇄ entry_id is bijective too,
+    and entry_id must stay routable (the probe's attack case).
+    """
+    return (
+        classify_shape(partner) in ("name", "label")
+        and key.n_distinct > TINY_ENUM_MAX
+        and partner.n_distinct > TINY_ENUM_MAX
+    )
+
+
 def route_alias(a: ColumnEvidence, b: ColumnEvidence) -> str | None:
     """Veto class for an asserted ALIAS (1:1 merge) pair, or None (not judged).
 
@@ -113,13 +133,24 @@ def route_alias(a: ColumnEvidence, b: ColumnEvidence) -> str | None:
     return None
 
 
-def route_edge(det: ColumnEvidence, dep: ColumnEvidence) -> str | None:
+def route_edge(
+    det: ColumnEvidence, dep: ColumnEvidence, *, entity_anchored: bool = False
+) -> str | None:
     """Veto class for an asserted DRILLDOWN edge det -> dep, or None.
 
     None means the statistical verdict stands unjudged — the default. The
     protected classes (dirty-true hierarchies, weak-true org edges: id/code
     determinants with genuine fan-in onto level-scale dependents) satisfy no
     predicate here by construction.
+
+    ``entity_anchored``: the structure carrying this edge contains an entity
+    key (a member with a 1:1 name/label alias partner —
+    :func:`is_entity_label_pair`; the producer computes membership). Such a
+    structure is the entity's own internal hierarchy (account_type →
+    parent_account_id → account_id), so its ID-SHAPED determinants skip the
+    tiny-enum quasi route — the clean-flat false-veto class the probe
+    separated 2/2 vs 9/9. Prose/temporal determinants route regardless: a
+    free-text edge inside an anchored chain is still junk.
     """
     if det.n_rows and det.n_distinct >= NEAR_KEY_FRAC * det.n_rows:
         return None  # near-key determinant: the stack's guard territory, not the judge's
@@ -128,7 +159,7 @@ def route_edge(det: ColumnEvidence, dep: ColumnEvidence) -> str | None:
         return FREE_TEXT_DETERMINANT
     if s_det == "temporal":
         return QUASI_IDENTIFIER
-    if s_det == "idlike" and dep.n_distinct <= TINY_ENUM_MAX:
+    if s_det == "idlike" and dep.n_distinct <= TINY_ENUM_MAX and not entity_anchored:
         return QUASI_IDENTIFIER
     if s_det == "name" and det.n_distinct > ENTITY_SCALE_MIN:
         return QUASI_IDENTIFIER

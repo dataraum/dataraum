@@ -14,6 +14,7 @@ from dataraum.analysis.hierarchies.routing import (
     QUASI_IDENTIFIER,
     ColumnEvidence,
     classify_shape,
+    is_entity_label_pair,
     route_alias,
     route_edge,
 )
@@ -122,3 +123,33 @@ class TestRouteAlias:
         a = _ev(["2025-01-01"], n_distinct=1_091, dtype="DATE")
         b = _ev(["2025-01-01"], n_distinct=1_091, dtype="DATE")
         assert route_alias(a, b) is None
+
+
+class TestEntityAnchor:
+    """The entity-key anchor (clean-flat false-veto fix, probed 2/2 vs 9/9)."""
+
+    def test_anchored_idlike_over_tiny_enum_is_protected(self):
+        # account chain: id-shaped determinant over a 4-value type — QUASI
+        # unanchored, unrouted when the chain carries an entity key.
+        det = _ev(["1000", "1010", "2000"], n_distinct=60)
+        dep = _ev(["Asset", "Liability"], n_distinct=4)
+        assert route_edge(det, dep) == QUASI_IDENTIFIER
+        assert route_edge(det, dep, entity_anchored=True) is None
+
+    def test_anchor_never_shields_prose_or_temporal(self):
+        prose = _ev(["a long posting description for the northern region office"], n_distinct=500)
+        date = _ev(["2025-03-01"], n_distinct=400, dtype="DATE")
+        dep = _ev(["A", "B"], n_distinct=4)
+        assert route_edge(prose, dep, entity_anchored=True) == FREE_TEXT_DETERMINANT
+        assert route_edge(date, dep, entity_anchored=True) == QUASI_IDENTIFIER
+
+    def test_entity_label_pair_shapes_and_floor(self):
+        key = _ev(["1000", "1010"], n_distinct=60)
+        label = _ev(["Accounts Receivable", "Cash", "Sales Revenue"], n_distinct=60)
+        prose = _ev(["monthly accrual posting for the northern region office"], n_distinct=60)
+        tiny = _ev(["EUR"], n_distinct=1)
+        assert is_entity_label_pair(key, label)
+        # prose partner never anchors (description <-> entry_id is bijective too)
+        assert not is_entity_label_pair(key, prose)
+        # degenerate domains are trivially "bijective" — the floor fences them
+        assert not is_entity_label_pair(tiny, tiny)

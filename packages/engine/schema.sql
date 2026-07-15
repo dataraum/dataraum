@@ -401,7 +401,6 @@ CREATE TABLE column_concepts (
 	column_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	meaning TEXT, 
-	ontology_hints JSON, 
 	temporal_behavior VARCHAR, 
 	temporal_behavior_contested BOOLEAN, 
 	unit_source_column VARCHAR, 

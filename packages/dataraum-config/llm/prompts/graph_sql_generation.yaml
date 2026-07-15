@@ -44,8 +44,8 @@ system_prompt: |
   need. Two grounding surfaces:
 
   - **Column meanings** — each column's authored business meaning with its measured facts
-    (aggregation-lineage reconciliation, unit source, temporal behavior) and the ontology
-    concepts it relates to. WIDE data (one column per concept): ground the standard_field on
+    (aggregation-lineage reconciliation, unit source, temporal behavior). WIDE data (one
+    column per concept): ground the standard_field on
     the column whose MEANING carries it — the reconciliation facts are the strongest evidence
     (a column proven to reconcile as a specific movement IS that movement's field). Treat any single
     signal as a CANDIDATE, not gospel — if a column's meaning contradicts the Value sets,

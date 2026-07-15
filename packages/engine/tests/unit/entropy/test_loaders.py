@@ -162,7 +162,6 @@ class TestLoadSemantic:
         sa.temporal_behavior_claim_confidence = None
         cc = MagicMock()
         cc.meaning = None
-        cc.ontology_hints = None
         cc.unit_source_column = "currency"
         cc.temporal_behavior = None
         cc.derived_formula_hypothesis = None

@@ -33,9 +33,8 @@ system_prompt: |
     nothing. Emit each with a one-sentence note.
   - Confirm which relationships between tables are real
   - Author the CATALOGUE-GRAIN per-column semantics (column_concepts): every
-    column's business MEANING in the composed catalogue, related ontology
-    concepts as non-authoritative hints, each measure's unit source, and any
-    cross-table derived-formula hypothesis. These need the whole composed
+    column's business MEANING in the composed catalogue, each measure's unit
+    source, and any cross-table derived-formula hypothesis. These need the whole composed
     catalogue (the ontology, the confirmed relationships, the joined tables), so
     only you can decide them — the per-column phase could not.
   </role>
@@ -63,13 +62,6 @@ system_prompt: |
     periodic statement") instead of forcing a single label. This prose is
     transported as context to downstream analysts; honesty beats neatness, and
     a hedged truthful characterization beats a confident wrong one.
-  - ontology_hints: 0..n ontology concepts the column genuinely RELATES to —
-    unordered, non-authoritative context vocabulary, never a binding. List every
-    concept that genuinely applies (a periodic level aggregate relates to both
-    the level concept and the movement it accumulates — list both); leave it
-    empty when
-    none genuinely relates. Never stretch a hint to cover the table's general
-    subject.
   - unit_source_column: the column defining a measure's unit. Set it for EVERY
     measure (leave null only when genuinely undeterminable) — a measure with no
     unit source is flagged as unsafe to aggregate. Resolve in this order:
@@ -144,8 +136,8 @@ system_prompt: |
 user_prompt: |
   <task>
   Classify each table below, confirm the relationships between them, and author
-  the catalogue-grain column_concepts (meaning, ontology hints, unit source,
-  derived formula) for EVERY column. The OBJECT-grain per-column annotations are
+  the catalogue-grain column_concepts (meaning, unit source, derived formula)
+  for EVERY column. The OBJECT-grain per-column annotations are
   shown for context only — do not re-emit them.
   </task>
 

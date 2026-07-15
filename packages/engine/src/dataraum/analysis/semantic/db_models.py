@@ -329,12 +329,6 @@ class ColumnConcept(Base):
             Replaces the retired single-slot ``business_concept`` binding — the
             precise-word mapping was ill-posed for multi-facet columns and no
             consumer branched on it.
-        ontology_hints: 0..n related vertical-ontology concepts, unordered and
-            NON-AUTHORITATIVE (DAT-769 contract: no consumer may branch on them,
-            no eval may grade them; multiplicity is expected — a periodic level
-            aggregate honestly relates to both the level concept and the
-            movement it accumulates). They keep the active vertical's metric
-            ``standard_field`` vocabulary discoverable in the grounding prose.
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural
@@ -362,7 +356,6 @@ class ColumnConcept(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     meaning: Mapped[str | None] = mapped_column(Text)
-    ontology_hints: Mapped[list[str] | None] = mapped_column(JSON)
     temporal_behavior: Mapped[str | None] = mapped_column(String)
     temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
     unit_source_column: Mapped[str | None] = mapped_column(String)

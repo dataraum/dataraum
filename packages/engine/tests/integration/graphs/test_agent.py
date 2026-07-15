@@ -111,7 +111,6 @@ def _make_execution_context(
                 column_name="amount",
                 table_name="test_data",
                 meaning="Transaction amount for the test fixture",
-                ontology_hints=["test_field"],
             )
         ],
     )

@@ -48,7 +48,6 @@ class ColumnContext:
 
     # Business concept mapping (from ontology, for metric calculations)
     meaning: str | None = None  # catalogue-grain business characterization (DAT-769)
-    ontology_hints: list[str] = field(default_factory=list)  # related concepts, non-authoritative
     temporal_behavior: str | None = None  # 'additive' or 'point_in_time'
 
     # Statistical metrics
@@ -387,7 +386,7 @@ def build_execution_context(
             reads (the in-run metrics phase passes its current run). Omitted ⇒ the
             promoted operating_model catalog head.
         catalogue_run_id: The begin_session catalogue head run (DAT-637) — scopes
-            the catalogue-grain ``ColumnConcept`` reads (meaning, ontology hints,
+            the catalogue-grain ``ColumnConcept`` reads (meaning,
             temporal_behavior, unit source). The metrics phase passes
             ``base_runs.relationship_run_id``. None ⇒ no concepts (object-grain
             column metadata still loads).
@@ -1015,7 +1014,6 @@ def build_execution_context(
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
                     entity_type=sem_ann.entity_type if sem_ann else None,
                     meaning=concept.meaning if concept else None,
-                    ontology_hints=list(concept.ontology_hints or []) if concept else [],
                     # The RESOLVED stock/flow verdict (entropy/resolve.py re-bases
                     # the ColumnConcept row at session_detect). Served as settled
                     # fact — temporal_behavior_contested is deliberately NOT
@@ -1676,8 +1674,6 @@ def _build_column_description(col: ColumnContext) -> str:
     tags: list[str] = []
     if col.meaning and col.business_name:
         tags.append(f"meaning: {col.meaning}")
-    if col.ontology_hints:
-        tags.append(f"relates to: {', '.join(col.ontology_hints)}")
     if col.temporal_behavior:
         tags.append(col.temporal_behavior)
     if tags:

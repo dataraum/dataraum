@@ -151,7 +151,6 @@ class TestPersistColumnConcepts:
                 table_name="orders",
                 column_name="total",
                 meaning="Order total including tax",
-                ontology_hints=["revenue"],
                 unit_source_column="currency_code",
                 derived_formula_hypothesis="subtotal + tax",
                 derived_formula_confidence=0.85,
@@ -180,7 +179,6 @@ class TestPersistColumnConcepts:
         cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
         total = rows[cols["total"]]
         assert total.meaning == "Order total including tax"
-        assert total.ontology_hints == ["revenue"]
         assert total.unit_source_column == "currency_code"
         assert total.derived_formula_hypothesis == "subtotal + tax"
         assert total.derived_formula_confidence == 0.85

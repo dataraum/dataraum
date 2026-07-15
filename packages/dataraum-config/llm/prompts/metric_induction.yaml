@@ -46,14 +46,13 @@ system_prompt: |
   <standard_fields>
   The standard_field in extract steps refers to business concepts from the
   vertical ontology. The graph agent resolves these to actual columns
-  in-context from the COLUMN MEANINGS feed (each column's authored meaning,
-  its measured facts, and the ontology concepts it relates to) — use concept
-  names from the ontology vocabulary the meanings relate to.
+  in-context from the COLUMN MEANINGS feed (each column's authored meaning
+  and its measured facts) — use concept names from the ontology vocabulary.
   </standard_fields>
 
   <guidelines>
   - Propose metrics that are actually computable from the available data
-  - Only use standard_fields the column meanings genuinely relate to
+  - Only use standard_fields genuinely carried by the columns per their meanings
   - Each metric should compute ONE business insight (not a dashboard)
   - Use meaningful graph_ids (e.g. "gross_margin", not "metric_1")
   - Include interpretation ranges when the metric has well-known benchmarks

@@ -286,16 +286,6 @@ class ColumnConceptOutput(BaseModel):
             "context to downstream analysts, not parsed."
         ),
     )
-    ontology_hints: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Related ontology concepts, 0..n, unordered. NON-AUTHORITATIVE hints — "
-            "context vocabulary, never a binding. List every concept the column "
-            "genuinely relates to (a periodic level aggregate relates to both the "
-            "level concept and the movement it accumulates — list both). Leave empty when no "
-            "listed concept genuinely relates; never stretch."
-        ),
-    )
     unit_source_column: str | None = Field(
         default=None,
         description=(
@@ -348,7 +338,7 @@ class TableSynthesisOutput(BaseModel):
 
     column_concepts: list[ColumnConceptOutput] = Field(
         description=(
-            "Catalogue-grain per-column semantics (meaning, ontology hints, unit "
+            "Catalogue-grain per-column semantics (meaning, unit "
             "source, derived-formula hypothesis) — REQUIRED, always emit this field, "
             "with an entry for EVERY column in the schema. Every column has a meaning "
             "(a noise or unidentifiable column's honest meaning is saying exactly "

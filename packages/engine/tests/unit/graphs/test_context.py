@@ -328,7 +328,6 @@ class TestFormatMetadataDocument:
             business_name="Credit Balance",
             business_description="Credit-side ledger balance",
             meaning="Per-account, per-period total of credit-side movements",
-            ontology_hints=["account_balance", "credit"],
             temporal_behavior="additive",
         )
         table = TableContext(table_id="tbl-1", table_name="trial_balance", columns=[col])
@@ -338,7 +337,6 @@ class TestFormatMetadataDocument:
         assert "Credit Balance" in result  # business_name (label)
         assert "Credit-side ledger balance" in result  # business_description
         assert "credit-side movements" in result  # meaning — was dropped when name set
-        assert "account_balance" in result  # ontology hints render as relates-to
         assert "additive" in result  # temporal_behavior — was dropped when name set
 
     def test_entropy_scores_per_column(self) -> None:

@@ -369,7 +369,6 @@ def load_semantic(
         ).scalar_one_or_none()
     if cc is not None:
         semantic_dict["meaning"] = cc.meaning
-        semantic_dict["ontology_hints"] = list(cc.ontology_hints or [])
         if cc.unit_source_column:
             semantic_dict["unit_source_column"] = cc.unit_source_column
         if cc.temporal_behavior:

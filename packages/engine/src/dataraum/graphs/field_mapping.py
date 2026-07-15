@@ -4,19 +4,21 @@ The grounding context every metric/cycle prompt transports: each column's
 LLM-authored business MEANING (free prose, ambiguity expressible) plus the
 deterministic measurement facts from their own homes — the aggregation-lineage
 reconciliation (the strongest semantic fact we own about a measure, DAT-759),
-the unit source, temporal behavior, and the object-grain role garnish.
+the unit source, temporal behavior, and the object-grain role garnish. The
+vertical ontology grounds the system as SERVED CONTEXT (the semantic agent
+authors meanings with the full ontology in-prompt; the SQL/metric agent gets
+the concept vocabulary separately) — never as tokens attached to columns.
 
 This replaced the ``business_concept → column`` mapping table (DAT-769): the
 single categorical binding was ill-posed for multi-facet columns and no
 consumer ever branched on it — every reader rendered it into prompt prose. The
 feed now renders honest meaning instead of a forced label; the reading agent
-resolves ontology ``standard_field`` references in-context from the meanings
-and their non-authoritative ontology hints.
+resolves ontology ``standard_field`` references in-context from the meanings.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -37,7 +39,6 @@ class ColumnMeaning:
     column_name: str
     table_name: str
     meaning: str
-    ontology_hints: list[str] = field(default_factory=list)
     unit_source_column: str | None = None
     temporal_behavior: str | None = None
     semantic_role: str | None = None
@@ -124,7 +125,6 @@ def load_column_meanings(
                 column_name=column.column_name,
                 table_name=f"{table.layer}_{table.table_name}",
                 meaning=concept_row.meaning,
-                ontology_hints=list(concept_row.ontology_hints or []),
                 unit_source_column=concept_row.unit_source_column,
                 temporal_behavior=concept_row.temporal_behavior,
                 semantic_role=annotation.semantic_role if annotation else None,
@@ -150,8 +150,7 @@ def format_meanings_for_prompt(meanings: list[ColumnMeaning]) -> str:
 
     lines = ["## COLUMN MEANINGS", ""]
     lines.append("Each column's business meaning, characterized in the context of the whole")
-    lines.append("catalogue, with measured facts where they exist. 'relates to' lists ontology")
-    lines.append("concepts the column is related to — context vocabulary, not assignments.")
+    lines.append("catalogue, with measured facts where they exist.")
     lines.append("")
 
     current_table = None
@@ -178,8 +177,7 @@ def format_meanings_for_prompt(meanings: list[ColumnMeaning]) -> str:
         if m.unit_source_column:
             facts.append(f"unit from {m.unit_source_column}")
         fact_str = f" [{'; '.join(facts)}]" if facts else ""
-        hint_str = f" (relates to: {', '.join(m.ontology_hints)})" if m.ontology_hints else ""
-        lines.append(f"- `{m.column_name}`{fact_str}: {m.meaning}{hint_str}")
+        lines.append(f"- `{m.column_name}`{fact_str}: {m.meaning}")
     lines.append("")
     lines.append(f"Total: {len(meanings)} columns with authored meanings.")
     return "\n".join(lines)

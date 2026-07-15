@@ -210,7 +210,7 @@ def persist_column_annotations(
 
     The per-column phase's authoritative output — single-table-knowable fields
     only (role, entity label, term, the stock/flow claim). Catalogue-grain
-    semantics (meaning, ontology hints, ontology temporal_behavior, unit source, derived
+    semantics (meaning, ontology temporal_behavior, unit source, derived
     formula) are NOT written here: the table agent authors them onto
     ``ColumnConcept`` under the catalogue head (DAT-637).
 
@@ -232,7 +232,7 @@ def persist_column_annotations(
             if not column_id:
                 continue
             # PK omitted so the model's Python-side default applies. OBJECT-grain
-            # only (DAT-637): meaning/ontology_hints, ontology temporal_behavior,
+            # only (DAT-637): meaning, ontology temporal_behavior,
             # unit_source_column, and the derived_formula hypothesis are
             # catalogue-grain — authored by the table agent onto ``ColumnConcept``,
             # never here. The stock/flow CLAIM stays (an independent single-column
@@ -317,7 +317,6 @@ def persist_column_concepts(
                 # Normalized like the formula hypothesis: an all-whitespace meaning
                 # is absence, so the gate below and the feed's IS NOT NULL read agree.
                 "meaning": (cc.meaning or "").strip() or None,
-                "ontology_hints": cc.ontology_hints or None,
                 "unit_source_column": cc.unit_source_column,
                 "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
                 "derived_formula_confidence": cc.derived_formula_confidence,

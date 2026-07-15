@@ -138,7 +138,6 @@ def build_cycle_detection_context(
             concept = concepts.get(c.column_id)
             if concept is not None:
                 col_info["meaning"] = concept.meaning
-                col_info["ontology_hints"] = list(concept.ontology_hints or [])
                 col_info["temporal_behavior"] = concept.temporal_behavior
             columns.append(col_info)
 
@@ -650,8 +649,6 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 parts.append(f"role={col['semantic_role']}")
             if col.get("meaning"):
                 parts.append(f"meaning={col['meaning']}")
-            if col.get("ontology_hints"):
-                parts.append(f"relates_to={', '.join(col['ontology_hints'])}")
             if col.get("entity_type"):
                 parts.append(f"entity={col['entity_type']}")
             lines.append(f"  - {', '.join(parts)}")

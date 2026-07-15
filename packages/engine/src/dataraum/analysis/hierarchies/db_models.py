@@ -21,17 +21,23 @@ from dataraum.storage import Base
 
 
 class DimensionHierarchy(Base):
-    """One drill-down chain or 1:1 alias group over a fact's enriched view, per run.
+    """One drill-down chain, alias group or role pair over a fact's enriched view, per run.
 
-    The deterministic g3 functional-dependency pass (DAT-537) writes one row per
-    discovered structure. Two kinds share the table via the ``kind`` discriminator:
+    The deterministic FD pass (DAT-537, stack v4 since DAT-761) writes one row
+    per discovered structure. Three kinds share the table via the ``kind``
+    discriminator:
 
     - ``kind='drilldown'``: an ordered drill-down hierarchy. ``members`` lists the
       levels **finest → coarsest** (each FD-determines the next, e.g. ``zip → city
       → state``); ``canonical_label`` renders the chain.
     - ``kind='alias'``: a 1:1 redundant-axis group (bidirectional ``g3 ≈ 0``).
       ``members`` lists the equivalent columns; ``canonical_label`` is the chosen
-      canonical axis name.
+      canonical axis name. A near-copy the role check could not decide surfaces
+      as an alias with ``needs_confirmation=True`` (never silently merged).
+    - ``kind='role'`` (DAT-761): a role-playing near-copy pair (bill-to ⇄ pay-to)
+      whose disagreement set is membership-systematic — the two columns are the
+      SAME domain in different roles: kept as separate axes, never merged, never
+      stacked as levels. ``score`` is the value-disagreement rate.
 
     Run-versioned like ``MeasureAggregationLineage`` (DAT-491): form-(a) writer —
     one row per ``(signature, run_id)``, UPSERTed, so a Temporal success-redelivery
@@ -61,7 +67,7 @@ class DimensionHierarchy(Base):
     # (cross-table levels surface for free on the denormalized view).
     table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
 
-    kind: Mapped[str] = mapped_column(String, nullable=False)  # 'drilldown' | 'alias'
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # 'drilldown' | 'alias' | 'role'
 
     # Ordered member columns. Each entry: {column_name, column_id, distinct_count}.
     # drilldown: finest → coarsest (the drill path). alias: the equivalent group,

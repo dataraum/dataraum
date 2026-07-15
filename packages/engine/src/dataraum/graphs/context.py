@@ -158,18 +158,20 @@ class SliceContext:
 
 @dataclass
 class HierarchyContext:
-    """A discovered drill-down hierarchy or 1:1 alias group (DAT-537).
+    """A discovered drill-down hierarchy, alias group or role pair (DAT-537/761).
 
-    The g3 functional-dependency pass surfaces these over a fact's enriched view:
-    a ``drilldown`` carries ordered levels finest → coarsest (``zip → city →
-    state``), an ``alias`` a redundant-axis group collapsed to one canonical label.
-    Exposed for the answer agent / GraphAgent to drill and de-duplicate axes; the
-    prompt CONSUMPTION lands in DAT-538 (this is the expose seam, not the use).
+    The FD pass surfaces these over a fact's enriched view: a ``drilldown``
+    carries ordered levels finest → coarsest (``zip → city → state``), an
+    ``alias`` a redundant-axis group collapsed to one canonical label, a
+    ``role`` (DAT-761) a role-playing near-copy pair (bill-to ⇄ pay-to) that
+    must stay two separate axes. Exposed for the answer agent / GraphAgent to
+    drill and de-duplicate axes; the prompt CONSUMPTION lands in DAT-538 (this
+    is the expose seam, not the use).
     """
 
-    kind: str  # 'drilldown' | 'alias'
+    kind: str  # 'drilldown' | 'alias' | 'role'
     table_name: str
-    members: list[str]  # ordered level names (drilldown) or the group (alias)
+    members: list[str]  # ordered levels (drilldown) or the group/pair (alias, role)
     canonical_label: str
     needs_confirmation: bool = False
 

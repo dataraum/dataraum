@@ -45,10 +45,14 @@ if TYPE_CHECKING:
 # Permutation budget: p_min = 1/(reps+1) ≈ 3.3e-4 — resolvable under BH even for
 # a single true hit in a family of ~100 candidates.
 PERM_REPS = 2999
-# Early-stop: once this many null exceedances are seen, no BH threshold at
-# q ≤ 0.05 could ever reject — stop permuting (conservative, exact).
+# Early-stop: once this many null exceedances are seen, stop permuting. The stop
+# is conservative ONLY while the minimum stoppable p — (1+count)/(1+block) —
+# exceeds every rejectable BH threshold: a stopped p can then never be rejected,
+# so P(p̃ ≤ α) ≤ α is preserved for all rejectable α. ``MAX_SOUND_Q`` is that
+# bound; callers must assert their q stays below it (the processor does).
 _EARLY_STOP_COUNT = 20
 _PERM_BLOCK = 100
+MAX_SOUND_Q = (1 + _EARLY_STOP_COUNT) / (1 + _PERM_BLOCK)  # ≈ 0.208
 
 
 def codes_of(series: pl.Series) -> np.ndarray:
@@ -56,7 +60,9 @@ def codes_of(series: pl.Series) -> np.ndarray:
 
     Null-as-category is the row-stat policy (DAT-757 null lane): a null-coded
     binary like ``{1, NULL}`` carries real structure that SQL ``COUNT(DISTINCT)``
-    is blind to. The sentinel is a non-colliding unicode NUL symbol.
+    is blind to. The sentinel is the unicode NUL *symbol* (U+2400) — a genuine
+    U+2400 in the data would collide, merging that value with NULL; accepted as
+    vanishingly rare rather than guarded.
     """
     import polars as pl  # noqa: PLC0415 — keep the module importable without polars typing
 
@@ -84,12 +90,8 @@ def _entropy_from_counts(counts: np.ndarray) -> float:
     return float(-(p * np.log(p)).sum())
 
 
-def fi(a: np.ndarray, b: np.ndarray) -> float:
-    """FI(a → b) = 1 − H(b|a)/H(b), in [0, 1]; 0 when H(b) = 0."""
-    _, b_counts = np.unique(b, return_counts=True)
-    h_b = _entropy_from_counts(b_counts)
-    if h_b == 0.0:
-        return 0.0
+def _h_conditional(a: np.ndarray, b: np.ndarray) -> float:
+    """H(b|a) over the (a, b) contingency."""
     counts, bounds = _grouped_sorted(a, b)
     n = len(a)
     group_tot = np.add.reduceat(counts, np.r_[0, bounds])
@@ -97,8 +99,16 @@ def fi(a: np.ndarray, b: np.ndarray) -> float:
         rep = np.repeat(group_tot, np.diff(np.r_[0, bounds, len(counts)]))
         p = counts / rep
         plogp = p * np.log(p)
-    h_b_given_a = float(-(np.add.reduceat(plogp, np.r_[0, bounds]) * group_tot / n).sum())
-    return 1.0 - h_b_given_a / h_b
+    return float(-(np.add.reduceat(plogp, np.r_[0, bounds]) * group_tot / n).sum())
+
+
+def fi(a: np.ndarray, b: np.ndarray) -> float:
+    """FI(a → b) = 1 − H(b|a)/H(b), in [0, 1]; 0 when H(b) = 0."""
+    _, b_counts = np.unique(b, return_counts=True)
+    h_b = _entropy_from_counts(b_counts)
+    if h_b == 0.0:
+        return 0.0
+    return 1.0 - _h_conditional(a, b) / h_b
 
 
 def perm_pvalue(
@@ -106,18 +116,26 @@ def perm_pvalue(
 ) -> float:
     """P_perm(FI(a, shuffled b) ≥ FI_obs), add-one corrected, early-stopping.
 
-    Early-stops in blocks once the exceedance count is high enough that no BH
-    threshold (q ≤ 0.05) could ever reject — the stopped p is an underestimate
-    of the true p only on the never-rejected side, so the stop is conservative.
+    Early-stops in blocks once the exceedance count guarantees no rejectable
+    BH threshold could ever accept the candidate (see ``MAX_SOUND_Q``) — the
+    stopped p is an underestimate of the true p only on the never-rejected
+    side, so the stop is conservative while q ≤ ``MAX_SOUND_Q``.
+
+    H(b) and FI_obs are hoisted out of the loop — b's marginal is
+    shuffle-invariant, so each rep pays only the H(b|a) contingency pass.
     """
-    obs = fi(a, b)
+    _, b_counts = np.unique(b, return_counts=True)
+    h_b = _entropy_from_counts(b_counts)
+    if h_b == 0.0:
+        return 1.0  # a constant b carries no dependence to test
+    obs = 1.0 - _h_conditional(a, b) / h_b
     bc = b.copy()
     count = done = 0
     while done < reps:
         block = min(_PERM_BLOCK, reps - done)
         for _ in range(block):
             rng.shuffle(bc)
-            if fi(a, bc) >= obs:
+            if 1.0 - _h_conditional(a, bc) / h_b >= obs:
                 count += 1
         done += block
         if count >= _EARLY_STOP_COUNT:
@@ -198,6 +216,12 @@ def role_verdict(
     VALUE_SYSTEMATIC (escalate, never merge on its own: real dirt is rarely
     marginal-random, so T2 alone cannot separate role from concentrated dirt);
     else if the permutation p-floor cannot reach α → ABSTAIN; else DIRT.
+
+    Width-driven boundary (documented, deliberate): with the default budget the
+    permutation p-floor is 1/(reps+1) ≈ 3.3e-4, so once m ≳ 150 contexts push
+    α = alpha_family/m below that floor, the verdict is unconditionally ABSTAIN
+    — on very wide views the role question honestly defers to the semantic lane
+    rather than deciding from an unresolvable test.
     """
     m = len(contexts) + 1
     alpha = alpha_family / m

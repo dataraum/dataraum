@@ -77,7 +77,10 @@ FD_MAX_G3 = 0.01
 LAMBDA_MIN = 0.5
 
 # BH false-discovery rate over one view's effect-screened candidate family.
+# Must stay below stats.MAX_SOUND_Q: the permutation early-stop is conservative
+# only while a stopped p can never be BH-rejected (see stats.py).
 Q_FDR = 0.05
+assert Q_FDR < stats.MAX_SOUND_Q, "early-stop soundness requires Q_FDR < MAX_SOUND_Q"
 
 # A near-copy pair (value-equality disagreement in (0, this]) takes the gate-#2
 # role check before it may merge. Above it, a bidirectional pair-g3 match is a
@@ -132,6 +135,24 @@ def _pair_rng(arm: str, a: str, b: str) -> np.random.Generator:
 # pair family across several single-scan queries instead of one giant SELECT.
 _MAX_PAIR_AGGS = 500
 
+# The permutation stage's own row ceiling, independent of the cells budget: a
+# narrow-tall view (2-4 columns) would otherwise sample 10-20M rows and pay
+# reps × O(n log n) per ACCEPTED candidate (true edges never early-stop). The
+# test is sample-honest at any subsample, and 1M rows is ample power for
+# candidates that already cleared the g3 + λ screens. The pulled frame is in
+# hash order (bottom-k), so a prefix is itself a valid deterministic sample.
+_MAX_PERM_ROWS = 1_000_000
+
+
+def _quote(name: str) -> str:
+    """Quote a catalog identifier for DuckDB SQL, doubling embedded quotes.
+
+    View column names descend from source CSV headers (VARCHAR-first load), so
+    an embedded ``"`` is possible — the drivers module's convention
+    (``drivers/processor.py::quote``), adopted here.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
 
 @dataclass(frozen=True)
 class _Candidate:
@@ -169,7 +190,7 @@ class _ViewScan:
 def _view_columns(duckdb_conn: duckdb.DuckDBPyConnection, view_name: str) -> list[str] | None:
     """The view's column names, or ``None`` if it is not queryable (logged)."""
     try:
-        rows = duckdb_conn.execute(f'DESCRIBE "{view_name}"').fetchall()
+        rows = duckdb_conn.execute(f"DESCRIBE {_quote(view_name)}").fetchall()
     except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
         logger.warning("hierarchy_view_describe_failed", view=view_name, error=str(e))
         return None
@@ -251,11 +272,11 @@ def _scan_view(
     the view is then skipped, a visible abstention.
     """
     parts = ["COUNT(*) AS n"]
-    parts += [f'COUNT(DISTINCT "{c}") AS d{i}' for i, c in enumerate(cols)]
-    parts += [f'COUNT("{c}") AS c{i}' for i, c in enumerate(cols)]
+    parts += [f"COUNT(DISTINCT {_quote(c)}) AS d{i}" for i, c in enumerate(cols)]
+    parts += [f"COUNT({_quote(c)}) AS c{i}" for i, c in enumerate(cols)]
     try:
         row = duckdb_conn.execute(
-            f'SELECT {", ".join(parts)} FROM "{view_name}"'  # noqa: S608 — catalog names
+            f"SELECT {', '.join(parts)} FROM {_quote(view_name)}"  # noqa: S608 — catalog names
         ).fetchone()
         if row is None:
             return None
@@ -279,9 +300,10 @@ def _scan_view(
         for start in range(0, len(pairs), _MAX_PAIR_AGGS):
             chunk = pairs[start : start + _MAX_PAIR_AGGS]
             sql = ", ".join(
-                f'COUNT(DISTINCT ("{a}", "{b}")) AS j{k}' for k, (a, b) in enumerate(chunk)
+                f"COUNT(DISTINCT ({_quote(a)}, {_quote(b)})) AS j{k}"
+                for k, (a, b) in enumerate(chunk)
             )
-            jrow = duckdb_conn.execute(f'SELECT {sql} FROM "{view_name}"')  # noqa: S608
+            jrow = duckdb_conn.execute(f"SELECT {sql} FROM {_quote(view_name)}")  # noqa: S608
             fetched = jrow.fetchone()
             if fetched is None:
                 return None
@@ -299,24 +321,27 @@ def _pull_sample(
     """An aligned VARCHAR sample of the candidate columns for the row statistics.
 
     Full view when it fits ``MAX_SAMPLE_CELLS``; else a bottom-k-by-hash sketch
-    (the DAT-571 drivers idiom: ``ORDER BY hash(cols) LIMIT n`` is a uniform
-    per-row sample that stays deterministic on the multi-threaded worker
-    connection, where ``USING SAMPLE … REPEATABLE`` only holds single-threaded).
-    Row-level statistics are sample-honest — g3 exactness is subset-invariant,
-    the permutation null is recomputed on the sample — while every guard reads
-    the full-view scan, so a sampled fold key can never trip the near-key guard
+    (the DAT-571 drivers idiom: ``ORDER BY hash(cols) LIMIT n`` stays
+    deterministic on the multi-threaded worker connection, where ``USING SAMPLE
+    … REPEATABLE`` only holds single-threaded — LIMIT ties are content-identical
+    rows, so the cut is stable). Note the sample is tuple-clustered, not iid:
+    all copies of a low-hash value-tuple enter together — first-order unbiased,
+    but the variance structure differs from row-iid sampling. Row-level
+    statistics are sample-honest — g3 exactness is subset-invariant, the
+    permutation null is recomputed on the sample — while every guard reads the
+    full-view scan, so a sampled fold key can never trip the near-key guard
     (the rel-hm lesson).
     """
     n_sample = max(MIN_SAMPLE_ROWS, MAX_SAMPLE_CELLS // max(len(cols), 1))
     sample = ""
     if n_rows > n_sample:
-        hash_cols = ", ".join(f'"{c}"' for c in cols)
+        hash_cols = ", ".join(_quote(c) for c in cols)
         sample = f" ORDER BY hash({hash_cols}) LIMIT {n_sample}"
         logger.info("hierarchy_view_sampled", view=view_name, full_n=n_rows, sample_n=n_sample)
-    select_cols = ", ".join(f'CAST("{c}" AS VARCHAR) AS "{c}"' for c in cols)
+    select_cols = ", ".join(f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in cols)
     try:
         table = duckdb_conn.execute(
-            f'SELECT {select_cols} FROM "{view_name}"{sample}'  # noqa: S608 — catalog names
+            f"SELECT {select_cols} FROM {_quote(view_name)}{sample}"  # noqa: S608 — catalog names
         ).arrow()
     except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
         logger.warning("hierarchy_sample_pull_failed", view=view_name, error=str(e))
@@ -324,13 +349,49 @@ def _pull_sample(
     return cast("pl.DataFrame", pl.from_arrow(table))
 
 
+def _break_cycles(edges: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    """Drop the edges inside directed cycles (Kahn peel), born-loud.
+
+    The old pass's acyclicity premise (one global distinct count orients every
+    edge) weakened when orientation moved to pairwise-complete row subsets: a
+    rep-level cycle is constructible when cardinalities sit within the screen
+    tolerances. A cycle is contradictory determination evidence — the honest
+    output is NO chain through it, logged loudly, never a hang or a crash.
+    Edges from acyclic nodes INTO the cycle survive (their target becomes a
+    sink); edges within the cyclic core are dropped.
+    """
+    nodes = {n for e in edges for n in e}
+    indeg = dict.fromkeys(nodes, 0)
+    succ: dict[str, list[str]] = {n: [] for n in nodes}
+    for a, b in edges:
+        succ[a].append(b)
+        indeg[b] += 1
+    queue = [n for n in nodes if indeg[n] == 0]
+    while queue:
+        n = queue.pop()
+        for m in succ[n]:
+            indeg[m] -= 1
+            if indeg[m] == 0:
+                queue.append(m)
+    cyclic = {n for n, d in indeg.items() if d > 0}
+    if not cyclic:
+        return edges
+    kept = {(a, b) for a, b in edges if not (a in cyclic and b in cyclic)}
+    logger.warning(
+        "hierarchy_cycle_detected",
+        cyclic_columns=sorted(cyclic),
+        dropped_edges=sorted(edges - kept),
+    )
+    return kept
+
+
 def _transitive_reduction(edges: set[tuple[str, str]]) -> set[tuple[str, str]]:
     """Remove edges implied by a longer path (DAG; ``a → b`` = a determines b).
 
     Drops ``a → c`` whenever ``a → … → c`` exists through an intermediate, so a
-    chain ``zip → city → state`` keeps only the adjacent links. Determination is a
-    partial order (acyclic once aliases are collapsed), so a simple reachability
-    test per edge suffices.
+    chain ``zip → city → state`` keeps only the adjacent links. Input must be
+    acyclic (``_break_cycles`` runs first), so a simple reachability test per
+    edge suffices.
     """
     succ: dict[str, set[str]] = {}
     for a, b in edges:
@@ -354,12 +415,20 @@ def _transitive_reduction(edges: set[tuple[str, str]]) -> set[tuple[str, str]]:
     return {(a, b) for (a, b) in edges if not reaches(a, b, skip=(a, b))}
 
 
+# Path enumeration is worst-case exponential on dense DAGs, and the widened
+# candidate universe makes dense decided DAGs reachable — cap the emitted
+# chains and say so, never hang.
+_MAX_CHAINS_PER_VIEW = 500
+
+
 def _maximal_chains(edges: set[tuple[str, str]]) -> list[list[str]]:
     """Every maximal path (length ≥ 2 nodes) through the reduced DAG, finest→coarsest.
 
     A node with no incoming reduced edge is a chain start (the finest level); a
     node with no outgoing edge is the end (coarsest). Branching yields multiple
-    chains. Deterministic: starts and successors are sorted.
+    chains. Deterministic: starts and successors are sorted; the walk is
+    iterative (no recursion limit) and capped born-loud at
+    ``_MAX_CHAINS_PER_VIEW``. Input must be a DAG (``_break_cycles`` runs first).
     """
     succ: dict[str, list[str]] = {}
     has_incoming: set[str] = set()
@@ -369,19 +438,23 @@ def _maximal_chains(edges: set[tuple[str, str]]) -> list[list[str]]:
     starts = sorted({a for a, _ in edges} - has_incoming)
 
     chains: list[list[str]] = []
-
-    def walk(path: list[str]) -> None:
-        tail = path[-1]
-        nexts = succ.get(tail)
+    stack: list[list[str]] = [[s] for s in reversed(starts)]
+    while stack:
+        path = stack.pop()
+        nexts = succ.get(path[-1])
         if not nexts:
             if len(path) >= 2:
                 chains.append(path)
-            return
-        for nxt in nexts:
-            walk([*path, nxt])
-
-    for start in starts:
-        walk(path=[start])
+                if len(chains) >= _MAX_CHAINS_PER_VIEW:
+                    logger.warning(
+                        "hierarchy_chains_truncated",
+                        cap=_MAX_CHAINS_PER_VIEW,
+                        pending_paths=len(stack),
+                    )
+                    break
+            continue
+        for nxt in reversed(nexts):
+            stack.append([*path, nxt])
     return chains
 
 
@@ -563,7 +636,6 @@ def _view_structures(
         return []
 
     codes = {c: stats.codes_of(frame.get_column(c)) for c in eligible}
-    strs = {c: frame.get_column(c).fill_null("␀").to_numpy() for c in eligible}
     n_sample = frame.height
 
     # Null policy, edge arm (DAT-757 lane): a NULL is DATA when the column is
@@ -601,7 +673,7 @@ def _view_structures(
 
     g3_cache: dict[tuple[str, str], float] = {}
 
-    def row_g3(a: str, b: str) -> float:
+    def edge_g3(a: str, b: str) -> float:
         if (a, b) not in g3_cache:
             ca, cb, _, _ = edge_arrays(a, b)
             g3_cache[(a, b)] = stats.row_g3(ca, cb) if len(ca) else 1.0
@@ -629,6 +701,10 @@ def _view_structures(
     # -- 2. effect screens ----------------------------------------------------
     cand_alias: list[tuple[str, str]] = []
     cand_edge: list[tuple[str, str]] = []
+    # Edges whose pairwise-complete support fell below the floor are surfaced
+    # (needs_confirmation on any chain that uses them), never silently dropped —
+    # the same posture the tiny-view MIN_SUPPORT_ROWS flag takes.
+    low_support: set[tuple[str, str]] = set()
     for i, a in enumerate(eligible):
         for b in eligible[i + 1 :]:
             fwd, bwd = scan.pair_g3(a, b)
@@ -642,14 +718,13 @@ def _view_structures(
                     continue
                 if len(cs) < MIN_SUPPORT_ROWS and len(cs) < n_sample:
                     logger.info(
-                        "hierarchy_edge_excluded",
+                        "hierarchy_edge_low_support",
                         determinant=s,
                         dependent=t,
-                        reason="null_support",
                         complete_rows=len(cs),
                     )
-                    continue
-                if row_g3(s, t) > FD_MAX_G3:
+                    low_support.add((s, t))
+                if edge_g3(s, t) > FD_MAX_G3:
                     continue
                 # -- 3. λ floor: the vacuous-skew kill (edge arm only) --------
                 lam = stats.gk_lambda(cs, ct)
@@ -681,6 +756,10 @@ def _view_structures(
             ca, cb, _, _ = edge_arrays(a, b)
         else:
             ca, cb = codes[a], codes[b]
+        if len(ca) > _MAX_PERM_ROWS:
+            # Frame rows are in hash order — a prefix is a deterministic sample,
+            # and the permutation test is sample-honest at any subsample.
+            ca, cb = ca[:_MAX_PERM_ROWS], cb[:_MAX_PERM_ROWS]
         return task, stats.perm_pvalue(ca, cb, _pair_rng(arm, a, b))
 
     p_by_task: dict[tuple[str, str, str], float] = {}
@@ -711,18 +790,42 @@ def _view_structures(
         return {
             "column_name": c.column_name,
             "column_id": c.column_id,
+            # Null-aware d2 (NULL = one category) — deliberately differs from the
+            # pre-DAT-761 null-blind SQL count; the null lane made d2 the honest
+            # "values this axis distinguishes".
             "distinct_count": scan.d2[col],
         }
 
+    # Disagreement vectors are built lazily per BH-accepted pair — an up-front
+    # object-array for every eligible column is gigabytes at the cells budget,
+    # for a handful of consumers.
+    to_check: list[tuple[str, str, np.ndarray, float]] = []
     for a, b in sorted(acc_alias):
-        dis = (strs[a] != strs[b]).astype(np.int64)
+        dis = (
+            (frame.get_column(a).fill_null("␀") != frame.get_column(b).fill_null("␀"))
+            .to_numpy()
+            .astype(np.int64)
+        )
         rate = float(dis.mean())
         if rate == 0.0 or rate > ROLE_MAX_DISAGREE:
             # Exact copy, or a relabeling bijection (code ↔ name): a true alias.
             merged.append((a, b))
             continue
+        to_check.append((a, b, dis, rate))
+
+    def role_task(item: tuple[str, str, np.ndarray, float]) -> stats.RoleResult:
+        a, b, dis, _rate = item
         contexts = {c: codes[c] for c in eligible if c not in (a, b)}
-        result = stats.role_verdict(dis, contexts, codes[b], _pair_rng("role", a, b))
+        return stats.role_verdict(dis, contexts, codes[b], _pair_rng("role", a, b))
+
+    verdicts: list[stats.RoleResult] = []
+    if to_check:
+        # Same pool discipline as the perm stage: pure numpy, read-only shared
+        # codes, per-pair generators — deterministic at any worker count.
+        with ThreadPoolExecutor(max_workers=_PERM_WORKERS) as pool:
+            verdicts = list(pool.map(role_task, to_check))
+
+    for (a, b, _dis, rate), result in zip(to_check, verdicts, strict=True):
         logger.info(
             "hierarchy_role_check",
             a=a,
@@ -790,16 +893,20 @@ def _view_structures(
     rep = {c: sorted(g)[0] for g in members.values() for c in g}
 
     edges: set[tuple[str, str]] = set()
+    thin_edges: set[tuple[str, str]] = set()  # rep-level image of low_support
     for a, b in acc_edges:
         if frozenset((a, b)) in same_domain:
             continue
         ra, rb = rep[a], rep[b]
         if ra != rb:
             edges.add((ra, rb))
-    reduced = _transitive_reduction(edges)
+            if (a, b) in low_support:
+                thin_edges.add((ra, rb))
+    reduced = _transitive_reduction(_break_cycles(edges))
 
     for chain in _maximal_chains(reduced):
-        score = max(row_g3(chain[k], chain[k + 1]) for k in range(len(chain) - 1))
+        hops = [(chain[k], chain[k + 1]) for k in range(len(chain) - 1)]
+        score = max(edge_g3(x, y) for x, y in hops)
         out.append(
             {
                 "run_id": run_id,
@@ -810,7 +917,9 @@ def _view_structures(
                 "signature": f"drilldown:{fact_table_id}:" + "|".join(sorted(chain)),
                 "score": score,
                 "detection_source": "g3",
-                "needs_confirmation": needs_conf,
+                # Surface, don't decide: a chain resting on a sub-floor
+                # pairwise-complete edge is flagged, same as a tiny view.
+                "needs_confirmation": needs_conf or any(h in thin_edges for h in hops),
             }
         )
         logger.info("hierarchy_drilldown", view=view_name, chain=chain, score=round(score, 4))

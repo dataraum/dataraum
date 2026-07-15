@@ -137,12 +137,9 @@ export interface SchemaColumnRow {
  * plus the resolved stock/flow adjudication (DAT-509): `temporalBehavior` is
  * the pooled-resolved value the resolve layer wrote onto the annotation
  * (`additive` = flow, `point_in_time` = stock — never SUM a stock across
- * periods). The contested flag is DELIBERATELY NOT served to the agent
- * (decision 2026-07-07, mirrors the engine GraphAgent): the adjudication
- * outperforms an LLM reading stock/flow from metadata alone, so the agent
- * gets the resolved verdict as settled fact — a contested tag would invite
- * second-guessing by the weaker judge. The flag's consumer is the human
- * teach lane (why_column renders it). */
+ * periods). This is the reconciled verdict served as settled fact: the resolve
+ * pass already adjudicated the LLM claim vs the data-grounded structural
+ * witness (DAT-786), so there is no separate doubt flag to carry here. */
 export interface SchemaConceptRow {
 	columnId: string;
 	meaning: string | null;
@@ -193,7 +190,7 @@ export function formatSchema(
 				: "";
 			// Mirror the engine's render (graphs/context.py): the resolved
 			// stock/flow behaviour as a parenthesized marker, served as settled
-			// fact (no contested tag — see SchemaConceptRow).
+			// fact (see SchemaConceptRow).
 			const temporalTag = semantic?.temporalBehavior
 				? ` (${semantic.temporalBehavior})`
 				: "";

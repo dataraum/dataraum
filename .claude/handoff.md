@@ -5,6 +5,37 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-786 — column_concepts.temporal_behavior_contested removed (verdict is authoritative)
+
+**Branch:** `fix/dat-786-remove-contested-flag`. Lead ruling (DAT-772 Gate 3):
+the reconciled `temporal_behavior` verdict IS the adjudication outcome — a
+parallel "contested" doubt-flag downstream second-guessed a deterministic,
+correct resolution.
+
+### What changed
+
+- **Schema:** `column_concepts.temporal_behavior_contested` (BOOLEAN) is GONE —
+  model column, resolve-pass write, `schema.sql`, and the cockpit Drizzle mirror.
+  Any eval/testdata fixture or assertion reading that column must drop it; test
+  DBs recreate (no migration, per the no-backfill rule).
+- **Resolve pass** (`entropy/resolve.py`): still writes the adjudicated
+  `temporal_behavior`; a witness disagreement now emits a
+  `temporal_behavior_contested` **log line** (column_id, run_id, resolved) —
+  diagnostic only, the resolved value wins unchanged.
+- **Detector unchanged:** the `temporal_behavior` EntropyObject evidence still
+  carries its `contested` key (pooled-conflict observability); only the
+  ColumnConcept persistence + downstream serving were cut.
+- **Cockpit drill flow-gate reversal (DAT-673):** a contested `additive` was
+  treated as stock (time-grain slice withheld); it is now trusted as additive —
+  the drill's axis menu offers the time grain wherever the reconciled verdict
+  says flow.
+
+### What eval should see
+
+- No detector/calibration change: same adjudication, same resolved labels.
+- Downstream shape change only: `column_concepts` has one fewer column; drill
+  axis menus may now offer time-grain on measures the old gate withheld.
+
 ## DAT-775 — grain_columns persists as a bare list; cycle prompt renders real grain
 
 **Branch:** `fix/dat-775-grain-columns-bare-list`. `table_entities.grain_columns`

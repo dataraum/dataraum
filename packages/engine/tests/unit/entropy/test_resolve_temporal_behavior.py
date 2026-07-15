@@ -1,11 +1,13 @@
-"""Resolved layer for temporal_behavior — ADR-0009 / DAT-445 / DAT-657.
+"""Resolved layer for temporal_behavior — ADR-0009 / DAT-445 / DAT-657 / DAT-786.
 
 ``resolve_temporal_behavior`` collapses each column's stock/flow adjudication onto
 its ``ColumnConcept`` row: ``temporal_behavior`` becomes the pooled-resolved value
 (the LLM claim reconciled with the data-grounded structural witness — the ontology
-prior was dropped, DAT-657) and ``temporal_behavior_contested`` records the
-disagreement. Total ignorance (no witness) leaves any prior value untouched.
-In-memory SQLite, FKs off so we skip parent rows — same pattern as the loader tests.
+prior was dropped, DAT-657). This verdict is authoritative on its own — DAT-786
+removed the parallel ``temporal_behavior_contested`` column; a disagreement between
+the witnesses is only logged, never persisted. Total ignorance (no witness) leaves
+any prior value untouched. In-memory SQLite, FKs off so we skip parent rows — same
+pattern as the loader tests.
 """
 
 from __future__ import annotations
@@ -104,8 +106,9 @@ def _read(session: Session, column_id: str, run_id: str = _RUN) -> ColumnConcept
     ).scalar_one()
 
 
-def test_conflict_overwrites_behaviour_and_flags_contested(real_session: Session) -> None:
-    """concept said stock, the pool resolved to flow under contest → write both."""
+def test_conflict_overwrites_behaviour_trusted_despite_contest(real_session: Session) -> None:
+    """concept said stock, the pool resolved to flow under contest → the resolved value
+    wins outright (DAT-786): the contest is a diagnostic log line, never persisted."""
     _seed_annotation(real_session, "col-a", behaviour="point_in_time")
     _seed_object(real_session, "col-a", resolved="additive", contested=True)
 
@@ -114,7 +117,6 @@ def test_conflict_overwrites_behaviour_and_flags_contested(real_session: Session
     assert updated == 1
     row = _read(real_session, "col-a")
     assert row.temporal_behavior == "additive"  # the adjudicated value replaced the prior
-    assert row.temporal_behavior_contested is True
 
 
 def test_uncontested_agreement_writes_behaviour_quietly(real_session: Session) -> None:
@@ -124,7 +126,6 @@ def test_uncontested_agreement_writes_behaviour_quietly(real_session: Session) -
     assert resolve_temporal_behavior(real_session, _RUN) == 1
     row = _read(real_session, "col-b")
     assert row.temporal_behavior == "point_in_time"
-    assert row.temporal_behavior_contested is False
 
 
 def test_total_ignorance_leaves_prior_value_untouched(real_session: Session) -> None:
@@ -135,7 +136,6 @@ def test_total_ignorance_leaves_prior_value_untouched(real_session: Session) -> 
     assert resolve_temporal_behavior(real_session, _RUN) == 0
     row = _read(real_session, "col-c")
     assert row.temporal_behavior == "point_in_time"  # unchanged
-    assert row.temporal_behavior_contested is None  # never written
 
 
 def test_only_this_runs_objects_resolve(real_session: Session) -> None:

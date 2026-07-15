@@ -281,7 +281,6 @@ class TestSynthesizeAndStoreTables:
                             table_id="",
                             table_name="orders",
                             entity_type="orders",
-                            confidence=0.9,
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[
@@ -624,7 +623,6 @@ class TestSynthesizeAndStoreTables:
                             table_id="",
                             table_name="orders",
                             entity_type="orders",
-                            confidence=0.9,
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[

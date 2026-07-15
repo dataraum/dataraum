@@ -159,7 +159,6 @@ class Concept(Base):
     description: Mapped[str | None] = mapped_column(Text)
     indicators: Mapped[list[str] | None] = mapped_column(JSON)
     exclude_patterns: Mapped[list[str] | None] = mapped_column(JSON)
-    typical_values: Mapped[list[str] | None] = mapped_column(JSON)
     unit_from_concept: Mapped[str | None] = mapped_column(String)
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
@@ -386,8 +385,6 @@ class TableEntity(Base):
         String, nullable=False
     )  # 'customer', 'order', 'product', etc.
     description: Mapped[str | None] = mapped_column(Text)
-    confidence: Mapped[float | None] = mapped_column(Float)
-    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     # Grain analysis
     grain_columns: Mapped[dict[str, Any] | None] = mapped_column(

@@ -13,6 +13,7 @@ from uuid import uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -61,6 +62,17 @@ class Relationship(Base):
             "detection_method",
             name="uq_relationship_columns_method",
         ),
+        # Closed-vocabulary enforcement (DAT-772 audit, DAT-782): the values every
+        # writer actually produces — ``detector.py`` (structural candidate),
+        # ``agent.py``/``processor.py`` (LLM-confirmed, orienting the LLM's
+        # foreign_key/hierarchy choice), ``materialize.py`` (manual/keeper overlay
+        # materialization, always 'foreign_key'). A producer-side Literal alone
+        # (``semantic/models.py``'s ``RelationshipOutput.relationship_type``)
+        # already drifted from this once — the CHECK is the DB-enforced backstop.
+        CheckConstraint(
+            "relationship_type IN ('foreign_key', 'hierarchy', 'candidate')",
+            name="relationship_type",
+        ),
     )
 
     relationship_id: Mapped[str] = mapped_column(
@@ -80,7 +92,7 @@ class Relationship(Base):
     # Classification
     relationship_type: Mapped[str] = mapped_column(
         String, nullable=False
-    )  # 'foreign_key', 'semantic_reference', 'derived', 'candidate'
+    )  # 'foreign_key', 'hierarchy', 'candidate' — see ck_relationships_relationship_type
     cardinality: Mapped[str | None] = mapped_column(
         String
     )  # 'one-to-one', 'one-to-many', 'many-to-one', 'many-to-many'
@@ -90,10 +102,9 @@ class Relationship(Base):
     detection_method: Mapped[str | None] = mapped_column(String)  # 'candidate', 'llm', 'manual'
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
-    # Verification (human-in-loop)
+    # Verification (human-in-loop): confirmation itself lives in ConfigOverlay
+    # (DAT-776) — ``is_confirmed`` is the only persisted verification signal here.
     is_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    confirmed_by: Mapped[str | None] = mapped_column(String)
 
     detected_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)

@@ -114,7 +114,6 @@ export const ProposedConcept = z.object({
 		.array(z.string())
 		.optional()
 		.describe("substrings that should NOT match this concept"),
-	typical_values: z.array(z.string()).optional(),
 	unit_from_concept: z
 		.string()
 		.optional()

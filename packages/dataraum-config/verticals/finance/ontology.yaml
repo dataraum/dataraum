@@ -114,12 +114,6 @@ concepts:
       - currency
       - ccy
       - curr
-    typical_values:
-      - USD
-      - EUR
-      - GBP
-      - CHF
-      - JPY
 
   # Balance Sheet Concepts
   - name: accounts_receivable

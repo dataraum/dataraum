@@ -112,9 +112,7 @@ Propose cycles that fit THIS source's concepts and schema. A cycle declares a re
 - business_value: how important the cycle is — one of high | medium | low (drives ranking/priority); a CLOSED vocabulary
 - aliases: alternative names the cycle is known by (e.g. ["o2c","revenue_cycle"]), otherwise omit
 - typical_stages: the cycle's stages in order, each { name, order (1-based), indicators: status-column value substrings that mark the stage }, otherwise omit
-- participating_entities: entity types that flow through the cycle (e.g. ["customer","invoice","payment"]), otherwise omit
 - completion_indicators: status-column VALUES that mean the cycle COMPLETED (e.g. ["paid","closed","settled"]) — these drive the structural completion_rate
-- related_tables: table-name substrings hinting where the cycle lives (context, not matching), otherwise omit
 - feeds_into: downstream cycle names this cycle's output feeds (e.g. ["accounts_receivable"]), otherwise omit
 </cycle_fields>
 

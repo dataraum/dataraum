@@ -290,7 +290,6 @@ class SemanticAgent(LLMFeature):
                 table_name=table.table_name,
                 entity_type=table.entity_type,
                 description=table.description,
-                confidence=0.9,
                 grain_columns=table.grain,
                 table_role=derive_table_role(
                     table.is_fact_table,

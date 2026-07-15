@@ -198,26 +198,40 @@ class SemanticAgent(LLMFeature):
             model=model,
         )
 
-        # converse raises a typed ProviderError on an API failure (DAT-503) —
-        # retryability rides the exception to the worker's durable boundary, so
-        # we don't re-wrap it. A returned Result is always a success.
-        response = self.provider.converse(request).unwrap()
+        result = self._converse_and_validate(request, tool, model)
+        if not result.success:
+            return Result.fail(result.error or "Table synthesis failed")
+        # column_concepts is a REQUIRED field on the tool schema (DAT-768), so a
+        # crowded-out omission surfaces here as a ValidationError that
+        # _converse_and_validate already repaired; a still-empty surface is caught
+        # loud downstream by synthesize_and_store_tables' measure-present gate.
+        return self._build_enrichment_result(result.unwrap())
 
+    def _converse_and_validate(
+        self,
+        request: ConversationRequest,
+        tool: ToolDefinition,
+        model: str,
+    ) -> Result[TableSynthesisOutput]:
+        """One ``analyze_tables`` turn → validated output, with a DAT-710 schema repair.
+
+        ``converse`` raises a typed ProviderError on an API failure (DAT-503) —
+        retryability rides the exception to the worker's durable boundary, so we
+        don't re-wrap it; a returned Result is always a success. One lazy tool
+        output (a relationship missing ``to_column``, a ``"placeholder"`` reasoning)
+        must not fail begin_session whole (DAT-710): it is schema-repaired in one
+        turn — the DAT-699 pattern — instead of a non-retryable PhaseFailed with
+        whole-cascade blast radius. strict grammar is the WRONG lever here: this is
+        a large batched extraction, exactly the shape where strict makes the model
+        legally under-produce (see ``ToolDefinition.strict``), so repair, never strict.
+        """
+        response = self.provider.converse(request).unwrap()
         if not response.tool_calls or response.tool_calls[0].name != "analyze_tables":
             return Result.fail("LLM did not use the analyze_tables tool")
-
         tool_input = response.tool_calls[0].input
         try:
-            synthesis = TableSynthesisOutput.model_validate(tool_input)
+            return Result.ok(TableSynthesisOutput.model_validate(tool_input))
         except ValidationError as e:
-            # One lazy relationship entry (a missing `to_column`, a `"placeholder"`
-            # reasoning) must not fail begin_session whole (DAT-710): enforce the
-            # schema with a repair turn — the DAT-699 pattern — instead of a
-            # non-retryable PhaseFailed with whole-cascade blast radius. strict
-            # grammar is the WRONG lever here: analyze_tables is a large batched
-            # extraction (every table's entity + all relationships), exactly the
-            # shape where strict makes the model legally under-produce (see
-            # `ToolDefinition.strict`), so repair, never strict.
             repaired = repair_tool_output(
                 self.provider,
                 tool,
@@ -230,9 +244,7 @@ class SemanticAgent(LLMFeature):
             )
             if not repaired.success:
                 return Result.fail(f"Failed to parse table synthesis response: {repaired.error}")
-            synthesis = repaired.unwrap()
-
-        return self._build_enrichment_result(synthesis)
+            return Result.ok(repaired.unwrap())
 
     @staticmethod
     def _format_persisted_annotations(annotations: list[dict[str, Any]]) -> str:

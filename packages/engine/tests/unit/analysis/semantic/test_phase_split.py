@@ -155,7 +155,7 @@ class TestPersistColumnConcepts:
             ),
         ]
 
-        count = persist_column_concepts(
+        result = persist_column_concepts(
             session,
             concepts,
             [table.table_id],
@@ -164,7 +164,9 @@ class TestPersistColumnConcepts:
         )
         session.flush()
 
-        assert count == 2
+        assert result.resolved == 2
+        assert result.emitted == 2
+        assert result.dropped_unresolved == 0
         rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
         cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
         total = rows[cols["total"]]
@@ -191,15 +193,37 @@ class TestPersistColumnConcepts:
             ),
         ]
 
-        count = persist_column_concepts(
+        result = persist_column_concepts(
             session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
         )
         session.flush()
 
-        assert count == 1  # collapsed
+        assert result.resolved == 1  # collapsed
+        assert result.emitted == 2  # both mentions counted as emitted
         rows = list(session.execute(select(ColumnConceptDB)).scalars())
         assert len(rows) == 1
         assert rows[0].business_concept == "net_revenue"  # last mention wins
+
+    def test_unresolvable_concept_dropped_and_counted(self, session) -> None:
+        """DAT-768 path #2: a concept whose (table, column) name resolves to no column
+        is dropped, and the breakdown surfaces it (resolved 0, dropped 1) instead of
+        being indistinguishable from an empty emission."""
+        table = _table_with_columns(session, "orders", ["total"])
+        concepts = [
+            ColumnConceptOutput(
+                table_name="orders", column_name="ghost", business_concept="revenue"
+            )
+        ]
+
+        result = persist_column_concepts(
+            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.emitted == 1
+        assert result.resolved == 0
+        assert result.dropped_unresolved == 1
+        assert list(session.execute(select(ColumnConceptDB)).scalars()) == []
 
 
 class TestNearConstantFeed:
@@ -685,6 +709,66 @@ class TestSynthesizeAndStoreTables:
         assert not result.success
         assert "LLM down" in (result.error or "")
 
+    @staticmethod
+    def _agent_returning_empty_concepts() -> MagicMock:
+        agent = MagicMock()
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[], entity_detections=[], relationships=[], column_concepts=[]
+                )
+            )
+        )
+        return agent
+
+    @staticmethod
+    def _annotate(session, table, column: str, role: str) -> None:
+        persist_column_annotations(
+            session,
+            ColumnAnnotationOutput(
+                tables=[
+                    TableColumnAnnotation(table_name=table.table_name, columns=[_col(column, role)])
+                ]
+            ),
+            [table.table_id],
+            annotated_by="m",
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+
+    def test_empty_concepts_with_measures_fails_loud(self, session) -> None:
+        """DAT-768: a measure column in the batch + zero resolved concepts is an
+        emptied grounding surface — begin_session fails loud instead of shipping it
+        green (every metric's measure→concept binding would otherwise collapse)."""
+        tbl = _table_with_columns(session, "trial_balance", ["debit_balance"])
+        self._annotate(session, tbl, "debit_balance", "measure")
+
+        result = synthesize_and_store_tables(
+            session,
+            self._agent_returning_empty_concepts(),
+            [tbl.table_id],
+            run_id=baseline_run_id(),
+        )
+
+        assert not result.success
+        assert "column_concepts empty" in (result.error or "")
+        assert "DAT-768" in (result.error or "")
+
+    def test_empty_concepts_without_measures_succeeds(self, session) -> None:
+        """No measure column → an empty concept surface is a legitimate judgment; the
+        phase must NOT fail (the gate is measure-conditional, not blanket)."""
+        tbl = _table_with_columns(session, "regions", ["region_name"])
+        self._annotate(session, tbl, "region_name", "dimension")
+
+        result = synthesize_and_store_tables(
+            session,
+            self._agent_returning_empty_concepts(),
+            [tbl.table_id],
+            run_id=baseline_run_id(),
+        )
+
+        assert result.success
+
 
 # ---------------------------------------------------------------------------
 # per-table parse / format helpers
@@ -708,6 +792,7 @@ class TestTableSynthesisHelpers:
                     }
                 ],
                 "relationships": [],
+                "column_concepts": [],
             }
         )
         result = agent._build_enrichment_result(synthesis)

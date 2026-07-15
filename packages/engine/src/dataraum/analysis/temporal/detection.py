@@ -274,10 +274,15 @@ def analyze_basic_temporal(
         # cadence? Measured on the DISTINCT-timestamp median gap (robust to
         # duplicate-per-day fact rows — the corrupted row-interval path that
         # scored duplicate-heavy columns "always stale" was deleted in DAT-783).
-        last_ts = max_ts if max_ts.tzinfo else max_ts.replace(tzinfo=UTC)
-        freshness_days = (datetime.now(UTC) - last_ts).total_seconds() / 86400
-        expected_interval_days = (median_gap / 86400) if median_gap else 0.0
-        is_stale = freshness_days > (expected_interval_days * stale_mult)
+        # With no median gap (a single distinct timestamp — a repeated as_of/
+        # period_end date) there is no cadence to be stale against, so is_stale is
+        # False rather than "any age at all" → True.
+        if median_gap:
+            last_ts = max_ts if max_ts.tzinfo else max_ts.replace(tzinfo=UTC)
+            freshness_days = (datetime.now(UTC) - last_ts).total_seconds() / 86400
+            is_stale = freshness_days > ((median_gap / 86400) * stale_mult)
+        else:
+            is_stale = False
 
         return Result.ok(
             {

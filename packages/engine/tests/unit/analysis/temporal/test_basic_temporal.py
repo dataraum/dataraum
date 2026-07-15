@@ -106,3 +106,19 @@ def test_old_data_is_stale_recent_data_is_not() -> None:
     recent = [today - timedelta(days=i) for i in range(30)]
     _table(conn, recent)
     assert analyze_basic_temporal(conn, "t", "ts", config=_CONFIG).unwrap()["is_stale"] is False
+
+
+def test_single_distinct_timestamp_is_not_stale() -> None:
+    """A repeated as_of/period_end date (one distinct value) has no cadence.
+
+    There is no median gap to be stale against, so ``is_stale`` is False — not
+    "any age at all" → True, which the None-guarded branch would otherwise produce
+    (regression guard for the reviewer-caught default-stale bug).
+    """
+    conn = duckdb.connect()
+    _table(conn, [datetime(2020, 6, 30) for _ in range(500)])  # all same day, very old
+
+    v = analyze_basic_temporal(conn, "t", "ts", config=_CONFIG).unwrap()
+
+    assert v["median_gap_seconds"] is None
+    assert v["is_stale"] is False

@@ -54,6 +54,43 @@ Cockpit drizzle mirror re-pulled in this branch (`bun run db:pull:metadata`) —
 action needed downstream.
 
 ---
+## DAT-783 — temporal profile: coverage facts wired, fiscal/update-frequency deleted
+
+**Branch:** `fix/dat-783-wire-temporal-profile-data`. The temporal phase serialized a
+rich model into `temporal_column_profiles.profile_data` (JSONB) that no reader in
+either package touched. Validated each component against the finance corpus, then
+promoted the correct parts to typed columns and deleted the WRONG ones. Not entropy
+detectors (no injection/recall loop), but the temporal response shape changed.
+
+### What changed
+
+- **`temporal_column_profiles` schema:** `profile_data` blob DELETED. New flat served
+  columns: `span_days`, `granularity_confidence`, `expected_periods`, `actual_periods`,
+  `gap_count`, `largest_gap_days`, plus a bounded `gaps` JSON column (list of
+  `{gap_start,gap_end,gap_length_days,missing_periods,severity}`, largest-first, cap 100).
+  `detected_granularity` now carries a CHECK (config granularity set + irregular/unknown).
+- **Fiscal calendar DELETED** (`FiscalCalendarAnalysis` + detector): false-positives on
+  any span that isn't a whole number of years (wrap-around months double-count). No
+  fiscal-year-end / period-end output is produced anymore.
+- **Update-frequency regularity DELETED** (`UpdateFrequencyAnalysis` + analyzer):
+  median ROW interval collapses to 0 on multi-row-per-timestamp fact tables → scored
+  duplicate-heavy columns "perfectly regular", and corrupted `detected_granularity` to
+  "irregular". No `update_frequency_score`/`interval_cv`/`data_freshness_days` anymore.
+- **`is_stale` derivation changed:** now from the robust DISTINCT-timestamp median gap
+  (was the corrupted row-interval path). A single-distinct-timestamp column (repeated
+  as_of/period_end date) is now `is_stale=False` (no cadence), not always-stale.
+- All served facts now come from the single DISTINCT-timestamp pass (`analyze_basic_temporal`);
+  the 20%-Bernoulli row-interval load path is gone. `TemporalQualityIssue` and
+  `TemporalTableSummary` deleted (redundant / computed-then-ignored).
+
+### What eval should expect
+
+- `detected_granularity`/`granularity_confidence` shift on duplicate-heavy fact columns
+  (e.g. a daily column with many rows/day now reads `day`, not `irregular`).
+- No fiscal or update-frequency signals in the temporal profile; graph-agent context now
+  surfaces per-time-axis `span` + `largest gap` instead.
+- `is_stale` on static historical datasets is still wall-clock-based (age vs cadence) — a
+  known semantic limitation noted for DAT-780/P5, not changed here.
 
 ## DAT-794 — Layer-A relationship detection is now deterministic
 

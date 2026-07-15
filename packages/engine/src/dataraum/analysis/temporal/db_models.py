@@ -1,7 +1,14 @@
 """Temporal analysis database models.
 
-SQLAlchemy models for persisting temporal analysis results.
-Uses hybrid storage: structured fields for queries + JSONB for full data.
+SQLAlchemy models for persisting temporal analysis results. Every computed fact is
+a typed served column — the load-bearing coverage scalars are flat, the gap list is
+a JSON interior of strict ``TemporalGapInfo`` submodels; there is no write-only
+``profile_data`` blob (DAT-783).
+
+The two-layer standard (DAT-781): the JSON interior's closed vocabulary
+(``TemporalGapInfo.severity``) is enforced by a Pydantic ``Literal`` at the writer,
+and the closed scalar column ``detected_granularity`` additionally gets a DB
+``CheckConstraint`` (a CHECK cannot reach into a JSON array).
 
 - TemporalColumnProfile: Per-column temporal analysis (like StatisticalProfile)
 """
@@ -14,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -28,6 +36,27 @@ from dataraum.storage import Base
 
 if TYPE_CHECKING:
     from dataraum.storage import Column
+
+# The closed vocabulary of ``detected_granularity``: the config granularity set
+# (config/phases/temporal.yaml ``granularity.definitions``) plus the two sentinels
+# ``infer_granularity`` emits — ``irregular`` (no definition matched) and ``unknown``
+# (no median gap). Sorted for a deterministic CHECK string in the offline DDL dump.
+_GRANULARITY_VALUES: tuple[str, ...] = tuple(
+    sorted(
+        (
+            "second",
+            "minute",
+            "hour",
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year",
+            "irregular",
+            "unknown",
+        )
+    )
+)
 
 
 class TemporalColumnProfile(Base):
@@ -46,6 +75,12 @@ class TemporalColumnProfile(Base):
     # and two coexisting runs' rows don't collide.
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_temporal_column_profiles_column_run"),
+        # Closed-vocabulary enforcement (DAT-783, the DAT-781 two-layer standard):
+        # ``infer_granularity`` sets this from the config set + irregular/unknown.
+        CheckConstraint(
+            "detected_granularity IN (" + ", ".join(f"'{v}'" for v in _GRANULARITY_VALUES) + ")",
+            name="detected_granularity",
+        ),
     )
 
     profile_id: Mapped[str] = mapped_column(String, primary_key=True)

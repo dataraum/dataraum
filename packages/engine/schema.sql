@@ -679,6 +679,7 @@ CREATE TABLE temporal_column_profiles (
 	gaps JSON NOT NULL, 
 	CONSTRAINT pk_temporal_column_profiles PRIMARY KEY (profile_id), 
 	CONSTRAINT uq_temporal_column_profiles_column_run UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_temporal_column_profiles_detected_granularity CHECK (detected_granularity IN ('day', 'hour', 'irregular', 'minute', 'month', 'quarter', 'second', 'unknown', 'week', 'year')), 
 	CONSTRAINT fk_temporal_column_profiles_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 

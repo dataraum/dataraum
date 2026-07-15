@@ -16,7 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
-from dataraum.analysis.hierarchies.processor import discover_dimension_hierarchies
+from dataraum.analysis.hierarchies.processor import (
+    _break_cycles,
+    _maximal_chains,
+    discover_dimension_hierarchies,
+)
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column
@@ -216,6 +220,23 @@ class TestStackV4:
         drills = _rows(real_session, tid, "drilldown")
         assert [_members(r) for r in drills] == [["city", "state"]]
 
+    def test_sub_floor_null_support_surfaces_not_drops(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """An edge whose pairwise-complete support falls below the floor is
+        surfaced with ``needs_confirmation`` — never silently dropped (the
+        review-finding posture: same as the tiny-view flag)."""
+        n = 400
+        city = [f"c{i % 20}" for i in range(n)]
+        # Nulls in 20-row blocks (coprime with the city cycle): 80 complete rows
+        # covering every city, so only SUPPORT is thin — not the FD structure.
+        state = [f"s{(i % 20) // 5}" if (i // 20) % 5 == 0 else None for i in range(n)]
+        tid = seed_view(real_session, duck, "sparse_geo", {"city": city, "state": state})
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        drills = _rows(real_session, tid, "drilldown")
+        assert [_members(r) for r in drills] == [["city", "state"]]
+        assert drills[0].needs_confirmation is True
+
     def test_null_coded_columns_alias(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
@@ -289,6 +310,29 @@ class TestStackV4:
         assert [_members(r) for r in aliases] == [["mystery", "state"]]
         by_name = {m["column_name"]: m["column_id"] for m in aliases[0].members}
         assert by_name["mystery"] == "" and by_name["state"] != ""
+
+
+class TestChainAssemblyGuards:
+    """Cycle and scale guards on the decided-DAG walk (DAT-761 review findings)."""
+
+    def test_break_cycles_drops_cyclic_core_keeps_spur(self) -> None:
+        # A rep-level 2-cycle is contradictory determination evidence: its
+        # internal edges go (loudly), the spur INTO it survives as a chain to
+        # a now-sink node — never a hang, never a silent full drop.
+        kept = _break_cycles({("s", "a"), ("a", "b"), ("b", "a")})
+        assert kept == {("s", "a")}
+        assert _maximal_chains(kept) == [["s", "a"]]
+
+    def test_pure_two_cycle_yields_no_chains_loudly(self) -> None:
+        assert _break_cycles({("a", "b"), ("b", "a")}) == set()
+
+    def test_maximal_chains_is_iterative_beyond_recursion_depth(self) -> None:
+        # The old recursive walk died at ~1000 nodes; the iterative walk must
+        # handle a path far deeper than any recursion limit.
+        edges = {(f"n{i:04d}", f"n{i + 1:04d}") for i in range(5000)}
+        chains = _maximal_chains(edges)
+        assert len(chains) == 1
+        assert len(chains[0]) == 5001
 
 
 class TestDimensionHierarchiesPhaseSkip:

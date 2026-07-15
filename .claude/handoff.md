@@ -35,7 +35,7 @@ into the engine.
   are now eligible axes (null-as-category — the rel-hm FN/Active lesson).
 - **Scan grain:** guards + pair counts from a full-view scan (chunked O(k²)
   aggregates); row statistics on an aligned in-memory sample (≤ 40M cells,
-  seeded reservoir) — a sampled fold key can never trip the near-key guard.
+  seeded bottom-k-by-hash sketch, the DAT-571 drivers idiom) — a sampled fold key can never trip the near-key guard.
 - Phase precondition changed: requires a grain-verified enriched view (was:
   slice definitions this run).
 

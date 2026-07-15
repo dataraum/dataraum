@@ -336,17 +336,28 @@ class TestTemporalModels:
         temporal = TemporalColumnProfile(
             profile_id=str(uuid4()),
             column_id=column.column_id,
+            run_id=str(uuid4()),
             profiled_at=datetime.now(),
             min_timestamp=datetime(2024, 1, 1),
             max_timestamp=datetime(2024, 12, 31),
+            span_days=364.0,
             detected_granularity="day",
+            granularity_confidence=0.98,
             completeness_ratio=0.96,
+            expected_periods=365,
+            actual_periods=360,
+            gap_count=5,
+            largest_gap_days=12.0,
             is_stale=False,
-            profile_data={
-                "span_days": 364.0,
-                "granularity_confidence": 0.98,
-                "gap_count": 5,
-            },
+            gaps=[
+                {
+                    "gap_start": "2024-06-01T00:00:00",
+                    "gap_end": "2024-06-13T00:00:00",
+                    "gap_length_days": 12.0,
+                    "missing_periods": 11,
+                    "severity": "moderate",
+                }
+            ],
         )
         session.add(temporal)
         session.commit()
@@ -355,5 +366,10 @@ class TestTemporalModels:
         saved = result.scalar_one()
 
         assert saved.detected_granularity == "day"
+        assert saved.span_days == 364.0
+        assert saved.granularity_confidence == 0.98
         assert saved.completeness_ratio == 0.96
+        assert saved.gap_count == 5
+        assert saved.largest_gap_days == 12.0
+        assert saved.gaps[0]["severity"] == "moderate"
         assert saved.is_stale is False

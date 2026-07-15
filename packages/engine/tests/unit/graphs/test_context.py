@@ -257,6 +257,8 @@ class TestFormatMetadataDocument:
                     detected_granularity="daily",
                     min_timestamp="2024-01-01",
                     max_timestamp="2024-12-31",
+                    span_days=364.0,
+                    largest_gap_days=7.0,
                 ),
             ],
         )
@@ -273,6 +275,10 @@ class TestFormatMetadataDocument:
         assert "by created" in result
         assert "2024-01-01 to 2024-12-31" in result
         assert "When the row was created." in result
+        # DAT-783: the promoted coverage facts reach the axis line — window span and
+        # the worst gap so the agent knows the axis isn't a clean continuum.
+        assert "364d span" in result
+        assert "largest gap 7d" in result
         # DAT-566: recurring identities surface with their note for "per <entity>".
         assert "Identity columns" in result
         assert "customer_id" in result

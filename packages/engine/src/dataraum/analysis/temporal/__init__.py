@@ -1,10 +1,9 @@
 """Temporal analysis module.
 
 Provides temporal analysis for time columns including:
-- Granularity detection (day, week, month, etc.)
-- Completeness and gap analysis
-- Update frequency + staleness assessment
-- Fiscal calendar alignment
+- Granularity detection (day, week, month, etc.) + confidence
+- Completeness, span, and gap analysis (the served coverage substrate)
+- Staleness assessment
 
 Main Entry Point:
     profile_temporal(table_id, duckdb_conn, session) -> Result[TemporalProfileResult]
@@ -26,7 +25,6 @@ from dataraum.analysis.temporal.db_models import (
 from dataraum.analysis.temporal.models import (
     TemporalAnalysisResult,
     TemporalProfileResult,
-    TemporalTableSummary,
 )
 from dataraum.analysis.temporal.processor import profile_temporal
 
@@ -36,7 +34,6 @@ __all__ = [
     # Result models
     "TemporalProfileResult",
     "TemporalAnalysisResult",
-    "TemporalTableSummary",
     # DB models
     "TemporalColumnProfile",
 ]

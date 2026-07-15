@@ -105,8 +105,15 @@ const full: LookProfileResult = {
 	temporal: {
 		min_timestamp: "2020-01-01T00:00:00.000Z",
 		max_timestamp: "2021-12-31T00:00:00.000Z",
+		span_days: 730,
 		granularity: "day",
+		granularity_confidence: 0.9,
 		completeness: 0.97,
+		expected_periods: 731,
+		actual_periods: 709,
+		gap_count: 3,
+		largest_gap_days: 12,
+		gaps: [],
 		is_stale: false,
 	},
 	derived: [

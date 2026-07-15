@@ -1,7 +1,14 @@
 """Temporal analysis database models.
 
-SQLAlchemy models for persisting temporal analysis results.
-Uses hybrid storage: structured fields for queries + JSONB for full data.
+SQLAlchemy models for persisting temporal analysis results. Every computed fact is
+a typed served column — the load-bearing coverage scalars are flat, the gap list is
+a JSON interior of strict ``TemporalGapInfo`` submodels; there is no write-only
+``profile_data`` blob (DAT-783).
+
+The two-layer standard (DAT-781): the JSON interior's closed vocabulary
+(``TemporalGapInfo.severity``) is enforced by a Pydantic ``Literal`` at the writer,
+and the closed scalar column ``detected_granularity`` additionally gets a DB
+``CheckConstraint`` (a CHECK cannot reach into a JSON array).
 
 - TemporalColumnProfile: Per-column temporal analysis (like StatisticalProfile)
 """
@@ -14,10 +21,12 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
 )
@@ -28,20 +37,36 @@ from dataraum.storage import Base
 if TYPE_CHECKING:
     from dataraum.storage import Column
 
+# The closed vocabulary of ``detected_granularity``: the config granularity set
+# (config/phases/temporal.yaml ``granularity.definitions``) plus the two sentinels
+# ``infer_granularity`` emits — ``irregular`` (no definition matched) and ``unknown``
+# (no median gap). Sorted for a deterministic CHECK string in the offline DDL dump.
+_GRANULARITY_VALUES: tuple[str, ...] = tuple(
+    sorted(
+        (
+            "second",
+            "minute",
+            "hour",
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year",
+            "irregular",
+            "unknown",
+        )
+    )
+)
+
 
 class TemporalColumnProfile(Base):
     """Per-column temporal analysis profile.
 
-    Similar to StatisticalProfile but for temporal characteristics.
-
-    HYBRID STORAGE APPROACH:
-    - Structured fields: Queryable dimensions (IDs, timestamps, key metrics)
-    - JSONB field: Full Pydantic model for flexibility
-
-    This allows:
-    - Fast queries on core dimensions
-    - Schema flexibility for experimentation
-    - Zero mapping code (Pydantic handles serialization)
+    Similar to StatisticalProfile but for temporal characteristics. Every computed
+    fact is a typed served column — there is NO write-only ``profile_data`` blob
+    (DAT-783 promoted the load-bearing coverage facts to flat columns + the ``gaps``
+    JSON interior, and deleted the WRONG fiscal/update-frequency components rather
+    than persisting them prettier).
     """
 
     __tablename__ = "temporal_column_profiles"
@@ -50,6 +75,12 @@ class TemporalColumnProfile(Base):
     # and two coexisting runs' rows don't collide.
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_temporal_column_profiles_column_run"),
+        # Closed-vocabulary enforcement (DAT-783, the DAT-781 two-layer standard):
+        # ``infer_granularity`` sets this from the config set + irregular/unknown.
+        CheckConstraint(
+            "detected_granularity IN (" + ", ".join(f"'{v}'" for v in _GRANULARITY_VALUES) + ")",
+            name="detected_granularity",
+        ),
     )
 
     profile_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -61,19 +92,28 @@ class TemporalColumnProfile(Base):
     # Relationships
     column: Mapped[Column] = relationship(back_populates="temporal_profiles")
 
-    # STRUCTURED: Queryable core dimensions
+    # Data window
     min_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     max_timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    detected_granularity: Mapped[str] = mapped_column(String, nullable=False)
-    completeness_ratio: Mapped[float | None] = mapped_column(Float)
+    span_days: Mapped[float] = mapped_column(Float, nullable=False)
 
-    # Flag for filtering (fast queries). Seasonality/trend flags were removed in DAT-524
-    # (they were computed from a degenerate constant series); ``is_stale`` is real — it
-    # comes from the timestamp-interval analysis, not the value series.
+    # Detected cadence (the vocabulary is the config granularity set + irregular/unknown)
+    detected_granularity: Mapped[str] = mapped_column(String, nullable=False)
+    granularity_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Coverage / completeness (from the DISTINCT-timestamp pass)
+    completeness_ratio: Mapped[float | None] = mapped_column(Float)
+    expected_periods: Mapped[int | None] = mapped_column(Integer)
+    actual_periods: Mapped[int | None] = mapped_column(Integer)
+    gap_count: Mapped[int | None] = mapped_column(Integer)
+    largest_gap_days: Mapped[float | None] = mapped_column(Float)
+
+    # Staleness: freshest observation old relative to the detected cadence.
     is_stale: Mapped[bool | None] = mapped_column(Boolean)
 
-    # JSONB: Full TemporalAnalysisResult model
-    profile_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    # JSON interior: the bounded list of significant gaps (largest first). Each entry
+    # is a strict ``TemporalGapInfo`` submodel validated at the writer (DAT-783).
+    gaps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
 
 
 # Index for efficient column lookups

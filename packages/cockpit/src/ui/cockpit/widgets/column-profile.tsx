@@ -360,8 +360,26 @@ export function ColumnProfileWidget({
 					<Group gap="md" wrap="wrap">
 						<Field label="from" value={temporal.min_timestamp ?? "—"} />
 						<Field label="to" value={temporal.max_timestamp ?? "—"} />
+						<Field
+							label="span"
+							value={
+								temporal.span_days === null
+									? "—"
+									: `${Math.round(temporal.span_days)}d`
+							}
+						/>
 						<Field label="granularity" value={temporal.granularity ?? "—"} />
 						<Field label="completeness" value={pct(temporal.completeness)} />
+						<Field
+							label="gaps"
+							value={
+								temporal.gap_count === null
+									? "—"
+									: temporal.largest_gap_days
+										? `${temporal.gap_count} (largest ${Math.round(temporal.largest_gap_days)}d)`
+										: String(temporal.gap_count)
+							}
+						/>
 						<Field
 							label="stale"
 							value={

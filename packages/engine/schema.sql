@@ -667,12 +667,19 @@ CREATE TABLE temporal_column_profiles (
 	profiled_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	min_timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	max_timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	span_days FLOAT NOT NULL, 
 	detected_granularity VARCHAR NOT NULL, 
+	granularity_confidence FLOAT NOT NULL, 
 	completeness_ratio FLOAT, 
+	expected_periods INTEGER, 
+	actual_periods INTEGER, 
+	gap_count INTEGER, 
+	largest_gap_days FLOAT, 
 	is_stale BOOLEAN, 
-	profile_data JSON NOT NULL, 
+	gaps JSON NOT NULL, 
 	CONSTRAINT pk_temporal_column_profiles PRIMARY KEY (profile_id), 
 	CONSTRAINT uq_temporal_column_profiles_column_run UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_temporal_column_profiles_detected_granularity CHECK (detected_granularity IN ('day', 'hour', 'irregular', 'minute', 'month', 'quarter', 'second', 'unknown', 'week', 'year')), 
 	CONSTRAINT fk_temporal_column_profiles_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 

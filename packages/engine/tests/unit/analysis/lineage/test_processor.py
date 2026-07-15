@@ -284,7 +284,7 @@ def _seed_series(
     measure_col: str,
     measure_by_entity: dict[str, list[float]],
     event_cols: list[str],
-    event_by_entity: dict[str, dict[str, list[float]]],
+    event_by_entity: dict[str, dict[str, list[float | None]]],
 ) -> dict[str, str]:
     """Seed one measure fact + one finer event fact with EXPLICIT per-entity series.
 
@@ -292,6 +292,8 @@ def _seed_series(
     canonical ``_seed`` can't express: per-entity, per-column monthly values for
     the event side and the measure side independently. Each event cell is written
     as two half-rows so the direction gate keeps the event side finer-grained.
+    ``None`` event values write SQL NULL — an all-NULL month drops that column
+    from the period sums, the shape behind the own-subset-denominator trap.
     """
     ids: dict[str, str] = {}
     entities = sorted(measure_by_entity)
@@ -363,7 +365,8 @@ def _seed_series(
             m_rows.append(f"('{entity}', {d}, {measure_by_entity[entity][i]})")
             cell = [event_by_entity[entity][c][i] for c in event_cols]
             for half in (0.5, 0.5):
-                e_rows.append(f"('{entity}', {d}, {', '.join(str(v * half) for v in cell)})")
+                halves = ", ".join("NULL" if v is None else str(v * half) for v in cell)
+                e_rows.append(f"('{entity}', {d}, {halves})")
     duck.execute(f"INSERT INTO monthly_summary VALUES {', '.join(m_rows)}")
     duck.execute(f"INSERT INTO events VALUES {', '.join(e_rows)}")
     return ids
@@ -489,6 +492,50 @@ class TestConventionSelection:
         assert row is not None
         assert row.convention_sql == '"gross" - "fees"'
         assert row.pattern == "per_period"
+
+    def test_own_subset_denominator_cannot_flatter_support(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Probe leg b2 at the processor level — pins the LOAD-BEARING caveat
+        that ``wilson_lcb`` is fed the pairing's common denominator, never the
+        convention's own aligned subset (``verdict.n_entities``).
+
+        ``partial`` is NULL for half the entities and fits its own subset
+        perfectly: 5 unanimous voters. The true ``base`` reconciles 7 of the 10
+        entities (three are deliberately off-scale and abstain). On the OWN
+        subset the trap outranks truth — LCB(5/5) ≈ 0.57 > LCB(7/10) ≈ 0.40 —
+        so reverting the denominator flips this test to ``partial``; on the
+        common denominator the trap collapses to LCB(5/10) ≈ 0.24 and ``base``
+        wins."""
+        entities = tuple(f"e{i}" for i in range(10))
+        base = {e: [200.0 + 15 * k + 5 * i for i in range(12)] for k, e in enumerate(entities)}
+        partial: dict[str, list[float | None]] = {
+            e: [base[e][i] if k < 5 else None for i in range(12)] for k, e in enumerate(entities)
+        }
+        # e0–e6 ARE the base movement; e7–e9 are 2× off-scale (residual 1.0 → abstain).
+        measure = {
+            e: [base[e][i] * (1.0 if k < 7 else 2.0) for i in range(12)]
+            for k, e in enumerate(entities)
+        }
+        ids = _seed_series(
+            real_session,
+            duck,
+            measure_col="total",
+            measure_by_entity=measure,
+            event_cols=["base", "partial"],
+            event_by_entity={e: {"base": base[e], "partial": partial[e]} for e in entities},
+        )
+        discover_aggregation_lineage(
+            real_session,
+            duckdb_conn=duck,
+            table_ids=[ids["monthly_summary"], ids["events"]],
+            run_id=_RUN,
+            period_grain="monthly",
+        )
+        row = _row_for(real_session, ids["monthly_summary.total"])
+        assert row is not None
+        assert row.convention_sql == '"base"'
+        assert row.match_rate == pytest.approx(0.7)  # 7 of 10 aligned entities vote
 
 
 class TestDiscoverAggregationLineage:

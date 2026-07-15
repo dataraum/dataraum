@@ -32,8 +32,11 @@ into the property-graph grounding. Grounded in the eval probe
 LCB). The best candidate per measure column persists as one run-versioned
 ``MeasureAggregationLineage`` row.
 
-Every abstention logs its stage (``lineage_candidate_dropped``) — visible,
-never silent.
+Every abstention logs its stage (``lineage_no_shared_dimension`` /
+``lineage_no_slice_series`` / ``lineage_direction_gate`` /
+``inline_slice_series_failed`` / ``lineage_convention_columns_capped``) —
+visible, never silent; per-convention abstentions inside a live pairing are
+the search doing its job and stay quiet.
 """
 
 from __future__ import annotations
@@ -271,7 +274,14 @@ class _Best:
 
 
 def _bic(candidate: _Best) -> float:
-    """BIC over the pooled winning-voter residual mass; ``k`` = arity."""
+    """Schwarz BIC over the pooled winning-voter residual mass; ``k`` = arity.
+
+    Winning-pattern voters only — consistent with the verdict's medians (the
+    grounding probe pooled ALL voters; immaterial where it matters, since
+    collinear twins share voter sets). The 1e-12 RSS floor means two exact-fit
+    candidates with different voter counts compare through the floor, not
+    evidence — reachable only on a cross-pairing exact-LCB tie, accepted.
+    """
     n = len(candidate.voter_residuals)
     if n == 0:
         return float("inf")
@@ -283,14 +293,24 @@ def _better(challenger: _Best, incumbent: _Best) -> bool:
     """DAT-759 selection order: support, then description length, then residual.
 
     1. Higher Wilson LCB wins — breadth of reconciling entities is the
-       generalization estimate, not residual depth on a subset.
+       generalization estimate, not residual depth on a subset. Support counts
+       every reconciling voter (a ≤20% pattern-dissenting minority included):
+       support means "this convention reconciles the entity", not "votes my
+       pattern".
     2. On an LCB tie across arities, the single wins unless the difference is
        very strongly better (ΔBIC > 10, Kass–Raftery) — exact collinear twins
        (``debit − net_amount ≡ credit``) are numerically identical, so only
-       description length can order them.
+       description length can order them. ΔBIC is statistically meaningful
+       within one pairing (same entities, same periods); a cross-pairing exact
+       LCB tie compares different data and the step degrades to a heuristic.
     3. Same arity: lower median residual.
+
+    Pairwise, not a strict weak order: mixing BIC (step 2) with median residual
+    (step 3) admits rare tie-surface cycles, so the streaming argmax is defined
+    by enumeration order — which is fully sorted (identities, tables, axes,
+    conventions) and therefore deterministic per run and per re-delivery.
     """
-    if abs(challenger.support_lcb - incumbent.support_lcb) > 1e-12:
+    if challenger.support_lcb != incumbent.support_lcb:
         return challenger.support_lcb > incumbent.support_lcb
     if challenger.arity != incumbent.arity:
         single, difference = (
@@ -314,8 +334,8 @@ def discover_aggregation_lineage(
     """Reconcile every shared-dimension fact pair and persist the verdicts.
 
     Idempotent per run — form-(a) writer (DAT-502): one row per measure
-    column (the best reconciling event table + convention by winning
-    residual), UPSERTed on ``uq_measure_lineage_column_run``. A Temporal
+    column (the best reconciling event table + convention by support-first
+    selection, see :func:`_better`), UPSERTed on ``uq_measure_lineage_column_run``. A Temporal
     success-redelivery (same ``run_id``) converges in place; prior runs'
     rows stay untouched. Deterministic SQL producer: the recomputed batch
     is the same verdict set, so no run-scoped clear is needed.
@@ -328,12 +348,18 @@ def discover_aggregation_lineage(
         for t in session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars()
     }
     # This run's slice dimensions (grouped by referenced identity below).
+    # Deterministic order: candidate enumeration inherits it, and the streaming
+    # argmax in ``_better`` resolves exact ties by that order — an unordered
+    # scan could let a Temporal success-redelivery pick a different equally-
+    # ranked verdict, breaking the deterministic-producer claim above.
     defs = (
         session.execute(
-            select(SliceDefinition).where(
+            select(SliceDefinition)
+            .where(
                 SliceDefinition.table_id.in_(table_ids),
                 SliceDefinition.run_id == run_id,
             )
+            .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
         )
         .scalars()
         .all()

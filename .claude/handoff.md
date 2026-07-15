@@ -5,6 +5,39 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-759 — aggregation-lineage convention selection is support-first (Wilson LCB)
+
+**Branch:** `fix/dat-759-convention-selection`. `discover_aggregation_lineage`
+no longer selects the reconciliation convention by minimum median residual —
+that criterion is monotone under the ordered-difference search family, so
+collinear artifacts (`debit − net_amount ≡ credit`) out-raced true singles on
+half-entity subsets and persisted **value-wrong `convention_sql`** into the
+property-graph grounding (the 0.50/0.75 match rates eval surfaced).
+
+### What changed
+
+- **Selection order:** Wilson score LCB (95%) of the vote rate over the
+  pairing's **common entity denominator** → on LCB ties, lower arity unless the
+  difference wins by ΔBIC > 10 (Kass–Raftery) → median residual. Grounded in
+  the eval probe `scripts/probes/dat759-convention-selection` (truth 3/3,
+  LCB margins 0.345–0.620; min-residual was value-wrong on 2/3 real measures).
+- **No schema change.** Persisted `MeasureAggregationLineage` fields are
+  unchanged; only which candidate wins changed. `lineage_reconciled` log lines
+  now also carry `support_lcb` + `n_entities_fired`.
+- `reconcile.py` gains `wilson_lcb`, `classify_series`, `dispose_classified`
+  (pure refactor of `dispose`; `FIRE_RESIDUAL_MAX` vote gate unchanged — the
+  min-over-family permutation-null replacement for it is a follow-up ticket).
+
+### What eval should see
+
+- `trial_balance.debit_balance` / `credit_balance` reconcile with conventions
+  `"debit"` / `"credit"` at match_rate 1.0 (was `debit − net_amount` at 0.50 /
+  `credit` at 0.75) → `test_reconciliation_covers_expected_rollup_measures`
+  goes 3/3. `balance_sheet.ending_balance` may report `"net_amount"` instead of
+  the value-identical `"debit" - "credit"` (arity preference).
+
+---
+
 ## DAT-761 — stack v4 dimension identity: DAT-757 gate stack replaces distinct-ratio g3
 
 **Branch:** `feat/dat-761-stack-v4-dimension-identity`. **The `dimension_hierarchies`

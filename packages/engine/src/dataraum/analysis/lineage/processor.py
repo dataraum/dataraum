@@ -18,8 +18,19 @@ and ordered pair differences like ``debit − credit`` — sums are linear, so
 conventions distribute over them), and lets the deterministic reconciliation
 statistic (:mod:`dataraum.analysis.lineage.reconcile`) dispose every pairing. A
 wrong pairing lands at residual ≈ 1 and abstains (probe margins: true ≈ 0.02 vs
-wrong-anchor ≈ 1.0); the best reconciling verdict per measure column persists as
-one run-versioned ``MeasureAggregationLineage`` row.
+wrong-anchor ≈ 1.0).
+
+Convention selection is SUPPORT-FIRST (DAT-759): candidates are ranked by the
+Wilson lower bound of their vote rate over the pairing's COMMON entity
+denominator, LCB ties break to the lower arity unless the difference wins by
+ΔBIC > 10 (Kass–Raftery), then by median residual. Minimum-residual selection
+was the prior criterion and is monotone under search freedom — the ordered
+differences structurally out-raced true singles (``debit − net_amount ≈ credit``
+beat ``debit`` on a half-entity subset), persisting value-wrong ``convention_sql``
+into the property-graph grounding. Grounded in the eval probe
+``scripts/probes/dat759-convention-selection`` (truth 3/3, margins 0.345–0.620
+LCB). The best candidate per measure column persists as one run-versioned
+``MeasureAggregationLineage`` row.
 
 Every abstention logs its stage (``lineage_candidate_dropped``) — visible,
 never silent.
@@ -27,6 +38,7 @@ never silent.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -34,7 +46,12 @@ from sqlalchemy import select
 
 from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.lineage.models import CandidateDisposal
-from dataraum.analysis.lineage.reconcile import dispose
+from dataraum.analysis.lineage.reconcile import (
+    MIN_PERIODS,
+    classify_series,
+    dispose_classified,
+    wilson_lcb,
+)
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -219,12 +236,71 @@ def _paired_row_counts(measure: _SliceSeries, event: _SliceSeries) -> tuple[int,
     return m_total, e_total
 
 
+def _pairing_universe(measure: _SliceSeries, event: _SliceSeries, measure_col: str) -> int:
+    """The COMMON entity denominator for one (measure, event) pairing (DAT-759).
+
+    Entities whose measure series is evaluable at all — ≥ ``MIN_PERIODS`` aligned
+    periods carrying the measure value, not identically zero — independent of any
+    convention's terms. Vote rates are comparable across the family only on this
+    shared denominator: a convention whose terms are absent on some entities must
+    NOT get a shrunken denominator and a flattered rate (the support-gameability
+    trap, probe leg b2 — own-subset LCB 0.722 vs common 0.299 on the same votes).
+    """
+    n = 0
+    for value in measure.sums.keys() & event.sums.keys():
+        m_periods = measure.sums[value]
+        ys = [
+            m_periods[label][measure_col]
+            for label in m_periods.keys() & event.sums[value].keys()
+            if measure_col in m_periods[label]
+        ]
+        if len(ys) >= MIN_PERIODS and any(ys):
+            n += 1
+    return n
+
+
 @dataclass(frozen=True)
 class _Best:
     verdict: CandidateDisposal
     event_table: Table
     convention_sql: str
-    winning_residual: float
+    winning_residual: float  # median winning-pattern voter residual
+    support_lcb: float  # Wilson LCB of voters over the pairing's common denominator
+    arity: int  # convention terms: 1 = single, 2 = ordered difference
+    voter_residuals: tuple[float, ...]  # winning-pattern per-entity residuals (ΔBIC)
+
+
+def _bic(candidate: _Best) -> float:
+    """BIC over the pooled winning-voter residual mass; ``k`` = arity."""
+    n = len(candidate.voter_residuals)
+    if n == 0:
+        return float("inf")
+    rss = max(sum(r * r for r in candidate.voter_residuals), 1e-12)
+    return n * math.log(rss / n) + candidate.arity * math.log(n)
+
+
+def _better(challenger: _Best, incumbent: _Best) -> bool:
+    """DAT-759 selection order: support, then description length, then residual.
+
+    1. Higher Wilson LCB wins — breadth of reconciling entities is the
+       generalization estimate, not residual depth on a subset.
+    2. On an LCB tie across arities, the single wins unless the difference is
+       very strongly better (ΔBIC > 10, Kass–Raftery) — exact collinear twins
+       (``debit − net_amount ≡ credit``) are numerically identical, so only
+       description length can order them.
+    3. Same arity: lower median residual.
+    """
+    if abs(challenger.support_lcb - incumbent.support_lcb) > 1e-12:
+        return challenger.support_lcb > incumbent.support_lcb
+    if challenger.arity != incumbent.arity:
+        single, difference = (
+            (incumbent, challenger)
+            if challenger.arity > incumbent.arity
+            else (challenger, incumbent)
+        )
+        difference_wins = _bic(single) - _bic(difference) > 10.0
+        return difference_wins == (challenger is difference)
+    return challenger.winning_residual < incumbent.winning_residual
 
 
 def discover_aggregation_lineage(
@@ -433,11 +509,18 @@ def discover_aggregation_lineage(
                             [c for c in event.numeric_columns if c not in keys_e]
                         )
                         for measure_col in measure_cols:
+                            # The common denominator every convention's vote rate
+                            # is judged against (DAT-759) — fixed per pairing, so
+                            # a term missing on some entities can't flatter a rate.
+                            universe = _pairing_universe(measure, event, measure_col)
+                            if universe == 0:
+                                continue
                             for convention_sql, terms in conventions:
                                 by_entity = _aligned_series(measure, event, measure_col, terms)
                                 if not by_entity:
                                     continue
-                                verdict = dispose(by_entity)
+                                results = classify_series(by_entity)
+                                verdict = dispose_classified(results)
                                 if verdict is None:
                                     continue
                                 residual = (
@@ -445,16 +528,24 @@ def discover_aggregation_lineage(
                                     if verdict.pattern == "per_period"
                                     else verdict.r_stock_median
                                 )
+                                challenger = _Best(
+                                    verdict=verdict,
+                                    event_table=event.table,
+                                    convention_sql=convention_sql,
+                                    winning_residual=residual,
+                                    support_lcb=wilson_lcb(verdict.n_entities_fired, universe),
+                                    arity=len(terms),
+                                    voter_residuals=tuple(
+                                        min(r.r_flow, r.r_stock)
+                                        for r in results.values()
+                                        if r.label == verdict.pattern
+                                    ),
+                                )
                                 key = columns_by_table[m_tid][measure_col].column_id
                                 prior = best_by_measure.get(key)
-                                if prior is None or residual < prior[0].winning_residual:
+                                if prior is None or _better(challenger, prior[0]):
                                     best_by_measure[key] = (
-                                        _Best(
-                                            verdict=verdict,
-                                            event_table=event.table,
-                                            convention_sql=convention_sql,
-                                            winning_residual=residual,
-                                        ),
+                                        challenger,
                                         measure.table,
                                         measure_col,
                                         slice_label,
@@ -489,6 +580,8 @@ def discover_aggregation_lineage(
             convention=best.convention_sql,
             pattern=best.verdict.pattern,
             match_rate=round(best.verdict.match_rate, 3),
+            support_lcb=round(best.support_lcb, 3),
+            n_entities_fired=best.verdict.n_entities_fired,
         )
     upsert(
         session,

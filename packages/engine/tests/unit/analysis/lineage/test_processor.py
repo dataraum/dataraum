@@ -277,6 +277,220 @@ def _row_for(session: Session, column_id: str) -> MeasureAggregationLineage | No
     ).scalar_one_or_none()
 
 
+def _seed_series(
+    session: Session,
+    duck: duckdb.DuckDBPyConnection,
+    *,
+    measure_col: str,
+    measure_by_entity: dict[str, list[float]],
+    event_cols: list[str],
+    event_by_entity: dict[str, dict[str, list[float]]],
+) -> dict[str, str]:
+    """Seed one measure fact + one finer event fact with EXPLICIT per-entity series.
+
+    The convention-selection tests (DAT-759) need adversarial numeric shapes the
+    canonical ``_seed`` can't express: per-entity, per-column monthly values for
+    the event side and the measure side independently. Each event cell is written
+    as two half-rows so the direction gate keeps the event side finer-grained.
+    """
+    ids: dict[str, str] = {}
+    entities = sorted(measure_by_entity)
+    months = len(next(iter(measure_by_entity.values())))
+    dim_table = Table(
+        table_id=str(uuid4()),
+        source_id="src-1",
+        table_name="chart_of_accounts",
+        layer="typed",
+        duckdb_path="chart_of_accounts",
+    )
+    session.add(dim_table)
+    ids["chart_of_accounts"] = dim_table.table_id
+    for name, cols in (("monthly_summary", [measure_col]), ("events", event_cols)):
+        table = Table(
+            table_id=str(uuid4()),
+            source_id="src-1",
+            table_name=name,
+            layer="typed",
+            duckdb_path=name,
+        )
+        session.add(table)
+        ids[name] = table.table_id
+        for pos, col in enumerate(cols):
+            column = Column(
+                column_id=str(uuid4()),
+                table_id=table.table_id,
+                column_name=col,
+                column_position=pos,
+                resolved_type="DOUBLE",
+            )
+            session.add(column)
+            ids[f"{name}.{col}"] = column.column_id
+        session.add(
+            TableEntity(
+                run_id=_RUN,
+                table_id=table.table_id,
+                detected_entity_type="fact",
+                time_columns=[{"column": "period_date", "aspect": "period", "note": "Period."}],
+            )
+        )
+        session.add(
+            SliceDefinition(
+                run_id=_RUN,
+                table_id=table.table_id,
+                column_id=ids[f"{name}.{cols[0]}"],
+                column_name=_DIM,
+                dimension_table_id=dim_table.table_id,
+                dimension_attribute="account_type",
+                fk_role="account_id",
+                slice_priority=1,
+                distinct_values=list(entities),
+                value_count=len(entities),
+                detection_source="llm",
+            )
+        )
+    session.flush()
+
+    duck.execute(
+        f'CREATE TABLE monthly_summary ("{_DIM}" VARCHAR, period_date DATE, {measure_col} DOUBLE)'
+    )
+    event_ddl = ", ".join(f"{c} DOUBLE" for c in event_cols)
+    duck.execute(f'CREATE TABLE events ("{_DIM}" VARCHAR, period_date DATE, {event_ddl})')
+    m_rows: list[str] = []
+    e_rows: list[str] = []
+    for entity in entities:
+        for i in range(months):
+            d = f"DATE '2025-{i + 1:02d}-15'"
+            m_rows.append(f"('{entity}', {d}, {measure_by_entity[entity][i]})")
+            cell = [event_by_entity[entity][c][i] for c in event_cols]
+            for half in (0.5, 0.5):
+                e_rows.append(f"('{entity}', {d}, {', '.join(str(v * half) for v in cell)})")
+    duck.execute(f"INSERT INTO monthly_summary VALUES {', '.join(m_rows)}")
+    duck.execute(f"INSERT INTO events VALUES {', '.join(e_rows)}")
+    return ids
+
+
+class TestConventionSelection:
+    """DAT-759: support-first selection (Wilson LCB over the common denominator).
+
+    Grounded by the eval probe ``scripts/probes/dat759-convention-selection``
+    (dataraum-eval): min-residual selection picked value-wrong conventions on
+    2/3 real measures; Wilson-LCB + ΔBIC arity tie-break selects truth 3/3.
+    """
+
+    def test_broad_single_beats_tighter_subset_artifact(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The headline defect: ``net_amount`` (= debit − credit) fits a 2/4
+        entity subset EXACTLY (credit ≡ 0 there) while the true ``debit`` fits
+        all 4 entities with a small residual. Min-residual selection picked the
+        subset artifact (0 < 0.01); support selection must pick ``debit``
+        (LCB 4/4 ≈ 0.51 ≫ 2/4 ≈ 0.15)."""
+        entities = ("assets", "equity", "expenses", "liabilities")
+        debit = {e: [100.0 + 10 * k + 3 * i for i in range(12)] for k, e in enumerate(entities)}
+        # 'assets'/'equity' carry credit movement; 'expenses'/'liabilities' none.
+        credit = {
+            e: [debit[e][i] / 3 if k < 2 else 0.0 for i in range(12)]
+            for k, e in enumerate(entities)
+        }
+        net = {e: [debit[e][i] - credit[e][i] for i in range(12)] for e in entities}
+        # The measure IS the debit movement — exact where credit is dead, 1%
+        # off where it is not, so the artifact's subset fit is strictly tighter.
+        measure = {
+            e: [debit[e][i] * (1.01 if k < 2 else 1.0) for i in range(12)]
+            for k, e in enumerate(entities)
+        }
+        ids = _seed_series(
+            real_session,
+            duck,
+            measure_col="debit_total",
+            measure_by_entity=measure,
+            event_cols=["credit", "debit", "net_amount"],
+            event_by_entity={
+                e: {"debit": debit[e], "credit": credit[e], "net_amount": net[e]} for e in entities
+            },
+        )
+        assert (
+            discover_aggregation_lineage(
+                real_session,
+                duckdb_conn=duck,
+                table_ids=[ids["monthly_summary"], ids["events"]],
+                run_id=_RUN,
+                period_grain="monthly",
+            )
+            > 0
+        )
+        row = _row_for(real_session, ids["monthly_summary.debit_total"])
+        assert row is not None
+        assert row.convention_sql == '"debit"'
+        assert row.pattern == "per_period"
+        assert row.match_rate > 0.99  # all 4 entities vote, unanimous
+
+    def test_collinear_twin_breaks_to_single(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """``debit − net_amount`` is numerically IDENTICAL to ``credit`` (the
+        roll-forward collinearity) — no data statistic can order the twins, so
+        the LCB tie must break to the lower arity, never to enumeration order."""
+        entities = ("assets", "equity", "expenses", "liabilities")
+        debit = {e: [80.0 + 5 * k + 2 * i for i in range(12)] for k, e in enumerate(entities)}
+        credit = {e: [30.0 + 3 * k + i for i in range(12)] for k, e in enumerate(entities)}
+        net = {e: [debit[e][i] - credit[e][i] for i in range(12)] for e in entities}
+        ids = _seed_series(
+            real_session,
+            duck,
+            measure_col="credit_total",
+            measure_by_entity=credit,
+            event_cols=["credit", "debit", "net_amount"],
+            event_by_entity={
+                e: {"debit": debit[e], "credit": credit[e], "net_amount": net[e]} for e in entities
+            },
+        )
+        discover_aggregation_lineage(
+            real_session,
+            duckdb_conn=duck,
+            table_ids=[ids["monthly_summary"], ids["events"]],
+            run_id=_RUN,
+            period_grain="monthly",
+        )
+        row = _row_for(real_session, ids["monthly_summary.credit_total"])
+        assert row is not None
+        assert row.convention_sql == '"credit"'
+
+    def test_true_difference_wins_by_bic(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Single-preference must not kill a TRUE difference: the measure is
+        ``gross − fees`` (fees ≈ 10% of gross). ``gross`` alone also votes on
+        every entity (residual ≈ 0.1 < FIRE_RESIDUAL_MAX) so the LCBs tie — the
+        ΔBIC > 10 escape (probe: ΔBIC = 56.6) must keep the difference."""
+        entities = ("assets", "equity", "expenses", "liabilities")
+        gross = {e: [1000.0 + 50 * k + 20 * i for i in range(12)] for k, e in enumerate(entities)}
+        fees = {e: [gross[e][i] * (0.08 + 0.01 * (i % 3)) for i in range(12)] for e in entities}
+        measure = {
+            e: [(gross[e][i] - fees[e][i]) * (1 + 0.001 * (-1) ** i) for i in range(12)]
+            for e in entities
+        }
+        ids = _seed_series(
+            real_session,
+            duck,
+            measure_col="net_revenue",
+            measure_by_entity=measure,
+            event_cols=["fees", "gross"],
+            event_by_entity={e: {"gross": gross[e], "fees": fees[e]} for e in entities},
+        )
+        discover_aggregation_lineage(
+            real_session,
+            duckdb_conn=duck,
+            table_ids=[ids["monthly_summary"], ids["events"]],
+            run_id=_RUN,
+            period_grain="monthly",
+        )
+        row = _row_for(real_session, ids["monthly_summary.net_revenue"])
+        assert row is not None
+        assert row.convention_sql == '"gross" - "fees"'
+        assert row.pattern == "per_period"
+
+
 class TestDiscoverAggregationLineage:
     def test_stock_measure_reconciles_cumulative(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
@@ -291,7 +505,8 @@ class TestDiscoverAggregationLineage:
         assert row.match_rate > 0.99
         assert row.run_id == _RUN
         # The winning convention reproduces the movement exactly: the single
-        # column "debit" (ties with "debit" - "credit" break to singles-first).
+        # column "debit" ("debit" - "credit" is its collinear twin here — the
+        # DAT-759 support-LCB tie breaks to the lower arity).
         assert row.convention_sql == '"debit"'
 
     def test_flow_measure_reconciles_per_period(

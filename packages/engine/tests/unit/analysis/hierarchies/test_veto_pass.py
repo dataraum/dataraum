@@ -68,38 +68,63 @@ def _judge_returning(verdict: str) -> MagicMock:
 
 def test_veto_surfaces_never_deletes() -> None:
     rows = [_alias_row()]
-    _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                     d_sql=_D_SQL, judge=_judge_returning("veto"))
+    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
+                             d_sql=_D_SQL, judge=_judge_returning("veto"))
     assert len(rows) == 1
     assert rows[0]["needs_confirmation"] is True
+    assert (stats.status, stats.routed, stats.vetoed, stats.views_judged) == ("ran", 1, 1, 1)
 
 
 def test_uphold_changes_nothing() -> None:
     rows = [_alias_row()]
     before = copy.deepcopy(rows)
-    _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                     d_sql=_D_SQL, judge=_judge_returning("uphold"))
+    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
+                             d_sql=_D_SQL, judge=_judge_returning("uphold"))
     assert rows == before
+    assert (stats.routed, stats.vetoed) == (1, 0)
 
 
-def test_lane_off_is_byte_identical() -> None:
+def test_lane_off_is_byte_identical_and_observable() -> None:
     rows = [_alias_row()]
     before = copy.deepcopy(rows)
-    _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                     d_sql=_D_SQL, judge=None)
+    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
+                             d_sql=_D_SQL, judge=None)
     assert rows == before
+    assert stats.status == "off"
 
 
-def test_judge_failure_skips_lane() -> None:
+def test_judge_failure_skips_lane_observably() -> None:
     from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
 
     judge = MagicMock(spec=DimensionIdentityJudge)
     judge.veto.return_value = MagicMock(success=False, error="api down")
     rows = [_alias_row()]
     before = copy.deepcopy(rows)
-    _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                     d_sql=_D_SQL, judge=judge)
+    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
+                             d_sql=_D_SQL, judge=judge)
     assert rows == before
+    assert (stats.status, stats.views_failed) == ("failed", 1)
+
+
+def test_permanent_error_skips_transient_propagates() -> None:
+    import pytest
+
+    from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
+    from dataraum.llm.providers.base import PermanentProviderError, TransientProviderError
+
+    judge = MagicMock(spec=DimensionIdentityJudge)
+    judge.veto.side_effect = PermanentProviderError("bad key")
+    rows = [_alias_row()]
+    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
+                             d_sql=_D_SQL, judge=judge)
+    assert stats.status == "failed" and rows[0]["needs_confirmation"] is False
+
+    # Transient errors ride to the Temporal boundary: the phase retry re-runs
+    # the seed-deterministic stats identically and re-asks the judge.
+    judge.veto.side_effect = TransientProviderError("429")
+    with pytest.raises(TransientProviderError):
+        _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
+                         d_sql=_D_SQL, judge=judge)
 
 
 def test_role_and_manual_rows_never_routed() -> None:

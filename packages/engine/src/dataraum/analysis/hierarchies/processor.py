@@ -469,7 +469,7 @@ def discover_dimension_hierarchies(
     table_ids: list[str],
     run_id: str,
     judge: object | None = None,
-) -> int:
+) -> tuple[int, VetoLaneStats]:
     """Run the stack-v4 identity pass over each enriched view; persist run-versioned.
 
     Form-(a) writer (DAT-502): one row per ``(signature, run_id)``, UPSERTed;
@@ -477,7 +477,9 @@ def discover_dimension_hierarchies(
     a redelivered run converges. ``judge`` is the DAT-762 veto lane
     (``DimensionIdentityJudge``), built by the PHASE (the composition root —
     the processor stays LLM-free and unit-hermetic); None = lane off, rows
-    byte-identical to the pure statistical output. Returns the rows persisted.
+    byte-identical to the pure statistical output. Returns the rows persisted
+    and the lane's observable outcome (a phase output — a dead lane must be
+    visible, never silent).
     """
     enriched = (
         session.execute(
@@ -494,6 +496,7 @@ def discover_dimension_hierarchies(
         for t in session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars()
     }
 
+    lane = VetoLaneStats(status="off" if judge is None else "ran")
     rows: list[dict[str, object]] = []
     col_ids_by_table: dict[str, dict[str, str]] = {}
     for ev in enriched:
@@ -532,13 +535,15 @@ def discover_dimension_hierarchies(
         )
         # DAT-762: names-only veto on the routed classes, before the teach
         # overlay (user assertions are never routed).
-        _judge_veto_pass(
-            view_rows,
-            view_name=ev.view_name,
-            frame=frame,
-            n_rows=scan.n,
-            d_sql=scan.d_sql,
-            judge=judge,
+        lane.absorb(
+            _judge_veto_pass(
+                view_rows,
+                view_name=ev.view_name,
+                frame=frame,
+                n_rows=scan.n,
+                d_sql=scan.d_sql,
+                judge=judge,
+            )
         )
         rows.extend(view_rows)
 
@@ -549,7 +554,9 @@ def discover_dimension_hierarchies(
     rows = _apply_teaches(session, rows, col_ids_by_table=col_ids_by_table, run_id=run_id)
 
     upsert(session, DimensionHierarchy, rows, index_elements=["signature", "run_id"])
-    return len(rows)
+    lane.finalize()
+    logger.info("hierarchy_veto_lane", **lane.as_output())
+    return len(rows), lane
 
 
 # Distinct-value sample size for the veto lane's shape classification —
@@ -614,6 +621,49 @@ def _route_row(
     return None
 
 
+@dataclass
+class VetoLaneStats:
+    """The veto lane's observable outcome — a first-class phase output.
+
+    The lane is advisory (stats decide), so a dead judge must never fail the
+    phase — but it must never die SILENTLY either (the DAT-536 inert-safeguard
+    lesson): consumers see ``status`` + counts in the phase outputs, and a
+    liveness assertion can catch a lane that stopped running.
+    """
+
+    status: str = "off"  # off | ran | failed | partial
+    views_judged: int = 0
+    views_failed: int = 0
+    routed: int = 0
+    vetoed: int = 0
+
+    def absorb(self, other: VetoLaneStats) -> None:
+        """Sum the counts; the final status is derived once all views are in."""
+        self.views_judged += other.views_judged
+        self.views_failed += other.views_failed
+        self.routed += other.routed
+        self.vetoed += other.vetoed
+
+    def finalize(self) -> None:
+        if self.status == "off":
+            return
+        if self.views_failed == 0:
+            self.status = "ran"
+        elif self.views_judged > 0:
+            self.status = "partial"
+        else:
+            self.status = "failed"
+
+    def as_output(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "views_judged": self.views_judged,
+            "views_failed": self.views_failed,
+            "routed": self.routed,
+            "vetoed": self.vetoed,
+        }
+
+
 def _judge_veto_pass(
     view_rows: list[dict[str, object]],
     *,
@@ -622,18 +672,24 @@ def _judge_veto_pass(
     n_rows: int,
     d_sql: dict[str, int],
     judge: object,
-) -> None:
+) -> VetoLaneStats:
     """Route this view's asserted structures; one batched names-only veto call.
 
     Stats DECIDE — a veto never deletes a row: the vetoed structure is
     surfaced (``needs_confirmation=True``) with a structured log carrying the
-    judge's reason (the v1 audit trail; no new column). Judge disabled or
-    failing means the lane is SKIPPED and the statistical verdicts stand —
-    absence of judgment is not a judgment. Runs BEFORE teach materialization:
-    user assertions are never routed.
+    judge's reason (the v1 audit trail; no new column). A PERMANENT provider
+    error skips the lane for this view (recorded in the returned stats, never
+    a phase failure — absence of judgment is not a judgment); a TRANSIENT
+    error propagates to the Temporal activity boundary, where the phase retry
+    re-runs the seed-deterministic stats identically and the judge gets its
+    second chance. Runs BEFORE teach materialization: user assertions are
+    never routed.
     """
-    if judge is None or not view_rows:
-        return
+    if judge is None:
+        return VetoLaneStats(status="off")
+    stats_out = VetoLaneStats(status="ran")
+    if not view_rows:
+        return stats_out
     evidence_of = {
         c: _column_evidence(frame, c, n_rows=n_rows, d_sql=d_sql) for c in frame.columns
     }
@@ -654,21 +710,31 @@ def _judge_veto_pass(
                 "routed_class": klass,
             }
         )
+    stats_out.routed = len(routed)
     if not routed:
-        return
+        return stats_out
     from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
+    from dataraum.llm.providers.base import PermanentProviderError
 
     assert isinstance(judge, DimensionIdentityJudge)
     try:
         result = judge.veto(
             table_name=view_name, all_columns=list(frame.columns), structures=routed
         )
-    except Exception as e:  # noqa: BLE001 — a failing judge must never fail the stats
+    except PermanentProviderError as e:
+        # Permanent = a retry cannot help (auth, bad request); transient errors
+        # deliberately PROPAGATE to the Temporal boundary — the phase retry
+        # re-runs the deterministic stats identically and re-asks the judge.
         logger.warning("hierarchy_veto_skipped", view=view_name, reason=str(e))
-        return
+        stats_out.views_failed = 1
+        stats_out.status = "failed"
+        return stats_out
     if not result.success:
         logger.warning("hierarchy_veto_skipped", view=view_name, reason=result.error)
-        return
+        stats_out.views_failed = 1
+        stats_out.status = "failed"
+        return stats_out
+    stats_out.views_judged = 1
     for verdict in result.unwrap():
         vetoed_row = by_ref.get(verdict.structure_ref)
         if vetoed_row is None:
@@ -685,6 +751,8 @@ def _judge_veto_pass(
         )
         if verdict.verdict == "veto":
             vetoed_row["needs_confirmation"] = True
+            stats_out.vetoed += 1
+    return stats_out
 
 
 def _validated_members(members: list[HierarchyMember]) -> list[dict[str, object]]:

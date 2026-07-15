@@ -30,7 +30,10 @@ def _teach(session: Session, action: str, table_id: str, members: list[str]) -> 
 
 
 def _discover(session: Session, duck: duckdb.DuckDBPyConnection, tid: str) -> int:
-    return discover_dimension_hierarchies(session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+    n, _lane = discover_dimension_hierarchies(
+        session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
+    )
+    return n
 
 
 def _by_members(session: Session, kind: str) -> dict[tuple[str, ...], DimensionHierarchy]:

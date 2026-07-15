@@ -63,12 +63,11 @@ class TestDiscoverDimensionHierarchies:
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_sales(real_session, duck)
-        assert (
-            discover_dimension_hierarchies(
-                real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
-            )
-            > 0
+        n, lane = discover_dimension_hierarchies(
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
         )
+        assert n > 0
+        assert lane.status == "off"  # no judge injected -> lane observably off
         drills = _rows(real_session, tid, "drilldown")
         assert len(drills) == 1
         row = drills[0]
@@ -143,11 +142,11 @@ class TestDiscoverDimensionHierarchies:
     ) -> None:
         """Success-redelivery (same run_id) converges by upsert on (signature, run_id)."""
         tid = seed_sales(real_session, duck)
-        first = discover_dimension_hierarchies(
+        first, _ = discover_dimension_hierarchies(
             real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
         )
         real_session.commit()
-        second = discover_dimension_hierarchies(
+        second, _ = discover_dimension_hierarchies(
             real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
         )
         real_session.commit()
@@ -162,12 +161,10 @@ class TestDiscoverDimensionHierarchies:
         tid = seed_sales(real_session, duck)
         real_session.execute(EnrichedView.__table__.update().values(is_grain_verified=False))
         real_session.flush()
-        assert (
-            discover_dimension_hierarchies(
-                real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
-            )
-            == 0
+        n, _lane = discover_dimension_hierarchies(
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
         )
+        assert n == 0
 
 
 class TestStackV4:

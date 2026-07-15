@@ -74,10 +74,11 @@ class DimensionHierarchiesPhase(BasePhase):
         from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
 
         run_id = ctx.require_run_id()
-        # The veto lane's composition root (DAT-762): None = lane off (config
-        # or provider unavailable) and the statistical verdicts stand unjudged.
+        # The veto lane's composition root (DAT-762): None = lane unavailable
+        # (config off / provider unbuildable) — the statistical verdicts stand
+        # unjudged and the lane status below says so OBSERVABLY.
         judge = DimensionIdentityJudge.from_config()
-        persisted = discover_dimension_hierarchies(
+        persisted, lane = discover_dimension_hierarchies(
             ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             table_ids=ctx.table_ids or [],
@@ -85,7 +86,10 @@ class DimensionHierarchiesPhase(BasePhase):
             judge=judge,
         )
         return PhaseResult.success(
-            outputs={"hierarchies": persisted},
+            outputs={"hierarchies": persisted, "veto_lane": lane.as_output()},
             records_created=persisted,
-            summary=f"{persisted} dimension hierarchy/alias/role structure(s) discovered",
+            summary=(
+                f"{persisted} dimension hierarchy/alias/role structure(s) discovered; "
+                f"veto lane {lane.status} ({lane.vetoed}/{lane.routed} routed vetoed)"
+            ),
         )

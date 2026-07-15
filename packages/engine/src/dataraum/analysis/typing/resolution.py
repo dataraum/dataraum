@@ -150,13 +150,29 @@ def reconcile_typed_columns(
     Keeping ids stable is what lets a re-type avoid orphaning another stage's
     per-Column rows (DAT-373 Option A).
     """
+    # Local import: a module-scope import would pull the whole downstream
+    # ``relationships`` package (its ``__init__`` eagerly loads the detector/
+    # evaluator tree) onto every load of this upstream typing module. No cycle
+    # today — just keeping that layering dependency lazy.
+    from dataraum.analysis.relationships.surrogate import is_surrogate_column
+
     current = {c.column_name: c for c in typed_table.columns}
     desired_names = {d[0] for d in desired}
 
-    # Delete columns that are no longer present in the re-typed table.
+    # Delete columns no longer present in the re-typed table — but NEVER a
+    # mint-owned surrogate (``_sk__*``). ``desired`` is built from the RAW
+    # source's columns only, which by construction never include an engine-minted
+    # surrogate (DAT-277); the surrogate mint owns their full lifecycle on the
+    # typed table (``surrogate_mint_phase`` re-materializes the physical column
+    # and reconciles the row, and is the ONLY writer that deletes a surrogate —
+    # clearing its FK children first). Deleting one here on a re-type would
+    # instead violate the FK from the surrogate relationship that still
+    # references it, failing the typing phase and killing the whole re-run
+    # cascade (DAT-766). Typing must not delete a column it did not create.
     for name, col in list(current.items()):
-        if name not in desired_names:
-            session.delete(col)
+        if name in desired_names or is_surrogate_column(name):
+            continue
+        session.delete(col)
 
     column_map: dict[str, str] = {}
     for column_name, original_name, position, raw_type, resolved_type in desired:

@@ -5,6 +5,37 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-766 — addSource re-run: typing no longer deletes minted `_sk__*` (FK crash fixed)
+
+**Branch:** `fix/dat-766-typing-preserve-surrogate-columns`. Typing-phase behavior
+change on **re-runs only** (a fresh run is unaffected).
+
+### What changed
+
+- `reconcile_typed_columns` (`analysis/typing/resolution.py`) now **never deletes a
+  minted surrogate** (`_sk__*`, DAT-277). `resolve_types` builds its `desired` set
+  from the RAW source's columns only, so a surrogate minted onto the typed table by
+  a prior run looked "dropped" and was DELETEd — violating the FK from the surrogate
+  relationship that still referenced it (`ForeignKeyViolation` → `PhaseFailed: No
+  tables were successfully typed` → the whole sibling-table cascade cancelled). The
+  surrogate mint owns the `_sk__*` lifecycle; typing leaves those columns alone.
+
+### For eval
+
+- **The DAT-766 repro is fixed:** `python -m calibration.run -s clean` twice without
+  `--reset` (any corpus that mints a surrogate) now proceeds **past typing** on the
+  re-run instead of dying at the FK violation. Re-running addSource over an
+  already-completed (minted) workspace is now safe.
+- **Sibling DAT-767 is still open:** the `detection-v1` re-run can still fail typing
+  with a DuckDB binder error (`"…" cannot be referenced before it is defined`) on a
+  mixed-case noise column. That mechanism is NOT closed — the engine loaders all
+  normalize physical raw columns to lowercase, so the reported "physical column is
+  mixed-case" doesn't hold against the loader code; closing it needs a trace of the
+  exact failing SQL + the raw table's true physical column case from a failing
+  workspace. Until then, expect `detection-v1` re-run (no `--reset`) to still break.
+
+---
+
 ## DAT-761 — stack v4 dimension identity: DAT-757 gate stack replaces distinct-ratio g3
 
 **Branch:** `feat/dat-761-stack-v4-dimension-identity`. **The `dimension_hierarchies`

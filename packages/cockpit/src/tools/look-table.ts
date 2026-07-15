@@ -207,11 +207,7 @@ export function projectColumnSemantic(
 	const meaning = row.meaning ?? null;
 	const semanticRole = row.semanticRole ?? null;
 	const businessName = row.businessName ?? null;
-	if (
-		meaning === null &&
-		semanticRole === null &&
-		businessName === null
-	) {
+	if (meaning === null && semanticRole === null && businessName === null) {
 		return null;
 	}
 	return {

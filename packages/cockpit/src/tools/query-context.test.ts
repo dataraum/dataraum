@@ -92,7 +92,9 @@ describe("formatSchema", () => {
 
 	it("shows each column's type and its [concept] tag when mapped", () => {
 		const block = formatSchema(tables, columnRows, concepts);
-		expect(block).toContain('- "Betrag" :: DECIMAL  [meaning: Transaction amount]');
+		expect(block).toContain(
+			'- "Betrag" :: DECIMAL  [meaning: Transaction amount]',
+		);
 		expect(block).toContain(
 			'- "account_type" :: VARCHAR  [meaning: Account class of the posting]',
 		);

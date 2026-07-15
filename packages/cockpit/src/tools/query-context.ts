@@ -166,8 +166,7 @@ export function formatSchema(
 
 	const conceptByColumn = new Map<string, SchemaConceptRow>();
 	for (const c of conceptRows) {
-		if (c.meaning || c.temporalBehavior)
-			conceptByColumn.set(c.columnId, c);
+		if (c.meaning || c.temporalBehavior) conceptByColumn.set(c.columnId, c);
 	}
 
 	const columnsByTable = new Map<string, SchemaColumnRow[]>();

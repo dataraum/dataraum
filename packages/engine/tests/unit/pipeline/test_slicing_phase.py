@@ -34,17 +34,30 @@ from dataraum.storage.upsert import upsert
 from tests.conftest import baseline_run_id
 
 
-def _axes(column: str | None) -> list[dict[str, str]]:
-    """Plural ``time_columns`` JSON for a single named axis (DAT-565), or empty."""
-    return [{"column": column, "aspect": "event", "note": "seed axis."}] if column else []
+def _axes(column: str | None) -> list[dict[str, object]]:
+    """Plural ``time_columns`` JSON for a single named event axis (DAT-565/780), or empty."""
+    return (
+        [
+            {
+                "column": column,
+                "aspect": "event",
+                "role": "event",
+                "is_anchor": True,
+                "note": "seed axis.",
+            }
+        ]
+        if column
+        else []
+    )
 
 
 def _seed(
     session: Session,
     *,
     dim_time_column: str | None = "date",
-    dim_axes: list[dict[str, str]] | None = None,
+    dim_axes: list[dict[str, Any]] | None = None,
     fact_time_column: str | None = None,
+    fact_axes: list[dict[str, Any]] | None = None,
     link_relationship: bool = True,
 ) -> dict[str, Any]:
     """Seed a fact table with an enriched view exposing FK-prefixed dim columns.
@@ -104,7 +117,7 @@ def _seed(
         table_id=fact.table_id,
         run_id=None,
         detected_entity_type="transaction",
-        time_columns=_axes(fact_time_column),
+        time_columns=fact_axes if fact_axes is not None else _axes(fact_time_column),
         detection_source="llm",
     )
     dim_entity = TableEntity(
@@ -233,8 +246,14 @@ class TestBuildContextDataTimeAxis:
         seeded = _seed(
             session,
             dim_axes=[
-                {"column": "other", "aspect": "x", "note": "n"},
-                {"column": "date", "aspect": "event", "note": "n"},
+                {"column": "other", "aspect": "x", "role": "event", "is_anchor": True, "note": "n"},
+                {
+                    "column": "date",
+                    "aspect": "event",
+                    "role": "event",
+                    "is_anchor": False,
+                    "note": "n",
+                },
             ],
         )
         fact: Table = seeded["fact"]
@@ -261,6 +280,33 @@ class TestBuildContextDataTimeAxis:
         by_name = _columns_by_name(data["tables"][0])
         assert by_name["invoice_id__date"]["is_dimension_time_column"] is False
         assert by_name["invoice_id__status"]["is_dimension_time_column"] is False
+
+    def test_attribute_role_dim_date_is_not_flagged(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-780: a dim's ATTRIBUTE-role date (valid_until) whose suffix matches an
+        enriched column must NOT be flagged is_dimension_time_column — otherwise the
+        deterministic backstop would promote it to a false event axis on the fact."""
+        seeded = _seed(
+            session,
+            dim_axes=[
+                {
+                    "column": "date",
+                    "aspect": "due",
+                    "role": "attribute",
+                    "is_anchor": False,
+                    "note": "A date the row refers to, not an event.",
+                }
+            ],
+        )
+        fact: Table = seeded["fact"]
+
+        data = SlicingPhase()._build_context_data(
+            _ctx(session, duckdb_conn, [fact.table_id]), [fact]
+        )
+
+        by_name = _columns_by_name(data["tables"][0])
+        assert by_name["invoice_id__date"]["is_dimension_time_column"] is False
 
     def test_no_flag_without_relationship_provenance(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -426,6 +472,50 @@ class TestRunTimeAxisFill:
         assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
         assert any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
+
+    def test_attribute_only_fact_still_gets_backstop_axis_preserving_attribute(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """DAT-780: a fact whose only date is attribute-role still gets the event-axis
+        backstop, and the attribute date is preserved (coverage, not an event axis).
+
+        Pre-DAT-780 the guard was bare truthiness; an attribute-only list would
+        suppress the backstop. The guard now tests role='event', and the fill
+        appends rather than clobbers.
+        """
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result(
+            {"invoices": "invoice_id__date"}
+        )
+        seeded = _seed(
+            session,
+            fact_axes=[
+                {
+                    "column": "due_date",
+                    "aspect": "due",
+                    "role": "attribute",
+                    "is_anchor": False,
+                    "note": "A date the row refers to.",
+                }
+            ],
+        )
+
+        with capture_logs() as logs:
+            result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id]))
+
+        assert result.status == PhaseStatus.COMPLETED
+        axes = seeded["fact_entity"].time_columns
+        # The attribute date survives; the backstop appended the event axis + anchor.
+        assert [tc["column"] for tc in axes] == ["due_date", "invoice_id__date"]
+        assert [tc["role"] for tc in axes] == ["attribute", "event"]
+        assert [tc["is_anchor"] for tc in axes] == [False, True]
+        assert any(e["event"] == "time_axis_filled" for e in logs)
 
     def test_hallucinated_column_is_rejected(
         self,

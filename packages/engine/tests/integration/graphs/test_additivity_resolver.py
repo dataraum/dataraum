@@ -95,7 +95,16 @@ def _seed(
             detected_entity_type="event",
             table_role=derive_table_role(True, grain_columns, time_columns),
             grain_columns=grain_columns,
-            time_columns=[{"column": c, "aspect": "t", "note": ""} for c in time_columns],
+            time_columns=[
+                {
+                    "column": c,
+                    "aspect": "t",
+                    "role": "event",
+                    "is_anchor": i == 0,
+                    "note": "",
+                }
+                for i, c in enumerate(time_columns)
+            ],
         )
     )
     session.add(

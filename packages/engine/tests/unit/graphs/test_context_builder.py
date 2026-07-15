@@ -172,7 +172,13 @@ class TestBuilderExtractsTableEntity:
                 description="Records of all financial transactions",
                 grain_columns=["invoice_id"],
                 time_columns=[
-                    {"column": "created_at", "aspect": "created", "note": "Row created."}
+                    {
+                        "column": "created_at",
+                        "aspect": "created",
+                        "role": "event",
+                        "is_anchor": True,
+                        "note": "Row created.",
+                    }
                 ],
                 identity_columns=[
                     {"column": "customer_id", "note": "Recurring customer identity."}

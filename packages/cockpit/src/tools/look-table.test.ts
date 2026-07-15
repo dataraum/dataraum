@@ -277,6 +277,45 @@ describe("projectTableEntity (DAT-476)", () => {
 		// The 40-hex digest is gone from every projected field.
 		expect(JSON.stringify(out)).not.toMatch(/src_[0-9a-f]{40}/);
 	});
+
+	it("carries the DAT-780 typed role + is_anchor through the projection", () => {
+		const out = projectTableEntity(
+			entityRow({
+				timeColumns: [
+					{
+						column: "order_date",
+						aspect: "order",
+						role: "event",
+						is_anchor: true,
+						note: "Placed.",
+					},
+					{
+						column: "due_date",
+						aspect: "due",
+						role: "attribute",
+						is_anchor: false,
+						note: "Owed.",
+					},
+				],
+			}),
+		);
+		expect(out.time_columns).toEqual([
+			{
+				column: "order_date",
+				aspect: "order",
+				role: "event",
+				is_anchor: true,
+				note: "Placed.",
+			},
+			{
+				column: "due_date",
+				aspect: "due",
+				role: "attribute",
+				is_anchor: false,
+				note: "Owed.",
+			},
+		]);
+	});
 });
 
 // The drizzle SQL predicate is a self-referential object whose bound literals

@@ -403,9 +403,13 @@ class TableEntity(Base):
     # PeriodicSnapshot subtype is derived from grain∩time at classification and
     # feeds the additivity COUNT rule. Nullable: an unclassified stub has no role.
     table_role: Mapped[str | None] = mapped_column(String)
-    # DAT-565: all event-time axes (multi-temporal) and recurring identity columns,
-    # each carrying a one-line note. JSON list[dict]; run-versioned like the rest.
-    #   time_columns:     [{"column": str, "aspect": str, "note": str}, ...]
+    # DAT-565: all date axes (multi-temporal) and recurring identity columns, each
+    # carrying a one-line note. JSON list[dict]; run-versioned like the rest. The
+    # event/attribute rule + single anchor are enforced at save by the TimeColumn
+    # submodel + TableEntityOutput validator (DAT-780) — this JSON interior is the
+    # typed home, so no scalar column / CheckConstraint carries the vocabulary.
+    #   time_columns:     [{"column": str, "aspect": str, "role": "event"|"attribute",
+    #                       "is_anchor": bool, "note": str}, ...]
     #   identity_columns: [{"column": str, "note": str}, ...]
     time_columns: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     identity_columns: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)

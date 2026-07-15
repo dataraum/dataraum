@@ -33,6 +33,18 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _has_event_axis(time_columns: list[dict[str, Any]] | None) -> bool:
+    """True when the entity already carries a genuine EVENT time axis (DAT-780).
+
+    The backstops fill an event axis only when semantic found none. Under the
+    event/attribute contract an attribute-only ``time_columns`` list is NOT an
+    event axis, so the guard must test role='event' membership — a bare
+    truthiness check would let an attribute date (due_date) suppress a real
+    event-axis backstop.
+    """
+    return any(tc.get("role") == "event" for tc in (time_columns or []))
+
+
 @analysis_phase
 class SlicingPhase(BasePhase):
     """LLM-powered slicing analysis phase.
@@ -244,8 +256,8 @@ class SlicingPhase(BasePhase):
                     for t in context_data.get("tables", [])
                 }
                 for entity in entities:
-                    if entity.time_columns:
-                        continue  # the table already has axes — inherit, never override
+                    if _has_event_axis(entity.time_columns):
+                        continue  # already has an EVENT axis — inherit, never override
                     table_name = name_by_id.get(entity.table_id, "")
                     chosen = slicing.time_columns.get(table_name)
                     if not chosen:
@@ -253,15 +265,21 @@ class SlicingPhase(BasePhase):
                     if chosen not in known_cols_by_table.get(table_name, set()):
                         logger.warning("time_axis_unknown_column", table=table_name, column=chosen)
                         continue
-                    # Fallback fires only when semantic found NO axis, so a fresh
-                    # single-element list is correct; reassign (not append) so the
-                    # JSON column is marked dirty for the flush.
+                    # Fires only when semantic found no EVENT axis (DAT-780): the one
+                    # synthesized axis is a genuine event axis and, being the only
+                    # event axis, the table's anchor. PRESERVE any attribute-role
+                    # dates semantic did emit (they get coverage; they are not event
+                    # axes); reassign a new list (not in-place append) so the JSON
+                    # column is marked dirty for the flush.
                     entity.time_columns = [
+                        *(entity.time_columns or []),
                         {
                             "column": chosen,
                             "aspect": "event",
+                            "role": "event",
+                            "is_anchor": True,
                             "note": "Event-time axis identified by the slice-agent fallback (semantic phase found none).",
-                        }
+                        },
                     ]
                     logger.info("time_axis_filled", table=table_name, column=chosen)
 
@@ -294,20 +312,31 @@ class SlicingPhase(BasePhase):
                         TableEntity.run_id == ctx.run_id,
                     )
                 ).scalars():
-                    if entity.time_columns:
-                        continue  # semantic or the agent already set it — never override
+                    if _has_event_axis(entity.time_columns):
+                        continue  # already has an EVENT axis — never override (DAT-780)
                     name = name_by_id.get(entity.table_id, "")
                     cols = flagged_by_table.get(name, [])
+                    # Typed per DAT-780: each flagged column is a genuine event axis;
+                    # ``cols`` is deterministically sorted (see ``dimension_time_axes``),
+                    # so anchoring the first is a stable, non-positional-accident choice
+                    # for a backstop that has no ranking signal — exactly one anchor.
+                    # PRESERVE any attribute-role dates semantic emitted (coverage-only,
+                    # never event axes).
                     entity.time_columns = [
-                        {
-                            "column": col,
-                            "aspect": "event",
-                            "note": (
-                                "Event-time axis from the deterministic "
-                                "is_dimension_time_column flag (DAT-720 backstop)."
-                            ),
-                        }
-                        for col in cols
+                        *(entity.time_columns or []),
+                        *(
+                            {
+                                "column": col,
+                                "aspect": "event",
+                                "role": "event",
+                                "is_anchor": i == 0,
+                                "note": (
+                                    "Event-time axis from the deterministic "
+                                    "is_dimension_time_column flag (DAT-720 backstop)."
+                                ),
+                            }
+                            for i, col in enumerate(cols)
+                        ),
                     ]
                     logger.info("time_axis_filled_deterministic", table=name, columns=cols)
 
@@ -649,12 +678,18 @@ class SlicingPhase(BasePhase):
                     dim_table_id = dim_table_by_fk_col.get(fk_col_id or "")
                     dim_suffix = dim_col.column_name.split("__", 1)[1] if fk_prefix else None
                     # Plural (DAT-565): the enriched suffix is a time axis if it
-                    # matches ANY of the dim table's event-time columns. (`x in
-                    # set` already short-circuits on a falsy ``dim_suffix``.)
+                    # matches ANY of the dim table's EVENT-time columns. EVENT-role
+                    # only (DAT-780) — an attribute date on the dim (valid_until) must
+                    # never be promoted to a fact's event axis by the backstop below.
+                    # (`x in set` already short-circuits on a falsy ``dim_suffix``.)
                     is_dim_time = bool(
                         dim_table_id
                         and dim_suffix
-                        in {tc.get("column") for tc in time_col_by_table.get(dim_table_id, [])}
+                        in {
+                            tc.get("column")
+                            for tc in time_col_by_table.get(dim_table_id, [])
+                            if tc.get("role") == "event"
+                        }
                     )
                     dim_entry: dict[str, Any] = {
                         "column_id": fk_col_id or dim_col.column_id,

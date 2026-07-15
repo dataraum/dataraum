@@ -65,6 +65,9 @@ _TABLES = [
 ]
 _COLUMNS = [
     ("c_amt", "t1", "amount", 1),
+    # A 2nd measure on t1 with NO lineage witness — its anchor_time_axis must fall
+    # back to t1's DECLARED anchor (DAT-780 witness-precedence fallback path).
+    ("c_amt2", "t1", "amount_declared", 3),
     ("c_k1", "t1", "account_id", 2),
     ("c_k2", "t2", "account_id", 1),
     ("c_k3", "t3", "group_id", 1),
@@ -112,8 +115,8 @@ def _seed(engine: Engine) -> None:
             f"INSERT INTO columns (column_id, table_id, column_name, column_position) "
             f"VALUES ('{cid}', '{tid}', '{name}', {pos})"
         )
-    # has_role: amount is a measure, account_id a key.
-    for cid, role in [("c_amt", "measure"), ("c_k1", "key")]:
+    # has_role: amount / amount_declared are measures, account_id a key.
+    for cid, role in [("c_amt", "measure"), ("c_amt2", "measure"), ("c_k1", "key")]:
         stmts.append(
             f"INSERT INTO semantic_annotations "
             f"(annotation_id, column_id, run_id, semantic_role, annotated_at) "
@@ -191,12 +194,35 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
             f"'foreign_key', 'many_to_one', 0.9, 'judge', '{TS}')"
         )
+    # t1 carries a DECLARED time-axis set with the anchor at index 1 (NOT 0) and an
+    # attribute date mixed in — the scrambled-order proof (DAT-780): a positional
+    # reader would wrongly pick 'created_date' at index 0, the view must pick the
+    # is_anchor='txn_date' regardless of position, and never the attribute 'due_date'.
+    t1_time_columns = (
+        '[{"column": "created_date", "aspect": "created", "role": "event", '
+        '"is_anchor": false, "note": "x"}, '
+        '{"column": "txn_date", "aspect": "txn", "role": "event", '
+        '"is_anchor": true, "note": "x"}, '
+        '{"column": "due_date", "aspect": "due", "role": "attribute", '
+        '"is_anchor": false, "note": "x"}]'
+    )
+    time_cols_by_entity = {"t1": t1_time_columns}
     for eid, tid, role in [("e_j", "t1", "fact"), ("e_a", "t2", "dimension")]:
-        stmts.append(
-            "INSERT INTO table_entities "
-            "(entity_id, table_id, run_id, detected_entity_type, table_role, detected_at) "
-            f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', '{role}', '{TS}')"
-        )
+        tcs = time_cols_by_entity.get(tid)
+        if tcs is not None:
+            stmts.append(
+                "INSERT INTO table_entities "
+                "(entity_id, table_id, run_id, detected_entity_type, table_role, "
+                " time_columns, detected_at) "
+                f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', '{role}', "
+                f"'{tcs}'::json, '{TS}')"
+            )
+        else:
+            stmts.append(
+                "INSERT INTO table_entities "
+                "(entity_id, table_id, run_id, detected_entity_type, table_role, detected_at) "
+                f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', '{role}', '{TS}')"
+            )
     # derived_from: journal_enriched view over the journal fact + the accounts dim.
     stmts.append(
         "INSERT INTO enriched_views "
@@ -283,10 +309,46 @@ def test_measure_column_matches_its_materialization(graph_engine: Engine) -> Non
         "COLUMNS (c.column_name AS column_name, c.materialization AS materialization))"
     )
     with graph_engine.connect() as conn:
+        rows = dict(conn.execute(text(sql)).all())
+    # 'amount' has a witness: 'per_period' normalizes to flow and beats the
+    # 'point_in_time' concept claim (→ stock). 'amount_declared' has neither witness
+    # nor concept claim → NULL materialization.
+    assert rows == {"amount": "flow", "amount_declared": None}
+
+
+def test_measure_anchor_time_axis_prefers_the_witness(graph_engine: Engine) -> None:
+    """DAT-780 Gap 2: a measure's anchor is the DAT-778 witness event-side axis where
+    a witness exists — precedence over the table's declared anchor, expressed by the
+    COALESCE order (mirrors materialization's witness-over-claim precedence)."""
+    sql = (
+        f"SELECT anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS column_node WHERE c.column_name = 'amount') "
+        "COLUMNS (c.anchor_time_axis AS anchor))"
+    )
+    with graph_engine.connect() as conn:
         rows = conn.execute(text(sql)).all()
-    # amount is the only measure; the witness 'per_period' normalizes to flow and
-    # beats the 'point_in_time' concept claim (→ stock).
-    assert rows == [("amount", "flow")]
+    # c_amt's witness row set event_time_axis_column='period_date'; it wins over t1's
+    # declared anchor 'txn_date'.
+    assert rows == [("period_date",)]
+
+
+def test_measure_anchor_time_axis_falls_back_to_declared_anchor(graph_engine: Engine) -> None:
+    """DAT-780 Gap 2: with no witness, the anchor is the table's TYPED declared anchor
+    (is_anchor=true, role='event') — never array position, never an attribute date.
+
+    t1's declared time_columns list the anchor 'txn_date' at index 1, with
+    'created_date' at index 0 (a positional reader's wrong pick) and the attribute
+    'due_date' present. 'amount_declared' has no witness, so it resolves the declared
+    anchor — proving the scrambled-order case and the attribute exclusion at once.
+    """
+    sql = (
+        f"SELECT anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS column_node WHERE c.column_name = 'amount_declared') "
+        "COLUMNS (c.anchor_time_axis AS anchor))"
+    )
+    with graph_engine.connect() as conn:
+        rows = conn.execute(text(sql)).all()
+    assert rows == [("txn_date",)]
 
 
 def test_references_edges_match_the_fk_topology(graph_engine: Engine) -> None:

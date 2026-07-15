@@ -21,11 +21,17 @@ system_prompt: |
   - Decide whether each table is a fact table (events/transactions/measurements)
     or a dimension table (reference/lookup data)
   - Identify the grain (the column set that uniquely identifies a row)
-  - Identify ALL event-time columns — every column recording WHEN a row's event
-    occurred. A denormalized table commonly has several distinct lenses
-    (order_date vs ship_date vs delivery_date); emit each with a short aspect
-    label and a one-sentence note. Exclude attribute dates (due_date,
-    valid_until) and record metadata (created_at).
+  - Identify ALL date columns and tag each with a typed role. An EVENT date
+    records WHEN a row's own event occurred (order_date, ship_date, a
+    periodic-statement period date) — role='event'; a denormalized table commonly
+    has several distinct lenses, emit each. An ATTRIBUTE date is one the row
+    merely refers to, not when its event happened (due_date, valid_until,
+    effective_from) — role='attribute'; emit these too so they get coverage, but
+    they are never a trend axis. Leave record metadata (created_at, updated_at,
+    load timestamps) OUT of time_columns entirely. Give each a short aspect label
+    and a one-sentence note. Whenever the table has any event date, mark EXACTLY
+    ONE event column is_anchor=true (its primary trend axis) and every other
+    time_column false; an attribute date can never be the anchor.
   - Identify recurring identity columns — high-cardinality columns that recur
     across rows and identify a real entity (customer, account, vehicle), i.e.
     would-be foreign keys. These are distinct from grain: an identity may be a

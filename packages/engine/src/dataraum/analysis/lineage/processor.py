@@ -460,7 +460,15 @@ def discover_aggregation_lineage(
         time_entity_stmt = time_entity_stmt.where(TableEntity.run_id == run_id)
     time_cols_by_table: dict[str, list[str]] = {}
     for entity in session.execute(time_entity_stmt).scalars():
-        axes = [tc["column"] for tc in (entity.time_columns or []) if tc.get("column")]
+        # EVENT axes only (DAT-780): the reconciliation rolls up event rows into a
+        # measure, so an attribute date (role='attribute' — due_date, valid_until)
+        # is never a valid rollup axis. The save-time contract stamps every
+        # persisted TimeColumn with a role, so filter strictly on it.
+        axes = [
+            tc["column"]
+            for tc in (entity.time_columns or [])
+            if tc.get("column") and tc.get("role") == "event"
+        ]
         if axes:
             time_cols_by_table[entity.table_id] = axes
     numeric_cols_by_table = {

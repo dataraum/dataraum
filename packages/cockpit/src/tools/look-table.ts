@@ -105,11 +105,16 @@ export type TableReadiness = z.infer<typeof TableReadiness>;
 // dimension), its grain, its time/identity columns, and a short description.
 // begin_session's `detect` writes it; `current_table_entities` head-resolves to
 // the promoted run. Null when no detect run has promoted (pre-session).
-// One event-time axis (DAT-565): a denormalized table commonly has several
-// (order vs ship vs delivery), each a distinct lens with a one-line note.
+// One date axis (DAT-565): a denormalized table commonly has several (order vs
+// ship vs delivery), each a distinct lens with a one-line note. DAT-780 adds the
+// typed `role` (event = a genuine trend axis, attribute = a date the row merely
+// refers to) and `is_anchor` (the table's one primary event axis). Both optional
+// here — the engine stamps them on every row, but this reader stays tolerant.
 const TimeColumn = z.object({
 	column: z.string(),
 	aspect: z.string(),
+	role: z.enum(["event", "attribute"]).optional(),
+	is_anchor: z.boolean().optional(),
 	note: z.string(),
 });
 
@@ -310,10 +315,18 @@ export interface TableEntityRow {
 }
 
 // The persisted time-axis shape (DAT-565): the engine writes a JSON list of
-// `{column, aspect, note}` (`analysis/semantic/processor.py`); null/malformed
-// degrades to []. Anything else is dropped rather than thrown.
+// `{column, aspect, role, is_anchor, note}` (`analysis/semantic/processor.py`;
+// DAT-780 added the typed role + anchor); null/malformed degrades to []. Anything
+// else is dropped rather than thrown. `role`/`is_anchor` are optional here so the
+// reader tolerates rows the engine hasn't re-stamped.
 const TimeColumns = z.array(
-	z.object({ column: z.string(), aspect: z.string(), note: z.string() }),
+	z.object({
+		column: z.string(),
+		aspect: z.string(),
+		role: z.enum(["event", "attribute"]).optional(),
+		is_anchor: z.boolean().optional(),
+		note: z.string(),
+	}),
 );
 
 // The persisted identity shape (DAT-565): the engine writes a JSON list of

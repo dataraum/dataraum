@@ -722,10 +722,19 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 	)) {
 		const lines: string[] = [];
 		if (entity.grain.length) lines.push(`  grain: ${entity.grain.join(", ")}`);
-		if (entity.time_columns.length)
+		// EVENT axes only (DAT-780): the answer agent trends/groups by these, so an
+		// attribute date (role='attribute' — due_date, valid_until) must never be
+		// offered as a time axis. Tolerant of un-roled rows (shown), strict against
+		// explicit attributes (hidden). The is_anchor axis is marked as the primary
+		// lens. Mirrors the engine's graphs/context.py treatment (two SQL agents).
+		const eventAxes = entity.time_columns.filter((t) => t.role !== "attribute");
+		if (eventAxes.length)
 			lines.push(
-				`  time: ${entity.time_columns
-					.map((t) => (t.aspect ? `${t.column} (${t.aspect})` : t.column))
+				`  time: ${eventAxes
+					.map((t) => {
+						const label = t.aspect ? `${t.column} (${t.aspect})` : t.column;
+						return t.is_anchor ? `${label} [anchor]` : label;
+					})
 					.join(", ")}`,
 			);
 		if (entity.identity_columns.length)

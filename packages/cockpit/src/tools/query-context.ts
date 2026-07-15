@@ -4,7 +4,7 @@
 // call list_tables — so it needs the workspace schema injected into its prompt to
 // write valid SQL. This builds the engine's `schema_info` equivalent: each TYPED
 // lake table, addressed as `lake.typed.<physical_name>`, with its columns' types
-// and (the field_mappings replacement) the per-column `business_concept` from the
+// and (the field_mappings replacement) the per-column `meaning` from the
 // promoted semantic run — so the model maps a question's terms to concrete columns
 // inline, no separate field-mapping artifact (DAT-485: field_mappings NOT built).
 //
@@ -145,7 +145,7 @@ export interface SchemaColumnRow {
  * teach lane (why_column renders it). */
 export interface SchemaConceptRow {
 	columnId: string;
-	businessConcept: string | null;
+	meaning: string | null;
 	temporalBehavior: string | null;
 }
 
@@ -166,7 +166,7 @@ export function formatSchema(
 
 	const conceptByColumn = new Map<string, SchemaConceptRow>();
 	for (const c of conceptRows) {
-		if (c.businessConcept || c.temporalBehavior)
+		if (c.meaning || c.temporalBehavior)
 			conceptByColumn.set(c.columnId, c);
 	}
 
@@ -189,8 +189,8 @@ export function formatSchema(
 		const colLines = cols.map((c) => {
 			const type = c.resolvedType ?? "unknown";
 			const semantic = conceptByColumn.get(c.columnId);
-			const conceptTag = semantic?.businessConcept
-				? `  [concept: ${semantic.businessConcept}]`
+			const conceptTag = semantic?.meaning
+				? `  [meaning: ${semantic.meaning}]`
 				: "";
 			// Mirror the engine's render (graphs/context.py): the resolved
 			// stock/flow behaviour as a parenthesized marker, served as settled
@@ -294,7 +294,7 @@ export async function buildSchemaBlock(): Promise<string> {
 	const conceptRows = await metadataDb
 		.select({
 			columnId: currentColumnConcepts.columnId,
-			businessConcept: currentColumnConcepts.businessConcept,
+			meaning: currentColumnConcepts.meaning,
 			temporalBehavior: currentColumnConcepts.temporalBehavior,
 		})
 		.from(currentColumnConcepts);
@@ -309,7 +309,7 @@ export async function buildSchemaBlock(): Promise<string> {
 		})),
 		conceptRows.map((c) => ({
 			columnId: c.columnId ?? "",
-			businessConcept: c.businessConcept ?? null,
+			meaning: c.meaning ?? null,
 			temporalBehavior: c.temporalBehavior ?? null,
 		})),
 	);

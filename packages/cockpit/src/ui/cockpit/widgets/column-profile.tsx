@@ -262,7 +262,7 @@ export function ColumnProfileWidget({
 						Semantic
 					</Text>
 					<Group gap="md" wrap="wrap">
-						<Field label="concept" value={semantic.business_concept ?? "—"} />
+						<Field label="meaning" value={semantic.meaning ?? "—"} />
 						<Field label="role" value={semantic.semantic_role ?? "—"} />
 						<Field
 							label="business name"

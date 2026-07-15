@@ -102,7 +102,7 @@ describe("projectColumnProfile — semantic + type decision", () => {
 		const out = projectColumnProfile("c_1", "amount", "orders", null, {
 			...EMPTY_ROWS,
 			semantic: {
-				businessConcept: "revenue",
+				meaning: "revenue (meaning)",
 				semanticRole: "measure",
 				businessName: "Order Amount",
 				entityType: null,
@@ -111,7 +111,7 @@ describe("projectColumnProfile — semantic + type decision", () => {
 			},
 		});
 		expect(out.semantic).toEqual({
-			business_concept: "revenue",
+			meaning: "Total order amount",
 			semantic_role: "measure",
 			business_name: "Order Amount",
 			entity_type: null,

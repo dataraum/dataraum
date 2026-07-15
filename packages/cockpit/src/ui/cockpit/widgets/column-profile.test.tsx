@@ -40,7 +40,7 @@ const EMPTY: LookProfileResult = {
 const full: LookProfileResult = {
 	...EMPTY,
 	semantic: {
-		business_concept: "revenue",
+		meaning: "Total order amount",
 		semantic_role: "measure",
 		business_name: "Order Amount",
 		entity_type: null,

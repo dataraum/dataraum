@@ -47,13 +47,13 @@ const columnRows: SchemaColumnRow[] = [
 const concepts: SchemaConceptRow[] = [
 	{
 		columnId: "c1",
-		businessConcept: "amount",
+		meaning: "amount (meaning)",
 		temporalBehavior: null,
 	},
 	// c2 has no concept; c3 maps to account_classification.
 	{
 		columnId: "c3",
-		businessConcept: "account_classification",
+		meaning: "account_classification (meaning)",
 		temporalBehavior: null,
 	},
 ];
@@ -102,13 +102,13 @@ describe("formatSchema", () => {
 		const semantics: SchemaConceptRow[] = [
 			{
 				columnId: "c1",
-				businessConcept: "account_balance",
+				meaning: "account_balance (meaning)",
 				temporalBehavior: "point_in_time",
 			},
 			// A resolved flow renders the marker — even with no concept mapped.
 			{
 				columnId: "c3",
-				businessConcept: null,
+				meaning: null,
 				temporalBehavior: "additive",
 			},
 		];

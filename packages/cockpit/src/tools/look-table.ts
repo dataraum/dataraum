@@ -62,7 +62,7 @@ const TopDriver = z.object({
 // pre-session). The full annotation (units, temporal behavior, evidence, …) is a
 // drill-down concern; this is the at-a-glance triple.
 const ColumnSemantic = z.object({
-	business_concept: z.string().nullable(),
+	meaning: z.string().nullable(),
 	semantic_role: z.string().nullable(),
 	business_name: z.string().nullable(),
 });
@@ -192,7 +192,7 @@ export interface ReadinessRow {
 	// Light semantics from the `current_semantic_annotations` left join (DAT-476).
 	// Optional so callers that don't join the view still satisfy the type; absent
 	// (undefined) or null is treated as unannotated.
-	businessConcept?: string | null;
+	meaning?: string | null;
 	semanticRole?: string | null;
 	businessName?: string | null;
 }
@@ -204,18 +204,18 @@ export interface ReadinessRow {
 export function projectColumnSemantic(
 	row: ReadinessRow,
 ): ColumnSemantic | null {
-	const businessConcept = row.businessConcept ?? null;
+	const meaning = row.meaning ?? null;
 	const semanticRole = row.semanticRole ?? null;
 	const businessName = row.businessName ?? null;
 	if (
-		businessConcept === null &&
+		meaning === null &&
 		semanticRole === null &&
 		businessName === null
 	) {
 		return null;
 	}
 	return {
-		business_concept: businessConcept,
+		meaning,
 		semantic_role: semanticRole,
 		// business_name is engine free-text (the human-readable column label) and
 		// can carry a raw `src_<digest>__` prefix — strip it before it reaches the
@@ -461,10 +461,10 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 			resolvedType: columns.resolvedType,
 			// Light per-column semantics, head-resolved by the views. Object-grain
 			// role/name from currentSemanticAnnotations (generation head);
-			// catalogue-grain business_concept from currentColumnConcepts (catalogue
+			// catalogue-grain meaning from currentColumnConcepts (catalogue
 			// head, DAT-637). Both left-joins nullable → an unannotated/unbound
 			// column reads null.
-			businessConcept: currentColumnConcepts.businessConcept,
+			meaning: currentColumnConcepts.meaning,
 			semanticRole: currentSemanticAnnotations.semanticRole,
 			businessName: currentSemanticAnnotations.businessName,
 		})

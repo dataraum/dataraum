@@ -182,6 +182,8 @@ def build_cycle_detection_context(
             "entity_type": ent.detected_entity_type,
             "description": ent.description,
             "table_role": ent.table_role,
+            # A bare list of column names (DAT-775) — ``format_context_for_prompt``
+            # below joins this directly into the prompt's "grain: ..." text.
             "grain_columns": ent.grain_columns,
         }
         for ent, table_name in entities

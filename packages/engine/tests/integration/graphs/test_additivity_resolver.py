@@ -94,7 +94,7 @@ def _seed(
             run_id=RUN,
             detected_entity_type="event",
             table_role=derive_table_role(True, grain_columns, time_columns),
-            grain_columns={"columns": grain_columns},
+            grain_columns=grain_columns,
             time_columns=[{"column": c, "aspect": "t", "note": ""} for c in time_columns],
         )
     )

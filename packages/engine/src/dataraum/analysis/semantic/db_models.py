@@ -391,10 +391,13 @@ class TableEntity(Base):
     )  # 'customer', 'order', 'product', etc.
     description: Mapped[str | None] = mapped_column(Text)
 
-    # Grain analysis
-    grain_columns: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON
-    )  # List of column IDs that define grain
+    # Grain analysis. A bare JSON list of column NAMES that uniquely identify
+    # each row (DAT-775) — NOT a ``{"columns": [...]}`` wrapper. The wrapper
+    # shape was an unenforced convention: one reader (``cycles/context.py``)
+    # joined the persisted value directly, so a wrapped dict rendered its sole
+    # key ("columns") as the grain in the cycle-detection prompt instead of the
+    # real columns. Nullable: an unclassified stub has no grain.
+    grain_columns: Mapped[list[str] | None] = mapped_column(JSON)
     # The table's operating-model role (DAT-728): fact | periodic_snapshot |
     # dimension (see :class:`TableRole`). Replaces the two booleans; the
     # PeriodicSnapshot subtype is derived from grain∩time at classification and

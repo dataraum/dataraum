@@ -88,6 +88,7 @@ def _seed(
     jl_dim_col: str = _DIM,
     tb_role_play_col: str | None = None,
     folded: bool = False,
+    axis_columns: bool = False,
 ) -> dict[str, str]:
     """Seed Tables/Columns/SliceDefinitions/TableEntity + the DuckDB rows.
 
@@ -113,6 +114,14 @@ def _seed(
     still fire off the primary slice: the two role slices must BOTH be tried, never
     collapsed to one (DAT-756 — the identity key groups a list per fact, not a
     last-write-wins single).
+
+    ``axis_columns=True`` also registers the time-axis names (``period_date``,
+    plus ``ship_date`` under ``multi_axis``) as real typed ``Column`` rows —
+    resolvable, like a real profiled date column would be. Off by default (the
+    minimal fixture): a table's agent-named axis is unvalidated LLM output
+    (DAT-780) and commonly WON'T resolve, so the default shape doubles as the
+    DAT-778 NULL-``*_time_axis_column_id`` case every other test already
+    exercises without asking for it.
     """
     ids: dict[str, str] = {}
     dim_table = Table(
@@ -154,6 +163,17 @@ def _seed(
         axes = [{"column": "period_date", "aspect": "period", "note": "Period."}]
         if multi_axis and name == "trial_balance":
             axes.append({"column": "ship_date", "aspect": "ship", "note": "Shipped."})
+        if axis_columns:
+            for pos, tc in enumerate(axes, start=len(cols)):
+                axis_column = Column(
+                    column_id=str(uuid4()),
+                    table_id=table.table_id,
+                    column_name=tc["column"],
+                    column_position=pos,
+                    resolved_type="DATE",
+                )
+                session.add(axis_column)
+                ids[f"{name}.{tc['column']}"] = axis_column.column_id
         session.add(
             TableEntity(
                 run_id=_RUN,
@@ -573,8 +593,16 @@ class TestDiscoverAggregationLineage:
         keeps the best-reconciling verdict. The degenerate ``ship_date`` axis (all
         rows in one period) cannot reconcile; the good ``period_date`` axis still
         wins, identical to the single-axis verdict — a bad axis never degrades it.
+
+        DAT-778: the WINNER of that competition persists — on both the measure
+        and event side — instead of being discarded once the verdict is picked.
+        ``axis_columns=True`` registers ``period_date``/``ship_date`` as real
+        typed columns (as a profiled date column would be), so the winning
+        axis's ``column_id`` resolves too, proving the persisted id is the
+        winner's, never the loser's (``ship_date`` would also resolve here, so
+        a wrong pick would silently pass without this fixture).
         """
-        ids = _seed(real_session, duck, multi_axis=True)
+        ids = _seed(real_session, duck, multi_axis=True, axis_columns=True)
         assert _discover(real_session, duck, ids) > 0
         row = _row_for(real_session, ids["trial_balance.balance"])
         assert row is not None
@@ -582,6 +610,43 @@ class TestDiscoverAggregationLineage:
         assert row.event_table_id == ids["journal_lines"]
         assert row.match_rate > 0.99
         assert row.convention_sql == '"debit"'
+        # The measure-side axis competition picked "period_date", never the
+        # degenerate "ship_date" — resolved to the real Column axis_columns
+        # registered, not the loser's.
+        assert row.measure_time_axis_column == "period_date"
+        assert row.measure_time_axis_column_id == ids["trial_balance.period_date"]
+        # journal_lines only ever had one axis, but it must still be CAPTURED,
+        # not silently dropped — the bug this ticket fixes discarded both sides.
+        assert row.event_time_axis_column == "period_date"
+        assert row.event_time_axis_column_id == ids["journal_lines.period_date"]
+        # The winning physical slice column resolves straight off the
+        # catalog's own SliceDefinition.column_id (schema-guaranteed NOT NULL).
+        assert row.measure_slice_column_id == ids["trial_balance.balance"]
+        assert row.event_slice_column_id == ids["journal_lines.debit"]
+
+    def test_time_axis_column_id_is_null_when_axis_name_unresolvable(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-778 NULL case: ``TimeColumn.column`` is unvalidated LLM output
+        (DAT-780 tightens this at save) — the winning axis NAME always persists
+        (it is literally what won the competition), but when that name doesn't
+        resolve to a real ``Column`` on the table, the id is an honest NULL,
+        never a sentinel string. The default (minimal) fixture doesn't register
+        ``period_date`` as a ``Column`` — the natural shape of "a witness with
+        no [resolvable] axis" this table can produce.
+        """
+        ids = _seed(real_session, duck)
+        assert _discover(real_session, duck, ids) > 0
+        row = _row_for(real_session, ids["trial_balance.balance"])
+        assert row is not None
+        assert row.measure_time_axis_column == "period_date"
+        assert row.measure_time_axis_column_id is None
+        assert row.event_time_axis_column == "period_date"
+        assert row.event_time_axis_column_id is None
+        # The physical slice column is unaffected by the axis-name gap — it is
+        # always resolvable, straight from SliceDefinition.column_id.
+        assert row.measure_slice_column_id == ids["trial_balance.balance"]
+        assert row.event_slice_column_id == ids["journal_lines.debit"]
 
     def test_junk_numeric_column_does_not_win(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

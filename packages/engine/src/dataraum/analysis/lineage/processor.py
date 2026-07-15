@@ -4,7 +4,11 @@ No LLM call and no slice materialization: the begin_session value layer already
 declared everything this needs. The slicing agent partitioned the facts by
 shared dimensions (the catalog ``SliceDefinition``, propagated across tables)
 and named each fact's event-time axes (``TableEntity.time_columns``); every axis
-is competed and the best-reconciling verdict per measure is kept (DAT-565).
+is competed and the best-reconciling verdict per measure is kept (DAT-565). The
+winning axis on each side, plus the winning physical slice column on each side
+(DAT-756 role-playing), are persisted on the ``MeasureAggregationLineage`` row
+(DAT-778) — the search result is the axis/column that won, not just the
+verdict computed under it.
 
 Discovery aggregates **inline** (DAT-536, one-view model): for each fact × shared
 dimension, a single ``GROUP BY dim, period`` over the fact's enriched view —
@@ -271,6 +275,10 @@ class _Best:
     support_lcb: float  # Wilson LCB of voters over the pairing's common denominator
     arity: int  # convention terms: 1 = single, 2 = ordered difference
     voter_residuals: tuple[float, ...]  # winning-pattern per-entity residuals (ΔBIC)
+    m_axis: str  # winning measure-side time-axis column name (DAT-565/778)
+    e_axis: str  # winning event-side time-axis column name (DAT-565/778)
+    m_slice_column_id: str  # winning physical slice column on the measure table (DAT-756/778)
+    e_slice_column_id: str  # winning physical slice column on the event table (DAT-756/778)
 
 
 def _bic(candidate: _Best) -> float:
@@ -471,13 +479,15 @@ def discover_aggregation_lineage(
         # Each fact groups by its OWN physical slice column (``sd.column_name``) —
         # the shared identity may be reached via differently-named columns (DAT-756),
         # while the VALUE domain is common, so ``_aligned_series`` still pairs them.
-        series_by_table: dict[str, list[tuple[str, _SliceSeries]]] = {}
+        # Each series carries its winning axis name + the physical slice column's
+        # ``column_id`` (DAT-778: both were previously discarded past this point).
+        series_by_table: dict[str, list[tuple[str, str, _SliceSeries]]] = {}
         for tid, sds in shared_dims[identity].items():
             t = tables.get(tid)
             if t is None:
                 continue
             # Every (role-playing slice × time axis) is a distinct lens to bucket by.
-            axis_series: list[tuple[str, _SliceSeries]] = []
+            axis_series: list[tuple[str, str, _SliceSeries]] = []
             for sd in sds:
                 for axis in time_cols_by_table.get(tid, []):
                     s = _slice_series(
@@ -491,7 +501,7 @@ def discover_aggregation_lineage(
                         grain=period_grain,
                     )
                     if s is not None:
-                        axis_series.append((axis, s))
+                        axis_series.append((axis, sd.column_id, s))
             if axis_series:
                 series_by_table[tid] = axis_series
         if len(series_by_table) < 2:
@@ -500,7 +510,7 @@ def discover_aggregation_lineage(
 
         for m_tid, m_axis_series in sorted(series_by_table.items()):
             keys_m = key_columns_by_table.get(m_tid, set())
-            for _m_axis, measure in m_axis_series:
+            for m_axis, m_slice_column_id, measure in m_axis_series:
                 measure_cols = [
                     c
                     for c in measure.numeric_columns
@@ -513,7 +523,7 @@ def discover_aggregation_lineage(
                     if e_tid == m_tid:
                         continue
                     keys_e = key_columns_by_table.get(e_tid, set())
-                    for _e_axis, event in e_axis_series:
+                    for e_axis, e_slice_column_id, event in e_axis_series:
                         # Direction gate: a rollup aggregates MANY event rows into
                         # each measure cell — the event side must be strictly
                         # finer-grained over the paired cells. Symmetric arithmetic
@@ -566,6 +576,10 @@ def discover_aggregation_lineage(
                                         for r in results.values()
                                         if r.label == verdict.pattern
                                     ),
+                                    m_axis=m_axis,
+                                    e_axis=e_axis,
+                                    m_slice_column_id=m_slice_column_id,
+                                    e_slice_column_id=e_slice_column_id,
                                 )
                                 key = columns_by_table[m_tid][measure_col].column_id
                                 prior = best_by_measure.get(key)
@@ -581,12 +595,24 @@ def discover_aggregation_lineage(
     # dedup'd by construction; PK omitted so the model's default applies.
     rows: list[dict[str, object]] = []
     for measure_column_id, (best, m_table, m_col, slice_label) in best_by_measure.items():
+        # The winning axis NAME always resolves (DAT-565); its ``column_id`` is a
+        # best-effort lookup against this table's OWN typed columns and is
+        # honestly NULL when the agent-named axis isn't one of them (DAT-778 —
+        # see the field docstrings on ``MeasureAggregationLineage``).
+        m_axis_col = columns_by_table.get(m_table.table_id, {}).get(best.m_axis)
+        e_axis_col = columns_by_table.get(best.event_table.table_id, {}).get(best.e_axis)
         rows.append(
             {
                 "run_id": run_id,
                 "measure_table_id": m_table.table_id,
                 "measure_column_id": measure_column_id,
                 "event_table_id": best.event_table.table_id,
+                "measure_time_axis_column": best.m_axis,
+                "measure_time_axis_column_id": m_axis_col.column_id if m_axis_col else None,
+                "event_time_axis_column": best.e_axis,
+                "event_time_axis_column_id": e_axis_col.column_id if e_axis_col else None,
+                "measure_slice_column_id": best.m_slice_column_id,
+                "event_slice_column_id": best.e_slice_column_id,
                 "slice_dimension": slice_label,
                 "convention_sql": best.convention_sql,
                 "period_grain": period_grain,

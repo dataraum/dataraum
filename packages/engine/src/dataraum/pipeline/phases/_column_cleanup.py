@@ -27,8 +27,12 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     surrogate, DAT-277), ``slice_definitions``, ``entropy_objects``,
     ``entropy_readiness``, ``claim_witnesses`` (all ``column_id``-keyed), plus the
     differently-named ``derived_columns.derived_column_id``,
-    ``measure_aggregation_lineage.measure_column_id``, and ``relationships``
-    (reachable through either ``from_column_id`` / ``to_column_id`` endpoint).
+    ``measure_aggregation_lineage`` (reachable through ``measure_column_id`` or
+    any of its DAT-778 witness FKs — ``measure_time_axis_column_id``,
+    ``event_time_axis_column_id``, ``measure_slice_column_id``,
+    ``event_slice_column_id``; a column can be a lineage row's *axis/slice*
+    witness without being its measure column), and ``relationships`` (reachable
+    through either ``from_column_id`` / ``to_column_id`` endpoint).
 
     Run BEFORE deleting the ``columns`` rows so the FK constraints are satisfied
     when the column rows go.
@@ -73,7 +77,13 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     )
     ctx.session.execute(
         delete(MeasureAggregationLineage).where(
-            MeasureAggregationLineage.measure_column_id.in_(column_ids)
+            or_(
+                MeasureAggregationLineage.measure_column_id.in_(column_ids),
+                MeasureAggregationLineage.measure_time_axis_column_id.in_(column_ids),
+                MeasureAggregationLineage.event_time_axis_column_id.in_(column_ids),
+                MeasureAggregationLineage.measure_slice_column_id.in_(column_ids),
+                MeasureAggregationLineage.event_slice_column_id.in_(column_ids),
+            )
         )
     )
     # Relationships reach a column through either endpoint.

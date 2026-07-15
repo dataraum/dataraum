@@ -5,6 +5,48 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-778 — lineage now persists the winning axis + slice column (no verdict change)
+
+**Branch:** `fix/dat-778-lineage-witness-persists-winning-axis`. `discover_aggregation_lineage`
+(`analysis/lineage/processor.py`) has always competed every event-time axis per
+fact (DAT-565) and every role-playing physical slice column at a shared
+dimension (DAT-756), but both winners were discarded once the verdict was
+picked — only the human `slice_dimension` label survived. This is a **pure
+persistence fix**: the reconciliation statistic, selection order (`_better`),
+and every persisted verdict field (`pattern`, `match_rate`, `r_flow_median`,
+`r_stock_median`, `n_entities*`, `convention_sql`) are byte-identical to
+before. No detector recall/precision change expected.
+
+### What changed
+Six new columns on `MeasureAggregationLineage`:
+- `measure_time_axis_column` / `event_time_axis_column` (String, NOT NULL) —
+  the winning axis NAME on each side; always populated, it is literally what
+  won DAT-565's competition.
+- `measure_time_axis_column_id` / `event_time_axis_column_id` (FK
+  `columns.column_id`, NULLABLE) — that name resolved against the table's
+  typed columns. `TimeColumn.column` is unvalidated LLM output (DAT-780 adds
+  an enforcement rule), so this is an honest NULL, never a sentinel, when the
+  agent named a column that isn't in `columns`.
+- `measure_slice_column_id` / `event_slice_column_id` (FK `columns.column_id`,
+  NOT NULL) — the winning physical slice column per side (DAT-756
+  role-playing can pick differently per side); always resolvable straight from
+  `SliceDefinition.column_id`.
+
+This is also the substrate DAT-780 (blocked on this ticket) consumes for the
+K2 measure-anchor designation.
+
+### Thresholds / new fields
+No score thresholds changed. Six new fields listed above on
+`measure_aggregation_lineage` (and its `current_measure_aggregation_lineage`
+read view) — additive only, every existing field unchanged.
+
+### Cross-package
+Cockpit drizzle mirror re-pulled in this branch (`bun run db:pull:metadata`) —
+`schema.sql` gained the six columns; the mirror is in lockstep, no further
+action needed downstream.
+
+---
+
 ## DAT-794 — Layer-A relationship detection is now deterministic
 
 **Branch:** `fix/dat-794-layer-a-determinism`. Both unseeded sampling sites in

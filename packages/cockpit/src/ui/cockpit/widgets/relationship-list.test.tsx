@@ -47,9 +47,10 @@ const REL = {
 	cardinality: "many_to_one",
 	confidence: 0.91,
 	// Real `detection_method` values are `candidate | llm | manual | keeper`
-	// (engine `relationships/db_models.py`). A confirmed FK is `llm`.
+	// (engine `relationships/db_models.py`). A confirmed FK is `llm`, vouched for
+	// by the `judge` (DAT-776 confirmation_source).
 	detection_method: "llm",
-	is_confirmed: true,
+	confirmation_source: "judge",
 };
 
 const analyzed: LookRelationshipsResult = {
@@ -75,7 +76,7 @@ describe("RelationshipListWidget (DAT-434)", () => {
 		expect(document.body.textContent).not.toContain("sess-1");
 	});
 
-	it("renders the catalog facts — type · cardinality, confidence, confirmed (DAT-478)", () => {
+	it("renders the catalog facts — type · cardinality, confidence, confirmation source (DAT-478/776)", () => {
 		renderWidget(analyzed);
 		const facts = screen.getByTestId(
 			"relationship-facts-c_orders_customer->c_customers_id",
@@ -83,7 +84,8 @@ describe("RelationshipListWidget (DAT-434)", () => {
 		// humanizeIdentifier turns foreign_key → "Foreign key", joined to cardinality.
 		expect(facts.textContent).toContain("Foreign key · many_to_one");
 		expect(facts.textContent).toContain("confidence 0.91");
-		expect(facts.textContent).toContain("confirmed");
+		// The confirmation-source badge shows WHO vouches (judge → "Judge").
+		expect(facts.textContent).toContain("Judge");
 	});
 
 	it("degrades a bands-only relationship's facts cell to a dash (DAT-478)", () => {
@@ -93,7 +95,7 @@ describe("RelationshipListWidget (DAT-434)", () => {
 			cardinality: null,
 			confidence: null,
 			detection_method: null,
-			is_confirmed: null,
+			confirmation_source: null,
 		};
 		renderWidget({ ...analyzed, relationships: [bandsOnly] });
 		// The row still renders (band + endpoints), the facts cell is just a dash.
@@ -125,16 +127,16 @@ describe("RelationshipListWidget (DAT-434)", () => {
 		expect(screen.queryByText("Ready")).toBeNull();
 	});
 
-	it("degrades an all-null-but-is_confirmed=false facts cell to a plain dash (DAT-478)", () => {
-		// is_confirmed=false is not a fact to show on its own — with no type/cardinality
-		// and no confidence the cell must be a bare dash, not empty chrome.
+	it("degrades an all-null-but-unconfirmed facts cell to a plain dash (DAT-478/776)", () => {
+		// An `unconfirmed` source is not a fact to show on its own — with no type/
+		// cardinality and no confidence the cell must be a bare dash, not empty chrome.
 		const detectedUnconfirmed = {
 			...REL,
 			relationship_type: null,
 			cardinality: null,
 			confidence: null,
 			detection_method: "candidate",
-			is_confirmed: false,
+			confirmation_source: "unconfirmed",
 		};
 		renderWidget({ ...analyzed, relationships: [detectedUnconfirmed] });
 		expect(

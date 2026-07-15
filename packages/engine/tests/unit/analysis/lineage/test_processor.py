@@ -623,7 +623,9 @@ class TestDiscoverAggregationLineage:
                 to_table_id=ids["journal_lines"],
                 to_column_id=ids["journal_lines.account_key"],
                 relationship_type="foreign_key",
-                cardinality="one-to-many",
+                # Stored canonically many→one (DAT-777 CHECK); direction is
+                # incidental here — the test only needs a key-column relationship.
+                cardinality="many-to-one",
                 confidence=0.9,
                 detection_method="llm",
             )

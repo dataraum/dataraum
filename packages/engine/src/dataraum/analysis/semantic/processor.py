@@ -92,48 +92,6 @@ def _resolve_cardinality(
     return None
 
 
-def _orient_fk_direction(
-    from_table_id: str,
-    from_col_id: str,
-    to_table_id: str,
-    to_col_id: str,
-    cardinality: str | None,
-    evidence: dict[str, Any],
-) -> tuple[str, str, str, str, str | None]:
-    """Orient a confirmed FK to the many→one convention (DAT-758).
-
-    The LLM judge emits the ``from``/``to`` direction and intermittently reverses
-    it (the header/line pair — ``journal_lines`` vs ``journal_entries`` — was seen
-    stored parent→child on the eval oracle). The persisted direction is NOT
-    cosmetic: ``og_references`` binds it verbatim as the graph edge, the cockpit
-    ``<relationships>`` block reads the directional fan-out caution off it, and the
-    referenced-dimension identity resolves ``from_column → to_table`` assuming
-    ``from`` is the fact FK (DAT-756). So orient it deterministically here.
-
-    The MEASURED cardinality (in the judge's ``from→to`` order — the candidate
-    lookup flips it per direction, and the fallback measures it that way) is the
-    reliable signal: when it reads ``one-to-many``, ``from`` is the ONE (parent/dim)
-    side, so swap the endpoints — and the directional evidence — to store
-    ``many-to-one`` child→parent. ``many-to-one`` is already correct; ``one-to-one``
-    is orientation-agnostic; ``many-to-many``/``None`` cannot be oriented. Mutates
-    ``evidence`` in place for the directional fields.
-    """
-    if cardinality != "one-to-many":
-        return from_table_id, from_col_id, to_table_id, to_col_id, cardinality
-    # RI is directional: left = fraction of FROM's values found in TO. After the
-    # swap the old TO becomes FROM, so left/right exchange.
-    left_ri = evidence.pop("left_referential_integrity", None)
-    right_ri = evidence.pop("right_referential_integrity", None)
-    if right_ri is not None:
-        evidence["left_referential_integrity"] = right_ri
-    if left_ri is not None:
-        evidence["right_referential_integrity"] = left_ri
-    # A many-to-one child→parent join matches each child row to exactly one parent
-    # — it never fans out (the one-to-many parent→child join did).
-    evidence["introduces_duplicates"] = False
-    return to_table_id, to_col_id, from_table_id, from_col_id, "many-to-one"
-
-
 def _build_candidate_metrics_lookup(
     relationship_candidates: list[dict[str, Any]] | None,
 ) -> dict[tuple[str, str, str, str], dict[str, Any]]:
@@ -844,33 +802,33 @@ def synthesize_and_store_tables(
                     error=str(e),
                 )
 
-        # DAT-758: orient to the FK convention (many→one, child→parent) from the
-        # measured cardinality before persisting. The judge intermittently reverses
-        # the direction, and every consumer that reads it assumes from = the many/
-        # fact side: og_references binds it verbatim, the conformed-dim slice identity
-        # resolves from_column → to_table, and the enrichment prompt's grain-safe
-        # marker (many-to-one/one-to-one) decides whether the join is offered at all —
-        # a reversed one-to-many FK is shown as NOT grain-safe and the dim join is lost.
-        from_table_id, from_col_id, to_table_id, to_col_id, cardinality = _orient_fk_direction(
-            from_table_id, from_col_id, to_table_id, to_col_id, cardinality, evidence
-        )
-
+        # Confirmed only at or above the judge's own decision boundary; a declined
+        # verdict stays a ``candidate`` (evidence kept) so it never reaches the
+        # "defined" catalog. See REL_CONFIRM_MIN (DAT-722). The confirmation source
+        # (DAT-776) tracks it: a confirmed row is vouched for by the ``judge``, a
+        # declined one is ``unconfirmed`` like a structural candidate.
+        confirmed = rel.confidence >= REL_CONFIRM_MIN
+        # DAT-777: build through the model's single orientation chokepoint. It
+        # orients to the FK convention (many→one, child→parent) from the measured
+        # cardinality — every consumer assumes from = the many/fact side
+        # (og_references binds it verbatim, the conformed-dim slice identity resolves
+        # from_column → to_table, and the enrichment prompt's grain-safe marker
+        # decides whether the join is offered at all; a reversed one-to-many FK is
+        # shown NOT grain-safe and the dim join is lost).
         rel_rows.append(
-            {
-                "run_id": run_id,
-                "from_table_id": from_table_id,
-                "from_column_id": from_col_id,
-                "to_table_id": to_table_id,
-                "to_column_id": to_col_id,
-                "relationship_type": rel.relationship_type.value,
-                "cardinality": cardinality,
-                "confidence": rel.confidence,
-                # Confirmed only at or above the judge's own decision boundary; a
-                # declined verdict stays a ``candidate`` (evidence kept) so it never
-                # reaches the "defined" catalog. See REL_CONFIRM_MIN (DAT-722).
-                "detection_method": "llm" if rel.confidence >= REL_CONFIRM_MIN else "candidate",
-                "evidence": evidence,
-            }
+            RelationshipModel.oriented_row(
+                run_id=run_id,
+                from_table_id=from_table_id,
+                from_column_id=from_col_id,
+                to_table_id=to_table_id,
+                to_column_id=to_col_id,
+                relationship_type=rel.relationship_type.value,
+                cardinality=cardinality,
+                confidence=rel.confidence,
+                detection_method="llm" if confirmed else "candidate",
+                confirmation_source="judge" if confirmed else "unconfirmed",
+                evidence=evidence,
+            )
         )
 
     # Run-versioned + idempotent (DAT-408): this run's llm relationships are stamped

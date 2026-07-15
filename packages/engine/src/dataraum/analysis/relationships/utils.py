@@ -120,13 +120,18 @@ def relationship_overlay_pairs(session: Session, action: str) -> list[tuple[str,
     ]
 
 
-def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]:
-    """Directional column pairs the user has dropped (``action == "reject"``).
+def load_suppressed_relationship_pairs(session: Session) -> set[frozenset[str]]:
+    """Undirected column pairs the user has dropped (``action == "reject"``).
 
     A re-run must not re-create a suppressed relationship, and its readiness must not
-    surface. Directional: rejecting ``(a, b)`` does not reject ``(b, a)``.
+    surface. Undirected (frozenset), like :func:`load_confirmed_relationship_pairs`:
+    a reject identifies the EDGE between two columns, so it holds whichever way a
+    row names the endpoints. This matters since DAT-777 canonicalizes orientation
+    (all rows stored many→one) while a teach overlay names the pair as the user saw
+    it — a directional reject would orphan silently when the two disagree. Callers
+    test ``frozenset({from_col, to_col}) in suppressed``.
     """
-    return set(relationship_overlay_pairs(session, "reject"))
+    return {frozenset(pair) for pair in relationship_overlay_pairs(session, "reject")}
 
 
 def load_confirmed_relationship_pairs(session: Session) -> set[frozenset[str]]:

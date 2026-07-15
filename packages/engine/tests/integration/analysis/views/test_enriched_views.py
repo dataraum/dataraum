@@ -353,7 +353,7 @@ class TestEnrichedViewsPhaseDuckLake:
                 cardinality="many_to_one",
                 confidence=0.9,
                 detection_method="llm",
-                is_confirmed=True,
+                confirmation_source="judge",
             )
         )
         session.flush()

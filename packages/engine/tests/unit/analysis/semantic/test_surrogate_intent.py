@@ -362,6 +362,46 @@ def test_duplicate_llm_relationships_fold_to_one_row(session) -> None:
     assert len(llm_rows) == 1
 
 
+def test_llm_persist_orients_and_marks_judge_confirmed(session) -> None:
+    """Write path 2 (DAT-777/776): the judge emits a single-column FK parent→child
+    (measured one-to-many); it persists many→one child→parent, confirmed by the
+    judge. Cardinality rides on the candidate metrics — no duckdb needed."""
+    entries = _table_with_columns(session, "entries", ["entry_id"])
+    lines = _table_with_columns(session, "lines", ["entry_id"])
+    cols = {(c.table_id, c.column_name): c.column_id for t in (entries, lines) for c in t.columns}
+    rel = Relationship(
+        relationship_id="rel-1",
+        from_table="entries",  # parent side named FROM (reversed)
+        from_column="entry_id",
+        to_table="lines",
+        to_column="entry_id",
+        key_columns=[],
+        relationship_type=RelationshipType.FOREIGN_KEY,
+        confidence=0.9,
+        detection_method="llm_tool",
+        evidence={"source": "table_synthesis"},
+    )
+    candidate = {
+        "table1": "entries",
+        "table2": "lines",
+        "join_columns": [
+            {"column1": "entry_id", "column2": "entry_id", "cardinality": "one-to-many"}
+        ],
+    }
+
+    assert _store(session, _agent([rel]), [entries, lines], candidates=[candidate]).success
+    session.flush()
+
+    row = session.execute(
+        select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
+    ).scalar_one()
+    # Flipped to child(lines.entry_id) → parent(entries.entry_id), many-to-one.
+    assert row.from_column_id == cols[(lines.table_id, "entry_id")]
+    assert row.to_column_id == cols[(entries.table_id, "entry_id")]
+    assert row.cardinality == "many-to-one"
+    assert row.confirmation_source == "judge"
+
+
 # --- Composite VERDICT records (DAT-697) ------------------------------------------
 #
 # Every offered rescue hint is adjudicated: confirmed → a status='confirmed'

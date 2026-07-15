@@ -176,8 +176,9 @@ def _store_candidates(
             if not col1_id or not col2_id:
                 continue
 
-            if (col1_id, col2_id) in suppressed:
-                # User dropped this relationship — honor the suppression overlay.
+            if frozenset((col1_id, col2_id)) in suppressed:
+                # User dropped this relationship — honor the suppression overlay
+                # (undirected: a reject holds whichever way the pair is named).
                 continue
 
             # Build evidence with value overlap and column characteristics
@@ -207,21 +208,27 @@ def _store_candidates(
             if candidate.introduces_duplicates is not None:
                 evidence["introduces_duplicates"] = candidate.introduces_duplicates
 
-            # PK omitted so the model's Python-side default applies (upsert
-            # contract, storage/upsert.py).
-            rows[(run_id, col1_id, col2_id, "candidate")] = {
-                "run_id": run_id,
-                "from_table_id": table1_id,
-                "from_column_id": col1_id,
-                "to_table_id": table2_id,
-                "to_column_id": col2_id,
-                "relationship_type": "candidate",
-                "cardinality": jc.cardinality,
-                "confidence": jc.join_confidence,
-                "detection_method": "candidate",
-                "evidence": evidence,
-                "is_confirmed": False,
-            }
+            # Build through the model's single orientation chokepoint (DAT-777):
+            # a candidate is stored many→one child→parent like every other write
+            # path, and the PK is omitted so the model's Python-side default
+            # applies (upsert contract, storage/upsert.py). A structural candidate
+            # is unconfirmed by definition (DAT-776). Dedup keys on the ORIENTED
+            # pair so two inputs orienting onto the same pair don't collide at
+            # upsert ("cannot affect row a second time").
+            row = RelationshipDB.oriented_row(
+                run_id=run_id,
+                from_table_id=table1_id,
+                from_column_id=col1_id,
+                to_table_id=table2_id,
+                to_column_id=col2_id,
+                relationship_type="candidate",
+                cardinality=jc.cardinality,
+                confidence=jc.join_confidence,
+                detection_method="candidate",
+                confirmation_source="unconfirmed",
+                evidence=evidence,
+            )
+            rows[(run_id, row["from_column_id"], row["to_column_id"], "candidate")] = row
 
     upsert(
         session,

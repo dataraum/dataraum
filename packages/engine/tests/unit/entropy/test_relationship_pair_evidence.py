@@ -71,7 +71,6 @@ def _add_relationship(
     method: str,
     evidence: dict[str, Any],
     confidence: float,
-    is_confirmed: bool = False,
 ) -> None:
     db.add(
         Relationship(
@@ -85,7 +84,6 @@ def _add_relationship(
             confidence=confidence,
             detection_method=method,
             evidence=evidence,
-            is_confirmed=is_confirmed,
         )
     )
     db.commit()
@@ -120,7 +118,6 @@ class TestTeachShadowedPairStillScores:
             method="manual",
             evidence=dict(_OVERLAY_EVIDENCE),
             confidence=1.0,
-            is_confirmed=True,
         )
 
         records = _run_relationship_entropy(session)
@@ -139,7 +136,6 @@ class TestTeachShadowedPairStillScores:
             method="keeper",
             evidence={"source": "config_overlay", "action": "keep"},
             confidence=1.0,
-            is_confirmed=True,
         )
 
         records = _run_relationship_entropy(session)
@@ -154,7 +150,6 @@ class TestTeachShadowedPairStillScores:
             method="manual",
             evidence=dict(_OVERLAY_EVIDENCE),
             confidence=1.0,
-            is_confirmed=True,
         )
 
         records = _run_relationship_entropy(session)
@@ -172,7 +167,6 @@ class TestLoaderRepresentativeMerge:
             method="manual",
             evidence=dict(_OVERLAY_EVIDENCE),
             confidence=1.0,
-            is_confirmed=True,
         )
 
         rel = load_relationship_for_pair(session, "c-fk", "c-pk", run_id="run-1")

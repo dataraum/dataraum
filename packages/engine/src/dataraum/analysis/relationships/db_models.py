@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
-    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -73,6 +72,25 @@ class Relationship(Base):
             "relationship_type IN ('foreign_key', 'hierarchy', 'candidate')",
             name="relationship_type",
         ),
+        # Confirmation-source vocabulary (DAT-776): the DB-enforced backstop for the
+        # closed set every writer sets EXPLICITLY via :meth:`oriented_row`. Replaces
+        # the inverted ``is_confirmed`` boolean, which the judge-confirm path never
+        # set (default False) so every LLM-confirmed FK read as "not confirmed".
+        CheckConstraint(
+            "confirmation_source IN ('unconfirmed', 'judge', 'user', 'keeper')",
+            name="confirmation_source",
+        ),
+        # Orientation invariant (DAT-777): a persisted FK is stored many→one,
+        # child→parent — so ``from`` is always the many/fact side every downstream
+        # consumer assumes (og_references, the conformed-dim identity resolve, the
+        # cockpit fan-out caution). :meth:`oriented_row` FLIPS a ``one-to-many`` row;
+        # this CHECK makes the invariant STRUCTURAL — a mis-oriented row fails loud at
+        # flush even on a write path that bypasses the helper, so it cannot silently
+        # persist reversed through any of the three writers.
+        CheckConstraint(
+            "cardinality IS NULL OR cardinality <> 'one-to-many'",
+            name="cardinality_oriented",
+        ),
     )
 
     relationship_id: Mapped[str] = mapped_column(
@@ -102,9 +120,20 @@ class Relationship(Base):
     detection_method: Mapped[str | None] = mapped_column(String)  # 'candidate', 'llm', 'manual'
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
-    # Verification (human-in-loop): confirmation itself lives in ConfigOverlay
-    # (DAT-776) — ``is_confirmed`` is the only persisted verification signal here.
-    is_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Verification source (DAT-776): WHO/WHAT vouches for this edge. Set EXPLICITLY
+    # by every writer via :meth:`oriented_row` (see ``ck_relationships_confirmation_source``):
+    #   'unconfirmed' — structural candidate / judge-declined (detector, processor)
+    #   'judge'       — this run's LLM judge confirmed it (processor llm path)
+    #   'user'        — explicit human teach, add/confirm overlay (materialize manual)
+    #   'keeper'      — silently retained: a prior promoted run's judge-confirmed edge
+    #                   the user never rejected (materialize keeper, DAT-409) — a
+    #                   distinct authority from a user assertion (silence, not a teach).
+    # Replaces the ``is_confirmed`` boolean the judge-confirm path never set, so every
+    # LLM-confirmed FK read as "not confirmed" (the inversion bug). NOT NULL with a
+    # server default for the unconfirmed state.
+    confirmation_source: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="unconfirmed"
+    )
 
     detected_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
@@ -117,6 +146,87 @@ class Relationship(Base):
     to_column: Mapped[Column] = relationship(
         foreign_keys=[to_column_id], back_populates="relationships_to"
     )
+
+    @classmethod
+    def oriented_row(
+        cls,
+        *,
+        run_id: str | None,
+        from_table_id: str,
+        from_column_id: str,
+        to_table_id: str,
+        to_column_id: str,
+        relationship_type: str,
+        cardinality: str | None,
+        confidence: float,
+        detection_method: str,
+        confirmation_source: str,
+        evidence: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """THE single builder for a persisted relationship row (DAT-777).
+
+        All three write paths — detector candidate, LLM judge, overlay
+        materialization — build their row through this one helper, so the FK
+        orientation invariant is enforced at ONE chokepoint instead of a single
+        per-path call the other two forgot. Returns the row dict the writers
+        upsert / ``session.add(Relationship(**row))``; the uuid PK is omitted so
+        the model's Python-side default applies.
+
+        Orients the endpoints to the many→one, child→parent FK convention every
+        downstream consumer assumes (``from`` = the many/fact side). The MEASURED
+        cardinality is the signal (DAT-758): ``one-to-many`` means ``from`` is the
+        ONE (parent/dim) side, so swap the endpoints — and the directional
+        ``left_*``/``right_*`` evidence — to store ``many-to-one``. ``many-to-one``
+        is already correct; ``one-to-one`` is orientation-agnostic;
+        ``many-to-many``/``None`` cannot be oriented. The DB backstop is
+        ``ck_relationships_cardinality_oriented``: a mis-oriented ``one-to-many``
+        row fails loud at flush even if a future writer bypasses this helper.
+        """
+        evidence = dict(evidence) if evidence else {}
+        if cardinality == "one-to-many":
+            from_table_id, from_column_id, to_table_id, to_column_id = (
+                to_table_id,
+                to_column_id,
+                from_table_id,
+                from_column_id,
+            )
+            cardinality = "many-to-one"
+            evidence = _swap_directional_evidence(evidence)
+            # A many-to-one child→parent join matches each child to exactly one
+            # parent — it never fans out (the one-to-many parent→child join did).
+            evidence["introduces_duplicates"] = False
+        return {
+            "run_id": run_id,
+            "from_table_id": from_table_id,
+            "from_column_id": from_column_id,
+            "to_table_id": to_table_id,
+            "to_column_id": to_column_id,
+            "relationship_type": relationship_type,
+            "cardinality": cardinality,
+            "confidence": confidence,
+            "detection_method": detection_method,
+            "confirmation_source": confirmation_source,
+            "evidence": evidence,
+        }
+
+
+def _swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Exchange every ``left_*``/``right_*`` metric when the FK endpoints flip.
+
+    Referential integrity, uniqueness and any other directional metric are named
+    for the FROM/TO endpoints; after the swap the old TO becomes FROM, so the
+    pairs exchange. An unpaired ``left_``/``right_`` key still moves — the metric
+    follows its endpoint.
+    """
+    swapped: dict[str, Any] = {}
+    for key, value in evidence.items():
+        if key.startswith("left_"):
+            swapped["right_" + key[len("left_") :]] = value
+        elif key.startswith("right_"):
+            swapped["left_" + key[len("right_") :]] = value
+        else:
+            swapped[key] = value
+    return swapped
 
 
 Index("idx_relationships_from", Relationship.from_table_id)

@@ -174,7 +174,8 @@ def test_suppressed_pairs_read_from_reject_overlay(session: Session) -> None:
         )
     )
     session.flush()
-    assert load_suppressed_relationship_pairs(session) == {("ca", "cb")}
+    # Undirected (DAT-777): a reject identifies the edge, not a direction.
+    assert load_suppressed_relationship_pairs(session) == {frozenset({"ca", "cb"})}
 
 
 def test_confirmed_pairs_read_from_confirm_overlay(session: Session) -> None:
@@ -292,7 +293,8 @@ def test_materialize_add_overlay_creates_manual(session: Session) -> None:
     assert row.detection_method == "manual"
     assert row.run_id == "r1"
     assert (row.from_table_id, row.to_table_id) == ("t1", "t2")
-    assert row.is_confirmed is True
+    # An `add` teach is an explicit human assertion (DAT-776).
+    assert row.confirmation_source == "user"
 
 
 def test_materialize_keep_overlay_creates_keeper_with_last_measured_evidence(
@@ -733,3 +735,103 @@ def test_materialize_skips_keep_on_adjudicated_pair_but_honors_manual(session: S
 
     methods = [r.detection_method for r in _materialized(session)]
     assert methods == ["manual"]  # keeper suppressed by the verdict; manual untouched
+
+
+# --- FK orientation enforced on every write path (DAT-777) ------------------------
+
+
+def test_detector_candidate_persists_oriented_many_to_one(session: Session) -> None:
+    """Write path 1: a detector candidate measured one-to-many is stored many→one
+    child→parent — the same convention the llm + overlay paths use."""
+    from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
+
+    _seed_tables_columns(session)  # t1.ca = orders.customer_id, t2.cb = customers.id
+    # Measured parent(customers.id) → child(orders.customer_id) as one-to-many.
+    candidate = RelationshipCandidate(
+        table1="customers",
+        table2="orders",
+        join_candidates=[
+            JoinCandidate(
+                column1="id",
+                column2="customer_id",
+                join_confidence=0.8,
+                cardinality="one-to-many",
+                left_uniqueness=1.0,
+                right_uniqueness=0.2,
+            )
+        ],
+    )
+    _store_candidates(session, ["t1", "t2"], [candidate], run_id="run-A")
+    session.flush()
+
+    row = session.query(Relationship).filter_by(detection_method="candidate").one()
+    # Flipped to child(orders.customer_id) → parent(customers.id), many-to-one.
+    assert (row.from_column_id, row.to_column_id) == ("ca", "cb")
+    assert row.cardinality == "many-to-one"
+    assert row.confirmation_source == "unconfirmed"
+    # Directional evidence followed the swap (uniqueness is left/right too).
+    assert row.evidence["left_uniqueness"] == 0.2
+    assert row.evidence["right_uniqueness"] == 1.0
+
+
+def test_materialize_reversed_manual_overlay_adopts_canonical_orientation(
+    session: Session,
+) -> None:
+    """Write path 3 + watch-item: a user teach naming the pair REVERSED still
+    materializes on the canonical oriented pair — it adopts the measured llm
+    row's orientation, so the durable row coexists with the llm row it confirms
+    instead of orphaning as a different-looking relationship."""
+    _seed_tables_columns(session)
+    session.add(
+        Relationship(
+            run_id="r1",
+            from_table_id="t1",
+            from_column_id="ca",  # canonical: orders.customer_id → customers.id
+            to_table_id="t2",
+            to_column_id="cb",
+            relationship_type="foreign_key",
+            cardinality="many-to-one",
+            confidence=0.9,
+            detection_method="llm",
+            confirmation_source="judge",
+        )
+    )
+    _overlay(session, "add", "cb", "ca")  # taught REVERSED (parent → child)
+    session.flush()
+
+    materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
+    session.flush()
+
+    manual = session.query(Relationship).filter_by(detection_method="manual").one()
+    assert (manual.from_column_id, manual.to_column_id) == ("ca", "cb")  # canonical, not (cb, ca)
+    assert manual.cardinality == "many-to-one"
+    assert manual.confirmation_source == "user"
+
+
+def test_reject_overlay_suppresses_undirected(session: Session) -> None:
+    """Watch-item: a reject taught in the opposite orientation to the row still
+    suppresses it — orientation-canonicalization must not orphan the teach."""
+    from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
+
+    _seed_tables_columns(session)
+    session.add(
+        ConfigOverlay(
+            type="relationship",
+            payload={"action": "reject", "from_column_id": "cb", "to_column_id": "ca"},
+        )
+    )
+    session.flush()
+
+    candidate = RelationshipCandidate(
+        table1="orders",
+        table2="customers",
+        join_candidates=[
+            JoinCandidate(
+                column1="customer_id", column2="id", join_confidence=0.9, cardinality="many-to-one"
+            )
+        ],
+    )
+    _store_candidates(session, ["t1", "t2"], [candidate])
+    session.flush()
+
+    assert session.query(Relationship).filter_by(detection_method="candidate").all() == []

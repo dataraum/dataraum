@@ -385,11 +385,11 @@ export const currentRelationships = metadataSchema
 		confidence: doublePrecision(),
 		detectionMethod: varchar("detection_method"),
 		evidence: json(),
-		isConfirmed: boolean("is_confirmed"),
+		confirmationSource: varchar("confirmation_source"),
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, is_confirmed, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, confirmation_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentSemanticAnnotations = metadataSchema

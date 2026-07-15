@@ -305,7 +305,8 @@ class EnrichedViewsPhase(BasePhase):
             prior_view = prior_views.get(fact_id)
             for spec in (prior_view.exposed_dimension_joins if prior_view else None) or []:
                 pair = (spec["from_column_id"], spec["to_column_id"])
-                if pair not in cand_by_pair or pair in suppressed:
+                # Suppression is undirected (DAT-777) — a reject holds either way.
+                if pair not in cand_by_pair or frozenset(pair) in suppressed:
                     continue
                 joins_with_ids.append(
                     (
@@ -331,7 +332,7 @@ class EnrichedViewsPhase(BasePhase):
                         new_pair = self._join_pair(
                             join, fact_id, tables_by_name, col_id_by_name, cand_by_pair
                         )
-                        if new_pair is None or new_pair in suppressed:
+                        if new_pair is None or frozenset(new_pair) in suppressed:
                             continue
                         if new_pair in inherited_pairs:
                             continue  # already inherited — never double-add a pair

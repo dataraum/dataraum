@@ -41,9 +41,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship, SurrogateKeyIntent
@@ -130,7 +129,9 @@ def _pair_adjudicated(session: Session, adjudication: _Adjudication, pair: tuple
 
     Surrogate provenance is recovered from the newest ``llm`` row on the same
     pair (the original mint — mirrors the mint phase's own fallback for
-    overlay-materialized rows).
+    overlay-materialized rows). The llm lookup is UNDIRECTED (DAT-777): the llm
+    row is stored canonically many→one while the keep overlay names the pair as
+    it was taught, so a directional match would miss its own measurement.
     """
     if frozenset(pair) in adjudication.declined_pairs:
         return True
@@ -139,8 +140,7 @@ def _pair_adjudicated(session: Session, adjudication: _Adjudication, pair: tuple
     evidences = session.execute(
         select(Relationship.evidence)
         .where(
-            Relationship.from_column_id == pair[0],
-            Relationship.to_column_id == pair[1],
+            _pair_matches_undirected(pair),
             Relationship.detection_method == "llm",
         )
         .order_by(Relationship.detected_at.desc())
@@ -186,10 +186,12 @@ def materialize_relationship_overlays(
     suppressed = load_suppressed_relationship_pairs(session)
     adjudication = _load_adjudication(session, run_id)
 
-    # The run's DEFINED rows so far, keyed (pair, method) — candidates are
-    # ephemeral and excluded. Dedup is per METHOD: an overlay row may join a
-    # pair the llm already confirmed (that coexistence IS the witness pool),
-    # but never duplicate a row of its own method.
+    # The run's DEFINED rows so far, keyed (UNDIRECTED pair, method) — candidates
+    # are ephemeral and excluded. Dedup is per METHOD: an overlay row may join a
+    # pair the llm already confirmed (that coexistence IS the witness pool), but
+    # never duplicate a row of its own method. Undirected (DAT-777): the llm row is
+    # stored canonically while the overlay names the pair as taught, so the key must
+    # ignore orientation or the same edge materializes twice under two names.
     defined_stmt = select(
         Relationship.from_column_id,
         Relationship.to_column_id,
@@ -198,8 +200,8 @@ def materialize_relationship_overlays(
         Relationship.run_id == run_id,
         Relationship.detection_method != "candidate",
     )
-    written: set[tuple[str, str, str]] = {
-        (f, t, str(m)) for f, t, m in session.execute(defined_stmt).tuples()
+    written: set[tuple[frozenset[str], str]] = {
+        (frozenset((f, t)), str(m)) for f, t, m in session.execute(defined_stmt).tuples()
     }
 
     # Resolve column → owning table for every column an overlay references, bounded
@@ -210,7 +212,7 @@ def materialize_relationship_overlays(
     for action, method in _ACTION_METHOD.items():
         for from_col, to_col in relationship_overlay_pairs(session, action):
             pair = (from_col, to_col)
-            if pair in suppressed or (from_col, to_col, method) in written:
+            if frozenset(pair) in suppressed or (frozenset(pair), method) in written:
                 continue
             if action == "keep" and _pair_adjudicated(session, adjudication, pair):
                 # This run RULED on the pair's composite (DAT-697) — a verdict
@@ -237,35 +239,54 @@ def materialize_relationship_overlays(
                 )
                 continue
             evidence: dict[str, Any] = {"source": "config_overlay", "action": action}
-            cardinality = None
             confidence = 1.0
             if measured is not None:
+                # Adopt the measured llm row's CANONICAL orientation (DAT-777): the
+                # overlay may name the pair either way, but the durable row must
+                # coexist with the llm row it confirms on the SAME oriented pair, or
+                # the two read as different relationships. Carry its last-measured
+                # evidence/cardinality (DAT-699) — stamped ``not_remeasured`` so no
+                # consumer mistakes a copied measurement for a fresh one.
+                from_table_r = measured.from_table_id
+                from_col_r = measured.from_column_id
+                to_table_r = measured.to_table_id
+                to_col_r = measured.to_column_id
+                cardinality = measured.cardinality
                 evidence = {
                     **(measured.evidence or {}),
                     **evidence,
                     "measured_run_id": measured.run_id,
                     "not_remeasured": True,
                 }
-                cardinality = measured.cardinality
                 if method == "keeper":
                     confidence = measured.confidence
+            else:
+                # A manual ``add`` of a relationship the system never detected: no
+                # measurement to canonicalize against, so trust the teach's own
+                # from = FK-side orientation (teach.validation) with no cardinality.
+                from_table_r, from_col_r = from_table, from_col
+                to_table_r, to_col_r = to_table, to_col
+                cardinality = None
             session.add(
                 Relationship(
-                    relationship_id=str(uuid4()),
-                    run_id=run_id,
-                    from_table_id=from_table,
-                    from_column_id=from_col,
-                    to_table_id=to_table,
-                    to_column_id=to_col,
-                    relationship_type="foreign_key",
-                    cardinality=cardinality,
-                    confidence=confidence,
-                    detection_method=method,
-                    evidence=evidence,
-                    is_confirmed=True,
+                    **Relationship.oriented_row(
+                        run_id=run_id,
+                        from_table_id=from_table_r,
+                        from_column_id=from_col_r,
+                        to_table_id=to_table_r,
+                        to_column_id=to_col_r,
+                        relationship_type="foreign_key",
+                        cardinality=cardinality,
+                        confidence=confidence,
+                        detection_method=method,
+                        # ``manual`` is an explicit human assertion (user); ``keeper``
+                        # is silent-accept retention of a prior judge row (DAT-776).
+                        confirmation_source="user" if method == "manual" else "keeper",
+                        evidence=evidence,
+                    )
                 )
             )
-            written.add((from_col, to_col, method))
+            written.add((frozenset(pair), method))
             count += 1
 
     logger.info(
@@ -276,18 +297,38 @@ def materialize_relationship_overlays(
     return count
 
 
+def _pair_matches_undirected(pair: tuple[str, str]) -> Any:
+    """A WHERE clause matching a relationship on the pair in EITHER orientation.
+
+    The overlay names the pair as it was taught while the llm row is stored
+    canonically many→one (DAT-777), so an overlay-vs-row lookup must ignore
+    orientation or it misses its own measurement.
+    """
+    return or_(
+        and_(
+            Relationship.from_column_id == pair[0],
+            Relationship.to_column_id == pair[1],
+        ),
+        and_(
+            Relationship.from_column_id == pair[1],
+            Relationship.to_column_id == pair[0],
+        ),
+    )
+
+
 def _last_measured_row(session: Session, pair: tuple[str, str]) -> Relationship | None:
     """The newest ``llm`` row on a pair — the last time this edge was MEASURED.
 
-    Overlay materialization copies its cardinality/evidence (and, for keepers,
-    confidence) so a durable row never asserts more than was ever measured.
+    Undirected (DAT-777): the overlay names the pair as taught while the llm row
+    is stored canonically, so match either orientation. Overlay materialization
+    copies its cardinality/evidence (and, for keepers, confidence) — and adopts its
+    canonical orientation — so a durable row never asserts more than was measured.
     """
     return (
         session.execute(
             select(Relationship)
             .where(
-                Relationship.from_column_id == pair[0],
-                Relationship.to_column_id == pair[1],
+                _pair_matches_undirected(pair),
                 Relationship.detection_method == "llm",
             )
             .order_by(Relationship.detected_at.desc())
@@ -358,13 +399,16 @@ def write_relationship_keepers(
         ).tuples()
     )
     reproduced = _run_pairs(session, current_run_id)
+    # Reject + keep overlays are matched UNDIRECTED (DAT-777): they name the pair as
+    # taught/lifted while the prior_llm rows are stored canonically, so a directional
+    # test would silently fail to skip a rejected or already-kept edge.
     rejected = load_suppressed_relationship_pairs(session)
-    already_kept = set(relationship_overlay_pairs(session, "keep"))
+    already_kept = {frozenset(p) for p in relationship_overlay_pairs(session, "keep")}
 
     count = 0
     for from_col, to_col, evidence in prior_llm:
         pair = (from_col, to_col)
-        if pair in reproduced or pair in rejected or pair in already_kept:
+        if pair in reproduced or frozenset(pair) in rejected or frozenset(pair) in already_kept:
             continue
         if _row_adjudicated(adjudication, pair, evidence):
             continue  # the judge ruled this run — a verdict is not silence
@@ -378,7 +422,7 @@ def write_relationship_keepers(
                 },
             )
         )
-        already_kept.add(pair)
+        already_kept.add(frozenset(pair))
         count += 1
 
     logger.info(

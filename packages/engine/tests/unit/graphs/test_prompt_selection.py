@@ -85,7 +85,7 @@ def test_extract_node_uses_the_grounding_prompt_on_balanced_tier(monkeypatch) ->
     rich.conventions = "CREDIT-NORMAL → credit - debit"  # DAT-645: vertical conventions
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
-    agent._generate_sql(MagicMock(), graph, ctx, {})
+    agent._generate_sql(MagicMock(), graph, ctx, {}, workspace_id="ws")
 
     name, prompt_ctx = renderer.render_split.call_args.args
     assert name == "graph_sql_generation"
@@ -125,7 +125,7 @@ def test_feature_config_sets_tier_and_effort(monkeypatch) -> None:
     rich.conventions = ""
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
-    agent._generate_sql(MagicMock(), graph, ctx, {})
+    agent._generate_sql(MagicMock(), graph, ctx, {}, workspace_id="ws")
 
     provider.get_model_for_tier.assert_called_with("fast")
     request = provider.converse.call_args.args[0]
@@ -164,7 +164,7 @@ def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
     rich.conventions = ""
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
-    agent._generate_sql(MagicMock(), graph, ctx, {})
+    agent._generate_sql(MagicMock(), graph, ctx, {}, workspace_id="ws")
 
     request = provider.converse.call_args.args[0]
     assert request.thinking is True
@@ -201,7 +201,7 @@ def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
     rich.conventions = ""
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
-    result = agent._generate_sql(MagicMock(), graph, ctx, {})
+    result = agent._generate_sql(MagicMock(), graph, ctx, {}, workspace_id="ws")
 
     assert result.success is False
     assert "2 tool calls" in (result.error or "")
@@ -228,7 +228,7 @@ def test_multi_step_graph_fails_loud_before_any_llm_call() -> None:
     agent = _agent_with(renderer, provider)
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")
 
-    result = agent._generate_sql(MagicMock(), graph, ctx, {})
+    result = agent._generate_sql(MagicMock(), graph, ctx, {}, workspace_id="ws")
 
     assert result.success is False
     assert "single-extract mini-graph" in (result.error or "")
@@ -260,18 +260,35 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
         "select_expr": "SUM(amount)",
         "description": "AR at latest period",
         "assumptions": [],
-        "provenance": None,
+        # Contract v2 (DAT-727): the enumeration is enforced against the served
+        # schema below — a real grounding must carry it.
+        "provenance": {
+            "field_resolution": "direct",
+            "column_mappings_basis": {
+                "accounts_receivable": {"measure_columns": ["amount"], "resolution": "direct"}
+            },
+        },
     }
     provider.converse.return_value.unwrap.return_value = MagicMock(tool_calls=[tool_call])
     agent = _agent_with(renderer, provider)
-    agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
+    agent._build_schema_info = MagicMock(  # type: ignore[method-assign]
+        return_value={
+            "tables": [
+                {"table_name": "enriched_gl", "columns": [{"name": "amount", "type": "DECIMAL"}]}
+            ]
+        }
+    )
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     rich = MagicMock()
     rich.field_mappings.mappings = {"accounts_receivable": object()}
     rich.conventions = ""
-    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
+    import duckdb
 
-    result = agent._generate_sql(MagicMock(), graph, ctx, {})
+    ctx = ExecutionContext(
+        duckdb_conn=duckdb.connect(":memory:"), schema_mapping_id="ws", rich_context=rich
+    )
+
+    result = agent._generate_sql(MagicMock(), graph, ctx, {}, workspace_id="ws")
 
     assert result.success is True
     code = result.value

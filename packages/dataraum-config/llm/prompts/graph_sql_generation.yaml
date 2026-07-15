@@ -60,7 +60,12 @@ system_prompt: |
   table is reached by a join (see the join-to-dimension blueprint). When more than one surface
   can express the concept, prefer the one whose served evidence is stronger — a COMPLETE
   low-cardinality classification beats a partial high-cardinality name enumeration. Record what
-  you chose and why in column_mappings_basis (which column, which values, why).
+  you chose and why in column_mappings_basis — and ENUMERATE there, per concept, EVERY relation
+  column your SQL parts touch, by role: measure_columns (the columns select_expr reads) and
+  filter_columns (the columns your where predicates filter on). Bare served column names,
+  verbatim, no table qualifier. This enumeration is validated against the served schema and
+  cross-checked against your SQL parts — a column your SQL uses but you did not enumerate (or
+  one you enumerate but never use) is rejected.
 
   FLOORS — few, and non-negotiable, because each one is a silent-wrong-number we have actually
   shipped (reason freely above them; never through them):
@@ -279,8 +284,11 @@ user_prompt: |
      `select_expr: "NULL"` with no relation and no predicates + a LOW-confidence assumption.
   3. `description` — the one-line human summary.
   4. `provenance` — field_resolution ("direct" if a field_mapping gave the column, "inferred"
-     if you grounded via Value sets / a join); column_mappings_basis = {concept: {column,
-     filter (the exact values), resolution}}.
+     if you grounded via Value sets / a join); column_mappings_basis = {concept:
+     {measure_columns (EVERY relation column select_expr reads), filter_columns (EVERY
+     relation column the where predicates filter on), filter (the exact values), resolution}}.
+     Served column names verbatim — the enumeration is validated against the served schema
+     and against your own SQL parts, so it must cover exactly the columns they touch.
   5. `assumptions` — genuine interpretation choices only; ALWAYS record one (LOW confidence)
      in the FALL-LOUD case, naming the concept and why it is ungrounded.
 

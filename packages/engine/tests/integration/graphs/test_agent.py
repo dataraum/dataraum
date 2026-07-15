@@ -82,6 +82,17 @@ def duckdb_with_data():
     conn.close()
 
 
+# Provenance contract v2 (DAT-727): a schema-valid grounding must enumerate every
+# relation column its SQL parts touch, by role, and the agent enforces it against
+# the served schema. The mocked outputs here read SUM(amount) over test_data.
+_V2_PROVENANCE = {
+    "field_resolution": "direct",
+    "column_mappings_basis": {
+        "test_field": {"measure_columns": ["amount"], "resolution": "direct"}
+    },
+}
+
+
 def _make_execution_context(
     duckdb_conn: duckdb.DuckDBPyConnection,
     *,
@@ -269,6 +280,7 @@ class TestGraphAgentIntegration:
             "where": [],
             "select_expr": "SUM(amount)",
             "description": "Sum amounts",
+            "provenance": _V2_PROVENANCE,
         }
 
         mock_tool_response = MagicMock()
@@ -292,7 +304,9 @@ def _agent_with_parts(
     select_expr: str, where: list[str] | None = None, description: str = "test"
 ) -> GraphAgent:
     """A GraphAgent whose mocked LLM emits extract clause parts over ``test_data``
-    (DAT-603 single-extract shape, DAT-671 parts-at-source)."""
+    (DAT-603 single-extract shape, DAT-671 parts-at-source). The v2 provenance
+    basis (DAT-727) enumerates the columns the parts touch — every call site here
+    reads ``amount`` and filters (if at all) on ``id``."""
     mock_config = MagicMock()
     mock_config.limits.max_output_tokens_per_request = 4000
     mock_config.limits.cache_ttl_seconds = 3600
@@ -311,6 +325,16 @@ def _agent_with_parts(
         "where": where or [],
         "select_expr": select_expr,
         "description": description,
+        "provenance": {
+            "field_resolution": "direct",
+            "column_mappings_basis": {
+                "test_field": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": ["id"] if where else [],
+                    "resolution": "direct",
+                }
+            },
+        },
     }
     response = MagicMock()
     response.tool_calls = [tool_call]
@@ -843,6 +867,7 @@ class TestGraphAgentSnippets:
             "where": [],
             "select_expr": "SUM(amount)",
             "description": "Sum amounts from test data",
+            "provenance": _V2_PROVENANCE,
         }
 
         mock_response = MagicMock()
@@ -1007,6 +1032,7 @@ class TestGraphAgentSnippets:
             "where": [],
             "select_expr": "SUM(amount)",
             "description": "Sum amounts from test data",
+            "provenance": _V2_PROVENANCE,
         }
 
         mock_response = MagicMock()
@@ -1048,8 +1074,15 @@ class TestPriorContextFeedback:
         cached = {
             "revenue": {
                 "sql": "SELECT 1 AS value",
+                # Persisted v2 basis shape (DAT-727) — prior_context feeds it
+                # back verbatim (json.dumps), whatever the stored shape.
                 "column_mappings_basis": {
-                    "revenue": {"column": "account_type", "filter": "IN (...)"}
+                    "revenue": {
+                        "measure_columns": ["amount"],
+                        "filter_columns": ["account_type"],
+                        "filter": "IN (...)",
+                        "resolution": "inferred",
+                    }
                 },
             }
         }

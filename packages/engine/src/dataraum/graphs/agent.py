@@ -307,6 +307,7 @@ class GraphAgent(LLMFeature):
                 context,
                 resolved_params,
                 cached_snippets=cached_snippets if cached_snippets else None,
+                workspace_id=workspace_id,
             )
             if not gen_result.success or not gen_result.value:
                 return Result.fail(gen_result.error or "SQL generation failed")
@@ -694,6 +695,8 @@ class GraphAgent(LLMFeature):
         context: ExecutionContext,
         parameters: dict[str, Any],
         cached_snippets: dict[str, dict[str, Any]] | None = None,
+        *,
+        workspace_id: str,
     ) -> Result[GeneratedCode]:
         """Ground a single leaf EXTRACT to SQL via the LLM (tool-based output).
 
@@ -758,9 +761,12 @@ class GraphAgent(LLMFeature):
         from dataraum.graphs.context import format_metadata_document
         from dataraum.graphs.field_mapping import format_mappings_for_prompt
 
+        # Built ONCE and shared by the prompt's <data_schema> block AND the
+        # contract-v2 enforcement below — "served" means the same thing in both.
+        schema_info = self._build_schema_info(context)
         prompt_context = {
             "graph_yaml": graph_yaml,
-            "table_schema": json.dumps(self._build_schema_info(context), indent=2),
+            "table_schema": json.dumps(schema_info, indent=2),
             "parameters": json.dumps(parameters, indent=2),
             "rich_context": format_metadata_document(context.rich_context),
             "field_mappings": format_mappings_for_prompt(context.rich_context.field_mappings),
@@ -939,6 +945,39 @@ class GraphAgent(LLMFeature):
                 return Result.fail(repaired.error or "schema repair failed")
             output = repaired.unwrap()
 
+        # Provenance contract v2 (DAT-727): the enumerated columns in
+        # column_mappings_basis are the operating-model graph's `uses` substrate
+        # (og_uses un-nests them), so they are ENFORCED here — against the SAME
+        # served schema the prompt rendered — never trusted, never recovered by
+        # parsing the SQL later. Membership + completeness violations get one
+        # contract-repair turn (the DAT-710 mechanics); a still-invalid output
+        # falls loud into the failed-snippet path (DAT-543) so the authored SQL
+        # + the exact violations feed the next run's prior_context instead of
+        # vanishing.
+        from dataraum.graphs.grounding_validation import (
+            schema_tables_from_info,
+            validate_grounding_basis,
+        )
+        from dataraum.llm.tool_repair import repair_tool_contract
+
+        schema_tables = schema_tables_from_info(schema_info)
+        violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+        if violations:
+            repaired = repair_tool_contract(
+                self.provider,
+                tool,
+                output.model_dump(mode="json"),
+                violations,
+                ExtractGroundingOutput,
+                model=model,
+                label=prompt_name,
+                max_tokens=self.config.limits.max_output_tokens_per_request,
+            )
+            if not repaired.success:
+                return Result.fail(repaired.error or "grounding contract repair failed")
+            output = repaired.unwrap()
+            violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+
         # Bind the one generated grounding to the graph's own leaf id (the model
         # never names a step — DAT-664's id-paraphrase class is gone by
         # construction). The model emits CLAUSE PARTS (DAT-671); the fused
@@ -967,13 +1006,38 @@ class GraphAgent(LLMFeature):
             generated_at=datetime.now(UTC),
         )
 
+        if violations:
+            # Contract still violated after the repair turn: retain the authored
+            # SQL flagged (DAT-543) with the violations as the reason — the graph
+            # cannot ground `uses` edges on an unenforced enumeration, and the
+            # next authoring revises against the exact violations instead of
+            # re-deriving blind.
+            reason = "grounding contract violated after repair: " + "; ".join(violations)
+            self._save_failed_snippet(
+                session,
+                graph,
+                generated_code,
+                context.schema_mapping_id or "default",
+                workspace_id=workspace_id,
+                mode="provenance_invalid",
+                reason=reason,
+            )
+            return Result.fail(reason)
+
         # Verification half (DAT-631): append what the agent PRODUCED to the
         # prompt dump — the SQL, per-concept grounding, and confidence — so a
         # metric that fails verification (and never persists a snippet) is still
         # inspectable offline. No-op unless prompt_dump_dir is set.
         from dataraum.llm.prompt_log import dump_response
 
-        basis = output.provenance.column_mappings_basis if output.provenance else {}
+        basis = (
+            {
+                c: b.model_dump(mode="json")
+                for c, b in output.provenance.column_mappings_basis.items()
+            }
+            if output.provenance
+            else {}
+        )
         response_body = json.dumps(
             {
                 "step_id": leaf.step_id,
@@ -1382,7 +1446,13 @@ class GraphAgent(LLMFeature):
             prov = generated_code.provenance
             provenance = {
                 "field_resolution": prov.field_resolution,
-                "column_mappings_basis": prov.column_mappings_basis,
+                # Contract-v2 submodels (DAT-727) → plain dicts: this blob is
+                # persisted as the snippet's JSON provenance, and og_uses
+                # un-nests exactly this shape ({concept: {measure_columns[],
+                # filter_columns[], filter, resolution}}).
+                "column_mappings_basis": {
+                    c: b.model_dump(mode="json") for c, b in prov.column_mappings_basis.items()
+                },
             }
 
         if generated_code.assumptions:
@@ -1485,10 +1555,12 @@ class GraphAgent(LLMFeature):
         """Retain an authored-but-unusable EXTRACT SQL, flagged (DAT-543).
 
         A first-authoring failure is NOT dropped. Either the SQL failed to run
-        (``mode="execution_failed"``) or it ran clean and the verifier rejected the
+        (``mode="execution_failed"``), it ran clean and the verifier rejected the
         VALUE (``mode="verifier_rejected"`` — e.g. negative against ``value >= 0``, or
-        NULL "no support"); the latter is VALID SQL whose result the data made
-        untrustworthy. We persist THIS node's own generated extract SQL with
+        NULL "no support"; VALID SQL whose result the data made untrustworthy), or
+        the provenance contract stayed violated after its repair turn
+        (``mode="provenance_invalid"``, DAT-727 — the SQL may be fine, but the graph
+        cannot ground ``uses`` edges on an unenforced column enumeration). We persist THIS node's own generated extract SQL with
         ``failed=True`` (``failure_count=1`` → ``find_by_key`` keeps it OUT of reuse)
         plus ``{failure_mode, failure_reason}`` in provenance, so
         ``_build_prior_context`` can feed the exact prior SQL + reason to the next

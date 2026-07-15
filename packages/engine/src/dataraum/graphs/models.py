@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =============================================================================
 # Enums
@@ -320,6 +320,45 @@ class GraphAssumptionOutput(BaseModel):
     )
 
 
+class ConceptGroundingBasis(BaseModel):
+    """How ONE concept grounds to the relation's columns — provenance contract v2 (DAT-727).
+
+    The typed substrate of the operating-model graph's ``uses`` edge (ADR-0021):
+    the model ENUMERATES every relation column its grounding touches, by role,
+    under the same evidence-first discipline as the ``grounding`` field. This is
+    strictly typed, ENFORCED data — validated at save against the served
+    relation schema plus a completeness cross-check of the emitted SQL parts,
+    with a repair turn on violation (``validate_grounding_basis``); parsing the
+    rendered SQL as a *source* of these names is forbidden by design (the parse
+    is at most a validator). ``extra="forbid"`` keeps the v1 free-form keys
+    (``column``) from silently surviving — this is a clean contract cut, no
+    backfill (pre-v2 rows simply yield no ``uses`` edges).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    measure_columns: list[str] = Field(
+        default_factory=list,
+        description="Every relation column the select_expr reads for this concept — bare "
+        "column names exactly as served in the schema, no table qualifier. Empty only when "
+        "the extract reads no column for it (e.g. COUNT(*)).",
+    )
+    filter_columns: list[str] = Field(
+        default_factory=list,
+        description="Every relation column the where predicates filter on for this concept — "
+        "bare served column names, no qualifier. Empty when the concept needs no filter.",
+    )
+    filter: str | None = Field(
+        default=None,
+        description="The exact served values the filter selects (the value→concept decision), "
+        "e.g. \"account_type IN ('revenue')\". null when unfiltered.",
+    )
+    resolution: str = Field(
+        description="How the columns were chosen: 'direct' (a field_mapping supplied them) "
+        "or 'inferred' (grounded via Value sets / a join)."
+    )
+
+
 class GraphProvenanceOutput(BaseModel):
     """Provenance of how the LLM grounded business concepts to SQL."""
 
@@ -327,9 +366,11 @@ class GraphProvenanceOutput(BaseModel):
         description="How fields were resolved: 'direct' (taught concept, deterministic mapping) "
         "or 'inferred' (LLM bridged vocabulary gap using enriched views)"
     )
-    column_mappings_basis: dict[str, dict[str, str]] = Field(
+    column_mappings_basis: dict[str, ConceptGroundingBasis] = Field(
         default_factory=dict,
-        description="Per-concept grounding: {concept: {column, filter, resolution}}",
+        description="Per-concept grounding record, keyed by concept name — enumerates ALL "
+        "relation columns each grounding touches, by role (see ConceptGroundingBasis). "
+        "Enforced against the served schema at save.",
     )
     # No free-text reasoning field: the former `llm_reasoning` was written into the
     # snippet provenance blob and read by nothing (DAT-603 consumer audit) — output
@@ -382,7 +423,11 @@ class ExtractGroundingOutput(BaseModel):
     (DAT-616) and the confidence gate — its `column_mappings_basis` is THE
     per-concept grounding record (a flat `column_mappings` duplicate was
     removed 2026-07-03: the prompt stopped teaching it in DAT-636 and it had
-    been silently empty since).
+    been silently empty since), and since contract v2 (DAT-727) also the
+    operating-model graph's `uses` substrate: a typed enumeration of every
+    relation column the grounding touches, ENFORCED at save against the
+    served schema (`validate_grounding_basis` — membership + completeness,
+    one repair turn, fall-loud on a still-invalid output).
     """
 
     grounding: str = Field(
@@ -420,5 +465,8 @@ class ExtractGroundingOutput(BaseModel):
     )
     provenance: GraphProvenanceOutput | None = Field(
         default=None,
-        description="How the concept was grounded to concrete columns",
+        description="How the concept was grounded to concrete columns. Required for a real "
+        "grounding (non-null relation): column_mappings_basis must enumerate EVERY relation "
+        "column the select_expr/where touch, by role, using served names verbatim — it is "
+        "validated against the served schema.",
     )

@@ -48,11 +48,17 @@ class TestSnippetProvenance:
     def test_save_snippet_with_provenance(self, session: Session) -> None:
         """Provenance dict roundtrips through save_snippet."""
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
+        # The persisted v2 basis shape (DAT-727): per-concept column enumeration
+        # by role — what _build_snippet_provenance model_dumps into this blob.
         provenance = {
             "field_resolution": "inferred",
-            "was_repaired": False,
             "column_mappings_basis": {
-                "revenue": {"column": "t.amount", "resolution": "inferred_from_enriched_view"}
+                "revenue": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": [],
+                    "filter": None,
+                    "resolution": "inferred",
+                }
             },
         }
 

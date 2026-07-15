@@ -65,8 +65,9 @@ system_prompt: |
     a hedged truthful characterization beats a confident wrong one.
   - ontology_hints: 0..n ontology concepts the column genuinely RELATES to —
     unordered, non-authoritative context vocabulary, never a binding. List every
-    concept that genuinely applies (a debit-side balance aggregate relates to
-    both the balance concept and the debit leg — list both); leave it empty when
+    concept that genuinely applies (a periodic level aggregate relates to both
+    the level concept and the movement it accumulates — list both); leave it
+    empty when
     none genuinely relates. Never stretch a hint to cover the table's general
     subject.
   - unit_source_column: the column defining a measure's unit. Set it for EVERY

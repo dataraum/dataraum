@@ -21,7 +21,7 @@
 // reader (mirroring the engine's `_describe_table`), NOT the column metadata: the
 // view is `SELECT f.*, <dim cols>` but the engine registers Column metadata for
 // the dim columns ONLY, so a metadata read would hide the fact's measures. DESCRIBE
-// returns the full set (names + types, no `[concept:]` tags — the engine drops them
+// returns the full set (names + types, no `[meaning:]` tags — the engine drops them
 // too); a lake-read failure falls back to the typed tables. The pure `formatSchema`
 // + `preferEnriched` are unit-tested; the Drizzle reads + the DESCRIBE are
 // smoke/integration-covered.
@@ -80,7 +80,7 @@ export function preferEnriched<T extends { layer: string }>(rows: T[]): T[] {
  * measures; DESCRIBE returns the full set. Returns null when the lake read fails
  * (views not yet checkpointed / lake unreachable) so the caller can fall back to
  * the typed tables — a degraded but non-empty schema block beats a hard failure.
- * Carries names + types only (no `[concept:]` tags), as the engine's enriched
+ * Carries names + types only (no `[meaning:]` tags), as the engine's enriched
  * schema_info does.
  */
 async function describeEnrichedViews(
@@ -153,7 +153,7 @@ export interface SchemaConceptRow {
  * Format the typed schema as the sub-agent's `<schema>` prompt block (pure).
  * Tables sorted by physical name, columns by name — deterministic. Each column
  * shows its resolved type and, when the semantic run mapped one, its
- * `[concept: …]`. Empty workspace → a one-line note.
+ * `[meaning: …]`. Empty workspace → a one-line note.
  */
 export function formatSchema(
 	tableRows: SchemaTableRow[],
@@ -206,10 +206,11 @@ export function formatSchema(
 	return (
 		"<schema>\n" +
 		`Address each table in SQL as ${LAKE_ALIAS}.<layer>.<name> exactly as shown ` +
-		"(quote column names with double quotes). Use a column's [concept: …] tag to " +
-		"map a question's business terms to the concrete column. The (additive)/" +
+		"(quote column names with double quotes). Use a column's [meaning: …] tag — its " +
+		"authored business meaning — to map a question's business terms to the concrete " +
+		"column. The (additive)/" +
 		"(point_in_time) marker is the stock/flow verdict RECONCILED FROM THE DATA — it is " +
-		"authoritative: it OVERRIDES the concept name and any domain intuition. A column " +
+		"authoritative: it OVERRIDES the meaning's wording and any domain intuition. A column " +
 		"named like a balance, level, or position is NOT a stock if it is marked (additive) " +
 		"— the data decided. (additive) is a flow: SUM it across ALL periods, never restrict " +
 		"to a single period. (point_in_time) is a stock: never SUM it across periods (take " +
@@ -224,8 +225,8 @@ export function formatSchema(
  * `<schema>` block. Prefer-enriched: when begin_session has materialized enriched
  * views, surface ONLY those (columns from a live DESCRIBE — metadata registers dim
  * columns only, so it would hide the fact's measures), falling back to the typed
- * tables on a lake-read failure. The typed path reads columns + semantic concepts
- * from metadata, so typed columns keep their `[concept:]` tags.
+ * tables on a lake-read failure. The typed path reads columns + column meanings
+ * from metadata, so typed columns keep their `[meaning:]` tags.
  */
 export async function buildSchemaBlock(): Promise<string> {
 	// Head-scoped reads (DAT-677): enriched views from the promoted catalog head

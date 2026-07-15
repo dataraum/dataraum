@@ -33,7 +33,7 @@ function row(overrides: Partial<ReadinessRow> = {}): ReadinessRow {
 		worstIntentRisk: 0.42,
 		// Light per-column semantics (DAT-476) — populated by default; the
 		// unannotated case overrides all three to null.
-		meaning: "monetary_amount (meaning)",
+		meaning: "Transaction amount in account currency",
 		semanticRole: "measure",
 		businessName: "Order Amount",
 		intents: [
@@ -165,7 +165,7 @@ describe("projectColumnSemantic (DAT-476)", () => {
 		// the block survives with the absent fields null, not collapsed to null.
 		const out = projectColumnSemantic(
 			row({
-				meaning: "monetary_amount (meaning)",
+				meaning: "Transaction amount in account currency",
 				semanticRole: null,
 				businessName: null,
 			}),

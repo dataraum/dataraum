@@ -274,6 +274,7 @@ class ConceptPersistCounts:
     emitted: int
     resolved: int
     dropped_unresolved: int
+    with_meaning: int  # resolved rows carrying a non-empty meaning (the load-bearing field)
 
 
 def persist_column_concepts(
@@ -313,7 +314,9 @@ def persist_column_concepts(
             {
                 "column_id": column_id,
                 "run_id": run_id,
-                "meaning": cc.meaning,
+                # Normalized like the formula hypothesis: an all-whitespace meaning
+                # is absence, so the gate below and the feed's IS NOT NULL read agree.
+                "meaning": (cc.meaning or "").strip() or None,
                 "ontology_hints": cc.ontology_hints or None,
                 "unit_source_column": cc.unit_source_column,
                 "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
@@ -337,12 +340,14 @@ def persist_column_concepts(
         emitted=len(column_concepts),
         resolved=len(rows),
         dropped_unresolved=len(dropped),
+        with_meaning=sum(1 for r in rows if r["meaning"]),
     )
     logger.info(
         "column_concepts_persisted",
         emitted=counts.emitted,
         resolved=counts.resolved,
         dropped_unresolved=counts.dropped_unresolved,
+        with_meaning=counts.with_meaning,
     )
     if dropped:
         # The exact names the agent echoed that resolved to no column — the signal
@@ -939,12 +944,30 @@ def synthesize_and_store_tables(
         # agent under-produced the whole field, or every name it echoed failed to
         # resolve). Fail begin_session loud rather than ship it green. Gates on
         # emptiness only — never on any content of a meaning or hint.
-        if counts.resolved == 0:
+        # Coverage visibility (DAT-769): the contract is a meaning for EVERY
+        # column, but a wide catalogue can exceed the output-token budget and the
+        # model may self-ration to the first N columns — partial coverage must be
+        # VISIBLE, never silent. No hard threshold (that would be a tuned knob and
+        # the eval's consumer oracles grade the outcome); the warning names the
+        # uncovered columns so a wide-data run is diagnosable from the log.
+        column_map = load_column_mappings(session, table_ids)
+        total_columns = len(column_map)
+        if counts.with_meaning < total_columns:
+            covered = {(cc.table_name, cc.column_name) for cc in enrichment.column_concepts}
+            missing = sorted(k for k in column_map if k not in covered)
+            logger.warning(
+                "column_meanings_partial_coverage",
+                with_meaning=counts.with_meaning,
+                total_columns=total_columns,
+                missing=missing[:40],
+            )
+        if counts.with_meaning == 0:
             return Result.fail(
-                "column_concepts resolved to zero rows for a non-empty schema "
-                f"(emitted={counts.emitted}, resolved=0, "
-                f"dropped_unresolved={counts.dropped_unresolved}) — the meaning "
-                "context every grounding prompt transports would be empty (DAT-768)."
+                "column_concepts resolved to zero meaningful rows for a non-empty "
+                f"schema (emitted={counts.emitted}, resolved={counts.resolved}, "
+                f"with_meaning=0, dropped_unresolved={counts.dropped_unresolved}) — "
+                "the meaning context every grounding prompt transports would be "
+                "empty (DAT-768)."
             )
 
     return Result.ok(enrichment)

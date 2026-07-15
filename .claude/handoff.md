@@ -20,8 +20,12 @@ accepting business-reality ambiguity. **Re-point every eval read of
   **`ontology_hints`** (0..n related concepts, non-authoritative, never a
   binding, never graded). Schema clean-cut, `schema.sql` regenerated.
 - `semantic_per_table` prompt authors characterization, not classification;
-  the object-grain `business_concept` transient field + prompt section are
-  deleted (they never persisted anywhere).
+  the object-grain `business_concept` transient field and BOTH its prompt asks
+  (system `<business_concept_mapping>` + the user-prompt "EXACT concept name"
+  instruction) are deleted (they never persisted anywhere). The downstream
+  prompts re-pointed to the meanings feed: `graph_sql_generation` (grounding
+  recipe), `business_cycles` (completion-concept grounding),
+  `metric_induction`, `column_annotation`.
 - The grounding feed (`graphs/field_mapping.py`) is rewritten:
   `load_column_meanings`/`format_meanings_for_prompt` render each column's
   meaning + measured facts (aggregation-lineage pattern/convention/match from
@@ -45,11 +49,8 @@ accepting business-reality ambiguity. **Re-point every eval read of
 - Worker-log greps: `column_concepts_persisted` unchanged; meanings visible in
   the `## COLUMN MEANINGS` prompt block.
 
-### Still open on the branch
-
-Cockpit drizzle mirror regen (`bun run db:pull:metadata` against a migrated
-DB) + two widgets rendering `business_concept` (`table-readiness.tsx`,
-`column-profile.tsx`) — mechanical field swap, no feature work.
+Cockpit: drizzle mirror regenerated; look tools / query-context / widgets
+swept to `meaning` (+hints); vitest unit suite green (1672).
 
 ---
 

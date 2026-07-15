@@ -94,18 +94,20 @@ def load_column_meanings(
 
     lineage_by_column: dict[str, tuple[str, str, str | None, float]] = {}
     lineage_stmt = (
-        select(MeasureAggregationLineage, Table.table_name)
+        select(MeasureAggregationLineage, Table.table_name, Table.layer)
         .outerjoin(Table, MeasureAggregationLineage.event_table_id == Table.table_id)
         .where(
             MeasureAggregationLineage.measure_table_id.in_(table_ids),
             MeasureAggregationLineage.run_id == catalogue_run_id,
         )
     )
-    for lineage, event_table_name in session.execute(lineage_stmt).all():
+    for lineage, event_table_name, event_layer in session.execute(lineage_stmt).all():
         lineage_by_column[lineage.measure_column_id] = (
             lineage.pattern,
             lineage.convention_sql,
-            event_table_name,
+            # Same layer-qualified vocabulary as the feed's own table headers, so
+            # the one grounding document never names a table two different ways.
+            f"{event_layer}_{event_table_name}" if event_table_name else None,
             lineage.match_rate,
         )
 
@@ -160,8 +162,12 @@ def format_meanings_for_prompt(meanings: list[ColumnMeaning]) -> str:
         facts: list[str] = []
         if m.semantic_role:
             facts.append(f"role={m.semantic_role}")
+        if m.entity_type:
+            facts.append(f"entity={m.entity_type}")
         if m.lineage_pattern and m.lineage_convention:
-            match = f", match {m.lineage_match_rate:.0%}" if m.lineage_match_rate else ""
+            match = (
+                f", match {m.lineage_match_rate:.0%}" if m.lineage_match_rate is not None else ""
+            )
             facts.append(
                 f"reconciles {m.lineage_pattern} as {m.lineage_convention}"
                 + (f" from {m.lineage_event_table}" if m.lineage_event_table else "")

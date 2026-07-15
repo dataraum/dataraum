@@ -123,7 +123,7 @@ system_prompt: |
 user_prompt: |
   <task>
   Annotate each column in the following tables with its semantic role,
-  entity type, business term, and ontology concept mapping.
+  entity type, and business term.
   </task>
 
   <schema>
@@ -131,8 +131,8 @@ user_prompt: |
   </schema>
 
   <ontology name="{ontology_name}">
-  Map columns to these domain concepts where applicable.
-  Use the EXACT concept name when a column matches semantically.
+  Domain vocabulary for context — use it when describing columns; you are not
+  mapping columns onto these concepts.
 
   {ontology_concepts}
   </ontology>

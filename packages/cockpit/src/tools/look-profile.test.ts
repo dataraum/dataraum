@@ -102,7 +102,7 @@ describe("projectColumnProfile — semantic + type decision", () => {
 		const out = projectColumnProfile("c_1", "amount", "orders", null, {
 			...EMPTY_ROWS,
 			semantic: {
-				meaning: "revenue (meaning)",
+				meaning: "Total order amount",
 				semanticRole: "measure",
 				businessName: "Order Amount",
 				entityType: null,

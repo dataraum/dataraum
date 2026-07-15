@@ -62,7 +62,7 @@ def _table_with_columns(session, name: str, columns: list[str]) -> Table:
 
 
 def _col(name: str, role: str, **kw) -> ColumnSemanticOutput:
-    # Object-grain only (DAT-637): business_concept / unit_source_column /
+    # Object-grain only (DAT-637): catalogue-grain meaning / unit_source_column /
     # derived_formula moved to the table agent's ColumnConceptOutput.
     return ColumnSemanticOutput(
         column_name=name,
@@ -109,7 +109,7 @@ class TestPersistColumnAnnotations:
         assert count == 2
         assert len(rows) == 2
         by_role = {r.semantic_role: r for r in rows}
-        # Object-grain fields only — catalogue-grain (business_concept, unit
+        # Object-grain fields only — catalogue-grain (meaning, unit
         # source) is the table agent's ColumnConcept, not this writer (DAT-637).
         assert by_role["key"].business_name == "Customer_Id"
         assert by_role["measure"].entity_type == "revenue_entity"
@@ -769,7 +769,7 @@ class TestSynthesizeAndStoreTables:
         )
 
         assert not result.success
-        assert "resolved to zero rows" in (result.error or "")
+        assert "zero meaningful rows" in (result.error or "")
         assert "DAT-768" in (result.error or "")
 
     def test_empty_concepts_fails_loud_without_measures_too(self, session) -> None:
@@ -787,7 +787,7 @@ class TestSynthesizeAndStoreTables:
         )
 
         assert not result.success
-        assert "resolved to zero rows" in (result.error or "")
+        assert "zero meaningful rows" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +828,6 @@ class TestTableSynthesisHelpers:
                     "table_name": "orders",
                     "column_name": "order_id",
                     "semantic_role": "key",
-                    "business_concept": None,
                     "entity_type": "order",
                     "confidence": 0.95,
                 }

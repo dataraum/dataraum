@@ -94,7 +94,7 @@ def _make_execution_context(
     will fail fast with a clear error.
     """
     from dataraum.graphs.context import GraphExecutionContext, TableContext
-    from dataraum.graphs.field_mapping import ColumnCandidate, FieldMappings
+    from dataraum.graphs.field_mapping import ColumnMeaning
 
     rich_context = GraphExecutionContext(
         tables=[
@@ -105,19 +105,15 @@ def _make_execution_context(
             ),
         ],
         total_tables=1,
-        field_mappings=FieldMappings(
-            mappings={
-                "test_field": [
-                    ColumnCandidate(
-                        column_id="c1",
-                        column_name="amount",
-                        table_name="test_data",
-                        confidence=1.0,
-                    )
-                ],
-            },
-            table_ids=["t1"],
-        ),
+        field_mappings=[
+            ColumnMeaning(
+                column_id="c1",
+                column_name="amount",
+                table_name="test_data",
+                meaning="Transaction amount for the test fixture",
+                ontology_hints=["test_field"],
+            )
+        ],
     )
     return ExecutionContext(
         duckdb_conn=duckdb_conn,

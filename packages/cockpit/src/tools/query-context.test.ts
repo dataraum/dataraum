@@ -47,13 +47,13 @@ const columnRows: SchemaColumnRow[] = [
 const concepts: SchemaConceptRow[] = [
 	{
 		columnId: "c1",
-		meaning: "amount (meaning)",
+		meaning: "Transaction amount",
 		temporalBehavior: null,
 	},
 	// c2 has no concept; c3 maps to account_classification.
 	{
 		columnId: "c3",
-		meaning: "account_classification (meaning)",
+		meaning: "Account class of the posting",
 		temporalBehavior: null,
 	},
 ];
@@ -92,9 +92,9 @@ describe("formatSchema", () => {
 
 	it("shows each column's type and its [concept] tag when mapped", () => {
 		const block = formatSchema(tables, columnRows, concepts);
-		expect(block).toContain('- "Betrag" :: DECIMAL  [concept: amount]');
+		expect(block).toContain('- "Betrag" :: DECIMAL  [meaning: Transaction amount]');
 		expect(block).toContain(
-			'- "account_type" :: VARCHAR  [concept: account_classification]',
+			'- "account_type" :: VARCHAR  [meaning: Account class of the posting]',
 		);
 	});
 
@@ -102,7 +102,7 @@ describe("formatSchema", () => {
 		const semantics: SchemaConceptRow[] = [
 			{
 				columnId: "c1",
-				meaning: "account_balance (meaning)",
+				meaning: "Period-end account balance",
 				temporalBehavior: "point_in_time",
 			},
 			// A resolved flow renders the marker — even with no concept mapped.
@@ -114,7 +114,7 @@ describe("formatSchema", () => {
 		];
 		const block = formatSchema(tables, columnRows, semantics);
 		expect(block).toContain(
-			'- "Betrag" :: DECIMAL  [concept: account_balance] (point_in_time)',
+			'- "Betrag" :: DECIMAL  [meaning: Period-end account balance] (point_in_time)',
 		);
 		const accountLine = block
 			.split("\n")

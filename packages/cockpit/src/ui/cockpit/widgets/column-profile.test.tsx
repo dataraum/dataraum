@@ -146,7 +146,7 @@ describe("ColumnProfileWidget (DAT-475)", () => {
 		expect(screen.queryByTestId("canvas-column-profile-unprofiled")).toBeNull();
 		// A few load-bearing values surface. "non-compliant" shows twice (the
 		// Benford verdict field + its interpretation line) — assert on count.
-		expect(screen.getByText("revenue")).toBeTruthy();
+		expect(screen.getByText("Total order amount")).toBeTruthy();
 		expect(screen.getAllByText("non-compliant").length).toBeGreaterThan(0);
 		expect(screen.getByText("qty * price")).toBeTruthy();
 		// The histogram bucket renders its edges + count (0–100 · 30). The badge

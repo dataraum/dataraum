@@ -312,7 +312,7 @@ def _format_table_schema(
                 "entity_type": ann.entity_type if ann else None,
                 "business_name": ann.business_name if ann else None,
                 "business_description": ann.business_description if ann else None,
-                "business_concept": concept.business_concept if concept else None,
+                "meaning": concept.meaning if concept else None,
                 "temporal_behavior": concept.temporal_behavior if concept else None,
             }
 
@@ -369,8 +369,8 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                     col_line += f' entity="{sem["entity_type"]}"'
                 if sem.get("business_name"):
                     col_line += f' business_name="{sem["business_name"]}"'
-                if sem.get("business_concept"):
-                    col_line += f' business_concept="{sem["business_concept"]}"'
+                if sem.get("meaning"):
+                    col_line += f' meaning="{sem["meaning"]}"'
                 if sem.get("temporal_behavior"):
                     col_line += f' temporal_behavior="{sem["temporal_behavior"]}"'
                 if sem.get("business_description"):

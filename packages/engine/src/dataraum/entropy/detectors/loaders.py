@@ -368,7 +368,7 @@ def load_semantic(
             )
         ).scalar_one_or_none()
     if cc is not None:
-        semantic_dict["business_concept"] = cc.business_concept
+        semantic_dict["meaning"] = cc.meaning
         if cc.unit_source_column:
             semantic_dict["unit_source_column"] = cc.unit_source_column
         if cc.temporal_behavior:
@@ -379,7 +379,7 @@ def load_semantic(
         if cc.derived_formula_confidence is not None:
             semantic_dict["derived_formula_confidence"] = cc.derived_formula_confidence
     else:
-        semantic_dict["business_concept"] = None
+        semantic_dict["meaning"] = None
     return semantic_dict
 
 

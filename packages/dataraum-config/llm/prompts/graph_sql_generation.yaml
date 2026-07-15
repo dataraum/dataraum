@@ -43,10 +43,13 @@ system_prompt: |
   identifier. You are GROUNDED, not guessing: <dataset_context> gives you exactly what you
   need. Two grounding surfaces:
 
-  - **Field mappings** — the semantic phase's `concept → table.column` mappings. WIDE data
-    (one column per concept): use the mapped `table.column`. Treat it as a CANDIDATE, not
-    gospel — if the mapped column is flagged near-constant or contradicts the Value sets,
-    reject it and ground via the discriminator instead.
+  - **Column meanings** — each column's authored business meaning with its measured facts
+    (aggregation-lineage reconciliation, unit source, temporal behavior). WIDE data (one
+    column per concept): ground the standard_field on
+    the column whose MEANING carries it — the reconciliation facts are the strongest evidence
+    (a column proven to reconcile as a specific movement IS that movement's field). Treat any single
+    signal as a CANDIDATE, not gospel — if a column's meaning contradicts the Value sets,
+    ground via the discriminator instead.
   - **Value sets** + **Business Concepts** — LONG-FORMAT data (one `<measure>` column plus a
     discriminator column whose values name the concept; no per-concept column). The concept is
     a SET OF VALUES of the discriminator. The **Value sets** block enumerates each categorical
@@ -54,8 +57,8 @@ system_prompt: |
     `indicators` and `exclude` patterns). Map the concept to the SPECIFIC discriminator values
     that mean it, then filter with an explicit `IN (...)` list of those values.
 
-  Weigh the surfaces rather than following a script: a sound field_mapping (a real
-  discriminator, not near-constant) is usually the direct answer for wide data; long-format
+  Weigh the surfaces rather than following a script: a column whose meaning and measured
+  facts carry the concept is usually the direct answer for wide data; long-format
   data usually grounds through discriminator values; a classification that lives on a dimension
   table is reached by a join (see the join-to-dimension blueprint). When more than one surface
   can express the concept, prefer the one whose served evidence is stronger — a COMPLETE
@@ -307,7 +310,7 @@ inputs:
   field_mappings:
     type: "string"
     required: true
-    description: "Business concept → column candidates from semantic analysis (empty string if none)"
+    description: "The COLUMN MEANINGS feed: per-column meaning + measured facts + related concepts (empty string if none)"
   prior_context:
     type: "string"
     required: true

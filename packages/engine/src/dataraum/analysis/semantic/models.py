@@ -264,27 +264,26 @@ class TableEntityOutput(BaseModel):
 
 
 class ColumnConceptOutput(BaseModel):
-    """Catalogue-grain semantics the table agent authors for ONE column (DAT-637).
+    """Catalogue-grain semantics the table agent authors for ONE column (DAT-637/769).
 
     These need the composed catalogue — the cross-cutting ontology, the confirmed
     relationships, the joined views — so they are decided here, never by the
-    object-grain per-column agent. Only emit a column that carries at least one of
-    these; columns with none are omitted.
+    object-grain per-column agent. Emit an entry for EVERY column: ``meaning`` is
+    the load-bearing context surface (DAT-769 — meaning transported as context,
+    never a categorical binding); the other fields only where they apply.
     """
 
     table_name: str = Field(description="Exact table name from the provided schema.")
     column_name: str = Field(description="Exact column name from the provided schema.")
 
-    business_concept: str | None = Field(
-        default=None,
+    meaning: str = Field(
         description=(
-            "The EXACT ontology concept this column GROUNDS (e.g. 'revenue', "
-            "'accounts_receivable'), or null. Bind ONLY a genuine discriminator the "
-            "agent can filter or aggregate on. NEVER bind a concept to a near-constant "
-            "column (one value ≥90% — a status flag like a 99%-true boolean is not a "
-            "discriminator). When a concept has no genuine column in this catalogue "
-            "(e.g. revenue is SUM of an amount filtered by an account-class value, not "
-            "any single column), leave it null — it grounds via value-sets, honestly."
+            "The column's business-model characterization in the context of its table "
+            "and the composed catalogue: what one row's value represents (its grain), "
+            "and the role it plays in the business process or statement. One to three "
+            "sentences of honest prose — ambiguity is expressible and welcome; never "
+            "force a single label onto a multi-facet column. This is transported as "
+            "context to downstream analysts, not parsed."
         ),
     )
     unit_source_column: str | None = Field(
@@ -339,12 +338,11 @@ class TableSynthesisOutput(BaseModel):
 
     column_concepts: list[ColumnConceptOutput] = Field(
         description=(
-            "Catalogue-grain per-column semantics (ontology concept, unit source, "
-            "derived-formula hypothesis) — REQUIRED, always emit this field. Include "
-            "an entry for EVERY column that carries at least one concept — measure "
-            "columns always do. Use [] only when NO column in the batch carries any "
-            "concept; returning [] when the schema has measures is an error, not a "
-            "shortcut."
+            "Catalogue-grain per-column semantics (meaning, unit "
+            "source, derived-formula hypothesis) — REQUIRED, always emit this field, "
+            "with an entry for EVERY column in the schema. Every column has a meaning "
+            "(a noise or unidentifiable column's honest meaning is saying exactly "
+            "that); returning [] for a non-empty schema is an error, not a shortcut."
         ),
     )
 
@@ -388,10 +386,6 @@ class SemanticAnnotation(BaseModel):
     entity_type: str | None = None
     business_name: str | None = None
     business_description: str | None = None  # LLM-generated description
-
-    # Business concept mapping - maps to standard domain concepts
-    # from the active ontology (e.g., 'accounts_receivable', 'revenue', 'fiscal_period')
-    business_concept: str | None = None
 
     # Temporal behavior from ontology: 'additive' or 'point_in_time'
     temporal_behavior: str | None = None

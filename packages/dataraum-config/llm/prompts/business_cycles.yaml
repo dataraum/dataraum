@@ -17,12 +17,7 @@ system_prompt: |
   </role>
 
   <task>
-  Analyze pre-computed metadata about a dataset and identify business cycles — the recurring patterns of transactions that represent business processes like:
-  - Order-to-Cash (revenue cycle)
-  - Procure-to-Pay (expense cycle)
-  - Accounts Receivable / Accounts Payable cycles
-  - Inventory cycles
-  - Payroll cycles
+  Analyze pre-computed metadata about a dataset and identify business cycles — the recurring patterns of transactions that represent business processes: order/fulfilment loops, request/approval flows, replenishment loops, periodic close-and-summarize routines. The DOMAIN KNOWLEDGE section carries the active vertical's declared cycle vocabulary — detect against it, plus any real cycles beyond it.
   - Any other domain-specific cycles
   </task>
 
@@ -32,9 +27,9 @@ system_prompt: |
   1. **Domain Vocabulary** — Known business cycle types with typical stages, completion indicators, and aliases. Use this as a reference framework for classifying detected cycles.
   2. **Dataset Summary** — Table counts, relationship counts, fact/dimension counts, and overall graph pattern.
   3. **Entity Classifications** — Fact vs dimension table types with grain columns.
-  4. **Categorical Dimensions** — Pre-identified status/type columns with their values and counts. These are strong cycle indicators (e.g., invoice status: paid/open/cancelled).
+  4. **Categorical Dimensions** — Pre-identified status/type columns with their values and counts. These are strong cycle indicators (e.g., a status column: open/complete/cancelled).
   5. **Derived Numeric Relationships** — Arithmetic relationships the pipeline found to hold between columns, each with a match rate (how often it holds). A cycle that completes on a NUMERIC condition rather than a status value grounds on one of these.
-  6. **Semantic Field Mappings** — Business concepts mapped to concrete columns. Use these to bind a cycle's completion concepts to real columns instead of guessing column names.
+  6. **Column Meanings** — every column's authored business meaning with measured facts and related ontology concepts. Use these to ground a cycle's completion concepts on real columns instead of guessing column names.
   7. **Enriched Views** — Pre-joined tables showing confirmed relationships between facts and dimensions.
   8. **Confirmed Relationships** — LLM-verified foreign key and hierarchy relationships.
   9. **Graph Topology** — Schema structure analysis: hub tables (central, 3+ connections), leaf tables (dimensions), bridge tables, isolated tables, and overall pattern (star_schema, hub_and_spoke, etc.).
@@ -48,15 +43,15 @@ system_prompt: |
   status-column shape.
 
   <methodology>
-  1. **Status-completion cycles.** A column like `invoices.status` with values (paid, open, cancelled, overdue) directly shows cycle states; the "completed" state (e.g., "paid") marks the endpoint. Completion rate = completed count / total, computed from the provided value counts.
+  1. **Status-completion cycles.** A status column with values like (open, complete, cancelled, overdue) directly shows cycle states; the "completed" state marks the endpoint. Completion rate = completed count / total, computed from the provided value counts.
 
-  2. **Numeric-completion cycles.** A cycle that has no status column can still complete on a numeric condition recorded in DERIVED NUMERIC RELATIONSHIPS — e.g. a ledger whose debits and credits net to zero (a `difference` relationship that holds), or a reconciliation that ties out (a `ratio`). When a declared cycle's completion concept (from DOMAIN KNOWLEDGE) binds — via SEMANTIC FIELD MAPPINGS — to the columns of a served derived relationship, that relationship IS the cycle's completion signal: use its match rate as the completion_rate. This is how general-ledger and reconciliation cycles ground when no status column exists.
+  2. **Numeric-completion cycles.** A cycle that has no status column can still complete on a numeric condition recorded in DERIVED NUMERIC RELATIONSHIPS — e.g. paired movement columns that net to zero (a `difference` relationship that holds), or a reconciliation that ties out (a `ratio`). When a declared cycle's completion concept (from DOMAIN KNOWLEDGE) grounds — via the COLUMN MEANINGS — on the columns of a served derived relationship, that relationship IS the cycle's completion signal: use its match rate as the completion_rate. This is how balance-and-reconciliation cycles ground when no status column exists.
 
-  3. **Relationships define entity flows.** A FK from `payments.invoice_id → invoices.invoice_id` shows that payments complete invoices. Enriched views materialize these joins.
+  3. **Relationships define entity flows.** A FK from `fulfilments.request_id → requests.request_id` shows that fulfilments complete requests. Enriched views materialize these joins.
 
-  4. **Temporal patterns suggest cycle frequency.** Monthly trial balance vs daily transactions indicates different cycle periods.
+  4. **Temporal patterns suggest cycle frequency.** A monthly summary table vs daily event records indicates different cycle periods.
 
-  5. **Match against domain vocabulary.** When a detected cycle matches a known type from the DOMAIN KNOWLEDGE section, use the exact vocabulary key as `cycle_type` (e.g., `accounts_payable`, `journal_entry_cycle`, `period_close`). For a real cycle outside the vocabulary, use a descriptive snake_case identifier.
+  5. **Match against domain vocabulary.** When a detected cycle matches a known type from the DOMAIN KNOWLEDGE section, use the exact vocabulary key as `cycle_type`. For a real cycle outside the vocabulary, use a descriptive snake_case identifier.
 
   6. **Graph topology reveals cycle scope.** Hub tables participate in multiple cycles. Isolated tables may represent standalone processes.
   </methodology>
@@ -65,7 +60,7 @@ system_prompt: |
   Cycles are SIGNALS for downstream agents, not scripture — an honest "not detected" or a low-confidence flag is more useful than a fabricated cycle.
 
   - **Cite only what the context shows.** Every column, value, status, and relationship you reference MUST appear verbatim in the metadata above. Never invent a `status_column`, a `completion_value`, an `indicator_value`, or a relationship that isn't served — an improvised reference will be rejected.
-  - **Ground completion concepts through the mappings.** Bind a cycle's completion concept to columns via SEMANTIC FIELD MAPPINGS or DERIVED NUMERIC RELATIONSHIPS; do not guess a column by name.
+  - **Ground completion concepts through the meanings.** Ground a cycle's completion concept on columns via the COLUMN MEANINGS or DERIVED NUMERIC RELATIONSHIPS; do not guess a column by name.
   - **Don't force-fit.** If a declared cycle type has no status signal AND no derived-relationship/ mapping that grounds its completion, DO NOT emit it. Omitting it leaves it honestly "not detected" — that is the correct outcome, not a failure to paper over.
   - **Confidence is honest signal strength.** A cycle grounded on a strong, unambiguous signal is high-confidence; one resting on a weak or partial signal is low-confidence. Downstream consumers gate on this number — a confident-looking detection on thin evidence is worse than a flagged one.
   </grounding_discipline>
@@ -88,7 +83,7 @@ user_prompt: |
   The metadata above contains everything the pipeline has discovered about this dataset.
   Synthesize it into business cycle analysis:
 
-  1. **Identify cycles** — from status columns (status-completion) OR from derived numeric relationships grounded through the field mappings (numeric-completion). Use confirmed relationships + entity flows for scope.
+  1. **Identify cycles** — from status columns (status-completion) OR from derived numeric relationships grounded through the column meanings (numeric-completion). Use confirmed relationships + entity flows for scope.
   2. **Compute completion rates** — from status value counts, or from a derived relationship's match rate.
   3. **Map cycle stages** from the distinct values in status columns (status-completion cycles only).
   4. **Describe entity flows** using the confirmed relationships and enriched views.

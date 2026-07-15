@@ -116,7 +116,7 @@ const QualityData = z.object({
 // --- The tool output shape.
 
 const Semantic = z.object({
-	business_concept: z.string().nullable(),
+	meaning: z.string().nullable(),
 	semantic_role: z.string().nullable(),
 	business_name: z.string().nullable(),
 	entity_type: z.string().nullable(),
@@ -248,7 +248,7 @@ export type LookProfileResult = z.infer<typeof LookProfileResult>;
 // --- The raw Drizzle row shapes (one per `current_*` read).
 
 export interface SemanticRow {
-	businessConcept: string | null;
+	meaning: string | null;
 	semanticRole: string | null;
 	businessName: string | null;
 	entityType: string | null;
@@ -338,7 +338,7 @@ function projectSemantic(
 ): z.infer<typeof Semantic> | null {
 	if (!row) return null;
 	return {
-		business_concept: row.businessConcept ?? null,
+		meaning: row.meaning ?? null,
 		semantic_role: row.semanticRole ?? null,
 		business_name: row.businessName ?? null,
 		entity_type: row.entityType ?? null,
@@ -595,7 +595,7 @@ export async function lookProfile(input: {
 async function loadSemantic(columnId: string): Promise<SemanticRow | null> {
 	const [row] = await metadataDb
 		.select({
-			businessConcept: currentColumnConcepts.businessConcept,
+			meaning: currentColumnConcepts.meaning,
 			semanticRole: currentSemanticAnnotations.semanticRole,
 			businessName: currentSemanticAnnotations.businessName,
 			entityType: currentSemanticAnnotations.entityType,

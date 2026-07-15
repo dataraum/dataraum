@@ -33,7 +33,7 @@ function row(overrides: Partial<ReadinessRow> = {}): ReadinessRow {
 		worstIntentRisk: 0.42,
 		// Light per-column semantics (DAT-476) — populated by default; the
 		// unannotated case overrides all three to null.
-		businessConcept: "monetary_amount",
+		meaning: "Transaction amount in account currency",
 		semanticRole: "measure",
 		businessName: "Order Amount",
 		intents: [
@@ -86,7 +86,7 @@ describe("projectColumnReadiness (DAT-350)", () => {
 		]);
 		// The light semantic triple rides alongside (DAT-476).
 		expect(out.semantic).toEqual({
-			business_concept: "monetary_amount",
+			meaning: "Transaction amount in account currency",
 			semantic_role: "measure",
 			business_name: "Order Amount",
 		});
@@ -99,7 +99,7 @@ describe("projectColumnReadiness (DAT-350)", () => {
 				worstIntentRisk: null,
 				intents: null,
 				topDrivers: null,
-				businessConcept: null,
+				meaning: null,
 				semanticRole: null,
 				businessName: null,
 			}),
@@ -147,7 +147,7 @@ describe("projectColumnReadiness (DAT-350)", () => {
 describe("projectColumnSemantic (DAT-476)", () => {
 	it("projects the light semantic triple when the column is annotated", () => {
 		expect(projectColumnSemantic(row())).toEqual({
-			business_concept: "monetary_amount",
+			meaning: "Transaction amount in account currency",
 			semantic_role: "measure",
 			business_name: "Order Amount",
 		});
@@ -155,23 +155,23 @@ describe("projectColumnSemantic (DAT-476)", () => {
 
 	it("is null when the column is unannotated (every semantic field absent)", () => {
 		const out = projectColumnSemantic(
-			row({ businessConcept: null, semanticRole: null, businessName: null }),
+			row({ meaning: null, semanticRole: null, businessName: null }),
 		);
 		expect(out).toBeNull();
 	});
 
 	it("keeps the block (partial fields) when at least one field is present", () => {
-		// A partial annotation (e.g. only a business_concept) is still an annotation —
+		// A partial annotation (e.g. only a meaning) is still an annotation —
 		// the block survives with the absent fields null, not collapsed to null.
 		const out = projectColumnSemantic(
 			row({
-				businessConcept: "monetary_amount",
+				meaning: "Transaction amount in account currency",
 				semanticRole: null,
 				businessName: null,
 			}),
 		);
 		expect(out).toEqual({
-			business_concept: "monetary_amount",
+			meaning: "Transaction amount in account currency",
 			semantic_role: null,
 			business_name: null,
 		});

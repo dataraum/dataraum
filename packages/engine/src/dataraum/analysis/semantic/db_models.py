@@ -317,14 +317,21 @@ class ColumnConcept(Base):
     cannot reach catalogue-grain semantics by construction.
 
     Fields:
-        business_concept: the standard ontology concept this column grounds
-            (revenue, accounts_receivable). Cross-cutting — a property of the
-            composed catalogue, not one table. None when the column is not a
-            genuine discriminator for any concept (grounds via value-sets).
+        meaning: the column's business-model characterization in the context of
+            the composed catalogue — free text, ambiguity expressible (DAT-769:
+            "the per-entity, per-period total of incoming movements — the inflow
+            column of a periodic statement" is a complete answer where a
+            categorical binding forced a coin-flip; examples here are
+            deliberately vertical-agnostic — verticals live in config, never in
+            engine contracts). Transported as CONTEXT to LLM consumers
+            (metric grounding feed, cycles, validation); never a decision surface.
+            Replaces the retired single-slot ``business_concept`` binding — the
+            precise-word mapping was ill-posed for multi-facet columns and no
+            consumer branched on it.
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
-            for this column — data-determined (DAT-657), NOT a function of
-            ``business_concept``: the resolved-layer pass writes the LLM claim
-            reconciled with the data-grounded structural witness.
+            for this column — data-determined (DAT-657): the resolved-layer pass
+            writes the LLM claim reconciled with the data-grounded structural
+            witness.
         temporal_behavior_contested: set by the resolved-layer pass when the LLM's
             ``temporal_behavior_claim`` and the data-grounded structural witness
             pool to a non-trivial conflict.
@@ -347,7 +354,7 @@ class ColumnConcept(Base):
     # Snapshot version axis: the begin_session (catalogue head) run that wrote this row.
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
-    business_concept: Mapped[str | None] = mapped_column(String)
+    meaning: Mapped[str | None] = mapped_column(Text)
     temporal_behavior: Mapped[str | None] = mapped_column(String)
     temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
     unit_source_column: Mapped[str | None] = mapped_column(String)

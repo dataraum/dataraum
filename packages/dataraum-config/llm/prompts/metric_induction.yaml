@@ -29,14 +29,14 @@ system_prompt: |
   - parameters: named parameters with type, default, description (optional)
   - dependencies: named steps that form the computation graph:
     - extract: pull a value from a table
-      - source.standard_field: abstract business concept (e.g. "revenue")
+      - source.standard_field: an ontology concept name from the vocabulary provided
       - source.statement: optional grouping (e.g. "income_statement")
       - aggregation: how to aggregate (sum, avg, min, max, count, end_of_period)
     - constant: a fixed value or parameter reference
       - parameter: name of a parameter defined above
       - default: fallback value
     - formula: compute from other steps
-      - expression: arithmetic using step names (e.g. "(revenue / cost) * 100")
+      - expression: arithmetic using step names (e.g. "(step_a / step_b) * 100")
       - depends_on: list of step names this formula uses
       - output_step: true for the final result
     - validation: optional conditions to check (condition, severity, message)
@@ -45,14 +45,14 @@ system_prompt: |
 
   <standard_fields>
   The standard_field in extract steps refers to business concepts from the
-  semantic annotations. The graph agent resolves these to actual columns
-  using the semantic mappings. Use the business_concept values you see in
-  the annotations — these are the vocabulary the system understands.
+  vertical ontology. The graph agent resolves these to actual columns
+  in-context from the COLUMN MEANINGS feed (each column's authored meaning
+  and its measured facts) — use concept names from the ontology vocabulary.
   </standard_fields>
 
   <guidelines>
   - Propose metrics that are actually computable from the available data
-  - Only use standard_fields that appear in the semantic annotations as business_concept
+  - Only use standard_fields genuinely carried by the columns per their meanings
   - Each metric should compute ONE business insight (not a dashboard)
   - Use meaningful graph_ids (e.g. "gross_margin", not "metric_1")
   - Include interpretation ranges when the metric has well-known benchmarks

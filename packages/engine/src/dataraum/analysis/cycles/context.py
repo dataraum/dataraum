@@ -37,7 +37,7 @@ from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
-from dataraum.graphs.field_mapping import format_mappings_for_prompt, load_semantic_mappings
+from dataraum.graphs.field_mapping import format_meanings_for_prompt, load_column_meanings
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
@@ -137,7 +137,7 @@ def build_cycle_detection_context(
                 col_info["business_description"] = ann.business_description
             concept = concepts.get(c.column_id)
             if concept is not None:
-                col_info["business_concept"] = concept.business_concept
+                col_info["meaning"] = concept.meaning
                 col_info["temporal_behavior"] = concept.temporal_behavior
             columns.append(col_info)
 
@@ -315,11 +315,11 @@ def build_cycle_detection_context(
 
     context["derived_relationships"] = derived_list
 
-    # 5c. Semantic field mappings (business_concept → column) — the SAME loader
-    # the metric graph agent grounds with, so a cycle's completion concepts bind
-    # to real columns instead of being improvised. Catalogue-grain, run-scoped.
-    field_mappings = load_semantic_mappings(session, table_ids, catalogue_run_id=run_id)
-    context["field_mappings"] = format_mappings_for_prompt(field_mappings)
+    # 5c. The column meaning feed (DAT-769) — the SAME loader the metric graph
+    # agent grounds with, so a cycle's completion concepts bind to real columns
+    # instead of being improvised. Catalogue-grain, run-scoped.
+    field_mappings = load_column_meanings(session, table_ids, catalogue_run_id=run_id)
+    context["field_mappings"] = format_meanings_for_prompt(field_mappings)
 
     # 6. Temporal profiles
     temporal_stmt = (
@@ -587,7 +587,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             )
         lines.append("")
 
-    # Semantic field mappings (business_concept → column) — the metric grounding feed
+    # The column meaning feed (DAT-769) — the metric grounding context
     field_mappings = context.get("field_mappings", "")
     if field_mappings:
         lines.append(field_mappings)
@@ -647,8 +647,8 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             parts = [col["name"]]
             if col.get("semantic_role"):
                 parts.append(f"role={col['semantic_role']}")
-            if col.get("business_concept"):
-                parts.append(f"concept={col['business_concept']}")
+            if col.get("meaning"):
+                parts.append(f"meaning={col['meaning']}")
             if col.get("entity_type"):
                 parts.append(f"entity={col['entity_type']}")
             lines.append(f"  - {', '.join(parts)}")

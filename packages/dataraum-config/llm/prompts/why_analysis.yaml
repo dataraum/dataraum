@@ -55,7 +55,7 @@ system_prompt: |
 
   <target_format>
   The `target` field in resolution_options MUST be a fully qualified
-  column reference: "table_name.column_name" (e.g. "zone1__invoices.amount").
+  column reference: "table_name.column_name" (e.g. "zone1__events.amount").
   Do NOT use dimension names, detector names, or abstract concepts as targets.
   For table-scoped teaches (like relationship), use the table name only.
   For teaches that don't need a target (like concept, validation, cycle),

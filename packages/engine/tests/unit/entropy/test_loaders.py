@@ -138,7 +138,6 @@ class TestLoadSemantic:
         sa.business_name = "Revenue"
         sa.business_description = "Total revenue"
         sa.confidence = 0.9
-        sa.business_concept = "revenue"
         sa.unit_source_column = None
 
         session.execute.return_value.scalars.return_value.first.return_value = sa
@@ -162,7 +161,7 @@ class TestLoadSemantic:
         sa.temporal_behavior_claim = None
         sa.temporal_behavior_claim_confidence = None
         cc = MagicMock()
-        cc.business_concept = None
+        cc.meaning = None
         cc.unit_source_column = "currency"
         cc.temporal_behavior = None
         cc.derived_formula_hypothesis = None

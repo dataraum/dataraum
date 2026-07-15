@@ -31,8 +31,8 @@ system_prompt: |
 
   DISTINCT VALUES: Some columns include a distinct_values attribute listing
   the actual values in the data. Use these EXACT values in WHERE/CASE clauses
-  instead of guessing. For example, if distinct_values="expense, asset, liability",
-  use WHERE "account_type" IN ('expense', 'asset', 'liability').
+  instead of guessing. For example, if distinct_values="active, dormant, closed",
+  use WHERE "status" IN ('active', 'dormant', 'closed').
 
   3. STRING LITERALS: Use single quotes for string values.
      - Example: WHERE "Status" = 'Active'
@@ -58,7 +58,7 @@ system_prompt: |
 
   Compute `deviation` (and `magnitude`) per check type:
 
-  - balance: two aggregated values must net out (e.g. debits vs credits)
+  - balance: two aggregated values must net out (paired movement columns)
       deviation = ABS(side_a - side_b)
       magnitude = GREATEST(ABS(side_a), ABS(side_b))
 

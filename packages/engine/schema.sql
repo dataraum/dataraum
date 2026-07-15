@@ -374,7 +374,7 @@ CREATE TABLE column_concepts (
 	concept_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
-	business_concept VARCHAR, 
+	meaning TEXT, 
 	temporal_behavior VARCHAR, 
 	temporal_behavior_contested BOOLEAN, 
 	unit_source_column VARCHAR, 

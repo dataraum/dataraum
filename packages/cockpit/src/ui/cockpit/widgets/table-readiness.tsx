@@ -149,7 +149,7 @@ function ColumnSemanticChips({ semantic }: { semantic: ColumnSemantic }) {
 	// every field is absent, so a non-null `semantic` always has ≥1 field — no
 	// all-null guard needed here; each chip is individually conditional below.
 	const businessName = semantic.business_name;
-	const concept = semantic.business_concept;
+	const meaning = semantic.meaning;
 	const role = semantic.semantic_role;
 	return (
 		<Group gap={4} wrap="wrap" mt={2} data-testid="readiness-semantic">
@@ -158,10 +158,10 @@ function ColumnSemanticChips({ semantic }: { semantic: ColumnSemantic }) {
 					{businessName}
 				</Text>
 			)}
-			{concept && (
-				<Badge variant="dot" size="xs" tt="none" color="blue">
-					{humanizeIdentifier(concept) || concept}
-				</Badge>
+			{meaning && (
+				<Text span size="xs" c="dimmed" title={meaning}>
+					{meaning}
+				</Text>
 			)}
 			{role && (
 				<Badge variant="dot" size="xs" tt="none" color="grape">

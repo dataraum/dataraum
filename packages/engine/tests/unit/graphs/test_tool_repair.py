@@ -100,7 +100,7 @@ def _provider(*responses: MagicMock) -> MagicMock:
 
 def _ctx() -> ExecutionContext:
     rich = MagicMock()
-    rich.field_mappings.mappings = {"revenue": object()}
+    rich.field_mappings = [object()]
     rich.conventions = ""
     return ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
@@ -111,7 +111,7 @@ def _generate(agent: GraphAgent) -> object:
 
 def test_valid_output_needs_no_repair(monkeypatch) -> None:
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "M")
+    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_VALID_INPUT))
     agent = _agent_with(provider)
 
@@ -126,7 +126,7 @@ def test_stringified_field_is_repaired_by_the_model(monkeypatch) -> None:
     invalid input + the validation error, forces the tool, and the repaired
     output grounds the extract — the finished SQL is never discarded."""
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "M")
+    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(_VALID_INPUT))
     agent = _agent_with(provider)
 
@@ -147,7 +147,7 @@ def test_stringified_field_is_repaired_by_the_model(monkeypatch) -> None:
 
 def test_second_validation_failure_fails_loud_with_both_errors(monkeypatch) -> None:
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "M")
+    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(_STRINGIFIED_INPUT))
     agent = _agent_with(provider)
 
@@ -161,7 +161,7 @@ def test_second_validation_failure_fails_loud_with_both_errors(monkeypatch) -> N
 
 def test_repair_turn_without_tool_call_fails_loud(monkeypatch) -> None:
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "M")
+    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(None))
     agent = _agent_with(provider)
 

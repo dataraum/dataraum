@@ -23,7 +23,7 @@ class BusinessMeaningDetector(EntropyDetector):
 
     The score is the LLM's naming confidence alone (score = 1 - confidence). No
     deterministic metadata override (ADR-0009): description / business_name /
-    entity_type / business_concept are evidence CONTEXT, not score.
+    entity_type / meaning are evidence CONTEXT, not score.
 
     Source: semantic/SemanticAnnotation
     """
@@ -69,14 +69,14 @@ class BusinessMeaningDetector(EntropyDetector):
             entity_type = getattr(semantic, "entity_type", None)
             semantic_role = getattr(semantic, "semantic_role", None)
             confidence = getattr(semantic, "confidence", None) or 1.0
-            business_concept = getattr(semantic, "business_concept", None)
+            meaning = getattr(semantic, "meaning", None)
         else:
             description = semantic.get("business_description", "") or ""
             business_name = semantic.get("business_name")
             entity_type = semantic.get("entity_type")
             semantic_role = semantic.get("semantic_role")
             confidence = semantic.get("confidence") or 1.0
-            business_concept = semantic.get("business_concept")
+            meaning = semantic.get("meaning")
 
         # Collect raw metrics (factual, not interpreted)
         raw_metrics = {
@@ -89,8 +89,8 @@ class BusinessMeaningDetector(EntropyDetector):
             "has_entity_type": bool(entity_type),
             "semantic_role": str(semantic_role) if semantic_role else None,
             "semantic_confidence": confidence,
-            "business_concept": business_concept,
-            "has_business_concept": bool(business_concept),
+            "meaning": meaning,
+            "has_meaning": bool(meaning),
         }
 
         # The measurement is the LLM's naming confidence ALONE (ADR-0009 hard rule:

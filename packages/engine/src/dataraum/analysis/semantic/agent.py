@@ -179,8 +179,10 @@ class SemanticAgent(LLMFeature):
             name="analyze_tables",
             description=(
                 "Classify each table as a business entity (fact/dimension, grain, "
-                "time column) and confirm relationships between tables. Do NOT "
-                "annotate individual columns — those are already decided."
+                "time column), confirm relationships between tables, and author the "
+                "catalogue-grain column_concepts (a meaning for EVERY column). The "
+                "OBJECT-grain per-column annotations (role, entity label, term) are "
+                "already decided — do not re-emit those."
             ),
             input_schema=TableSynthesisOutput.model_json_schema(),
         )
@@ -204,7 +206,8 @@ class SemanticAgent(LLMFeature):
         # column_concepts is a REQUIRED field on the tool schema (DAT-768), so a
         # crowded-out omission surfaces here as a ValidationError that
         # _converse_and_validate already repaired; a still-empty surface is caught
-        # loud downstream by synthesize_and_store_tables' measure-present gate.
+        # loud downstream by synthesize_and_store_tables' emptiness gate (DAT-769:
+        # blanket — every column carries a meaning by contract).
         return self._build_enrichment_result(result.unwrap())
 
     def _converse_and_validate(
@@ -260,7 +263,6 @@ class SemanticAgent(LLMFeature):
         for table_name, cols in by_table.items():
             lines.append(f"\n### {table_name}")
             for col in cols:
-                concept = col.get("business_concept") or "(none)"
                 role = col.get("semantic_role") or "(unknown)"
                 conf = col.get("confidence")
                 conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
@@ -270,8 +272,7 @@ class SemanticAgent(LLMFeature):
                 unit = col.get("detected_unit")
                 unit_str = f", value_unit={unit}" if unit else ""
                 lines.append(
-                    f"  - {col['column_name']}: role={role}, concept={concept}, "
-                    f"confidence={conf_str}{unit_str}"
+                    f"  - {col['column_name']}: role={role}, confidence={conf_str}{unit_str}"
                 )
         return "\n".join(lines)
 

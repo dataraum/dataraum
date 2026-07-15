@@ -5,6 +5,57 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-769 — business_concept retired: meaning-as-context semantic layer
+
+**Branch:** `feat/dat-769-meaning-as-context`. The single categorical
+column→ontology binding is GONE — decided 2026-07-15: no precise word-mapping
+onto ontologies; the system maps MEANING and transports it as context,
+accepting business-reality ambiguity. **Re-point every eval read of
+`ColumnConcept.business_concept`.**
+
+### What changed
+
+- `ColumnConcept.business_concept` → **`meaning`** (free-text business-model
+  characterization, catalogue-grain, authored per column — EVERY column). ONE
+  field: the initially-planned `ontology_hints` list was CUT before merge
+  (consumers must never need exact token matches — resolution is by meaning in
+  context; the ontology grounds as SERVED CONTEXT, never as tokens attached to
+  columns). Schema clean-cut, `schema.sql` regenerated.
+- `semantic_per_table` prompt authors characterization, not classification;
+  the object-grain `business_concept` transient field and BOTH its prompt asks
+  (system `<business_concept_mapping>` + the user-prompt "EXACT concept name"
+  instruction) are deleted (they never persisted anywhere). The downstream
+  prompts re-pointed to the meanings feed: `graph_sql_generation` (grounding
+  recipe), `business_cycles` (completion-concept grounding),
+  `metric_induction`, `column_annotation`.
+- The grounding feed (`graphs/field_mapping.py`) is rewritten:
+  `load_column_meanings`/`format_meanings_for_prompt` render each column's
+  meaning + measured facts (aggregation-lineage pattern/convention/match from
+  DAT-759, unit source, temporal behavior, role). Consumed unchanged
+  by the metric graph agent and cycles context; validation resolver, cockpit
+  context lines, and the `business_meaning` detector evidence carry
+  meaning instead of a concept string.
+- The DAT-768 fall-loud gate widens: zero resolved `column_concepts` rows for
+  a non-empty schema ALWAYS fails begin_session (every column carries meaning
+  by contract; the old gate was measure-conditional).
+
+### What eval must do (this bumps with the submodule)
+
+- `test_business_concept_grounding`'s measure asserts are RETIRED — the
+  ill-posed oracle (grade consumers instead: reconciliation coverage, cycle
+  recall, /deliver accuracy). Dimension-identity truth is graded via the
+  DAT-762 bus-matrix cells when that lands.
+- `calibration/metadata_truth.py` readers of `business_concept` and the
+  testdata `metadata_truth.yaml` `column_concepts` export re-point to the new
+  shape (or retire).
+- Worker-log greps: `column_concepts_persisted` unchanged; meanings visible in
+  the `## COLUMN MEANINGS` prompt block.
+
+Cockpit: drizzle mirror regenerated; look tools / query-context / widgets
+swept to `meaning`; vitest unit suite green (1672).
+
+---
+
 ## DAT-768 — empty column_concepts falls loud (salvaged from PR #483)
 
 **Branch:** `fix/dat-768-empty-concepts-fall-loud`. The `column_concepts` surface

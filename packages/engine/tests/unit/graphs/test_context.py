@@ -310,13 +310,14 @@ class TestFormatMetadataDocument:
         # DAT-566: a table with no identity_columns renders no identity clause.
         assert "Identity columns" not in result
 
-    def test_column_description_surfaces_concept_and_temporal_behavior(self) -> None:
-        """A named measure still surfaces its concept AND stock/flow verdict (DAT-543).
+    def test_column_description_surfaces_meaning_and_temporal_behavior(self) -> None:
+        """A named measure still surfaces its meaning AND stock/flow verdict (DAT-543/769).
 
-        Regression guard: the old ``if business_name / elif business_concept`` made
-        label, business_concept, and temporal_behavior mutually exclusive, so every
-        measure WITH a business_name (i.e. every grounded one) silently dropped BOTH
-        its concept and its temporal_behavior. All four must render.
+        Regression guard: the old ``if business_name / elif meaning`` shape made
+        label, meaning, and temporal_behavior mutually exclusive, so every measure
+        WITH a business_name (i.e. every grounded one) silently dropped BOTH its
+        meaning context and its temporal_behavior. All of them must render, hints
+        included.
         """
         col = ColumnContext(
             column_id="col-1",
@@ -326,7 +327,7 @@ class TestFormatMetadataDocument:
             semantic_role="measure",
             business_name="Credit Balance",
             business_description="Credit-side ledger balance",
-            business_concept="account_balance",
+            meaning="Per-account, per-period total of credit-side movements",
             temporal_behavior="additive",
         )
         table = TableContext(table_id="tbl-1", table_name="trial_balance", columns=[col])
@@ -335,7 +336,7 @@ class TestFormatMetadataDocument:
 
         assert "Credit Balance" in result  # business_name (label)
         assert "Credit-side ledger balance" in result  # business_description
-        assert "account_balance" in result  # business_concept — was dropped when name set
+        assert "credit-side movements" in result  # meaning — was dropped when name set
         assert "additive" in result  # temporal_behavior — was dropped when name set
 
     def test_entropy_scores_per_column(self) -> None:

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from dataraum.analysis.cycles.health import HealthReport
     from dataraum.analysis.relationships.db_models import Relationship
-    from dataraum.graphs.field_mapping import FieldMappings
+    from dataraum.graphs.field_mapping import ColumnMeaning
 
 logger = get_logger(__name__)
 
@@ -47,7 +47,7 @@ class ColumnContext:
     entity_type: str | None = None  # customer, product, transaction, etc.
 
     # Business concept mapping (from ontology, for metric calculations)
-    business_concept: str | None = None  # e.g., 'revenue', 'accounts_receivable'
+    meaning: str | None = None  # catalogue-grain business characterization (DAT-769)
     temporal_behavior: str | None = None  # 'additive' or 'point_in_time'
 
     # Statistical metrics
@@ -330,8 +330,8 @@ class GraphExecutionContext:
     # Enriched views (pre-joined fact + dimension tables)
     enriched_views: list[EnrichedViewContext] = field(default_factory=list)
 
-    # Field mappings (business_concept → column mappings for metrics)
-    field_mappings: FieldMappings | None = None
+    # Column meaning feed (meaning + measurement facts, DAT-769) for metrics
+    field_mappings: list[ColumnMeaning] = field(default_factory=list)
 
     # Ontology concept vocabulary (DAT-616): the vertical's concepts with their
     # indicators/exclude_patterns, so the SQL agent can map discriminator VALUES
@@ -386,7 +386,7 @@ def build_execution_context(
             reads (the in-run metrics phase passes its current run). Omitted ⇒ the
             promoted operating_model catalog head.
         catalogue_run_id: The begin_session catalogue head run (DAT-637) — scopes
-            the catalogue-grain ``ColumnConcept`` reads (business_concept, ontology
+            the catalogue-grain ``ColumnConcept`` reads (meaning,
             temporal_behavior, unit source). The metrics phase passes
             ``base_runs.relationship_run_id``. None ⇒ no concepts (object-grain
             column metadata still loads).
@@ -411,7 +411,7 @@ def build_execution_context(
     )
     from dataraum.analysis.temporal import TemporalColumnProfile
     from dataraum.analysis.typing.db_models import TypeDecision
-    from dataraum.graphs.field_mapping import load_semantic_mappings
+    from dataraum.graphs.field_mapping import load_column_meanings
     from dataraum.storage import Column, Table
 
     if not table_ids:
@@ -814,11 +814,11 @@ def build_execution_context(
         except Exception as e:
             logger.warning("cycle_health_failed", error=str(e))
 
-    # 14. Load field mappings (catalogue-grain concept → column, DAT-637)
-    field_mappings = load_semantic_mappings(session, table_ids, catalogue_run_id=catalogue_run_id)
+    # 14. Load the column meaning feed (catalogue-grain, DAT-637/769)
+    field_mappings = load_column_meanings(session, table_ids, catalogue_run_id=catalogue_run_id)
 
     # 14b. Load the vertical's concept vocabulary (DAT-616). On long-format data the
-    # discriminating measure (`amount`) carries no business_concept, so field_mappings
+    # discriminating measure (`amount`) may carry only a generic meaning, so the feed
     # is empty for the P&L concepts; serving the ontology lets the agent ground which
     # discriminator VALUES are revenue/cogs/opex from the value-sets it's now fed.
     concept_vocabulary: str | None = None
@@ -1013,7 +1013,7 @@ def build_execution_context(
                     data_type=type_dec.decided_type if type_dec else None,
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
                     entity_type=sem_ann.entity_type if sem_ann else None,
-                    business_concept=concept.business_concept if concept else None,
+                    meaning=concept.meaning if concept else None,
                     # The RESOLVED stock/flow verdict (entropy/resolve.py re-bases
                     # the ColumnConcept row at session_detect). Served as settled
                     # fact — temporal_behavior_contested is deliberately NOT
@@ -1652,9 +1652,9 @@ def _build_value_sets(table: TableContext) -> list[str]:
 def _build_column_description(col: ColumnContext) -> str:
     """Build the column-description cell: label + description + concept + stock/flow.
 
-    Label, ``business_concept``, and ``temporal_behavior`` are INDEPENDENT fields — a
+    Label, ``meaning``, and ``temporal_behavior`` are INDEPENDENT fields — a
     named measure still has a concept and a reconciled stock/flow verdict. The old
-    ``if business_name / elif business_concept`` made them mutually exclusive, so every
+    ``if business_name / elif meaning`` made them mutually exclusive, so every
     column that had a ``business_name`` (i.e. every grounded measure) silently lost BOTH
     its concept and its ``temporal_behavior``. ``temporal_behavior`` is ALSO shown in the
     Drivers section as ``target_type``; surfacing it here too is intentional — one
@@ -1667,13 +1667,13 @@ def _build_column_description(col: ColumnContext) -> str:
         parts.append(col.business_name)
         if col.business_description:
             parts.append(f": {col.business_description}")
-    elif col.business_concept:
-        parts.append(col.business_concept)
+    elif col.meaning:
+        parts.append(col.meaning)
 
-    # Concept (when it isn't already the label) + stock/flow verdict — always surfaced.
+    # Meaning context (when it isn't already the label) + stock/flow verdict.
     tags: list[str] = []
-    if col.business_concept and col.business_name:
-        tags.append(f"concept: {col.business_concept}")
+    if col.meaning and col.business_name:
+        tags.append(f"meaning: {col.meaning}")
     if col.temporal_behavior:
         tags.append(col.temporal_behavior)
     if tags:

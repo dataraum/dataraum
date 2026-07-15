@@ -47,9 +47,7 @@ from dataraum.analysis.semantic.models import (
     Relationship as SemanticRelationship,
 )
 from dataraum.analysis.semantic.utils import (
-    annotations_have_measure,
     load_column_mappings,
-    load_persisted_annotations,
     load_table_mappings,
 )
 from dataraum.core.logging import get_logger
@@ -212,7 +210,7 @@ def persist_column_annotations(
 
     The per-column phase's authoritative output — single-table-knowable fields
     only (role, entity label, term, the stock/flow claim). Catalogue-grain
-    semantics (business_concept, ontology temporal_behavior, unit source, derived
+    semantics (meaning, ontology temporal_behavior, unit source, derived
     formula) are NOT written here: the table agent authors them onto
     ``ColumnConcept`` under the catalogue head (DAT-637).
 
@@ -234,7 +232,7 @@ def persist_column_annotations(
             if not column_id:
                 continue
             # PK omitted so the model's Python-side default applies. OBJECT-grain
-            # only (DAT-637): business_concept, ontology temporal_behavior,
+            # only (DAT-637): meaning, ontology temporal_behavior,
             # unit_source_column, and the derived_formula hypothesis are
             # catalogue-grain — authored by the table agent onto ``ColumnConcept``,
             # never here. The stock/flow CLAIM stays (an independent single-column
@@ -276,6 +274,7 @@ class ConceptPersistCounts:
     emitted: int
     resolved: int
     dropped_unresolved: int
+    with_meaning: int  # resolved rows carrying a non-empty meaning (the load-bearing field)
 
 
 def persist_column_concepts(
@@ -315,7 +314,9 @@ def persist_column_concepts(
             {
                 "column_id": column_id,
                 "run_id": run_id,
-                "business_concept": cc.business_concept,
+                # Normalized like the formula hypothesis: an all-whitespace meaning
+                # is absence, so the gate below and the feed's IS NOT NULL read agree.
+                "meaning": (cc.meaning or "").strip() or None,
                 "unit_source_column": cc.unit_source_column,
                 "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
                 "derived_formula_confidence": cc.derived_formula_confidence,
@@ -338,12 +339,14 @@ def persist_column_concepts(
         emitted=len(column_concepts),
         resolved=len(rows),
         dropped_unresolved=len(dropped),
+        with_meaning=sum(1 for r in rows if r["meaning"]),
     )
     logger.info(
         "column_concepts_persisted",
         emitted=counts.emitted,
         resolved=counts.resolved,
         dropped_unresolved=counts.dropped_unresolved,
+        with_meaning=counts.with_meaning,
     )
     if dropped:
         # The exact names the agent echoed that resolved to no column — the signal
@@ -684,17 +687,6 @@ def _build_surrogate_intent(
 REL_CONFIRM_MIN = 0.7
 
 
-def _batch_has_measures(session: Session, table_ids: list[str]) -> bool:
-    """Whether any column in the batch carries the ``measure`` semantic role.
-
-    The upstream per-column phase has already annotated roles. A batch that holds
-    a measure is one that MUST bind at least one ontology concept, so zero resolved
-    ``column_concepts`` for it is an emptied surface, not a plausible judgment
-    (DAT-768). Reads the same persisted annotations the table agent saw.
-    """
-    return annotations_have_measure(load_persisted_annotations(session, table_ids))
-
-
 def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
@@ -943,21 +935,37 @@ def synthesize_and_store_tables(
             annotated_by=annotated_by,
             run_id=run_id,
         )
-        # DAT-768: the column_concepts surface is load-bearing — every metric's
-        # measure→concept binding grounds on it. With measure-role columns in the
-        # batch, ZERO resolved concepts is not a judgment; it is an emptied surface
-        # (the agent under-produced the whole field, or every name it echoed failed
-        # to resolve) that would silently collapse all downstream grounding. Fail
-        # begin_session loud rather than ship it green — the agent already
-        # re-prompted once on an empty emission (see synthesize_tables), so a
-        # still-empty surface here is a real defect, not a flake. This gates on
-        # emptiness of the surface, never on any specific concept judgment.
-        if counts.resolved == 0 and _batch_has_measures(session, table_ids):
+        # DAT-768/769: the column_concepts surface is load-bearing — the meaning
+        # context every downstream grounding prompt (metric graph agent, cycles,
+        # validation) transports. Every column carries a meaning by contract, so
+        # ZERO resolved entries is never a judgment; it is an emptied surface (the
+        # agent under-produced the whole field, or every name it echoed failed to
+        # resolve). Fail begin_session loud rather than ship it green. Gates on
+        # emptiness only — never on any content of a meaning or hint.
+        # Coverage visibility (DAT-769): the contract is a meaning for EVERY
+        # column, but a wide catalogue can exceed the output-token budget and the
+        # model may self-ration to the first N columns — partial coverage must be
+        # VISIBLE, never silent. No hard threshold (that would be a tuned knob and
+        # the eval's consumer oracles grade the outcome); the warning names the
+        # uncovered columns so a wide-data run is diagnosable from the log.
+        column_map = load_column_mappings(session, table_ids)
+        total_columns = len(column_map)
+        if counts.with_meaning < total_columns:
+            covered = {(cc.table_name, cc.column_name) for cc in enrichment.column_concepts}
+            missing = sorted(k for k in column_map if k not in covered)
+            logger.warning(
+                "column_meanings_partial_coverage",
+                with_meaning=counts.with_meaning,
+                total_columns=total_columns,
+                missing=missing[:40],
+            )
+        if counts.with_meaning == 0:
             return Result.fail(
-                "column_concepts empty despite measure-role columns in the batch "
-                f"(emitted={counts.emitted}, resolved=0, "
-                f"dropped_unresolved={counts.dropped_unresolved}) — metric grounding "
-                "would collapse (DAT-768)."
+                "column_concepts resolved to zero meaningful rows for a non-empty "
+                f"schema (emitted={counts.emitted}, resolved={counts.resolved}, "
+                f"with_meaning=0, dropped_unresolved={counts.dropped_unresolved}) — "
+                "the meaning context every grounding prompt transports would be "
+                "empty (DAT-768)."
             )
 
     return Result.ok(enrichment)

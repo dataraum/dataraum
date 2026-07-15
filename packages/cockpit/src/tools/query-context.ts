@@ -4,7 +4,7 @@
 // call list_tables — so it needs the workspace schema injected into its prompt to
 // write valid SQL. This builds the engine's `schema_info` equivalent: each TYPED
 // lake table, addressed as `lake.typed.<physical_name>`, with its columns' types
-// and (the field_mappings replacement) the per-column `business_concept` from the
+// and (the field_mappings replacement) the per-column `meaning` from the
 // promoted semantic run — so the model maps a question's terms to concrete columns
 // inline, no separate field-mapping artifact (DAT-485: field_mappings NOT built).
 //
@@ -21,7 +21,7 @@
 // reader (mirroring the engine's `_describe_table`), NOT the column metadata: the
 // view is `SELECT f.*, <dim cols>` but the engine registers Column metadata for
 // the dim columns ONLY, so a metadata read would hide the fact's measures. DESCRIBE
-// returns the full set (names + types, no `[concept:]` tags — the engine drops them
+// returns the full set (names + types, no `[meaning:]` tags — the engine drops them
 // too); a lake-read failure falls back to the typed tables. The pure `formatSchema`
 // + `preferEnriched` are unit-tested; the Drizzle reads + the DESCRIBE are
 // smoke/integration-covered.
@@ -80,7 +80,7 @@ export function preferEnriched<T extends { layer: string }>(rows: T[]): T[] {
  * measures; DESCRIBE returns the full set. Returns null when the lake read fails
  * (views not yet checkpointed / lake unreachable) so the caller can fall back to
  * the typed tables — a degraded but non-empty schema block beats a hard failure.
- * Carries names + types only (no `[concept:]` tags), as the engine's enriched
+ * Carries names + types only (no `[meaning:]` tags), as the engine's enriched
  * schema_info does.
  */
 async function describeEnrichedViews(
@@ -145,7 +145,7 @@ export interface SchemaColumnRow {
  * teach lane (why_column renders it). */
 export interface SchemaConceptRow {
 	columnId: string;
-	businessConcept: string | null;
+	meaning: string | null;
 	temporalBehavior: string | null;
 }
 
@@ -153,7 +153,7 @@ export interface SchemaConceptRow {
  * Format the typed schema as the sub-agent's `<schema>` prompt block (pure).
  * Tables sorted by physical name, columns by name — deterministic. Each column
  * shows its resolved type and, when the semantic run mapped one, its
- * `[concept: …]`. Empty workspace → a one-line note.
+ * `[meaning: …]`. Empty workspace → a one-line note.
  */
 export function formatSchema(
 	tableRows: SchemaTableRow[],
@@ -166,8 +166,7 @@ export function formatSchema(
 
 	const conceptByColumn = new Map<string, SchemaConceptRow>();
 	for (const c of conceptRows) {
-		if (c.businessConcept || c.temporalBehavior)
-			conceptByColumn.set(c.columnId, c);
+		if (c.meaning || c.temporalBehavior) conceptByColumn.set(c.columnId, c);
 	}
 
 	const columnsByTable = new Map<string, SchemaColumnRow[]>();
@@ -189,8 +188,8 @@ export function formatSchema(
 		const colLines = cols.map((c) => {
 			const type = c.resolvedType ?? "unknown";
 			const semantic = conceptByColumn.get(c.columnId);
-			const conceptTag = semantic?.businessConcept
-				? `  [concept: ${semantic.businessConcept}]`
+			const conceptTag = semantic?.meaning
+				? `  [meaning: ${semantic.meaning}]`
 				: "";
 			// Mirror the engine's render (graphs/context.py): the resolved
 			// stock/flow behaviour as a parenthesized marker, served as settled
@@ -206,10 +205,11 @@ export function formatSchema(
 	return (
 		"<schema>\n" +
 		`Address each table in SQL as ${LAKE_ALIAS}.<layer>.<name> exactly as shown ` +
-		"(quote column names with double quotes). Use a column's [concept: …] tag to " +
-		"map a question's business terms to the concrete column. The (additive)/" +
+		"(quote column names with double quotes). Use a column's [meaning: …] tag — its " +
+		"authored business meaning — to map a question's business terms to the concrete " +
+		"column. The (additive)/" +
 		"(point_in_time) marker is the stock/flow verdict RECONCILED FROM THE DATA — it is " +
-		"authoritative: it OVERRIDES the concept name and any domain intuition. A column " +
+		"authoritative: it OVERRIDES the meaning's wording and any domain intuition. A column " +
 		"named like a balance, level, or position is NOT a stock if it is marked (additive) " +
 		"— the data decided. (additive) is a flow: SUM it across ALL periods, never restrict " +
 		"to a single period. (point_in_time) is a stock: never SUM it across periods (take " +
@@ -224,8 +224,8 @@ export function formatSchema(
  * `<schema>` block. Prefer-enriched: when begin_session has materialized enriched
  * views, surface ONLY those (columns from a live DESCRIBE — metadata registers dim
  * columns only, so it would hide the fact's measures), falling back to the typed
- * tables on a lake-read failure. The typed path reads columns + semantic concepts
- * from metadata, so typed columns keep their `[concept:]` tags.
+ * tables on a lake-read failure. The typed path reads columns + column meanings
+ * from metadata, so typed columns keep their `[meaning:]` tags.
  */
 export async function buildSchemaBlock(): Promise<string> {
 	// Head-scoped reads (DAT-677): enriched views from the promoted catalog head
@@ -294,7 +294,7 @@ export async function buildSchemaBlock(): Promise<string> {
 	const conceptRows = await metadataDb
 		.select({
 			columnId: currentColumnConcepts.columnId,
-			businessConcept: currentColumnConcepts.businessConcept,
+			meaning: currentColumnConcepts.meaning,
 			temporalBehavior: currentColumnConcepts.temporalBehavior,
 		})
 		.from(currentColumnConcepts);
@@ -309,7 +309,7 @@ export async function buildSchemaBlock(): Promise<string> {
 		})),
 		conceptRows.map((c) => ({
 			columnId: c.columnId ?? "",
-			businessConcept: c.businessConcept ?? null,
+			meaning: c.meaning ?? null,
 			temporalBehavior: c.temporalBehavior ?? null,
 		})),
 	);

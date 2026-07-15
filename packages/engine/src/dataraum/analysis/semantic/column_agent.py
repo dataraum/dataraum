@@ -194,8 +194,10 @@ class ColumnAnnotationAgent(LLMFeature):
         lines = ["The following standard_field concepts are used by active metrics:"]
         lines.extend(f"  - {f}" for f in fields)
         lines.append("")
-        lines.append("PRIORITY: If a column semantically matches one of these concepts,")
-        lines.append("set business_concept to the EXACT concept name from this list.")
+        # DAT-769: vocabulary context only — concept binding was retired with the
+        # catalogue-grain meaning redesign; nothing asks the per-column agent to
+        # map columns onto concept names.
+        lines.append("Use these as vocabulary context when describing columns.")
         return "\n".join(lines)
 
     @staticmethod

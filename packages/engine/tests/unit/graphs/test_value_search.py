@@ -180,8 +180,7 @@ def _loop_agent(provider: MagicMock) -> GraphAgent:
 
 def _rich_exec_ctx(conn: duckdb.DuckDBPyConnection) -> ExecutionContext:
     ctx = _context(conn)
-    ctx.rich_context.field_mappings = MagicMock()
-    ctx.rich_context.field_mappings.mappings = {"depreciation": object()}
+    ctx.rich_context.field_mappings = [object()]
     ctx.rich_context.conventions = ""
     return ctx
 
@@ -195,7 +194,7 @@ def _provider(*responses: MagicMock) -> MagicMock:
 
 def test_search_then_generate_grounds_with_the_searched_values(monkeypatch) -> None:
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "M")
+    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     conn = duckdb.connect()
     conn.execute("CREATE TABLE coa AS SELECT * FROM (VALUES ('Depreciation')) v(account_name)")
     provider = _provider(
@@ -224,7 +223,7 @@ def test_search_budget_exhaustion_fails_loud(monkeypatch) -> None:
     """A model that never stops searching hits the budget and fails loud —
     the last allowed search's result carries the budget notice."""
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "M")
+    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     conn = duckdb.connect()
     conn.execute("CREATE TABLE coa AS SELECT * FROM (VALUES ('Depreciation')) v(account_name)")
     search = {"table": "chart_of_account_ob", "column": "account_name", "pattern": "x"}

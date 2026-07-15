@@ -36,6 +36,13 @@ from dataraum.core.models.base import RelationshipType, Result
 from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_run_id
 
+# A minimal resolvable meaning entry (orders.order_id exists in every relationship
+# fixture below) so the DAT-768/769 empty-surface gate — not under test in the
+# relationship flows — stays quiet.
+_MEANING_MIN = [
+    ColumnConceptOutput(table_name="orders", column_name="order_id", meaning="test meaning")
+]
+
 
 def _table_with_columns(session, name: str, columns: list[str]) -> Table:
     src = Source(name=f"src_{name}", source_type="csv")
@@ -55,7 +62,7 @@ def _table_with_columns(session, name: str, columns: list[str]) -> Table:
 
 
 def _col(name: str, role: str, **kw) -> ColumnSemanticOutput:
-    # Object-grain only (DAT-637): business_concept / unit_source_column /
+    # Object-grain only (DAT-637): catalogue-grain meaning / unit_source_column /
     # derived_formula moved to the table agent's ColumnConceptOutput.
     return ColumnSemanticOutput(
         column_name=name,
@@ -102,7 +109,7 @@ class TestPersistColumnAnnotations:
         assert count == 2
         assert len(rows) == 2
         by_role = {r.semantic_role: r for r in rows}
-        # Object-grain fields only — catalogue-grain (business_concept, unit
+        # Object-grain fields only — catalogue-grain (meaning, unit
         # source) is the table agent's ColumnConcept, not this writer (DAT-637).
         assert by_role["key"].business_name == "Customer_Id"
         assert by_role["measure"].entity_type == "revenue_entity"
@@ -133,7 +140,7 @@ class TestPersistColumnConcepts:
     """The catalogue-grain authoring the table agent owns (DAT-637)."""
 
     def test_persists_concept_unit_and_normalizes_formula(self, session) -> None:
-        """business_concept / unit source / derived-formula land on ColumnConcept.
+        """meaning / hints / unit source / derived-formula land on ColumnConcept.
 
         Whitespace-only hypotheses normalize to None so the detector's
         truthiness read ("no hypothesis → witness abstains") holds.
@@ -143,7 +150,7 @@ class TestPersistColumnConcepts:
             ColumnConceptOutput(
                 table_name="orders",
                 column_name="total",
-                business_concept="revenue",
+                meaning="Order total including tax",
                 unit_source_column="currency_code",
                 derived_formula_hypothesis="subtotal + tax",
                 derived_formula_confidence=0.85,
@@ -151,6 +158,7 @@ class TestPersistColumnConcepts:
             ColumnConceptOutput(
                 table_name="orders",
                 column_name="discount",
+                meaning="Per-order discount amount",
                 derived_formula_hypothesis="   ",
             ),
         ]
@@ -170,7 +178,7 @@ class TestPersistColumnConcepts:
         rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
         cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
         total = rows[cols["total"]]
-        assert total.business_concept == "revenue"
+        assert total.meaning == "Order total including tax"
         assert total.unit_source_column == "currency_code"
         assert total.derived_formula_hypothesis == "subtotal + tax"
         assert total.derived_formula_confidence == 0.85
@@ -185,12 +193,8 @@ class TestPersistColumnConcepts:
         """
         table = _table_with_columns(session, "orders", ["total"])
         concepts = [
-            ColumnConceptOutput(
-                table_name="orders", column_name="total", business_concept="revenue"
-            ),
-            ColumnConceptOutput(
-                table_name="orders", column_name="total", business_concept="net_revenue"
-            ),
+            ColumnConceptOutput(table_name="orders", column_name="total", meaning="gross"),
+            ColumnConceptOutput(table_name="orders", column_name="total", meaning="net"),
         ]
 
         result = persist_column_concepts(
@@ -202,7 +206,7 @@ class TestPersistColumnConcepts:
         assert result.emitted == 2  # both mentions counted as emitted
         rows = list(session.execute(select(ColumnConceptDB)).scalars())
         assert len(rows) == 1
-        assert rows[0].business_concept == "net_revenue"  # last mention wins
+        assert rows[0].meaning == "net"  # last mention wins
 
     def test_unresolvable_concept_dropped_and_counted(self, session) -> None:
         """DAT-768 path #2: a concept whose (table, column) name resolves to no column
@@ -210,9 +214,7 @@ class TestPersistColumnConcepts:
         being indistinguishable from an empty emission."""
         table = _table_with_columns(session, "orders", ["total"])
         concepts = [
-            ColumnConceptOutput(
-                table_name="orders", column_name="ghost", business_concept="revenue"
-            )
+            ColumnConceptOutput(table_name="orders", column_name="ghost", meaning="phantom")
         ]
 
         result = persist_column_concepts(
@@ -272,10 +274,12 @@ class TestSynthesizeAndStoreTables:
         customers = _table_with_columns(session, "customers", ["id"])
 
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
+                    column_concepts=_MEANING_MIN,
                     entity_detections=[
                         EntityDetection(
                             table_id="",
@@ -345,10 +349,12 @@ class TestSynthesizeAndStoreTables:
         customers = _table_with_columns(session, "customers", ["id"])
 
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
+                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -418,10 +424,12 @@ class TestSynthesizeAndStoreTables:
         customers = _table_with_columns(session, "customers", ["id"])
 
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
+                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -501,10 +509,12 @@ class TestSynthesizeAndStoreTables:
         session.flush()
 
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
+                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -571,10 +581,12 @@ class TestSynthesizeAndStoreTables:
         conn.execute("INSERT INTO lake.typed.customers VALUES (100), (100), (100)")
 
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
+                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -614,10 +626,12 @@ class TestSynthesizeAndStoreTables:
     def _agent() -> MagicMock:
         """An agent that always classifies `orders` and confirms the orders→customers FK."""
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
+                    column_concepts=_MEANING_MIN,
                     entity_detections=[
                         EntityDetection(
                             table_id="",
@@ -701,6 +715,7 @@ class TestSynthesizeAndStoreTables:
 
     def test_propagates_agent_failure(self, session) -> None:
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(return_value=Result.fail("LLM down"))
 
         result = synthesize_and_store_tables(session, agent, ["t1"], run_id=baseline_run_id())
@@ -710,6 +725,7 @@ class TestSynthesizeAndStoreTables:
     @staticmethod
     def _agent_returning_empty_concepts() -> MagicMock:
         agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
         agent.synthesize_tables = MagicMock(
             return_value=Result.ok(
                 SemanticEnrichmentResult(
@@ -734,10 +750,10 @@ class TestSynthesizeAndStoreTables:
         )
         session.flush()
 
-    def test_empty_concepts_with_measures_fails_loud(self, session) -> None:
-        """DAT-768: a measure column in the batch + zero resolved concepts is an
-        emptied grounding surface — begin_session fails loud instead of shipping it
-        green (every metric's measure→concept binding would otherwise collapse)."""
+    def test_empty_concepts_fails_loud(self, session) -> None:
+        """DAT-768/769: zero resolved column_concepts for a non-empty schema is an
+        emptied grounding surface — every column carries a meaning by contract, so
+        emptiness is never a judgment. begin_session fails loud."""
         tbl = _table_with_columns(session, "trial_balance", ["debit_balance"])
         self._annotate(session, tbl, "debit_balance", "measure")
 
@@ -749,12 +765,13 @@ class TestSynthesizeAndStoreTables:
         )
 
         assert not result.success
-        assert "column_concepts empty" in (result.error or "")
+        assert "zero meaningful rows" in (result.error or "")
         assert "DAT-768" in (result.error or "")
 
-    def test_empty_concepts_without_measures_succeeds(self, session) -> None:
-        """No measure column → an empty concept surface is a legitimate judgment; the
-        phase must NOT fail (the gate is measure-conditional, not blanket)."""
+    def test_empty_concepts_fails_loud_without_measures_too(self, session) -> None:
+        """The gate is blanket under the meaning contract (DAT-769) — a
+        dimension-only batch still carries meanings, so emptiness fails there too
+        (the old gate was measure-conditional)."""
         tbl = _table_with_columns(session, "regions", ["region_name"])
         self._annotate(session, tbl, "region_name", "dimension")
 
@@ -765,7 +782,8 @@ class TestSynthesizeAndStoreTables:
             run_id=baseline_run_id(),
         )
 
-        assert result.success
+        assert not result.success
+        assert "zero meaningful rows" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +824,6 @@ class TestTableSynthesisHelpers:
                     "table_name": "orders",
                     "column_name": "order_id",
                     "semantic_role": "key",
-                    "business_concept": None,
                     "entity_type": "order",
                     "confidence": 0.95,
                 }

@@ -298,6 +298,43 @@ class TestFormatMetadataDocument:
         assert "customer_id" in result
         assert "Recurring customer identity" in result
 
+    def test_attribute_role_time_column_is_not_rendered_as_a_lens(self) -> None:
+        """DAT-780: an attribute-role date is NOT presented as a time lens.
+
+        The answer agent picks a trend lens from these entries, so an attribute date
+        (due_date) must never appear as a 'Time column'/'by <aspect>' lens — it stays
+        a normal column in the table below."""
+        table = TableContext(
+            table_id="t1",
+            table_name="orders",
+            row_count=10,
+            column_count=2,
+            table_role="fact",
+            grain_columns=["order_id"],
+            time_columns=[
+                {
+                    "column": "order_date",
+                    "aspect": "order",
+                    "role": "event",
+                    "is_anchor": True,
+                    "note": "When placed.",
+                },
+                {
+                    "column": "due_date",
+                    "aspect": "due",
+                    "role": "attribute",
+                    "is_anchor": False,
+                    "note": "When payment is owed.",
+                },
+            ],
+        )
+        ctx = GraphExecutionContext(tables=[table], total_tables=1, total_columns=2)
+        result = format_metadata_document(ctx)
+        # The event axis renders as a lens; the attribute date does NOT.
+        assert "by order" in result
+        assert "by due" not in result
+        assert "When payment is owed." not in result
+
     def test_column_table_format(self) -> None:
         """Columns are formatted in a table with business metadata."""
         col = ColumnContext(

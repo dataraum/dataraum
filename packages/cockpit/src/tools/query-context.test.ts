@@ -496,6 +496,45 @@ describe("formatEntities (DAT-607)", () => {
 		);
 	});
 
+	it("offers event axes only, marks the anchor, hides attribute dates (DAT-780)", () => {
+		const out = formatEntities([
+			{
+				address: entAddr("wwi_orders"),
+				entity: entity({
+					time_columns: [
+						{
+							column: "OrderDate",
+							aspect: "order",
+							role: "event",
+							is_anchor: true,
+							note: "Placed.",
+						},
+						{
+							column: "ShipDate",
+							aspect: "ship",
+							role: "event",
+							is_anchor: false,
+							note: "Shipped.",
+						},
+						{
+							column: "DueDate",
+							aspect: "due",
+							role: "attribute",
+							is_anchor: false,
+							note: "Owed.",
+						},
+					],
+				}),
+			},
+		]);
+		// The anchor is marked; ShipDate is a plain event lens; DueDate (attribute)
+		// is never offered as a time axis.
+		expect(out).toContain(
+			"  time: OrderDate (order) [anchor], ShipDate (ship)",
+		);
+		expect(out).not.toContain("DueDate");
+	});
+
 	it("labels a dimension table and omits the kind when neither flag is set", () => {
 		const dim = formatEntities([
 			{

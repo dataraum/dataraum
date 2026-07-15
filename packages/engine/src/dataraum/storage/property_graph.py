@@ -125,9 +125,11 @@ def _element_view_sql(name: str) -> str:
         # neither is present. Each LEFT-joined table is (column_id, run) unique after
         # head resolution, so the join is 1:1 and column_id is a valid KEY.
         #
-        # anchor_time_axis — THE anchor event-time axis for this (measure) column, the
-        # ONE documented home of the DAT-780 witness-precedence rule (replaces the
-        # parked #486's positional `tc.ord = 1` pick; nothing reads array position):
+        # anchor_time_axis — THE anchor event-time axis for this column, the ONE
+        # documented home of the DAT-780 witness-precedence rule (replaces the parked
+        # #486's positional `tc.ord = 1` pick; nothing reads array position). Computed
+        # for EVERY column vertex but only meaningful for a MEASURE (its trend axis) —
+        # a non-measure resolves to its table's declared anchor, harmlessly unread:
         #   1. the DAT-778 lineage-witness event-side axis (mal.event_time_axis_column)
         #      where a witness reconciled this measure — the data-proven rollup axis;
         #   2. else the table's DECLARED anchor — the one time_columns entry the LLM

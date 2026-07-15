@@ -5,6 +5,54 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-780 — `time_columns` contract: event/attribute role + typed anchor (BREAKING LLM contract)
+
+**Branch:** `fix/dat-780-time-columns-event-attribute-anchor`. Hardens the
+`semantic_per_table` (`analyze_tables`) LLM output contract and the persisted
+`TableEntity.time_columns` JSON. **Breaking** — test DBs must be recreated (no
+backfill); an eval corpus captured before this ships will fail schema validation.
+
+### What changed (LLM output + persisted shape)
+Each `TimeColumn` now carries two REQUIRED fields beyond `{column, aspect, note}`:
+- `role: 'event' | 'attribute'` — the LLM commits per column. `event` = when the
+  row's own event occurred (a real trend/rollup axis). `attribute` = a date the
+  row merely refers to (due_date, valid_until) — kept for coverage, never a trend
+  axis. Record metadata (created_at) stays excluded from `time_columns` entirely.
+- `is_anchor: bool` — exactly ONE `role='event'` column per table is the anchor
+  (the primary trend axis) whenever the table has any event date.
+
+Both are enforced at SAVE by a Pydantic `TableEntityOutput` validator routed
+through the existing DAT-710 repair turn: zero anchors with events present, two
+anchors, or an attribute-role anchor → one repair turn, then fall loud. The
+`semantic_per_table` prompt was updated in lockstep.
+
+### Consumers adapted (filter role='event')
+- `analysis/lineage/processor.py` — rollup axes are event-only (an attribute date
+  can no longer become a reconciliation axis).
+- `analysis/semantic/agent.py::derive_table_role` — periodic-snapshot detection
+  counts only event dates in the grain.
+- `graphs/context.py` + cockpit `tools/query-context.ts` — the two SQL agents'
+  time-lens context renders event axes only (anchor marked); attribute dates drop.
+- `pipeline/phases/slicing_phase.py` — the event-axis backstops guard on
+  `role='event'` (an attribute-only table still gets its backstop axis), preserve
+  attribute dates on fill, and the `is_dimension_time_column` flag matches only a
+  dim's EVENT dates.
+
+### New read seam (property graph)
+`og_columns` gained an `anchor_time_axis` property (`schema_graph.sql` re-dumped):
+`COALESCE(witness event-side axis, table declared anchor)` — the DAT-778 lineage
+witness axis wins where a witness exists, else the typed `is_anchor` declared
+axis. This is the anchor's single home; nothing reads array position. (Replaces
+the parked #486's positional `tc.ord = 1` pick — not resurrected.)
+
+### Thresholds / cross-package
+No score thresholds changed. `time_columns` is a JSON column, so `schema.sql` and
+the cockpit drizzle mirror are UNCHANGED (verified `db:pull:metadata` clean); only
+`schema_graph.sql` changed. Cockpit `look-table.ts` mirrors the two new fields
+(optional, tolerant).
+
+---
+
 ## DAT-778 — lineage now persists the winning axis + slice column (no verdict change)
 
 **Branch:** `fix/dat-778-lineage-witness-persists-winning-axis`. `discover_aggregation_lineage`

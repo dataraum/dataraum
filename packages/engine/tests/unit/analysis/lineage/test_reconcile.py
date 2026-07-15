@@ -9,7 +9,14 @@ abstain guardrail. Properties and orderings, not fitted thresholds.
 from __future__ import annotations
 
 from dataraum.analysis.lineage.models import PATTERN_CUMULATIVE, PATTERN_PER_PERIOD
-from dataraum.analysis.lineage.reconcile import classify_entity, dispose, reconcile
+from dataraum.analysis.lineage.reconcile import (
+    classify_entity,
+    classify_series,
+    dispose,
+    dispose_classified,
+    reconcile,
+    wilson_lcb,
+)
 
 _T = 12
 
@@ -135,3 +142,32 @@ class TestDispose:
 
     def test_empty_series_is_no_verdict(self) -> None:
         assert dispose({}) is None
+
+    def test_dispose_is_dispose_classified_of_classify_series(self) -> None:
+        # The DAT-759 split is a pure refactor: the composed path is identical.
+        series = {f"acct{i}": _stock_entity(i) for i in range(4)}
+        assert dispose(series) == dispose_classified(classify_series(series))
+
+
+class TestWilsonLcb:
+    """The DAT-759 support statistic: Wilson score lower bound of the vote rate."""
+
+    def test_known_values(self) -> None:
+        assert wilson_lcb(0, 0) == 0.0
+        assert wilson_lcb(0, 10) == 0.0
+        assert abs(wilson_lcb(4, 4) - 0.510) < 0.005
+        assert abs(wilson_lcb(2, 4) - 0.150) < 0.005
+        assert abs(wilson_lcb(20, 20) - 0.839) < 0.005
+
+    def test_breadth_beats_perfect_subset(self) -> None:
+        # The selection property the criterion exists for: 21/21 with the same
+        # rate bound dominates a perfect small subset (the probe's real margins).
+        assert wilson_lcb(21, 21) > wilson_lcb(15, 21) > wilson_lcb(4, 21)
+
+    def test_common_denominator_is_load_bearing(self) -> None:
+        # Probe leg b2: the same 10 votes rank near-top on their own subset
+        # denominator and mid-field on the common one — callers must pass the
+        # pairing universe, never the convention's aligned subset.
+        assert wilson_lcb(10, 10) > 0.7
+        assert wilson_lcb(10, 20) < 0.31
+        assert wilson_lcb(20, 20) > wilson_lcb(10, 10)

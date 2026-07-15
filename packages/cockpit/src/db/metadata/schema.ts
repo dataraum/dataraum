@@ -75,6 +75,25 @@ export const configOverlay = metadataSchema
 		sql`SELECT overlay_id, type, payload, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.config_overlay`,
 	);
 
+export const currentBusMatrix = metadataSchema
+	.view("current_bus_matrix", {
+		entryId: varchar("entry_id"),
+		runId: varchar("run_id"),
+		factTableId: varchar("fact_table_id"),
+		attachment: varchar(),
+		conceptLabel: varchar("concept_label"),
+		dimensionTableId: varchar("dimension_table_id"),
+		roles: json(),
+		attributes: json(),
+		confirmationSource: varchar("confirmation_source"),
+		needsConfirmation: boolean("needs_confirmation"),
+		signature: varchar(),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	})
+	.as(
+		sql`SELECT entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, roles, attributes, confirmation_source, needs_confirmation, signature, created_at FROM ws_00000000_0000_0000_0000_000000000001.bus_matrix r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentClaimWitnesses = metadataSchema
 	.view("current_claim_witnesses", {
 		claimWitnessId: varchar("claim_witness_id"),

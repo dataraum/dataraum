@@ -17,6 +17,12 @@ every other phase agent (config + provider, misconfiguration fails the
 phase); a judgment call that fails mid-run skips the lane for that view with
 the statistical verdicts standing, recorded in the ``veto_lane`` output.
 
+DAT-762 Part 2 rides the same phase: after discovery the BUS MATRIX is derived
+and persisted (``bus_matrix`` — fact × dimension exposure as
+referenced/folded/degenerate cells). The referenced leg is structural (slice
+identities); the folded leg's cross-fact identity is the same judge's conform
+judgment; outcomes land in the ``bus_matrix`` output.
+
 Runs after ``slicing`` and before ``aggregation_lineage`` (the driver tree
 consumes the alias groups in DAT-545; role pairs deliberately stay separate
 axes). It also folds the user's durable hierarchy/alias teaches into this run
@@ -31,6 +37,7 @@ from types import ModuleType
 
 from sqlalchemy import select
 
+from dataraum.analysis.hierarchies.bus_matrix import derive_bus_matrix
 from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
 from dataraum.analysis.hierarchies.processor import discover_dimension_hierarchies
 from dataraum.analysis.views.db_models import EnrichedView
@@ -98,11 +105,28 @@ class DimensionHierarchiesPhase(BasePhase):
             run_id=run_id,
             judge=judge,
         )
+        # The bus matrix (DAT-762 Part 2) derives from what discovery just
+        # persisted (fold groups) + the run's slice identities; the same judge
+        # decides cross-fact folded identity (conform).
+        cells, bus = derive_bus_matrix(
+            ctx.session,
+            duckdb_conn=ctx.duckdb_conn,
+            table_ids=ctx.table_ids or [],
+            run_id=run_id,
+            judge=judge,
+        )
         return PhaseResult.success(
-            outputs={"hierarchies": persisted, "veto_lane": lane.as_output()},
-            records_created=persisted,
+            outputs={
+                "hierarchies": persisted,
+                "veto_lane": lane.as_output(),
+                "bus_matrix": bus.as_output(),
+            },
+            records_created=persisted + cells,
             summary=(
                 f"{persisted} dimension hierarchy/alias/role structure(s) discovered; "
-                f"veto lane {lane.status} ({lane.vetoed}/{lane.routed} routed vetoed)"
+                f"veto lane {lane.status} ({lane.vetoed}/{lane.routed} routed vetoed); "
+                f"{cells} bus-matrix cell(s) "
+                f"({bus.referenced} referenced / {bus.folded} folded / "
+                f"{bus.degenerate} degenerate, conform {bus.status})"
             ),
         )

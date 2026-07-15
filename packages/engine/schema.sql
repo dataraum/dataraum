@@ -202,6 +202,31 @@ CREATE TABLE tables (
 
 CREATE INDEX idx_tables_source ON tables (source_id);
 
+CREATE TABLE bus_matrix (
+	entry_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	fact_table_id VARCHAR NOT NULL, 
+	attachment VARCHAR NOT NULL, 
+	concept_label VARCHAR NOT NULL, 
+	dimension_table_id VARCHAR, 
+	roles JSON NOT NULL, 
+	attributes JSON NOT NULL, 
+	confirmation_source VARCHAR DEFAULT 'unconfirmed' NOT NULL, 
+	needs_confirmation BOOLEAN NOT NULL, 
+	signature VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_bus_matrix PRIMARY KEY (entry_id), 
+	CONSTRAINT uq_bus_matrix_signature_run UNIQUE (signature, run_id), 
+	CONSTRAINT ck_bus_matrix_attachment CHECK (attachment IN ('degenerate', 'folded', 'referenced')), 
+	CONSTRAINT ck_bus_matrix_confirmation_source CHECK (confirmation_source IN ('judge', 'keeper', 'unconfirmed', 'user')), 
+	CONSTRAINT fk_bus_matrix_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_bus_matrix_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)
+);
+
+CREATE INDEX idx_bus_matrix_fact ON bus_matrix (fact_table_id);
+
+CREATE INDEX idx_bus_matrix_run ON bus_matrix (run_id);
+
 CREATE TABLE column_eligibility (
 	eligibility_id VARCHAR(36) NOT NULL, 
 	column_id VARCHAR(36) NOT NULL, 

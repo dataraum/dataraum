@@ -195,3 +195,112 @@ class DimensionHierarchy(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+# Closed vocabularies for the bus matrix (DAT-762), sorted for deterministic
+# CHECK strings in the offline DDL dump. ``confirmation_source`` is the
+# relationships vocabulary (DAT-776/#495) applied at cell grain — one vocabulary
+# across the catalog, so a consumer ranks provenance the same way everywhere.
+_ATTACHMENT_VALUES: tuple[str, ...] = ("degenerate", "folded", "referenced")
+_CELL_CONFIRMATION_VALUES: tuple[str, ...] = ("judge", "keeper", "unconfirmed", "user")
+
+
+class BusMatrixEntry(Base):
+    """One cell of the Kimball bus matrix: fact × dimension exposure, per run (DAT-762).
+
+    The alignable drill-across surface as a first-class artifact: which dimension
+    concepts attach to which facts, and HOW —
+
+    - ``attachment='referenced'``: a surviving FK to a dimension table. Derived
+      structurally from the run's slice identities (``SliceDefinition.
+      dimension_table_id``, DAT-756 — the same join ``og_conformed_dimension``
+      reads); ``roles`` carries the role multiplicity (a fact may attach one
+      dimension at several FK roles). No LLM involved.
+    - ``attachment='folded'``: the dimension's attributes inlined into the fact
+      (DAT-757). The GROUP comes from the stats (this run's discovered
+      ``dimension_hierarchies`` structures over folded slice columns); the
+      CROSS-FACT identity — two facts folding the same concept — is decided by
+      the conform judge over names + attribute sets + authored column meanings
+      (no pairwise statistic exists across facts; the DAT-757 K/L cell class).
+    - ``attachment='degenerate'``: a fact-grain operational identifier with no
+      dimension table and no attribute set (near-key, id-shaped) — recorded so
+      the abstention is visible, never asserted as folded/referenced.
+
+    The truth-side vocabulary has a fourth kind, ``key_only`` (an FK column
+    surviving a REMOVED dimension table). Those columns sit exactly on the
+    Layer-A blind-spot classes (sparse/low-distinct FKs — DAT-762 comments
+    16642/16643), so v1 cannot derive them structurally; they are the recorded
+    acceptance boundary, not a cell this writer emits.
+
+    ``confirmation_source`` is the relationships vocabulary (DAT-776) at cell
+    grain: 'unconfirmed' (structural/stats derivation, no judgment passed),
+    'judge' (this run's conform judge decided the cross-fact identity), 'user'
+    (a hierarchy teach asserts the underlying structure), 'keeper' (reserved —
+    inherited from a keeper-retained relationship). A referenced cell inherits
+    the WEAKEST source across its roles' underlying relationships (the honest
+    floor). ``needs_confirmation=True`` marks a folded cell whose cross-fact
+    identity the judge ABSTAINED on — surfaced, never silently asserted.
+
+    Run-versioned form-(a) writer like :class:`DimensionHierarchy`: one row per
+    ``(signature, run_id)``, UPSERTed; on ``read_views._CATALOG_GRAIN`` so
+    ``current_bus_matrix`` resolves the promoted run and rides
+    ``session_promote_to_latest``.
+    """
+
+    __tablename__ = "bus_matrix"
+    __table_args__ = (
+        UniqueConstraint("signature", "run_id", name="uq_bus_matrix_signature_run"),
+        Index("idx_bus_matrix_fact", "fact_table_id"),
+        Index("idx_bus_matrix_run", "run_id"),
+        # Closed vocabularies (the DAT-781 two-layer standard): the producer
+        # writes from the module constants (layer 1); the CHECKs — derived from
+        # those same constants so the two can never drift — are the DB backstop.
+        CheckConstraint(
+            "attachment IN (" + ", ".join(f"'{v}'" for v in _ATTACHMENT_VALUES) + ")",
+            name="attachment",
+        ),
+        CheckConstraint(
+            "confirmation_source IN ("
+            + ", ".join(f"'{v}'" for v in _CELL_CONFIRMATION_VALUES)
+            + ")",
+            name="confirmation_source",
+        ),
+    )
+
+    entry_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    # Snapshot version axis (DAT-448): the begin_session run that derived this cell.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    fact_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+
+    attachment: Mapped[str] = mapped_column(String, nullable=False)
+    # The dimension identity, by attachment: referenced → the dimension table's
+    # name (structural); folded → the judge's canonical concept label on conform,
+    # else the fold-key column name; degenerate → the identifier column name.
+    # A reported label, never a decision surface (no consumer word-matches on it).
+    concept_label: Mapped[str] = mapped_column(String, nullable=False)
+    # Referenced cells only: the FK-target dimension table (NULL otherwise).
+    dimension_table_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tables.table_id"), nullable=True
+    )
+
+    # Fact-side key columns carrying the exposure, sorted (≥1): FK role columns
+    # (referenced), the fold key (folded), the identifier itself (degenerate).
+    roles: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    # Folded cells: the inlined attribute columns (sorted, fold key excluded).
+    # Referenced cells: the exposed dimension attributes (enriched-view levels).
+    # Degenerate cells: empty.
+    attributes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+
+    confirmation_source: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="unconfirmed"
+    )
+    needs_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Run-grain dedup key: "bus:{attachment}:{fact_table_id}:{identity}" where
+    # identity is the dimension_table_id (referenced), the sorted member columns
+    # (folded), or the column name (degenerate).
+    signature: Mapped[str] = mapped_column(String, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )

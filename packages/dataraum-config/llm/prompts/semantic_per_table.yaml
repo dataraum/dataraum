@@ -74,9 +74,14 @@ system_prompt: |
       - An aggregate/snapshot column grounds the AGGREGATE concept, not its
         components: a periodic running total or a per-key end-of-period balance is
         that balance/total concept, not the per-event leg it accumulates.
-      - Don't bind by the table's subject: a generically-named column (e.g.
-        `amount`) grounds the concept whose indicators name it, not a broader concept
-        associated with what the table is "about".
+      - Don't bind by the table's subject. When a table's rows each record an event
+        involving some asset or entity, a generically-named MEASURE column on it
+        (e.g. `amount`) grounds the concept whose indicator names it — `amount` →
+        `transaction_amount` — NOT the asset/entity concept the table is "about".
+        Binding `amount` to the table's subject because "every row moves that thing"
+        is the exact trap to avoid: the column measures the movement, it is not the
+        thing moved. A `business_concept` is the column's own meaning, never the
+        table's theme.
   - unit_source_column: the column defining a measure's unit. Set it for EVERY
     measure (leave null only when genuinely undeterminable) — a measure with no
     unit source is flagged as unsafe to aggregate. Resolve in this order:

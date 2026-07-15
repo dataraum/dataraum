@@ -31,12 +31,18 @@ effort (`dataraum-config/llm/config.yaml`).
     gone. (It runs at `high`, the *highest* of the extraction agents; a bump to
     `xhigh` was considered and rejected — the schema-required fix, not more effort, is
     the lever.)
-  - **Secondary safety nets:** the agent re-prompts once on an empty-with-measures
-    emission; `synthesize_and_store_tables` **fails begin_session loud**
-    (non-retryable `PhaseFailed`) if concepts still resolve to **0** with measures
+  - **Secondary safety net:** `synthesize_and_store_tables` **fails begin_session
+    loud** (non-retryable `PhaseFailed`) if concepts resolve to **0** with measures
     present (covers the name-resolution-wipeout path too); and
     `persist_column_concepts` logs a `column_concepts_persisted` breakdown
-    (`emitted` / `resolved` / `dropped_unresolved`).
+    (`emitted` / `resolved` / `dropped_unresolved`). (An earlier inline concept
+    re-prompt was removed — the required-field + existing repair turn supersede it.)
+  - **Spot-checked on the real finance corpus** (`ws_607cb3ee…`, `effort:high`,
+    real LLM): the 9-table batch emits ~28 concepts (no crowd-out) and the DAT-685
+    bindings all hold in one run — `journal_lines.debit→debit`,
+    `trial_balance.debit_balance→account_balance`, `bank_transactions.amount→
+    transaction_amount`. This is a spot-check, not the calibration; run the real
+    gate below.
   - **Behavior change for eval:** a corpus that legitimately produces zero concepts
     *with a measure present* will now FAIL the run instead of passing empty. That is
     the intended fall-loud; if any calibration corpus trips it as a false positive,

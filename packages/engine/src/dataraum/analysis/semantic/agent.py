@@ -32,10 +32,7 @@ from dataraum.analysis.semantic.models import (
     TableSynthesisOutput,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
-from dataraum.analysis.semantic.utils import (
-    annotations_have_measure,
-    load_persisted_annotations,
-)
+from dataraum.analysis.semantic.utils import load_persisted_annotations
 from dataraum.analysis.statistics.db_models import (
     StatisticalProfile as ColumnProfileModel,
 )
@@ -67,18 +64,6 @@ if TYPE_CHECKING:
     from dataraum.llm.providers.base import LLMProvider
 
 logger = get_logger(__name__)
-
-# DAT-768: the corrective addendum for the one concept re-prompt. An empty
-# ``column_concepts`` is schema-legal, so the schema-repair turn never catches it;
-# this names the omission directly (never a specific binding — that judgment stays
-# the model's, taught by the prompt itself, DAT-769).
-_CONCEPT_REPROMPT = (
-    "Your previous analysis returned an empty column_concepts list, but this schema "
-    "has measure columns that must carry ontology concepts. Re-run analyze_tables and, "
-    "for every column that maps to a seeded concept, emit a column_concepts entry "
-    "binding it — measures especially. Bind a column only to a concept it genuinely "
-    "carries; omitting a column that has none is still correct."
-)
 
 
 class SemanticAgent(LLMFeature):
@@ -171,7 +156,6 @@ class SemanticAgent(LLMFeature):
                     relationships=relationship_candidates,
                 )
 
-        annotations = load_persisted_annotations(session, table_ids)
         context = {
             "tables_json": json.dumps(tables_json),
             "ontology_name": ontology,
@@ -179,7 +163,9 @@ class SemanticAgent(LLMFeature):
             "relationship_candidates": self._format_relationship_candidates(
                 relationship_candidates, graph_structure=graph_structure
             ),
-            "column_annotations": self._format_persisted_annotations(annotations),
+            "column_annotations": self._format_persisted_annotations(
+                load_persisted_annotations(session, table_ids)
+            ),
         }
 
         try:
@@ -215,42 +201,11 @@ class SemanticAgent(LLMFeature):
         result = self._converse_and_validate(request, tool, model)
         if not result.success:
             return Result.fail(result.error or "Table synthesis failed")
-        synthesis = result.unwrap()
-
-        # DAT-768: an empty ``column_concepts`` is schema-legal, so the repair turn
-        # never fires on it — but with measure-role columns in the batch, zero
-        # concept bindings across every table is an implausible under-production of
-        # the whole field (the "omit the rest" wholesale-omission failure), not a
-        # judgment. Re-prompt ONCE naming the omission; if it still returns empty,
-        # the phase's empty-surface backstop fails begin_session loud (DAT-768).
-        if not synthesis.column_concepts and annotations_have_measure(annotations):
-            reprompt = ConversationRequest(
-                messages=[
-                    Message(role="user", content=user_prompt),
-                    Message(role="user", content=_CONCEPT_REPROMPT),
-                ],
-                system=system_prompt,
-                tools=[tool],
-                tool_choice={"type": "tool", "name": "analyze_tables"},
-                label="semantic_per_table_concepts",
-                effort=feature_config.effort,
-                max_tokens=self.config.limits.max_output_tokens_per_request,
-                temperature=temperature,
-                model=model,
-            )
-            retry = self._converse_and_validate(reprompt, tool, model)
-            if retry.success and retry.unwrap().column_concepts:
-                # Graft in ONLY the recovered field. The retry is a fresh turn with
-                # no memory of turn 1's table/relationship classification (``tables``
-                # is required, so the model re-derives it blind under a concepts-only
-                # instruction) — swapping the whole object would silently discard
-                # turn 1's vetted relationships (the DAT-699/721/722 confirmation
-                # work). Keep them; only ``column_concepts`` was missing.
-                synthesis = synthesis.model_copy(
-                    update={"column_concepts": retry.unwrap().column_concepts}
-                )
-
-        return self._build_enrichment_result(synthesis)
+        # column_concepts is a REQUIRED field on the tool schema (DAT-768), so a
+        # crowded-out omission surfaces here as a ValidationError that
+        # _converse_and_validate already repaired; a still-empty surface is caught
+        # loud downstream by synthesize_and_store_tables' measure-present gate.
+        return self._build_enrichment_result(result.unwrap())
 
     def _converse_and_validate(
         self,

@@ -747,23 +747,20 @@ class GraphAgent(LLMFeature):
                 "Cannot generate SQL without dataset context. "
                 "Use ExecutionContext.with_rich_context() to build context."
             )
-        if (
-            not context.rich_context.field_mappings
-            or not context.rich_context.field_mappings.mappings
-        ):
+        if not context.rich_context.field_mappings:
             return Result.fail(
-                "Cannot generate SQL without field mappings. "
-                "Run the semantic phase to map business concepts to columns."
+                "Cannot generate SQL without the column meaning feed. "
+                "Run the semantic phase to author column meanings."
             )
         from dataraum.graphs.context import format_metadata_document
-        from dataraum.graphs.field_mapping import format_mappings_for_prompt
+        from dataraum.graphs.field_mapping import format_meanings_for_prompt
 
         prompt_context = {
             "graph_yaml": graph_yaml,
             "table_schema": json.dumps(self._build_schema_info(context), indent=2),
             "parameters": json.dumps(parameters, indent=2),
             "rich_context": format_metadata_document(context.rich_context),
-            "field_mappings": format_mappings_for_prompt(context.rich_context.field_mappings),
+            "field_mappings": format_meanings_for_prompt(context.rich_context.field_mappings),
             # DAT-616: feed back what prior runs learned for this concept — the
             # honest-fail reason + prior value→concept filter decisions.
             "prior_context": self._build_prior_context(

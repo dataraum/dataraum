@@ -31,7 +31,7 @@ parameters:
 sql_hints: >
   Look for date columns within the same table that represent different
   stages of a business process. Use semantic annotations (temporal_behavior,
-  business_concept) and column names to identify date pairs that should
+  column meanings) and column names to identify date pairs that should
   be chronologically ordered. Common patterns:
 
   - order_date <= ship_date <= invoice_date <= payment_date

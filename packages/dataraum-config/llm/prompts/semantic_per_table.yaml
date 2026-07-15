@@ -32,8 +32,9 @@ system_prompt: |
     non-grain column, and the grain may be a surrogate row key that identifies
     nothing. Emit each with a one-sentence note.
   - Confirm which relationships between tables are real
-  - Author the CATALOGUE-GRAIN per-column semantics (column_concepts): which
-    columns ground an ontology concept, each measure's unit source, and any
+  - Author the CATALOGUE-GRAIN per-column semantics (column_concepts): every
+    column's business MEANING in the composed catalogue, related ontology
+    concepts as non-authoritative hints, each measure's unit source, and any
     cross-table derived-formula hypothesis. These need the whole composed
     catalogue (the ontology, the confirmed relationships, the joined tables), so
     only you can decide them — the per-column phase could not.
@@ -49,20 +50,25 @@ system_prompt: |
   </grain_split>
 
   <column_concepts>
-  Emit a column_concepts entry for EVERY column that carries at least one of these —
-  a measure column always carries a business_concept. Omit only columns that
-  genuinely carry none; returning an empty column_concepts when the schema has
-  measure columns is an error, not a shortcut.
+  Emit a column_concepts entry for EVERY column. Every column has a meaning — for
+  a noise-like or unidentifiable column the honest meaning is saying exactly that.
+  Returning an empty column_concepts for a non-empty schema is an error.
 
-  - business_concept: the EXACT ontology concept a column GROUNDS (e.g. 'revenue',
-    'accounts_receivable'). Bind ONLY a genuine discriminator the analyst can
-    filter or aggregate on. NEVER bind a concept to a near-constant column —
-    flagged `near_constant` in the schema (its single most-frequent value covers
-    ≥90% of rows: a status flag like a 99%-true boolean is NOT a discriminator).
-    When a concept has no genuine column
-    in this catalogue (e.g. revenue is SUM of an amount filtered by an
-    account-class value, not any single column), leave business_concept null — it
-    grounds via value-sets, honestly. A wrong binding is worse than none.
+  - meaning: the column's business-model characterization in the context of its
+    table and the composed catalogue — one to three sentences: what one row's
+    value represents (its grain), and the role it plays in the business process
+    or statement. Write MEANING, not classification: where a column genuinely
+    participates in more than one business notion, say so in plain words ("the
+    per-account, per-period total of debit-side movements — the debit column of
+    a trial balance") instead of forcing a single label. This prose is
+    transported as context to downstream analysts; honesty beats neatness, and
+    a hedged truthful characterization beats a confident wrong one.
+  - ontology_hints: 0..n ontology concepts the column genuinely RELATES to —
+    unordered, non-authoritative context vocabulary, never a binding. List every
+    concept that genuinely applies (a debit-side balance aggregate relates to
+    both the balance concept and the debit leg — list both); leave it empty when
+    none genuinely relates. Never stretch a hint to cover the table's general
+    subject.
   - unit_source_column: the column defining a measure's unit. Set it for EVERY
     measure (leave null only when genuinely undeterminable) — a measure with no
     unit source is flagged as unsafe to aggregate. Resolve in this order:
@@ -137,9 +143,9 @@ system_prompt: |
 user_prompt: |
   <task>
   Classify each table below, confirm the relationships between them, and author
-  the catalogue-grain column_concepts (ontology concept, unit source, derived
-  formula) for the columns that carry them. The OBJECT-grain per-column
-  annotations are shown for context only — do not re-emit them.
+  the catalogue-grain column_concepts (meaning, ontology hints, unit source,
+  derived formula) for EVERY column. The OBJECT-grain per-column annotations are
+  shown for context only — do not re-emit them.
   </task>
 
   <schema>

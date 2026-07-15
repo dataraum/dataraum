@@ -1,10 +1,17 @@
-"""Field mapping for graph execution.
+"""Column meaning feed for graph execution (DAT-769).
 
-Maps business concepts (e.g., 'revenue', 'accounts_receivable') to concrete
-columns in the dataset based on semantic annotations.
+The grounding context every metric/cycle prompt transports: each column's
+LLM-authored business MEANING (free prose, ambiguity expressible) plus the
+deterministic measurement facts from their own homes — the aggregation-lineage
+reconciliation (the strongest semantic fact we own about a measure, DAT-759),
+the unit source, temporal behavior, and the object-grain role garnish.
 
-This enables metrics that use `standard_field` references to resolve to
-actual column names based on the LLM-detected business_concept mappings.
+This replaced the ``business_concept → column`` mapping table (DAT-769): the
+single categorical binding was ill-posed for multi-facet columns and no
+consumer ever branched on it — every reader rendered it into prompt prose. The
+feed now renders honest meaning instead of a forced label; the reading agent
+resolves ontology ``standard_field`` references in-context from the meanings
+and their non-authoritative ontology hints.
 """
 
 from __future__ import annotations
@@ -13,86 +20,62 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
+from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
-    pass
+    from sqlalchemy.orm import Session
 
 
 @dataclass
-class ColumnCandidate:
-    """A column that matches an ontology term."""
+class ColumnMeaning:
+    """One column's transported semantics: authored meaning + measured facts."""
 
     column_id: str
     column_name: str
     table_name: str
-    confidence: float = 0.5
+    meaning: str
+    ontology_hints: list[str] = field(default_factory=list)
+    unit_source_column: str | None = None
+    temporal_behavior: str | None = None
     semantic_role: str | None = None
     entity_type: str | None = None
+    # Aggregation-lineage reconciliation (DAT-759) — deterministic, data-grounded.
+    lineage_pattern: str | None = None  # per_period | cumulative
+    lineage_convention: str | None = None  # e.g. '"debit"' or '"gross" - "fees"'
+    lineage_event_table: str | None = None
+    lineage_match_rate: float | None = None
 
 
-@dataclass
-class FieldMappings:
-    """Collection of business concept → column mappings."""
-
-    # Maps business_concept → list of matching columns
-    mappings: dict[str, list[ColumnCandidate]] = field(default_factory=dict)
-
-    # Tracks which tables were scanned
-    table_ids: list[str] = field(default_factory=list)
-
-    def get_all_columns(self, business_concept: str) -> list[ColumnCandidate]:
-        """Get all matching columns for a business concept.
-
-        Args:
-            business_concept: Standard field name (e.g., 'revenue')
-
-        Returns:
-            List of matching columns, sorted by confidence
-        """
-        candidates = self.mappings.get(business_concept, [])
-        return sorted(candidates, key=lambda c: c.confidence, reverse=True)
-
-    @property
-    def available_concepts(self) -> list[str]:
-        """List all business concepts that have mappings."""
-        return [concept for concept, cols in self.mappings.items() if cols]
-
-    @property
-    def total_mappings(self) -> int:
-        """Total number of column mappings across all terms."""
-        return sum(len(cols) for cols in self.mappings.values())
-
-
-def load_semantic_mappings(
+def load_column_meanings(
     session: Session,
     table_ids: list[str],
     *,
     catalogue_run_id: str | None = None,
-) -> FieldMappings:
-    """Load business_concept → column mappings from ``ColumnConcept`` (DAT-637).
+) -> list[ColumnMeaning]:
+    """Load the per-column meaning feed from ``ColumnConcept`` (DAT-637/769).
 
-    ``business_concept`` is catalogue-grain: authored by the table agent and
-    sealed under the begin_session catalogue head. ``catalogue_run_id`` scopes the
-    read to that single run (fail-closed: ``None`` ⇒ no mappings, never a cross-run
-    read). The object-grain role/entity_type garnish is outer-joined from
-    ``SemanticAnnotation`` — a descriptive hint on the candidate, not the
-    grounding decision (which is the concept binding itself).
+    ``meaning`` is catalogue-grain: authored by the table agent and sealed under
+    the begin_session catalogue head. ``catalogue_run_id`` scopes the read to that
+    single run (fail-closed: ``None`` ⇒ empty feed, never a cross-run read). The
+    object-grain role/entity_type garnish is outer-joined from
+    ``SemanticAnnotation``; the reconciliation facts from
+    ``MeasureAggregationLineage`` under the same catalogue run.
 
     Args:
         session: Database session.
-        table_ids: Table IDs to load mappings for.
-        catalogue_run_id: The begin_session catalogue head run the concepts live
+        table_ids: Table IDs to load the feed for.
+        catalogue_run_id: The begin_session catalogue head run the meanings live
             under (``base_runs.relationship_run_id``).
 
     Returns:
-        FieldMappings with business_concept → column mappings.
+        One :class:`ColumnMeaning` per meaning-carrying column, in
+        (table, column) order.
     """
     if not table_ids or not catalogue_run_id:
-        return FieldMappings(table_ids=table_ids)
+        return []
 
     stmt = (
         select(ColumnConcept, Column, Table, SemanticAnnotation)
@@ -102,82 +85,102 @@ def load_semantic_mappings(
         .where(
             Table.table_id.in_(table_ids),
             ColumnConcept.run_id == catalogue_run_id,
-            ColumnConcept.business_concept.isnot(None),
+            ColumnConcept.meaning.isnot(None),
         )
         # The SemanticAnnotation garnish (role/entity_type) can fan out across runs;
         # order so the dedup below keeps a deterministic row, not a DB-arbitrary one.
-        .order_by(SemanticAnnotation.run_id.desc())
+        .order_by(Table.table_name, Column.column_name, SemanticAnnotation.run_id.desc())
     )
 
-    mappings: dict[str, list[ColumnCandidate]] = {}
-    seen: set[tuple[str, str]] = set()  # (concept, column_id) — outerjoin can fan out
+    lineage_by_column: dict[str, tuple[str, str, str | None, float]] = {}
+    lineage_stmt = (
+        select(MeasureAggregationLineage, Table.table_name)
+        .outerjoin(Table, MeasureAggregationLineage.event_table_id == Table.table_id)
+        .where(
+            MeasureAggregationLineage.measure_table_id.in_(table_ids),
+            MeasureAggregationLineage.run_id == catalogue_run_id,
+        )
+    )
+    for lineage, event_table_name in session.execute(lineage_stmt).all():
+        lineage_by_column[lineage.measure_column_id] = (
+            lineage.pattern,
+            lineage.convention_sql,
+            event_table_name,
+            lineage.match_rate,
+        )
 
+    out: list[ColumnMeaning] = []
+    seen: set[str] = set()  # column_id — the annotation outerjoin can fan out
     for concept_row, column, table, annotation in session.execute(stmt).all():
-        concept = concept_row.business_concept
-        if not concept or (concept, column.column_id) in seen:
+        if column.column_id in seen or not concept_row.meaning:
             continue
-        seen.add((concept, column.column_id))
-        mappings.setdefault(concept, []).append(
-            ColumnCandidate(
+        seen.add(column.column_id)
+        lineage = lineage_by_column.get(column.column_id)
+        out.append(
+            ColumnMeaning(
                 column_id=column.column_id,
                 column_name=column.column_name,
                 table_name=f"{table.layer}_{table.table_name}",
-                # A concept binding is authoritative, not probabilistic — the table
-                # agent does not author a per-binding confidence, so this is the
-                # constant fallback by design (not a missing feature).
-                confidence=concept_row.confidence or 0.5,
+                meaning=concept_row.meaning,
+                ontology_hints=list(concept_row.ontology_hints or []),
+                unit_source_column=concept_row.unit_source_column,
+                temporal_behavior=concept_row.temporal_behavior,
                 semantic_role=annotation.semantic_role if annotation else None,
                 entity_type=annotation.entity_type if annotation else None,
+                lineage_pattern=lineage[0] if lineage else None,
+                lineage_convention=lineage[1] if lineage else None,
+                lineage_event_table=lineage[2] if lineage else None,
+                lineage_match_rate=lineage[3] if lineage else None,
             )
         )
+    return out
 
-    return FieldMappings(mappings=mappings, table_ids=table_ids)
 
+def format_meanings_for_prompt(meanings: list[ColumnMeaning]) -> str:
+    """Render the meaning feed for LLM prompts (metric grounding, cycles).
 
-def format_mappings_for_prompt(field_mappings: FieldMappings) -> str:
-    """Format field mappings for inclusion in LLM prompts.
-
-    Creates a human-readable representation of the available field mappings
-    for the graph agent to use when resolving standard_field references.
-
-    Args:
-        field_mappings: The field mappings to format
-
-    Returns:
-        Formatted string for prompt context
+    Meaning first (the honest characterization the agent reasons over), then the
+    deterministic measurement facts, then the non-authoritative ontology hints —
+    labeled as related concepts, never as bindings.
     """
-    if not field_mappings.available_concepts:
-        return "No semantic field mappings available. Standard field references cannot be resolved."
+    if not meanings:
+        return "No column meanings available for this catalogue run."
 
-    lines = ["## Semantic Field Mappings", ""]
-    lines.append("The following business concepts have been mapped to concrete columns:")
+    lines = ["## COLUMN MEANINGS", ""]
+    lines.append("Each column's business meaning, characterized in the context of the whole")
+    lines.append("catalogue, with measured facts where they exist. 'relates to' lists ontology")
+    lines.append("concepts the column is related to — context vocabulary, not assignments.")
     lines.append("")
 
-    for concept in sorted(field_mappings.available_concepts):
-        candidates = field_mappings.get_all_columns(concept)
-        if len(candidates) == 1:
-            c = candidates[0]
-            lines.append(
-                f"- **{concept}** → `{c.table_name}.{c.column_name}` (confidence: {c.confidence:.2f})"
+    current_table = None
+    for m in meanings:
+        if m.table_name != current_table:
+            current_table = m.table_name
+            lines.append(f"### {m.table_name}")
+        facts: list[str] = []
+        if m.semantic_role:
+            facts.append(f"role={m.semantic_role}")
+        if m.lineage_pattern and m.lineage_convention:
+            match = f", match {m.lineage_match_rate:.0%}" if m.lineage_match_rate else ""
+            facts.append(
+                f"reconciles {m.lineage_pattern} as {m.lineage_convention}"
+                + (f" from {m.lineage_event_table}" if m.lineage_event_table else "")
+                + match
             )
-        else:
-            lines.append(f"- **{concept}** (multiple candidates):")
-            for c in candidates:
-                lines.append(
-                    f"  - `{c.table_name}.{c.column_name}` (confidence: {c.confidence:.2f})"
-                )
-
+        if m.temporal_behavior:
+            facts.append(f"temporal={m.temporal_behavior}")
+        if m.unit_source_column:
+            facts.append(f"unit from {m.unit_source_column}")
+        fact_str = f" [{'; '.join(facts)}]" if facts else ""
+        hint_str = f" (relates to: {', '.join(m.ontology_hints)})" if m.ontology_hints else ""
+        lines.append(f"- `{m.column_name}`{fact_str}: {m.meaning}{hint_str}")
     lines.append("")
-    lines.append(
-        f"Total mappings: {field_mappings.total_mappings} columns across {len(field_mappings.available_concepts)} business concepts"
-    )
-
+    lines.append(f"Total: {len(meanings)} columns with authored meanings.")
     return "\n".join(lines)
 
 
 __all__ = [
-    "ColumnCandidate",
-    "FieldMappings",
-    "load_semantic_mappings",
-    "format_mappings_for_prompt",
+    "ColumnMeaning",
+    "load_column_meanings",
+    "format_meanings_for_prompt",
 ]

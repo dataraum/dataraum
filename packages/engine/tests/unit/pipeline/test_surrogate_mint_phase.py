@@ -614,20 +614,30 @@ def test_semantic_to_mint_to_enriched_join_holds_grain(session, lake) -> None:
     from unittest.mock import MagicMock
 
     from dataraum.analysis.semantic.models import (
+        ColumnConceptOutput,
+        SemanticEnrichmentResult,
+    )
+    from dataraum.analysis.semantic.models import (
         Relationship as SemanticRelationship,
     )
-    from dataraum.analysis.semantic.models import SemanticEnrichmentResult
     from dataraum.analysis.semantic.processor import synthesize_and_store_tables
     from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
     from dataraum.core.models.base import RelationshipType, Result
 
     seed = _seed(session)
     agent = MagicMock()
+    agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
     agent.synthesize_tables = MagicMock(
         return_value=Result.ok(
             SemanticEnrichmentResult(
                 annotations=[],
                 entity_detections=[],
+                # Quiet the DAT-768/769 empty-surface gate (not under test).
+                column_concepts=[
+                    ColumnConceptOutput(
+                        table_name="txn", column_name="account", meaning="test meaning"
+                    )
+                ],
                 relationships=[
                     SemanticRelationship(
                         relationship_id="rel-1",

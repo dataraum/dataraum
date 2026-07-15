@@ -260,7 +260,6 @@ class SemanticAgent(LLMFeature):
         for table_name, cols in by_table.items():
             lines.append(f"\n### {table_name}")
             for col in cols:
-                concept = col.get("business_concept") or "(none)"
                 role = col.get("semantic_role") or "(unknown)"
                 conf = col.get("confidence")
                 conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
@@ -270,8 +269,7 @@ class SemanticAgent(LLMFeature):
                 unit = col.get("detected_unit")
                 unit_str = f", value_unit={unit}" if unit else ""
                 lines.append(
-                    f"  - {col['column_name']}: role={role}, concept={concept}, "
-                    f"confidence={conf_str}{unit_str}"
+                    f"  - {col['column_name']}: role={role}, confidence={conf_str}{unit_str}"
                 )
         return "\n".join(lines)
 

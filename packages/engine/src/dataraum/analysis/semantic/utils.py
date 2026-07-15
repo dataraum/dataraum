@@ -18,7 +18,7 @@ def load_column_concepts(
     """Catalogue-grain per-column semantics for ``table_ids`` at the catalogue head run.
 
     The ONLY reader of :class:`ColumnConcept` (DAT-637). ``catalogue_run_id`` is
-    **mandatory** — the catalogue-grain fields (business_concept, ontology
+    **mandatory** — the catalogue-grain fields (meaning, ontology hints,
     temporal_behavior, unit_source_column, derived_formula hypothesis) live only
     under the begin_session catalogue head, so a caller MUST hold that run to read
     them. Object-grain code (add_source ``detect``) has no catalogue run and so
@@ -77,16 +77,6 @@ def load_column_mappings(
     return {(table_name, col_name): col_id for table_name, col_name, col_id in result.all()}
 
 
-def annotations_have_measure(annotations: list[dict[str, Any]]) -> bool:
-    """Whether any loaded annotation carries the ``measure`` semantic role (DAT-768).
-
-    The measure role is what makes an empty ``column_concepts`` surface implausible:
-    a batch holding a measure MUST bind at least one ontology concept, so zero is an
-    emptied surface, not a judgment.
-    """
-    return any(a.get("semantic_role") == "measure" for a in annotations)
-
-
 def load_persisted_annotations(
     session: Session,
     table_ids: list[str],
@@ -95,7 +85,7 @@ def load_persisted_annotations(
 
     The per-table synthesis phase reads these as read-only context — the
     OBJECT-grain column annotations the per-column agent produced (role, entity
-    label, term, the stock/flow claim). It does NOT include ``business_concept``:
+    label, term, the stock/flow claim). It does NOT include catalogue-grain ``meaning``:
     that is catalogue-grain and AUTHORED by the table agent itself (DAT-637), so
     feeding it back would be the dual-ownership we removed. Returns one dict per
     annotated column, ordered by table then column.

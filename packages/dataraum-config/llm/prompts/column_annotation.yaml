@@ -26,11 +26,6 @@ system_prompt: |
   - attribute: Descriptive field not typically used for aggregation
   </semantic_roles>
 
-  <business_concept_mapping>
-  Match columns to ontology concepts by SEMANTIC MEANING, not just name patterns.
-  Set business_concept to null if no concept applies.
-  </business_concept_mapping>
-
   <confidence_guidance>
   The confidence field (0.0–1.0) must reflect how READABLE the column name
   is — not just whether you can guess the content from the data.

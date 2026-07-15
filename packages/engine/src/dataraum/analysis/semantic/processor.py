@@ -47,9 +47,7 @@ from dataraum.analysis.semantic.models import (
     Relationship as SemanticRelationship,
 )
 from dataraum.analysis.semantic.utils import (
-    annotations_have_measure,
     load_column_mappings,
-    load_persisted_annotations,
     load_table_mappings,
 )
 from dataraum.core.logging import get_logger
@@ -212,7 +210,7 @@ def persist_column_annotations(
 
     The per-column phase's authoritative output — single-table-knowable fields
     only (role, entity label, term, the stock/flow claim). Catalogue-grain
-    semantics (business_concept, ontology temporal_behavior, unit source, derived
+    semantics (meaning, ontology hints, ontology temporal_behavior, unit source, derived
     formula) are NOT written here: the table agent authors them onto
     ``ColumnConcept`` under the catalogue head (DAT-637).
 
@@ -234,7 +232,7 @@ def persist_column_annotations(
             if not column_id:
                 continue
             # PK omitted so the model's Python-side default applies. OBJECT-grain
-            # only (DAT-637): business_concept, ontology temporal_behavior,
+            # only (DAT-637): meaning/ontology_hints, ontology temporal_behavior,
             # unit_source_column, and the derived_formula hypothesis are
             # catalogue-grain — authored by the table agent onto ``ColumnConcept``,
             # never here. The stock/flow CLAIM stays (an independent single-column
@@ -315,7 +313,8 @@ def persist_column_concepts(
             {
                 "column_id": column_id,
                 "run_id": run_id,
-                "business_concept": cc.business_concept,
+                "meaning": cc.meaning,
+                "ontology_hints": cc.ontology_hints or None,
                 "unit_source_column": cc.unit_source_column,
                 "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
                 "derived_formula_confidence": cc.derived_formula_confidence,
@@ -684,17 +683,6 @@ def _build_surrogate_intent(
 REL_CONFIRM_MIN = 0.7
 
 
-def _batch_has_measures(session: Session, table_ids: list[str]) -> bool:
-    """Whether any column in the batch carries the ``measure`` semantic role.
-
-    The upstream per-column phase has already annotated roles. A batch that holds
-    a measure is one that MUST bind at least one ontology concept, so zero resolved
-    ``column_concepts`` for it is an emptied surface, not a plausible judgment
-    (DAT-768). Reads the same persisted annotations the table agent saw.
-    """
-    return annotations_have_measure(load_persisted_annotations(session, table_ids))
-
-
 def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
@@ -944,21 +932,19 @@ def synthesize_and_store_tables(
             annotated_by=annotated_by,
             run_id=run_id,
         )
-        # DAT-768: the column_concepts surface is load-bearing — every metric's
-        # measure→concept binding grounds on it. With measure-role columns in the
-        # batch, ZERO resolved concepts is not a judgment; it is an emptied surface
-        # (the agent under-produced the whole field, or every name it echoed failed
-        # to resolve) that would silently collapse all downstream grounding. Fail
-        # begin_session loud rather than ship it green — the agent already
-        # re-prompted once on an empty emission (see synthesize_tables), so a
-        # still-empty surface here is a real defect, not a flake. This gates on
-        # emptiness of the surface, never on any specific concept judgment.
-        if counts.resolved == 0 and _batch_has_measures(session, table_ids):
+        # DAT-768/769: the column_concepts surface is load-bearing — the meaning
+        # context every downstream grounding prompt (metric graph agent, cycles,
+        # validation) transports. Every column carries a meaning by contract, so
+        # ZERO resolved entries is never a judgment; it is an emptied surface (the
+        # agent under-produced the whole field, or every name it echoed failed to
+        # resolve). Fail begin_session loud rather than ship it green. Gates on
+        # emptiness only — never on any content of a meaning or hint.
+        if counts.resolved == 0:
             return Result.fail(
-                "column_concepts empty despite measure-role columns in the batch "
+                "column_concepts resolved to zero rows for a non-empty schema "
                 f"(emitted={counts.emitted}, resolved=0, "
-                f"dropped_unresolved={counts.dropped_unresolved}) — metric grounding "
-                "would collapse (DAT-768)."
+                f"dropped_unresolved={counts.dropped_unresolved}) — the meaning "
+                "context every grounding prompt transports would be empty (DAT-768)."
             )
 
     return Result.ok(enrichment)

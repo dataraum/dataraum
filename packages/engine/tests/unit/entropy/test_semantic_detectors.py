@@ -110,7 +110,7 @@ class TestBusinessMeaningDetector:
                 business_description="Total order amount in USD",
                 business_name="Order Amount",
                 entity_type="monetary_amount",
-                business_concept="revenue",
+                meaning="Total order amount",
             )
         )
         assert bare[0].score == pytest.approx(documented[0].score)

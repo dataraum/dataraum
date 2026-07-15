@@ -66,7 +66,7 @@ def _mocks() -> tuple[MagicMock, MagicMock]:
 def test_extract_node_uses_the_grounding_prompt_on_balanced_tier(monkeypatch) -> None:
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
     monkeypatch.setattr(
-        "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"
+        "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
     ext = GraphStep(
         step_id="revenue",
@@ -81,7 +81,7 @@ def test_extract_node_uses_the_grounding_prompt_on_balanced_tier(monkeypatch) ->
     agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     rich = MagicMock()
-    rich.field_mappings.mappings = {"revenue": object()}
+    rich.field_mappings = [object()]
     rich.conventions = "CREDIT-NORMAL → credit - debit"  # DAT-645: vertical conventions
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
@@ -104,7 +104,7 @@ def test_feature_config_sets_tier_and_effort(monkeypatch) -> None:
 
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
     monkeypatch.setattr(
-        "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"
+        "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
     ext = GraphStep(
         step_id="revenue",
@@ -121,7 +121,7 @@ def test_feature_config_sets_tier_and_effort(monkeypatch) -> None:
     agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     rich = MagicMock()
-    rich.field_mappings.mappings = {"revenue": object()}
+    rich.field_mappings = [object()]
     rich.conventions = ""
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
@@ -145,7 +145,7 @@ def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
 
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
     monkeypatch.setattr(
-        "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"
+        "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
     ext = GraphStep(
         step_id="revenue",
@@ -160,7 +160,7 @@ def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
     agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     rich = MagicMock()
-    rich.field_mappings.mappings = {"revenue": object()}
+    rich.field_mappings = [object()]
     rich.conventions = ""
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
@@ -179,7 +179,7 @@ def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
     guard is the tripwire)."""
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
     monkeypatch.setattr(
-        "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"
+        "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
     ext = GraphStep(
         step_id="revenue",
@@ -197,7 +197,7 @@ def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
     agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     rich = MagicMock()
-    rich.field_mappings.mappings = {"revenue": object()}
+    rich.field_mappings = [object()]
     rich.conventions = ""
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 
@@ -240,7 +240,7 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
     the leaf's step_id — the DAT-664 id-paraphrase class is gone by construction."""
     monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
     monkeypatch.setattr(
-        "dataraum.graphs.field_mapping.format_mappings_for_prompt", lambda f: "MAPS"
+        "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
     ext = GraphStep(
         step_id="accounts_receivable",
@@ -267,7 +267,7 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
     agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     rich = MagicMock()
-    rich.field_mappings.mappings = {"accounts_receivable": object()}
+    rich.field_mappings = [object()]
     rich.conventions = ""
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws", rich_context=rich)
 

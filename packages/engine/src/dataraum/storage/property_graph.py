@@ -16,22 +16,32 @@ supported. So every read splits:
   roll-up) → a bounded recursive CTE over the SAME edge view, capped at a max
   traversal depth (≈4) with a cycle guard.
 
-**Scope (P1 / DAT-726).** Vertices are the typed rows that exist today — ``Column``
-and ``Table``; the vocabulary ``Concept`` vertices are P3. Edges/props carried:
+**Scope (P1 / DAT-726, concepts P3/P4, grounding P2 / DAT-727).** Vertices:
 
-    column_node  (KEY column_id)  props: semantic_role (has_role),
-                                          materialization (materializes_as)
-    table_node   (KEY table_id)   props: table_role (fact/periodic_snapshot/dimension)
+    column_node    (KEY column_id)   props: semantic_role (has_role),
+                                            materialization (materializes_as)
+    table_node     (KEY table_id)    props: table_role (fact/periodic_snapshot/dimension)
+    concept_node   (KEY concept_id)  the typed vocabulary (DAT-728)
+    grounding_node (KEY snippet_id)  the reified grounding commitment (DAT-727):
+                                     relation / select_expr / where_predicates
+                                     un-nested from the healthy extract snippet's
+                                     clause parts (DAT-671)
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
     concept_edge       concept → concept [concept_edges]      part_of/disjoint/reconciles (P4)
     conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (DAT-756)
+    grounded_by        concept → grounding [sql_snippets]     a concept's groundings; >1 = multi-grounding
+    uses               grounding → column  [provenance contract v2] the columns a grounding touches
 
 ``rolls_up_to`` (dimension_hierarchies' JSON members) lands in P5 where its
 consumer does. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
 ``part_of`` / ``disjoint_with`` / ``reconciles_with`` as a ``predicate`` property;
 its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
+The ``uses`` edge un-nests the TYPED ``column_mappings_basis`` (provenance contract
+v2, DAT-727) — enforced at authoring, never parsed out of SQL; ``filtered_by →
+DimMember`` is deferred to the dimension-identity foundation (DAT-756/757), with
+``where[]`` carried losslessly on the grounding vertex meanwhile.
 ``conformed_dimension`` (DAT-756) types two facts sharing a dimension AXIS — the same
 resolved ``(dimension_table_id, attribute)`` identity, NOT a column name — as a
 drill-across path (an alignable GROUP BY the SQL agents can author over). It is
@@ -81,11 +91,14 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_tables",
     "og_columns",
     "og_concepts",
+    "og_grounding",
     "og_references",
     "og_has_dimension",
     "og_derived_from",
     "og_concept_edges",
     "og_conformed_dimension",
+    "og_grounded_by",
+    "og_uses",
 )
 
 
@@ -140,12 +153,38 @@ def _element_view_sql(name: str) -> str:
         # Concept vertex: the workspace's typed vocabulary (DAT-728). Active rows
         # only (superseded_at IS NULL) — the partial-unique index makes concept_id
         # unique among them, so it is a valid KEY. Its vocabulary edges are the
-        # `concept_edge` edge below (DAT-729); `grounded_by` arrives with P2.
+        # `concept_edge` edge below (DAT-729) and `grounded_by` (DAT-727).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_concepts AS\n"
             f"SELECT concept_id::text AS concept_id, vertical, name, kind\n"
             f"FROM {READ_TOKEN}.concepts\n"
             f"WHERE superseded_at IS NULL;"
+        )
+    if name == "og_grounding":
+        # Grounding vertex (DAT-727): one node per HEALTHY extract snippet — the
+        # reified N-ary grounding commitment (concept + relation + filter +
+        # select_expr; the DD's "Grounding is a NODE, not an edge"). The vertex
+        # set is the reusable knowledge base: snippet_type='extract' (the sole
+        # concept-keyed cache), failure_count=0 (a retained DAT-543 failure is
+        # prior-context, not knowledge), parts IS NOT NULL (parts-at-source,
+        # DAT-671 — pre-cut rows heal by re-authoring, no backfill). Properties
+        # un-nest the persisted clause parts; where_predicates is the where[]
+        # JSON array as text, carried LOSSLESSLY on the node because its
+        # DimMember decomposition (filtered_by) is deferred to the
+        # dimension-identity foundation (DAT-756/757). The parts round-trip:
+        # compose_extract_sql(select_expr, relation, where) == the snippet's sql.
+        # sql_snippets is workspace-persistent (un-versioned pass-through view),
+        # so snippet_id is a valid KEY as-is.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_grounding AS\n"
+            f"SELECT s.snippet_id::text AS snippet_id,\n"
+            f"       s.standard_field, s.statement, s.aggregation, s.description,\n"
+            f"       s.parts->'from'->>0 AS relation,\n"
+            f"       s.parts->'select'->0->>'expr' AS select_expr,\n"
+            f"       (s.parts->'where')::text AS where_predicates\n"
+            f"FROM {READ_TOKEN}.sql_snippets s\n"
+            f"WHERE s.snippet_type = 'extract' AND s.failure_count = 0\n"
+            f"  AND s.parts IS NOT NULL;"
         )
     if name == "og_concept_edges":
         # concept_edge (concept → concept): the vocabulary relations part_of /
@@ -279,6 +318,98 @@ def _element_view_sql(name: str) -> str:
             f" AND s1.table_id <> s2.table_id\n"
             f"WHERE s1.dimension_table_id IS NOT NULL;"
         )
+    if name == "og_grounded_by":
+        # grounded_by edge (concept → grounding, DAT-727): a snippet's
+        # standard_field IS a concept name (the catalog's standard fields), so
+        # the edge resolves it to the ACTIVE concept row — the same
+        # (name, superseded_at IS NULL) resolution og_concept_edges uses, and
+        # the same INNER-JOIN discipline (the graph never dangles: a snippet
+        # whose field names no active concept simply has no edge). The join is
+        # name-grain across verticals — a workspace runs one vertical; if two
+        # actives ever shared a name, each would carry the edge, which is the
+        # honest reading. Multi-grounding enumeration is first-class here: a
+        # concept with >1 healthy snippet (account_balance across
+        # trial_balance/balance_sheet) simply has >1 grounded_by edge.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_grounded_by AS\n"
+            f"SELECT (c.concept_id || '_' || s.snippet_id)::text AS edge_key,\n"
+            f"       c.concept_id::text AS concept_id,\n"
+            f"       s.snippet_id::text AS snippet_id,\n"
+            f"       s.standard_field\n"
+            f"FROM {READ_TOKEN}.sql_snippets s\n"
+            f"JOIN {READ_TOKEN}.concepts c\n"
+            f"  ON c.name = s.standard_field AND c.superseded_at IS NULL\n"
+            f"WHERE s.snippet_type = 'extract' AND s.failure_count = 0\n"
+            f"  AND s.parts IS NOT NULL;"
+        )
+    if name == "og_uses":
+        # uses edge (grounding → column, DAT-727): un-nests the TYPED provenance
+        # contract v2 — provenance.column_mappings_basis {concept:
+        # {measure_columns[], filter_columns[], …}}, ENFORCED against the served
+        # relation schema at authoring (validate_grounding_basis + repair turn),
+        # never recovered by parsing SQL. Pre-v2 rows lack the arrays and yield
+        # no edges (clean cut, no backfill).
+        #
+        # Name → column_id resolution scopes the enumerated name to the
+        # relation's BASE tables: an enriched-view relation resolves to its fact
+        # + exposed dimension tables (the served view columns originate there —
+        # same bases og_derived_from edges name); a typed-table relation (the
+        # no-enriched-view fallback, matched on table_name OR duckdb_path like
+        # the additivity resolver) resolves to itself. current_* scoping keeps
+        # the endpoint inside the promoted column set — the edge can never
+        # dangle. A name only the DuckDB view knows (a builder alias) resolves
+        # nowhere and is dropped: honest under-coverage, never a wrong edge.
+        #
+        # DISTINCT ON dedupes a column enumerated by several concepts/roles into
+        # ONE edge per (snippet, column) — PGQ needs a unique edge KEY — keeping
+        # the measure reading when roles collide ('measure' sorts before
+        # 'filter'). role rides as the edge property.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_uses AS\n"
+            f"SELECT DISTINCT ON (s.snippet_id, c.column_id)\n"
+            f"       (s.snippet_id || '_' || c.column_id)::text AS edge_key,\n"
+            f"       s.snippet_id::text AS snippet_id,\n"
+            f"       c.column_id::text AS column_id,\n"
+            f"       u.role\n"
+            f"FROM {READ_TOKEN}.sql_snippets s\n"
+            f"CROSS JOIN LATERAL json_each(\n"
+            f"     COALESCE(s.provenance->'column_mappings_basis', '{{}}'::json)\n"
+            f"     ) AS b(concept, entry)\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"  SELECT m.value AS column_name, 'measure' AS role\n"
+            f"  FROM json_array_elements_text(\n"
+            f"       COALESCE(b.entry->'measure_columns', '[]'::json)) m(value)\n"
+            f"  UNION ALL\n"
+            f"  SELECT f.value, 'filter'\n"
+            f"  FROM json_array_elements_text(\n"
+            f"       COALESCE(b.entry->'filter_columns', '[]'::json)) f(value)\n"
+            f") u\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"  SELECT ev.fact_table_id::text AS base_table_id\n"
+            f"  FROM {READ_TOKEN}.current_enriched_views ev\n"
+            f"  WHERE ev.view_name = s.parts->'from'->>0\n"
+            f"  UNION ALL\n"
+            f"  SELECT dt.value\n"
+            f"  FROM {READ_TOKEN}.current_enriched_views ev\n"
+            f"  CROSS JOIN LATERAL json_array_elements_text(\n"
+            f"       COALESCE(ev.dimension_table_ids, '[]'::json)) dt(value)\n"
+            f"  WHERE ev.view_name = s.parts->'from'->>0\n"
+            f"  UNION ALL\n"
+            f"  SELECT t.table_id::text\n"
+            f"  FROM {READ_TOKEN}.current_tables t\n"
+            f"  WHERE (t.table_name = s.parts->'from'->>0\n"
+            f"         OR t.duckdb_path = s.parts->'from'->>0)\n"
+            f"    AND NOT EXISTS (\n"
+            f"      SELECT 1 FROM {READ_TOKEN}.current_enriched_views ev2\n"
+            f"      WHERE ev2.view_name = s.parts->'from'->>0)\n"
+            f") bases\n"
+            f"JOIN {READ_TOKEN}.current_columns c\n"
+            f"  ON c.table_id = bases.base_table_id AND c.column_name = u.column_name\n"
+            f"WHERE s.snippet_type = 'extract' AND s.failure_count = 0\n"
+            f"  AND s.parts IS NOT NULL\n"
+            f"ORDER BY s.snippet_id, c.column_id,\n"
+            f"         CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;"
+        )
     raise AssertionError(f"unreachable: {name} not an element view")
 
 
@@ -300,7 +431,10 @@ def _property_graph_sql() -> str:
         f"    {READ_TOKEN}.og_columns KEY (column_id) LABEL column_node\n"
         f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
-        f"      PROPERTIES (concept_id, vertical, name, kind)\n"
+        f"      PROPERTIES (concept_id, vertical, name, kind),\n"
+        f"    {READ_TOKEN}.og_grounding KEY (snippet_id) LABEL grounding_node\n"
+        f"      PROPERTIES (snippet_id, standard_field, statement, aggregation,\n"
+        f"                  relation, select_expr, where_predicates, description)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"
@@ -329,7 +463,17 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)\n"
         f"      LABEL conformed_dimension\n"
-        f"      PROPERTIES (dimension_table_id, dimension_attribute)\n"
+        f"      PROPERTIES (dimension_table_id, dimension_attribute),\n"
+        f"    {READ_TOKEN}.og_grounded_by KEY (edge_key)\n"
+        f"      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)\n"
+        f"      DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"
+        f"      LABEL grounded_by\n"
+        f"      PROPERTIES (standard_field),\n"
+        f"    {READ_TOKEN}.og_uses KEY (edge_key)\n"
+        f"      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"
+        f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
+        f"      LABEL uses\n"
+        f"      PROPERTIES (role)\n"
         f"  );"
     )
 

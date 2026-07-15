@@ -41,10 +41,10 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Five edges: refs, has_dimension, derived_from (P1), concept_edge (DAT-729),
-    # conformed_dimension (DAT-756).
-    assert graph_sql.count("SOURCE KEY") == 5
-    assert graph_sql.count("DESTINATION KEY") == 5
+    # Seven edges: refs, has_dimension, derived_from (P1), concept_edge (DAT-729),
+    # conformed_dimension (DAT-756), grounded_by + uses (DAT-727).
+    assert graph_sql.count("SOURCE KEY") == 7
+    assert graph_sql.count("DESTINATION KEY") == 7
     # The measure→materialization MATCH (the P1 AC) reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -58,6 +58,17 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)" in graph_sql
     assert "LABEL conformed_dimension" in graph_sql
     assert "PROPERTIES (dimension_table_id, dimension_attribute)" in graph_sql
+    # The grounding vertex (DAT-727) carries the round-trippable clause parts.
+    assert "KEY (snippet_id) LABEL grounding_node" in graph_sql
+    assert "relation, select_expr, where_predicates, description" in graph_sql
+    # grounded_by binds concept → grounding; uses binds grounding → column.
+    assert "SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)" in graph_sql
+    assert "DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)" in graph_sql
+    assert "LABEL grounded_by" in graph_sql
+    assert "SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)" in graph_sql
+    assert "DESTINATION KEY (column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "LABEL uses" in graph_sql
+    assert "PROPERTIES (role)" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

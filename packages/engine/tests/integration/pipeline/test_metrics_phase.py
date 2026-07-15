@@ -418,7 +418,7 @@ def _fake_generate(authored: list[str]):
     supported (non-NULL) value, so the verifier passes.
     """
 
-    def _gen(session, graph, context, parameters, cached_snippets=None):  # noqa: ANN001
+    def _gen(session, graph, context, parameters, cached_snippets=None, *, workspace_id=None):  # noqa: ANN001
         authored.append(graph.graph_id)
         steps = [
             {"step_id": sid, "sql": "SELECT 1 AS value", "description": sid} for sid in graph.steps

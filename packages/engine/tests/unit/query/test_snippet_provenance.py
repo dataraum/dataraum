@@ -49,7 +49,6 @@ class TestSnippetProvenance:
         """Provenance dict roundtrips through save_snippet."""
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
         provenance = {
-            "field_resolution": "inferred",
             "was_repaired": False,
             "column_mappings_basis": {
                 "revenue": {"column": "t.amount", "resolution": "inferred_from_enriched_view"}
@@ -69,7 +68,7 @@ class TestSnippetProvenance:
         )
 
         assert record.provenance == provenance
-        assert record.provenance["field_resolution"] == "inferred"
+        assert record.provenance["column_mappings_basis"]["revenue"]["column"] == "t.amount"
 
     def test_save_snippet_without_provenance(self, session: Session) -> None:
         """Provenance is None when not provided."""
@@ -87,7 +86,7 @@ class TestSnippetProvenance:
 
     def test_provenance_survives_find_by_key(self, session: Session) -> None:
         """Provenance is available after finding snippet by key."""
-        provenance = {"field_resolution": "direct", "was_repaired": False}
+        provenance = {"column_mappings_basis": {}, "was_repaired": False}
         _add_snippet(session, SOURCE_ID, provenance=provenance)
 
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
@@ -104,12 +103,12 @@ class TestSnippetProvenance:
 
     def test_provenance_updated_on_failed_snippet_replace(self, session: Session) -> None:
         """When a failed snippet is replaced, provenance is updated."""
-        record = _add_snippet(session, SOURCE_ID, provenance={"field_resolution": "inferred"})
+        record = _add_snippet(session, SOURCE_ID, provenance={"column_mappings_basis": {}})
         record.failure_count = 1
         session.flush()
 
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
-        new_provenance = {"field_resolution": "direct", "was_repaired": True}
+        new_provenance = {"column_mappings_basis": {"revenue": {}}, "was_repaired": True}
         updated = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(new_amount) FROM t",

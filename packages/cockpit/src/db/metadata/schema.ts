@@ -615,23 +615,6 @@ export const runTables = metadataSchema
 		sql`SELECT run_id, table_id FROM ws_00000000_0000_0000_0000_000000000001.run_tables`,
 	);
 
-export const snippetUsage = metadataSchema
-	.view("snippet_usage", {
-		usageId: varchar("usage_id"),
-		workspaceId: varchar("workspace_id"),
-		executionId: varchar("execution_id"),
-		executionType: varchar("execution_type"),
-		snippetId: varchar("snippet_id"),
-		usageType: varchar("usage_type"),
-		matchConfidence: doublePrecision("match_confidence"),
-		sqlMatchRatio: doublePrecision("sql_match_ratio"),
-		stepId: varchar("step_id"),
-		createdAt: timestamp("created_at"),
-	})
-	.as(
-		sql`SELECT usage_id, workspace_id, execution_id, execution_type, snippet_id, usage_type, match_confidence, sql_match_ratio, step_id, created_at FROM ws_00000000_0000_0000_0000_000000000001.snippet_usage`,
-	);
-
 export const sources = metadataSchema
 	.view("sources", {
 		sourceId: varchar("source_id"),
@@ -665,18 +648,15 @@ export const sqlSnippets = metadataSchema
 		sql: text(),
 		description: text(),
 		source: varchar(),
-		llmModel: varchar("llm_model"),
 		provenance: json(),
 		parts: json(),
 		executionCount: integer("execution_count"),
 		failureCount: integer("failure_count"),
-		lastUsedAt: timestamp("last_used_at"),
-		columnHash: varchar("column_hash"),
 		createdAt: timestamp("created_at"),
 		updatedAt: timestamp("updated_at"),
 	})
 	.as(
-		sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, llm_model, provenance, parts, execution_count, failure_count, last_used_at, column_hash, created_at, updated_at FROM ws_00000000_0000_0000_0000_000000000001.sql_snippets`,
+		sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, provenance, parts, execution_count, failure_count, created_at, updated_at FROM ws_00000000_0000_0000_0000_000000000001.sql_snippets`,
 	);
 
 export const tables = metadataSchema

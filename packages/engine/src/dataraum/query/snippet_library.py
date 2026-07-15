@@ -1,8 +1,9 @@
 """SQL Snippet Library — the engine-owned snippet Knowledge Base substrate.
 
 Manages snippet lifecycle for the LIVE producer path (the GraphAgent in
-``graphs/agent.py`` + ``metrics_phase``): upsert, exact-key discovery, and
-usage/failure tracking. The natural-language CONSUMER discovery surface — key-based
+``graphs/agent.py`` + ``metrics_phase``): upsert (including failure retention via
+``save_snippet(failed=True)``), exact-key discovery, and usage tracking. The
+natural-language CONSUMER discovery surface — key-based
 graph search, full-graph injection, vocabulary, stats — moved to the cockpit TS tier
 (the ``answer`` sub-agent, DAT-485/494) and was removed in DAT-487; the cockpit reads
 the same ``sql_snippets`` substrate directly via Drizzle.
@@ -48,7 +49,7 @@ from uuid import uuid4
 from sqlalchemy import select, update
 
 from dataraum.core.logging import get_logger
-from dataraum.query.snippet_models import SnippetUsageRecord, SQLSnippetRecord
+from dataraum.query.snippet_models import SQLSnippetRecord
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -83,9 +84,9 @@ class SnippetLibrary:
         Args:
             session: SQLAlchemy session for snippet metadata
             workspace_id: Workspace id for per-row population.
-                Required for paths that create new rows (snippet upsert,
-                usage recording). Read-only paths (find_by_*, record_failure)
-                may pass None.
+                Required for paths that create new rows (snippet upsert).
+                Paths that create no rows (find_by_*, record_usage) may
+                pass None.
         """
         self.session = session
         self.workspace_id = workspace_id
@@ -253,8 +254,6 @@ class SnippetLibrary:
         parameter_value: str | None = None,
         normalized_expression: str | None = None,
         input_fields: list[str] | None = None,
-        llm_model: str | None = None,
-        column_hash: str | None = None,
         provenance: dict[str, Any] | None = None,
         parts: dict[str, Any] | None = None,
         failed: bool = False,
@@ -283,9 +282,7 @@ class SnippetLibrary:
             parameter_value: Parameter value (for constants)
             normalized_expression: Normalized expression (for formulas)
             input_fields: Input field names (for formulas)
-            llm_model: LLM model used to generate
-            column_hash: Hash for schema change invalidation
-            provenance: Grounding decisions (field_resolution, column_mappings_basis, etc.)
+            provenance: Grounding decisions (column_mappings_basis, etc.)
             parts: Clause parts the extract's ``sql`` was rendered from (DAT-671) —
                 the structured artifact drill composition builds on; extracts only.
 
@@ -332,8 +329,6 @@ class SnippetLibrary:
             existing.sql = sql
             existing.description = description
             existing.source = source
-            existing.llm_model = llm_model
-            existing.column_hash = column_hash
             existing.provenance = provenance
             existing.parts = parts
             existing.failure_count = 1 if failed else 0
@@ -359,8 +354,6 @@ class SnippetLibrary:
                 sql=sql,
                 description=description,
                 source=source,
-                llm_model=llm_model,
-                column_hash=column_hash,
                 provenance=provenance,
                 parts=parts,
                 execution_count=0,
@@ -383,71 +376,25 @@ class SnippetLibrary:
 
     # --- Usage Tracking ---
 
-    def record_usage(
-        self,
-        execution_id: str,
-        execution_type: str,
-        usage_type: str,
-        *,
-        snippet_id: str | None = None,
-        match_confidence: float = 0.0,
-        sql_match_ratio: float = 0.0,
-        step_id: str | None = None,
-    ) -> SnippetUsageRecord:
-        """Record how a snippet was used in an execution.
+    def record_usage(self, snippet_id: str | None, usage_type: str) -> None:
+        """Bump ``execution_count`` when a cached snippet was reused this run.
+
+        The per-execution usage audit trail (``snippet_usage``) was write-only
+        telemetry — never read by anything — and was removed (DAT-781). This is
+        what remains of ``record_usage``: the one side effect that DOES have a
+        live reader (the cockpit's why-metric surface, ``execution_count``).
 
         Args:
-            execution_id: The execution that used (or didn't use) the snippet
-            execution_type: "graph" or "query"
-            usage_type: "exact_reuse", "adapted", "provided_not_used", "newly_generated"
-            snippet_id: The snippet ID (None for newly_generated)
-            match_confidence: Confidence at discovery time
-            sql_match_ratio: Similarity between generated and snippet SQL
-            step_id: The step ID this usage relates to
-
-        Returns:
-            Created SnippetUsageRecord
+            snippet_id: The snippet ID (None when nothing was reused — no-op).
+            usage_type: "exact_reuse", "adapted", "provided_not_used", or
+                "newly_generated" — only the first two bump the count.
         """
-        record = SnippetUsageRecord(
-            usage_id=str(uuid4()),
-            workspace_id=self._require_workspace_id(),
-            execution_id=execution_id,
-            execution_type=execution_type,
-            snippet_id=snippet_id,
-            usage_type=usage_type,
-            match_confidence=match_confidence,
-            sql_match_ratio=sql_match_ratio,
-            step_id=step_id,
-            created_at=datetime.now(UTC),
-        )
-        self.session.add(record)
-
-        # Update snippet usage stats
         if snippet_id and usage_type in ("exact_reuse", "adapted"):
             self.session.execute(
                 update(SQLSnippetRecord)
                 .where(SQLSnippetRecord.snippet_id == snippet_id)
-                .values(
-                    execution_count=SQLSnippetRecord.execution_count + 1,
-                    last_used_at=datetime.now(UTC),
-                )
+                .values(execution_count=SQLSnippetRecord.execution_count + 1)
             )
-
-        return record
-
-    def record_failure(self, snippet_ids: list[str]) -> None:
-        """Increment failure_count for snippets that produced execution errors.
-
-        Args:
-            snippet_ids: Snippet IDs whose SQL failed during execution.
-        """
-        if not snippet_ids:
-            return
-        self.session.execute(
-            update(SQLSnippetRecord)
-            .where(SQLSnippetRecord.snippet_id.in_(snippet_ids))
-            .values(failure_count=SQLSnippetRecord.failure_count + 1)
-        )
 
 
 __all__ = ["SnippetLibrary", "SnippetMatch"]

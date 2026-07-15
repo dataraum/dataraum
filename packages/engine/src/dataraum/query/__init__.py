@@ -7,7 +7,7 @@ the LIVE producer path depends on:
 
 - ``snippet_library``: ``SnippetLibrary`` (save / find_by_key / record_usage) —
   written by the GraphAgent (``graphs/agent.py``) and ``metrics_phase``.
-- ``snippet_models``: the ``SQLSnippetRecord`` / ``SnippetUsageRecord`` ORM models.
+- ``snippet_models``: the ``SQLSnippetRecord`` ORM model.
 - ``snippet_utils``: ``normalize_sql`` / ``determine_usage_type`` /
   ``normalize_expression``.
 - ``execution``: ``execute_sql_steps`` — the engine's SQL-step executor (GraphAgent).

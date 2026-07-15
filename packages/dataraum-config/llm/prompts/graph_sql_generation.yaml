@@ -278,9 +278,8 @@ user_prompt: |
      the floors of <field_resolution_strategy>; if the concept cannot be grounded, FALL LOUD:
      `select_expr: "NULL"` with no relation and no predicates + a LOW-confidence assumption.
   3. `description` — the one-line human summary.
-  4. `provenance` — field_resolution ("direct" if a field_mapping gave the column, "inferred"
-     if you grounded via Value sets / a join); column_mappings_basis = {concept: {column,
-     filter (the exact values), resolution}}.
+  4. `provenance` — column_mappings_basis = {concept: {column, filter (the exact values),
+     resolution}}.
   5. `assumptions` — genuine interpretation choices only; ALWAYS record one (LOW confidence)
      in the FALL-LOUD case, naming the concept and why it is ungrounded.
 

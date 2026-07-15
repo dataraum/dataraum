@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from dataraum.query.snippet_models import SnippetUsageRecord, SQLSnippetRecord
+from dataraum.query.snippet_models import SQLSnippetRecord
 
 
 class TestSQLSnippetRecord:
@@ -148,98 +148,18 @@ class TestSQLSnippetRecord:
         )
         session.flush()  # Should not raise
 
-
-class TestSnippetUsageRecord:
-    """Tests for SnippetUsageRecord model."""
-
-    def _create_snippet(self, session) -> SQLSnippetRecord:
-        """Helper to create a snippet for usage tests."""
+    def test_snippet_type_check_constraint(self, session):
+        """An unrecognized snippet_type is rejected at the DB layer (DAT-781: the
+        two-layer enforcement standard — a closed-vocabulary column gets a
+        CheckConstraint whenever it's touched)."""
         record = SQLSnippetRecord(
             workspace_id="ws_test",
-            snippet_type="extract",
-            standard_field="revenue",
+            snippet_type="bogus",
             schema_mapping_id="schema_abc",
             sql="SELECT 1",
             description="test",
-            source="graph:test",
+            source="graph:dso",
         )
         session.add(record)
-        session.flush()
-        return record
-
-    def test_create_exact_reuse(self, session):
-        """Record an exact reuse."""
-        snippet = self._create_snippet(session)
-        usage = SnippetUsageRecord(
-            workspace_id="ws_test",
-            execution_id="exec_001",
-            execution_type="graph",
-            snippet_id=snippet.snippet_id,
-            usage_type="exact_reuse",
-            match_confidence=1.0,
-            sql_match_ratio=1.0,
-            step_id="revenue",
-        )
-        session.add(usage)
-        session.flush()
-
-        assert usage.usage_id is not None
-        assert usage.usage_type == "exact_reuse"
-
-    def test_create_newly_generated(self, session):
-        """Record a newly generated step (no snippet)."""
-        usage = SnippetUsageRecord(
-            workspace_id="ws_test",
-            execution_id="exec_002",
-            execution_type="query",
-            snippet_id=None,
-            usage_type="newly_generated",
-            match_confidence=0.0,
-            sql_match_ratio=0.0,
-            step_id="monthly_revenue",
-        )
-        session.add(usage)
-        session.flush()
-
-        assert usage.snippet_id is None
-        assert usage.usage_type == "newly_generated"
-
-    def test_snippet_relationship(self, session):
-        """Usage record links back to snippet."""
-        snippet = self._create_snippet(session)
-        usage = SnippetUsageRecord(
-            workspace_id="ws_test",
-            execution_id="exec_003",
-            execution_type="graph",
-            snippet_id=snippet.snippet_id,
-            usage_type="adapted",
-            match_confidence=0.9,
-            sql_match_ratio=0.85,
-        )
-        session.add(usage)
-        session.flush()
-
-        # Navigate relationship
-        assert usage.snippet is not None
-        assert usage.snippet.snippet_id == snippet.snippet_id
-
-    def test_cascade_delete(self, session):
-        """Deleting snippet cascades to usage records."""
-        snippet = self._create_snippet(session)
-        usage = SnippetUsageRecord(
-            workspace_id="ws_test",
-            execution_id="exec_004",
-            execution_type="graph",
-            snippet_id=snippet.snippet_id,
-            usage_type="exact_reuse",
-            match_confidence=1.0,
-            sql_match_ratio=1.0,
-        )
-        session.add(usage)
-        session.flush()
-
-        usage_id = usage.usage_id
-        session.delete(snippet)
-        session.flush()
-
-        assert session.get(SnippetUsageRecord, usage_id) is None
+        with pytest.raises(IntegrityError):
+            session.flush()

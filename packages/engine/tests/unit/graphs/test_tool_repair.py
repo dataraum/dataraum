@@ -33,7 +33,6 @@ _VALID_INPUT = {
     "select_expr": "SUM(amount)",
     "description": "Total revenue",
     "provenance": {
-        "field_resolution": "direct",
         "column_mappings_basis": {"revenue": {"column": "amount", "filter": "Income"}},
     },
 }
@@ -143,7 +142,7 @@ def test_stringified_field_is_repaired_by_the_model(monkeypatch) -> None:
     assert repair_request.label == "graph_sql_generation_repair"
     content = repair_request.messages[0].content
     assert "Validation error" in content
-    assert "field_resolution" in content  # the model's own output rides along
+    assert "column_mappings_basis" in content  # the model's own output rides along
 
 
 def test_second_validation_failure_fails_loud_with_both_errors(monkeypatch) -> None:

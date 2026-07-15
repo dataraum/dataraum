@@ -49,8 +49,10 @@ re-grain owed to DAT-501 Phase 5 / DAT-506), and `derived_columns` (skip-guarded
 
 - `metrics_phase` commits once **per metric** (`_execute_isolated`). Allowed because
   every per-metric write converges: snippet state is first-writer-wins (DAT-485) and
-  `snippet_usage`/`execution_count` are the documented **telemetry exception** —
-  not run-stamped, may inflate on redelivery, nothing gates on them.
+  `sql_snippets.execution_count` is the documented **telemetry exception** —
+  not run-stamped, may inflate on redelivery, nothing gates on it. (The
+  `snippet_usage` audit table that shared this exception was write-only and
+  removed, DAT-781.)
 - `lifecycle_artifacts` advance state in place within a run; `declare_artifact` is
   **declare-or-reuse**: a redelivered declare RESETS the same `(session, type, key,
   run)` row to `declared` (state_reason/grounded_against cleared) because

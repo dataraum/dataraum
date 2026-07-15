@@ -127,12 +127,22 @@ def _seed(engine: Engine) -> None:
         "INSERT INTO column_concepts (concept_id, column_id, run_id, temporal_behavior, annotated_at) "
         f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', '{TS}')"
     )
+    # measure_time_axis_column_id / event_time_axis_column_id are left NULL — this
+    # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
+    # resolve (DAT-778's honest-NULL case). measure_slice_column_id /
+    # event_slice_column_id are NOT NULL (sourced from SliceDefinition.column_id in
+    # the real writer): 'c_k1' stands in for both, same as the real writer would use
+    # when measure_table_id == event_table_id.
     stmts.append(
         "INSERT INTO measure_aggregation_lineage "
         "(lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, "
+        " measure_time_axis_column, event_time_axis_column, "
+        " measure_slice_column_id, event_slice_column_id, "
         " slice_dimension, convention_sql, period_grain, pattern, match_rate, "
         " r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at) "
-        f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't1', 'month', 'SUM(amount)', "
+        f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't1', "
+        f"'period_date', 'period_date', 'c_k1', 'c_k1', "
+        f"'month', 'SUM(amount)', "
         f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, '{TS}')"
     )
     for rid, ft, fc, tt, tc in _REFS:

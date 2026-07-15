@@ -27,8 +27,16 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     surrogate, DAT-277), ``slice_definitions``, ``entropy_objects``,
     ``entropy_readiness``, ``claim_witnesses`` (all ``column_id``-keyed), plus the
     differently-named ``derived_columns.derived_column_id``,
-    ``measure_aggregation_lineage.measure_column_id``, and ``relationships``
-    (reachable through either ``from_column_id`` / ``to_column_id`` endpoint).
+    ``driver_rankings.measure_column_id`` (was MISSING before DAT-778 — a
+    prior run's ranking FK-blocked the column delete on the eligibility /
+    surrogate-mint / enriched-views paths, which only reach this function,
+    never the table-level teardown),
+    ``measure_aggregation_lineage`` (reachable through ``measure_column_id`` or
+    any of its DAT-778 witness FKs — ``measure_time_axis_column_id``,
+    ``event_time_axis_column_id``, ``measure_slice_column_id``,
+    ``event_slice_column_id``; a column can be a lineage row's *axis/slice*
+    witness without being its measure column), and ``relationships`` (reachable
+    through either ``from_column_id`` / ``to_column_id`` endpoint).
 
     Run BEFORE deleting the ``columns`` rows so the FK constraints are satisfied
     when the column rows go.
@@ -38,6 +46,7 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     from sqlalchemy import delete, or_
 
     from dataraum.analysis.correlation.db_models import DerivedColumn
+    from dataraum.analysis.drivers.db_models import DriverRankingArtifact
     from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
@@ -72,8 +81,17 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
         delete(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
     )
     ctx.session.execute(
+        delete(DriverRankingArtifact).where(DriverRankingArtifact.measure_column_id.in_(column_ids))
+    )
+    ctx.session.execute(
         delete(MeasureAggregationLineage).where(
-            MeasureAggregationLineage.measure_column_id.in_(column_ids)
+            or_(
+                MeasureAggregationLineage.measure_column_id.in_(column_ids),
+                MeasureAggregationLineage.measure_time_axis_column_id.in_(column_ids),
+                MeasureAggregationLineage.event_time_axis_column_id.in_(column_ids),
+                MeasureAggregationLineage.measure_slice_column_id.in_(column_ids),
+                MeasureAggregationLineage.event_slice_column_id.in_(column_ids),
+            )
         )
     )
     # Relationships reach a column through either endpoint.

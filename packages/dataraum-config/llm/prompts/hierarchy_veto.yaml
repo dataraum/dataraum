@@ -13,7 +13,7 @@
 # prompt.
 
 name: hierarchy_veto
-version: "1.0.0"
+version: "1.0.1"
 description: Names-only veto on asserted dimension structures (DAT-762)
 temperature: 0.1
 
@@ -46,6 +46,9 @@ system_prompt: |
   </verdict_space>
 
   <rules>
+  - Drilldown members are listed coarse -> fine, left to right (each step
+    RIGHT of another is the finer level that groups INTO it); alias groups
+    are unordered.
   - Judge from the given identifiers only. Do not speculate about values or
     statistics; they were deliberately withheld.
   - Vetoing a TRUE structure destroys real metadata; veto only when the

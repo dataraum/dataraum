@@ -212,6 +212,7 @@ CREATE TABLE bus_matrix (
 	roles JSON NOT NULL, 
 	attributes JSON NOT NULL, 
 	confirmation_source VARCHAR DEFAULT 'unconfirmed' NOT NULL, 
+	conformed_group VARCHAR, 
 	needs_confirmation BOOLEAN NOT NULL, 
 	signature VARCHAR NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 

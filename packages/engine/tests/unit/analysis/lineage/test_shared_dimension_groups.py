@@ -2,9 +2,11 @@
 
 Pins the pure grouping function: referenced identities pair on
 (dimension_table_id, dimension_attribute); judge-conformed FOLDED bus-matrix
-cells form identities keyed by the conform pass's concept label, served by the
-facts' own folded SliceDefinitions; a conformed fold whose key column was
-never sliced abstains for that fact rather than guessing.
+cells form identities keyed by ``conformed_group`` — the conform-connected
+component's signature, NEVER the concept label: a label collision across
+distinct groups must not merge them (it would discard a DISTINCT verdict) and
+label drift inside one group must not split it. A conformed fold whose key
+column was never sliced abstains for that fact rather than guessing.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ def _slice(
     )
 
 
-def _cell(fact: str, key: str, label: str) -> BusMatrixEntry:
+def _cell(fact: str, key: str, label: str, group: str | None) -> BusMatrixEntry:
     return BusMatrixEntry(
         run_id=RUN,
         fact_table_id=fact,
@@ -45,6 +47,7 @@ def _cell(fact: str, key: str, label: str) -> BusMatrixEntry:
         roles=[key],
         attributes=[],
         confirmation_source="judge",
+        conformed_group=group,
         signature=f"bus:folded:{fact}:{key}",
     )
 
@@ -66,9 +69,10 @@ def test_conformed_folded_cells_form_an_identity() -> None:
         _slice("gl", "account_id"),  # folded slices: no dimension_table_id
         _slice("tb", "account_id"),
     ]
-    cells = [_cell("gl", "account_id", "account"), _cell("tb", "account_id", "account")]
+    g = "conform:gl:account_id|tb:account_id"
+    cells = [_cell("gl", "account_id", "account", g), _cell("tb", "account_id", "account", g)]
     groups, folded_labels = _shared_dimension_groups(defs, cells)
-    identity = ("folded:account", "")
+    identity = (f"folded:{g}", "")
     assert set(groups[identity]) == {"gl", "tb"}
     assert folded_labels[identity] == "account"
     # the lens objects ARE the facts' own folded slices
@@ -77,23 +81,51 @@ def test_conformed_folded_cells_form_an_identity() -> None:
 
 def test_unsliced_fold_key_abstains_for_that_fact() -> None:
     defs = [_slice("gl", "account_id")]  # tb's fold key was never sliced
-    cells = [_cell("gl", "account_id", "account"), _cell("tb", "account_id", "account")]
+    g = "conform:gl:account_id|tb:account_id"
+    cells = [_cell("gl", "account_id", "account", g), _cell("tb", "account_id", "account", g)]
     groups, _ = _shared_dimension_groups(defs, cells)
-    assert set(groups[("folded:account", "")]) == {"gl"}  # singleton — caller filters
+    assert set(groups[(f"folded:{g}", "")]) == {"gl"}  # singleton — caller filters
 
 
 def test_referenced_slice_never_serves_a_folded_identity() -> None:
     # A same-named REFERENCED slice must not be borrowed as a folded lens.
     defs = [_slice("gl", "account_id", dim="d1"), _slice("tb", "account_id")]
-    cells = [_cell("gl", "account_id", "account"), _cell("tb", "account_id", "account")]
+    g = "conform:gl:account_id|tb:account_id"
+    cells = [_cell("gl", "account_id", "account", g), _cell("tb", "account_id", "account", g)]
     groups, _ = _shared_dimension_groups(defs, cells)
-    assert set(groups.get(("folded:account", ""), {})) == {"tb"}
+    assert set(groups.get((f"folded:{g}", ""), {})) == {"tb"}
     assert set(groups[("d1", "")]) == {"gl"}
 
 
-def test_distinct_labels_stay_distinct_axes() -> None:
-    defs = [_slice("gl", "account_id"), _slice("bt", "payment_id")]
-    cells = [_cell("gl", "account_id", "account"), _cell("bt", "payment_id", "vendor payment")]
+def test_label_collision_across_groups_never_merges() -> None:
+    # The judge said DISTINCT (two separate components) but both got the same
+    # generic label — grouping by label would silently merge them.
+    defs = [_slice("gl", "status"), _slice("bt", "state")]
+    g1 = "conform:gl:status|iv:status"
+    g2 = "conform:bt:state|pm:state"
+    cells = [_cell("gl", "status", "status", g1), _cell("bt", "state", "status", g2)]
     groups, folded_labels = _shared_dimension_groups(defs, cells)
-    assert ("folded:account", "") in groups and ("folded:vendor payment", "") in groups
-    assert len(folded_labels) == 2
+    assert set(groups[(f"folded:{g1}", "")]) == {"gl"}
+    assert set(groups[(f"folded:{g2}", "")]) == {"bt"}
+    assert len(folded_labels) == 2  # two identities, both displaying "status"
+    assert set(folded_labels.values()) == {"status"}
+
+
+def test_one_group_is_one_axis_regardless_of_labels() -> None:
+    # Cells of ONE conform component always form one axis; the conform pass
+    # canonicalizes the label, and the grouping never re-splits on it.
+    defs = [_slice("gl", "account_id"), _slice("tb", "acct_no")]
+    g = "conform:gl:account_id|tb:acct_no"
+    cells = [_cell("gl", "account_id", "account", g), _cell("tb", "acct_no", "account", g)]
+    groups, folded_labels = _shared_dimension_groups(defs, cells)
+    assert set(groups[(f"folded:{g}", "")]) == {"gl", "tb"}
+    assert folded_labels[(f"folded:{g}", "")] == "account"
+
+
+def test_unconformed_cell_contributes_nothing() -> None:
+    # conformed_group is None → no cross-fact identity was asserted.
+    defs = [_slice("gl", "account_id")]
+    cells = [_cell("gl", "account_id", "account_id", None)]
+    groups, folded_labels = _shared_dimension_groups(defs, cells)
+    assert groups == {}
+    assert folded_labels == {}

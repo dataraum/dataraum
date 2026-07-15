@@ -161,6 +161,19 @@ def test_conform_batch_output_validates_abstain() -> None:
     assert out.verdicts[0].concept_label is None
 
 
+def test_conform_without_label_is_malformed() -> None:
+    """A conform verdict missing its required label FAILS validation — it feeds
+    the DAT-710 repair loop (re-ask the judge), never a deterministic fill-in
+    by the consumer (a column name is not a concept label)."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ConformBatchOutput.model_validate(
+            {"verdicts": [{"pair_ref": "p", "verdict": "conform", "reason": "same thing"}]}
+        )
+
+
 def test_evidence_formatting_is_deterministic() -> None:
     text = DimensionIdentityJudge._format_candidates(_CANDIDATES)
     assert "ref=p1" in text

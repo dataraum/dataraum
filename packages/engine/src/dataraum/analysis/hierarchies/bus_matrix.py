@@ -32,18 +32,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.analysis.hierarchies import routing
 from dataraum.analysis.hierarchies.db_models import BusMatrixEntry, DimensionHierarchy
-from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
+from dataraum.analysis.hierarchies.judge import ConformVerdict, DimensionIdentityJudge
 from dataraum.analysis.hierarchies.processor import (
     NEAR_KEY_FRAC,
-    _column_evidence,
-    _pull_sample,
-    _quote,
-    _resolve_candidates,
-    _view_columns,
+    column_evidence,
+    pull_sample,
+    quote_ident,
+    resolve_candidates,
+    view_columns,
 )
 from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -69,6 +69,11 @@ _SOURCE_RANK = {"unconfirmed": 0, "judge": 1, "keeper": 2, "user": 3}
 # an attribute/timestamp, not an operational identifier.
 _DEGENERATE_SHAPES = frozenset({"idlike", "code"})
 
+# Conform candidates per judgment call: pairs grow O(components²) with
+# facts × fold groups, so the batch is chunked (the per-pair ref scheme keeps
+# chunks independent) instead of one unbounded prompt.
+_CONFORM_BATCH_MAX = 32
+
 
 @dataclass
 class BusMatrixStats:
@@ -86,6 +91,9 @@ class BusMatrixStats:
     conform_pairs: int = 0
     conformed: int = 0
     abstained: int = 0
+    # Pairs the judge returned NO verdict for (a truncating model must be
+    # visible in the phase outputs, not uphold-by-omission).
+    unanswered: int = 0
 
     def as_output(self) -> dict[str, object]:
         return {
@@ -96,6 +104,7 @@ class BusMatrixStats:
             "conform_pairs": self.conform_pairs,
             "conformed": self.conformed,
             "abstained": self.abstained,
+            "unanswered": self.unanswered,
         }
 
 
@@ -110,6 +119,9 @@ class _FoldComponent:
     has_manual: bool
     # Assigned by the conform pass; None = unconformed (own label).
     concept_label: str | None = None
+    # The conform-connected component's deterministic signature (DAT-800 group
+    # key); None = no cross-fact identity asserted.
+    conformed_group: str | None = None
     conformed: bool = False
     abstained: bool = False
 
@@ -151,10 +163,6 @@ def derive_bus_matrix(
     if not enriched:
         return 0, stats
     fact_ids = sorted({ev.fact_table_id for ev in enriched})
-    name_of = {
-        t.table_id: t.table_name
-        for t in session.execute(select(Table)).scalars()  # facts AND dim targets
-    }
     slices = (
         session.execute(
             select(SliceDefinition).where(
@@ -164,6 +172,12 @@ def derive_bus_matrix(
         .scalars()
         .all()
     )
+    # Facts AND the referenced dim targets — the only names any leg reports.
+    named_ids = set(fact_ids) | {s.dimension_table_id for s in slices if s.dimension_table_id}
+    name_of = {
+        t.table_id: t.table_name
+        for t in session.execute(select(Table).where(Table.table_id.in_(named_ids))).scalars()
+    }
 
     rows: list[dict[str, object]] = []
     rows += _referenced_cells(session, enriched, slices, name_of, run_id=run_id, stats=stats)
@@ -185,6 +199,18 @@ def derive_bus_matrix(
         stats=stats,
     )
 
+    # Retry stability: folded-cell identity depends on the LLM lanes (a veto
+    # changes component membership → member_key → signature), so a
+    # crash-after-commit redelivery with a flipped verdict would strand the
+    # first attempt's cells under the same run_id — invisible to the upsert,
+    # visible through ``current_bus_matrix``. Delete-then-insert in ONE
+    # transaction is exactly idempotent when row identity is not retry-stable;
+    # the upsert + unique constraint stay as the in-batch backstop.
+    session.execute(
+        delete(BusMatrixEntry).where(
+            BusMatrixEntry.run_id == run_id, BusMatrixEntry.fact_table_id.in_(fact_ids)
+        )
+    )
     upsert(session, BusMatrixEntry, rows, index_elements=["signature", "run_id"])
     logger.info("bus_matrix_derived", **stats.as_output())
     return len(rows), stats
@@ -235,6 +261,7 @@ def _referenced_cells(
                 "roles": roles,
                 "attributes": attributes,
                 "confirmation_source": source,
+                "conformed_group": None,
                 "needs_confirmation": False,
                 "signature": f"bus:referenced:{fact_id}:{dim_id}",
             }
@@ -290,7 +317,14 @@ def _fold_components(
         members = st.members
         own = fact_col_ids.get(st.table_id, set())
         col_ids = [str(m["column_id"]) for m in members]
-        if not all((cid in own or cid == "") for cid in col_ids):
+        col_names = [str(m["column_name"]) for m in members]
+        # An empty column_id is an unresolved member (manual teach), fact-own
+        # by assumption — EXCEPT when the name carries the ``__`` join marker:
+        # an unresolvable joined ``fk__attr`` column is referenced territory.
+        if not all(
+            (cid in own or (cid == "" and "__" not in name))
+            for cid, name in zip(col_ids, col_names, strict=True)
+        ):
             continue  # touches a joined dim column — referenced territory
         if any(cid in referenced_key_cols for cid in col_ids):
             continue  # rooted on a referenced FK key — already a referenced cell
@@ -340,9 +374,19 @@ def _conform_pass(
 ) -> None:
     """Cross-fact identity via the conform judge; verdicts land on the components.
 
-    Candidates are all cross-fact component pairs (the folded universe is small —
-    facts × their fold groups). Meanings are authored column context
-    (``ColumnConcept.meaning``), served as corroborating evidence.
+    Candidates are all cross-fact component pairs, judged in chunks of
+    ``_CONFORM_BATCH_MAX`` (components grow with facts × fold groups — one
+    unbounded prompt would degrade exactly when the corpus is widest).
+    Meanings are authored column context (``ColumnConcept.meaning``), served
+    as corroborating evidence.
+
+    Group identity is the CONFORM-CONNECTED COMPONENT, not the label: the
+    judge's conform verdicts are union-found, each connected group gets one
+    deterministic ``conformed_group`` signature (its members) and one label
+    (the first conform verdict in deterministic pair order). Keying on the
+    label instead would silently SPLIT a group whose verdicts drifted labels
+    and silently MERGE two distinct groups sharing a generic label —
+    discarding the judge's own DISTINCT verdict.
     """
     pairs = [
         (i, j)
@@ -379,26 +423,48 @@ def _conform_pass(
         {"ref": f"pair:{i}:{j}", "left": side(components[i]), "right": side(components[j])}
         for i, j in pairs
     ]
-    try:
-        result = judge.conform(candidates=candidates)
-    except PermanentProviderError as e:
-        # Permanent = a retry cannot help; transient errors deliberately propagate
-        # to the Temporal boundary (the veto lane's contract).
-        logger.warning("bus_matrix_conform_skipped", reason=str(e))
-        stats.status = "failed"
-        return
-    if not result.success:
-        logger.warning("bus_matrix_conform_skipped", reason=result.error)
-        stats.status = "failed"
-        return
+    verdicts: list[ConformVerdict] = []
+    for start in range(0, len(candidates), _CONFORM_BATCH_MAX):
+        chunk = candidates[start : start + _CONFORM_BATCH_MAX]
+        try:
+            result = judge.conform(candidates=chunk)
+        except PermanentProviderError as e:
+            # Permanent = a retry cannot help; transient errors deliberately
+            # propagate to the Temporal boundary (the veto lane's contract).
+            logger.warning("bus_matrix_conform_skipped", reason=str(e))
+            stats.status = "failed"
+            return
+        if not result.success:
+            logger.warning("bus_matrix_conform_skipped", reason=result.error)
+            stats.status = "failed"
+            return
+        verdicts.extend(result.unwrap())
 
     by_ref = {f"pair:{i}:{j}": (i, j) for i, j in pairs}
-    for verdict in result.unwrap():
+
+    # Union-find over the components; conform verdicts are the edges.
+    parent = list(range(len(components)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    conform_edges: list[tuple[int, int, str]] = []  # (i, j, label) in verdict order
+    non_conform: list[tuple[int, int, str]] = []  # (i, j, verdict) for consistency check
+    abstain_touched: set[int] = set()
+    seen_refs: set[str] = set()
+    for verdict in verdicts:
         pair = by_ref.get(verdict.pair_ref)
         if pair is None:
             logger.warning("bus_matrix_conform_unknown_ref", ref=verdict.pair_ref)
             continue
-        left, right = components[pair[0]], components[pair[1]]
+        if verdict.pair_ref in seen_refs:
+            continue  # first verdict per ref wins; duplicates never double-count
+        seen_refs.add(verdict.pair_ref)
+        i, j = pair
+        left, right = components[i], components[j]
         logger.info(
             "bus_matrix_conform",
             left=f"{left.fact_table_name}.{left.fold_key}",
@@ -409,18 +475,76 @@ def _conform_pass(
         )
         if verdict.verdict == "conform":
             stats.conformed += 1
-            label = verdict.concept_label or left.fold_key
-            for comp in (left, right):
-                comp.conformed = True
-                # First conform verdict wins (deterministic candidate order).
-                comp.concept_label = comp.concept_label or label
+            # concept_label is non-None here (ConformVerdict's validator).
+            conform_edges.append((i, j, verdict.concept_label or left.fold_key))
+            parent[find(i)] = find(j)
         elif verdict.verdict == "abstain":
             stats.abstained += 1
-            for comp in (left, right):
-                if not comp.conformed:
-                    comp.abstained = True
-        # 'role' / 'distinct': resolved as separate axes — cells keep their own
-        # labels, no flag (the judge answered; the answer is "two dimensions").
+            abstain_touched.update(pair)
+        else:
+            # 'role' / 'distinct': separate axes — no flag (the judge answered;
+            # the answer is "two dimensions"). Kept for the consistency check.
+            non_conform.append((i, j, verdict.verdict))
+
+    # A pair with no verdict is silently unjudged otherwise — make the
+    # truncation observable (the DAT-536 inert-safeguard lesson).
+    missing = sorted(set(by_ref) - seen_refs)
+    if missing:
+        stats.unanswered = len(missing)
+        logger.warning("bus_matrix_conform_unanswered", refs=missing)
+
+    # One label + one group signature per connected component: the FIRST
+    # conform verdict on the component names it; later differing labels are
+    # drift — reported, never applied (and never a split: the group key is
+    # the component, not the label).
+    canon: dict[int, tuple[str, str]] = {}
+    for i, j, label in conform_edges:
+        root = find(i)
+        if root not in canon:
+            canon[root] = (label, _group_key(components, parent, root))
+        elif canon[root][0] != label:
+            logger.warning(
+                "bus_matrix_conform_label_drift",
+                left=f"{components[i].fact_table_name}.{components[i].fold_key}",
+                right=f"{components[j].fact_table_name}.{components[j].fold_key}",
+                kept=canon[root][0],
+                rejected=label,
+            )
+    for k, comp in enumerate(components):
+        root = find(k)
+        if root in canon:
+            comp.conformed = True
+            comp.concept_label, comp.conformed_group = canon[root]
+
+    # The judge separating a pair that its own conform verdicts transitively
+    # joined is instability — observable, never reconciled deterministically.
+    for i, j, kind in non_conform:
+        if find(i) == find(j):
+            logger.warning(
+                "bus_matrix_conform_inconsistent",
+                left=f"{components[i].fact_table_name}.{components[i].fold_key}",
+                right=f"{components[j].fact_table_name}.{components[j].fold_key}",
+                separating_verdict=kind,
+            )
+
+    for k in abstain_touched:
+        if not components[k].conformed:
+            components[k].abstained = True
+
+
+def _group_key(components: list[_FoldComponent], parent: list[int], root: int) -> str:
+    """Deterministic conformed-group signature: the component's member set."""
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    members = sorted(
+        f"{c.fact_table_id}:{c.fold_key}" for k, c in enumerate(components) if find(k) == root
+    )
+    return "conform:" + "|".join(members)
 
 
 def _folded_cells(
@@ -445,6 +569,7 @@ def _folded_cells(
                 "roles": [comp.fold_key],
                 "attributes": comp.attributes,
                 "confirmation_source": source,
+                "conformed_group": comp.conformed_group,
                 "needs_confirmation": comp.abstained and not comp.conformed,
                 "signature": f"bus:folded:{comp.fact_table_id}:{member_key}",
             }
@@ -473,10 +598,10 @@ def _degenerate_cells(
     """
     out: list[dict[str, object]] = []
     for ev in sorted(enriched, key=lambda e: e.view_name):
-        view_cols = _view_columns(duckdb_conn, ev.view_name)
+        view_cols = view_columns(duckdb_conn, ev.view_name)
         if view_cols is None:
             continue
-        by_name = _resolve_candidates(session, ev, view_cols)
+        by_name = resolve_candidates(session, ev, view_cols)
         cand = sorted(
             c
             for c, meta in by_name.items()
@@ -484,10 +609,12 @@ def _degenerate_cells(
         )
         if not cand:
             continue
-        parts = ["COUNT(*)"] + [f"COUNT(DISTINCT {_quote(c)})" for c in cand]
+        parts = ["COUNT(*)"] + [
+            f"COUNT(DISTINCT {quote_ident(c)}), COUNT({quote_ident(c)})" for c in cand
+        ]
         try:
             row = duckdb_conn.execute(
-                f"SELECT {', '.join(parts)} FROM {_quote(ev.view_name)}"  # noqa: S608
+                f"SELECT {', '.join(parts)} FROM {quote_ident(ev.view_name)}"  # noqa: S608
             ).fetchone()
         except Exception as e:  # noqa: BLE001 — skip this view, logged (visible abstention)
             logger.warning("bus_matrix_degenerate_scan_failed", view=ev.view_name, error=str(e))
@@ -495,15 +622,18 @@ def _degenerate_cells(
         if row is None or not row[0]:
             continue
         n = int(row[0])
-        d_sql = {c: int(row[i + 1]) for i, c in enumerate(cand)}
-        near_keys = [c for c in cand if d_sql[c] >= NEAR_KEY_FRAC * n]
+        d_sql = {c: int(row[2 * i + 1]) for i, c in enumerate(cand)}
+        # The discovery guard's statistic is the NULL-AWARE distinct count
+        # (processor's d2: NULL is a groupable value) — match it exactly.
+        d2 = {c: d_sql[c] + (1 if int(row[2 * i + 2]) < n else 0) for i, c in enumerate(cand)}
+        near_keys = [c for c in cand if d2[c] >= NEAR_KEY_FRAC * n]
         if not near_keys:
             continue
-        frame = _pull_sample(duckdb_conn, ev.view_name, near_keys, n)
+        frame = pull_sample(duckdb_conn, ev.view_name, near_keys, n)
         if frame is None:
             continue
         for c in near_keys:
-            shape = routing.classify_shape(_column_evidence(frame, c, n_rows=n, d_sql=d_sql))
+            shape = routing.classify_shape(column_evidence(frame, c, n_rows=n, d_sql=d_sql))
             if shape not in _DEGENERATE_SHAPES:
                 continue
             out.append(
@@ -516,6 +646,7 @@ def _degenerate_cells(
                     "roles": [c],
                     "attributes": [],
                     "confirmation_source": "unconfirmed",
+                    "conformed_group": None,
                     "needs_confirmation": False,
                     "signature": f"bus:degenerate:{ev.fact_table_id}:{c}",
                 }

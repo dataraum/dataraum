@@ -294,6 +294,14 @@ class BusMatrixEntry(Base):
     confirmation_source: Mapped[str] = mapped_column(
         String, nullable=False, server_default="unconfirmed"
     )
+    # Conformed-group identity: a deterministic signature over the
+    # conform-connected component this folded cell belongs to (the conform
+    # pass union-finds the judge's CONFORM verdicts), NULL when no cross-fact
+    # identity was asserted. This is the DAT-800 GROUP KEY — consumers join
+    # folded cells on it, never on ``concept_label``: a label collision across
+    # distinct groups must not merge them (it would discard a DISTINCT
+    # verdict), and label drift inside one group must not split it.
+    conformed_group: Mapped[str | None] = mapped_column(String, nullable=True)
     needs_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Run-grain dedup key: "bus:{attachment}:{fact_table_id}:{identity}" where

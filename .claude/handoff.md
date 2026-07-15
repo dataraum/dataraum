@@ -31,6 +31,16 @@ classes the DAT-757 scorecard measured as names-judgeable.
   `needs_confirmation`), `degenerate` (near-key AND id-shaped only). The
   truth-side `key_only` class is NOT derivable (Layer-A blind-spot FKs —
   DAT-762 comments 16642/16643) and stays a reported boundary.
+- **`conformed_group` is the identity key** (post-review): conform verdicts
+  are union-found; each conform-connected component gets one deterministic
+  group signature and ONE canonicalized label (first verdict wins; drift is
+  logged, never applied). Consumers — DAT-800 lineage included — join folded
+  cells on `conformed_group`, NEVER on `concept_label` (a label collision
+  across distinct groups must not merge them; label drift must not split).
+  Eval grades identity on the shared group, label share as canonicalization.
+- **Retry stability**: `derive_bus_matrix` deletes the run's cells before
+  insert (one transaction) — folded-cell signatures ride LLM verdicts, so an
+  at-least-once redelivery with a flipped veto must not strand stale cells.
 - **Judge construction**: standard agent pattern — the phase builds it
   (`load_llm_config` + `create_provider`), misconfiguration FAILS the phase;
   there is no judge-off configuration. A mid-run judgment failure skips the
@@ -39,7 +49,8 @@ classes the DAT-757 scorecard measured as names-judgeable.
 - **Phase outputs** now include `veto_lane` (status ran|partial|failed,
   routed/vetoed counts) and `bus_matrix` (status, per-leg cell counts,
   conform_pairs/conformed/abstained) — eval can assert lane liveness from the
-  phase output instead of PhaseLog.
+  phase output instead of PhaseLog. Both carry `unanswered`: refs the judge
+  returned no verdict for (unjudged-but-observable, never uphold-by-omission).
 - `GraphExecutionContext.bus_matrix` exposes the cells (expose seam only).
 - Schema: new table `bus_matrix` (+ `current_bus_matrix` read view) —
   additive; `schema.sql`/`schema_read.sql`/cockpit drizzle mirror regenerated.

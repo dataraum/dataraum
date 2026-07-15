@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -70,6 +70,18 @@ class ConformVerdict(BaseModel):
         description="Canonical concept label (lowercase, singular) — required on conform",
     )
     reason: str = Field(description="One sentence of grounds")
+
+    @model_validator(mode="after")
+    def _conform_requires_label(self) -> ConformVerdict:
+        """A conform without its label is a MALFORMED response, not a judgment.
+
+        Enforced at the model so the DAT-710 repair loop re-asks the judge —
+        the consumer must never complete an LLM judgment field
+        deterministically (a column name is not a concept label).
+        """
+        if self.verdict == "conform" and not self.concept_label:
+            raise ValueError("concept_label is required on a conform verdict")
+        return self
 
 
 class ConformBatchOutput(BaseModel):

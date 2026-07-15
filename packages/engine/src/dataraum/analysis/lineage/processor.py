@@ -354,13 +354,15 @@ def _shared_dimension_groups(
     bucketing lens the search competes.
 
     FOLDED identities (DAT-800): a folded slice has no referenced identity, but
-    the run's conform judge may have asserted its CROSS-FACT identity — the
-    ``confirmation_source='judge'`` folded bus-matrix cells. Cells conformed
-    together share one ``concept_label`` by construction (the conform pass
-    assigns it), so the label is the v1 group key; each cell's fold key names
-    the fact's physical grouping column, whose own FOLDED ``SliceDefinition``
-    is the same lens object the referenced path uses. A conformed fold whose
-    key column was never sliced abstains loudly, never guesses.
+    the run's conform judge may have asserted its CROSS-FACT identity — folded
+    bus-matrix cells carrying a ``conformed_group``. THAT group signature (the
+    conform-connected component) is the group key; ``concept_label`` is
+    display-only — keying on it would split a group whose verdicts drifted
+    labels and merge two distinct groups sharing a generic label, discarding
+    the judge's own DISTINCT verdict. Each cell's fold key names the fact's
+    physical grouping column, whose own FOLDED ``SliceDefinition`` is the same
+    lens object the referenced path uses. A conformed fold whose key column
+    was never sliced abstains loudly, never guesses.
 
     Returns ``(groups, folded_labels)`` — groups include singletons (the caller
     applies the >=2-tables filter); ``folded_labels`` maps each folded identity
@@ -375,11 +377,12 @@ def _shared_dimension_groups(
 
     folded_slice = {(sd.table_id, sd.column_name): sd for sd in defs if not sd.dimension_table_id}
     folded_labels: dict[tuple[str, str], str] = {}
-    cells_by_label: dict[str, list[BusMatrixEntry]] = {}
+    cells_by_group: dict[str, list[BusMatrixEntry]] = {}
     for cell in conformed_cells:
-        cells_by_label.setdefault(cell.concept_label, []).append(cell)
-    for label, cells in sorted(cells_by_label.items()):
-        identity = (f"folded:{label}", "")
+        if cell.conformed_group:
+            cells_by_group.setdefault(cell.conformed_group, []).append(cell)
+    for group, cells in sorted(cells_by_group.items()):
+        identity = (f"folded:{group}", "")
         for cell in cells:
             key_col = cell.roles[0] if cell.roles else None
             lens = folded_slice.get((cell.fact_table_id, key_col))
@@ -388,12 +391,13 @@ def _shared_dimension_groups(
                     "lineage_folded_axis_unsliced",
                     fact_table_id=cell.fact_table_id,
                     column=key_col,
-                    concept=label,
+                    concept=cell.concept_label,
                 )
                 continue
             defs_by_dim.setdefault(identity, {}).setdefault(cell.fact_table_id, []).append(lens)
         if identity in defs_by_dim:
-            folded_labels[identity] = label
+            # One label per group (the conform pass canonicalizes) — display only.
+            folded_labels[identity] = cells[0].concept_label
     return defs_by_dim, folded_labels
 
 
@@ -442,6 +446,10 @@ def discover_aggregation_lineage(
     # (DAT-800): the bus matrix — derived by ``dimension_hierarchies``, which
     # runs before this phase — carries them; on a denormalized corpus these are
     # the ONLY shared dimensions (the flat-shape inertness this closes).
+    # ``conformed_group`` (not ``confirmation_source``) is the filter: who
+    # asserted the underlying STRUCTURE (user teach vs stats) is orthogonal to
+    # whether the judge conformed its cross-fact IDENTITY — a user-taught fold
+    # the judge conformed participates.
     conformed_cells = (
         session.execute(
             select(BusMatrixEntry)
@@ -449,7 +457,7 @@ def discover_aggregation_lineage(
                 BusMatrixEntry.run_id == run_id,
                 BusMatrixEntry.fact_table_id.in_(table_ids),
                 BusMatrixEntry.attachment == "folded",
-                BusMatrixEntry.confirmation_source == "judge",
+                BusMatrixEntry.conformed_group.is_not(None),
             )
             .order_by(BusMatrixEntry.signature)
         )

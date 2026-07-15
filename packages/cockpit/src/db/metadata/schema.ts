@@ -86,12 +86,13 @@ export const currentBusMatrix = metadataSchema
 		roles: json(),
 		attributes: json(),
 		confirmationSource: varchar("confirmation_source"),
+		conformedGroup: varchar("conformed_group"),
 		needsConfirmation: boolean("needs_confirmation"),
 		signature: varchar(),
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	})
 	.as(
-		sql`SELECT entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, roles, attributes, confirmation_source, needs_confirmation, signature, created_at FROM ws_00000000_0000_0000_0000_000000000001.bus_matrix r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, roles, attributes, confirmation_source, conformed_group, needs_confirmation, signature, created_at FROM ws_00000000_0000_0000_0000_000000000001.bus_matrix r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentClaimWitnesses = metadataSchema

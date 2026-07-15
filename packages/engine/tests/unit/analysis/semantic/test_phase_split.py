@@ -330,6 +330,11 @@ class TestSynthesizeAndStoreTables:
         )
         anns = session.execute(select(AnnotationDB)).scalars().all()
         assert len(entities) == 1 and entities[0].table_role == "fact"
+        # DAT-775: grain_columns persists as a BARE list, never a {"columns": [...]}
+        # wrapper — a downstream reader (cycles/context.py) joins it directly into
+        # an LLM prompt, so a wrapped dict would render its key ("columns") instead
+        # of the real grain.
+        assert entities[0].grain_columns == ["order_id"]
         # DAT-565: all event-time axes + identities persisted run-versioned (JSON).
         assert [tc["column"] for tc in entities[0].time_columns] == ["order_date", "ship_date"]
         assert entities[0].time_columns[1]["aspect"] == "ship"

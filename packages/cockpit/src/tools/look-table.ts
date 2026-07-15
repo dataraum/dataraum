@@ -295,10 +295,11 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
 }
 
 /** One `current_table_entities` row, as Drizzle returns it. grainColumns is the
- * persisted grain — the engine writes the DICT shape `{"columns": [...]}`
- * (`semantic/processor.py`), so the parser below accepts that (and tolerates a
- * bare `string[]` for safety). `tableRole` is the engine's single role string
- * (DAT-728), surfaced verbatim on the tool output. */
+ * persisted grain — the engine writes a BARE `string[]` of column names
+ * (`semantic/processor.py`; DAT-775 — a prior `{"columns": [...]}` wrapper was
+ * an unenforced convention that corrupted a different engine reader's prompt).
+ * `tableRole` is the engine's single role string (DAT-728), surfaced verbatim
+ * on the tool output. */
 export interface TableEntityRow {
 	detectedEntityType: string | null;
 	tableRole: string | null;
@@ -322,20 +323,16 @@ const IdentityColumns = z.array(
 	z.object({ column: z.string(), note: z.string() }),
 );
 
-// The persisted grain shape. The engine ALWAYS writes the dict form
-// `{"columns": [...]}` (`analysis/semantic/processor.py:343`; the engine's own
-// reader `graphs/context.py` accepts both), so the dict is the real shape; the
-// bare array is tolerated as a fallback. Anything else degrades to [].
-const GrainColumns = z.union([
-	z.object({ columns: z.array(z.string()) }).transform((g) => g.columns),
-	z.array(z.string()),
-]);
+// The persisted grain shape (DAT-775): the engine writes a bare JSON array of
+// column names (`analysis/semantic/processor.py`; `db_models.py`
+// `TableEntity.grain_columns`). Anything else (null, malformed) degrades to [].
+const GrainColumns = z.array(z.string());
 
 /**
  * Project the table-entity header row to the tool shape (DAT-476). Pure (no DB).
- * `grain_columns` is the engine's persisted dict `{"columns": [...]}` (bare
- * array tolerated); a genuinely malformed/absent blob degrades to an empty grain
- * rather than throwing. The remaining fields map straight through (the view is
+ * `grain_columns` is the engine's persisted bare array of column names; a
+ * genuinely malformed/absent blob degrades to an empty grain rather than
+ * throwing. The remaining fields map straight through (the view is
  * head-resolved, so a present row IS the promoted detect run), but the engine
  * free-text fields (description / business name surrogate) can carry raw
  * `src_<digest>__` prefixes, so they're digest-stripped before reaching the

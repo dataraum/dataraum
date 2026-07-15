@@ -5,6 +5,31 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-775 — grain_columns persists as a bare list; cycle prompt renders real grain
+
+**Branch:** `fix/dat-775-grain-columns-bare-list`. `table_entities.grain_columns`
+was written as `{"columns": [...]}` — an unenforced wrapper convention. The
+cycle-detection context joined the raw value into its prompt, and joining a dict
+iterates its KEYS, so every table's grain rendered as the literal string
+`grain: columns`. Live prompt corruption.
+
+### What changed
+
+- The writer persists a bare JSON list of column names; the SQLAlchemy column is
+  typed `Mapped[list[str] | None]` (no DDL change — JSON stays JSON).
+- The defensive dict-or-list unwrap in `graphs/context.py` is deleted; the
+  cockpit's `look_table`/`query-context` grain parser is a bare `string[]` only.
+- No backfill: existing workspaces re-run `add_source` (test DBs recreate).
+
+### What eval should see
+
+- The cycle-detection prompt's TABLE CLASSIFICATIONS section now carries each
+  table's actual grain columns (`grain: account_id, period`) instead of
+  `grain: columns` for every table — cycle-detection quality may shift;
+  re-baseline any cycle evals that snapshot prompts or scores.
+
+---
+
 ## DAT-769 — business_concept retired: meaning-as-context semantic layer
 
 **Branch:** `feat/dat-769-meaning-as-context`. The single categorical

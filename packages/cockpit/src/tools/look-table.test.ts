@@ -184,11 +184,9 @@ function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 		// Raw row carries the engine's role string (DAT-728); the projection
 		// surfaces it verbatim as table_role, never flattened to a boolean.
 		tableRole: "fact",
-		// The engine ALWAYS persists grain as the DICT shape `{"columns": [...]}`
-		// (`analysis/semantic/processor.py`), NOT a bare array — fixture it that way
-		// so the projection's real-shape parse is exercised (the bare-array form
-		// only ever shows up as a tolerated fallback).
-		grainColumns: { columns: ["order_id", "line_no"] },
+		// The engine persists grain as a bare array of column names (DAT-775;
+		// `analysis/semantic/processor.py`).
+		grainColumns: ["order_id", "line_no"],
 		timeColumns: [
 			{
 				column: "order_date",
@@ -205,7 +203,7 @@ function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 }
 
 describe("projectTableEntity (DAT-476)", () => {
-	it("maps the descriptive header through, grain from the engine's {columns:[…]} dict", () => {
+	it("maps the descriptive header through, grain from the engine's bare array", () => {
 		expect(projectTableEntity(entityRow())).toEqual({
 			entity_type: "transaction",
 			table_role: "fact",
@@ -243,23 +241,19 @@ describe("projectTableEntity (DAT-476)", () => {
 		).toEqual([]);
 	});
 
-	it("tolerates a bare string[] grain (defensive fallback)", () => {
-		expect(
-			projectTableEntity(entityRow({ grainColumns: ["order_id"] })).grain,
-		).toEqual(["order_id"]);
-	});
-
 	it("degrades a genuinely malformed/absent grain blob to an empty grain rather than throwing", () => {
 		expect(projectTableEntity(entityRow({ grainColumns: null })).grain).toEqual(
 			[],
 		);
-		// Neither the dict-with-`columns` nor the bare-array shape.
 		expect(
 			projectTableEntity(entityRow({ grainColumns: { not: "an array" } }))
 				.grain,
 		).toEqual([]);
+		// DAT-775: the retired `{"columns": [...]}` wrapper is no longer a
+		// recognized shape — it degrades to [] like any other malformed blob,
+		// it is NOT unwrapped.
 		expect(
-			projectTableEntity(entityRow({ grainColumns: { columns: "nope" } }))
+			projectTableEntity(entityRow({ grainColumns: { columns: ["order_id"] } }))
 				.grain,
 		).toEqual([]);
 	});
@@ -269,7 +263,7 @@ describe("projectTableEntity (DAT-476)", () => {
 		// renders them as-is and the result stays digest-free.
 		const out = projectTableEntity(
 			entityRow({
-				grainColumns: { columns: [`order_id`, "line_no"] },
+				grainColumns: [`order_id`, "line_no"],
 				timeColumns: [
 					{ column: `order_date`, aspect: "order", note: "Placed." },
 				],

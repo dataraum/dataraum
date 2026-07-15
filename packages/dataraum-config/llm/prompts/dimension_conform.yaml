@@ -58,3 +58,8 @@ user_prompt: |
   {candidates}
 
   Return a verdict for every pair via the tool.
+
+inputs:
+  candidates:
+    description: The cross-fact exposure pairs, one block each
+    required: true

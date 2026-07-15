@@ -63,3 +63,14 @@ user_prompt: |
   {structures}
 
   Return a verdict for every structure via the tool.
+
+inputs:
+  table_name:
+    description: The table/view the structures were asserted on
+    required: true
+  all_columns:
+    description: The table's full column-name list (the names-only evidence)
+    required: true
+  structures:
+    description: The routed asserted structures, one line each
+    required: true

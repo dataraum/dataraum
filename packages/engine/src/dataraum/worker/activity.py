@@ -515,7 +515,8 @@ def run_detectors(
         # Resolved layer (ADR-0009 / DAT-457): collapse this run's adjudications
         # onto the semantic rows semantic_per_column already wrote — null_semantics
         # → SemanticAnnotation.null_tokens, temporal_behavior → the adjudicated
-        # stock/flow + contested flag (DAT-445). No-op when no adjudication ran.
+        # stock/flow verdict (DAT-445; the parallel contested flag was dropped
+        # DAT-786). No-op when no adjudication ran.
         resolved = resolve_null_tokens(session, run_id)
         resolved_tb = resolve_temporal_behavior(session, run_id)
         readiness_rows = persist_readiness(session, table_ids, run_id=run_id)

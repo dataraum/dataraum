@@ -234,17 +234,17 @@ async function targetFields(req: DrillAxesRequest): Promise<string[]> {
 }
 
 /** A column's stock/flow adjudication as the flow gate reads it: the
- *  `temporal_behavior` verdict plus whether that verdict is CONTESTED (the
- *  detectors disagreed). A contested or point_in_time input counts as stock. */
+ *  `temporal_behavior` verdict. The reconciled verdict is authoritative on its
+ *  own (DAT-786) — the stock/flow resolve pass already adjudicates the LLM
+ *  claim vs the structural witness, so there is no separate "contested" doubt
+ *  to second-guess it with downstream. */
 export interface TemporalBehavior {
 	behavior: string | null;
-	contested: boolean;
 }
 
 /** Why an aggregated column disqualifies the node's grain: a point-in-time
- *  `stock`, a `contested` verdict (detectors disagreed), or `unclassified`
- *  (no — or a non-flow — stock/flow classification). */
-export type OffendingCause = "stock" | "contested" | "unclassified";
+ *  `stock`, or `unclassified` (no — or a non-flow — stock/flow classification). */
+export type OffendingCause = "stock" | "unclassified";
 
 /** An aggregated column that fails the flow gate, with the reason it fails —
  *  so the caller can phrase an accurate refusal per cause (DAT-673). */
@@ -253,26 +253,24 @@ export interface OffendingColumn {
 	cause: OffendingCause;
 }
 
-/** Why a non-flow column offends (pure). Contested outranks the behavior value:
- *  a disputed verdict is reported as such even if the last-written behavior was
- *  a balance; a plain `point_in_time` is a stock; anything else — null, missing,
- *  or an unrecognized value — is unclassified. */
+/** Why a non-flow column offends (pure): a plain `point_in_time` is a stock;
+ *  anything else — null, missing, or an unrecognized value — is unclassified. */
 function offendingCause(b: TemporalBehavior | undefined): OffendingCause {
-	if (b?.contested) return "contested";
 	if (b?.behavior === "point_in_time") return "stock";
 	return "unclassified";
 }
 
 /**
- * The FLOW GATE (DAT-673): a node's measures may be summed into time buckets
- * only when every base column they aggregate is a summable FLOW —
- * `temporal_behavior = additive` AND NOT `temporal_behavior_contested`. A stock
+ * The FLOW GATE (DAT-673, contested handling reversed by DAT-786): a node's
+ * measures may be summed into time buckets only when every base column they
+ * aggregate is a summable FLOW — `temporal_behavior = additive`. A stock
  * (point-in-time balance) summed per period double-counts — arithmetically
- * consistent, semantically fabricated; a CONTESTED verdict counts as stock too
- * (we can't stand behind "summable flow" when the detectors disagreed).
- * Unclassified (null) fails CLOSED for the same reason. Returns the offending
- * columns WITH their cause so the caller phrases an accurate refusal. Pure →
- * unit-tested; the aggregated-column extraction is the AST read (`sql-ast.ts`).
+ * consistent, semantically fabricated. Unclassified (null) fails CLOSED for
+ * the same reason. The reconciled `additive` verdict is trusted at face value
+ * — the resolve pass already adjudicated it, so there is no separate
+ * contested state to gate on here. Returns the offending columns WITH their
+ * cause so the caller phrases an accurate refusal. Pure → unit-tested; the
+ * aggregated-column extraction is the AST read (`sql-ast.ts`).
  */
 export function temporalGate(
 	aggregatedCols: ReadonlySet<string>,
@@ -285,21 +283,19 @@ export function temporalGate(
 	const offending: OffendingColumn[] = [];
 	for (const column of aggregatedCols) {
 		const b = behaviorByColumn.get(column);
-		// A clean flow — additive AND uncontested — is the ONLY safe shape.
-		if (b !== undefined && b.behavior === "additive" && !b.contested) continue;
+		// A flow — additive — is the ONLY safe shape.
+		if (b !== undefined && b.behavior === "additive") continue;
 		offending.push({ column, cause: offendingCause(b) });
 	}
 	return { safe: offending.length === 0, offending };
 }
 
-/** One offending column's honest phrasing — a contested verdict is NOT a
- *  "balance", and an unclassified column has no classification at all. */
+/** One offending column's honest phrasing — an unclassified column has no
+ *  classification at all. */
 function phraseOffender({ column, cause }: OffendingColumn): string {
 	switch (cause) {
 		case "stock":
 			return `${column} is a balance (point-in-time stock), not a flow`;
-		case "contested":
-			return `${column} has a contested stock/flow verdict (the detectors disagreed)`;
 		case "unclassified":
 			return `${column} has no stock/flow classification`;
 	}
@@ -328,9 +324,9 @@ export interface DrillAxesResult {
 	axes: DrillAxis[];
 	reason?: string;
 	/** Set when the flow gate stripped time grain from the temporal axes — the
-	 *  node aggregates a stock / contested / unclassified measure that can't be
-	 *  summed into periods (DAT-673). The date axis stays as a raw slice. This is
-	 *  a SERVER-SIDE signal only — no client reads it yet; surfacing it in the
+	 *  node aggregates a stock / unclassified measure that can't be summed into
+	 *  periods (DAT-673). The date axis stays as a raw slice. This is a
+	 *  SERVER-SIDE signal only — no client reads it yet; surfacing it in the
 	 *  drill UI (so the missing grain chip reads as a decision, not a gap) is
 	 *  deferred to DAT-715. */
 	temporalGateReason?: string;
@@ -489,11 +485,8 @@ export async function resolveDrillAxes(
 				resolvedType: columns.resolvedType,
 				// The adjudicated stock/flow verdict for the flow gate (DAT-673) —
 				// null when the column has no concept (unclassified → fail closed).
+				// Trusted at face value (DAT-786) — no separate contested flag.
 				temporalBehavior: currentColumnConcepts.temporalBehavior,
-				// …and whether that verdict is CONTESTED: a contested `additive` is
-				// treated as stock (fail closed — the detectors disagreed).
-				temporalBehaviorContested:
-					currentColumnConcepts.temporalBehaviorContested,
 			})
 			.from(columns)
 			.leftJoin(
@@ -540,19 +533,16 @@ export async function resolveDrillAxes(
 		const behaviorByColumn = new Map<string, TemporalBehavior>();
 		for (const r of columnRows) {
 			if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
-			// First-wins per name (rows are ordered); an OFFENDING verdict (stock,
-			// unclassified, or contested) is sticky — never overwritten by a later
-			// flow-safe (additive & uncontested) row for the same name, so a shared
-			// column can only lose grain, never regain it across facts.
+			// First-wins per name (rows are ordered); an OFFENDING verdict (stock or
+			// unclassified) is sticky — never overwritten by a later flow-safe
+			// (additive) row for the same name, so a shared column can only lose
+			// grain, never regain it across facts.
 			const current = behaviorByColumn.get(r.columnName);
 			const currentFlowSafe =
-				current !== undefined &&
-				current.behavior === "additive" &&
-				!current.contested;
+				current !== undefined && current.behavior === "additive";
 			if (current === undefined || currentFlowSafe) {
 				behaviorByColumn.set(r.columnName, {
 					behavior: r.temporalBehavior ?? null,
-					contested: r.temporalBehaviorContested ?? false,
 				});
 			}
 		}

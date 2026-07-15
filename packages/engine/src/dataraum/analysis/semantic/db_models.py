@@ -13,7 +13,6 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
-    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -331,10 +330,10 @@ class ColumnConcept(Base):
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural
-            witness.
-        temporal_behavior_contested: set by the resolved-layer pass when the LLM's
-            ``temporal_behavior_claim`` and the data-grounded structural witness
-            pool to a non-trivial conflict.
+            witness. This verdict is authoritative on its own — DAT-786 removed
+            the parallel "contested" doubt flag; a disagreement between the LLM
+            claim and the structural witness is logged at the resolve site, not
+            persisted downstream.
         unit_source_column: the column (possibly ``table.column`` via a confirmed
             FK) that defines this measure's unit.
         derived_formula_hypothesis / _confidence: the arithmetic this column
@@ -356,7 +355,6 @@ class ColumnConcept(Base):
 
     meaning: Mapped[str | None] = mapped_column(Text)
     temporal_behavior: Mapped[str | None] = mapped_column(String)
-    temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
     unit_source_column: Mapped[str | None] = mapped_column(String)
     derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
     derived_formula_confidence: Mapped[float | None] = mapped_column(Float)

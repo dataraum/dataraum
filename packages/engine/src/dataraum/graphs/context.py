@@ -1016,8 +1016,8 @@ def build_execution_context(
                     meaning=concept.meaning if concept else None,
                     # The RESOLVED stock/flow verdict (entropy/resolve.py re-bases
                     # the ColumnConcept row at session_detect). Served as settled
-                    # fact — temporal_behavior_contested is deliberately NOT
-                    # rendered here (see resolve_temporal_behavior's docstring).
+                    # fact — authoritative on its own (DAT-786 dropped the
+                    # parallel contested flag; see resolve_temporal_behavior).
                     temporal_behavior=concept.temporal_behavior if concept else None,
                     business_name=sem_ann.business_name if sem_ann else None,
                     business_description=sem_ann.business_description if sem_ann else None,

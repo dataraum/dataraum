@@ -8,9 +8,9 @@ generated SQL. This runs inside the terminal ``detect`` transaction (same
 already wrote for this run; ``current_semantic_annotations`` then surfaces it.
 
 Two measurements resolve today: ``null_semantics`` → ``null_tokens`` and
-``temporal_behavior`` → ``temporal_behavior`` + ``temporal_behavior_contested``.
-Each is a no-op when a run wrote no objects of its detector (e.g. begin_session),
-so both can live unconditionally in the generic terminal detect step.
+``temporal_behavior`` → ``temporal_behavior``. Each is a no-op when a run wrote
+no objects of its detector (e.g. begin_session), so both can live unconditionally
+in the generic terminal detect step.
 """
 
 from __future__ import annotations
@@ -19,11 +19,14 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import CursorResult, select, update
 
+from dataraum.core.logging import get_logger
 from dataraum.entropy.db_models import EntropyObjectRecord
 from dataraum.entropy.measurements.null_semantics import resolved_null_tokens
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+logger = get_logger(__name__)
 
 
 def resolve_null_tokens(session: Session, run_id: str | None) -> int:
@@ -73,20 +76,19 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
     DAT-445) and, for each column whose adjudication resolved to a behaviour, UPDATEs
     the matching ``(column_id, run_id)`` annotation: ``temporal_behavior`` becomes the
     pooled-resolved value (the LLM stock/flow claim reconciled with the data-grounded
-    structural witness — the ontology prior was dropped, DAT-657) and
-    ``temporal_behavior_contested`` records whether the witnesses disagreed.
-    The contested flag is DELIBERATELY NOT rendered to the SQL-authoring agents
-    (decision 2026-07-07): the adjudication outperforms an LLM reading stock/flow
-    from metadata alone, so the agents get the resolved verdict as settled fact —
-    a "(contested)" tag would invite second-guessing by the weaker judge. The
-    flag's consumers are the teach/readiness lane. Columns that resolved to total
-    ignorance (no witness) are left untouched, preserving any prior value. Idempotent
-    on retry (same run_id → same UPDATE). Returns the number of annotations updated.
+    structural witness — the ontology prior was dropped, DAT-657). This verdict is
+    authoritative on its own — DAT-786 removed the parallel ``temporal_behavior_contested``
+    column: propagating a doubt-flag downstream second-guessed a resolution that is
+    already deterministic and correct. A disagreement between the LLM claim and the
+    structural witness is logged here for observability, not persisted. Columns that
+    resolved to total ignorance (no witness) are left untouched, preserving any prior
+    value. Idempotent on retry (same run_id → same UPDATE). Returns the number of
+    annotations updated.
     """
-    # temporal_behavior + contested are catalogue-grain (DAT-637): on ColumnConcept,
-    # authored by the table agent and resolved here at session_detect (the run that
-    # holds ColumnConcept). At add_source detect no ColumnConcept exists under the
-    # run, so the UPDATE matches nothing — a harmless no-op, the correct grain.
+    # temporal_behavior is catalogue-grain (DAT-637): on ColumnConcept, authored by
+    # the table agent and resolved here at session_detect (the run that holds
+    # ColumnConcept). At add_source detect no ColumnConcept exists under the run, so
+    # the UPDATE matches nothing — a harmless no-op, the correct grain.
     from dataraum.analysis.semantic.db_models import ColumnConcept
 
     records = session.execute(
@@ -107,16 +109,22 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
         resolved = first.get("resolved")
         if resolved is None:
             continue  # total ignorance — leave any prior value in place
+        if first.get("contested"):
+            # Diagnostic only (DAT-786) — the resolved value below still wins.
+            # debug, not info: per-item log inside a loop (entropy/ convention).
+            logger.debug(
+                "temporal_behavior_contested",
+                column_id=record.column_id,
+                run_id=run_id,
+                resolved=resolved,
+            )
         result: CursorResult[Any] = session.execute(  # type: ignore[assignment]
             update(ColumnConcept)
             .where(
                 ColumnConcept.column_id == record.column_id,
                 ColumnConcept.run_id == run_id,
             )
-            .values(
-                temporal_behavior=resolved,
-                temporal_behavior_contested=bool(first.get("contested", False)),
-            )
+            .values(temporal_behavior=resolved)
         )
         updated += int(result.rowcount or 0)  # see resolve_null_tokens — no-ops stay visible
     return updated

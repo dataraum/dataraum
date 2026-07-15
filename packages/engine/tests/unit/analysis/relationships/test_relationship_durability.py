@@ -835,3 +835,40 @@ def test_reject_overlay_suppresses_undirected(session: Session) -> None:
     session.flush()
 
     assert session.query(Relationship).filter_by(detection_method="candidate").all() == []
+
+
+def test_materialize_confirm_on_candidate_only_pair_adopts_candidate_orientation(
+    session: Session,
+) -> None:
+    """Watch-item: a confirm/add on a pair the detector FOUND (candidate) but the
+    llm never confirmed adopts that candidate's canonical orientation + measurement
+    — even taught reversed — so no disconnected phantom row with a NULL cardinality
+    slips past the orientation CHECK."""
+    _seed_tables_columns(session)
+    session.add(
+        Relationship(
+            run_id="r1",
+            from_table_id="t1",
+            from_column_id="ca",  # detector oriented: orders.customer_id → customers.id
+            to_table_id="t2",
+            to_column_id="cb",
+            relationship_type="candidate",
+            cardinality="many-to-one",
+            confidence=0.7,
+            detection_method="candidate",
+            confirmation_source="unconfirmed",
+            evidence={"orphan_count": 3},
+        )
+    )
+    _overlay(session, "confirm", "cb", "ca")  # taught REVERSED (parent → child)
+    session.flush()
+
+    materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
+    session.flush()
+
+    manual = session.query(Relationship).filter_by(detection_method="manual").one()
+    assert (manual.from_column_id, manual.to_column_id) == ("ca", "cb")  # candidate's canonical
+    assert manual.cardinality == "many-to-one"
+    assert manual.confirmation_source == "user"
+    assert manual.confidence == 1.0  # a user assertion, not the candidate's 0.7
+    assert manual.evidence["orphan_count"] == 3  # candidate measurement carried (DAT-699)

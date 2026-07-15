@@ -147,9 +147,8 @@ class Relationship(Base):
         foreign_keys=[to_column_id], back_populates="relationships_to"
     )
 
-    @classmethod
+    @staticmethod
     def oriented_row(
-        cls,
         *,
         run_id: str | None,
         from_table_id: str,
@@ -216,7 +215,9 @@ def _swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     Referential integrity, uniqueness and any other directional metric are named
     for the FROM/TO endpoints; after the swap the old TO becomes FROM, so the
     pairs exchange. An unpaired ``left_``/``right_`` key still moves — the metric
-    follows its endpoint.
+    follows its endpoint. Only ``left_``/``right_``-PREFIXED keys are covered: an
+    unprefixed-but-directional metric (e.g. a bare ``orphan_count``) does NOT swap,
+    so a new evidence producer that needs orientation-following must use the prefix.
     """
     swapped: dict[str, Any] = {}
     for key, value in evidence.items():

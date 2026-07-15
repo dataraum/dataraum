@@ -238,32 +238,41 @@ def materialize_relationship_overlays(
                     to_column=to_col,
                 )
                 continue
+            # A manual teach on a pair the detector already found (a ``candidate``
+            # row, oriented by detector.py) but the llm never confirmed adopts that
+            # row's canonical orientation + measurement too (DAT-777 watch-item):
+            # the durable row must coexist with the detected row on the SAME oriented
+            # pair, and a reversed teach must not slip past as a disconnected phantom
+            # (its NULL cardinality would sail over the orientation CHECK). keeper
+            # never reaches this fallback — it requires an llm measurement, skipped
+            # above.
+            reference = measured if measured is not None else _last_candidate_row(session, pair)
             evidence: dict[str, Any] = {"source": "config_overlay", "action": action}
             confidence = 1.0
-            if measured is not None:
-                # Adopt the measured llm row's CANONICAL orientation (DAT-777): the
-                # overlay may name the pair either way, but the durable row must
-                # coexist with the llm row it confirms on the SAME oriented pair, or
-                # the two read as different relationships. Carry its last-measured
-                # evidence/cardinality (DAT-699) — stamped ``not_remeasured`` so no
-                # consumer mistakes a copied measurement for a fresh one.
-                from_table_r = measured.from_table_id
-                from_col_r = measured.from_column_id
-                to_table_r = measured.to_table_id
-                to_col_r = measured.to_column_id
-                cardinality = measured.cardinality
+            if reference is not None:
+                # Adopt the detected row's CANONICAL orientation (DAT-777): the overlay
+                # may name the pair either way, but the durable row must coexist with
+                # the row it confirms on the SAME oriented pair, or the two read as
+                # different relationships. Carry its last measurement (DAT-699) —
+                # stamped ``not_remeasured`` so no consumer mistakes a copied
+                # measurement for a fresh one.
+                from_table_r = reference.from_table_id
+                from_col_r = reference.from_column_id
+                to_table_r = reference.to_table_id
+                to_col_r = reference.to_column_id
+                cardinality = reference.cardinality
                 evidence = {
-                    **(measured.evidence or {}),
+                    **(reference.evidence or {}),
                     **evidence,
-                    "measured_run_id": measured.run_id,
+                    "measured_run_id": reference.run_id,
                     "not_remeasured": True,
                 }
                 if method == "keeper":
-                    confidence = measured.confidence
+                    confidence = reference.confidence
             else:
-                # A manual ``add`` of a relationship the system never detected: no
-                # measurement to canonicalize against, so trust the teach's own
-                # from = FK-side orientation (teach.validation) with no cardinality.
+                # A manual ``add`` of a relationship the system never detected at all:
+                # no row to canonicalize against, so trust the teach's own from =
+                # FK-side orientation (teach.validation) with no cardinality.
                 from_table_r, from_col_r = from_table, from_col
                 to_table_r, to_col_r = to_table, to_col
                 cardinality = None
@@ -330,6 +339,30 @@ def _last_measured_row(session: Session, pair: tuple[str, str]) -> Relationship 
             .where(
                 _pair_matches_undirected(pair),
                 Relationship.detection_method == "llm",
+            )
+            .order_by(Relationship.detected_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _last_candidate_row(session: Session, pair: tuple[str, str]) -> Relationship | None:
+    """The newest ``candidate`` row on a pair — the detector's canonical detection.
+
+    The fallback reference for a MANUAL teach on a pair the detector found but the
+    llm never confirmed (DAT-777): candidates are stored oriented (detector.py →
+    ``oriented_row``), so a durable ``manual`` row adopts that orientation instead
+    of trusting the overlay's taught direction. Undirected match, like the llm
+    lookup. keeper never uses this — it requires an llm measurement.
+    """
+    return (
+        session.execute(
+            select(Relationship)
+            .where(
+                _pair_matches_undirected(pair),
+                Relationship.detection_method == "candidate",
             )
             .order_by(Relationship.detected_at.desc())
             .limit(1)

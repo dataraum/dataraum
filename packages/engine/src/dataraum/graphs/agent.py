@@ -294,7 +294,6 @@ class GraphAgent(LLMFeature):
                 # Track usage: all steps were exact reuses
                 self._track_snippet_usage(
                     session=session,
-                    execution_id=generated_code.code_id,
                     cached_snippets=cached_snippets,
                     generated_steps=generated_code.steps,
                     workspace_id=workspace_id,
@@ -316,7 +315,6 @@ class GraphAgent(LLMFeature):
             # Track usage: compare generated steps against provided snippets
             self._track_snippet_usage(
                 session=session,
-                execution_id=generated_code.code_id,
                 cached_snippets=cached_snippets or {},
                 generated_steps=generated_code.steps,
                 workspace_id=workspace_id,
@@ -329,11 +327,14 @@ class GraphAgent(LLMFeature):
         exec_result = self._execute_sql(generated_code, context, graph)
         if not exec_result.success or not exec_result.value:
             # This node is ungroundable — the caller records it in the run's binding
-            # map. Do NOT record_failure the cached DEP snippets: they were
+            # map. Do NOT flag the cached DEP snippets as failed: they were
             # decided-once and grounded by their OWN authoring, so blaming them for
             # THIS node's failure poisons shared extracts (a broken formula would mark
             # `revenue` failed → every metric using it can no longer find it, and
-            # honest metrics like dso silently break). DAT-636 (Bug B).
+            # honest metrics like dso silently break). DAT-636 (Bug B). (The bulk
+            # failure-flag path this warned against, ``record_failure()``, had zero
+            # callers and was removed — DAT-781; this comment records the design
+            # reason it was never wired, not merely dead code.)
             reason = exec_result.error or "SQL execution failed"
             self._save_failed_snippet(
                 session,
@@ -455,7 +456,6 @@ class GraphAgent(LLMFeature):
             return Result.fail(f"metric '{graph.graph_id}': failed to compose from the DAG")
         self._track_snippet_usage(
             session=session,
-            execution_id=generated_code.code_id,
             cached_snippets=cached_snippets,
             generated_steps=generated_code.steps,
             workspace_id=workspace_id,
@@ -982,9 +982,6 @@ class GraphAgent(LLMFeature):
                 "where": output.where,
                 "select_expr": output.select_expr,
                 "sql": rendered_sql,
-                "field_resolution": output.provenance.field_resolution
-                if output.provenance
-                else None,
                 "column_mappings_basis": basis,
                 "assumptions": [
                     {"assumption": a.assumption, "basis": a.basis, "confidence": a.confidence}
@@ -1306,62 +1303,35 @@ class GraphAgent(LLMFeature):
     def _track_snippet_usage(
         self,
         session: Session,
-        execution_id: str,
         cached_snippets: dict[str, dict[str, Any]],
         generated_steps: list[dict[str, str]],
         *,
         workspace_id: str,
     ) -> None:
-        """Track how cached snippets were used in graph execution."""
+        """Bump ``execution_count`` for cached snippets reused in this graph execution.
+
+        Compares each generated step's SQL against the snippet offered for its
+        step_id; ``record_usage`` bumps the count only for ``exact_reuse``/
+        ``adapted`` matches (steps with no provided snippet, or a provided
+        snippet not reflected in the output, are no-ops — DAT-781 removed the
+        per-execution usage audit trail this used to also write).
+        """
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_utils import determine_usage_type
 
         library = SnippetLibrary(session, workspace_id=workspace_id)
-        used_snippet_ids: set[str] = set()
 
         for gen_step in generated_steps:
             step_id = gen_step.get("step_id", "")
             provided = cached_snippets.get(step_id)
-
             if provided is None:
-                library.record_usage(
-                    execution_id=execution_id,
-                    execution_type="graph",
-                    usage_type="newly_generated",
-                    step_id=step_id,
-                )
-            else:
-                snippet_id = provided.get("snippet_id")
-                usage_type = determine_usage_type(
-                    gen_step.get("sql", ""),
-                    provided.get("sql", ""),
-                )
-                is_exact = usage_type == "exact_reuse"
-                library.record_usage(
-                    execution_id=execution_id,
-                    execution_type="graph",
-                    usage_type=usage_type,
-                    snippet_id=snippet_id,
-                    match_confidence=1.0,
-                    sql_match_ratio=1.0 if is_exact else 0.0,
-                    step_id=step_id,
-                )
-                if snippet_id:
-                    used_snippet_ids.add(snippet_id)
-
-        # Provided snippets not used by any generated step
-        generated_step_ids = {s.get("step_id", "") for s in generated_steps}
-        for step_id, provided in cached_snippets.items():
-            if step_id not in generated_step_ids:
-                snippet_id = provided.get("snippet_id")
-                if snippet_id and snippet_id not in used_snippet_ids:
-                    library.record_usage(
-                        execution_id=execution_id,
-                        execution_type="graph",
-                        usage_type="provided_not_used",
-                        snippet_id=snippet_id,
-                        step_id=step_id,
-                    )
+                continue
+            snippet_id = provided.get("snippet_id")
+            usage_type = determine_usage_type(
+                gen_step.get("sql", ""),
+                provided.get("sql", ""),
+            )
+            library.record_usage(snippet_id, usage_type)
 
     @staticmethod
     def _build_snippet_provenance(
@@ -1369,8 +1339,8 @@ class GraphAgent(LLMFeature):
     ) -> dict[str, Any] | None:
         """The provenance blob saved alongside a snippet.
 
-        Carries the LLM grounding decisions (field_resolution, column_mappings_basis)
-        and — crucially for the phase confidence gate — the per-input
+        Carries the LLM grounding decision (column_mappings_basis) and —
+        crucially for the phase confidence gate — the per-input
         ``assumptions`` (so a metric ASSEMBLED from cache still surfaces its weakest
         grounding's confidence). Composed FORMULA/CONSTANT snippets have no LLM
         provenance but DO carry forward their extract leaves' assumptions.
@@ -1381,7 +1351,6 @@ class GraphAgent(LLMFeature):
         if generated_code.provenance:
             prov = generated_code.provenance
             provenance = {
-                "field_resolution": prov.field_resolution,
                 "column_mappings_basis": prov.column_mappings_basis,
             }
 
@@ -1463,7 +1432,6 @@ class GraphAgent(LLMFeature):
                 standard_field=graph_step.source.standard_field,
                 statement=graph_step.source.statement,
                 aggregation=graph_step.aggregation,
-                llm_model=generated_code.llm_model,
                 provenance=provenance_dict,
                 parts=gen_step.get("parts"),
             )
@@ -1536,7 +1504,6 @@ class GraphAgent(LLMFeature):
                 standard_field=graph_step.source.standard_field,
                 statement=graph_step.source.statement,
                 aggregation=graph_step.aggregation,
-                llm_model=generated_code.llm_model,
                 provenance=provenance,
                 parts=gen_step.get("parts"),
                 failed=True,
@@ -1607,7 +1574,6 @@ class GraphAgent(LLMFeature):
                     source=source,
                     standard_field=graph_step.parameter or step_id,
                     parameter_value=param_value,
-                    llm_model=generated_code.llm_model,
                     provenance=provenance_dict,
                 )
 
@@ -1636,7 +1602,6 @@ class GraphAgent(LLMFeature):
                     source=source,
                     normalized_expression=normalized,
                     input_fields=input_fields,
-                    llm_model=generated_code.llm_model,
                     provenance=provenance_dict,
                 )
 

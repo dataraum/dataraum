@@ -5,6 +5,59 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-762 — dimension-identity LLM lane + persisted bus matrix
+
+**Branch:** `feat/dat-762-dimension-identity-lane`. The `dimension_hierarchies`
+phase is no longer LLM-less: it now carries the class-routed veto lane and
+derives the bus matrix. Stats still DECIDE; the LLM vetoes/judges only the
+classes the DAT-757 scorecard measured as names-judgeable.
+
+### What changed
+
+- **Veto lane** (`analysis/hierarchies/routing.py` + `judge.py`): deterministic
+  value-evidence routing (never names) selects asserted structures in three
+  classes — quasi-identifier, free-text determinant, proxy bijection — and a
+  names-only judge may veto them. A veto sets `needs_confirmation=True`
+  (surfaced, never deleted). The stats-owned classes (dirty-true hierarchies,
+  weak-true edges, vacuous skew, roles, measures) are unreachable by
+  construction. Expect the DAT-761 recorded residue (the void id↔text alias)
+  to arrive flagged.
+- **Bus matrix** (`analysis/hierarchies/bus_matrix.py`, table `bus_matrix`,
+  read view `current_bus_matrix`, catalog grain): one cell per fact ×
+  dimension exposure — `referenced` (structural, from slice identities; roles
+  = FK multiplicity; `confirmation_source` = weakest underlying relationship),
+  `folded` (stats fold groups; CROSS-FACT identity decided by the conform
+  judge over names + attributes + `ColumnConcept.meaning`; abstain →
+  `needs_confirmation`), `degenerate` (near-key AND id-shaped only). The
+  truth-side `key_only` class is NOT derivable (Layer-A blind-spot FKs —
+  DAT-762 comments 16642/16643) and stays a reported boundary.
+- **Judge construction**: standard agent pattern — the phase builds it
+  (`load_llm_config` + `create_provider`), misconfiguration FAILS the phase;
+  there is no judge-off configuration. A mid-run judgment failure skips the
+  lane observably (stats stand); transient provider errors ride to the
+  Temporal retry.
+- **Phase outputs** now include `veto_lane` (status ran|partial|failed,
+  routed/vetoed counts) and `bus_matrix` (status, per-leg cell counts,
+  conform_pairs/conformed/abstained) — eval can assert lane liveness from the
+  phase output instead of PhaseLog.
+- `GraphExecutionContext.bus_matrix` exposes the cells (expose seam only).
+- Schema: new table `bus_matrix` (+ `current_bus_matrix` read view) —
+  additive; `schema.sql`/`schema_read.sql`/cockpit drizzle mirror regenerated.
+
+### Eval consumes
+
+- `calibration/unit/test_dimension_identity_routing.py` (component 1, Tier-1)
+  + `calibration/test_dimension_identity_judge.py` (component 2, live judge)
+  — both green on this branch: composite through the lane 42–43/45, zero
+  leakage, veto 9/9, conform 0 false merges.
+- `calibration/test_bus_matrix_e2e.py` (component 3) grades
+  `current_bus_matrix` against `metadata_truth.bus_matrix` /
+  `folded_dimensions` / `degenerate_ids` on a completed run — needs one
+  clean-flat pipeline run on this code.
+
+---
+---
+
 ## DAT-780 — `time_columns` contract: event/attribute role + typed anchor (BREAKING LLM contract)
 
 **Branch:** `fix/dat-780-time-columns-event-attribute-anchor`. Hardens the
@@ -139,6 +192,8 @@ detectors (no injection/recall loop), but the temporal response shape changed.
   surfaces per-time-axis `span` + `largest gap` instead.
 - `is_stale` on static historical datasets is still wall-clock-based (age vs cadence) — a
   known semantic limitation noted for DAT-780/P5, not changed here.
+
+---
 
 ## DAT-794 — Layer-A relationship detection is now deterministic
 

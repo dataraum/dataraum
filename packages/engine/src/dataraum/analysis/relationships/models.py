@@ -21,7 +21,7 @@ class JoinCandidate(BaseModel):
     - cardinality: detected relationship cardinality
     - left/right_uniqueness: distinct/total ratio for each column
     - statistical_confidence: confidence in the Jaccard estimate (0-1)
-    - algorithm: which algorithm was used (exact, sampled, minhash)
+    - algorithm: which algorithm was used (exact, minhash)
 
     Evaluation metrics (populated by evaluator.py):
     - left_referential_integrity: % of FK values with matching PK
@@ -41,11 +41,11 @@ class JoinCandidate(BaseModel):
 
     # Statistical confidence in the Jaccard estimate (0-1)
     # Higher = more certain the score is accurate
-    # 1.0 = exact computation, <1.0 = sampling/minhash estimate
+    # 1.0 = exact computation, <1.0 = minhash estimate
     statistical_confidence: float = 1.0
 
     # Algorithm used for computation
-    algorithm: str = "exact"  # exact, sampled, or minhash
+    algorithm: str = "exact"  # exact or minhash ("sampled" only in pre-DAT-794 persisted evidence)
 
     # Evaluation metrics (populated by evaluator.py)
     left_referential_integrity: float | None = None  # 0-100%

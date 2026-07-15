@@ -5,6 +5,52 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-794 — Layer-A relationship detection is now deterministic
+
+**Branch:** `fix/dat-794-layer-a-determinism`. Both unseeded sampling sites in
+Layer-A candidate detection are gone — repeated pipeline runs over the same
+data now produce identical relationship candidates and identical LLM evidence.
+
+### What changed
+
+- `joins.py`: the reservoir-sampled middle band (10K–1M distinct) is DELETED —
+  exact Jaccard/containment below 1M distinct, MinHash (deterministic,
+  hash-based) above. The probe showed the sampled band was slower than exact
+  at every scale it covered (59ms vs 17ms at 1M distinct) and dropped subset
+  FKs (true Jaccard below min_score, rescued only by containment≥0.95) in
+  ~30% of runs — on the calibration corpus that was
+  `invoices.entry_id → journal_entries.entry_id` at 35/50 detection.
+- Containment is now FRACTIONAL, exact, ≥0.95 to rescue (uniform across all
+  sizes; still gated at >10 distinct). Previously the exact path required
+  100% containment — a dirty subset FK (a few orphans, e.g. an orphan
+  injection) whose Jaccard sits below the gate would have been dropped
+  deterministically; now it yields a candidate scored at its true containment
+  (e.g. 0.98) so the RI evaluator can quantify the orphans. Expect candidates
+  for dirty FKs that previously vanished, with honest fractional scores
+  instead of a snapped 1.0.
+- `finder.py` `_uniqueness_ratio`: the 10% Bernoulli row sample is DELETED —
+  exact `COUNT(DISTINCT)/COUNT(*)`. The sampled ratio was a *biased* estimator
+  (sample-distinct/sample-rows), overstating uniqueness of FK-like columns at
+  any rate (measured 0.93–0.95 for a true 0.47); the value feeds the semantic
+  LLM prompt as `[uniq: L= R=]` key-vs-measure evidence, so it was both
+  nondeterministic prompt churn AND misinformation.
+- `sample_percent` is gone end-to-end: `detect_relationships` /
+  `find_relationships` signatures, `relationships_phase`, and
+  `phases/relationships.yaml` (key deleted).
+
+### What eval should expect
+
+- Layer-A candidates stable across runs — candidate-set diffs between reps of
+  the same strategy now indicate a real bug, not sampling noise.
+- Uniqueness ratios in candidates/prompts are exact; expect shifted values
+  (e.g. journal_lines.entry_id 0.47, not ~0.94).
+- Two clean-corpus FKs remain undetectable at Layer A by design
+  (`bank_transactions.account_id` and `balance_sheet.account_id` → chart, 2
+  and 7 distinct values): statistically invisible to any overlap measure —
+  LLM-lane territory (DAT-762), documented on DAT-794.
+
+---
+
 ## DAT-769 — business_concept retired: meaning-as-context semantic layer
 
 **Branch:** `feat/dat-769-meaning-as-context`. The single categorical

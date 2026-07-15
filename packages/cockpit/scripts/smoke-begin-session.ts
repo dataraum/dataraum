@@ -31,13 +31,15 @@ import { recordRun } from "#/db/cockpit/runs";
 import { actors, workspaces } from "#/db/cockpit/schema";
 import { metadataDb } from "#/db/metadata/client";
 import { sourcesWrite } from "#/db/metadata/write-surface";
-import { beginSession } from "#/tools/begin-session";
 import { lookRelationships } from "#/tools/look-relationships";
 import { lookTable } from "#/tools/look-table";
 import { whyRelationship } from "#/tools/why-relationship";
 import { whyTable } from "#/tools/why-table";
 import type { AddSourceInput, AddSourceResult } from "#/temporal/types";
-import { addSourceWorkflowId } from "#/temporal/workflow-id";
+import {
+	addSourceWorkflowId,
+	beginSessionWorkflowId,
+} from "#/temporal/workflow-id";
 
 const env = z
 	.object({
@@ -76,7 +78,11 @@ async function ingest(client: Client): Promise<string[]> {
 			engineSchema: `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`,
 			vertical: VERTICAL,
 		})
-		.onConflictDoNothing();
+		// onConflictDoUPDATE, not DoNothing: the cockpit boot-seeds this workspace
+		// row (vertical `_adhoc`) before any smoke runs, so DoNothing left the stale
+		// vertical in place and the journey grounded the wrong ontology — begin_session
+		// then fails loud ("Vertical '_adhoc' has no concepts"). Bit the 2026-07-15 smoke.
+		.onConflictDoUpdate({ target: workspaces.id, set: { vertical: VERTICAL } });
 
 	await metadataDb
 		.insert(sourcesWrite)
@@ -138,16 +144,34 @@ async function main(): Promise<void> {
 
 		const tableIds = await ingest(client);
 
-		// ---- begin_session via the agent tool -----------------------------------
-		// The vertical is the WORKSPACE property (seeded = finance in ingest); the
-		// driver sources it from the registry (DAT-506), so no vertical arg here.
-		const begun = await beginSession({ table_ids: tableIds });
-		// beginSession returns a born-loud {error} when the workspace has no typed
-		// tables (DAT-534); the smoke ingested above, so it must have started.
-		if ("error" in begun) throw new Error(`begin_session refused: ${begun.error}`);
-		console.log(`✓ begin_session started: workflow=${begun.workflow_id}`);
+		// ---- begin_session: drive the WORKFLOW directly ---------------------------
+		// NOT via the beginSession tool: that tool is a JOURNEY SIGNAL (DAT-530) whose
+		// returned run_id is a placeholder (== workflow_id), so awaiting
+		// getHandle(wf, run).result() throws "Invalid RunId" — and the journey also
+		// auto-cascades operating_model, which a smoke does not want implicitly.
+		// A smoke drives beginSessionWorkflow directly on the engine queue with the
+		// vertical explicit (the smoke runbook pattern). Bit the 2026-07-15 smoke.
+		const bsHandle = await client.workflow.start("beginSessionWorkflow", {
+			taskQueue: engineTaskQueueFor(env.DATARAUM_WORKSPACE_ID),
+			workflowId: beginSessionWorkflowId(env.DATARAUM_WORKSPACE_ID),
+			args: [
+				{
+					workspace_id: env.DATARAUM_WORKSPACE_ID,
+					tables: tableIds,
+					verticals: [VERTICAL],
+				},
+			],
+		});
+		await recordRun({
+			workspaceId: env.DATARAUM_WORKSPACE_ID,
+			kind: "onboarding",
+			stage: "begin_session",
+			workflowId: beginSessionWorkflowId(env.DATARAUM_WORKSPACE_ID),
+			runId: bsHandle.firstExecutionRunId,
+		});
+		console.log(`✓ begin_session started: workflow=${bsHandle.workflowId}`);
 		// Await the workflow to completion (it seals + promotes the relationship heads).
-		await client.workflow.getHandle(begun.workflow_id, begun.run_id).result();
+		await bsHandle.result();
 		console.log("✓ begin_session workflow completed (sealed + promoted)");
 
 		// ---- look_relationships --------------------------------------------------

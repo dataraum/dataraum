@@ -36,10 +36,11 @@ METRIC (``_execute_isolated``). That is under the failure contract because
 every per-metric write converges under at-least-once redelivery: snippet
 state is first-writer-wins (``SnippetLibrary.save_snippet`` keeps a healthy
 existing row, replaces only failed ones — the DAT-485 app-level dedup), and
-the ``snippet_usage`` rows / ``execution_count`` counters are the documented
-TELEMETRY exception — ``sql_snippets``/``snippet_usage`` are not run-stamped,
-so a redelivery can inflate usage telemetry; nothing gates on it (write-only
-since DAT-487/488).
+the ``execution_count`` counter is the documented TELEMETRY exception —
+``sql_snippets`` is not run-stamped, so a redelivery can inflate the count;
+nothing gates on it (write-only since DAT-487/488; the per-execution
+``snippet_usage`` audit trail this once fed was itself write-only —
+removed, DAT-781).
 
 Authoring vs assembly (DAT-636): the LLM is called ONLY in the up-front
 authoring pass (``_warm_shared_nodes``), which decides every unique node once and

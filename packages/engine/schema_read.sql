@@ -283,10 +283,6 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-DROP VIEW IF EXISTS __READ__.snippet_usage;
-CREATE VIEW __READ__.snippet_usage AS
-SELECT * FROM __WS__.snippet_usage;
-
 DROP VIEW IF EXISTS __READ__.sources;
 CREATE VIEW __READ__.sources AS
 SELECT * FROM __WS__.sources;

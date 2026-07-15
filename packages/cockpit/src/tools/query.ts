@@ -479,7 +479,6 @@ export async function persistLearnedSnippets(
 				sql: c.sql,
 				description: `Learned from a query: ${c.name}`,
 				source,
-				llmModel: MODEL,
 			});
 		}
 	} catch (err) {

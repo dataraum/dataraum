@@ -350,10 +350,16 @@ class TestSnippetLibraryFormulaPerMetric:
 
 
 class TestSnippetLibraryRecordUsage:
-    """Tests for usage tracking."""
+    """Tests for ``execution_count`` tracking.
 
-    def test_record_exact_reuse(self, session):
-        """Record an exact reuse and update snippet stats."""
+    DAT-781 removed the per-execution ``snippet_usage`` audit-trail row this
+    used to also insert — write-only telemetry, never read by anything. What
+    remains is the one side effect with a live reader (the cockpit's
+    why-metric surface): bumping ``execution_count`` on exact reuse/adapted.
+    """
+
+    def test_record_exact_reuse_increments_execution_count(self, session):
+        """An exact reuse bumps the snippet's execution_count."""
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         snippet = library.save_snippet(
@@ -367,42 +373,14 @@ class TestSnippetLibraryRecordUsage:
         session.flush()
         assert snippet.execution_count == 0
 
-        usage = library.record_usage(
-            execution_id="exec_001",
-            execution_type="graph",
-            usage_type="exact_reuse",
-            snippet_id=snippet.snippet_id,
-            match_confidence=1.0,
-            sql_match_ratio=1.0,
-            step_id="revenue",
-        )
+        library.record_usage(snippet.snippet_id, "exact_reuse")
         session.flush()
 
-        assert usage.usage_type == "exact_reuse"
-        assert usage.step_id == "revenue"
-
-        # Snippet stats should be updated
         session.refresh(snippet)
         assert snippet.execution_count == 1
-        assert snippet.last_used_at is not None
 
-    def test_record_newly_generated(self, session):
-        """Record a newly generated step (no snippet)."""
-        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
-
-        usage = library.record_usage(
-            execution_id="exec_002",
-            execution_type="query",
-            usage_type="newly_generated",
-            step_id="monthly_revenue",
-        )
-        session.flush()
-
-        assert usage.snippet_id is None
-        assert usage.usage_type == "newly_generated"
-
-    def test_record_provided_not_used(self, session):
-        """Record when snippet was provided but LLM ignored it."""
+    def test_record_adapted_increments_execution_count(self, session):
+        """An adapted reuse also bumps execution_count."""
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         snippet = library.save_snippet(
@@ -415,17 +393,35 @@ class TestSnippetLibraryRecordUsage:
         )
         session.flush()
 
-        library.record_usage(
-            execution_id="exec_003",
-            execution_type="query",
-            usage_type="provided_not_used",
-            snippet_id=snippet.snippet_id,
-            match_confidence=0.7,
-            sql_match_ratio=0.3,
+        library.record_usage(snippet.snippet_id, "adapted")
+        session.flush()
+
+        session.refresh(snippet)
+        assert snippet.execution_count == 1
+
+    def test_record_newly_generated_is_noop(self, session):
+        """No snippet was reused (snippet_id=None) — must not raise."""
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
+
+        library.record_usage(None, "newly_generated")
+
+    def test_record_provided_not_used_does_not_increment(self, session):
+        """Snippet was offered but the generated SQL ignored it — no bump."""
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
+
+        snippet = library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="test",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
+            standard_field="revenue",
         )
         session.flush()
 
-        # provided_not_used should NOT increment execution_count
+        library.record_usage(snippet.snippet_id, "provided_not_used")
+        session.flush()
+
         session.refresh(snippet)
         assert snippet.execution_count == 0
 

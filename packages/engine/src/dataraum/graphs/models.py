@@ -323,10 +323,6 @@ class GraphAssumptionOutput(BaseModel):
 class GraphProvenanceOutput(BaseModel):
     """Provenance of how the LLM grounded business concepts to SQL."""
 
-    field_resolution: str = Field(
-        description="How fields were resolved: 'direct' (taught concept, deterministic mapping) "
-        "or 'inferred' (LLM bridged vocabulary gap using enriched views)"
-    )
     column_mappings_basis: dict[str, dict[str, str]] = Field(
         default_factory=dict,
         description="Per-concept grounding: {concept: {column, filter, resolution}}",
@@ -334,6 +330,10 @@ class GraphProvenanceOutput(BaseModel):
     # No free-text reasoning field: the former `llm_reasoning` was written into the
     # snippet provenance blob and read by nothing (DAT-603 consumer audit) — output
     # tokens are serial-decode latency, so an unread sentence per call is pure cost.
+    # `field_resolution` (direct/inferred) was the same class of write-only field —
+    # emitted by the LLM, stamped into provenance, read by nothing persisted
+    # (DAT-781). Deleted rather than typed for DAT-727 contract v2 (parked at the
+    # time of this cut) — v2 rebases over this if/when it lands.
 
 
 class ValueSearchInput(BaseModel):

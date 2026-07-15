@@ -26,15 +26,14 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
-    Float,
-    ForeignKey,
     Integer,
     String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage import Base
 
@@ -59,6 +58,10 @@ class SQLSnippetRecord(Base):
             "schema_mapping_id",
             "parameter_value",
             name="uq_snippet_semantic_key",
+        ),
+        CheckConstraint(
+            "snippet_type IN ('extract', 'constant', 'formula', 'query')",
+            name="snippet_type",
         ),
     )
 
@@ -87,7 +90,6 @@ class SQLSnippetRecord(Base):
     source: Mapped[str] = mapped_column(
         String, nullable=False
     )  # e.g. "graph:dso", "query:exec_456"
-    llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # --- Clause parts (DAT-671, parts-at-source; EXTRACT snippets only) ---
@@ -102,10 +104,6 @@ class SQLSnippetRecord(Base):
     # --- Quality tracking ---
     execution_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    column_hash: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )  # For schema change invalidation
 
     # --- Timestamps ---
     created_at: Mapped[datetime] = mapped_column(
@@ -115,56 +113,5 @@ class SQLSnippetRecord(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
 
-    # --- Relationships ---
-    usages: Mapped[list[SnippetUsageRecord]] = relationship(
-        "SnippetUsageRecord",
-        back_populates="snippet",
-        cascade="all, delete-orphan",
-    )
 
-
-class SnippetUsageRecord(Base):
-    """Tracks how a snippet was used in a specific execution.
-
-    Records whether the snippet was exactly reused, adapted, provided but
-    not used, or newly generated. This enables stabilization metrics.
-    """
-
-    __tablename__ = "snippet_usage"
-
-    usage_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    workspace_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-
-    # --- Execution link ---
-    execution_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    execution_type: Mapped[str] = mapped_column(String, nullable=False)  # "graph" | "query"
-
-    # --- Snippet link ---
-    snippet_id: Mapped[str | None] = mapped_column(
-        ForeignKey("sql_snippets.snippet_id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )  # NULL for newly_generated (no snippet existed)
-
-    # --- Usage classification ---
-    usage_type: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # exact_reuse | adapted | provided_not_used | newly_generated
-    match_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    sql_match_ratio: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-
-    # --- Metadata ---
-    step_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-
-    # --- Relationships ---
-    snippet: Mapped[SQLSnippetRecord | None] = relationship(
-        "SQLSnippetRecord",
-        back_populates="usages",
-        foreign_keys=[snippet_id],
-    )
-
-
-__all__ = ["SQLSnippetRecord", "SnippetUsageRecord"]
+__all__ = ["SQLSnippetRecord"]

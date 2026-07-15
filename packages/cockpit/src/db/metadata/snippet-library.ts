@@ -43,8 +43,8 @@ export interface SnippetRow {
 	inputFields: unknown;
 	sql: string;
 	description: string;
-	// DAT-616: {field_resolution, column_mappings_basis, …} — the agent's own prior
-	// value→concept FILTER decisions, fed back so grounding isn't re-invented.
+	// DAT-616: {column_mappings_basis, …} — the agent's own prior value→concept
+	// FILTER decisions, fed back so grounding isn't re-invented.
 	provenance: unknown;
 	source: string;
 }

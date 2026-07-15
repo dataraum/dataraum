@@ -2,7 +2,9 @@
 
 from datetime import datetime
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship
@@ -227,7 +229,6 @@ class TestSemanticModels:
             table=table,
             detected_entity_type="transaction",
             description="Daily sales transactions",
-            confidence=0.88,
             grain_columns=["sale_id"],
             table_role="fact",
             detection_source="llm",
@@ -277,6 +278,47 @@ class TestTopologicalModels:
         assert saved.relationship_type == "foreign_key"
         assert saved.cardinality == "n:1"
         assert saved.confidence == 0.95
+
+    def test_relationship_type_check_constraint(self, session: Session):
+        """The closed relationship_type vocabulary is DB-enforced (DAT-782).
+
+        ``ck_relationships_relationship_type`` admits exactly the values the
+        writers produce ('foreign_key', 'hierarchy', 'candidate'). A dead
+        value — e.g. 'semantic_reference', once advertised in the column
+        comment but never written — must be rejected at INSERT, not merely
+        discouraged by a producer-side Literal (which drifted once already).
+        """
+        source = Source(name="test_source", source_type="csv")
+        sales_table = Table(source=source, table_name="sales", layer="raw")
+        customer_table = Table(source=source, table_name="customers", layer="raw")
+        customer_id_col = Column(table=sales_table, column_name="customer_id", column_position=1)
+        id_col = Column(table=customer_table, column_name="id", column_position=1)
+        session.add_all([source, sales_table, customer_table, customer_id_col, id_col])
+        session.flush()
+
+        def _rel(relationship_type: str, detection_method: str) -> Relationship:
+            # detection_method varies per row to sidestep the run-grain unique
+            # constraint (run_id, from_column_id, to_column_id, detection_method).
+            return Relationship(
+                from_table_id=sales_table.table_id,
+                from_column_id=customer_id_col.column_id,
+                to_table_id=customer_table.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type=relationship_type,
+                confidence=0.9,
+                detection_method=detection_method,
+            )
+
+        # Every value a real writer produces is admitted.
+        for i, real_value in enumerate(("foreign_key", "hierarchy", "candidate")):
+            session.add(_rel(real_value, detection_method=f"method_{i}"))
+        session.flush()
+
+        # A value outside the closed vocabulary is rejected by the CHECK.
+        session.add(_rel("semantic_reference", detection_method="method_dead"))
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
 
 
 class TestTemporalModels:

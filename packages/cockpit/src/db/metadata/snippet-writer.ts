@@ -42,7 +42,6 @@ export interface SaveQuerySnippetInput extends QuerySnippetKey {
 	description: string;
 	/** Provenance, e.g. `query:<runId>`. */
 	source: string;
-	llmModel?: string | null;
 }
 
 export interface SaveQuerySnippetResult {
@@ -122,7 +121,6 @@ export async function saveQuerySnippet(
 		sql: input.sql,
 		description: input.description,
 		source: input.source,
-		llmModel: input.llmModel ?? null,
 		executionCount: 0,
 		failureCount: 0,
 		createdAt: now,

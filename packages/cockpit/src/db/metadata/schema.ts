@@ -54,14 +54,13 @@ export const concepts = metadataSchema
 		description: text(),
 		indicators: json(),
 		excludePatterns: json("exclude_patterns"),
-		typicalValues: json("typical_values"),
 		unitFromConcept: varchar("unit_from_concept"),
 		source: varchar(),
 		createdAt: timestamp("created_at"),
 		supersededAt: timestamp("superseded_at"),
 	})
 	.as(
-		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, typical_values, unit_from_concept, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
+		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
 	);
 
 export const configOverlay = metadataSchema
@@ -387,12 +386,10 @@ export const currentRelationships = metadataSchema
 		detectionMethod: varchar("detection_method"),
 		evidence: json(),
 		isConfirmed: boolean("is_confirmed"),
-		confirmedAt: timestamp("confirmed_at"),
-		confirmedBy: varchar("confirmed_by"),
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, is_confirmed, confirmed_at, confirmed_by, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, is_confirmed, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentSemanticAnnotations = metadataSchema
@@ -503,8 +500,6 @@ export const currentTableEntities = metadataSchema
 		runId: varchar("run_id"),
 		detectedEntityType: varchar("detected_entity_type"),
 		description: text(),
-		confidence: doublePrecision(),
-		evidence: json(),
 		grainColumns: json("grain_columns"),
 		tableRole: varchar("table_role"),
 		timeColumns: json("time_columns"),
@@ -513,7 +508,7 @@ export const currentTableEntities = metadataSchema
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, table_role, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, grain_columns, table_role, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTables = metadataSchema
@@ -620,23 +615,6 @@ export const runTables = metadataSchema
 		sql`SELECT run_id, table_id FROM ws_00000000_0000_0000_0000_000000000001.run_tables`,
 	);
 
-export const snippetUsage = metadataSchema
-	.view("snippet_usage", {
-		usageId: varchar("usage_id"),
-		workspaceId: varchar("workspace_id"),
-		executionId: varchar("execution_id"),
-		executionType: varchar("execution_type"),
-		snippetId: varchar("snippet_id"),
-		usageType: varchar("usage_type"),
-		matchConfidence: doublePrecision("match_confidence"),
-		sqlMatchRatio: doublePrecision("sql_match_ratio"),
-		stepId: varchar("step_id"),
-		createdAt: timestamp("created_at"),
-	})
-	.as(
-		sql`SELECT usage_id, workspace_id, execution_id, execution_type, snippet_id, usage_type, match_confidence, sql_match_ratio, step_id, created_at FROM ws_00000000_0000_0000_0000_000000000001.snippet_usage`,
-	);
-
 export const sources = metadataSchema
 	.view("sources", {
 		sourceId: varchar("source_id"),
@@ -670,18 +648,15 @@ export const sqlSnippets = metadataSchema
 		sql: text(),
 		description: text(),
 		source: varchar(),
-		llmModel: varchar("llm_model"),
 		provenance: json(),
 		parts: json(),
 		executionCount: integer("execution_count"),
 		failureCount: integer("failure_count"),
-		lastUsedAt: timestamp("last_used_at"),
-		columnHash: varchar("column_hash"),
 		createdAt: timestamp("created_at"),
 		updatedAt: timestamp("updated_at"),
 	})
 	.as(
-		sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, llm_model, provenance, parts, execution_count, failure_count, last_used_at, column_hash, created_at, updated_at FROM ws_00000000_0000_0000_0000_000000000001.sql_snippets`,
+		sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, provenance, parts, execution_count, failure_count, created_at, updated_at FROM ws_00000000_0000_0000_0000_000000000001.sql_snippets`,
 	);
 
 export const tables = metadataSchema

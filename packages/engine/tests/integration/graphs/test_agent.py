@@ -908,17 +908,21 @@ class TestGraphAgentSnippets:
         assert result.value.output_value == 600.0  # 100 + 200 + 300
         assert agent.provider.converse.call_count == 0  # No LLM call needed
 
-    def test_snippet_usage_tracked_on_assembly(
+    def test_execution_count_incremented_on_assembly(
         self,
         session: Session,
         duckdb_with_data,
         sample_graph,
     ):
-        """Test that snippet usage is tracked when assembled from cache."""
+        """Assembling a metric from a cached (exact-reuse) snippet bumps its
+        execution_count — the one usage-tracking side effect with a live
+        reader (the cockpit's why-metric surface). The per-execution
+        ``snippet_usage`` audit trail this used to also write was write-only
+        telemetry, removed (DAT-781)."""
         from sqlalchemy import select
 
         from dataraum.query.snippet_library import SnippetLibrary
-        from dataraum.query.snippet_models import SnippetUsageRecord
+        from dataraum.query.snippet_models import SQLSnippetRecord
 
         mock_provider = MagicMock()
         mock_provider.get_model_for_tier.return_value = "test-model"
@@ -943,6 +947,7 @@ class TestGraphAgentSnippets:
             aggregation="sum",
         )
         session.flush()
+        assert snippet.execution_count == 0
 
         agent = GraphAgent(
             config=mock_config,
@@ -955,74 +960,11 @@ class TestGraphAgentSnippets:
         result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
         assert result.success
 
-        # Verify usage record was created
-        usages = list(session.execute(select(SnippetUsageRecord)).scalars().all())
-        assert len(usages) >= 1
-
-        # Should be an exact_reuse since snippet was assembled without LLM
-        exact_reuse = next((u for u in usages if u.usage_type == "exact_reuse"), None)
-        assert exact_reuse is not None
-        assert exact_reuse.execution_type == "graph"
-        assert exact_reuse.snippet_id == snippet.snippet_id
-
-    def test_usage_tracked_without_cached_snippets(
-        self,
-        session: Session,
-        duckdb_with_data,
-        sample_graph,
-    ):
-        """Test that usage is tracked on first-time execution (no cached snippets)."""
-        from sqlalchemy import select
-
-        from dataraum.query.snippet_models import SnippetUsageRecord
-
-        mock_provider = MagicMock()
-        mock_provider.get_model_for_tier.return_value = "test-model"
-
-        mock_config = MagicMock()
-        mock_config.limits.max_output_tokens_per_request = 4000
-        mock_config.limits.cache_ttl_seconds = 3600
-        mock_config.features.graph_sql_generation = None
-
-        mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
-
-        agent = GraphAgent(
-            config=mock_config,
-            provider=mock_provider,
-            prompt_renderer=mock_renderer,
-        )
-
-        # Mock LLM response (single-extract clause-parts shape, DAT-603/671)
-        mock_tool_call = MagicMock()
-        mock_tool_call.name = "generate_sql"
-        mock_tool_call.input = {
-            "grounding": "test grounding: served values verified",
-            "relation": "test_data",
-            "where": [],
-            "select_expr": "SUM(amount)",
-            "description": "Sum amounts from test data",
-        }
-
-        mock_response = MagicMock()
-        mock_response.tool_calls = [mock_tool_call]
-        mock_response.content = None
-        agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
-
-        context = _make_execution_context(duckdb_with_data)
-
-        # Execute — no cached snippets (first time), should still track usage
-        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
-        assert result.success
-
-        # Verify usage records were created
-        usages = list(session.execute(select(SnippetUsageRecord)).scalars().all())
-        assert len(usages) >= 1
-
-        # All steps should be newly_generated
-        newly_generated = [u for u in usages if u.usage_type == "newly_generated"]
-        assert len(newly_generated) >= 1
-        assert newly_generated[0].execution_type == "graph"
+        # Assembled from cache (exact reuse, no LLM call) → execution_count bumped.
+        refreshed = session.execute(
+            select(SQLSnippetRecord).where(SQLSnippetRecord.snippet_id == snippet.snippet_id)
+        ).scalar_one()
+        assert refreshed.execution_count == 1
 
 
 class TestPriorContextFeedback:

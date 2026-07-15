@@ -25,7 +25,6 @@ CREATE TABLE concepts (
 	description TEXT, 
 	indicators JSON, 
 	exclude_patterns JSON, 
-	typical_values JSON, 
 	unit_from_concept VARCHAR, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
@@ -147,17 +146,15 @@ CREATE TABLE sql_snippets (
 	sql TEXT NOT NULL, 
 	description TEXT NOT NULL, 
 	source VARCHAR NOT NULL, 
-	llm_model VARCHAR, 
 	provenance JSON, 
 	parts JSON, 
 	execution_count INTEGER NOT NULL, 
 	failure_count INTEGER NOT NULL, 
-	last_used_at TIMESTAMP WITHOUT TIME ZONE, 
-	column_hash VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_sql_snippets PRIMARY KEY (snippet_id), 
-	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value)
+	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value), 
+	CONSTRAINT ck_sql_snippets_snippet_type CHECK (snippet_type IN ('extract', 'constant', 'formula', 'query'))
 );
 
 CREATE INDEX ix_sql_snippets_normalized_expression ON sql_snippets (normalized_expression);
@@ -183,27 +180,6 @@ CREATE TABLE validation_results (
 );
 
 CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
-
-CREATE TABLE snippet_usage (
-	usage_id VARCHAR NOT NULL, 
-	workspace_id VARCHAR NOT NULL, 
-	execution_id VARCHAR NOT NULL, 
-	execution_type VARCHAR NOT NULL, 
-	snippet_id VARCHAR, 
-	usage_type VARCHAR NOT NULL, 
-	match_confidence FLOAT NOT NULL, 
-	sql_match_ratio FLOAT NOT NULL, 
-	step_id VARCHAR, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_snippet_usage PRIMARY KEY (usage_id), 
-	CONSTRAINT fk_snippet_usage_snippet_id_sql_snippets FOREIGN KEY(snippet_id) REFERENCES sql_snippets (snippet_id) ON DELETE CASCADE
-);
-
-CREATE INDEX ix_snippet_usage_execution_id ON snippet_usage (execution_id);
-
-CREATE INDEX ix_snippet_usage_snippet_id ON snippet_usage (snippet_id);
-
-CREATE INDEX ix_snippet_usage_workspace_id ON snippet_usage (workspace_id);
 
 CREATE TABLE tables (
 	table_id VARCHAR NOT NULL, 
@@ -359,8 +335,6 @@ CREATE TABLE table_entities (
 	run_id VARCHAR NOT NULL, 
 	detected_entity_type VARCHAR NOT NULL, 
 	description TEXT, 
-	confidence FLOAT, 
-	evidence JSON, 
 	grain_columns JSON, 
 	table_role VARCHAR, 
 	time_columns JSON, 
@@ -555,11 +529,10 @@ CREATE TABLE relationships (
 	detection_method VARCHAR, 
 	evidence JSON, 
 	is_confirmed BOOLEAN NOT NULL, 
-	confirmed_at TIMESTAMP WITHOUT TIME ZONE, 
-	confirmed_by VARCHAR, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_relationships PRIMARY KEY (relationship_id), 
 	CONSTRAINT uq_relationship_columns_method UNIQUE (run_id, from_column_id, to_column_id, detection_method), 
+	CONSTRAINT ck_relationships_relationship_type CHECK (relationship_type IN ('foreign_key', 'hierarchy', 'candidate')), 
 	CONSTRAINT fk_relationships_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_relationships_from_column_id_columns FOREIGN KEY(from_column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_relationships_to_table_id_tables FOREIGN KEY(to_table_id) REFERENCES tables (table_id), 

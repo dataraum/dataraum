@@ -253,11 +253,10 @@ def _apply_cycle(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]
 
     Payload shape mirrors one ``cycles.yaml`` ``cycle_types`` entry plus its
     key: ``{vertical, name, description?, business_value?, aliases?,
-    typical_stages?, participating_entities?, completion_indicators?,
-    feeds_into?}``. ``vertical`` is matched by the caller (this applier only
-    sees rows already filtered to the loading vertical); ``name`` is the
-    ``cycle_types`` key — unlike validations (a list keyed by ``validation_id``)
-    the cycle vocabulary is a MAPPING.
+    typical_stages?, completion_indicators?, feeds_into?}``. ``vertical`` is
+    matched by the caller (this applier only sees rows already filtered to the
+    loading vertical); ``name`` is the ``cycle_types`` key — unlike validations
+    (a list keyed by ``validation_id``) the cycle vocabulary is a MAPPING.
 
     Merge semantics mirror ``validation``: one row = one whole cycle entry.
     Same ``name`` replaces — the last row for a given name wins (rows are

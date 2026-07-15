@@ -106,7 +106,6 @@ def _seed(
         detected_entity_type="transaction",
         time_columns=_axes(fact_time_column),
         detection_source="llm",
-        confidence=0.9,
     )
     dim_entity = TableEntity(
         table_id=dim.table_id,
@@ -114,7 +113,6 @@ def _seed(
         detected_entity_type="document",
         time_columns=dim_axes if dim_axes is not None else _axes(dim_time_column),
         detection_source="llm",
-        confidence=0.9,
     )
     session.add_all([fact_entity, dim_entity])
 
@@ -302,7 +300,6 @@ class TestBuildContextDataTimeAxis:
                 detected_entity_type="transaction",
                 time_columns=_axes("booking_date"),
                 detection_source="llm",
-                confidence=0.9,
             )
         )
         session.flush()

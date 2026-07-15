@@ -745,7 +745,6 @@ def synthesize_and_store_tables(
                 table_id=table_id,
                 detected_entity_type=entity.entity_type,
                 description=entity.description,
-                confidence=entity.confidence,
                 grain_columns={"columns": entity.grain_columns},
                 table_role=entity.table_role,
                 time_columns=[tc.model_dump() for tc in entity.time_columns],

@@ -95,24 +95,12 @@ export const CycleSpecSchema = z.object({
 		.describe(
 			"The cycle's stages in order, each with the status values that mark it.",
 		),
-	participating_entities: z
-		.array(z.string())
-		.optional()
-		.describe(
-			"Entity types that flow through the cycle, e.g. ['customer','invoice','payment'].",
-		),
 	completion_indicators: z
 		.array(z.string())
 		.optional()
 		.describe(
 			"Status-column values that mean the cycle COMPLETED, e.g. " +
 				"['paid','closed','settled'] — these drive the structural completion_rate.",
-		),
-	related_tables: z
-		.array(z.string())
-		.optional()
-		.describe(
-			"Table-name substrings that hint where the cycle lives (context, not matching).",
 		),
 	feeds_into: z
 		.array(z.string())

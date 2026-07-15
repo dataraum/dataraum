@@ -406,7 +406,6 @@ class EntityDetection(BaseModel):
 
     entity_type: str
     description: str | None = None  # LLM-generated table description
-    confidence: float
 
     grain_columns: list[str] = Field(default_factory=list)
     # The operating-model role (DAT-728): fact | periodic_snapshot | dimension

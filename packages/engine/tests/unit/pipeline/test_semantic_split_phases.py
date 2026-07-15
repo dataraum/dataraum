@@ -280,7 +280,6 @@ class TestPerTableShouldSkip:
             TableEntity(
                 table_id=t1.table_id,
                 detected_entity_type="thing",
-                confidence=0.9,
                 detection_source="llm",
             )
         )

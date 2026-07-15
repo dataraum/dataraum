@@ -85,7 +85,6 @@ export const conceptsWrite = rawSchema.table("concepts", {
 	description: text("description"),
 	indicators: json("indicators").$type<string[]>(),
 	excludePatterns: json("exclude_patterns").$type<string[]>(),
-	typicalValues: json("typical_values").$type<string[]>(),
 	unitFromConcept: varchar("unit_from_concept"),
 	source: varchar("source"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
@@ -99,8 +98,8 @@ export const conceptsWrite = rawSchema.table("concepts", {
  * columns with no DB default — `description`, `execution_count`,
  * `failure_count`, `created_at`, `updated_at` — must be set on every insert
  * (the model's defaults are ORM-side, not server defaults). Identity/quality columns the
- * cockpit never writes (last_used_at, column_hash, provenance, input_fields,
- * normalized_expression) are omitted.
+ * cockpit never writes (provenance, input_fields, normalized_expression) are
+ * omitted.
  */
 export const sqlSnippetsWrite = rawSchema.table("sql_snippets", {
 	snippetId: varchar("snippet_id").primaryKey(),
@@ -114,7 +113,6 @@ export const sqlSnippetsWrite = rawSchema.table("sql_snippets", {
 	sql: text("sql").notNull(),
 	description: text("description").notNull(),
 	source: varchar("source").notNull(),
-	llmModel: varchar("llm_model"),
 	executionCount: integer("execution_count").notNull(),
 	failureCount: integer("failure_count").notNull(),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),

@@ -35,6 +35,14 @@ Six new columns on `MeasureAggregationLineage`:
 This is also the substrate DAT-780 (blocked on this ticket) consumes for the
 K2 measure-anchor designation.
 
+Bundled (reviewer finding, pre-existing gap in a file this change touches):
+`delete_column_dependents` (`pipeline/phases/_column_cleanup.py`) now also
+deletes `driver_rankings` rows by `measure_column_id` — it was the one FK
+child of `columns` missing from the column-level cleanup, so a prior run's
+ranking could FK-block a column delete on the eligibility / surrogate-mint /
+enriched-views paths. The lineage delete there also matches the four new
+witness FKs.
+
 ### Thresholds / new fields
 No score thresholds changed. Six new fields listed above on
 `measure_aggregation_lineage` (and its `current_measure_aggregation_lineage`

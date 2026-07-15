@@ -87,8 +87,10 @@ def _seed(
     tb_dim_col: str = _DIM,
     jl_dim_col: str = _DIM,
     tb_role_play_col: str | None = None,
+    role_play_wins: bool = False,
     folded: bool = False,
     axis_columns: bool = False,
+    values: tuple[str, ...] = _VALUES,
 ) -> dict[str, str]:
     """Seed Tables/Columns/SliceDefinitions/TableEntity + the DuckDB rows.
 
@@ -109,11 +111,18 @@ def _seed(
     name, no cross-table identity, must NOT pair).
 
     ``tb_role_play_col`` adds a SECOND trial_balance slice at the SAME identity (a
-    role-playing FK to the same dim + attribute) whose DuckDB values are degenerate
-    (``'other'`` — outside ``_VALUES``, so its own series is empty). The witness must
+    role-playing FK to the same dim + attribute), carrying its OWN ``Column`` row
+    (a distinct ``column_id``, so the DAT-778 winning-slice assertions can tell the
+    two slices apart). By default its DuckDB values are degenerate (``'other'`` —
+    outside the catalog values, so its own series is empty). The witness must
     still fire off the primary slice: the two role slices must BOTH be tried, never
     collapsed to one (DAT-756 — the identity key groups a list per fact, not a
-    last-write-wins single).
+    last-write-wins single). ``role_play_wins=True`` inverts the competition: the
+    role-play column labels EVERY entity truthfully while the primary covers only
+    the first two ``values`` (rest ``'other'``) — both slices fire, and the
+    role-play, enumerated second, must strictly win on support (Wilson LCB over
+    more reconciling entities). Use with ≥ 4 ``values`` so the primary still
+    clears ``MIN_ENTITIES_FIRED`` and genuinely competes.
 
     ``axis_columns=True`` also registers the time-axis names (``period_date``,
     plus ``ship_date`` under ``multi_axis``) as real typed ``Column`` rows —
@@ -205,28 +214,38 @@ def _seed(
                 dimension_attribute=attribute,
                 fk_role=role,
                 slice_priority=1,
-                distinct_values=list(_VALUES),
-                value_count=len(_VALUES),
+                distinct_values=list(values),
+                value_count=len(values),
                 detection_source="llm",
             )
         )
     # A second trial_balance slice at the SAME identity (role-playing FK): must NOT
-    # collapse the primary slice (DAT-756). Its DuckDB values are degenerate so only
-    # the primary reconciles — proving both are tried, not one arbitrarily kept.
+    # collapse the primary slice (DAT-756). By default its DuckDB values are
+    # degenerate so only the primary reconciles — proving both are tried, not one
+    # arbitrarily kept; under ``role_play_wins`` the roles flip (see docstring).
     if tb_role_play_col:
         rp_role, _, rp_attr = tb_role_play_col.partition("__")
+        rp_column = Column(
+            column_id=str(uuid4()),
+            table_id=ids["trial_balance"],
+            column_name=tb_role_play_col,
+            column_position=90,
+            resolved_type="VARCHAR",
+        )
+        session.add(rp_column)
+        ids[f"trial_balance.{tb_role_play_col}"] = rp_column.column_id
         session.add(
             SliceDefinition(
                 run_id=_RUN,
                 table_id=ids["trial_balance"],
-                column_id=ids["trial_balance.balance"],
+                column_id=rp_column.column_id,
                 column_name=tb_role_play_col,
                 dimension_table_id=ids["chart_of_accounts"],
                 dimension_attribute=rp_attr or None,
                 fk_role=rp_role,
                 slice_priority=2,
-                distinct_values=list(_VALUES),
-                value_count=len(_VALUES),
+                distinct_values=list(values),
+                value_count=len(values),
                 detection_source="llm",
             )
         )
@@ -252,7 +271,7 @@ def _seed(
 
     tb_rows: list[str] = []
     jl_rows: list[str] = []
-    for k, value in enumerate(_VALUES, start=1):
+    for k, value in enumerate(values, start=1):
         running = 0.0
         for i, month in enumerate(_MONTHS):
             net = _net(k, i)
@@ -262,11 +281,21 @@ def _seed(
             # Degenerate second axis: every row shares one ship_date, collapsing
             # the per-period series to a single bucket so this axis cannot win.
             tb_axis_val = ", DATE '2025-01-15'" if multi_axis else ""
-            # Degenerate role-play value: 'other' is outside _VALUES, so this second
-            # same-identity slice contributes no series — only the primary reconciles.
-            tb_role_val = ", 'other'" if tb_role_play_col else ""
+            if role_play_wins:
+                # The role-play column labels every entity truthfully; the primary
+                # covers only the first two (rest 'other', outside the catalog
+                # values → excluded from its series). Both slices fire; the
+                # role-play reconciles MORE entities and must win on support.
+                tb_dim_val = value if k <= 2 else "other"
+                tb_role_val = f", '{value}'"
+            else:
+                # Degenerate role-play value: 'other' is outside the catalog values,
+                # so this second same-identity slice contributes no series — only
+                # the primary reconciles.
+                tb_dim_val = value
+                tb_role_val = ", 'other'" if tb_role_play_col else ""
             tb_rows.append(
-                f"('{value}', {d}, {running}, {net}{tb_extra}{tb_axis_val}{tb_role_val})"
+                f"('{tb_dim_val}', {d}, {running}, {net}{tb_extra}{tb_axis_val}{tb_role_val})"
             )
             # Two finer-grained event rows summing to the movement.
             for half in (net / 2, net - net / 2):
@@ -750,6 +779,40 @@ class TestDiscoverAggregationLineage:
         assert row is not None
         assert row.pattern == "cumulative"
         assert row.event_table_id == ids["journal_lines"]
+        # DAT-778: the degenerate role-play slice contributes no series, so the
+        # primary's physical column is the (only possible) persisted winner.
+        assert row.measure_slice_column_id == ids["trial_balance.balance"]
+
+    def test_winning_role_playing_slice_column_persists(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-778: when TWO role-playing slices at the same identity BOTH fire,
+        the persisted ``measure_slice_column_id`` is the competition WINNER's,
+        never the first-enumerated slice's. The primary slice (priority 1, tried
+        first, incumbent) covers only 2 of the 4 catalog values (support
+        LCB(2,2) ≈ 0.34); the role-play column labels all 4 truthfully
+        (LCB(4,4) ≈ 0.51) and strictly wins on support — so a persist path that
+        kept the first (or an arbitrary) slice's column_id fails here, which the
+        all-degenerate role-play fixture above cannot detect (its losing slice
+        never produces a live candidate at all).
+        """
+        ids = _seed(
+            real_session,
+            duck,
+            tb_role_play_col="counter_account_id__account_type",
+            role_play_wins=True,
+            values=("assets", "liabilities", "equity", "revenue"),
+        )
+        assert _discover(real_session, duck, ids) > 0
+        row = _row_for(real_session, ids["trial_balance.balance"])
+        assert row is not None
+        assert row.pattern == "cumulative"
+        assert row.event_table_id == ids["journal_lines"]
+        rp_column_id = ids["trial_balance.counter_account_id__account_type"]
+        assert row.measure_slice_column_id == rp_column_id
+        assert row.measure_slice_column_id != ids["trial_balance.balance"]  # primary lost
+        # The event fact carries a single slice; its physical column persists too.
+        assert row.event_slice_column_id == ids["journal_lines.debit"]
 
     def test_rerun_is_idempotent(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

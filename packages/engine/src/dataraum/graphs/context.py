@@ -622,8 +622,14 @@ def build_execution_context(
                 DimensionHierarchy.run_id == run_id,
             )
             # Strongest (lowest g3) first; role-check rows have no g3 (NULL) and
-            # sort last, deterministically across Postgres/SQLite (DAT-784).
-            .order_by(DimensionHierarchy.g3.asc().nulls_last())
+            # sort last. The signature tiebreak makes ties (several rows at
+            # g3=0.0, manual teaches) fully deterministic — the sort is a
+            # determinism device, NOT a ranking policy (DAT-762 ruling): the
+            # substrate serves evidence, consumers rank with full information.
+            .order_by(
+                DimensionHierarchy.g3.asc().nulls_last(),
+                DimensionHierarchy.signature.asc(),
+            )
         )
         for hier in session.execute(hier_stmt).scalars().all():
             hier_tbl = table_map.get(hier.table_id)

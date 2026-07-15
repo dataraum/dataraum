@@ -50,7 +50,7 @@ import numpy as np
 import polars as pl
 from sqlalchemy import select
 
-from dataraum.analysis.hierarchies import stats
+from dataraum.analysis.hierarchies import routing, stats
 from dataraum.analysis.hierarchies.db_models import (
     DimensionHierarchy,
     HierarchyMember,
@@ -468,12 +468,16 @@ def discover_dimension_hierarchies(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     run_id: str,
+    judge: object | None = None,
 ) -> int:
     """Run the stack-v4 identity pass over each enriched view; persist run-versioned.
 
     Form-(a) writer (DAT-502): one row per ``(signature, run_id)``, UPSERTed;
-    deterministic (fixed permutation/sample seeds), so a redelivered run
-    converges. Returns the rows persisted.
+    the statistical pass is deterministic (fixed permutation/sample seeds), so
+    a redelivered run converges. ``judge`` is the DAT-762 veto lane
+    (``DimensionIdentityJudge``), built by the PHASE (the composition root —
+    the processor stays LLM-free and unit-hermetic); None = lane off, rows
+    byte-identical to the pure statistical output. Returns the rows persisted.
     """
     enriched = (
         session.execute(
@@ -518,16 +522,25 @@ def discover_dimension_hierarchies(
         frame = _pull_sample(duckdb_conn, ev.view_name, cand_names, scan.n)
         if frame is None:
             continue
-        rows.extend(
-            _view_structures(
-                fact_table_id=ev.fact_table_id,
-                view_name=ev.view_name,
-                run_id=run_id,
-                by_name=by_name,
-                scan=scan,
-                frame=frame,
-            )
+        view_rows = _view_structures(
+            fact_table_id=ev.fact_table_id,
+            view_name=ev.view_name,
+            run_id=run_id,
+            by_name=by_name,
+            scan=scan,
+            frame=frame,
         )
+        # DAT-762: names-only veto on the routed classes, before the teach
+        # overlay (user assertions are never routed).
+        _judge_veto_pass(
+            view_rows,
+            view_name=ev.view_name,
+            frame=frame,
+            n_rows=scan.n,
+            d_sql=scan.d_sql,
+            judge=judge,
+        )
+        rows.extend(view_rows)
 
     # Fold the user's durable hierarchy/alias teaches into this run (DAT-537),
     # mirroring relationship-overlay materialization minus keeper-lift-up + witness
@@ -537,6 +550,141 @@ def discover_dimension_hierarchies(
 
     upsert(session, DimensionHierarchy, rows, index_elements=["signature", "run_id"])
     return len(rows)
+
+
+# Distinct-value sample size for the veto lane's shape classification —
+# matches the frozen acceptance fixture (dataraum-eval, SAMPLE_DISTINCT).
+_VETO_SAMPLE_VALUES = 200
+
+
+def _column_evidence(
+    frame: pl.DataFrame, col: str, *, n_rows: int, d_sql: dict[str, int]
+) -> routing.ColumnEvidence:
+    """Routing evidence for one candidate column, deterministic.
+
+    Distinct counts are the null-blind SQL counts (the acceptance fixture's
+    semantics); sample values are a seeded subset of the frame's sorted
+    distinct values — a pure function of the column identity, never of
+    scheduling (the ``_pair_rng`` discipline).
+    """
+    s = frame.get_column(col)
+    distinct = s.drop_nulls().cast(pl.Utf8).unique().sort()
+    k = min(_VETO_SAMPLE_VALUES, len(distinct))
+    digest = int.from_bytes(hashlib.blake2b(f"veto:{col}".encode(), digest_size=8).digest(), "big")
+    rng = np.random.default_rng((_PERM_SEED, digest))
+    idx = rng.choice(len(distinct), size=k, replace=False) if k else np.array([], dtype=int)
+    return routing.ColumnEvidence(
+        n_rows=n_rows,
+        n_distinct=d_sql.get(col, len(distinct)),
+        dtype=str(s.dtype),
+        sample_values=sorted(str(distinct[int(i)])[:120] for i in idx),
+    )
+
+
+def _route_row(
+    row: dict[str, object],
+    evidence_of: dict[str, routing.ColumnEvidence],
+) -> str | None:
+    """The veto class for one assembled structure row, or None (not judged).
+
+    Only stack-asserted structures are routable: manual/teach rows and the
+    role-check outcomes (``role_verdict`` set — the conform/role machinery's
+    territory, DAT-494) never reach the veto. Drilldown chains route per hop
+    (members are stored coarse→fine, so the determinant is the finer member);
+    alias groups route per unordered pair.
+    """
+    if row["detection_source"] != "g3" or row["role_verdict"] is not None:
+        return None
+    members = cast("list[dict[str, object]]", row["members"])
+    cols = [str(m["column_name"]) for m in members]
+    if any(c not in evidence_of for c in cols):
+        return None
+    if row["kind"] == "drilldown":
+        for coarse, fine in zip(cols, cols[1:], strict=False):
+            klass = routing.route_edge(evidence_of[fine], evidence_of[coarse])
+            if klass is not None:
+                return klass
+        return None
+    if row["kind"] == "alias":
+        for i in range(len(cols)):
+            for j in range(i + 1, len(cols)):
+                klass = routing.route_alias(evidence_of[cols[i]], evidence_of[cols[j]])
+                if klass is not None:
+                    return klass
+    return None
+
+
+def _judge_veto_pass(
+    view_rows: list[dict[str, object]],
+    *,
+    view_name: str,
+    frame: pl.DataFrame,
+    n_rows: int,
+    d_sql: dict[str, int],
+    judge: object,
+) -> None:
+    """Route this view's asserted structures; one batched names-only veto call.
+
+    Stats DECIDE — a veto never deletes a row: the vetoed structure is
+    surfaced (``needs_confirmation=True``) with a structured log carrying the
+    judge's reason (the v1 audit trail; no new column). Judge disabled or
+    failing means the lane is SKIPPED and the statistical verdicts stand —
+    absence of judgment is not a judgment. Runs BEFORE teach materialization:
+    user assertions are never routed.
+    """
+    if judge is None or not view_rows:
+        return
+    evidence_of = {
+        c: _column_evidence(frame, c, n_rows=n_rows, d_sql=d_sql) for c in frame.columns
+    }
+    routed: list[dict[str, object]] = []
+    by_ref: dict[str, dict[str, object]] = {}
+    for row in view_rows:
+        klass = _route_row(row, evidence_of)
+        if klass is None:
+            continue
+        ref = str(row["signature"])
+        by_ref[ref] = row
+        members = cast("list[dict[str, object]]", row["members"])
+        routed.append(
+            {
+                "ref": ref,
+                "kind": row["kind"],
+                "members": [str(m["column_name"]) for m in members],
+                "routed_class": klass,
+            }
+        )
+    if not routed:
+        return
+    from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
+
+    assert isinstance(judge, DimensionIdentityJudge)
+    try:
+        result = judge.veto(
+            table_name=view_name, all_columns=list(frame.columns), structures=routed
+        )
+    except Exception as e:  # noqa: BLE001 — a failing judge must never fail the stats
+        logger.warning("hierarchy_veto_skipped", view=view_name, reason=str(e))
+        return
+    if not result.success:
+        logger.warning("hierarchy_veto_skipped", view=view_name, reason=result.error)
+        return
+    for verdict in result.unwrap():
+        vetoed_row = by_ref.get(verdict.structure_ref)
+        if vetoed_row is None:
+            logger.warning(
+                "hierarchy_veto_unknown_ref", view=view_name, ref=verdict.structure_ref
+            )
+            continue
+        logger.info(
+            "hierarchy_veto",
+            view=view_name,
+            signature=vetoed_row["signature"],
+            verdict=verdict.verdict,
+            reason=verdict.reason,
+        )
+        if verdict.verdict == "veto":
+            vetoed_row["needs_confirmation"] = True
 
 
 def _validated_members(members: list[HierarchyMember]) -> list[dict[str, object]]:

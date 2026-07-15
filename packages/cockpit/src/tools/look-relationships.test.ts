@@ -34,9 +34,10 @@ function catalogRow(
 		cardinality: "many_to_one",
 		confidence: 0.91,
 		// Real `detection_method` values are `candidate | llm | manual | keeper`
-		// (engine `relationships/db_models.py`). A confirmed FK is `llm`.
+		// (engine `relationships/db_models.py`). A confirmed FK is `llm`, vouched
+		// for by the `judge` (DAT-776 confirmation_source).
 		detectionMethod: "llm",
-		isConfirmed: true,
+		confirmationSource: "judge",
 		...overrides,
 	};
 }
@@ -111,7 +112,7 @@ describe("projectRelationshipReadiness (DAT-409)", () => {
 		expect(out.cardinality).toBeNull();
 		expect(out.confidence).toBeNull();
 		expect(out.detection_method).toBeNull();
-		expect(out.is_confirmed).toBeNull();
+		expect(out.confirmation_source).toBeNull();
 	});
 
 	it("joins catalog facts when a matching catalog row is supplied (DAT-478)", () => {
@@ -126,7 +127,7 @@ describe("projectRelationshipReadiness (DAT-409)", () => {
 		expect(out.cardinality).toBe("many_to_one");
 		expect(out.confidence).toBe(0.91);
 		expect(out.detection_method).toBe("llm");
-		expect(out.is_confirmed).toBe(true);
+		expect(out.confirmation_source).toBe("judge");
 	});
 
 	it("returns null for a non-relationship target (defensive guard)", () => {
@@ -224,7 +225,7 @@ describe("unionRelationships (DAT-478)", () => {
 		expect(rel.relationship_type).toBe("foreign_key");
 		expect(rel.cardinality).toBe("many_to_one");
 		expect(rel.confidence).toBe(0.91);
-		expect(rel.is_confirmed).toBe(true);
+		expect(rel.confirmation_source).toBe("judge");
 	});
 
 	it("surfaces a bands-only readiness row (no catalog match) with null facts", () => {
@@ -240,7 +241,7 @@ describe("unionRelationships (DAT-478)", () => {
 		expect(bands?.relationship_type).toBeNull();
 		expect(bands?.cardinality).toBeNull();
 		expect(bands?.confidence).toBeNull();
-		expect(bands?.is_confirmed).toBeNull();
+		expect(bands?.confirmation_source).toBeNull();
 	});
 
 	it("surfaces a catalog-only relationship (no readiness row) with null bands", () => {
@@ -254,7 +255,7 @@ describe("unionRelationships (DAT-478)", () => {
 		expect(catalogOnly).toBeDefined();
 		// Facts present…
 		expect(catalogOnly?.relationship_type).toBe("foreign_key");
-		expect(catalogOnly?.is_confirmed).toBe(true);
+		expect(catalogOnly?.confirmation_source).toBe("judge");
 		// …bands/intents null — never dropped.
 		expect(catalogOnly?.band).toBeNull();
 		expect(catalogOnly?.worst_intent_risk).toBeNull();
@@ -309,20 +310,20 @@ describe("unionRelationships (DAT-478)", () => {
 
 	it("picks the llm/confirmed row when a pair has BOTH a candidate and an llm row (deterministic winner)", () => {
 		// One promoted run carries multiple rows per directional pair — a structural
-		// `candidate` (is_confirmed=false) AND the `llm` row the selector confirmed
+		// `candidate` (unconfirmed) AND the `llm` row the selector confirmed
 		// (uniqueness includes detection_method). The higher-precedence row (llm beats
 		// candidate) must win regardless of input order, so the surfaced facts are
 		// deterministic — and confidence does NOT flip it (the candidate's is higher).
 		const candidate = catalogRow({
 			detectionMethod: "candidate",
-			isConfirmed: false,
+			confirmationSource: "unconfirmed",
 			confidence: 0.99, // higher confidence must NOT beat the higher-precedence method
 			relationshipType: "structural_candidate",
 			cardinality: "unknown",
 		});
 		const llm = catalogRow({
 			detectionMethod: "llm",
-			isConfirmed: true,
+			confirmationSource: "judge",
 			confidence: 0.8,
 			relationshipType: "foreign_key",
 			cardinality: "many_to_one",
@@ -335,7 +336,7 @@ describe("unionRelationships (DAT-478)", () => {
 			const out = unionRelationships([row()], catalog, wideNames());
 			expect(out).toHaveLength(1);
 			expect(out[0].detection_method).toBe("llm");
-			expect(out[0].is_confirmed).toBe(true);
+			expect(out[0].confirmation_source).toBe("judge");
 			expect(out[0].relationship_type).toBe("foreign_key");
 			expect(out[0].cardinality).toBe("many_to_one");
 			expect(out[0].confidence).toBe(0.8);
@@ -423,7 +424,12 @@ describe("unionRelationships (DAT-478)", () => {
 		// so it must not surface as a catalog-only relationship.
 		const out = unionRelationships(
 			[],
-			[catalogRow({ detectionMethod: "candidate", isConfirmed: false })],
+			[
+				catalogRow({
+					detectionMethod: "candidate",
+					confirmationSource: "unconfirmed",
+				}),
+			],
 			wideNames(),
 		);
 		expect(out).toEqual([]);
@@ -434,7 +440,12 @@ describe("unionRelationships (DAT-478)", () => {
 		// the pair, the (candidate) facts still ride on it — the row is real.
 		const out = unionRelationships(
 			[row()],
-			[catalogRow({ detectionMethod: "candidate", isConfirmed: false })],
+			[
+				catalogRow({
+					detectionMethod: "candidate",
+					confirmationSource: "unconfirmed",
+				}),
+			],
 			wideNames(),
 		);
 		expect(out).toHaveLength(1);

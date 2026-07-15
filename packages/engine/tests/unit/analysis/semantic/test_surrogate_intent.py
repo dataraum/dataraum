@@ -362,6 +362,48 @@ def test_duplicate_llm_relationships_fold_to_one_row(session) -> None:
     assert len(llm_rows) == 1
 
 
+def test_llm_persist_orients_and_marks_judge_confirmed(session) -> None:
+    """Write path 2 (DAT-777/776): the judge emits a single-column FK in the
+    dim-first (measured one-to-many) direction; it persists many→one child→parent,
+    confirmed by the judge. Cardinality rides on the candidate metrics — no duckdb
+    needed. Uses the txn/coa shape so the `_agent` mock's meaning resolves (the
+    DAT-768/769 empty-surface gate)."""
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    cols = {(c.table_id, c.column_name): c.column_id for t in (txn, coa) for c in t.columns}
+    rel = Relationship(
+        relationship_id="rel-1",
+        from_table="coa",  # dim side named FROM (reversed / one-to-many)
+        from_column="account_name",
+        to_table="txn",
+        to_column="account",
+        key_columns=[],
+        relationship_type=RelationshipType.FOREIGN_KEY,
+        confidence=0.9,
+        detection_method="llm_tool",
+        evidence={"source": "table_synthesis"},
+    )
+    candidate = {
+        "table1": "coa",
+        "table2": "txn",
+        "join_columns": [
+            {"column1": "account_name", "column2": "account", "cardinality": "one-to-many"}
+        ],
+    }
+
+    assert _store(session, _agent([rel]), [txn, coa], candidates=[candidate]).success
+    session.flush()
+
+    row = session.execute(
+        select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
+    ).scalar_one()
+    # Flipped to child(txn.account) → parent(coa.account_name), many-to-one.
+    assert row.from_column_id == cols[(txn.table_id, "account")]
+    assert row.to_column_id == cols[(coa.table_id, "account_name")]
+    assert row.cardinality == "many-to-one"
+    assert row.confirmation_source == "judge"
+
+
 # --- Composite VERDICT records (DAT-697) ------------------------------------------
 #
 # Every offered rescue hint is adjudicated: confirmed → a status='confirmed'

@@ -44,7 +44,7 @@ CREATE VIEW __READ__.og_references AS
 SELECT relationship_id::text AS relationship_id,
        from_table_id::text AS from_table_id, to_table_id::text AS to_table_id,
        from_column_id, to_column_id, cardinality, relationship_type,
-       confidence, is_confirmed
+       confidence, confirmation_source
 FROM __READ__.current_relationships r
 WHERE NOT EXISTS (
   SELECT 1 FROM __READ__.current_slice_definitions s1
@@ -116,7 +116,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
       LABEL refs
-      PROPERTIES (cardinality, relationship_type, confidence, is_confirmed,
+      PROPERTIES (cardinality, relationship_type, confidence, confirmation_source,
                   from_column_id, to_column_id),
     __READ__.og_has_dimension KEY (slice_id)
       SOURCE KEY (table_id) REFERENCES og_tables (table_id)

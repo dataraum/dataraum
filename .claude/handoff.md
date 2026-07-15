@@ -153,6 +153,36 @@ accepting business-reality ambiguity. **Re-point every eval read of
 
 Cockpit: drizzle mirror regenerated; look tools / query-context / widgets
 swept to `meaning`; vitest unit suite green (1672).
+## DAT-776/777 — confirmation_source column + FK-orientation canonicalized on every write path
+
+**Branch:** `fix/dat-776-777-confirmation-source-orientation-chokepoint`.
+
+### What changed (response shape)
+
+- **`relationships.is_confirmed` (BOOLEAN) is GONE**, replaced by
+  **`relationships.confirmation_source` (TEXT, NOT NULL, default `'unconfirmed'`)**
+  with the closed vocabulary `unconfirmed | judge | user | keeper` (CHECK-enforced).
+  Any eval/testdata fixture, seed, or assertion keyed on `is_confirmed` must switch
+  to `confirmation_source`. Mapping: candidate/judge-declined → `unconfirmed`, llm
+  judge → `judge`, manual teach → `user`, silent-accept keeper → `keeper`. The old
+  boolean was inverted (judge-confirmed rows read False); this fixes that.
+- **FK orientation is now canonicalized on ALL write paths** (previously only the
+  llm persist path): detector candidates, llm rows, and overlay-materialized
+  manual/keeper rows are all stored many→one, child→parent. A row with
+  `cardinality='one-to-many'` can no longer persist (new CHECK
+  `ck_relationships_cardinality_oriented`). Any seed/oracle that stores a
+  relationship as `one-to-many`, or that asserts candidate rows in the detector's
+  raw (unoriented) direction, must be updated to the canonical direction.
+- Overlay teach matching (reject/confirm/add) is now **undirected** — a teach holds
+  whichever way the pair is named.
+
+### What eval should see
+
+- `og_references` and the cockpit `look_relationships` surface now carry
+  `confirmation_source` instead of `is_confirmed`; a judge-confirmed FK reads
+  `judge`, not the old (wrong) "not confirmed".
+- No calibration/recall change: detection logic (find/evaluate) is untouched — only
+  the STORED orientation of candidates and the confirmation column changed.
 
 ---
 

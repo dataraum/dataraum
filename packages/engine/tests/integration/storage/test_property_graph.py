@@ -139,9 +139,10 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             "INSERT INTO relationships "
             "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
-            " to_column_id, relationship_type, cardinality, confidence, is_confirmed, detected_at) "
+            " to_column_id, relationship_type, cardinality, confidence, confirmation_source, "
+            " detected_at) "
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
-            f"'foreign_key', 'many_to_one', 0.9, true, '{TS}')"
+            f"'foreign_key', 'many_to_one', 0.9, 'judge', '{TS}')"
         )
     # has_dimension: three facts each sliced by their own account_id FK, all resolving
     # the referenced identity dimension_table_id='t2' (the accounts dim). journal (t1)
@@ -175,9 +176,10 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             "INSERT INTO relationships "
             "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
-            " to_column_id, relationship_type, cardinality, confidence, is_confirmed, detected_at) "
+            " to_column_id, relationship_type, cardinality, confidence, confirmation_source, "
+            " detected_at) "
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
-            f"'foreign_key', 'many_to_one', 0.9, true, '{TS}')"
+            f"'foreign_key', 'many_to_one', 0.9, 'judge', '{TS}')"
         )
     for eid, tid, role in [("e_j", "t1", "fact"), ("e_a", "t2", "dimension")]:
         stmts.append(

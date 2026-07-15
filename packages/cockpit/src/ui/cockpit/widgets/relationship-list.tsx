@@ -32,19 +32,25 @@ const TOP_DRIVERS_SHOWN = 2;
 const DASH = "—";
 
 /** The catalog facts cell (DAT-478): type · cardinality, with a confidence caption
- * and a confirmed badge. Every fact is nullable (a bands-only row carries none), so
- * the cell degrades to a dash rather than rendering empty chrome. */
+ * and a confirmation-source badge. Every fact is nullable (a bands-only row carries
+ * none), so the cell degrades to a dash rather than rendering empty chrome. */
 function CatalogFactsCell({ rel }: { rel: RelationshipReadiness }) {
 	const type = rel.relationship_type
 		? humanizeIdentifier(rel.relationship_type)
 		: null;
 	const headline = [type, rel.cardinality].filter(Boolean).join(" · ");
+	// Confirmed = vouched for by judge/user/keeper (DAT-776); `unconfirmed` (or a
+	// bands-only null) is a detected-not-confirmed candidate that shows no badge.
+	const confirmedBy =
+		rel.confirmation_source && rel.confirmation_source !== "unconfirmed"
+			? rel.confirmation_source
+			: null;
 	// A row carries real facts only when there's something to SHOW: a type/cardinality
-	// headline, a confidence caption, or a confirmed badge. `is_confirmed === false`
-	// (detected, not confirmed) renders nothing on its own — without a headline or
-	// confidence it must degrade to a plain dash, not an empty-headline cell + chrome.
+	// headline, a confidence caption, or a confirmation badge. An unconfirmed row
+	// renders nothing on its own — without a headline or confidence it must degrade to
+	// a plain dash, not an empty-headline cell + chrome.
 	const hasFacts =
-		headline.length > 0 || rel.confidence !== null || rel.is_confirmed === true;
+		headline.length > 0 || rel.confidence !== null || confirmedBy !== null;
 
 	if (!hasFacts) {
 		return (
@@ -60,9 +66,9 @@ function CatalogFactsCell({ rel }: { rel: RelationshipReadiness }) {
 				<Text span size="sm">
 					{headline || DASH}
 				</Text>
-				{rel.is_confirmed && (
+				{confirmedBy && (
 					<Badge size="xs" color="green" variant="light">
-						confirmed
+						{humanizeIdentifier(confirmedBy)}
 					</Badge>
 				)}
 			</Group>

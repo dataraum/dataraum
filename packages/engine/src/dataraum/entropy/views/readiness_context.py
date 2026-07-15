@@ -611,14 +611,18 @@ def load_relationship_readiness(session: Session) -> list[EntropyReadinessRecord
         return []
 
     # The current run's live directional column pairs, minus user-dropped ones.
-    live_pairs = set(
-        session.execute(
+    # Suppression is UNDIRECTED (DAT-777): a reject names the pair as taught while
+    # the row is stored canonically, so filter by the unordered pair.
+    suppressed = load_suppressed_relationship_pairs(session)
+    live_pairs = {
+        p
+        for p in session.execute(
             select(Relationship.from_column_id, Relationship.to_column_id).where(
                 Relationship.run_id == current_run,
             )
         ).tuples()
-    )
-    live_pairs -= load_suppressed_relationship_pairs(session)
+        if frozenset(p) not in suppressed
+    }
 
     gated: list[EntropyReadinessRecord] = []
     for rec in rows:

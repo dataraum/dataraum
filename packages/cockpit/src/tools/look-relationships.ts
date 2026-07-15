@@ -88,7 +88,10 @@ const RelationshipReadiness = z.object({
 	cardinality: z.string().nullable(),
 	confidence: z.number().nullable(),
 	detection_method: z.string().nullable(),
-	is_confirmed: z.boolean().nullable(),
+	// Who/what vouches for the edge (DAT-776): unconfirmed | judge | user | keeper.
+	// Replaces the inverted is_confirmed boolean, which read judge-confirmed FKs as
+	// "not confirmed".
+	confirmation_source: z.string().nullable(),
 });
 export type RelationshipReadiness = z.infer<typeof RelationshipReadiness>;
 
@@ -121,7 +124,7 @@ export interface RelationshipCatalogRow {
 	cardinality: string | null;
 	confidence: number | null;
 	detectionMethod: string | null;
-	isConfirmed: boolean | null;
+	confirmationSource: string | null;
 }
 
 /** The catalog facts as they ride on the tool's output shape (null when no match). */
@@ -131,7 +134,7 @@ type CatalogFacts = Pick<
 	| "cardinality"
 	| "confidence"
 	| "detection_method"
-	| "is_confirmed"
+	| "confirmation_source"
 >;
 
 const NO_CATALOG_FACTS: CatalogFacts = {
@@ -139,7 +142,7 @@ const NO_CATALOG_FACTS: CatalogFacts = {
 	cardinality: null,
 	confidence: null,
 	detection_method: null,
-	is_confirmed: null,
+	confirmation_source: null,
 };
 
 /** Endpoint name lookup: column_id → its column + owning table name. */
@@ -177,7 +180,7 @@ function catalogFacts(row: RelationshipCatalogRow | undefined): CatalogFacts {
 		cardinality: row.cardinality ?? null,
 		confidence: row.confidence ?? null,
 		detection_method: row.detectionMethod ?? null,
-		is_confirmed: row.isConfirmed ?? null,
+		confirmation_source: row.confirmationSource ?? null,
 	};
 }
 
@@ -268,7 +271,7 @@ const relMethodRank = (method: string | null): number =>
  * The per-pair catalog winner: a confirmed FK carries MULTIPLE catalog rows in one
  * promoted run — a structural `candidate` row AND an `llm`/`manual`/`keeper` row
  * (uniqueness is `(session_id, run_id, from_column_id, to_column_id, detection_method)`).
- * The facts we surface (`relationship_type` / `is_confirmed` / …) must match the
+ * The facts we surface (`relationship_type` / `confirmation_source` / …) must match the
  * representative row the engine's readiness pass measured, so per pair we pick by the
  * engine's METHOD PRECEDENCE (`manual > keeper > llm > candidate`), NOT confidence —
  * else the surfaced facts can contradict the band on the same row. Confidence is only
@@ -405,7 +408,7 @@ export async function lookRelationships(): Promise<LookRelationshipsResult> {
 			cardinality: currentRelationships.cardinality,
 			confidence: currentRelationships.confidence,
 			detectionMethod: currentRelationships.detectionMethod,
-			isConfirmed: currentRelationships.isConfirmed,
+			confirmationSource: currentRelationships.confirmationSource,
 		})
 		.from(currentRelationships)
 		// The in-memory fold owns winner selection — `unionRelationships` /
@@ -500,7 +503,7 @@ export const lookRelationshipsTool = toolDefinition({
 		"quality drivers per relationship, identified by its directional column pair " +
 		"(from_column_id → to_column_id). Each relationship also carries its catalog " +
 		"facts (relationship_type, cardinality, confidence, detection_method, " +
-		"is_confirmed) — WHAT it is alongside HOW READY it is. Read-only; reflects the " +
+		"confirmation_source) — WHAT it is alongside HOW READY it is. Read-only; reflects the " +
 		"promoted begin_session detect run. pending_teaches counts un-applied teaches " +
 		"across the workspace; if > 0, suggest a `replay` before trusting the bands. Use " +
 		"`why_relationship` to explain a specific relationship's band.",

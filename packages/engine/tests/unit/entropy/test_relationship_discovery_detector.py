@@ -67,7 +67,7 @@ def _add_relationship(
             confidence=confidence,
             detection_method=method,
             evidence=evidence,
-            is_confirmed=False,
+            confirmation_source="unconfirmed",
         )
     )
     db.commit()

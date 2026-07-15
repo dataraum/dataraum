@@ -272,6 +272,7 @@ def test_dim_to_fact_intent_persists_fk_side_first(session, lake) -> None:
         "_sk__account_name__business_id",
     )
     assert rel.cardinality == "many-to-one"
+    assert rel.confirmation_source == "judge"  # a minted composite is judge-confirmed (DAT-776)
     assert rel.evidence["introduces_duplicates"] is False  # measured in the stored direction
     assert rel.evidence["surrogate"]["natural_pairs"] == [
         ["account", "account_name"],

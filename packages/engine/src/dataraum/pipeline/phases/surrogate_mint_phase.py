@@ -314,7 +314,8 @@ class SurrogateMintPhase(BasePhase):
         specs: list[SurrogateSpec] = []
         frozen: set[str] = set()
         for row in rows:
-            if (row.from_column_id, row.to_column_id) in suppressed:
+            # Suppression is undirected (DAT-777) — a reject holds either way.
+            if frozenset((row.from_column_id, row.to_column_id)) in suppressed:
                 continue
             provenance = self._surrogate_provenance(ctx, row)
             if provenance is None:
@@ -643,9 +644,15 @@ class SurrogateMintPhase(BasePhase):
                     "to_table_id": to_table.table_id,
                     "to_column_id": to_col.column_id,
                     "relationship_type": "foreign_key",
+                    # Already oriented many→one above (this writer flips the fqn/spec
+                    # /provenance earlier, before the coverage + RI metrics read them,
+                    # so it can't route through ``Relationship.oriented_row``); the
+                    # ``ck_relationships_cardinality_oriented`` CHECK backstops it.
                     "cardinality": cardinality,
                     "confidence": intent.confidence,
                     "detection_method": "llm",
+                    # A minted composite is a judge-confirmed FK (DAT-776).
+                    "confirmation_source": "judge",
                     "evidence": evidence,
                 }
             ],

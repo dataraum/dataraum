@@ -43,6 +43,7 @@ def test_table_entity_output_parses_multi_time_and_identity() -> None:
                 }
             ],
             "relationships": [],
+            "column_concepts": [],
         }
     )
     table = out.tables[0]
@@ -74,7 +75,29 @@ def test_table_synthesis_output_validates_entities_and_relationships() -> None:
                     "reasoning": "FK by name + value overlap.",
                 }
             ],
+            "column_concepts": [],
         }
     )
     assert out.tables[0].is_fact_table is True
     assert out.relationships[0].to_table == "customers"
+
+
+def test_load_bearing_fields_are_required_in_the_tool_schema() -> None:
+    """``column_concepts`` and ``relationships`` are REQUIRED in the tool schema (DAT-768).
+
+    They were ``default_factory=list``, so a crowded-out omission was schema-legal and
+    the DAT-710 repair turn never fired (the DAT-672 class). Marking them required makes
+    an omission a validation error the repair turn catches — the model must emit the
+    field (``[]`` is still allowed, but the key cannot silently vanish).
+    """
+    required = set(TableSynthesisOutput.model_json_schema()["required"])
+    assert {"tables", "relationships", "column_concepts"} <= required
+
+
+def test_omitting_column_concepts_is_a_validation_error() -> None:
+    """Omitting the whole field now raises — the signal the repair turn keys on."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        TableSynthesisOutput.model_validate({"tables": [], "relationships": []})

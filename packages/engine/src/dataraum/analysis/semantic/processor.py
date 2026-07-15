@@ -5,6 +5,7 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -45,7 +46,12 @@ from dataraum.analysis.semantic.models import (
 from dataraum.analysis.semantic.models import (
     Relationship as SemanticRelationship,
 )
-from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
+from dataraum.analysis.semantic.utils import (
+    annotations_have_measure,
+    load_column_mappings,
+    load_persisted_annotations,
+    load_table_mappings,
+)
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import DecisionSource, Result
 from dataraum.storage.upsert import upsert
@@ -256,6 +262,22 @@ def persist_column_annotations(
     return len(rows)
 
 
+@dataclass(frozen=True)
+class ConceptPersistCounts:
+    """Emitted vs resolved vs dropped for a ``column_concepts`` persist (DAT-768).
+
+    ``emitted`` = concepts the table agent produced; ``resolved`` = rows actually
+    written (name matched a column, after the same-column dedup); ``dropped_unresolved``
+    = concepts whose ``(table, column)`` name matched no column in the batch. A
+    silently-empty load-bearing surface is now a visible count, not indistinguishable
+    from "no concepts to bind".
+    """
+
+    emitted: int
+    resolved: int
+    dropped_unresolved: int
+
+
 def persist_column_concepts(
     session: Session,
     column_concepts: list[ColumnConceptOutput],
@@ -263,7 +285,7 @@ def persist_column_concepts(
     *,
     annotated_by: str,
     run_id: str,
-) -> int:
+) -> ConceptPersistCounts:
     """Persist the table agent's catalogue-grain per-column semantics (DAT-637).
 
     Writes ``ColumnConcept`` rows under the begin_session (catalogue head) run.
@@ -275,14 +297,19 @@ def persist_column_concepts(
     run's.
 
     Returns:
-        Number of concept rows persisted.
+        A :class:`ConceptPersistCounts` breakdown. The counts are logged so a
+        name-resolution wipeout (every emitted concept dropped as unresolved,
+        DAT-768 path #2) is diagnosable rather than indistinguishable from an
+        empty emission; the caller gates begin_session on ``resolved``.
     """
     column_map = load_column_mappings(session, table_ids)
 
     rows: list[dict[str, Any]] = []
+    dropped: list[tuple[str, str]] = []
     for cc in column_concepts:
         column_id = column_map.get((cc.table_name, cc.column_name))
         if not column_id:
+            dropped.append((cc.table_name, cc.column_name))
             continue
         rows.append(
             {
@@ -306,7 +333,24 @@ def persist_column_concepts(
     rows = list(deduped.values())
 
     upsert(session, ConceptModel, rows, index_elements=["column_id", "run_id"])
-    return len(rows)
+
+    counts = ConceptPersistCounts(
+        emitted=len(column_concepts),
+        resolved=len(rows),
+        dropped_unresolved=len(dropped),
+    )
+    logger.info(
+        "column_concepts_persisted",
+        emitted=counts.emitted,
+        resolved=counts.resolved,
+        dropped_unresolved=counts.dropped_unresolved,
+    )
+    if dropped:
+        # The exact names the agent echoed that resolved to no column — the signal
+        # that distinguishes a naming drift (case, enriched prefix, display name)
+        # from a genuinely empty emission.
+        logger.debug("column_concepts_dropped_unresolved", dropped=dropped)
+    return counts
 
 
 def ground_columns(
@@ -640,6 +684,17 @@ def _build_surrogate_intent(
 REL_CONFIRM_MIN = 0.7
 
 
+def _batch_has_measures(session: Session, table_ids: list[str]) -> bool:
+    """Whether any column in the batch carries the ``measure`` semantic role.
+
+    The upstream per-column phase has already annotated roles. A batch that holds
+    a measure is one that MUST bind at least one ontology concept, so zero resolved
+    ``column_concepts`` for it is an emptied surface, not a plausible judgment
+    (DAT-768). Reads the same persisted annotations the table agent saw.
+    """
+    return annotations_have_measure(load_persisted_annotations(session, table_ids))
+
+
 def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
@@ -882,12 +937,28 @@ def synthesize_and_store_tables(
         annotated_by = agent.provider.get_model_for_tier(
             agent.config.features.semantic_analysis.model_tier
         )
-        persist_column_concepts(
+        counts = persist_column_concepts(
             session,
             enrichment.column_concepts,
             table_ids,
             annotated_by=annotated_by,
             run_id=run_id,
         )
+        # DAT-768: the column_concepts surface is load-bearing — every metric's
+        # measure→concept binding grounds on it. With measure-role columns in the
+        # batch, ZERO resolved concepts is not a judgment; it is an emptied surface
+        # (the agent under-produced the whole field, or every name it echoed failed
+        # to resolve) that would silently collapse all downstream grounding. Fail
+        # begin_session loud rather than ship it green — the agent already
+        # re-prompted once on an empty emission (see synthesize_tables), so a
+        # still-empty surface here is a real defect, not a flake. This gates on
+        # emptiness of the surface, never on any specific concept judgment.
+        if counts.resolved == 0 and _batch_has_measures(session, table_ids):
+            return Result.fail(
+                "column_concepts empty despite measure-role columns in the batch "
+                f"(emitted={counts.emitted}, resolved=0, "
+                f"dropped_unresolved={counts.dropped_unresolved}) — metric grounding "
+                "would collapse (DAT-768)."
+            )
 
     return Result.ok(enrichment)

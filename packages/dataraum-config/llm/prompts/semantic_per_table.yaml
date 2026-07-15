@@ -49,8 +49,10 @@ system_prompt: |
   </grain_split>
 
   <column_concepts>
-  Emit a column_concepts entry ONLY for columns that carry at least one of these;
-  omit every other column.
+  Emit a column_concepts entry for EVERY column that carries at least one of these —
+  a measure column always carries a business_concept. Omit only columns that
+  genuinely carry none; returning an empty column_concepts when the schema has
+  measure columns is an error, not a shortcut.
 
   - business_concept: the EXACT ontology concept a column GROUNDS (e.g. 'revenue',
     'accounts_receivable'). Bind ONLY a genuine discriminator the analyst can

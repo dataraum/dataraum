@@ -5,6 +5,41 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-768 — empty column_concepts falls loud (salvaged from PR #483)
+
+**Branch:** `fix/dat-768-empty-concepts-fall-loud`. The `column_concepts` surface
+(metric grounding, cycles field mappings) could come out EMPTY while the phase
+reported success — observed 2/3 runs on 2026-07-14, one of them fully green.
+Mechanical honesty fixes only; the DAT-769-directed prompt-binding commits from
+PR #483 are dropped (that question is being retired — see DAT-769 redesign).
+
+### What changed
+
+- `TableSynthesisOutput.column_concepts` and `.relationships` are **REQUIRED
+  tool-schema fields** (no `default_factory`): wholesale omission is now a
+  validation error the DAT-710 repair turn catches, instead of schema-legal
+  silence.
+- `persist_column_concepts` returns an emitted/resolved/dropped_unresolved
+  breakdown and logs `column_concepts_persisted` (+ a debug list of the exact
+  unresolved names) — a name-resolution wipeout is diagnosable, not
+  indistinguishable from an empty emission.
+- `synthesize_and_store_tables` **fails begin_session loud** when zero concepts
+  resolve while the batch has measure-role columns — an emptied load-bearing
+  surface, never a plausible judgment. Gates on emptiness only, never on any
+  specific binding (ADR-0009).
+- `semantic_analysis.effort: high` pinned explicitly in `llm/config.yaml`
+  (no-op vs the current API default; removes the hidden dependency).
+
+### What eval should see
+
+- A DAT-768 recurrence now fails the `semantic_per_table` phase with
+  `column_concepts empty despite measure-role columns...` instead of going
+  green with 0 rows; worker.log carries `column_concepts_persisted
+  (emitted=…, resolved=…, dropped_unresolved=…)` per batch.
+- No behavior change when concepts are produced (the common case).
+
+---
+
 ## DAT-759 — aggregation-lineage convention selection is support-first (Wilson LCB)
 
 **Branch:** `fix/dat-759-convention-selection`. `discover_aggregation_lineage`

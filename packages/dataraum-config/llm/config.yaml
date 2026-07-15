@@ -28,6 +28,14 @@ features:
   semantic_analysis:
     enabled: true
     model_tier: balanced
+    # Pin the API default explicitly (DAT-768). Omitting output_config.effort means
+    # the Anthropic server-side default — currently "high" — so this is a no-op on
+    # behavior, but it removes the hidden dependency on that default and states the
+    # intent: semantic_per_table is a large batched extraction that also authors the
+    # load-bearing column_concepts field, and must stay at high. The structural
+    # anti-crowd-out fix is making column_concepts a REQUIRED tool-schema field
+    # (models.py) so an omission is a validation error the repair turn catches.
+    effort: high
 
   slicing_analysis:
     enabled: true

@@ -99,7 +99,6 @@ class RelationshipsPhase(BasePhase):
         else:
             config = load_phase_config("relationships")
         min_confidence = config["min_confidence"]
-        sample_percent = config["sample_percent"]
 
         # Run relationship detection
         detection_result = detect_relationships(
@@ -107,7 +106,6 @@ class RelationshipsPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             session=ctx.session,
             min_confidence=min_confidence,
-            sample_percent=sample_percent,
             evaluate=True,
             run_id=ctx.run_id,
         )

@@ -5,6 +5,106 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-794 — Layer-A relationship detection is now deterministic
+
+**Branch:** `fix/dat-794-layer-a-determinism`. Both unseeded sampling sites in
+Layer-A candidate detection are gone — repeated pipeline runs over the same
+data now produce identical relationship candidates and identical LLM evidence.
+
+### What changed
+
+- `joins.py`: the reservoir-sampled middle band (10K–1M distinct) is DELETED —
+  exact Jaccard/containment below 1M distinct, MinHash (deterministic,
+  hash-based) above. The probe showed the sampled band was slower than exact
+  at every scale it covered (59ms vs 17ms at 1M distinct) and dropped subset
+  FKs (true Jaccard below min_score, rescued only by containment≥0.95) in
+  ~30% of runs — on the calibration corpus that was
+  `invoices.entry_id → journal_entries.entry_id` at 35/50 detection.
+- Containment is now FRACTIONAL, exact, ≥0.95 to rescue (uniform across all
+  sizes; still gated at >10 distinct). Previously the exact path required
+  100% containment — a dirty subset FK (a few orphans, e.g. an orphan
+  injection) whose Jaccard sits below the gate would have been dropped
+  deterministically; now it yields a candidate scored at its true containment
+  (e.g. 0.98) so the RI evaluator can quantify the orphans. Expect candidates
+  for dirty FKs that previously vanished, with honest fractional scores
+  instead of a snapped 1.0.
+- `finder.py` `_uniqueness_ratio`: the 10% Bernoulli row sample is DELETED —
+  exact `COUNT(DISTINCT)/COUNT(*)`. The sampled ratio was a *biased* estimator
+  (sample-distinct/sample-rows), overstating uniqueness of FK-like columns at
+  any rate (measured 0.93–0.95 for a true 0.47); the value feeds the semantic
+  LLM prompt as `[uniq: L= R=]` key-vs-measure evidence, so it was both
+  nondeterministic prompt churn AND misinformation.
+- `sample_percent` is gone end-to-end: `detect_relationships` /
+  `find_relationships` signatures, `relationships_phase`, and
+  `phases/relationships.yaml` (key deleted).
+
+### What eval should expect
+
+- Layer-A candidates stable across runs — candidate-set diffs between reps of
+  the same strategy now indicate a real bug, not sampling noise.
+- Uniqueness ratios in candidates/prompts are exact; expect shifted values
+  (e.g. journal_lines.entry_id 0.47, not ~0.94).
+- Two clean-corpus FKs remain undetectable at Layer A by design
+  (`bank_transactions.account_id` and `balance_sheet.account_id` → chart, 2
+  and 7 distinct values): statistically invisible to any overlap measure —
+  LLM-lane territory (DAT-762), documented on DAT-794.
+  
+## DAT-786 — column_concepts.temporal_behavior_contested removed (verdict is authoritative)
+
+**Branch:** `fix/dat-786-remove-contested-flag`. Lead ruling (DAT-772 Gate 3):
+the reconciled `temporal_behavior` verdict IS the adjudication outcome — a
+parallel "contested" doubt-flag downstream second-guessed a deterministic,
+correct resolution.
+
+### What changed
+
+- **Schema:** `column_concepts.temporal_behavior_contested` (BOOLEAN) is GONE —
+  model column, resolve-pass write, `schema.sql`, and the cockpit Drizzle mirror.
+  Any eval/testdata fixture or assertion reading that column must drop it; test
+  DBs recreate (no migration, per the no-backfill rule).
+- **Resolve pass** (`entropy/resolve.py`): still writes the adjudicated
+  `temporal_behavior`; a witness disagreement now emits a
+  `temporal_behavior_contested` **log line** (column_id, run_id, resolved) —
+  diagnostic only, the resolved value wins unchanged.
+- **Detector unchanged:** the `temporal_behavior` EntropyObject evidence still
+  carries its `contested` key (pooled-conflict observability); only the
+  ColumnConcept persistence + downstream serving were cut.
+- **Cockpit drill flow-gate reversal (DAT-673):** a contested `additive` was
+  treated as stock (time-grain slice withheld); it is now trusted as additive —
+  the drill's axis menu offers the time grain wherever the reconciled verdict
+  says flow.
+
+### What eval should see
+
+- No detector/calibration change: same adjudication, same resolved labels.
+- Downstream shape change only: `column_concepts` has one fewer column; drill
+  axis menus may now offer time-grain on measures the old gate withheld.
+
+## DAT-775 — grain_columns persists as a bare list; cycle prompt renders real grain
+
+**Branch:** `fix/dat-775-grain-columns-bare-list`. `table_entities.grain_columns`
+was written as `{"columns": [...]}` — an unenforced wrapper convention. The
+cycle-detection context joined the raw value into its prompt, and joining a dict
+iterates its KEYS, so every table's grain rendered as the literal string
+`grain: columns`. Live prompt corruption.
+
+### What changed
+
+- The writer persists a bare JSON list of column names; the SQLAlchemy column is
+  typed `Mapped[list[str] | None]` (no DDL change — JSON stays JSON).
+- The defensive dict-or-list unwrap in `graphs/context.py` is deleted; the
+  cockpit's `look_table`/`query-context` grain parser is a bare `string[]` only.
+- No backfill: existing workspaces re-run `add_source` (test DBs recreate).
+
+### What eval should see
+
+- The cycle-detection prompt's TABLE CLASSIFICATIONS section now carries each
+  table's actual grain columns (`grain: account_id, period`) instead of
+  `grain: columns` for every table — cycle-detection quality may shift;
+  re-baseline any cycle evals that snapshot prompts or scores.
+
+---
+
 ## DAT-769 — business_concept retired: meaning-as-context semantic layer
 
 **Branch:** `feat/dat-769-meaning-as-context`. The single categorical
@@ -83,6 +183,34 @@ swept to `meaning`; vitest unit suite green (1672).
   `judge`, not the old (wrong) "not confirmed".
 - No calibration/recall change: detection logic (find/evaluate) is untouched — only
   the STORED orientation of candidates and the confirmation column changed.
+
+---
+
+## DAT-779/784 — dimension_hierarchies persist-contract hardening (response shape)
+
+**Branch:** `fix/dat-779-784-hierarchy-contract`. **Persist-shape change only — no
+detector/verdict logic changed, so calibration numbers do NOT move** (`stats.py`
+untouched; the same structures are found with the same g3/verdicts). A reader that
+queries `dimension_hierarchies` columns by name must update:
+
+- **`score` column is RENAMED → `g3`** (kind-invariant: the g3 evidence for
+  drilldown/alias; NULL for `kind='role'` and value_systematic/abstain aliases,
+  which have no functional dependency). Any eval query selecting `.score` on this
+  table breaks — rename to `.g3`.
+- **New column `role_verdict`** (VARCHAR, nullable, `CHECK IN ('abstain','dirt',
+  'role','value_systematic')`): the stack-v4 role-check outcome; NULL on rows with
+  no role check. VALUE_SYSTEMATIC and ABSTAIN aliases are now distinguishable
+  (they used to collapse to one bare `needs_confirmation` alias — DAT-784).
+- **New column `role_evidence`** (JSON, nullable): `{t1_p, t1_context, t2_p,
+  k_disagree, alpha, disagree_rate}` — the role-check evidence (the disagreement
+  rate that was formerly conflated into `score` now lives here).
+- **`members[]` JSON entries gain a `level` int** (0 = coarsest, increasing =
+  finer) and are stored coarse→fine. Drilldown member order is now read by `level`,
+  not array position (DAT-779) — a testdata/eval assertion on drilldown member
+  order should sort by `level`.
+
+No `--reset`/backfill: test DBs recreate (this is a breaking schema change, by
+design). DAT-762 (conform/role judge) will consume `role_verdict` + `role_evidence`.
 
 ---
 

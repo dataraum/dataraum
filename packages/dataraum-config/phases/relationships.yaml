@@ -1,3 +1,2 @@
 # Relationship detection configuration
 min_confidence: 0.5        # Minimum Jaccard/containment score threshold
-sample_percent: 10.0       # Percentage of rows to sample for uniqueness calculation

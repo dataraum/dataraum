@@ -13,7 +13,6 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
-    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -331,10 +330,10 @@ class ColumnConcept(Base):
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural
-            witness.
-        temporal_behavior_contested: set by the resolved-layer pass when the LLM's
-            ``temporal_behavior_claim`` and the data-grounded structural witness
-            pool to a non-trivial conflict.
+            witness. This verdict is authoritative on its own — DAT-786 removed
+            the parallel "contested" doubt flag; a disagreement between the LLM
+            claim and the structural witness is logged at the resolve site, not
+            persisted downstream.
         unit_source_column: the column (possibly ``table.column`` via a confirmed
             FK) that defines this measure's unit.
         derived_formula_hypothesis / _confidence: the arithmetic this column
@@ -356,7 +355,6 @@ class ColumnConcept(Base):
 
     meaning: Mapped[str | None] = mapped_column(Text)
     temporal_behavior: Mapped[str | None] = mapped_column(String)
-    temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
     unit_source_column: Mapped[str | None] = mapped_column(String)
     derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
     derived_formula_confidence: Mapped[float | None] = mapped_column(Float)
@@ -393,10 +391,13 @@ class TableEntity(Base):
     )  # 'customer', 'order', 'product', etc.
     description: Mapped[str | None] = mapped_column(Text)
 
-    # Grain analysis
-    grain_columns: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON
-    )  # List of column IDs that define grain
+    # Grain analysis. A bare JSON list of column NAMES that uniquely identify
+    # each row (DAT-775) — NOT a ``{"columns": [...]}`` wrapper. The wrapper
+    # shape was an unenforced convention: one reader (``cycles/context.py``)
+    # joined the persisted value directly, so a wrapped dict rendered its sole
+    # key ("columns") as the grain in the cycle-detection prompt instead of the
+    # real columns. Nullable: an unclassified stub has no grain.
+    grain_columns: Mapped[list[str] | None] = mapped_column(JSON)
     # The table's operating-model role (DAT-728): fact | periodic_snapshot |
     # dimension (see :class:`TableRole`). Replaces the two booleans; the
     # PeriodicSnapshot subtype is derived from grain∩time at classification and

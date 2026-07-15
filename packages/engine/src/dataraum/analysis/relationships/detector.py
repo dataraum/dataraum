@@ -35,7 +35,6 @@ def detect_relationships(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
     min_confidence: float = 0.3,
-    sample_percent: float = 10.0,
     evaluate: bool = True,
     run_id: str | None = None,
 ) -> Result[RelationshipDetectionResult]:
@@ -43,13 +42,14 @@ def detect_relationships(
 
     Uses value overlap (Jaccard/containment) to find joinable column pairs.
     Candidates are stored for semantic analysis to confirm/reject.
+    Fully deterministic (DAT-794): no sampling anywhere below 1M distinct
+    values, so repeated runs over the same data produce identical candidates.
 
     Args:
         table_ids: List of table IDs to analyze
         duckdb_conn: DuckDB connection
         session: SQLAlchemy async session
         min_confidence: Minimum join_confidence threshold (default 0.3)
-        sample_percent: Percentage of rows to sample for uniqueness calculation
         evaluate: Whether to evaluate candidates with quality metrics (default True)
 
     Returns:
@@ -79,9 +79,7 @@ def detect_relationships(
             )
 
         # Find relationships via value overlap
-        raw_results = find_relationships(
-            duckdb_conn, tables_data, min_confidence, sample_percent=sample_percent
-        )
+        raw_results = find_relationships(duckdb_conn, tables_data, min_confidence)
 
         # Convert to typed models
         candidates = [

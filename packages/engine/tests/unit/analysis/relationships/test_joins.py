@@ -145,8 +145,10 @@ class TestSelectAlgorithm:
     def test_small_uses_exact(self):
         assert _select_algorithm(self._stats(100), self._stats(500)) == JoinAlgorithm.EXACT
 
-    def test_medium_uses_sampled(self):
-        assert _select_algorithm(self._stats(50_000), self._stats(50_000)) == JoinAlgorithm.SAMPLED
+    def test_medium_uses_exact(self):
+        # The 10K–1M reservoir-sampled band was deleted in DAT-794 (slower than
+        # exact AND nondeterministic); everything below 1M distinct is exact.
+        assert _select_algorithm(self._stats(50_000), self._stats(50_000)) == JoinAlgorithm.EXACT
 
     def test_large_uses_minhash(self):
         assert (

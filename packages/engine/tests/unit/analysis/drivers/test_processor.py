@@ -82,12 +82,17 @@ def _seed(
             table_id=fact.table_id,
             kind="alias",
             members=[
-                {"column_name": "D_e25", "column_id": col_id["D_e25"], "distinct_count": 4},
-                {"column_name": ALIAS, "column_id": col_id[ALIAS], "distinct_count": 4},
+                {
+                    "column_name": "D_e25",
+                    "column_id": col_id["D_e25"],
+                    "distinct_count": 4,
+                    "level": 0,
+                },
+                {"column_name": ALIAS, "column_id": col_id[ALIAS], "distinct_count": 4, "level": 1},
             ],
             canonical_label="D_e25",
             signature=f"alias:{fact.table_id}:D_e25|{ALIAS}",
-            score=0.0,
+            g3=0.0,
         )
     )
     session.add(

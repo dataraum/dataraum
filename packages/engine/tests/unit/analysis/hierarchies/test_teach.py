@@ -45,24 +45,27 @@ class TestHierarchyTeach:
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_sales(real_session, duck)
-        # The g3 pass finds zip → city → state; rejecting it (by member set, any
-        # order) drops the structure this run.
+        # The g3 pass finds the zip/city/state chain; rejecting it (by member set,
+        # any order) drops the structure this run. Stored coarse → fine (DAT-779).
         _teach(real_session, "reject", tid, ["state", "zip", "city"])
         _discover(real_session, duck, tid)
-        assert ("zip", "city", "state") not in _by_members(real_session, "drilldown")
+        assert ("state", "city", "zip") not in _by_members(real_session, "drilldown")
 
     def test_add_materializes_manual_drilldown(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_sales(real_session, duck)
-        # Assert a chain the g3 pass would not surface on its own (city alone → state
-        # is found, but an explicit add of a 2-level chain lands as a manual row).
+        # Assert a chain the g3 pass would not surface on its own. The teach INPUT is
+        # finest → coarsest (``city, state``); STORAGE is coarse → fine with explicit
+        # levels (DAT-779), so it lands as ``state → city``.
         _teach(real_session, "add", tid, ["city", "state"])
         _discover(real_session, duck, tid)
-        row = _by_members(real_session, "drilldown")[("city", "state")]
+        row = _by_members(real_session, "drilldown")[("state", "city")]
         assert row.detection_source == "manual"
         assert row.needs_confirmation is False
-        assert row.canonical_label == "city → state"
+        assert row.canonical_label == "state → city"
+        assert [m["level"] for m in row.members] == [0, 1]
+        assert row.g3 == 0.0  # a manual add asserts an exact FD
         # The catalog resolves the member column ids (provenance), not left blank.
         assert all(m["column_id"] for m in row.members)
 
@@ -90,5 +93,5 @@ class TestHierarchyTeach:
         real_session.add(overlay)
         real_session.flush()
         _discover(real_session, duck, tid)
-        # The reject was undone (superseded) → the g3 chain survives.
-        assert ("zip", "city", "state") in _by_members(real_session, "drilldown")
+        # The reject was undone (superseded) → the g3 chain survives (coarse → fine).
+        assert ("state", "city", "zip") in _by_members(real_session, "drilldown")

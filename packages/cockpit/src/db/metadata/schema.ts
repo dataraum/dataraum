@@ -103,7 +103,6 @@ export const currentColumnConcepts = metadataSchema
 		runId: varchar("run_id"),
 		meaning: text(),
 		temporalBehavior: varchar("temporal_behavior"),
-		temporalBehaviorContested: boolean("temporal_behavior_contested"),
 		unitSourceColumn: varchar("unit_source_column"),
 		derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
 		derivedFormulaConfidence: doublePrecision("derived_formula_confidence"),
@@ -113,7 +112,7 @@ export const currentColumnConcepts = metadataSchema
 		confidence: doublePrecision(),
 	})
 	.as(
-		sql`SELECT concept_id, column_id, run_id, meaning, temporal_behavior, temporal_behavior_contested, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.column_concepts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT concept_id, column_id, run_id, meaning, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.column_concepts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentColumnEligibility = metadataSchema
@@ -206,13 +205,15 @@ export const currentDimensionHierarchies = metadataSchema
 		members: json(),
 		canonicalLabel: varchar("canonical_label"),
 		signature: varchar(),
-		score: doublePrecision(),
+		g3: doublePrecision(),
+		roleVerdict: varchar("role_verdict"),
+		roleEvidence: json("role_evidence"),
 		detectionSource: varchar("detection_source"),
 		needsConfirmation: boolean("needs_confirmation"),
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	})
 	.as(
-		sql`SELECT hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, score, detection_source, needs_confirmation, created_at FROM ws_00000000_0000_0000_0000_000000000001.dimension_hierarchies r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, g3, role_verdict, role_evidence, detection_source, needs_confirmation, created_at FROM ws_00000000_0000_0000_0000_000000000001.dimension_hierarchies r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentDriverRankings = metadataSchema

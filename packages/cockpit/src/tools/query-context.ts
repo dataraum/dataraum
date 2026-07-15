@@ -137,12 +137,9 @@ export interface SchemaColumnRow {
  * plus the resolved stock/flow adjudication (DAT-509): `temporalBehavior` is
  * the pooled-resolved value the resolve layer wrote onto the annotation
  * (`additive` = flow, `point_in_time` = stock — never SUM a stock across
- * periods). The contested flag is DELIBERATELY NOT served to the agent
- * (decision 2026-07-07, mirrors the engine GraphAgent): the adjudication
- * outperforms an LLM reading stock/flow from metadata alone, so the agent
- * gets the resolved verdict as settled fact — a contested tag would invite
- * second-guessing by the weaker judge. The flag's consumer is the human
- * teach lane (why_column renders it). */
+ * periods). This is the reconciled verdict served as settled fact: the resolve
+ * pass already adjudicated the LLM claim vs the data-grounded structural
+ * witness (DAT-786), so there is no separate doubt flag to carry here. */
 export interface SchemaConceptRow {
 	columnId: string;
 	meaning: string | null;
@@ -193,7 +190,7 @@ export function formatSchema(
 				: "";
 			// Mirror the engine's render (graphs/context.py): the resolved
 			// stock/flow behaviour as a parenthesized marker, served as settled
-			// fact (no contested tag — see SchemaConceptRow).
+			// fact (see SchemaConceptRow).
 			const temporalTag = semantic?.temporalBehavior
 				? ` (${semantic.temporalBehavior})`
 				: "";
@@ -343,11 +340,13 @@ export interface CatalogAxisRow {
 }
 
 /** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
- * drill-down chain. `members` is the engine's JSON array of `{column_name}`. */
+ * drill-down chain. `members` is the engine's JSON array; order is carried by each
+ * member's `level` (the engine's HierarchyMember contract, DAT-779), NOT by array
+ * position — read ascending by level. */
 export interface CatalogHierarchyRow {
 	tableId: string;
 	kind: string;
-	members: Array<{ column_name?: string | null }>;
+	members: Array<{ column_name?: string | null; level?: number | null }>;
 	canonicalLabel: string | null;
 }
 
@@ -362,8 +361,15 @@ function hierarchyLine(h: CatalogHierarchyRow): string | null {
 		if (others.length === 0) return null;
 		return `  alias: "${canonical}" ≡ ${others.map((n) => `"${n}"`).join(", ")} (group by the canonical only)`;
 	}
-	// Drill-down / FD chain — members are ordered coarse→fine by the engine.
-	return `  drill-down: ${names.map((n) => `"${n}"`).join(" → ")}`;
+	// Drill-down / FD chain. Order is `level`, not array position (DAT-779) — sort
+	// ascending by level before joining; fall back to the array index only if a
+	// level is somehow absent.
+	const ordered = h.members
+		.map((m, i) => ({ name: m.column_name, level: m.level ?? i }))
+		.sort((a, b) => a.level - b.level)
+		.map((m) => m.name)
+		.filter((n): n is string => typeof n === "string" && n.length > 0);
+	return `  drill-down: ${ordered.map((n) => `"${n}"`).join(" → ")}`;
 }
 
 /**

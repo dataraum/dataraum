@@ -12,15 +12,24 @@ from __future__ import annotations
 from uuid import uuid4
 
 import duckdb
+import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
+from dataraum.analysis.hierarchies.db_models import (
+    DimensionHierarchy,
+    HierarchyMember,
+    RoleEvidence,
+)
 from dataraum.analysis.hierarchies.processor import (
     _break_cycles,
     _maximal_chains,
+    _validated_members,
     discover_dimension_hierarchies,
 )
+from dataraum.analysis.hierarchies.stats import RoleResult, RoleVerdict
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column
@@ -40,11 +49,17 @@ def _rows(session: Session, table_id: str, kind: str) -> list[DimensionHierarchy
 
 
 def _members(row: DimensionHierarchy) -> list[str]:
+    """Member column names in persisted array order (coarse → fine for a drilldown)."""
     return [m["column_name"] for m in row.members]
 
 
+def _levels(row: DimensionHierarchy) -> list[int]:
+    """The ``level`` of each member, in persisted array order."""
+    return [m["level"] for m in row.members]
+
+
 class TestDiscoverDimensionHierarchies:
-    def test_drilldown_chain_finest_to_coarsest(
+    def test_drilldown_chain_coarsest_to_finest_by_level(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_sales(real_session, duck)
@@ -58,12 +73,34 @@ class TestDiscoverDimensionHierarchies:
         assert len(drills) == 1
         row = drills[0]
         # Aliases collapse to canonical (zip < zip_code, state < state_name); the
-        # chain is finest → coarsest with the transitive zip → state edge reduced out.
-        assert _members(row) == ["zip", "city", "state"]
-        assert row.canonical_label == "zip → city → state"
-        assert row.score <= 0.01
+        # chain is stored coarse → fine with the transitive state → zip edge reduced
+        # out. ``level`` carries the direction: 0 = coarsest (DAT-779).
+        assert _members(row) == ["state", "city", "zip"]
+        assert _levels(row) == [0, 1, 2]
+        assert row.canonical_label == "state → city → zip"
+        # g3 replaces the overloaded ``score`` (kind-invariant, DAT-784).
+        assert row.g3 is not None and row.g3 <= 0.01
+        assert row.role_verdict is None and row.role_evidence is None
         assert row.run_id == RUN
         assert row.needs_confirmation is False
+
+    def test_drilldown_member_shape_matches_cockpit_contract(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The persisted ``members`` JSON is exactly the shape the cockpit reader
+        (query-context.ts ``CatalogHierarchyRow``) expects — the offline-DDL seam
+        contract (DAT-779): each entry is {column_name, column_id, distinct_count,
+        level}, and ``level`` (0 = coarsest) is the authoritative order, not array
+        position."""
+        tid = seed_sales(real_session, duck)
+        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        row = _rows(real_session, tid, "drilldown")[0]
+        for member in row.members:
+            assert set(member) == {"column_name", "column_id", "distinct_count", "level"}
+        # level is a contiguous 0..n-1 permutation; sorting by it yields coarse → fine.
+        assert sorted(m["level"] for m in row.members) == list(range(len(row.members)))
+        by_level = [m["column_name"] for m in sorted(row.members, key=lambda m: m["level"])]
+        assert by_level == ["state", "city", "zip"]
 
     def test_one_to_one_aliases_collapse(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
@@ -156,7 +193,9 @@ class TestStackV4:
         )
         discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
         chains = [_members(r) for r in _rows(real_session, tid, "drilldown")]
-        assert ["det", "flag"] in chains
+        # Stored coarse → fine: ``flag`` (2 distinct, coarsest) determines nothing
+        # finer than ``det`` (50 distinct) — det → flag reversed for storage.
+        assert ["flag", "det"] in chains
         assert all("vacuous" not in c for c in chains)
 
     def test_dirty_true_edge_kept(
@@ -171,8 +210,9 @@ class TestStackV4:
         tid = seed_view(real_session, duck, "dirty_geo", {"city": city, "state": state})
         discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
         drills = _rows(real_session, tid, "drilldown")
-        assert [_members(r) for r in drills] == [["city", "state"]]
-        assert 0.0 < drills[0].score <= 0.01
+        # Coarse → fine: state (coarser) before city (finer).
+        assert [_members(r) for r in drills] == [["state", "city"]]
+        assert drills[0].g3 is not None and 0.0 < drills[0].g3 <= 0.01
 
     def test_role_pair_kept_apart(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
@@ -202,6 +242,16 @@ class TestStackV4:
         roles = _rows(real_session, tid, "role")
         assert [_members(r) for r in roles] == [["billto", "soldto"]]
         assert roles[0].needs_confirmation is False
+        # The verdict + evidence are persisted, not lost to a log line (DAT-784):
+        # 'role' with T1 (channel) as the discriminating context, no g3 (a role pair
+        # has no functional dependency), and the disagreement rate in the evidence.
+        row = roles[0]
+        assert row.role_verdict == "role"
+        assert row.g3 is None
+        assert row.role_evidence is not None
+        assert row.role_evidence["t1_context"] == "channel"
+        assert row.role_evidence["k_disagree"] > 0
+        assert 0.0 < row.role_evidence["disagree_rate"] < 0.05
         # Not merged, and no drilldown stacks the two role siblings as levels.
         for r in _rows(real_session, tid, "alias") + _rows(real_session, tid, "drilldown"):
             assert not {"soldto", "billto"} <= set(_members(r))
@@ -218,7 +268,7 @@ class TestStackV4:
         tid = seed_view(real_session, duck, "null_geo", {"city": city, "state": state})
         discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
         drills = _rows(real_session, tid, "drilldown")
-        assert [_members(r) for r in drills] == [["city", "state"]]
+        assert [_members(r) for r in drills] == [["state", "city"]]  # coarse → fine
 
     def test_sub_floor_null_support_surfaces_not_drops(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
@@ -234,7 +284,7 @@ class TestStackV4:
         tid = seed_view(real_session, duck, "sparse_geo", {"city": city, "state": state})
         discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
         drills = _rows(real_session, tid, "drilldown")
-        assert [_members(r) for r in drills] == [["city", "state"]]
+        assert [_members(r) for r in drills] == [["state", "city"]]  # coarse → fine
         assert drills[0].needs_confirmation is True
 
     def test_null_coded_columns_alias(
@@ -365,3 +415,125 @@ class TestDimensionHierarchiesPhaseSkip:
 
         tid = seed_sales(real_session, duck)
         assert DimensionHierarchiesPhase().should_skip(self._ctx(real_session, duck, [tid])) is None
+
+
+def _member_json(name: str, level: int) -> dict[str, object]:
+    return {"column_name": name, "column_id": "", "distinct_count": None, "level": level}
+
+
+def _bare_row(**overrides: object) -> DimensionHierarchy:
+    """A minimal well-formed row; overrides poke one field for a rejection test."""
+    fields: dict[str, object] = {
+        "run_id": RUN,
+        "table_id": "t1",
+        "kind": "alias",
+        "members": [_member_json("a", 0), _member_json("b", 1)],
+        "canonical_label": "a",
+        "signature": f"alias:t1:{uuid4()}",
+    }
+    fields.update(overrides)
+    return DimensionHierarchy(**fields)
+
+
+class TestPersistenceContract:
+    """The verdict/evidence persistence contract (DAT-784) and the member-level
+    JSON contract (DAT-779) — the two-layer standard: a DB CheckConstraint on the
+    closed-vocabulary column, and strict Pydantic submodels on the JSON interiors."""
+
+    def test_role_verdict_check_rejects_unknown(self, real_session: Session) -> None:
+        """An out-of-vocabulary ``role_verdict`` is rejected at the DB layer
+        (the DAT-781 two-layer standard flush-rejection test)."""
+        real_session.add(_bare_row(role_verdict="bogus"))
+        with pytest.raises(IntegrityError):
+            real_session.flush()
+
+    def test_value_systematic_and_abstain_are_distinguishable(self, real_session: Session) -> None:
+        """The exact DAT-784 bug: the two undecidable verdicts used to collapse to
+        one bare ``needs_confirmation`` alias. Now the column tells them apart, and
+        the evidence survives."""
+        vs = RoleEvidence(
+            t1_p=0.3, t1_context="ctx", t2_p=0.01, k_disagree=40, alpha=0.01, disagree_rate=0.02
+        ).model_dump()
+        ab = RoleEvidence(
+            t1_p=1.0, t1_context=None, t2_p=1.0, k_disagree=3, alpha=0.01, disagree_rate=0.003
+        ).model_dump()
+        real_session.add(
+            _bare_row(role_verdict="value_systematic", role_evidence=vs, needs_confirmation=True)
+        )
+        real_session.add(
+            _bare_row(role_verdict="abstain", role_evidence=ab, needs_confirmation=True)
+        )
+        real_session.flush()
+        real_session.expire_all()
+        verdicts = {
+            r.role_verdict: r
+            for r in real_session.execute(select(DimensionHierarchy)).scalars().all()
+        }
+        assert set(verdicts) == {"value_systematic", "abstain"}
+        assert verdicts["value_systematic"].role_evidence["k_disagree"] == 40
+        assert verdicts["abstain"].role_evidence["t1_context"] is None
+
+    def test_hierarchy_member_submodel_rejects_bad_shape(self) -> None:
+        # extra key forbidden, negative level rejected, level required.
+        with pytest.raises(ValidationError):
+            HierarchyMember(column_name="a", column_id="", distinct_count=1, level=0, extra="x")  # type: ignore[call-arg]
+        with pytest.raises(ValidationError):
+            HierarchyMember(column_name="a", column_id="", distinct_count=1, level=-1)
+        with pytest.raises(ValidationError):
+            HierarchyMember(column_name="a", column_id="", distinct_count=1)  # type: ignore[call-arg]
+
+    def test_role_evidence_submodel_rejects_bad_shape(self) -> None:
+        with pytest.raises(ValidationError):
+            RoleEvidence(  # type: ignore[call-arg]
+                t1_p=0.1, t1_context=None, t2_p=0.1, k_disagree=1, alpha=0.01
+            )  # missing disagree_rate
+        with pytest.raises(ValidationError):
+            RoleEvidence(
+                t1_p=0.1,
+                t1_context=None,
+                t2_p=0.1,
+                k_disagree=1,
+                alpha=0.01,
+                disagree_rate=0.1,
+                extra="x",  # type: ignore[call-arg]
+            )
+
+    def test_validated_members_requires_contiguous_levels(self) -> None:
+        # A gap in the level set is a mis-numbered writer → loud failure (DAT-779).
+        good = [
+            HierarchyMember(column_name="a", column_id="", distinct_count=None, level=0),
+            HierarchyMember(column_name="b", column_id="", distinct_count=None, level=1),
+        ]
+        assert [m["column_name"] for m in _validated_members(good)] == ["a", "b"]
+        gapped = [
+            HierarchyMember(column_name="a", column_id="", distinct_count=None, level=0),
+            HierarchyMember(column_name="b", column_id="", distinct_count=None, level=2),
+        ]
+        with pytest.raises(ValueError, match="contiguous"):
+            _validated_members(gapped)
+
+    def test_role_row_helper_requires_disagree_rate(self) -> None:
+        """``_hierarchy_row`` refuses to persist a verdict without its rate — the
+        evidence must never be half-formed."""
+        from dataraum.analysis.hierarchies.processor import _hierarchy_row
+
+        result = RoleResult(
+            verdict=RoleVerdict.ROLE,
+            t1_p=0.001,
+            t1_context="ctx",
+            t2_p=0.5,
+            k_disagree=20,
+            alpha=0.01,
+        )
+        with pytest.raises(ValueError, match="disagree_rate"):
+            _hierarchy_row(
+                run_id=RUN,
+                table_id="t1",
+                kind="role",
+                members=[_member_json("a", 0)],
+                canonical_label="a ⇄ b",
+                signature="role:t1:a|b",
+                role=result,
+                detection_source="g3",
+                needs_confirmation=False,
+            )

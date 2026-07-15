@@ -52,12 +52,14 @@ def _provider(*responses: MagicMock) -> MagicMock:
     return provider
 
 
-def _agent_with(provider: MagicMock, monkeypatch) -> SemanticAgent:
+def _agent_with(provider: MagicMock, monkeypatch, annotations: list | None = None) -> SemanticAgent:
     # Everything before the converse call is mocked so the test drives only the
     # validate → repair → build seam (mirrors tests/unit/graphs/test_tool_repair.py).
+    # ``annotations`` feeds the DAT-768 measure-presence check (empty = no measures).
     monkeypatch.setattr("dataraum.analysis.semantic.agent.DataSampler", MagicMock())
     monkeypatch.setattr(
-        "dataraum.analysis.semantic.agent.load_persisted_annotations", lambda s, t: []
+        "dataraum.analysis.semantic.agent.load_persisted_annotations",
+        lambda s, t: annotations or [],
     )
 
     agent = SemanticAgent.__new__(SemanticAgent)
@@ -145,4 +147,66 @@ def test_repair_turn_without_tool_call_fails_loud(monkeypatch) -> None:
 
     assert not result.success
     assert "no tool call" in result.error
+    assert provider.converse.call_count == 2
+
+
+# --- DAT-768: empty column_concepts is schema-legal → a targeted re-prompt ---
+
+_CONCEPT = {
+    "table_name": "trial_balance",
+    "column_name": "debit_balance",
+    "business_concept": "account_balance",
+}
+_EMPTY_CONCEPTS = {"tables": [], "relationships": [], "column_concepts": []}
+# Turn 1 carries a confirmed relationship but no concepts; the retry recovers the
+# concept but (as a blind fresh turn) drops the relationship — the merge must keep
+# turn 1's relationship, not swap the whole object.
+_REL_NO_CONCEPTS = {"tables": [], "relationships": [_COMPLETE_REL], "column_concepts": []}
+_CONCEPT_NO_REL = {"tables": [], "relationships": [], "column_concepts": [_CONCEPT]}
+_MEASURE_ANNS = [{"semantic_role": "measure", "column_name": "debit_balance"}]
+
+
+def test_empty_concepts_with_measures_triggers_reprompt(monkeypatch) -> None:
+    """Measures present + zero column_concepts is an implausible whole-field omission
+    (schema-legal, so the repair turn never fires). One corrective re-prompt recovers
+    the bindings — and grafts in ONLY column_concepts, so turn 1's vetted
+    relationships survive the blind retry (they are not re-derivable there)."""
+    provider = _provider(_response(_REL_NO_CONCEPTS), _response(_CONCEPT_NO_REL))
+    agent = _agent_with(provider, monkeypatch, annotations=_MEASURE_ANNS)
+
+    result = agent.synthesize_tables(MagicMock(), ["t1"])
+
+    assert result.success
+    assert len(result.value.column_concepts) == 1  # recovered from the retry
+    assert len(result.value.relationships) == 1  # turn 1's relationship NOT clobbered
+    assert result.value.relationships[0].to_column == "id"
+    assert provider.converse.call_count == 2
+    reprompt = provider.converse.call_args_list[1].args[0]
+    assert reprompt.label == "semantic_per_table_concepts"
+    assert "empty column_concepts" in reprompt.messages[1].content
+
+
+def test_empty_concepts_without_measures_no_reprompt(monkeypatch) -> None:
+    """No measure columns → an empty column_concepts is a legitimate judgment; the
+    agent must NOT waste a re-prompt."""
+    provider = _provider(_response(_EMPTY_CONCEPTS))
+    agent = _agent_with(provider, monkeypatch, annotations=[])
+
+    result = agent.synthesize_tables(MagicMock(), ["t1"])
+
+    assert result.success
+    assert result.value.column_concepts == []
+    assert provider.converse.call_count == 1
+
+
+def test_reprompt_still_empty_returns_empty_for_phase_backstop(monkeypatch) -> None:
+    """Measures present but the re-prompt ALSO returns empty → the agent returns the
+    empty surface (one attempt only); the phase's loud backstop fails begin_session."""
+    provider = _provider(_response(_EMPTY_CONCEPTS), _response(_EMPTY_CONCEPTS))
+    agent = _agent_with(provider, monkeypatch, annotations=_MEASURE_ANNS)
+
+    result = agent.synthesize_tables(MagicMock(), ["t1"])
+
+    assert result.success  # the agent doesn't fail — the phase does
+    assert result.value.column_concepts == []
     assert provider.converse.call_count == 2

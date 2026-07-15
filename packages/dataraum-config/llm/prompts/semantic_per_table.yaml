@@ -49,8 +49,10 @@ system_prompt: |
   </grain_split>
 
   <column_concepts>
-  Emit a column_concepts entry ONLY for columns that carry at least one of these;
-  omit every other column.
+  Emit a column_concepts entry for EVERY column that carries at least one of these —
+  a measure column always carries a business_concept. Omit only columns that
+  genuinely carry none; returning an empty column_concepts when the schema has
+  measure columns is an error, not a shortcut.
 
   - business_concept: the EXACT ontology concept a column GROUNDS (e.g. 'revenue',
     'accounts_receivable'). Bind ONLY a genuine discriminator the analyst can
@@ -61,6 +63,18 @@ system_prompt: |
     in this catalogue (e.g. revenue is SUM of an amount filtered by an
     account-class value, not any single column), leave business_concept null — it
     grounds via value-sets, honestly. A wrong binding is worse than none.
+
+    Binding discipline — bind by the COLUMN's OWN meaning, never the table's domain
+    or a name prefix. When a column name exactly matches one concept's indicator,
+    that concept takes precedence over any prefix or table-domain association:
+      - `debit_balance` / `credit_balance` ground `account_balance` (which lists
+        them as indicators), NOT `debit` / `credit` — a periodic per-account
+        `*_balance` aggregate on a trial-balance / snapshot table is the running
+        BALANCE, not the entry leg, even though the name starts with the leg's word.
+        (An entry-leg column named exactly `debit` still grounds `debit`.)
+      - a column named `amount` on a `bank_transactions` table grounds
+        `transaction_amount` (its own indicator), not `cash` — bind the column, not
+        the table's domain gestalt.
   - unit_source_column: the column defining a measure's unit. Set it for EVERY
     measure (leave null only when genuinely undeterminable) — a measure with no
     unit source is flagged as unsafe to aggregate. Resolve in this order:

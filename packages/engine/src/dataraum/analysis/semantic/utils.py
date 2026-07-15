@@ -77,6 +77,16 @@ def load_column_mappings(
     return {(table_name, col_name): col_id for table_name, col_name, col_id in result.all()}
 
 
+def annotations_have_measure(annotations: list[dict[str, Any]]) -> bool:
+    """Whether any loaded annotation carries the ``measure`` semantic role (DAT-768).
+
+    The measure role is what makes an empty ``column_concepts`` surface implausible:
+    a batch holding a measure MUST bind at least one ontology concept, so zero is an
+    emptied surface, not a judgment.
+    """
+    return any(a.get("semantic_role") == "measure" for a in annotations)
+
+
 def load_persisted_annotations(
     session: Session,
     table_ids: list[str],

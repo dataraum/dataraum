@@ -5,6 +5,49 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-768 / DAT-769 — semantic_per_table: fall loud on empty concepts + binding discipline
+
+**Branch:** `fix/dat-768-769-semantic-grounding-robustness`. Changes the
+`semantic_per_table` phase (`analysis/semantic/{agent,processor,utils,models}.py`)
+and its prompt (`dataraum-config/llm/prompts/semantic_per_table.yaml`).
+
+### What changed
+
+- **DAT-768 — an empty `column_concepts` surface no longer reports success.** The
+  field is `default_factory=list`, so the DAT-710 schema-repair turn never fired on
+  a whole-field omission; one call could yield **0** `column_concepts` and the phase
+  went green while every measure→concept binding downstream collapsed. Now:
+  - the agent **re-prompts once** when it emits zero concepts *and* the batch has
+    measure-role columns (schema-legal emptiness the repair turn can't catch);
+  - `synthesize_and_store_tables` **fails begin_session loud** (non-retryable
+    `PhaseFailed`) when concepts resolve to **0** with measure columns present —
+    covers both the empty-emission path and the name-resolution-wipeout path;
+  - `persist_column_concepts` now returns/logs a `column_concepts_persisted`
+    breakdown (`emitted` / `resolved` / `dropped_unresolved`) — a naming drift
+    (case, enriched prefix, display name) is now a visible count, not silence.
+  - **Behavior change for eval:** a corpus that legitimately produces zero concepts
+    *with a measure present* will now FAIL the run instead of passing empty. That is
+    the intended fall-loud; if any calibration corpus trips it as a false positive,
+    that's a signal (either a real grounding gap or a too-broad measure annotation),
+    not a regression to paper over.
+
+- **DAT-769 — binding discipline added to the prompt** (no override, the LLM still
+  judges): bind by the column's OWN meaning, not the table domain or a name prefix;
+  an exact column-name/indicator match beats a prefix or domain match; a periodic
+  per-account `*_balance` aggregate is the balance concept, not the entry leg.
+
+### For eval (calibration to run)
+
+- **Re-run the Tier-3 finance grounding calibration** (the business-concept oracle
+  + the DAT-685 HARD gate). The DAT-769 acceptance is that both hold in the SAME
+  run: `journal_lines.debit → debit` AND `trial_balance.debit_balance →
+  account_balance` (and `bank_transactions.amount → transaction_amount`, not
+  `cash`). Prompt-only ⇒ provable only here, not by unit tests.
+- Watch the new `column_concepts_persisted` log line for `dropped_unresolved > 0` —
+  that is DAT-768 path #2 (the agent bound names that didn't resolve) surfacing.
+
+---
+
 ## DAT-761 — stack v4 dimension identity: DAT-757 gate stack replaces distinct-ratio g3
 
 **Branch:** `feat/dat-761-stack-v4-dimension-identity`. **The `dimension_hierarchies`

@@ -341,8 +341,10 @@ class TableSynthesisOutput(BaseModel):
         default_factory=list,
         description=(
             "Catalogue-grain per-column semantics (ontology concept, unit source, "
-            "derived-formula hypothesis). Emit only columns carrying at least one; "
-            "omit the rest."
+            "derived-formula hypothesis). Emit an entry for EVERY column that carries "
+            "at least one concept — measure columns always do. Omit only columns that "
+            "genuinely carry none; returning this empty when the schema has measures "
+            "is an error, not a shortcut."
         ),
     )
 

@@ -22,12 +22,19 @@ and ``Table``; the vocabulary ``Concept`` vertices are P3. Edges/props carried:
     column_node  (KEY column_id)  props: semantic_role (has_role),
                                           materialization (materializes_as),
                                           anchor_time_axis (witness axis ▸ declared anchor)
-    table_node   (KEY table_id)   props: table_role (fact/periodic_snapshot/dimension)
+    table_node   (KEY table_id)   props: layer (typed | enriched), table_role
+                                          (fact/periodic_snapshot/dimension)
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
     concept_edge       concept → concept [concept_edges]      part_of/disjoint/reconciles (P4)
     conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (DAT-756)
+
+One vertex label spans both layers (DAT-774): typed source tables AND enriched-view
+tables are ``table_node``, discriminated by the ``layer`` property (the DD types "Table
+… incl. enriched views" as one label). Before DAT-774 ``og_tables`` was typed-only, so
+every ``derived_from`` edge — whose source is always an enriched-view table — dangled at
+its source endpoint and none ever instantiated in a MATCH. See ``og_tables`` below.
 
 ``rolls_up_to`` (dimension_hierarchies' JSON members) lands in P5 where its
 consumer does. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
@@ -100,16 +107,43 @@ def _element_view_sql(name: str) -> str:
     comparison; the cast is free (the values are already textual ids).
     """
     if name == "og_tables":
-        # Table vertex: the analyzed-representative table + its role
-        # (table_role: fact / periodic_snapshot / dimension). current_table_entities
-        # is (table_id, run) unique post-head, so the LEFT JOIN stays 1:1 and
-        # table_id is a valid KEY.
+        # Table vertex: BOTH typed source tables AND enriched-view tables (DAT-774).
+        # The DD's type system declares "Table (physical relation, incl. enriched
+        # views)" as ONE vertex label, so both layers bind to table_node with ``layer``
+        # ('typed' | 'enriched') the discriminating property — a consumer meaning
+        # "source tables only" filters ``WHERE layer = 'typed'``; a SECOND vertex label
+        # would contradict the declared typing (the DAT-774 tiebreaker).
+        #
+        # Typed branch: the analyzed-representative typed table + its role (table_role:
+        # fact / periodic_snapshot / dimension). current_table_entities is (table_id,
+        # run) unique post-head, so the LEFT JOIN stays 1:1 and table_id is a valid KEY.
+        #
+        # Enriched branch (the DAT-774 fix): the enriched-view tables. Sourced from
+        # current_enriched_views — NOT current_tables, which is hard-filtered
+        # ``layer='typed'`` (read_views.py, DAT-655), so enriched tables never surfaced
+        # and EVERY og_derived_from edge dangled at its source endpoint: no derived_from
+        # edge had ever instantiated. Head-resolution stays intact under the two-head
+        # model — a typed vertex is current under its (table:{id}, generation) head; an
+        # enriched vertex is current under the begin_session (catalog) enriched_views
+        # head, the SAME head og_derived_from reads — so every derived_from SOURCE
+        # endpoint now resolves BY CONSTRUCTION (both views read current_enriched_views).
+        # ``view_name`` IS the enriched Table's table_name (enriched_views_phase sets
+        # both to ``enriched_{fact}``); layer is the constant 'enriched'; table_role /
+        # detected_entity_type are NULL (an enriched view is a derived relation, never a
+        # detected entity). ``WHERE view_table_id IS NOT NULL`` drops an un-materialized
+        # view (no vertex), mirroring the edge's own guard. table_id is uuid4-unique
+        # across both branches, so the union KEY stays valid.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_tables AS\n"
             f"SELECT t.table_id::text AS table_id, t.table_name, t.layer,\n"
             f"       te.table_role, te.detected_entity_type\n"
             f"FROM {READ_TOKEN}.current_tables t\n"
-            f"LEFT JOIN {READ_TOKEN}.current_table_entities te ON te.table_id = t.table_id;"
+            f"LEFT JOIN {READ_TOKEN}.current_table_entities te ON te.table_id = t.table_id\n"
+            f"UNION ALL\n"
+            f"SELECT ev.view_table_id::text AS table_id, ev.view_name AS table_name,\n"
+            f"       'enriched' AS layer, NULL AS table_role, NULL AS detected_entity_type\n"
+            f"FROM {READ_TOKEN}.current_enriched_views ev\n"
+            f"WHERE ev.view_table_id IS NOT NULL;"
         )
     if name == "og_columns":
         # Column vertex: the physical column with its semantic role (has_role),
@@ -247,6 +281,12 @@ def _element_view_sql(name: str) -> str:
         # unnested). edge_key = view_id + role[+dim] keeps it unique across the union
         # — '_'-delimited, NOT ':' (a ':' before a letter is a bind param to text()).
         # view_table_id is nullable (a non-materialized view has no vertex) → skip.
+        # The dimension branch is SELECT DISTINCT (DAT-774): dimension_table_ids is a
+        # JSON array, and a DUPLICATE id in it would unnest to two rows sharing one
+        # edge_key (view_id || '_dim_' || id) — a non-unique PGQ edge KEY. DISTINCT over
+        # the projected columns dedups on (view_id, id), so the key is genuinely unique
+        # regardless of the JSON's contents. (The writer already set-dedups the ids, but
+        # the KEY invariant must hold on the view, not on a producer's good behaviour.)
         return (
             f"CREATE VIEW {READ_TOKEN}.og_derived_from AS\n"
             f"SELECT (ev.view_id || '_fact')::text AS edge_key,\n"
@@ -255,7 +295,7 @@ def _element_view_sql(name: str) -> str:
             f"FROM {READ_TOKEN}.current_enriched_views ev\n"
             f"WHERE ev.view_table_id IS NOT NULL\n"
             f"UNION ALL\n"
-            f"SELECT (ev.view_id || '_dim_' || dt.value)::text AS edge_key,\n"
+            f"SELECT DISTINCT (ev.view_id || '_dim_' || dt.value)::text AS edge_key,\n"
             f"       ev.view_table_id::text AS view_table_id,\n"
             f"       dt.value AS base_table_id, 'dimension' AS base_role\n"
             f"FROM {READ_TOKEN}.current_enriched_views ev\n"

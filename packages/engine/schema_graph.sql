@@ -19,7 +19,12 @@ CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
        te.table_role, te.detected_entity_type
 FROM __READ__.current_tables t
-LEFT JOIN __READ__.current_table_entities te ON te.table_id = t.table_id;
+LEFT JOIN __READ__.current_table_entities te ON te.table_id = t.table_id
+UNION ALL
+SELECT ev.view_table_id::text AS table_id, ev.view_name AS table_name,
+       'enriched' AS layer, NULL AS table_role, NULL AS detected_entity_type
+FROM __READ__.current_enriched_views ev
+WHERE ev.view_table_id IS NOT NULL;
 
 CREATE VIEW __READ__.og_columns AS
 SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_name,
@@ -76,7 +81,7 @@ SELECT (ev.view_id || '_fact')::text AS edge_key,
 FROM __READ__.current_enriched_views ev
 WHERE ev.view_table_id IS NOT NULL
 UNION ALL
-SELECT (ev.view_id || '_dim_' || dt.value)::text AS edge_key,
+SELECT DISTINCT (ev.view_id || '_dim_' || dt.value)::text AS edge_key,
        ev.view_table_id::text AS view_table_id,
        dt.value AS base_table_id, 'dimension' AS base_role
 FROM __READ__.current_enriched_views ev

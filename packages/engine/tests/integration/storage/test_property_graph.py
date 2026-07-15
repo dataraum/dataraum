@@ -9,7 +9,10 @@ engine:
   GRAPH succeed);
 * a PGQ ``MATCH`` returns correct rows — every measure column → its stock/flow
   materialization, seeded with the REAL pipeline vocabularies;
-* ``derived_from`` edges are enumerable (enriched view → fact + dim bases);
+* ``derived_from`` edges are enumerable from a REALISTIC enriched-VIEW table
+  (layer='enriched', head-scoped via enriched_views — the DAT-774 fix that made
+  ``og_tables`` admit enriched vertices) → its fact + dim bases; the edge_key is deduped
+  against a duplicate dimension id, and an un-materialized (NULL) view yields nothing;
 * the ``cockpit_reader`` role can query the graph (a property graph needs its own
   GRANT — table grants don't reach GRAPH_TABLE);
 * the two-mechanism query model is de-risked on a chain that OUTRUNS the depth cap
@@ -53,15 +56,28 @@ READER_PW = "graph-reader-test-pw"
 # back edge t6→t4 (the cycle t4→t5→t6→t4). This lets the de-risk tests distinguish
 # "hit the depth cap" (t6 exists but is unreachable from t1 within 4 hops) from
 # "ran out of edges", and fire the cycle guard (from t4, t4 never re-enters).
-# t_enr is the enriched-view table over (t1 fact, t2 dim).
-_TABLES = [
+# t7/t8 are two extra facts carrying ONLY enriched views (no refs / slices / entity, so
+# the refs/conformed counts are untouched) — for the DAT-774 derived_from cases: t7
+# backs the duplicate-dim dedup view, t8 the un-materialized (NULL view_table_id) view.
+_TYPED_TABLES = [
     ("t1", "journal"),
     ("t2", "accounts"),
     ("t3", "account_group"),
     ("t4", "statement"),
     ("t5", "division"),
     ("t6", "root"),
-    ("t_enr", "journal_enriched"),
+    ("t7", "ledger"),
+    ("t8", "paylog"),
+]
+# Enriched-VIEW tables (DAT-774): layer='enriched' and — like the real pipeline — NO
+# generation head. An enriched view is minted in begin_session, never promoted under a
+# (table:{id}, generation) head; its currency flows from the (catalog) enriched_views
+# head, resolved through current_enriched_views. og_tables surfaces these as table
+# vertices via that same view, or every derived_from edge dangles at its source — the
+# exact bug DAT-774 fixes.
+_ENRICHED_TABLES = [
+    ("t_enr", "enriched_journal"),  # v_1 — realistic: journal fact + accounts dim
+    ("t_enr2", "enriched_ledger"),  # v_2 — duplicate dim id, dedup proof
 ]
 _COLUMNS = [
     ("c_amt", "t1", "amount", 1),
@@ -97,7 +113,7 @@ def _seed(engine: Engine) -> None:
     so the ``current_*`` views (and the graph's element views) resolve them.
     """
     stmts: list[str] = []
-    for tid, name in _TABLES:
+    for tid, name in _TYPED_TABLES:
         stmts.append(
             f"INSERT INTO tables (table_id, source_id, table_name, layer, created_at) "
             f"VALUES ('{tid}', '{SRC}', '{name}', 'typed', '{TS}')"
@@ -105,6 +121,14 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             f"INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at) "
             f"VALUES ('h_{tid}', 'table:{tid}', 'generation', '{RUN}', '{TS}')"
+        )
+    # Enriched-view tables: layer='enriched', and NO generation head (the pipeline
+    # promotes none for them). They're referenced by the enriched_views rows below (FK)
+    # and surfaced as vertices only through current_enriched_views (DAT-774).
+    for tid, name in _ENRICHED_TABLES:
+        stmts.append(
+            f"INSERT INTO tables (table_id, source_id, table_name, layer, created_at) "
+            f"VALUES ('{tid}', '{SRC}', '{name}', 'enriched', '{TS}')"
         )
     stmts.append(
         f"INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at) "
@@ -223,14 +247,28 @@ def _seed(engine: Engine) -> None:
                 "(entity_id, table_id, run_id, detected_entity_type, table_role, detected_at) "
                 f"VALUES ('{eid}', '{tid}', '{RUN}', 'entity', '{role}', '{TS}')"
             )
-    # derived_from: journal_enriched view over the journal fact + the accounts dim.
-    stmts.append(
-        "INSERT INTO enriched_views "
-        "(view_id, fact_table_id, view_table_id, view_name, run_id, "
-        " dimension_table_ids, is_grain_verified, created_at) "
-        f"VALUES ('v_1', 't1', 't_enr', 'journal_enriched', '{RUN}', "
-        f"'[\"t2\"]'::json, true, '{TS}')"
-    )
+    # derived_from (DAT-774): three enriched-view rows exercising the fixed edge.
+    #  v_1 REALISTIC — enriched_journal over the journal fact (t1) + accounts dim (t2).
+    #     Its source vertex (t_enr, layer='enriched') resolves via current_enriched_views,
+    #     so BOTH the view→fact and view→dim edges MATCH.
+    #  v_2 DEDUP — enriched_ledger whose dimension_table_ids carries a DUPLICATE id
+    #     (["t2","t2"]); the og_derived_from SELECT DISTINCT collapses it to one view→dim
+    #     edge (a non-deduped view would emit two rows sharing one edge_key — a non-unique
+    #     PGQ KEY).
+    #  v_3 ABSENCE — paylog's view was never materialized (view_table_id NULL); the WHERE
+    #     view_table_id IS NOT NULL guard drops it: no vertex, no edge.
+    for vid, fact, view_tid, vname, dims in [
+        ("v_1", "t1", "'t_enr'", "enriched_journal", '["t2"]'),
+        ("v_2", "t7", "'t_enr2'", "enriched_ledger", '["t2", "t2"]'),
+        ("v_3", "t8", "NULL", "enriched_paylog", '["t2"]'),
+    ]:
+        stmts.append(
+            "INSERT INTO enriched_views "
+            "(view_id, fact_table_id, view_table_id, view_name, run_id, "
+            " dimension_table_ids, is_grain_verified, created_at) "
+            f"VALUES ('{vid}', '{fact}', {view_tid}, '{vname}', '{RUN}', "
+            f"'{dims}'::json, true, '{TS}')"
+        )
     # Concept vertices + a disjoint_with concept edge (DAT-729): the vocabulary graph.
     # Concepts/edges are workspace-persistent (NOT run-versioned) — plain active rows,
     # no head to promote. The og_concept_edges view resolves the edge's (vertical, name)
@@ -371,15 +409,66 @@ def test_references_edges_match_the_fk_topology(graph_engine: Engine) -> None:
 
 
 def test_derived_from_edges_enumerable(graph_engine: Engine) -> None:
-    """derived_from: the enriched view resolves to its fact + dimension bases."""
+    """derived_from (DAT-774): the enriched-VIEW table (layer='enriched') resolves as a
+    table vertex, so both the view→fact and view→dimension edges MATCH.
+
+    Before the fix ``og_tables`` was typed-only (it sat on ``current_tables``, filtered
+    ``layer='typed'``), the ``derived_from`` SOURCE endpoint dangled, and NO such edge
+    ever instantiated in a MATCH. Scoped to the realistic v_1 view (enriched_journal);
+    the projected source ``layer`` proves the enriched vertex — not a typed one — anchors
+    the edge.
+    """
+    sql = (
+        f"SELECT vlayer, base, role FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (v IS table_node WHERE v.table_name = 'enriched_journal')"
+        "-[e IS derived_from]->(base IS table_node) "
+        "COLUMNS (v.layer AS vlayer, base.table_name AS base, e.base_role AS role))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.vlayer, r.base, r.role) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("enriched", "journal", "fact"),
+        ("enriched", "accounts", "dimension"),
+    }
+
+
+def test_derived_from_edge_key_unique_under_duplicate_dim(graph_engine: Engine) -> None:
+    """DAT-774 secondary defect: a DUPLICATE id in dimension_table_ids must not emit two
+    edges sharing one edge_key (a non-unique PGQ KEY).
+
+    v_2 (enriched_ledger) carries dimension_table_ids=["t2","t2"]; the og_derived_from
+    dimension branch SELECT DISTINCTs it, so exactly ONE view→dim edge exists alongside
+    the one view→fact edge. Collected as a LIST (not a set): a leaked duplicate would
+    surface as a repeated ('accounts','dimension') row.
+    """
     sql = (
         f"SELECT base, role FROM GRAPH_TABLE ({_graph_ref()} "
-        "MATCH (v IS table_node)-[e IS derived_from]->(base IS table_node) "
+        "MATCH (v IS table_node WHERE v.table_name = 'enriched_ledger')"
+        "-[e IS derived_from]->(base IS table_node) "
         "COLUMNS (base.table_name AS base, e.base_role AS role))"
     )
     with graph_engine.connect() as conn:
-        rows = {(r.base, r.role) for r in conn.execute(text(sql))}
-    assert rows == {("journal", "fact"), ("accounts", "dimension")}
+        rows = sorted((r.base, r.role) for r in conn.execute(text(sql)))
+    assert rows == [("accounts", "dimension"), ("ledger", "fact")]
+
+
+def test_derived_from_unmaterialized_view_has_no_edge(graph_engine: Engine) -> None:
+    """DAT-774: an enriched_views row whose view was never materialized (view_table_id
+    NULL — v_3 over paylog) contributes NO vertex and NO edge.
+
+    The ``WHERE view_table_id IS NOT NULL`` guard drops exactly the rows guaranteed to
+    dangle, so every derived_from edge's source is one of the two materialized views and
+    'enriched_paylog' is never a source vertex.
+    """
+    sql = (
+        f"SELECT vname FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (v IS table_node)-[e IS derived_from]->(base IS table_node) "
+        "COLUMNS (v.table_name AS vname))"
+    )
+    with graph_engine.connect() as conn:
+        sources = {r.vname for r in conn.execute(text(sql))}
+    assert sources == {"enriched_journal", "enriched_ledger"}
+    assert "enriched_paylog" not in sources
 
 
 def test_has_dimension_edge(graph_engine: Engine) -> None:

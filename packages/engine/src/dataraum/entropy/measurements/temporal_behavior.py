@@ -91,8 +91,16 @@ class ColumnTemporalAdjudication:
     table: str
     column: str
     claim_field: str  # "temporal_behavior:{table}.{column}" — the claim-slot identity
+    # ALL opinionated witnesses (EntropyObject provenance). NOTE (DAT-764): unlike
+    # every other adjudication detector, this may be a SUPERSET of what feeds
+    # ``result`` — when the data-grounded structural witness overrules a disagreeing
+    # name-based claim, only the authoritative subset is pooled. Do not assume
+    # ``result``'s (C, U) is recomputable from ``witnesses`` for this detector.
     witnesses: tuple[Witness, ...]
     result: PoolResult
+    # The structural witness fired and pooled OUT a disagreeing ``llm_claim`` (DAT-764).
+    # Carried so the resolved layer flags ``contested`` without recomputing the test.
+    overruled: bool = False
 
 
 def _distribution(p_stock: float) -> dict[str, float]:
@@ -113,6 +121,16 @@ def _has_opinion(witness: Witness) -> bool:
     """A witness has an opinion when its distribution is not (≈) uniform."""
     uniform = 1.0 / len(witness.distribution)
     return any(abs(p - uniform) > _OPINION_EPS for p in witness.distribution)
+
+
+def _p_stock(witness: Witness) -> float:
+    """The witness's P(stock) — its position on the stock(≥0.5)/flow(<0.5) line."""
+    return witness.distribution[CLAIM_SPACE.index("stock")]
+
+
+def _find(witnesses: tuple[Witness, ...], witness_id: str) -> Witness | None:
+    """The opinionated witness with this id, or ``None`` if it abstained/absent."""
+    return next((w for w in witnesses if w.witness_id == witness_id), None)
 
 
 def _leaning(p_stock_extreme: float | None, confidence: float | None) -> dict[str, float]:
@@ -144,15 +162,21 @@ def structural_reconciliation_distribution(
     return _leaning(_PATTERN_PSTOCK.get((pattern or "").strip()), match_rate)
 
 
-def resolved_behaviour(result: PoolResult) -> tuple[str | None, bool]:
-    """The resolved temporal behaviour + a contested flag, from a pooled result.
+def resolved_behaviour(adj: ColumnTemporalAdjudication) -> tuple[str | None, bool]:
+    """The resolved temporal behaviour + a contested flag, from an adjudication.
 
     ``(label, contested)`` where label ∈ {"point_in_time", "additive", None} — None
-    when no witness took a position (total ignorance). ``contested`` is True when the
-    pooled conflict is non-trivial: the resolved layer writes the label but flags it
-    so a downstream SQL agent treats a contested stock with caution. Inverse of the
-    ontology vocabulary so the resolve write round-trips onto ColumnConcept (DAT-637).
+    when no witness took a position (total ignorance). Inverse of the ontology
+    vocabulary so the resolve write round-trips onto ColumnConcept (DAT-637).
+
+    The label follows the AUTHORITATIVE posterior — which is the structural
+    reconciliation alone whenever it fired and the name-based ``llm_claim`` disagreed
+    (DAT-764), so the data decides stock/flow. ``contested`` records whether the two
+    reads landed on opposite sides of the stock/flow line: pure observability for the
+    teach/readiness lane (deliberately NOT rendered to SQL agents — resolve.py), and
+    the readiness/loss lane keys on the pooled conflict SCORE, not this flag.
     """
+    result = adj.result
     if not result.posterior:
         return None, False
     p_stock = result.posterior[CLAIM_SPACE.index("stock")]
@@ -162,7 +186,18 @@ def resolved_behaviour(result: PoolResult) -> tuple[str | None, bool]:
         # "uncontested stock" via the >= tie-break.
         return None, False
     label = "point_in_time" if p_stock >= 0.5 else "additive"
-    contested = result.conflict > CONTESTED_MIN_CONFLICT
+    structural = _find(adj.witnesses, "structural_reconciliation")
+    llm = _find(adj.witnesses, "llm_claim")
+    if structural is not None and llm is not None:
+        # Both independent reads present → they contest iff they land on opposite
+        # sides of the stock/flow line. That is exactly the overrule condition
+        # ``measure_temporal_behavior`` already computed — reuse it (single source
+        # of truth), never recompute, so the two can't silently drift.
+        contested = adj.overruled
+    else:
+        # A lone witness (or none) — no second read to contest it; fall back to the
+        # pooled conflict for the llm-only / structural-only cases.
+        contested = result.conflict > CONTESTED_MIN_CONFLICT
     return label, contested
 
 
@@ -212,11 +247,32 @@ def measure_temporal_behavior(
     )
     # Only witnesses that take a position are pooled: an abstaining witness is
     # ignorance, not a conflicting party. Both abstain → pool([]) → C=0, U=1.
-    witnesses = tuple(w for w in candidates if _has_opinion(w))
+    opinionated = tuple(w for w in candidates if _has_opinion(w))
+    # DAT-764 / DAT-657: stock/flow is DATA-DETERMINED, so the structural
+    # reconciliation is authoritative when it fired a gated verdict this run. A
+    # name-anchored ``llm_claim`` that DISAGREES with it is OVERRULED — pooled out,
+    # not against it. The pool's conflict ``C`` is weight-robust (a reliability edge
+    # cannot damp it — reliabilities.py), so a symmetric pool let a confident LLM
+    # "balance"→stock read both flip the label on a moderate-match verdict AND
+    # manufacture a readiness-blocking disagreement (``trial_balance.debit_balance``,
+    # per_period@0.75 → stock). An AGREEING claim is KEPT — it corroborates (lower
+    # ignorance); when structural abstained, the ``llm_claim`` stands alone. This is
+    # the docstring's "the structural witness already wins" made literal.
+    structural = _find(opinionated, "structural_reconciliation")
+    llm = _find(opinionated, "llm_claim")
+    overruled = (
+        structural is not None
+        and llm is not None
+        and (_p_stock(llm) >= 0.5) != (_p_stock(structural) >= 0.5)
+    )
+    pooled = (structural,) if overruled and structural is not None else opinionated
     return ColumnTemporalAdjudication(
         table=table,
         column=column,
         claim_field=f"temporal_behavior:{table}.{column}",
-        witnesses=witnesses,
-        result=pool(witnesses),
+        # Both opinionated reads are recorded (EntropyObject provenance); only the
+        # authoritative set is POOLED into the (C, U) + posterior.
+        witnesses=opinionated,
+        result=pool(pooled),
+        overruled=overruled,
     )

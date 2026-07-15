@@ -95,7 +95,7 @@ class TemporalBehaviorDetector(EntropyDetector):
         if not adj.witnesses:
             return []  # neither the claim nor the reconciliation opined → nothing to say
 
-        label, contested = resolved_behaviour(adj.result)
+        label, contested = resolved_behaviour(adj)
         posterior = dict(zip(CLAIM_SPACE, adj.result.posterior, strict=True))
         # No teach_suggestion (DAT-657): stock/flow is data-determined, so the
         # structural witness already wins — nothing for a human to teach. A wrong

@@ -61,6 +61,64 @@ exercises the `role` kind end-to-end.
 
 ---
 
+## DAT-764 — structural reconciliation is authoritative for stock/flow
+
+**Branch:** `fix/dat-764-structural-authoritative`. **Re-run Tier-3 stock/flow — this
+fixes the three `trial_balance` reds WITHOUT a band resweep (the harness was detecting a
+real mislabel, exactly as the ticket said).** The DAT-728 handoff assumed the surviving
+2-witness pool (`llm_claim` + `structural_reconciliation`) would resolve `debit_balance`
+via structural+LLM **agreement**. The eval run showed the LLM intermittently name-reads
+the periodic "balance" columns as **stock**, and the symmetric pool let that confident
+name-read tip a data-grounded `per_period` (flow) verdict — `debit_balance` reconciled at
+match_rate 0.75 → resolved `point_in_time`, while `credit_balance` at 1.0 survived.
+
+### What changed
+
+- **`entropy/measurements/temporal_behavior.py`** — when the `structural_reconciliation`
+  witness fired a gated verdict this run AND the `llm_claim` disagrees, the LLM claim is
+  **pooled OUT** (not pooled against it). Stock/flow is data-determined (DAT-657/491): the
+  reconciliation is the only witness whose input is the data, not the name, so its verdict
+  sets the label regardless of match magnitude. An AGREEING claim is kept (corroborates,
+  lower ignorance); when structural abstained (every add_source detect) the LLM stands
+  alone (unchanged). Verified on the eval match_rates: `debit_balance`@0.75 and
+  `credit_balance`@1.0 both now resolve `additive` with pooled **conflict 0.000**; a
+  genuine cumulative stock (`balance_sheet.ending_balance`) still resolves `point_in_time`.
+- `resolved_behaviour(adj)` now takes the adjudication (was the bare `PoolResult`) so it
+  reads the two witness positions; `contested` records whether the reads disagreed (pure
+  observability — the readiness/loss lane keys on the conflict SCORE, `loss.py`, not this
+  flag). One caller updated (the detector).
+
+### For eval (calibration to run)
+
+- **Re-run Tier-3 stock/flow.** `trial_balance.debit_balance` AND `credit_balance` →
+  `additive`. The `temporal_behavior` disagreement SCORE for these drops to ~0 (the pool no
+  longer manufactures conflict when the data decided), so `test_clean_scores_within_measured_bands`
+  and `test_clean_readiness_no_regression` (query_intent) should recover **without**
+  touching bands or `intent_readiness.yaml`. Keep the witness-liveness guard.
+- **Watch:** a genuinely ambiguous flow the structural witness gets WRONG would now be
+  authoritative with no LLM temper. This is the deliberate DAT-491 stance (the witness is
+  heavily gated: ≥2 voting entities, ≥0.8 agreement, wrong-anchor residual guard). Confirm
+  no CLEAR stock (`balance_sheet`/`ending_balance` family) regresses to flow.
+- **Cross-detector safety invariant to pin (eval-owned test):** making structural
+  authoritative removes the pooled CONFLICT signal, so a WEAK verdict (low match_rate —
+  few entities reconciled) that overrules a confident LLM no longer contributes conflict
+  risk. Safety then rests on IGNORANCE, which scales with match_rate (measured: ~0.998 at
+  match 0.05 → ~0.53 at 1.0) and is unit-tested here. But whether that keeps
+  `aggregation_intent` OUT of "ready" is a CROSS-detector property of `loss.yaml`'s
+  ignorance weight × readiness bands — not enforced in engine code (deliberately: no
+  invented match_rate floor). Add an eval regression: a low-match structural override
+  disagreeing with a confident LLM must NOT band `aggregation_intent` "ready". A future
+  `loss.yaml`/bands edit could otherwise silently reopen the SUM-a-stock failure class.
+
+### testdata hints
+
+None. The finance corpus's `trial_balance` (per-period flows named "balance") + genuine
+`balance_sheet` stocks already exercise both sides. The moderate-match (0.75) verdict is
+the discriminating case — a fact that reconciles on only some entities is what separates
+"data authoritative even at partial match" from the old symmetric tip.
+
+---
+
 ## DAT-756 — referenced-dimension identity + `shared_dims` fix + conformed-dimension
 
 **Branch:** `feat/dat-756-dimension-identity`. **A detector-grouping-key fix (closes a

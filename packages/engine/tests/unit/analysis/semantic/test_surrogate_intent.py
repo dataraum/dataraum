@@ -363,18 +363,20 @@ def test_duplicate_llm_relationships_fold_to_one_row(session) -> None:
 
 
 def test_llm_persist_orients_and_marks_judge_confirmed(session) -> None:
-    """Write path 2 (DAT-777/776): the judge emits a single-column FK parent→child
-    (measured one-to-many); it persists many→one child→parent, confirmed by the
-    judge. Cardinality rides on the candidate metrics — no duckdb needed."""
-    entries = _table_with_columns(session, "entries", ["entry_id"])
-    lines = _table_with_columns(session, "lines", ["entry_id"])
-    cols = {(c.table_id, c.column_name): c.column_id for t in (entries, lines) for c in t.columns}
+    """Write path 2 (DAT-777/776): the judge emits a single-column FK in the
+    dim-first (measured one-to-many) direction; it persists many→one child→parent,
+    confirmed by the judge. Cardinality rides on the candidate metrics — no duckdb
+    needed. Uses the txn/coa shape so the `_agent` mock's meaning resolves (the
+    DAT-768/769 empty-surface gate)."""
+    txn = _table_with_columns(session, "txn", ["account", "business_id"])
+    coa = _table_with_columns(session, "coa", ["account_name", "business_id"])
+    cols = {(c.table_id, c.column_name): c.column_id for t in (txn, coa) for c in t.columns}
     rel = Relationship(
         relationship_id="rel-1",
-        from_table="entries",  # parent side named FROM (reversed)
-        from_column="entry_id",
-        to_table="lines",
-        to_column="entry_id",
+        from_table="coa",  # dim side named FROM (reversed / one-to-many)
+        from_column="account_name",
+        to_table="txn",
+        to_column="account",
         key_columns=[],
         relationship_type=RelationshipType.FOREIGN_KEY,
         confidence=0.9,
@@ -382,22 +384,22 @@ def test_llm_persist_orients_and_marks_judge_confirmed(session) -> None:
         evidence={"source": "table_synthesis"},
     )
     candidate = {
-        "table1": "entries",
-        "table2": "lines",
+        "table1": "coa",
+        "table2": "txn",
         "join_columns": [
-            {"column1": "entry_id", "column2": "entry_id", "cardinality": "one-to-many"}
+            {"column1": "account_name", "column2": "account", "cardinality": "one-to-many"}
         ],
     }
 
-    assert _store(session, _agent([rel]), [entries, lines], candidates=[candidate]).success
+    assert _store(session, _agent([rel]), [txn, coa], candidates=[candidate]).success
     session.flush()
 
     row = session.execute(
         select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
     ).scalar_one()
-    # Flipped to child(lines.entry_id) → parent(entries.entry_id), many-to-one.
-    assert row.from_column_id == cols[(lines.table_id, "entry_id")]
-    assert row.to_column_id == cols[(entries.table_id, "entry_id")]
+    # Flipped to child(txn.account) → parent(coa.account_name), many-to-one.
+    assert row.from_column_id == cols[(txn.table_id, "account")]
+    assert row.to_column_id == cols[(coa.table_id, "account_name")]
     assert row.cardinality == "many-to-one"
     assert row.confirmation_source == "judge"
 

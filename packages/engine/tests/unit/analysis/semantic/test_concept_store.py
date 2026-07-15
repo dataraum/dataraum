@@ -107,7 +107,6 @@ def test_load_workspace_concepts_reads_typed_rows(session: Session) -> None:
     by_name = {c.name: c for c in definition.concepts}
     assert len(by_name) == 22
     assert by_name["revenue"].kind == "measure"
-    assert by_name["currency"].is_unit_dimension is True
     # Conventions still come from YAML (not config→DB in this phase).
     assert any(conv.id == "sign_natural_balance" for conv in definition.conventions)
 

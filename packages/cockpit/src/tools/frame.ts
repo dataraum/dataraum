@@ -114,19 +114,11 @@ export const ProposedConcept = z.object({
 		.array(z.string())
 		.optional()
 		.describe("substrings that should NOT match this concept"),
-	typical_role: z
-		.string()
-		.optional()
-		.describe('"measure" | "dimension" | "timestamp" | "key"'),
 	typical_values: z.array(z.string()).optional(),
 	unit_from_concept: z
 		.string()
 		.optional()
 		.describe("name of the concept providing this measure's unit"),
-	is_unit_dimension: z
-		.boolean()
-		.optional()
-		.describe("true if this concept defines units for other measures"),
 });
 export type ProposedConcept = z.infer<typeof ProposedConcept>;
 

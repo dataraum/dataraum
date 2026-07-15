@@ -33,10 +33,8 @@ class OntologyConcept(BaseModel):
     description: str | None = None
     indicators: list[str] = Field(default_factory=list)
     exclude_patterns: list[str] = Field(default_factory=list)
-    typical_role: str | None = None
     typical_values: list[str] = Field(default_factory=list)
     unit_from_concept: str | None = None  # Which concept provides this measure's unit
-    is_unit_dimension: bool = False  # Whether this concept defines units for measures
 
 
 class OntologyConvention(BaseModel):

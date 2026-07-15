@@ -21,8 +21,7 @@ import { conceptsWrite } from "../db/metadata/write-surface";
 
 // The ontological kind of a concept — mirrors the engine's ConceptKind
 // (packages/engine/.../analysis/semantic/db_models.py). Required on every write:
-// the typed `concepts` table has `kind` NOT NULL, and it is distinct from
-// `typical_role` (a grounding-prompt hint) — a concept is one of these four.
+// the typed `concepts` table has `kind` NOT NULL — a concept is one of these four.
 export const CONCEPT_KINDS = [
 	"measure",
 	"entity",
@@ -41,10 +40,8 @@ export interface ConceptWriteInput {
 	description?: string;
 	indicators?: string[];
 	exclude_patterns?: string[];
-	typical_role?: string;
 	typical_values?: string[];
 	unit_from_concept?: string;
-	is_unit_dimension?: boolean;
 }
 
 /**
@@ -84,10 +81,8 @@ export async function writeConcept(
 			description: input.description,
 			indicators: input.indicators,
 			excludePatterns: input.exclude_patterns,
-			typicalRole: input.typical_role,
 			typicalValues: input.typical_values,
 			unitFromConcept: input.unit_from_concept,
-			isUnitDimension: input.is_unit_dimension ?? false,
 			source: "frame",
 			createdAt: new Date(),
 			supersededAt: null,

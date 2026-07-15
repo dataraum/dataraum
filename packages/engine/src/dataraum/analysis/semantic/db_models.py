@@ -35,9 +35,9 @@ class ConceptKind(StrEnum):
     """The ontological kind of a concept (DAT-728).
 
     The typed vocabulary axis the flat ``config_overlay`` JSON lacked. Distinct
-    from a column's ``semantic_role`` (a data-detected per-column property) and
-    from ``typical_role`` (a grounding-prompt hint): ``kind`` is the concept's own
-    type, authored in the vertical and seeded into the ``concepts`` table.
+    from a column's ``semantic_role`` (a data-detected per-column property):
+    ``kind`` is the concept's own type, authored in the vertical and seeded into
+    the ``concepts`` table.
 
     - ``MEASURE`` — is aggregated (revenue, debit, account_balance).
     - ``ENTITY`` — names a table's grain (account, entity, customer).
@@ -159,16 +159,8 @@ class Concept(Base):
     description: Mapped[str | None] = mapped_column(Text)
     indicators: Mapped[list[str] | None] = mapped_column(JSON)
     exclude_patterns: Mapped[list[str] | None] = mapped_column(JSON)
-    # A grounding-prompt hint (measure|dimension|timestamp|key) — the concept's
-    # typical column role, distinct from the ontological ``kind`` above.
-    typical_role: Mapped[str | None] = mapped_column(String)
     typical_values: Mapped[list[str] | None] = mapped_column(JSON)
     unit_from_concept: Mapped[str | None] = mapped_column(String)
-    # server_default so the NOT-NULL invariant is DB-enforced, not left to every
-    # write path remembering to set it (a bare INSERT omitting it still lands false).
-    is_unit_dimension: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
-    )
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'frame' | 'teach'

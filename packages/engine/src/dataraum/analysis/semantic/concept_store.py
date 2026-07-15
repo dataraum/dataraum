@@ -68,10 +68,8 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 "description": c.description,
                 "indicators": c.indicators or None,
                 "exclude_patterns": c.exclude_patterns or None,
-                "typical_role": c.typical_role,
                 "typical_values": c.typical_values or None,
                 "unit_from_concept": c.unit_from_concept,
-                "is_unit_dimension": c.is_unit_dimension,
                 "source": "seed",
             }
         )
@@ -112,10 +110,8 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
             description=r.description,
             indicators=list(r.indicators or []),
             exclude_patterns=list(r.exclude_patterns or []),
-            typical_role=r.typical_role,
             typical_values=list(r.typical_values or []),
             unit_from_concept=r.unit_from_concept,
-            is_unit_dimension=r.is_unit_dimension,
         )
         for r in rows
     ]

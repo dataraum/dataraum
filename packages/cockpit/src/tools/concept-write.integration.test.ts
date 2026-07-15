@@ -79,7 +79,7 @@ describe.skipIf(!STACK_AVAILABLE)("writeConcept (DAT-728 config→DB)", () => {
 		);
 	}
 
-	it("declares a concept as one active row (source='frame', is_unit_dimension default)", async () => {
+	it("declares a concept as one active row (source='frame')", async () => {
 		const { concept_id } = await writer.writeConcept({
 			vertical: TEST_VERTICAL,
 			name: "revenue",
@@ -91,12 +91,6 @@ describe.skipIf(!STACK_AVAILABLE)("writeConcept (DAT-728 config→DB)", () => {
 		expect(rows[0].concept_id).toBe(concept_id);
 		expect(rows[0].kind).toBe("measure");
 		expect(rows[0].source).toBe("frame");
-		// is_unit_dimension omitted → the write defaults it false (never NULL).
-		const dim = await sql.unsafe(
-			`SELECT is_unit_dimension FROM "${SCHEMA}".concepts WHERE concept_id = $1`,
-			[concept_id],
-		);
-		expect(dim[0].is_unit_dimension).toBe(false);
 	});
 
 	it("an edit supersedes the incumbent and leaves EXACTLY ONE active row", async () => {

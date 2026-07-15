@@ -54,16 +54,14 @@ export const concepts = metadataSchema
 		description: text(),
 		indicators: json(),
 		excludePatterns: json("exclude_patterns"),
-		typicalRole: varchar("typical_role"),
 		typicalValues: json("typical_values"),
 		unitFromConcept: varchar("unit_from_concept"),
-		isUnitDimension: boolean("is_unit_dimension"),
 		source: varchar(),
 		createdAt: timestamp("created_at"),
 		supersededAt: timestamp("superseded_at"),
 	})
 	.as(
-		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, typical_role, typical_values, unit_from_concept, is_unit_dimension, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
+		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, typical_values, unit_from_concept, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
 	);
 
 export const configOverlay = metadataSchema

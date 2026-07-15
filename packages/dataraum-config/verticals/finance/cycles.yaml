@@ -10,9 +10,7 @@
 #   - description: What this cycle represents
 #   - business_value: Importance (high/medium/low)
 #   - typical_stages: Common stages in order
-#   - participating_entities: Entity types that flow through this cycle
 #   - completion_indicators: Column values that indicate cycle completion
-#   - related_tables: Table name patterns (for context, not matching)
 #   - feeds_into: Downstream cycles that depend on this cycle's output
 
 cycle_types:
@@ -40,25 +38,12 @@ cycle_types:
       - name: "Payment Received"
         order: 5
         indicators: ["paid", "collected", "closed", "settled"]
-    participating_entities:
-      - customer
-      - order
-      - product
-      - invoice
-      - payment
     completion_indicators:
       - "paid"
       - "collected"
       - "closed"
       - "settled"
       - "complete"
-    related_tables:
-      - customer
-      - order
-      - sales
-      - invoice
-      - payment
-      - receipt
     feeds_into:
       - accounts_receivable
       - journal_entry_cycle
@@ -83,22 +68,11 @@ cycle_types:
       - name: "Payment Received"
         order: 4
         indicators: ["paid", "received", "collected", "cleared"]
-    participating_entities:
-      - customer
-      - invoice
-      - payment
-      - receivable
     completion_indicators:
       - "paid"
       - "collected"
       - "cleared"
       - "closed"
-    related_tables:
-      - customer
-      - invoice
-      - receivable
-      - payment
-      - collection
     feeds_into:
       - journal_entry_cycle
 
@@ -126,25 +100,11 @@ cycle_types:
       - name: "Payment Made"
         order: 5
         indicators: ["paid", "disbursed", "settled"]
-    participating_entities:
-      - vendor
-      - supplier
-      - purchase_order
-      - invoice
-      - payment
     completion_indicators:
       - "paid"
       - "disbursed"
       - "settled"
       - "closed"
-    related_tables:
-      - vendor
-      - supplier
-      - purchase
-      - po
-      - invoice
-      - payment
-      - disbursement
     feeds_into:
       - accounts_payable
       - inventory_cycle
@@ -169,22 +129,11 @@ cycle_types:
       - name: "Payment Disbursed"
         order: 4
         indicators: ["paid", "disbursed", "cleared"]
-    participating_entities:
-      - vendor
-      - invoice
-      - payment
-      - payable
     completion_indicators:
       - "paid"
       - "disbursed"
       - "cleared"
       - "closed"
-    related_tables:
-      - vendor
-      - payable
-      - invoice
-      - payment
-      - check
     feeds_into:
       - journal_entry_cycle
 
@@ -208,23 +157,11 @@ cycle_types:
       - name: "Shipped/Consumed"
         order: 4
         indicators: ["shipped", "sold", "consumed", "issued"]
-    participating_entities:
-      - product
-      - item
-      - sku
-      - warehouse
-      - location
     completion_indicators:
       - "shipped"
       - "sold"
       - "consumed"
       - "issued"
-    related_tables:
-      - product
-      - inventory
-      - stock
-      - warehouse
-      - movement
     feeds_into:
       - order_to_cash
 
@@ -245,20 +182,11 @@ cycle_types:
       - name: "Terminated/Retired"
         order: 3
         indicators: ["terminated", "retired", "separated", "inactive"]
-    participating_entities:
-      - employee
-      - department
-      - position
     completion_indicators:
       - "terminated"
       - "retired"
       - "separated"
       - "inactive"
-    related_tables:
-      - employee
-      - staff
-      - personnel
-      - hr
     feeds_into:
       - payroll_cycle
 
@@ -281,20 +209,10 @@ cycle_types:
       - name: "Payment Issued"
         order: 4
         indicators: ["paid", "disbursed", "deposited"]
-    participating_entities:
-      - employee
-      - timesheet
-      - payroll
     completion_indicators:
       - "paid"
       - "disbursed"
       - "deposited"
-    related_tables:
-      - employee
-      - timesheet
-      - payroll
-      - salary
-      - compensation
     feeds_into:
       - journal_entry_cycle
 
@@ -318,21 +236,11 @@ cycle_types:
       - name: "Disposed"
         order: 4
         indicators: ["disposed", "retired", "sold", "written_off"]
-    participating_entities:
-      - asset
-      - equipment
-      - property
     completion_indicators:
       - "disposed"
       - "retired"
       - "sold"
       - "written_off"
-    related_tables:
-      - asset
-      - equipment
-      - property
-      - depreciation
-      - fixed_asset
     feeds_into:
       - journal_entry_cycle
 
@@ -354,20 +262,11 @@ cycle_types:
       - name: "Reconciled"
         order: 3
         indicators: ["reconciled", "cleared", "true", "yes"]
-    participating_entities:
-      - bank_transaction
-      - bank_account
-      - account
     completion_indicators:
       - "reconciled"
       - "true"
       - "cleared"
       - "matched"
-    related_tables:
-      - bank
-      - transaction
-      - reconciliation
-      - statement
     feeds_into:
       - period_close
 
@@ -391,19 +290,10 @@ cycle_types:
       - name: "Posted"
         order: 4
         indicators: ["posted", "final", "closed"]
-    participating_entities:
-      - journal_entry
-      - account
-      - ledger
     completion_indicators:
       - "posted"
       - "final"
       - "closed"
-    related_tables:
-      - journal
-      - journal_entry
-      - gl_entry
-      - ledger
     feeds_into:
       - intercompany_cycle
       - period_close
@@ -429,23 +319,12 @@ cycle_types:
       - name: "Period Closed"
         order: 4
         indicators: ["closed", "final", "locked", "published"]
-    participating_entities:
-      - period
-      - account
-      - trial_balance
-      - ledger
     completion_indicators:
       - "closed"
       - "final"
       - "locked"
       - "published"
       - "balanced"
-    related_tables:
-      - trial_balance
-      - period
-      - fiscal_period
-      - reporting
-      - close
     feeds_into: []
 
   intercompany_cycle:
@@ -464,18 +343,10 @@ cycle_types:
       - name: "Eliminated"
         order: 3
         indicators: ["eliminated", "settled", "cleared"]
-    participating_entities:
-      - entity
-      - subsidiary
-      - company
     completion_indicators:
       - "eliminated"
       - "settled"
       - "cleared"
-    related_tables:
-      - intercompany
-      - elimination
-      - subsidiary
 
 # =============================================================================
 # ANALYSIS HINTS

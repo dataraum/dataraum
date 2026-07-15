@@ -54,14 +54,13 @@ export const concepts = metadataSchema
 		description: text(),
 		indicators: json(),
 		excludePatterns: json("exclude_patterns"),
-		typicalValues: json("typical_values"),
 		unitFromConcept: varchar("unit_from_concept"),
 		source: varchar(),
 		createdAt: timestamp("created_at"),
 		supersededAt: timestamp("superseded_at"),
 	})
 	.as(
-		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, typical_values, unit_from_concept, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
+		sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.concepts`,
 	);
 
 export const configOverlay = metadataSchema
@@ -387,12 +386,10 @@ export const currentRelationships = metadataSchema
 		detectionMethod: varchar("detection_method"),
 		evidence: json(),
 		isConfirmed: boolean("is_confirmed"),
-		confirmedAt: timestamp("confirmed_at"),
-		confirmedBy: varchar("confirmed_by"),
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, is_confirmed, confirmed_at, confirmed_by, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, is_confirmed, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentSemanticAnnotations = metadataSchema
@@ -503,8 +500,6 @@ export const currentTableEntities = metadataSchema
 		runId: varchar("run_id"),
 		detectedEntityType: varchar("detected_entity_type"),
 		description: text(),
-		confidence: doublePrecision(),
-		evidence: json(),
 		grainColumns: json("grain_columns"),
 		tableRole: varchar("table_role"),
 		timeColumns: json("time_columns"),
@@ -513,7 +508,7 @@ export const currentTableEntities = metadataSchema
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, table_role, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, grain_columns, table_role, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTables = metadataSchema

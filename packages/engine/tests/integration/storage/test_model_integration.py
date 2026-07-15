@@ -227,7 +227,6 @@ class TestSemanticModels:
             table=table,
             detected_entity_type="transaction",
             description="Daily sales transactions",
-            confidence=0.88,
             grain_columns=["sale_id"],
             table_role="fact",
             detection_source="llm",

@@ -54,9 +54,7 @@ describe("CycleSpecSchema (DAT-465)", () => {
 				{ name: "Order Placed", order: 1, indicators: ["ordered", "new"] },
 				{ name: "Payment Received", order: 5, indicators: ["paid"] },
 			],
-			participating_entities: ["customer", "order", "payment"],
 			completion_indicators: ["paid", "settled"],
-			related_tables: ["orders", "payments"],
 			feeds_into: ["accounts_receivable"],
 		});
 		expect(parsed.business_value).toBe("high");
@@ -116,7 +114,6 @@ describe("narrowShippedCycle (DAT-465)", () => {
 			completion_indicators: ["paid", "collected", "closed"],
 			// extra YAML fields are ignored by the narrowing
 			typical_stages: [{ name: "Order Placed", order: 1 }],
-			related_tables: ["orders"],
 		});
 		expect(spec).toEqual({
 			name: "order_to_cash",

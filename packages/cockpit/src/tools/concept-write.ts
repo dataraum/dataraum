@@ -40,7 +40,6 @@ export interface ConceptWriteInput {
 	description?: string;
 	indicators?: string[];
 	exclude_patterns?: string[];
-	typical_values?: string[];
 	unit_from_concept?: string;
 }
 
@@ -81,7 +80,6 @@ export async function writeConcept(
 			description: input.description,
 			indicators: input.indicators,
 			excludePatterns: input.exclude_patterns,
-			typicalValues: input.typical_values,
 			unitFromConcept: input.unit_from_concept,
 			source: "frame",
 			createdAt: new Date(),

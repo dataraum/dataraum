@@ -85,7 +85,6 @@ export const conceptsWrite = rawSchema.table("concepts", {
 	description: text("description"),
 	indicators: json("indicators").$type<string[]>(),
 	excludePatterns: json("exclude_patterns").$type<string[]>(),
-	typicalValues: json("typical_values").$type<string[]>(),
 	unitFromConcept: varchar("unit_from_concept"),
 	source: varchar("source"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),

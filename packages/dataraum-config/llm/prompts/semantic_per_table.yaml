@@ -63,25 +63,8 @@ system_prompt: |
     in this catalogue (e.g. revenue is SUM of an amount filtered by an
     account-class value, not any single column), leave business_concept null — it
     grounds via value-sets, honestly. A wrong binding is worse than none.
-
-    Binding discipline — bind by the COLUMN's OWN meaning, never the table's domain
-    or a name prefix. The ontology's indicators are the discriminator; read them.
-      - Exact indicator match wins over a prefix match: a column grounds the concept
-        that lists its FULL name as an indicator, not the shorter concept whose word
-        it merely starts with. A `<x>_<agg>` column (e.g. `<x>_balance`) grounds the
-        concept indicated by `<x>_<agg>`, not the `<x>` concept it begins with — a
-        column named exactly `<x>` still grounds `<x>`.
-      - An aggregate/snapshot column grounds the AGGREGATE concept, not its
-        components: a periodic running total or a per-key end-of-period balance is
-        that balance/total concept, not the per-event leg it accumulates.
-      - Don't bind by the table's subject. When a table's rows each record an event
-        involving some asset or entity, a generically-named MEASURE column on it
-        (e.g. `amount`) grounds the concept whose indicator names it — `amount` →
-        `transaction_amount` — NOT the asset/entity concept the table is "about".
-        Binding `amount` to the table's subject because "every row moves that thing"
-        is the exact trap to avoid: the column measures the movement, it is not the
-        thing moved. A `business_concept` is the column's own meaning, never the
-        table's theme.
+    Each ontology concept lists indicator terms that may correspond to columns in the
+    schema. Consider them when deciding a column's business_concept.
   - unit_source_column: the column defining a measure's unit. Set it for EVERY
     measure (leave null only when genuinely undeterminable) — a measure with no
     unit source is flagged as unsafe to aggregate. Resolve in this order:

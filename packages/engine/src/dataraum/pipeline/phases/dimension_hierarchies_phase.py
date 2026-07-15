@@ -12,9 +12,10 @@ stats decide; deterministic value-evidence routing selects the asserted
 structures in the classes the DAT-757 scorecard measured as names-judgeable
 (quasi-identifier, free-text determinant, proxy bijection), and a names-only
 LLM judge may veto them — vetoed structures are SURFACED
-(``needs_confirmation``), never deleted, and a disabled or failing judge means
-the lane is skipped with the statistical verdicts standing. This phase is the
-lane's composition root (it builds the judge; the processor stays LLM-free).
+(``needs_confirmation``), never deleted. The judge is built here exactly like
+every other phase agent (config + provider, misconfiguration fails the
+phase); a judgment call that fails mid-run skips the lane for that view with
+the statistical verdicts standing, recorded in the ``veto_lane`` output.
 
 Runs after ``slicing`` and before ``aggregation_lineage`` (the driver tree
 consumes the alias groups in DAT-545; role pairs deliberately stay separate
@@ -30,9 +31,11 @@ from types import ModuleType
 
 from sqlalchemy import select
 
+from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
 from dataraum.analysis.hierarchies.processor import discover_dimension_hierarchies
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
+from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -71,13 +74,23 @@ class DimensionHierarchiesPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
-
         run_id = ctx.require_run_id()
-        # The veto lane's composition root (DAT-762): None = lane unavailable
-        # (config off / provider unbuildable) — the statistical verdicts stand
-        # unjudged and the lane status below says so OBSERVABLY.
-        judge = DimensionIdentityJudge.from_config()
+
+        try:
+            config = load_llm_config()
+        except FileNotFoundError as e:
+            return PhaseResult.failed(f"LLM config not found: {e}")
+        provider_config = config.providers.get(config.active_provider)
+        if not provider_config:
+            return PhaseResult.failed(f"Provider '{config.active_provider}' not configured")
+        try:
+            provider = create_provider(config.active_provider, provider_config.model_dump())
+        except Exception as e:
+            return PhaseResult.failed(f"Failed to create LLM provider: {e}")
+
+        judge = DimensionIdentityJudge(
+            config=config, provider=provider, prompt_renderer=PromptRenderer()
+        )
         persisted, lane = discover_dimension_hierarchies(
             ctx.session,
             duckdb_conn=ctx.duckdb_conn,

@@ -20,8 +20,8 @@ veto rides it later): a producer submits evidence dicts and gets typed
 verdicts back; routing tables live with the producer, never here.
 
 Posture rules (research record, DAT-757/762): no deterministic overrides of
-LLM judgments; a judge that is disabled or unavailable means the lane is
-SKIPPED and stats verdicts stand — absence of judgment is not a judgment.
+LLM judgments; a FAILED judgment call means the lane is skipped for that view
+and stats verdicts stand — absence of judgment is not a judgment.
 """
 
 from __future__ import annotations
@@ -32,10 +32,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.llm.config import LLMConfig, load_llm_config
+from dataraum.llm.config import LLMConfig
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.prompts import PromptRenderer
-from dataraum.llm.providers import create_provider
 from dataraum.llm.providers.base import (
     ConversationRequest,
     LLMProvider,
@@ -89,38 +88,6 @@ class DimensionIdentityJudge(LLMFeature):
         prompt_renderer: PromptRenderer | None = None,
     ) -> None:
         super().__init__(config, provider, prompt_renderer or PromptRenderer())
-
-    @classmethod
-    def from_config(cls) -> DimensionIdentityJudge | None:
-        """Build the judge from llm/config.yaml, or None when the lane is off.
-
-        Returns:
-            A judge when ``features.dimension_identity_judgment`` is present and
-            enabled and the active provider constructs; None otherwise. None means
-            SKIP the lane — never a failure (absence of judgment is not a
-            judgment).
-        """
-        try:
-            config = load_llm_config()
-        except FileNotFoundError:
-            logger.warning("dimension_identity_judge_skipped", reason="no llm config")
-            return None
-        feature = config.features.dimension_identity_judgment
-        if feature is None or not feature.enabled:
-            return None
-        provider_config = config.providers.get(config.active_provider)
-        if not provider_config:
-            logger.warning(
-                "dimension_identity_judge_skipped",
-                reason=f"provider {config.active_provider!r} not configured",
-            )
-            return None
-        try:
-            provider = create_provider(config.active_provider, provider_config.model_dump())
-        except Exception as e:  # noqa: BLE001 — judge-off must never break the phase
-            logger.warning("dimension_identity_judge_skipped", reason=str(e))
-            return None
-        return cls(config=config, provider=provider)
 
     def veto(
         self,
@@ -202,13 +169,15 @@ class DimensionIdentityJudge(LLMFeature):
         output_model: type[T],
     ) -> Result[T]:
         """One forced-tool judgment turn with the DAT-710 schema repair."""
+        # Tier/effort from feature config (DAT-603) — an absent entry keeps the
+        # defaults: balanced tier, API-default effort. `enabled` is deliberately
+        # not consulted: the veto lane rides every dimension_hierarchies run
+        # (the graph_sql_generation posture — not an optional feature).
         feature = self.config.features.dimension_identity_judgment
-        if feature is None or not feature.enabled:
-            return Result.fail("dimension_identity_judgment is disabled")
+        tier = feature.model_tier if feature else "balanced"
+        effort = feature.effort if feature else None
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                template, context
-            )
+            system_prompt, user_prompt, temperature = self.renderer.render_split(template, context)
         except Exception as e:  # noqa: BLE001 — template errors are config errors
             return Result.fail(f"Failed to render {template} prompt: {e}")
 
@@ -217,14 +186,14 @@ class DimensionIdentityJudge(LLMFeature):
             description=tool_description,
             input_schema=output_model.model_json_schema(),
         )
-        model = self.provider.get_model_for_tier(feature.model_tier)
+        model = self.provider.get_model_for_tier(tier)
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": tool_name},
             label=template,
-            effort=feature.effort,
+            effort=effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
@@ -257,8 +226,7 @@ class DimensionIdentityJudge(LLMFeature):
         for s in structures:
             members = " -> ".join(str(m) for m in s["members"])
             lines.append(
-                f"- ref={s['ref']} kind={s['kind']} "
-                f"routed_class={s['routed_class']}: {members}"
+                f"- ref={s['ref']} kind={s['kind']} routed_class={s['routed_class']}: {members}"
             )
         return "\n".join(lines)
 

@@ -86,7 +86,6 @@ features:
   # Forced tool_choice suppresses thinking on the Anthropic API, so the v1
   # judges are non-thinking by design (DAT-757 scorecard was graded that way).
   dimension_identity_judgment:
-    enabled: true
     model_tier: balanced
 
 # Cost controls

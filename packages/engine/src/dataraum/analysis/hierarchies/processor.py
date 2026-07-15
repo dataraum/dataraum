@@ -1,6 +1,8 @@
 """Dimension-identity discovery over the enriched views (DAT-761, stack v4 from DAT-757).
 
-Deterministic, no LLM. For each fact's grain-verified enriched view, EVERY
+The statistical pass is deterministic; the DAT-762 veto lane (an injected
+``DimensionIdentityJudge``) is the one LLM touchpoint, advisory by contract.
+For each fact's grain-verified enriched view, EVERY
 dimension-like view column is a candidate (measures excluded by their
 ``semantic_role`` — the additivity lane: ``revenue → tier`` is reliably asserted
 by every statistic, so measures never enter FD discovery). The upstream pipeline
@@ -56,11 +58,13 @@ from dataraum.analysis.hierarchies.db_models import (
     HierarchyMember,
     RoleEvidence,
 )
+from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
 from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
 from dataraum.analysis.hierarchies.stats import RoleVerdict
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
+from dataraum.llm.providers.base import PermanentProviderError
 from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
@@ -468,18 +472,17 @@ def discover_dimension_hierarchies(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     run_id: str,
-    judge: object | None = None,
+    judge: DimensionIdentityJudge,
 ) -> tuple[int, VetoLaneStats]:
     """Run the stack-v4 identity pass over each enriched view; persist run-versioned.
 
     Form-(a) writer (DAT-502): one row per ``(signature, run_id)``, UPSERTed;
     the statistical pass is deterministic (fixed permutation/sample seeds), so
-    a redelivered run converges. ``judge`` is the DAT-762 veto lane
-    (``DimensionIdentityJudge``), built by the PHASE (the composition root —
-    the processor stays LLM-free and unit-hermetic); None = lane off, rows
-    byte-identical to the pure statistical output. Returns the rows persisted
-    and the lane's observable outcome (a phase output — a dead lane must be
-    visible, never silent).
+    a redelivered run converges. ``judge`` is the DAT-762 veto lane, built by
+    the phase like every other agent (the ``synthesize_and_store_tables``
+    seam; unit tests pass a mock). Returns the rows persisted and the lane's
+    observable outcome (a phase output — a dead lane must be visible, never
+    silent).
     """
     enriched = (
         session.execute(
@@ -496,7 +499,7 @@ def discover_dimension_hierarchies(
         for t in session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars()
     }
 
-    lane = VetoLaneStats(status="off" if judge is None else "ran")
+    lane = VetoLaneStats()
     rows: list[dict[str, object]] = []
     col_ids_by_table: dict[str, dict[str, str]] = {}
     for ev in enriched:
@@ -625,13 +628,13 @@ def _route_row(
 class VetoLaneStats:
     """The veto lane's observable outcome — a first-class phase output.
 
-    The lane is advisory (stats decide), so a dead judge must never fail the
-    phase — but it must never die SILENTLY either (the DAT-536 inert-safeguard
-    lesson): consumers see ``status`` + counts in the phase outputs, and a
-    liveness assertion can catch a lane that stopped running.
+    The lane is advisory (stats decide), so a failed judgment call must never
+    fail the phase — but it must never die SILENTLY either (the DAT-536
+    inert-safeguard lesson): consumers see ``status`` + counts in the phase
+    outputs, and a liveness assertion can catch a lane that stopped running.
     """
 
-    status: str = "off"  # off | ran | failed | partial
+    status: str = "ran"  # ran | failed | partial
     views_judged: int = 0
     views_failed: int = 0
     routed: int = 0
@@ -645,8 +648,6 @@ class VetoLaneStats:
         self.vetoed += other.vetoed
 
     def finalize(self) -> None:
-        if self.status == "off":
-            return
         if self.views_failed == 0:
             self.status = "ran"
         elif self.views_judged > 0:
@@ -671,7 +672,7 @@ def _judge_veto_pass(
     frame: pl.DataFrame,
     n_rows: int,
     d_sql: dict[str, int],
-    judge: object,
+    judge: DimensionIdentityJudge,
 ) -> VetoLaneStats:
     """Route this view's asserted structures; one batched names-only veto call.
 
@@ -685,14 +686,10 @@ def _judge_veto_pass(
     second chance. Runs BEFORE teach materialization: user assertions are
     never routed.
     """
-    if judge is None:
-        return VetoLaneStats(status="off")
-    stats_out = VetoLaneStats(status="ran")
+    stats_out = VetoLaneStats()
     if not view_rows:
         return stats_out
-    evidence_of = {
-        c: _column_evidence(frame, c, n_rows=n_rows, d_sql=d_sql) for c in frame.columns
-    }
+    evidence_of = {c: _column_evidence(frame, c, n_rows=n_rows, d_sql=d_sql) for c in frame.columns}
     routed: list[dict[str, object]] = []
     by_ref: dict[str, dict[str, object]] = {}
     for row in view_rows:
@@ -713,10 +710,6 @@ def _judge_veto_pass(
     stats_out.routed = len(routed)
     if not routed:
         return stats_out
-    from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
-    from dataraum.llm.providers.base import PermanentProviderError
-
-    assert isinstance(judge, DimensionIdentityJudge)
     try:
         result = judge.veto(
             table_name=view_name, all_columns=list(frame.columns), structures=routed
@@ -738,9 +731,7 @@ def _judge_veto_pass(
     for verdict in result.unwrap():
         vetoed_row = by_ref.get(verdict.structure_ref)
         if vetoed_row is None:
-            logger.warning(
-                "hierarchy_veto_unknown_ref", view=view_name, ref=verdict.structure_ref
-            )
+            logger.warning("hierarchy_veto_unknown_ref", view=view_name, ref=verdict.structure_ref)
             continue
         logger.info(
             "hierarchy_veto",

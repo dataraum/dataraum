@@ -1,8 +1,8 @@
 """DimensionIdentityJudge plumbing (DAT-762 Phase A).
 
 Scripted-provider tests (the test_synthesis_repair pattern): the judge's
-forced-tool turn, the DAT-710 schema repair, the empty-input short-circuit,
-and the from_config lane-off contract. No LLM calls.
+forced-tool turn, the DAT-710 schema repair, and the empty-input
+short-circuit. No LLM calls.
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ from dataraum.analysis.hierarchies.judge import (
 )
 
 _VETO_INPUT = {
-    "verdicts": [
-        {"structure_ref": "s1", "verdict": "veto", "reason": "id-shaped determinant"}
-    ]
+    "verdicts": [{"structure_ref": "s1", "verdict": "veto", "reason": "id-shaped determinant"}]
 }
 # Live failure shape: a verdict entry missing its reason.
 _MALFORMED_VETO_INPUT = {"verdicts": [{"structure_ref": "s1", "verdict": "veto"}]}
@@ -51,19 +49,16 @@ def _response(tool_name: str, tool_input: dict | None) -> MagicMock:
 def _provider(*responses: MagicMock) -> MagicMock:
     provider = MagicMock()
     provider.get_model_for_tier.side_effect = lambda tier: "model-x"
-    provider.converse.side_effect = [
-        MagicMock(unwrap=MagicMock(return_value=r)) for r in responses
-    ]
+    provider.converse.side_effect = [MagicMock(unwrap=MagicMock(return_value=r)) for r in responses]
     return provider
 
 
-def _config(enabled: bool = True) -> MagicMock:
+def _config() -> MagicMock:
     config = MagicMock()
     feature = MagicMock()
-    feature.enabled = enabled
     feature.model_tier = "balanced"
     feature.effort = None
-    config.features.dimension_identity_judgment = feature if enabled else None
+    config.features.dimension_identity_judgment = feature
     config.limits.max_output_tokens_per_request = 24000
     return config
 
@@ -75,17 +70,29 @@ def _renderer() -> MagicMock:
 
 
 _STRUCTURES = [
-    {"ref": "s1", "kind": "alias", "members": ["entry_key", "desc_entry"],
-     "routed_class": "proxy-bijection"}
+    {
+        "ref": "s1",
+        "kind": "alias",
+        "members": ["entry_key", "desc_entry"],
+        "routed_class": "proxy-bijection",
+    }
 ]
 
 _CANDIDATES = [
     {
         "ref": "p1",
-        "left": {"fact_table": "ledger", "key": "acct_id",
-                 "attributes": ["acct_name"], "meanings": {"acct_id": "the entity key"}},
-        "right": {"fact_table": "balances", "key": "account_id",
-                  "attributes": ["account_name"], "meanings": {}},
+        "left": {
+            "fact_table": "ledger",
+            "key": "acct_id",
+            "attributes": ["acct_name"],
+            "meanings": {"acct_id": "the entity key"},
+        },
+        "right": {
+            "fact_table": "balances",
+            "key": "account_id",
+            "attributes": ["account_name"],
+            "meanings": {},
+        },
     }
 ]
 
@@ -152,14 +159,6 @@ def test_conform_batch_output_validates_abstain() -> None:
         {"verdicts": [{"pair_ref": "p", "verdict": "abstain", "reason": "no evidence"}]}
     )
     assert out.verdicts[0].concept_label is None
-
-
-def test_from_config_returns_none_when_feature_absent(monkeypatch) -> None:
-    config = _config(enabled=False)
-    monkeypatch.setattr(
-        "dataraum.analysis.hierarchies.judge.load_llm_config", lambda: config
-    )
-    assert DimensionIdentityJudge.from_config() is None
 
 
 def test_evidence_formatting_is_deterministic() -> None:

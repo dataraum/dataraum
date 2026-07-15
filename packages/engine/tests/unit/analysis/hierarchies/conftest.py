@@ -9,6 +9,7 @@ are present for both the g3 and the teach tests.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import duckdb
@@ -17,11 +18,22 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
+from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table, init_database
 
 RUN = "session-run-1"
+
+
+def uphold_judge() -> MagicMock:
+    """A scripted judge that upholds everything — for tests pinning the statistical pass."""
+    judge = MagicMock(spec=DimensionIdentityJudge)
+    judge.veto.return_value = Result.ok([])
+    return judge
+
+
 VIEW = "sales_enriched"
 
 # zip → (city, state): multiple zips per city, multiple cities per state — a real

@@ -19,8 +19,13 @@ from dataraum.analysis.hierarchies.routing import (
 )
 
 
-def _ev(values: list[str], *, n_rows: int = 10_000, n_distinct: int | None = None,
-        dtype: str = "VARCHAR") -> ColumnEvidence:
+def _ev(
+    values: list[str],
+    *,
+    n_rows: int = 10_000,
+    n_distinct: int | None = None,
+    dtype: str = "VARCHAR",
+) -> ColumnEvidence:
     return ColumnEvidence(
         n_rows=n_rows,
         n_distinct=n_distinct if n_distinct is not None else len(values),
@@ -39,7 +44,9 @@ class TestClassifyShape:
     def test_prose_needs_whitespace_not_just_length(self):
         # A 64-char hash is idlike, not prose — the rel-hm postal-code lesson.
         assert classify_shape(_ev(["a1" * 32, "b2" * 32])) == "idlike"
-        assert classify_shape(_ev(["a soft jersey top with long sleeves and a round neck"])) == "prose"
+        assert (
+            classify_shape(_ev(["a soft jersey top with long sleeves and a round neck"])) == "prose"
+        )
 
     def test_name_is_digitless_alpha(self):
         assert classify_shape(_ev(["Schumacher", "Hamilton", "Alonso"])) == "name"
@@ -88,8 +95,7 @@ class TestRouteEdge:
         assert route_edge(det, dep) is None
 
     def test_near_key_determinant_refused(self):
-        det = _ev(["2025-01-01 10:00:00"], n_rows=50_000, n_distinct=49_963,
-                  dtype="TIMESTAMP")
+        det = _ev(["2025-01-01 10:00:00"], n_rows=50_000, n_distinct=49_963, dtype="TIMESTAMP")
         dep = _ev(["G1"], n_distinct=500)
         assert route_edge(det, dep) is None
 
@@ -103,8 +109,7 @@ class TestRouteAlias:
     def test_id_prose_bijection_is_proxy(self):
         # The DAT-761 residue: entry_key <-> desc_entry.
         a = _ev(["JE-000001", "JE-000002"], n_distinct=11_754)
-        b = _ev(["monthly accrual posting for the northern region office"],
-                n_distinct=11_754)
+        b = _ev(["monthly accrual posting for the northern region office"], n_distinct=11_754)
         assert route_alias(a, b) == PROXY_BIJECTION
 
     def test_code_label_alias_stays_unrouted(self):

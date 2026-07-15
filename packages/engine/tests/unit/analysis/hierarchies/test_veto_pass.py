@@ -1,8 +1,9 @@
 """The veto lane's integration pass (DAT-762 Phase C) — scripted judge.
 
 Pins the seam contract: a veto SURFACES (needs_confirmation=True), never
-deletes; uphold changes nothing; judge off/failed means the lane is skipped
-and the rows are byte-identical; role-check and manual rows are never routed.
+deletes; uphold changes nothing; a failed judge call skips the lane
+observably and the rows are byte-identical; role-check and manual rows are
+never routed.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ def _frame() -> pl.DataFrame:
     return pl.DataFrame(
         {
             "entry_key": [f"JE-{i:06d}" for i in range(200)],
-            "desc_entry": [f"a long posting description for entry number {i} etc" for i in range(200)],
+            "desc_entry": [
+                f"a long posting description for entry number {i} etc" for i in range(200)
+            ],
             "region": ["North" if i % 2 else "South" for i in range(200)],
         }
     )
@@ -35,9 +38,12 @@ def _frame() -> pl.DataFrame:
 _D_SQL = {"entry_key": 200, "desc_entry": 200, "region": 2}
 
 
-def _alias_row(*, sig: str = "alias:t1:desc_entry|entry_key",
-               role_verdict: str | None = None,
-               detection_source: str = "g3") -> dict[str, object]:
+def _alias_row(
+    *,
+    sig: str = "alias:t1:desc_entry|entry_key",
+    role_verdict: str | None = None,
+    detection_source: str = "g3",
+) -> dict[str, object]:
     return {
         "kind": "alias",
         "signature": sig,
@@ -57,19 +63,27 @@ def _judge_returning(verdict: str) -> MagicMock:
     judge = MagicMock(spec=DimensionIdentityJudge)
     judge.veto.return_value = MagicMock(
         success=True,
-        unwrap=lambda: [VetoVerdict(
-            structure_ref="alias:t1:desc_entry|entry_key",
-            verdict=verdict,  # type: ignore[arg-type]
-            reason="scripted",
-        )],
+        unwrap=lambda: [
+            VetoVerdict(
+                structure_ref="alias:t1:desc_entry|entry_key",
+                verdict=verdict,  # type: ignore[arg-type]
+                reason="scripted",
+            )
+        ],
     )
     return judge
 
 
 def test_veto_surfaces_never_deletes() -> None:
     rows = [_alias_row()]
-    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                             d_sql=_D_SQL, judge=_judge_returning("veto"))
+    stats = _judge_veto_pass(
+        rows,
+        view_name="v",
+        frame=_frame(),
+        n_rows=200,
+        d_sql=_D_SQL,
+        judge=_judge_returning("veto"),
+    )
     assert len(rows) == 1
     assert rows[0]["needs_confirmation"] is True
     assert (stats.status, stats.routed, stats.vetoed, stats.views_judged) == ("ran", 1, 1, 1)
@@ -78,19 +92,16 @@ def test_veto_surfaces_never_deletes() -> None:
 def test_uphold_changes_nothing() -> None:
     rows = [_alias_row()]
     before = copy.deepcopy(rows)
-    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                             d_sql=_D_SQL, judge=_judge_returning("uphold"))
+    stats = _judge_veto_pass(
+        rows,
+        view_name="v",
+        frame=_frame(),
+        n_rows=200,
+        d_sql=_D_SQL,
+        judge=_judge_returning("uphold"),
+    )
     assert rows == before
     assert (stats.routed, stats.vetoed) == (1, 0)
-
-
-def test_lane_off_is_byte_identical_and_observable() -> None:
-    rows = [_alias_row()]
-    before = copy.deepcopy(rows)
-    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                             d_sql=_D_SQL, judge=None)
-    assert rows == before
-    assert stats.status == "off"
 
 
 def test_judge_failure_skips_lane_observably() -> None:
@@ -100,8 +111,9 @@ def test_judge_failure_skips_lane_observably() -> None:
     judge.veto.return_value = MagicMock(success=False, error="api down")
     rows = [_alias_row()]
     before = copy.deepcopy(rows)
-    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                             d_sql=_D_SQL, judge=judge)
+    stats = _judge_veto_pass(
+        rows, view_name="v", frame=_frame(), n_rows=200, d_sql=_D_SQL, judge=judge
+    )
     assert rows == before
     assert (stats.status, stats.views_failed) == ("failed", 1)
 
@@ -115,21 +127,20 @@ def test_permanent_error_skips_transient_propagates() -> None:
     judge = MagicMock(spec=DimensionIdentityJudge)
     judge.veto.side_effect = PermanentProviderError("bad key")
     rows = [_alias_row()]
-    stats = _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                             d_sql=_D_SQL, judge=judge)
+    stats = _judge_veto_pass(
+        rows, view_name="v", frame=_frame(), n_rows=200, d_sql=_D_SQL, judge=judge
+    )
     assert stats.status == "failed" and rows[0]["needs_confirmation"] is False
 
     # Transient errors ride to the Temporal boundary: the phase retry re-runs
     # the seed-deterministic stats identically and re-asks the judge.
     judge.veto.side_effect = TransientProviderError("429")
     with pytest.raises(TransientProviderError):
-        _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200,
-                         d_sql=_D_SQL, judge=judge)
+        _judge_veto_pass(rows, view_name="v", frame=_frame(), n_rows=200, d_sql=_D_SQL, judge=judge)
 
 
 def test_role_and_manual_rows_never_routed() -> None:
-    ev = {c: _column_evidence(_frame(), c, n_rows=200, d_sql=_D_SQL)
-          for c in _frame().columns}
+    ev = {c: _column_evidence(_frame(), c, n_rows=200, d_sql=_D_SQL) for c in _frame().columns}
     assert _route_row(_alias_row(role_verdict="value_systematic"), ev) is None
     assert _route_row(_alias_row(detection_source="manual"), ev) is None
     # ...while the same structure from the stack IS routed (the id<->prose residue).

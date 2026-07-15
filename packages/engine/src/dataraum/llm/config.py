@@ -71,6 +71,10 @@ class LLMFeatures(BaseModel):
     graph_sql_generation: FeatureConfig | None = None
     # (sql_repair died with graph-path text repair, DAT-671 — the graph agent
     # heals by looping, never by rewriting a statement behind its grounding.)
+    # DAT-762: the class-routed dimension-identity judge (names-only veto on
+    # stats-asserted structures + cross-fact conform/role judgment). None or
+    # enabled:false skips the lane entirely — stats verdicts stand unjudged.
+    dimension_identity_judgment: FeatureConfig | None = None
 
 
 class LLMLimits(BaseModel):

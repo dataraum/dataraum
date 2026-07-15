@@ -376,7 +376,6 @@ CREATE TABLE column_concepts (
 	run_id VARCHAR NOT NULL, 
 	meaning TEXT, 
 	temporal_behavior VARCHAR, 
-	temporal_behavior_contested BOOLEAN, 
 	unit_source_column VARCHAR, 
 	derived_formula_hypothesis VARCHAR, 
 	derived_formula_confidence FLOAT, 

@@ -124,11 +124,6 @@ describe("formatSchema", () => {
 		expect(accountLine).toBe('  - "account_type" :: VARCHAR (additive)');
 		// The instruction header explains the markers to the sub-agent.
 		expect(block).toContain("never SUM it across periods");
-		// The contested flag is DELIBERATELY absent (decision 2026-07-07, mirrors
-		// the engine GraphAgent): the adjudication outperforms an LLM
-		// second-guessing stock/flow from metadata — the verdict is settled fact.
-		// Contested surfaces on the human teach lane (why_column), never here.
-		expect(block).not.toContain("contested");
 	});
 
 	it("omits the concept tag for an unmapped column", () => {

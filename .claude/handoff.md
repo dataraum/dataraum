@@ -48,6 +48,60 @@ data now produce identical relationship candidates and identical LLM evidence.
   (`bank_transactions.account_id` and `balance_sheet.account_id` → chart, 2
   and 7 distinct values): statistically invisible to any overlap measure —
   LLM-lane territory (DAT-762), documented on DAT-794.
+  
+## DAT-786 — column_concepts.temporal_behavior_contested removed (verdict is authoritative)
+
+**Branch:** `fix/dat-786-remove-contested-flag`. Lead ruling (DAT-772 Gate 3):
+the reconciled `temporal_behavior` verdict IS the adjudication outcome — a
+parallel "contested" doubt-flag downstream second-guessed a deterministic,
+correct resolution.
+
+### What changed
+
+- **Schema:** `column_concepts.temporal_behavior_contested` (BOOLEAN) is GONE —
+  model column, resolve-pass write, `schema.sql`, and the cockpit Drizzle mirror.
+  Any eval/testdata fixture or assertion reading that column must drop it; test
+  DBs recreate (no migration, per the no-backfill rule).
+- **Resolve pass** (`entropy/resolve.py`): still writes the adjudicated
+  `temporal_behavior`; a witness disagreement now emits a
+  `temporal_behavior_contested` **log line** (column_id, run_id, resolved) —
+  diagnostic only, the resolved value wins unchanged.
+- **Detector unchanged:** the `temporal_behavior` EntropyObject evidence still
+  carries its `contested` key (pooled-conflict observability); only the
+  ColumnConcept persistence + downstream serving were cut.
+- **Cockpit drill flow-gate reversal (DAT-673):** a contested `additive` was
+  treated as stock (time-grain slice withheld); it is now trusted as additive —
+  the drill's axis menu offers the time grain wherever the reconciled verdict
+  says flow.
+
+### What eval should see
+
+- No detector/calibration change: same adjudication, same resolved labels.
+- Downstream shape change only: `column_concepts` has one fewer column; drill
+  axis menus may now offer time-grain on measures the old gate withheld.
+
+## DAT-775 — grain_columns persists as a bare list; cycle prompt renders real grain
+
+**Branch:** `fix/dat-775-grain-columns-bare-list`. `table_entities.grain_columns`
+was written as `{"columns": [...]}` — an unenforced wrapper convention. The
+cycle-detection context joined the raw value into its prompt, and joining a dict
+iterates its KEYS, so every table's grain rendered as the literal string
+`grain: columns`. Live prompt corruption.
+
+### What changed
+
+- The writer persists a bare JSON list of column names; the SQLAlchemy column is
+  typed `Mapped[list[str] | None]` (no DDL change — JSON stays JSON).
+- The defensive dict-or-list unwrap in `graphs/context.py` is deleted; the
+  cockpit's `look_table`/`query-context` grain parser is a bare `string[]` only.
+- No backfill: existing workspaces re-run `add_source` (test DBs recreate).
+
+### What eval should see
+
+- The cycle-detection prompt's TABLE CLASSIFICATIONS section now carries each
+  table's actual grain columns (`grain: account_id, period`) instead of
+  `grain: columns` for every table — cycle-detection quality may shift;
+  re-baseline any cycle evals that snapshot prompts or scores.
 
 ---
 

@@ -18,7 +18,10 @@ import duckdb
 import pytest
 
 from dataraum.analysis.correlation.db_models import DerivedColumn
-from dataraum.analysis.cycles.context import build_cycle_detection_context
+from dataraum.analysis.cycles.context import (
+    build_cycle_detection_context,
+    format_context_for_prompt,
+)
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -79,9 +82,9 @@ def two_tables_two_runs(session):
     session.add_all([txn_account_col, acct_id_col])
     session.flush()
 
-    for run_id, conf, is_fact, desc in (
-        ("run-current", 0.95, True, "CURRENT classification"),
-        ("run-stale", 0.10, False, "STALE classification"),
+    for run_id, conf, is_fact, desc, grain in (
+        ("run-current", 0.95, True, "CURRENT classification", ["account_id", "period"]),
+        ("run-stale", 0.10, False, "STALE classification", ["stale_id"]),
     ):
         session.add(
             Relationship(
@@ -104,6 +107,7 @@ def two_tables_two_runs(session):
                 detected_entity_type="fact" if is_fact else "dimension",
                 description=desc,
                 table_role="fact" if is_fact else "dimension",
+                grain_columns=grain,
             )
         )
     session.commit()
@@ -153,6 +157,33 @@ def test_scopes_to_pinned_run(session, two_tables_two_runs) -> None:
     assert len(entities) == 1
     assert entities[0]["table_role"] == "fact"
     assert entities[0]["description"] == "CURRENT classification"
+    # DAT-775: a bare list of column names, never a {"columns": [...]} wrapper —
+    # format_context_for_prompt joins this straight into the LLM prompt.
+    assert entities[0]["grain_columns"] == ["account_id", "period"]
+
+
+def test_format_context_for_prompt_renders_grain_column_names() -> None:
+    """DAT-775 regression: the cycle-detection prompt renders the table's ACTUAL
+    grain columns, never the literal string "columns" — the symptom of the fixed
+    bug, where a persisted ``{"columns": [...]}`` wrapper had its sole dict key
+    joined into the prompt instead of the real grain."""
+    context = {
+        "tables": [{"table_name": "accounts", "row_count": 50, "columns": []}],
+        "entity_classifications": [
+            {
+                "table_name": "accounts",
+                "entity_type": "account",
+                "description": "Chart of accounts.",
+                "table_role": "dimension",
+                "grain_columns": ["account_id", "period"],
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "grain: account_id, period" in rendered
+    assert "grain: columns" not in rendered
 
 
 @pytest.fixture

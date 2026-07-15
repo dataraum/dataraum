@@ -1016,8 +1016,8 @@ def build_execution_context(
                     meaning=concept.meaning if concept else None,
                     # The RESOLVED stock/flow verdict (entropy/resolve.py re-bases
                     # the ColumnConcept row at session_detect). Served as settled
-                    # fact — temporal_behavior_contested is deliberately NOT
-                    # rendered here (see resolve_temporal_behavior's docstring).
+                    # fact — authoritative on its own (DAT-786 dropped the
+                    # parallel contested flag; see resolve_temporal_behavior).
                     temporal_behavior=concept.temporal_behavior if concept else None,
                     business_name=sem_ann.business_name if sem_ann else None,
                     business_description=sem_ann.business_description if sem_ann else None,
@@ -1057,15 +1057,13 @@ def build_execution_context(
         # Get table entropy data
         tbl_entropy = table_entropy_lookup.get(table.table_name)
 
-        # Extract grain_columns: stored as JSON (may be list of column IDs or names)
-        grain_cols: list[str] = []
-        if table_entity and table_entity.grain_columns:
-            raw_grain = table_entity.grain_columns
-            if isinstance(raw_grain, list):
-                grain_cols = list(raw_grain)
-            elif isinstance(raw_grain, dict):
-                # Some formats store as {"columns": [...]}
-                grain_cols = list(raw_grain.get("columns", []))
+        # grain_columns is persisted as a bare JSON list of column names
+        # (analysis/semantic/db_models.py TableEntity.grain_columns; DAT-775 —
+        # a prior ``{"columns": [...]}`` wrapper was an unenforced convention
+        # that corrupted a different reader's prompt).
+        grain_cols: list[str] = (
+            list(table_entity.grain_columns) if table_entity and table_entity.grain_columns else []
+        )
 
         table_contexts.append(
             TableContext(

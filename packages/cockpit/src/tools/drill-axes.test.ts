@@ -264,37 +264,36 @@ describe("applyTemporalKinds", () => {
 	});
 });
 
-describe("temporalGate (DAT-673)", () => {
+describe("temporalGate (DAT-673, contested handling reversed by DAT-786)", () => {
 	const behavior = (
-		entries: [string, string | null, boolean][],
+		entries: [string, string | null][],
 	): Map<string, TemporalBehavior> =>
-		new Map(
-			entries.map(([col, b, contested]) => [col, { behavior: b, contested }]),
-		);
+		new Map(entries.map(([col, b]) => [col, { behavior: b }]));
 
-	it("passes a plain additive (uncontested) flow — grain stays", () => {
+	it("passes a plain additive flow — grain stays", () => {
 		const gate = temporalGate(
 			new Set(["credit"]),
-			behavior([["credit", "additive", false]]),
+			behavior([["credit", "additive"]]),
 		);
 		expect(gate).toEqual({ safe: true, offending: [] });
 	});
 
-	it("flags a contested additive column with the 'contested' cause", () => {
+	it("trusts a reconciled additive verdict at face value — no contested gate (DAT-786 reversal of DAT-673)", () => {
+		// DAT-673 used to treat a "contested" additive verdict as stock (fail
+		// closed). DAT-786 removed the contested flag entirely — the stock/flow
+		// resolve pass already adjudicates the LLM claim vs the structural
+		// witness, so the reconciled `additive` verdict is trusted outright.
 		const gate = temporalGate(
 			new Set(["credit"]),
-			behavior([["credit", "additive", true]]),
+			behavior([["credit", "additive"]]),
 		);
-		expect(gate).toEqual({
-			safe: false,
-			offending: [{ column: "credit", cause: "contested" }],
-		});
+		expect(gate).toEqual({ safe: true, offending: [] });
 	});
 
 	it("distinguishes stock (point_in_time) from unclassified (missing)", () => {
 		const gate = temporalGate(
 			new Set(["balance", "mystery"]),
-			behavior([["balance", "point_in_time", false]]),
+			behavior([["balance", "point_in_time"]]),
 		);
 		expect(gate.safe).toBe(false);
 		expect(gate.offending).toEqual([
@@ -304,18 +303,8 @@ describe("temporalGate (DAT-673)", () => {
 	});
 
 	it("reports a present-but-null behavior as unclassified", () => {
-		const gate = temporalGate(new Set(["x"]), behavior([["x", null, false]]));
+		const gate = temporalGate(new Set(["x"]), behavior([["x", null]]));
 		expect(gate.offending).toEqual([{ column: "x", cause: "unclassified" }]);
-	});
-
-	it("contested outranks the behavior value in the reported cause", () => {
-		// A point_in_time that is ALSO contested reports as contested — the
-		// higher-order fact (the detectors disagreed).
-		const gate = temporalGate(
-			new Set(["x"]),
-			behavior([["x", "point_in_time", true]]),
-		);
-		expect(gate.offending).toEqual([{ column: "x", cause: "contested" }]);
 	});
 
 	it("is safe only when EVERY aggregated column is a clean flow", () => {
@@ -323,8 +312,8 @@ describe("temporalGate (DAT-673)", () => {
 			temporalGate(
 				new Set(["credit", "debit"]),
 				behavior([
-					["credit", "additive", false],
-					["debit", "additive", false],
+					["credit", "additive"],
+					["debit", "additive"],
 				]),
 			),
 		).toEqual({ safe: true, offending: [] });
@@ -332,43 +321,37 @@ describe("temporalGate (DAT-673)", () => {
 			temporalGate(
 				new Set(["credit", "debit"]),
 				behavior([
-					["credit", "additive", false],
-					["debit", "additive", true],
+					["credit", "additive"],
+					["debit", "point_in_time"],
 				]),
 			),
 		).toEqual({
 			safe: false,
-			offending: [{ column: "debit", cause: "contested" }],
+			offending: [{ column: "debit", cause: "stock" }],
 		});
 	});
 
 	it("fails closed when the aggregated set is empty (unparseable expr)", () => {
-		expect(
-			temporalGate(new Set(), behavior([["credit", "additive", false]])),
-		).toEqual({
-			safe: false,
-			offending: [],
-		});
+		expect(temporalGate(new Set(), behavior([["credit", "additive"]]))).toEqual(
+			{
+				safe: false,
+				offending: [],
+			},
+		);
 	});
 });
 
 describe("describeTemporalGate (DAT-673)", () => {
-	it("phrases each cause honestly — a balance, a dispute, a gap", () => {
+	it("phrases each cause honestly — a balance, a gap", () => {
 		expect(
 			describeTemporalGate([{ column: "debit_balance", cause: "stock" }]),
 		).toMatch(/debit_balance.*balance.*not a flow/);
-		expect(
-			describeTemporalGate([{ column: "net_position", cause: "contested" }]),
-		).toMatch(/net_position.*contested.*detectors disagreed/);
 		expect(
 			describeTemporalGate([{ column: "mystery", cause: "unclassified" }]),
 		).toMatch(/mystery.*no stock\/flow classification/);
 	});
 
-	it("does NOT call a contested or unclassified column a balance", () => {
-		expect(
-			describeTemporalGate([{ column: "net_position", cause: "contested" }]),
-		).not.toContain("balance");
+	it("does NOT call an unclassified column a balance", () => {
 		expect(
 			describeTemporalGate([{ column: "mystery", cause: "unclassified" }]),
 		).not.toContain("balance");
@@ -489,8 +472,8 @@ const seed = () => {
 	]);
 	// The catalog types behind temporal detection: the VIEW table (vt1) carries
 	// the FK-projected dims; customer__segment is a DATE there. The FACT (fact1)
-	// carries the aggregated measure `amount` — additive AND uncontested (a clean
-	// flow), so the flow gate leaves the temporal grain on.
+	// carries the aggregated measure `amount` — additive (a clean flow), so the
+	// flow gate leaves the temporal grain on.
 	rowsByTable.set(columns, [
 		{ tableId: "vt1", columnName: "customer__region", resolvedType: "VARCHAR" },
 		{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
@@ -499,7 +482,6 @@ const seed = () => {
 			columnName: "amount",
 			resolvedType: "DOUBLE",
 			temporalBehavior: "additive",
-			temporalBehaviorContested: false,
 		},
 	]);
 };
@@ -648,7 +630,12 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect(res.temporalGateReason).not.toContain("balance");
 	});
 
-	it("FLOW GATE: a CONTESTED additive measure counts as stock — grain stripped (DAT-673)", async () => {
+	it("FLOW GATE: a reconciled additive measure keeps its grain — no contested second-guessing (DAT-786 reversal of DAT-673)", async () => {
+		// DAT-673 used to fail this closed when the detectors "contested" the
+		// additive verdict. DAT-786 removed that flag: the stock/flow resolve
+		// pass already adjudicated the LLM claim vs the structural witness, so
+		// the reconciled `additive` verdict on `net_position` is now trusted
+		// outright and the time-grain slice is NOT withheld.
 		seed();
 		rowsByTable.set(sqlSnippets, [
 			{
@@ -661,8 +648,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				failureCount: 0,
 			},
 		]);
-		// `net_position` is additive, but the detectors CONTESTED it — we can't
-		// stand behind "summable flow", so the grain must fail closed.
 		rowsByTable.set(columns, [
 			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
 			{
@@ -670,18 +655,13 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				columnName: "net_position",
 				resolvedType: "DOUBLE",
 				temporalBehavior: "additive",
-				temporalBehaviorContested: true,
 			},
 		]);
 		const res = await resolveDrillAxes({ standardField: "revenue" });
 		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		// Still offered as a raw slice, but the grain is gated off.
 		expect(dateAxis).toBeDefined();
-		expect(dateAxis?.temporal).toBeNull();
-		expect(res.temporalGateReason).toContain("net_position");
-		// Accurate cause: a contested verdict is reported as such, NOT as a balance.
-		expect(res.temporalGateReason).toContain("contested");
-		expect(res.temporalGateReason).not.toContain("balance");
+		expect(dateAxis?.temporal).toBe("date");
+		expect(res.temporalGateReason).toBeUndefined();
 	});
 
 	it("FLOW GATE: a stale multi-measure snippet does NOT strip a safe measure's grain (scope leak, DAT-673)", async () => {
@@ -759,7 +739,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				columnName: "credit",
 				resolvedType: "DOUBLE",
 				temporalBehavior: "additive",
-				temporalBehaviorContested: false,
 			},
 		]);
 		const res = await resolveDrillAxes({ metricKey: "gross_margin" });

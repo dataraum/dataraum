@@ -156,6 +156,16 @@ def analyze_graph_topology(
     for from_id, to_id in edges:
         # Only add edges between tables in our analysis scope
         if from_id in table_ids and to_id in table_ids:
+            # A self-referential FK (a within-table hierarchy, e.g.
+            # chart_of_accounts.parent_id -> account_id, now a routine Layer-A
+            # candidate — DAT-763) is NOT an inter-table structural edge. A
+            # NetworkX self-loop double-counts degree (+2) and lists a table as
+            # its own neighbor, so it would misclassify hub/bridge/dimension roles
+            # and corrupt the ContextDocument. Topology measures inter-table
+            # connectivity; the self-FK still lives in the relationship catalog.
+            # (Cycle detection below already skips self-loops via len >= 2.)
+            if from_id == to_id:
+                continue
             G.add_edge(from_id, to_id)
             G_directed.add_edge(from_id, to_id)
 

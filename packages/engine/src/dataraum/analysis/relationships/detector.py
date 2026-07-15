@@ -66,7 +66,9 @@ def detect_relationships(
         # Load table paths + column metadata (no row data — uniqueness is computed in SQL)
         tables_data = _load_tables(session, table_ids)
 
-        if len(tables_data) < 2:
+        # A single table can still carry a self-referential FK (DAT-763), so one
+        # table is enough to detect; only an empty scope has nothing to probe.
+        if not tables_data:
             return Result.ok(
                 RelationshipDetectionResult(
                     candidates=[],

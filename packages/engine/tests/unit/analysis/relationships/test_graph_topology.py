@@ -195,6 +195,27 @@ class TestAnalyzeGraphTopology:
         assert roles["customers"] == "dimension"  # 1 connection
         assert roles["products"] == "isolated"  # 0 connections
 
+    def test_self_referential_fk_does_not_inflate_role(self):
+        # DAT-763: a self-FK (chart_of_accounts.parent_id -> account_id) is a
+        # within-table hierarchy, not an inter-table edge. A NetworkX self-loop
+        # counts degree +2 and lists the table as its own neighbor, which would
+        # misclassify a dimension carrying ONE external FK + a self-FK as a hub.
+        table_ids = ["coa", "journal"]
+        relationships = [
+            {"from_table_id": "journal", "to_table_id": "coa"},  # one external FK
+            {"from_table_id": "coa", "to_table_id": "coa"},  # self-referential FK
+        ]
+        names = {"coa": "chart_of_accounts", "journal": "journal_lines"}
+
+        result = analyze_graph_topology(table_ids, relationships, table_names=names)
+
+        by_name = {r.table_name: r for r in result.tables}
+        coa = by_name["chart_of_accounts"]
+        assert coa.role == "dimension"  # degree 1, NOT hub (would be 3 with the loop)
+        assert coa.connection_count == 1
+        assert "chart_of_accounts" not in coa.connects_to  # never its own neighbor
+        assert "chart_of_accounts" not in result.hub_tables
+
 
 class TestFormatGraphStructure:
     """Tests for format_graph_structure_for_context."""

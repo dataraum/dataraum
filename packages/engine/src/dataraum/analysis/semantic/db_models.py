@@ -320,19 +320,21 @@ class ColumnConcept(Base):
     Fields:
         meaning: the column's business-model characterization in the context of
             the composed catalogue — free text, ambiguity expressible (DAT-769:
-            "per-account per-period total of debit-side movements — the debit
-            column of a trial balance" is a complete answer where a categorical
-            binding forced a coin-flip). Transported as CONTEXT to LLM consumers
+            "the per-entity, per-period total of incoming movements — the inflow
+            column of a periodic statement" is a complete answer where a
+            categorical binding forced a coin-flip; examples here are
+            deliberately vertical-agnostic — verticals live in config, never in
+            engine contracts). Transported as CONTEXT to LLM consumers
             (metric grounding feed, cycles, validation); never a decision surface.
             Replaces the retired single-slot ``business_concept`` binding — the
             precise-word mapping was ill-posed for multi-facet columns and no
             consumer branched on it.
         ontology_hints: 0..n related vertical-ontology concepts, unordered and
             NON-AUTHORITATIVE (DAT-769 contract: no consumer may branch on them,
-            no eval may grade them; multiplicity is expected — debit_balance →
-            [account_balance, debit] is the honest answer). They keep the
-            ontology's metric ``standard_field`` vocabulary discoverable in the
-            grounding prose.
+            no eval may grade them; multiplicity is expected — a periodic level
+            aggregate honestly relates to both the level concept and the
+            movement it accumulates). They keep the active vertical's metric
+            ``standard_field`` vocabulary discoverable in the grounding prose.
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural

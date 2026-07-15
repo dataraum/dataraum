@@ -291,8 +291,8 @@ class ColumnConceptOutput(BaseModel):
         description=(
             "Related ontology concepts, 0..n, unordered. NON-AUTHORITATIVE hints — "
             "context vocabulary, never a binding. List every concept the column "
-            "genuinely relates to (a debit-side balance aggregate relates to both the "
-            "balance concept and the debit leg — list both). Leave empty when no "
+            "genuinely relates to (a periodic level aggregate relates to both the "
+            "level concept and the movement it accumulates — list both). Leave empty when no "
             "listed concept genuinely relates; never stretch."
         ),
     )

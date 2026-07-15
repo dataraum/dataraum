@@ -59,8 +59,8 @@ system_prompt: |
     value represents (its grain), and the role it plays in the business process
     or statement. Write MEANING, not classification: where a column genuinely
     participates in more than one business notion, say so in plain words ("the
-    per-account, per-period total of debit-side movements — the debit column of
-    a trial balance") instead of forcing a single label. This prose is
+    per-entity, per-period total of incoming movements — the inflow column of a
+    periodic statement") instead of forcing a single label. This prose is
     transported as context to downstream analysts; honesty beats neatness, and
     a hedged truthful characterization beats a confident wrong one.
   - ontology_hints: 0..n ontology concepts the column genuinely RELATES to —

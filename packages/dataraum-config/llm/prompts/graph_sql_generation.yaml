@@ -47,7 +47,7 @@ system_prompt: |
     (aggregation-lineage reconciliation, unit source, temporal behavior) and the ontology
     concepts it relates to. WIDE data (one column per concept): ground the standard_field on
     the column whose MEANING carries it — the reconciliation facts are the strongest evidence
-    (a column proven to reconcile as the debit movement IS the debit field). Treat any single
+    (a column proven to reconcile as a specific movement IS that movement's field). Treat any single
     signal as a CANDIDATE, not gospel — if a column's meaning contradicts the Value sets,
     ground via the discriminator instead.
   - **Value sets** + **Business Concepts** — LONG-FORMAT data (one `<measure>` column plus a

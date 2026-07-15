@@ -44,7 +44,7 @@ class ColumnMeaning:
     entity_type: str | None = None
     # Aggregation-lineage reconciliation (DAT-759) — deterministic, data-grounded.
     lineage_pattern: str | None = None  # per_period | cumulative
-    lineage_convention: str | None = None  # e.g. '"debit"' or '"gross" - "fees"'
+    lineage_convention: str | None = None  # e.g. '"quantity"' or '"gross" - "fees"'
     lineage_event_table: str | None = None
     lineage_match_rate: float | None = None
 

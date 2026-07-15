@@ -1336,11 +1336,13 @@ def format_metadata_document(
             meta_parts.append(f"**Grain**: {', '.join(table.grain_columns)}.")
         if table.row_count:
             meta_parts.append(f"**Rows**: {table.row_count:,}.")
-        # All event-time axes (DAT-565): the answer agent picks the lens per
-        # question, so render each with its granularity/range and one-line note.
+        # Event-time axes (DAT-565): the answer agent picks the lens per question,
+        # so render each with its granularity/range and one-line note. EVENT-role
+        # only (DAT-780) — an attribute date (role='attribute') is a normal column
+        # in the table below, never presented here as a trend/time lens.
         for tc in table.time_columns:
             name = tc.get("column")
-            if not name:
+            if not name or tc.get("role") != "event":
                 continue
             time_col = next((c for c in table.columns if c.column_name == name), None)
             label = f"by {tc['aspect']}" if tc.get("aspect") else None

@@ -31,6 +31,41 @@ _MALFORMED_REL = {k: v for k, v in _COMPLETE_REL.items() if k != "to_column"}
 _VALID_INPUT = {"tables": [], "relationships": [_COMPLETE_REL], "column_concepts": []}
 _MALFORMED_INPUT = {"tables": [], "relationships": [_MALFORMED_REL], "column_concepts": []}
 
+# DAT-780: a table with event dates but no anchor is a save-time contract
+# violation the TableEntityOutput validator raises — routed through the SAME
+# repair turn as a malformed relationship.
+_TABLE_NO_ANCHOR = {
+    "table_name": "orders",
+    "entity_type": "orders",
+    "description": "Customer orders.",
+    "is_fact_table": True,
+    "grain": ["order_id"],
+    "time_columns": [
+        {
+            "column": "order_date",
+            "aspect": "order",
+            "role": "event",
+            "is_anchor": False,
+            "note": "When placed.",
+        }
+    ],
+    "identity_columns": [],
+}
+_TABLE_WITH_ANCHOR = {
+    **_TABLE_NO_ANCHOR,
+    "time_columns": [{**_TABLE_NO_ANCHOR["time_columns"][0], "is_anchor": True}],
+}
+_ANCHORLESS_INPUT = {
+    "tables": [_TABLE_NO_ANCHOR],
+    "relationships": [],
+    "column_concepts": [],
+}
+_ANCHORED_INPUT = {
+    "tables": [_TABLE_WITH_ANCHOR],
+    "relationships": [],
+    "column_concepts": [],
+}
+
 
 def _response(tool_input: dict | None) -> MagicMock:
     response = MagicMock()
@@ -128,6 +163,38 @@ def test_missing_field_is_repaired_by_the_model(monkeypatch) -> None:
 
 def test_second_validation_failure_fails_loud(monkeypatch) -> None:
     provider = _provider(_response(_MALFORMED_INPUT), _response(_MALFORMED_INPUT))
+    agent = _agent_with(provider, monkeypatch)
+
+    result = agent.synthesize_tables(MagicMock(), ["t1"])
+
+    assert not result.success
+    assert "after a repair turn" in result.error
+    assert provider.converse.call_count == 2
+
+
+def test_missing_anchor_is_repaired_by_the_model(monkeypatch) -> None:
+    """DAT-780: a table with event dates but no is_anchor is a validation error the
+    repair turn catches — the model re-emits with the anchor committed, and
+    begin_session is never failed. Proves the anchor invariant rides the DAT-710 seam."""
+    provider = _provider(_response(_ANCHORLESS_INPUT), _response(_ANCHORED_INPUT))
+    agent = _agent_with(provider, monkeypatch)
+
+    result = agent.synthesize_tables(MagicMock(), ["t1"])
+
+    assert result.success
+    axes = result.value.entity_detections[0].time_columns
+    assert [tc.is_anchor for tc in axes] == [True]
+    assert provider.converse.call_count == 2
+
+    repair_request = provider.converse.call_args_list[1].args[0]
+    content = repair_request.messages[0].content
+    assert "Validation error" in content
+    assert "is_anchor" in content  # the invariant message rides along
+
+
+def test_persistent_missing_anchor_fails_loud(monkeypatch) -> None:
+    """A model that cannot satisfy the anchor invariant twice fails loud (DAT-780)."""
+    provider = _provider(_response(_ANCHORLESS_INPUT), _response(_ANCHORLESS_INPUT))
     agent = _agent_with(provider, monkeypatch)
 
     result = agent.synthesize_tables(MagicMock(), ["t1"])

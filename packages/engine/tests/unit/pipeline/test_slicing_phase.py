@@ -34,9 +34,21 @@ from dataraum.storage.upsert import upsert
 from tests.conftest import baseline_run_id
 
 
-def _axes(column: str | None) -> list[dict[str, str]]:
-    """Plural ``time_columns`` JSON for a single named axis (DAT-565), or empty."""
-    return [{"column": column, "aspect": "event", "note": "seed axis."}] if column else []
+def _axes(column: str | None) -> list[dict[str, object]]:
+    """Plural ``time_columns`` JSON for a single named event axis (DAT-565/780), or empty."""
+    return (
+        [
+            {
+                "column": column,
+                "aspect": "event",
+                "role": "event",
+                "is_anchor": True,
+                "note": "seed axis.",
+            }
+        ]
+        if column
+        else []
+    )
 
 
 def _seed(

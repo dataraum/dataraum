@@ -295,7 +295,11 @@ class SemanticAgent(LLMFeature):
                 table_role=derive_table_role(
                     table.is_fact_table,
                     table.grain,
-                    [tc.column for tc in table.time_columns],
+                    # EVENT axes only (DAT-780): a periodic snapshot is a fact whose
+                    # grain holds a genuine event date (the snapshot period), so an
+                    # attribute date (due_date) landing in the grain must not flip a
+                    # plain fact to periodic_snapshot.
+                    [tc.column for tc in table.time_columns if tc.role == "event"],
                 ),
                 time_columns=table.time_columns,
                 identity_columns=table.identity_columns,

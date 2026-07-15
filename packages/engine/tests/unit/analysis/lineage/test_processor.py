@@ -91,6 +91,7 @@ def _seed(
     folded: bool = False,
     axis_columns: bool = False,
     values: tuple[str, ...] = _VALUES,
+    measure_axis_role: str = "event",
 ) -> dict[str, str]:
     """Seed Tables/Columns/SliceDefinitions/TableEntity + the DuckDB rows.
 
@@ -169,9 +170,29 @@ def _seed(
         # The agent-named time axes the inline producer resolves (DAT-491/565).
         # multi_axis adds a SECOND, degenerate axis (``ship_date``, constant) on
         # the measure fact: the search must compete both and keep the good one.
-        axes = [{"column": "period_date", "aspect": "period", "note": "Period."}]
+        # DAT-780: the measure fact's axis role is parametrized so a test can prove
+        # an attribute-role date is filtered out of the event-axis set. is_anchor is
+        # only meaningful for an event axis; keep it false when the role is attribute.
+        m_role = measure_axis_role if name == "trial_balance" else "event"
+        axes = [
+            {
+                "column": "period_date",
+                "aspect": "period",
+                "role": m_role,
+                "is_anchor": m_role == "event",
+                "note": "Period.",
+            }
+        ]
         if multi_axis and name == "trial_balance":
-            axes.append({"column": "ship_date", "aspect": "ship", "note": "Shipped."})
+            axes.append(
+                {
+                    "column": "ship_date",
+                    "aspect": "ship",
+                    "role": "event",
+                    "is_anchor": False,
+                    "note": "Shipped.",
+                }
+            )
         if axis_columns:
             for pos, tc in enumerate(axes, start=len(cols)):
                 axis_column = Column(
@@ -381,7 +402,15 @@ def _seed_series(
                 run_id=_RUN,
                 table_id=table.table_id,
                 detected_entity_type="fact",
-                time_columns=[{"column": "period_date", "aspect": "period", "note": "Period."}],
+                time_columns=[
+                    {
+                        "column": "period_date",
+                        "aspect": "period",
+                        "role": "event",
+                        "is_anchor": True,
+                        "note": "Period.",
+                    }
+                ],
             )
         )
         session.add(
@@ -652,6 +681,21 @@ class TestDiscoverAggregationLineage:
         # catalog's own SliceDefinition.column_id (schema-guaranteed NOT NULL).
         assert row.measure_slice_column_id == ids["trial_balance.balance"]
         assert row.event_slice_column_id == ids["journal_lines.debit"]
+
+    def test_attribute_role_axis_is_excluded_from_rollup(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-780 Gap 1: an attribute-role date is never a rollup axis.
+
+        The measure fact's only date is tagged role='attribute' (a due_date-style
+        column). The consumer filters strictly on role='event', so trial_balance
+        contributes no time axis, no measure series can form, and discovery
+        abstains — proving the event/attribute rule is enforced at the consumer,
+        not merely documented. With role='event' the SAME fixture reconciles.
+        """
+        ids_attr = _seed(real_session, duck, measure_axis_role="attribute")
+        assert _discover(real_session, duck, ids_attr) == 0
+        assert _row_for(real_session, ids_attr["trial_balance.balance"]) is None
 
     def test_time_axis_column_id_is_null_when_axis_name_unresolvable(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

@@ -288,8 +288,20 @@ class TestSynthesizeAndStoreTables:
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[
-                                TimeColumn(column="order_date", aspect="order", note="Placed."),
-                                TimeColumn(column="ship_date", aspect="ship", note="Shipped."),
+                                TimeColumn(
+                                    column="order_date",
+                                    aspect="order",
+                                    role="event",
+                                    is_anchor=True,
+                                    note="Placed.",
+                                ),
+                                TimeColumn(
+                                    column="ship_date",
+                                    aspect="ship",
+                                    role="event",
+                                    is_anchor=False,
+                                    note="Shipped.",
+                                ),
                             ],
                             identity_columns=[
                                 IdentityColumn(column="customer_id", note="Buying account.")
@@ -645,8 +657,20 @@ class TestSynthesizeAndStoreTables:
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[
-                                TimeColumn(column="order_date", aspect="order", note="Placed."),
-                                TimeColumn(column="ship_date", aspect="ship", note="Shipped."),
+                                TimeColumn(
+                                    column="order_date",
+                                    aspect="order",
+                                    role="event",
+                                    is_anchor=True,
+                                    note="Placed.",
+                                ),
+                                TimeColumn(
+                                    column="ship_date",
+                                    aspect="ship",
+                                    role="event",
+                                    is_anchor=False,
+                                    note="Shipped.",
+                                ),
                             ],
                             identity_columns=[
                                 IdentityColumn(column="customer_id", note="Buying account.")

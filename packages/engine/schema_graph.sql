@@ -28,12 +28,20 @@ SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_na
          CASE mal.pattern WHEN 'per_period' THEN 'flow' WHEN 'cumulative' THEN 'stock' END,
          CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
                                    WHEN 'point_in_time' THEN 'stock' END
-       ) AS materialization
+       ) AS materialization,
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
 FROM __READ__.current_columns c
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = c.column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = c.column_id
 LEFT JOIN __READ__.current_measure_aggregation_lineage mal
-       ON mal.measure_column_id = c.column_id;
+       ON mal.measure_column_id = c.column_id
+LEFT JOIN __READ__.current_table_entities te ON te.table_id = c.table_id
+LEFT JOIN LATERAL (
+    SELECT elem->>'column' AS column_name
+    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem
+    WHERE elem->>'role' = 'event' AND (elem->>'is_anchor')::boolean IS TRUE
+    LIMIT 1
+  ) declared_anchor ON TRUE;
 
 CREATE VIEW __READ__.og_concepts AS
 SELECT concept_id::text AS concept_id, vertical, name, kind
@@ -107,7 +115,8 @@ CREATE PROPERTY GRAPH __READ__.operating_model
     __READ__.og_tables KEY (table_id) LABEL table_node
       PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),
     __READ__.og_columns KEY (column_id) LABEL column_node
-      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),
+      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
+                  anchor_time_axis),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
       PROPERTIES (concept_id, vertical, name, kind)
   )

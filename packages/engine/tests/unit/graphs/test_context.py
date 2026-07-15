@@ -100,7 +100,15 @@ class TestTableContext:
             table_role="fact",
             table_description="Financial transactions table",
             grain_columns=["id"],
-            time_columns=[{"column": "created_at", "aspect": "created", "note": "Created."}],
+            time_columns=[
+                {
+                    "column": "created_at",
+                    "aspect": "created",
+                    "role": "event",
+                    "is_anchor": True,
+                    "note": "Created.",
+                }
+            ],
             columns=[col1, col2],
         )
         assert ctx.row_count == 1000
@@ -244,7 +252,13 @@ class TestFormatMetadataDocument:
             table_description="Records of all financial transactions",
             grain_columns=["transaction_id"],
             time_columns=[
-                {"column": "created_at", "aspect": "created", "note": "When the row was created."}
+                {
+                    "column": "created_at",
+                    "aspect": "created",
+                    "role": "event",
+                    "is_anchor": True,
+                    "note": "When the row was created.",
+                }
             ],
             identity_columns=[{"column": "customer_id", "note": "Recurring customer identity."}],
             columns=[

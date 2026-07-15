@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from dataraum.core.models.base import (
     ColumnRef,
@@ -177,18 +177,43 @@ class RelationshipOutput(BaseModel):
 
 
 class TimeColumn(BaseModel):
-    """One event-time axis of a table (DAT-565 multi-temporal).
+    """One date axis of a table (DAT-565 multi-temporal; DAT-780 event/attribute rule).
 
-    A denormalized table commonly has several — each a distinct temporal lens
-    (order vs ship vs delivery). Carries a one-line note so downstream
-    formatters and the answer agent can pick the right lens per question."""
+    A denormalized table commonly has several date columns — each a distinct
+    temporal lens (order vs ship vs delivery). Carries a one-line note so
+    downstream formatters and the answer agent can pick the right lens per
+    question. The typed ``role`` splits genuine event axes (a trend/rollup can be
+    keyed on them) from attribute dates (dates the row merely refers to — never a
+    trend axis); ``is_anchor`` names the table's single primary event axis."""
 
     column: str = Field(description="Exact column name from the provided schema.")
     aspect: str = Field(
         description=(
             "The temporal aspect this column records, as a short lowercase label "
-            "(e.g. 'order', 'ship', 'delivery', 'payment') — distinguishes one "
-            "event date from another on the same row."
+            "(e.g. 'order', 'ship', 'delivery', 'payment', 'due') — distinguishes "
+            "one date from another on the same row."
+        )
+    )
+    role: Literal["event", "attribute"] = Field(
+        description=(
+            "The kind of date this column holds — a CLOSED vocabulary the LLM "
+            "commits per column (DAT-780). 'event' = WHEN the row's own event "
+            "occurred (order_date, ship_date, payment_date, a periodic-statement "
+            "period date) — a genuine time axis analysis may segment or roll up by. "
+            "'attribute' = a date the row merely REFERS to, not when the row's "
+            "event happened (due_date, valid_until, effective_from) — it gets "
+            "coverage like any column but must never be used as a trend/event axis. "
+            "Record metadata (created_at, updated_at, load timestamps) is NOT a "
+            "time column at all — leave it out of time_columns entirely."
+        )
+    )
+    is_anchor: bool = Field(
+        description=(
+            "True for the ONE primary event axis of this table — the default date "
+            "to trend/roll up by when a question names no specific lens. Exactly "
+            "one time_column with role='event' must set this true whenever the "
+            "table has any event date; every other time_column sets it false. An "
+            "attribute-role column can never be the anchor."
         )
     )
     note: str = Field(description="One sentence describing what this time column represents.")
@@ -242,14 +267,47 @@ class TableEntityOutput(BaseModel):
     time_columns: list[TimeColumn] = Field(
         default_factory=list,
         description=(
-            "EVERY column recording WHEN a row's event occurred (booking/transaction/"
-            "observation date) — each a distinct temporal lens the analysis can "
-            "segment by (e.g. order_date, ship_date, delivery_date). A denormalized "
-            "table commonly has several; emit all. Exclude attribute dates such as "
-            "due_date or valid_until, and record metadata like created_at. Empty if "
-            "the table has no event-time column."
+            "EVERY date column of the table, each tagged with a typed ``role`` "
+            "(DAT-780). Emit event dates — when a row's own event occurred "
+            "(order_date, ship_date, delivery_date, a periodic-statement period "
+            "date) — with role='event'; a denormalized table commonly has several, "
+            "emit all. Emit attribute dates — a date the row merely refers to "
+            "(due_date, valid_until, effective_from) — with role='attribute' so "
+            "they get coverage yet are never used as a trend axis. Leave record "
+            "metadata (created_at, updated_at, load timestamps) OUT entirely. "
+            "Whenever any event date exists, mark exactly ONE of them "
+            "is_anchor=true (the primary axis) and every other time_column false; "
+            "an attribute date can never be the anchor. Empty only if the table has "
+            "no date column at all."
         ),
     )
+
+    @model_validator(mode="after")
+    def _validate_time_anchor(self) -> TableEntityOutput:
+        """Enforce the DAT-780 anchor invariant at validation (the DAT-710 save seam).
+
+        A ValidationError here rides the existing ``_converse_and_validate`` repair
+        turn: the model re-emits a corrected anchor commitment, and a second failure
+        falls loud (``synthesize_tables`` → ``Result.fail`` → phase fails). The rules:
+
+        - every ``is_anchor`` column must be role='event' (an attribute anchor is a
+          contract violation) — this also rules out an anchor when no event date
+          exists, since any anchor would then be attribute-role;
+        - a table with any event date has EXACTLY ONE anchor.
+        """
+        anchors = [tc for tc in self.time_columns if tc.is_anchor]
+        if any(tc.role != "event" for tc in anchors):
+            raise ValueError(
+                f"table '{self.table_name}': an anchor time_column must have role='event' "
+                "(an attribute date can never be the trend anchor)"
+            )
+        events = [tc for tc in self.time_columns if tc.role == "event"]
+        if events and len(anchors) != 1:
+            raise ValueError(
+                f"table '{self.table_name}': exactly one event time_column must set "
+                f"is_anchor=true (found {len(anchors)} among {len(events)} event dates)"
+            )
+        return self
 
     identity_columns: list[IdentityColumn] = Field(
         default_factory=list,
@@ -412,7 +470,9 @@ class EntityDetection(BaseModel):
     # (``TableRole``). Derived at classification from the LLM's fact/dimension bit
     # + grain∩time; replaces the two booleans.
     table_role: str
-    time_columns: list[TimeColumn] = Field(default_factory=list)  # all event-time axes (DAT-565)
+    # All date axes (DAT-565), each typed role='event'|'attribute' with one
+    # is_anchor per table among the event axes (DAT-780).
+    time_columns: list[TimeColumn] = Field(default_factory=list)
     identity_columns: list[IdentityColumn] = Field(default_factory=list)  # recurring identities
 
 

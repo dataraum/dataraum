@@ -255,11 +255,15 @@ class SlicingPhase(BasePhase):
                         continue
                     # Fallback fires only when semantic found NO axis, so a fresh
                     # single-element list is correct; reassign (not append) so the
-                    # JSON column is marked dirty for the flush.
+                    # JSON column is marked dirty for the flush. Typed per DAT-780:
+                    # the one synthesized axis is a genuine event axis and, being the
+                    # only one, the table's anchor.
                     entity.time_columns = [
                         {
                             "column": chosen,
                             "aspect": "event",
+                            "role": "event",
+                            "is_anchor": True,
                             "note": "Event-time axis identified by the slice-agent fallback (semantic phase found none).",
                         }
                     ]
@@ -298,16 +302,22 @@ class SlicingPhase(BasePhase):
                         continue  # semantic or the agent already set it — never override
                     name = name_by_id.get(entity.table_id, "")
                     cols = flagged_by_table.get(name, [])
+                    # Typed per DAT-780: each flagged column is a genuine event axis;
+                    # ``cols`` is deterministically sorted (see ``dimension_time_axes``),
+                    # so anchoring the first is a stable, non-positional-accident choice
+                    # for a backstop that has no ranking signal — exactly one anchor.
                     entity.time_columns = [
                         {
                             "column": col,
                             "aspect": "event",
+                            "role": "event",
+                            "is_anchor": i == 0,
                             "note": (
                                 "Event-time axis from the deterministic "
                                 "is_dimension_time_column flag (DAT-720 backstop)."
                             ),
                         }
-                        for col in cols
+                        for i, col in enumerate(cols)
                     ]
                     logger.info("time_axis_filled_deterministic", table=name, columns=cols)
 

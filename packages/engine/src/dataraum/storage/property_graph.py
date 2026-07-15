@@ -20,7 +20,8 @@ supported. So every read splits:
 and ``Table``; the vocabulary ``Concept`` vertices are P3. Edges/props carried:
 
     column_node  (KEY column_id)  props: semantic_role (has_role),
-                                          materialization (materializes_as)
+                                          materialization (materializes_as),
+                                          anchor_time_axis (witness axis ▸ declared anchor)
     table_node   (KEY table_id)   props: table_role (fact/periodic_snapshot/dimension)
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
@@ -111,9 +112,11 @@ def _element_view_sql(name: str) -> str:
             f"LEFT JOIN {READ_TOKEN}.current_table_entities te ON te.table_id = t.table_id;"
         )
     if name == "og_columns":
-        # Column vertex: the physical column with its semantic role (has_role) and
-        # materialization (materializes_as → flow | stock). The two source columns
-        # carry DIFFERENT raw vocabularies and must be normalized, NOT COALESCEd raw:
+        # Column vertex: the physical column with its semantic role (has_role),
+        # materialization (materializes_as → flow | stock), and the anchor event-time
+        # axis a measure trends by (anchor_time_axis). The two materialization source
+        # columns carry DIFFERENT raw vocabularies and must be normalized, NOT
+        # COALESCEd raw:
         #   measure_aggregation_lineage.pattern ∈ {per_period, cumulative}  (DAT-491
         #     witness posterior — per_period ⇒ flow, cumulative ⇒ stock),
         #   column_concepts.temporal_behavior ∈ {additive, point_in_time}   (ontology
@@ -121,6 +124,18 @@ def _element_view_sql(name: str) -> str:
         # Prefer the data-reconciled witness posterior over the prior claim; NULL when
         # neither is present. Each LEFT-joined table is (column_id, run) unique after
         # head resolution, so the join is 1:1 and column_id is a valid KEY.
+        #
+        # anchor_time_axis — THE anchor event-time axis for this (measure) column, the
+        # ONE documented home of the DAT-780 witness-precedence rule (replaces the
+        # parked #486's positional `tc.ord = 1` pick; nothing reads array position):
+        #   1. the DAT-778 lineage-witness event-side axis (mal.event_time_axis_column)
+        #      where a witness reconciled this measure — the data-proven rollup axis;
+        #   2. else the table's DECLARED anchor — the one time_columns entry the LLM
+        #      committed with role='event' AND is_anchor=true (the typed field, NOT
+        #      list position). Read from current_table_entities' JSON interior via a
+        #      lateral; the save-time contract guarantees at most one such row.
+        # NULL when neither exists. The COALESCE order IS the precedence, exactly like
+        # materialization prefers the witness posterior over the concept prior.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_columns AS\n"
             f"SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_name,\n"
@@ -129,12 +144,20 @@ def _element_view_sql(name: str) -> str:
             f"         CASE mal.pattern WHEN 'per_period' THEN 'flow' WHEN 'cumulative' THEN 'stock' END,\n"
             f"         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'\n"
             f"                                   WHEN 'point_in_time' THEN 'stock' END\n"
-            f"       ) AS materialization\n"
+            f"       ) AS materialization,\n"
+            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis\n"
             f"FROM {READ_TOKEN}.current_columns c\n"
             f"LEFT JOIN {READ_TOKEN}.current_semantic_annotations sa ON sa.column_id = c.column_id\n"
             f"LEFT JOIN {READ_TOKEN}.current_column_concepts cc ON cc.column_id = c.column_id\n"
             f"LEFT JOIN {READ_TOKEN}.current_measure_aggregation_lineage mal\n"
-            f"       ON mal.measure_column_id = c.column_id;"
+            f"       ON mal.measure_column_id = c.column_id\n"
+            f"LEFT JOIN {READ_TOKEN}.current_table_entities te ON te.table_id = c.table_id\n"
+            f"LEFT JOIN LATERAL (\n"
+            f"    SELECT elem->>'column' AS column_name\n"
+            f"    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem\n"
+            f"    WHERE elem->>'role' = 'event' AND (elem->>'is_anchor')::boolean IS TRUE\n"
+            f"    LIMIT 1\n"
+            f"  ) declared_anchor ON TRUE;"
         )
     if name == "og_concepts":
         # Concept vertex: the workspace's typed vocabulary (DAT-728). Active rows
@@ -298,7 +321,8 @@ def _property_graph_sql() -> str:
         f"    {READ_TOKEN}.og_tables KEY (table_id) LABEL table_node\n"
         f"      PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),\n"
         f"    {READ_TOKEN}.og_columns KEY (column_id) LABEL column_node\n"
-        f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization),\n"
+        f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,\n"
+        f"                  anchor_time_axis),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
         f"      PROPERTIES (concept_id, vertical, name, kind)\n"
         f"  )\n"

@@ -805,8 +805,8 @@ def _build_session_phase_config(phase_name: str, vertical: str | None) -> dict[s
     """Phase static config + the session's frame ``vertical`` (DAT-401).
 
     Source-free analogue of :func:`_build_phase_config`: a begin_session phase
-    needs its pipeline.yaml static config (e.g. relationships' ``min_confidence``
-    / ``sample_percent``) plus the ``vertical`` the LLM table-synthesis reads —
+    needs its pipeline.yaml static config (e.g. relationships' ``min_confidence``)
+    plus the ``vertical`` the LLM table-synthesis reads —
     sourced from the session's frame, defaulting to ``"_adhoc"`` on a cold-start
     session (mirrors add_source's ``identity.vertical or "_adhoc"``).
     """

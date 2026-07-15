@@ -10,9 +10,9 @@ measured uncertainty — the same model as every other
 A join between two tables is established in three steps, each recorded:
 
 1. **Candidates from values.** Column pairs are proposed by value overlap — containment
-   and Jaccard similarity, computed exactly or by sampling on large columns — together
-   with per-column uniqueness, which yields the candidate cardinality (one-to-one,
-   one-to-many, many-to-many).
+   and Jaccard similarity, computed exactly (deterministic MinHash signatures above one
+   million distinct values) — together with per-column uniqueness, which yields the
+   candidate cardinality (one-to-one, one-to-many, many-to-many).
 2. **Evaluation against the data.** Before any semantic step, each candidate is measured:
    referential integrity in both directions, orphan counts, whether the join verifies its
    claimed cardinality, and whether it introduces duplicate rows.

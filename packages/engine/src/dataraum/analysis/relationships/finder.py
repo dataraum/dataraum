@@ -21,7 +21,6 @@ def find_relationships(
     conn: duckdb.DuckDBPyConnection,
     tables: dict[str, TableData],  # name -> (duckdb_path, column_names, column_types)
     min_confidence: float = 0.3,
-    sample_percent: float = 10.0,
 ) -> list[dict[str, Any]]:
     """Find relationships between tables via value overlap.
 
@@ -30,7 +29,6 @@ def find_relationships(
         tables: Dict of table_name -> (duckdb_path, column_names, column_types)
             where column_types maps column_name -> resolved_type
         min_confidence: Minimum join_confidence threshold (default 0.3)
-        sample_percent: Row-sample percentage for the uniqueness ratio (default 10%)
 
     Returns:
         List of relationship candidates with join columns
@@ -66,7 +64,7 @@ def find_relationships(
                 same_table=same,
             )
 
-            # Enrich with uniqueness ratios (SQL, sampled)
+            # Enrich with uniqueness ratios (exact SQL)
             enriched_candidates = []
             for jc in join_candidates:
                 col1_name, col2_name = jc["column1"], jc["column2"]
@@ -78,10 +76,10 @@ def find_relationships(
                         "join_confidence": jc["join_confidence"],
                         "cardinality": jc["cardinality"],
                         "left_uniqueness": _uniqueness_ratio(
-                            conn, path1, col1_name, sample_percent, uniqueness_cache
+                            conn, path1, col1_name, uniqueness_cache
                         ),
                         "right_uniqueness": _uniqueness_ratio(
-                            conn, path2, col2_name, sample_percent, uniqueness_cache
+                            conn, path2, col2_name, uniqueness_cache
                         ),
                         "statistical_confidence": jc.get("statistical_confidence", 1.0),
                         "algorithm": jc.get("algorithm", "exact"),
@@ -107,13 +105,17 @@ def _uniqueness_ratio(
     conn: duckdb.DuckDBPyConnection,
     duckdb_path: str,
     column: str,
-    sample_percent: float,
     cache: dict[tuple[str, str], float],
 ) -> float:
-    """Distinct values / total rows for a column, over a Bernoulli row sample.
+    """Distinct values / total rows for a column, computed exactly in SQL.
 
-    Computed in SQL (no DataFrame materialization). ``COUNT(DISTINCT)`` already ignores
-    NULLs, so the ratio is over observed values; an empty sample yields 0.0.
+    Exact by design (DAT-794): a row-sampled ratio is a biased estimator of the
+    wrong quantity — sample-distinct/sample-rows systematically overstates the
+    uniqueness of repeated-value (FK-like) columns at ANY sample rate (measured
+    0.93–0.95 for a true 0.47 at 10%), and the value is served to the semantic
+    LLM as key-vs-measure evidence. A full COUNT(DISTINCT) costs ~26ms at 1M
+    rows. ``COUNT(DISTINCT)`` ignores NULLs, so the ratio is over observed
+    values; an empty table yields 0.0.
     """
     key = (duckdb_path, column)
     if key in cache:
@@ -121,10 +123,10 @@ def _uniqueness_ratio(
     quoted = '"' + column.replace('"', '""') + '"'
     row = conn.execute(
         f"SELECT COUNT(DISTINCT {quoted})::DOUBLE / NULLIF(COUNT(*), 0) "  # noqa: S608 — catalog identifiers
-        f"FROM (SELECT {quoted} FROM {duckdb_path} USING SAMPLE {sample_percent}% (bernoulli))"
+        f"FROM {duckdb_path}"
     ).fetchone()
     # fetchone() on a bare aggregate always returns one row; row[0] is None only when
-    # NULLIF zeroes an empty sample.
+    # NULLIF zeroes an empty table.
     ratio = round(row[0], 4) if row and row[0] is not None else 0.0
     cache[key] = ratio
     return ratio

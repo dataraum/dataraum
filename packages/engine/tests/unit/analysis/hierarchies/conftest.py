@@ -71,6 +71,58 @@ def duck() -> Iterator[duckdb.DuckDBPyConnection]:
         conn.close()
 
 
+def seed_view(
+    session: Session,
+    duck: duckdb.DuckDBPyConnection,
+    view_name: str,
+    columns: dict[str, list],
+    *,
+    register: set[str] | None = None,
+) -> str:
+    """Seed a fact + grain-verified enriched view from raw column lists.
+
+    ``columns`` maps view column name → values (None = SQL NULL). ``register``
+    names the columns that get catalog ``Column`` rows (default: all) — a column
+    left out exercises the unresolved-provenance path (``column_id=""``).
+    Returns the fact ``table_id``.
+    """
+    table = Table(
+        table_id=str(uuid4()),
+        source_id="src-1",
+        table_name=view_name,
+        layer="typed",
+        duckdb_path=view_name,
+    )
+    session.add(table)
+    for pos, name in enumerate(columns):
+        if register is not None and name not in register:
+            continue
+        session.add(
+            Column(
+                column_id=str(uuid4()),
+                table_id=table.table_id,
+                column_name=name,
+                column_position=pos,
+                resolved_type="VARCHAR",
+            )
+        )
+    session.add(
+        EnrichedView(
+            run_id=RUN, fact_table_id=table.table_id, view_name=view_name, is_grain_verified=True
+        )
+    )
+    session.flush()
+
+    names = list(columns)
+    duck.execute(f'CREATE TABLE "{view_name}" (' + ", ".join(f'"{n}" VARCHAR' for n in names) + ")")
+    rows = list(zip(*columns.values(), strict=True))
+    duck.executemany(
+        f'INSERT INTO "{view_name}" VALUES ({", ".join("?" for _ in names)})',  # noqa: S608
+        [[None if v is None else str(v) for v in row] for row in rows],
+    )
+    return table.table_id
+
+
 def seed_sales(session: Session, duck: duckdb.DuckDBPyConnection, *, rows_per_zip: int = 20) -> str:
     """Seed the fact, its grain-verified enriched view, the catalog, and DuckDB rows.
 

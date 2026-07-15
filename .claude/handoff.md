@@ -5,6 +5,62 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-761 — stack v4 dimension identity: DAT-757 gate stack replaces distinct-ratio g3
+
+**Branch:** `feat/dat-761-stack-v4-dimension-identity`. **The `dimension_hierarchies`
+phase's decision layer is replaced end-to-end and its candidate universe widened —
+re-run any calibration that consumes hierarchies/aliases (driver de-confounding
+included).** Folds the DAT-757 research verdicts (Jira 16265/66/67, 16300/02/03)
+into the engine.
+
+### What changed
+
+- **The distinct-count-ratio "g3" is GONE.** Edges are now decided by classic
+  row-g3 ≤ 0.01 (Kivinen–Mannila) + Goodman–Kruskal λ ≥ 0.5 (kills the
+  vacuous-skew class: ≥98%-dominant dependents) + a seeded permutation p with
+  Benjamini–Hochberg q ≤ 0.05 over each view's screened family. Aliases keep
+  pair-count g3 (both directions ≤ 0.01) + both-direction perm-p under the same
+  BH family. New pure-stats module `analysis/hierarchies/stats.py`.
+- **New structure kind `role`** (`dimension_hierarchies.kind`): a value-equality
+  near-copy (disagreement in (0, 5%]) is classified via disagreement-set
+  permutation tests (T1 membership vs contexts, T2 value concentration,
+  Bonferroni). ROLE pairs (bill-to vs sold-to) persist as `kind='role'`, are
+  never merged, and never stack as drill-down levels; undecidable near-copies
+  surface as `needs_confirmation` aliases instead of silently merging.
+- **Candidate universe = the enriched view's columns**, no longer the grain-safe
+  slice catalog. Measures are excluded by `semantic_role='measure'` (the
+  additivity lane); everything else is guarded data-grounded (null-aware
+  constant drop, near-key, λ), each exclusion logged. The upstream pipeline
+  `max_columns` limit is the only width cap. Null-coded columns (`{1, NULL}`)
+  are now eligible axes (null-as-category — the rel-hm FN/Active lesson).
+- **Scan grain:** guards + pair counts from a full-view scan (chunked O(k²)
+  aggregates); row statistics on an aligned in-memory sample (≤ 40M cells,
+  seeded reservoir) — a sampled fold key can never trip the near-key guard.
+- Phase precondition changed: requires a grain-verified enriched view (was:
+  slice definitions this run).
+
+### For eval (calibration to run)
+
+- **Hierarchy/alias recall on the calibration corpora** — structures can
+  legitimately CHANGE: spurious chains from the distinct-ratio vanish; role
+  near-copies stop merging; null-coded columns join alias groups. The DAT-757
+  matrix (32/32) + RelBench fold harness re-run against this implementation is
+  the acceptance gate (tracked on DAT-761).
+- **Driver rankings shift (correctly):** `drivers/_candidate_dims` collapses
+  alias groups — role pairs now stay separate competing axes instead of being
+  wrongly collapsed to one canonical.
+- New oracle surface: `kind='role'` rows (role-playing folded dims) — testdata's
+  role-FK fixtures (SALT-style bill-to/ship-to) can be graded directly.
+
+### testdata hints
+
+The 2b generator features already scoped on DAT-757 (partial-inline, false-friend
+collision, disjoint regions, folded-numeric) are exactly the fixtures this stack
+is calibrated against; a role-playing folded pair with channel-driven divergence
+exercises the `role` kind end-to-end.
+
+---
+
 ## DAT-756 — referenced-dimension identity + `shared_dims` fix + conformed-dimension
 
 **Branch:** `feat/dat-756-dimension-identity`. **A detector-grouping-key fix (closes a

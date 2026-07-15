@@ -1,48 +1,63 @@
-"""g3 functional-dependency / hierarchy discovery over the enriched views (DAT-537).
+"""Dimension-identity discovery over the enriched views (DAT-761, stack v4 from DAT-757).
 
-Deterministic, no LLM. For each fact's grain-verified enriched view, the catalog's
-grain-safe slice dimensions (DAT-536) are the candidate axes. One DuckDB scan per
-view computes every column's distinct count and every unordered pair's joint
-distinct count; from those the **approximate functional dependency** measure
+Deterministic, no LLM. For each fact's grain-verified enriched view, EVERY
+dimension-like view column is a candidate (measures excluded by their
+``semantic_role`` — the additivity lane: ``revenue → tier`` is reliably asserted
+by every statistic, so measures never enter FD discovery). The upstream pipeline
+``max_columns`` limit is the only width cap; all other exclusions are
+data-grounded guards, each logged (born-loud).
 
-    g3(A → B) = 1 − COUNT(DISTINCT A) / COUNT(DISTINCT (A, B))
+The decision layer is the DAT-757 gate stack (32/32 on the adversarial matrix,
+100% recoverable-truth recall on rel-f1/rel-hm/rel-salt folded by their own FK
+metadata — verdicts on DAT-757, build ticket DAT-761):
 
-is read for both directions of every pair (g3 = 0 ⇔ A determines B exactly). Edges
-become drill-down hierarchies (``zip → city → state``) after transitive reduction;
-bidirectional ``g3 ≈ 0`` pairs collapse into 1:1 alias groups (the redundant-axis
-dedup the DAT-545 driver tree needs to de-confound its ranking).
+1. **Null policy** — eligibility counts NULL as a category (a null-coded binary
+   ``{1, NULL}`` is a lane, not a silent constant-drop); row statistics use
+   null-as-category codes.
+2. **Effect screens** — EDGES: classic row-g3 ≤ 0.01 (``a`` determines ``b`` up
+   to a 1% dirty-row tolerance) + determinant guards; ALIASES: pair-count g3
+   ≤ 0.01 in both directions (the conservative semantics for near-copies).
+3. **Goodman–Kruskal λ ≥ 0.5** (edge arm) — kills the vacuous-skew class
+   (≥98%-dominant dependents pass g3 vacuously; exact FDs keep λ = 1).
+4. **Permutation p + Benjamini–Hochberg** (q ≤ 0.05) over the view's screened
+   family — what discovery ASSERTS. Seeded, so a redelivered run converges.
+5. **Disagreement-set role check** (alias arm) — value-equality near-copies
+   (0 < disagree ≤ 5%) are classified ROLE / VALUE-SYSTEMATIC / ABSTAIN / DIRT
+   from the disagreement set; a ROLE pair (bill-to vs pay-to) is persisted as
+   ``kind='role'`` and never merged; undecidable near-copies surface as
+   ``needs_confirmation`` aliases instead of being silently merged.
 
-Null semantics (documented bias): the per-column distinct counts ignore NULLs
-(SQL ``COUNT(DISTINCT)``) while the joint distinct count over a row literal counts
-``(a, NULL)`` as a present pair, so a column with NULLs inflates its joint count and
-its g3 — biasing toward MISSED dependencies (false negatives), never spurious ones.
-A missed edge is recoverable via teach; a spurious asserted hierarchy is not. Slice
-dimensions are categorical and typically non-null, so for the common case g3 is exact.
+Scan grain (the rel-hm lesson): guards and pair counts come from a FULL-view
+scan (a row sample makes fold keys look near-key); row-level statistics run on
+an aligned sample capped by ``MAX_SAMPLE_CELLS`` — inference is sample-honest,
+guards are exact.
 
-Candidate set = ALL this-run grain-safe catalog dims (deterministic; no priority
-cap — a cap would be arbitrary across runs and would drop axes DAT-545 must rank).
-Pruning is only by data-grounded guards: a constant column (< ``MIN_DISTINCT_DIMENSION``)
-is not an axis at all and is dropped from both roles; a too-coarse determinant
-(≤ 2 distinct) determines anything vacuously and a near-key determinant
-(≥ ``NEAR_KEY_FRAC`` of the rows distinct) manufactures a spurious FD, so both are
-rejected as DETERMINANTS (still allowed as a coarsest level). The candidate count and
-every guard exclusion are logged (born-loud): a pathologically wide view is a measured
-signal, never a silent cut.
+Edges become drill-down hierarchies (``zip → city → state``) after transitive
+reduction; merged alias groups collapse to one canonical axis (the redundant-axis
+dedup the DAT-545 driver tree consumes). Role pairs deliberately stay separate
+axes — collapsing them was the BILLTO↔PAYER over-merge the role check reverses.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+import numpy as np
+import polars as pl
 from sqlalchemy import select
 
+from dataraum.analysis.hierarchies import stats
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
 from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
-from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.hierarchies.stats import RoleVerdict
+from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
-from dataraum.storage import Table
+from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
@@ -51,74 +66,262 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# g3 at or below this is treated as an exact functional dependency (allows a
-# small fraction of dirty-data violations). A true FD over clean data is g3 = 0.
+# Effect floor: g3 at or below this is an approximate FD (tolerates a small
+# fraction of dirty-data violations). A true FD over clean data is g3 = 0.
 FD_MAX_G3 = 0.01
 
-# A constant column (1 distinct) is not a usable axis at all: useless as a level
-# and trivially determined by everything (junk ``X → constant`` edges) — dropped
-# from BOTH roles. A 2-value column is a legitimate low-cardinality level (e.g. a
-# binary dimension, or the coarsest level when the data spans 2 states), so the
-# floor for being a candidate is 2.
+# Goodman–Kruskal λ floor for asserted edges: the determinant must explain at
+# least half the baseline (majority-vote) prediction error — the PRE midpoint,
+# pre-registered in DAT-757 before the RelBench run (48 vacuous extras killed,
+# 0 truth lost).
+LAMBDA_MIN = 0.5
+
+# BH false-discovery rate over one view's effect-screened candidate family.
+Q_FDR = 0.05
+
+# A near-copy pair (value-equality disagreement in (0, this]) takes the gate-#2
+# role check before it may merge. Above it, a bidirectional pair-g3 match is a
+# relabeling bijection (code ↔ name), not a near-copy — merge semantics differ.
+ROLE_MAX_DISAGREE = 0.05
+
+# Eligibility (null-aware: NULL counts as a category — the null-policy lane).
+# A 1-category column is not an axis; a 2-value column is a legitimate coarsest
+# level. Determinants must distinguish ≥ 3 values (non-vacuous) and be below the
+# near-key fraction (a near-unique column determines anything — spurious).
 MIN_DISTINCT_DIMENSION = 2
-# A DETERMINANT must distinguish enough values that the FD isn't trivial — a
-# ≤2-distinct determinant "determines" anything coarser vacuously (ticket guard) —
-# and at most ``NEAR_KEY_FRAC`` of the rows: a near-unique column is a key, every
-# value maps to one of anything, a spurious FD.
 MIN_DISTINCT_DETERMINANT = 3
 NEAR_KEY_FRAC = 0.9
 
-# Edges resting on fewer than this many rows are surfaced for confirmation
-# (``needs_confirmation``) rather than auto-asserted — too little support to trust.
+# Structures resting on fewer rows than this are surfaced for confirmation
+# (``needs_confirmation``) rather than auto-asserted.
 MIN_SUPPORT_ROWS = 100
+
+# Row-statistics working set: rows × candidate columns pulled into memory
+# (the DAT-580 drivers precedent). Guards never depend on the sample.
+MAX_SAMPLE_CELLS = 40_000_000
+MIN_SAMPLE_ROWS = 50_000
+
+# Fixed seed: the permutation null must be identical across Temporal
+# success-redeliveries so the run-versioned upsert converges (the row sample is
+# deterministic by construction — bottom-k-by-hash, see _pull_sample). Each
+# candidate derives its OWN generator from this seed + a stable digest of the
+# pair (see _pair_rng), so results are independent of iteration order and of
+# the permutation pool's worker count.
+_PERM_SEED = 20260714
+
+# The screened candidates' permutation tests are pure numpy (no session, no
+# DuckDB) and embarrassingly parallel; numpy's sort kernels release the GIL.
+# Bounded modestly — the Temporal worker already runs phases concurrently.
+_PERM_WORKERS = max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
+def _pair_rng(arm: str, a: str, b: str) -> np.random.Generator:
+    """A per-candidate generator seeded from a stable digest of the pair.
+
+    ``hash()`` is process-salted (PYTHONHASHSEED), so a keyed digest is used —
+    the draw sequence for a candidate is a pure function of the module seed and
+    the (arm, a, b) identity, never of scheduling.
+    """
+    digest = int.from_bytes(
+        hashlib.blake2b(f"{arm}:{a}->{b}".encode(), digest_size=8).digest(), "big"
+    )
+    return np.random.default_rng((_PERM_SEED, digest))
+
+
+# COUNT(DISTINCT (a, b)) aggregates per scan statement — wide views chunk the
+# pair family across several single-scan queries instead of one giant SELECT.
+_MAX_PAIR_AGGS = 500
 
 
 @dataclass(frozen=True)
-class _Pair:
-    """The g3 evidence for one unordered column pair over the enriched view."""
+class _Candidate:
+    """A resolved candidate dimension column on one enriched view."""
 
-    d_a: int  # distinct values of column a (NULLs ignored)
-    d_b: int  # distinct values of column b
-    d_ab: int  # distinct (a, b) pairs (row literal; NULL field counts as present)
-
-    def g3(self, *, forward: bool) -> float:
-        """The g3 of a → b (``forward``) or b → a. Empty pair → 1.0 (no FD)."""
-        if self.d_ab == 0:
-            return 1.0
-        return 1.0 - (self.d_a if forward else self.d_b) / self.d_ab
+    column_name: str  # the enriched-view column (member identity)
+    column_id: str  # the source column's catalog id (provenance; "" if unresolved)
 
 
-def _g3_scan(
+@dataclass
+class _ViewScan:
+    """Full-view scan facts: everything the guards and the alias arm need."""
+
+    n: int
+    d2: dict[str, int]  # null-aware distinct counts (NULL = one category)
+    d_sql: dict[str, int]  # SQL COUNT(DISTINCT) (null-blind; display metadata)
+    # Row-literal pair distincts, (a < b) key order. Only ALIAS-SATISFIABLE pairs
+    # are scanned: d_ab ≥ max(d2) always, so bidirectional pair-g3 ≤ 0.01 forces
+    # the two distinct counts within 1% of each other — every other pair is
+    # pruned from the O(k²) joint family without changing any decision.
+    joints: dict[tuple[str, str], int]
+
+    def pair_g3(self, a: str, b: str) -> tuple[float, float]:
+        """Pair-count g3 for (a → b, b → a), null-aware numerators.
+
+        A pair pruned from the joint scan cannot satisfy the alias screen —
+        it reads as (1.0, 1.0), never an alias.
+        """
+        d_ab = self.joints.get((a, b) if (a, b) in self.joints else (b, a), 0)
+        if d_ab == 0:
+            return 1.0, 1.0
+        return 1.0 - self.d2[a] / d_ab, 1.0 - self.d2[b] / d_ab
+
+
+def _view_columns(duckdb_conn: duckdb.DuckDBPyConnection, view_name: str) -> list[str] | None:
+    """The view's column names, or ``None`` if it is not queryable (logged)."""
+    try:
+        rows = duckdb_conn.execute(f'DESCRIBE "{view_name}"').fetchall()
+    except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
+        logger.warning("hierarchy_view_describe_failed", view=view_name, error=str(e))
+        return None
+    return [str(r[0]) for r in rows]
+
+
+def _resolve_candidates(
+    session: Session, ev: EnrichedView, view_cols: list[str]
+) -> dict[str, _Candidate]:
+    """Resolve view columns to source-column provenance and drop measures.
+
+    Fact-own columns resolve by name on the fact table; joined dim columns
+    (``{fk}__{attr}``, builder.py convention) resolve to the dim table's ``attr``
+    column via the exposed joins. An unresolvable column keeps ``column_id=""``
+    (it still participates — provenance is metadata, not a gate).
+
+    Measures are excluded BEFORE discovery (the additivity lane):
+    ``semantic_role`` is object-grain, read by ``column_id`` without a run filter
+    (the ``drivers/persistence.py`` convention).
+    """
+    fact_ids = {
+        c.column_name: c.column_id
+        for c in session.execute(
+            select(Column).where(Column.table_id == ev.fact_table_id)
+        ).scalars()
+    }
+    dim_table_by_fk: dict[str, str] = {
+        str(j["fact_fk_column"]): str(j["dim_table_name"])
+        for j in (ev.exposed_dimension_joins or [])
+    }
+    dim_ids: dict[tuple[str, str], str] = {}
+    if ev.dimension_table_ids:
+        name_by_id = {
+            t.table_id: t.table_name
+            for t in session.execute(
+                select(Table).where(Table.table_id.in_(ev.dimension_table_ids))
+            ).scalars()
+        }
+        for c in session.execute(
+            select(Column).where(Column.table_id.in_(ev.dimension_table_ids))
+        ).scalars():
+            tname = name_by_id.get(c.table_id)
+            if tname:
+                dim_ids[(tname, c.column_name)] = c.column_id
+
+    by_name: dict[str, _Candidate] = {}
+    for name in view_cols:
+        column_id = fact_ids.get(name, "")
+        if not column_id and "__" in name:
+            fk, attr = name.split("__", 1)
+            column_id = dim_ids.get((dim_table_by_fk.get(fk, ""), attr), "")
+        by_name[name] = _Candidate(column_name=name, column_id=column_id)
+
+    resolved = [c.column_id for c in by_name.values() if c.column_id]
+    measure_ids: set[str] = set()
+    if resolved:
+        measure_ids = set(
+            session.execute(
+                select(SemanticAnnotation.column_id).where(
+                    SemanticAnnotation.column_id.in_(resolved),
+                    SemanticAnnotation.semantic_role == "measure",
+                )
+            ).scalars()
+        )
+    for name in list(by_name):
+        if by_name[name].column_id in measure_ids:
+            logger.info("hierarchy_column_excluded", column=name, reason="measure")
+            del by_name[name]
+    return by_name
+
+
+def _scan_view(
     duckdb_conn: duckdb.DuckDBPyConnection, view_name: str, cols: list[str]
-) -> tuple[int, dict[str, int], dict[tuple[int, int], int]] | None:
-    """One scan: row count, per-column distinct counts, per-pair joint distincts.
+) -> _ViewScan | None:
+    """Full-view scan: row count, per-column distinct/null counts, pair distincts.
 
-    Returns ``(n_rows, {col: d_col}, {(i, j): d_ij})`` for ``i < j``, or ``None``
-    if the scan fails (logged) — the view is then skipped, a visible abstention.
+    Chunked — the pair family is O(k²) aggregates, split across single-scan
+    queries of ≤ ``_MAX_PAIR_AGGS`` each. Returns ``None`` on failure (logged) —
+    the view is then skipped, a visible abstention.
     """
     parts = ["COUNT(*) AS n"]
     parts += [f'COUNT(DISTINCT "{c}") AS d{i}' for i, c in enumerate(cols)]
-    pair_alias: dict[tuple[int, int], str] = {}
-    for i in range(len(cols)):
-        for j in range(i + 1, len(cols)):
-            alias = f"j_{i}_{j}"
-            pair_alias[(i, j)] = alias
-            parts.append(f'COUNT(DISTINCT ("{cols[i]}", "{cols[j]}")) AS {alias}')
-    sql = f'SELECT {", ".join(parts)} FROM "{view_name}"'  # noqa: S608 — names are catalog dims
+    parts += [f'COUNT("{c}") AS c{i}' for i, c in enumerate(cols)]
     try:
-        row = duckdb_conn.execute(sql).fetchone()
+        row = duckdb_conn.execute(
+            f'SELECT {", ".join(parts)} FROM "{view_name}"'  # noqa: S608 — catalog names
+        ).fetchone()
+        if row is None:
+            return None
+        n = int(row[0])
+        d_sql = {c: int(row[1 + i]) for i, c in enumerate(cols)}
+        non_null = {c: int(row[1 + len(cols) + i]) for i, c in enumerate(cols)}
+        d2 = {c: d_sql[c] + (1 if non_null[c] < n else 0) for c in cols}
+
+        # Joint distincts serve ONLY the alias screen, and d_ab ≥ max(d2_a, d2_b)
+        # makes bidirectional g3 ≤ FD_MAX_G3 impossible unless the two distinct
+        # counts sit within that tolerance of each other — prune the rest (on
+        # wide/large views this cuts the O(k²) aggregate family by orders of
+        # magnitude with zero semantic change).
+        pairs = [
+            (cols[i], cols[j])
+            for i in range(len(cols))
+            for j in range(i + 1, len(cols))
+            if max(d2[cols[i]], d2[cols[j]]) <= min(d2[cols[i]], d2[cols[j]]) / (1.0 - FD_MAX_G3)
+        ]
+        joints: dict[tuple[str, str], int] = {}
+        for start in range(0, len(pairs), _MAX_PAIR_AGGS):
+            chunk = pairs[start : start + _MAX_PAIR_AGGS]
+            sql = ", ".join(
+                f'COUNT(DISTINCT ("{a}", "{b}")) AS j{k}' for k, (a, b) in enumerate(chunk)
+            )
+            jrow = duckdb_conn.execute(f'SELECT {sql} FROM "{view_name}"')  # noqa: S608
+            fetched = jrow.fetchone()
+            if fetched is None:
+                return None
+            for k, pair in enumerate(chunk):
+                joints[pair] = int(fetched[k])
     except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
-        logger.warning("hierarchy_g3_scan_failed", view=view_name, error=str(e))
+        logger.warning("hierarchy_scan_failed", view=view_name, error=str(e))
         return None
-    if row is None:
+    return _ViewScan(n=n, d2=d2, d_sql=d_sql, joints=joints)
+
+
+def _pull_sample(
+    duckdb_conn: duckdb.DuckDBPyConnection, view_name: str, cols: list[str], n_rows: int
+) -> pl.DataFrame | None:
+    """An aligned VARCHAR sample of the candidate columns for the row statistics.
+
+    Full view when it fits ``MAX_SAMPLE_CELLS``; else a bottom-k-by-hash sketch
+    (the DAT-571 drivers idiom: ``ORDER BY hash(cols) LIMIT n`` is a uniform
+    per-row sample that stays deterministic on the multi-threaded worker
+    connection, where ``USING SAMPLE … REPEATABLE`` only holds single-threaded).
+    Row-level statistics are sample-honest — g3 exactness is subset-invariant,
+    the permutation null is recomputed on the sample — while every guard reads
+    the full-view scan, so a sampled fold key can never trip the near-key guard
+    (the rel-hm lesson).
+    """
+    n_sample = max(MIN_SAMPLE_ROWS, MAX_SAMPLE_CELLS // max(len(cols), 1))
+    sample = ""
+    if n_rows > n_sample:
+        hash_cols = ", ".join(f'"{c}"' for c in cols)
+        sample = f" ORDER BY hash({hash_cols}) LIMIT {n_sample}"
+        logger.info("hierarchy_view_sampled", view=view_name, full_n=n_rows, sample_n=n_sample)
+    select_cols = ", ".join(f'CAST("{c}" AS VARCHAR) AS "{c}"' for c in cols)
+    try:
+        table = duckdb_conn.execute(
+            f'SELECT {select_cols} FROM "{view_name}"{sample}'  # noqa: S608 — catalog names
+        ).arrow()
+    except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
+        logger.warning("hierarchy_sample_pull_failed", view=view_name, error=str(e))
         return None
-    n = int(row[0])
-    singles = {c: int(row[1 + i]) for i, c in enumerate(cols)}
-    # ``parts`` is n, then the k singles, then the joints in ``pair_alias`` order —
-    # so the j-th joint sits at offset ``1 + k + j`` (pair_alias is insertion-ordered).
-    offset = 1 + len(cols)
-    joints = {pair: int(row[offset + k]) for k, pair in enumerate(pair_alias)}
-    return n, singles, joints
+    return cast("pl.DataFrame", pl.from_arrow(table))
 
 
 def _transitive_reduction(edges: set[tuple[str, str]]) -> set[tuple[str, str]]:
@@ -178,54 +381,8 @@ def _maximal_chains(edges: set[tuple[str, str]]) -> list[list[str]]:
             walk([*path, nxt])
 
     for start in starts:
-        walk([start])
+        walk(path=[start])
     return chains
-
-
-@dataclass(frozen=True)
-class _Candidate:
-    """A resolved candidate dimension column on one enriched view."""
-
-    column_name: str  # the enriched-view column the g3 pass measures (member identity)
-    column_id: str  # the catalog SliceDefinition's underlying column (provenance)
-
-
-def _alias_groups(
-    names: list[str], pairs: dict[tuple[str, str], _Pair]
-) -> tuple[list[list[str]], dict[str, str]]:
-    """Union-find 1:1 aliases (bidirectional g3 ≈ 0) into groups.
-
-    Returns ``(groups, representative)``: ``groups`` lists each alias set (size ≥ 2,
-    sorted, canonical = first); ``representative`` maps every column to its canonical
-    so hierarchy detection runs on collapsed axes (a redundant axis never appears as
-    its own level).
-    """
-    parent = {n: n for n in names}
-
-    def find(x: str) -> str:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(x: str, y: str) -> None:
-        rx, ry = find(x), find(y)
-        if rx != ry:
-            # Point the lexicographically smaller root at the larger; the group's
-            # canonical is recomputed as ``sorted(group)[0]`` below, so the exact
-            # link direction here is not load-bearing — only connectivity is.
-            parent[min(rx, ry)] = max(rx, ry)
-
-    for (a, b), pair in pairs.items():
-        if pair.g3(forward=True) <= FD_MAX_G3 and pair.g3(forward=False) <= FD_MAX_G3:
-            union(a, b)
-
-    members: dict[str, list[str]] = {}
-    for n in names:
-        members.setdefault(find(n), []).append(n)
-    groups = [sorted(g) for g in members.values() if len(g) >= 2]
-    representative = {n: sorted(g)[0] for g in members.values() for n in g}
-    return groups, representative
 
 
 def discover_dimension_hierarchies(
@@ -235,10 +392,11 @@ def discover_dimension_hierarchies(
     table_ids: list[str],
     run_id: str,
 ) -> int:
-    """Compute g3 hierarchies + aliases over each enriched view; persist run-versioned.
+    """Run the stack-v4 identity pass over each enriched view; persist run-versioned.
 
     Form-(a) writer (DAT-502): one row per ``(signature, run_id)``, UPSERTed;
-    deterministic, so a redelivered run converges. Returns the rows persisted.
+    deterministic (fixed permutation/sample seeds), so a redelivered run
+    converges. Returns the rows persisted.
     """
     enriched = (
         session.execute(
@@ -256,24 +414,15 @@ def discover_dimension_hierarchies(
     }
 
     rows: list[dict[str, object]] = []
+    col_ids_by_table: dict[str, dict[str, str]] = {}
     for ev in enriched:
-        defs = (
-            session.execute(
-                select(SliceDefinition).where(
-                    SliceDefinition.table_id == ev.fact_table_id,
-                    SliceDefinition.run_id == run_id,
-                    SliceDefinition.column_name.isnot(None),
-                )
-            )
-            .scalars()
-            .all()
+        view_cols = _view_columns(duckdb_conn, ev.view_name)
+        if view_cols is None:
+            continue
+        by_name = _resolve_candidates(session, ev, view_cols)
+        col_ids_by_table.setdefault(ev.fact_table_id, {}).update(
+            {c.column_name: c.column_id for c in by_name.values()}
         )
-        # Dedup by enriched column name (the propagation pass can emit a dim twice).
-        by_name: dict[str, _Candidate] = {}
-        for sd in defs:
-            name = sd.column_name or ""
-            if name and name not in by_name:
-                by_name[name] = _Candidate(column_name=name, column_id=sd.column_id)
         cand_names = sorted(by_name)
         if len(cand_names) < 2:
             continue
@@ -286,8 +435,11 @@ def discover_dimension_hierarchies(
             n_candidates=len(cand_names),
         )
 
-        scan = _g3_scan(duckdb_conn, ev.view_name, cand_names)
+        scan = _scan_view(duckdb_conn, ev.view_name, cand_names)
         if scan is None:
+            continue
+        frame = _pull_sample(duckdb_conn, ev.view_name, cand_names, scan.n)
+        if frame is None:
             continue
         rows.extend(
             _view_structures(
@@ -295,60 +447,37 @@ def discover_dimension_hierarchies(
                 view_name=ev.view_name,
                 run_id=run_id,
                 by_name=by_name,
-                cand_names=cand_names,
                 scan=scan,
+                frame=frame,
             )
         )
 
     # Fold the user's durable hierarchy/alias teaches into this run (DAT-537),
     # mirroring relationship-overlay materialization minus keeper-lift-up + witness
-    # (g3 is deterministic). reject suppresses a g3 structure; add/alias assert one.
-    rows = _apply_teaches(session, rows, table_ids=table_ids, run_id=run_id)
+    # (the stack is deterministic). reject suppresses a discovered structure;
+    # add/alias assert one.
+    rows = _apply_teaches(session, rows, col_ids_by_table=col_ids_by_table, run_id=run_id)
 
     upsert(session, DimensionHierarchy, rows, index_elements=["signature", "run_id"])
     return len(rows)
-
-
-def _member_column_ids(
-    session: Session, table_ids: list[str], run_id: str
-) -> dict[str, dict[str, str]]:
-    """``table_id -> {column_name: column_id}`` from this run's slice catalog.
-
-    Resolves a manual teach's member columns to their catalog column ids; a member
-    the catalog doesn't carry (a forced edge on an excluded/unknown column) resolves
-    to ``""`` rather than failing the teach.
-    """
-    out: dict[str, dict[str, str]] = {}
-    for sd in (
-        session.execute(
-            select(SliceDefinition).where(
-                SliceDefinition.table_id.in_(table_ids),
-                SliceDefinition.run_id == run_id,
-                SliceDefinition.column_name.isnot(None),
-            )
-        )
-        .scalars()
-        .all()
-    ):
-        if sd.column_name:
-            out.setdefault(sd.table_id, {})[sd.column_name] = sd.column_id
-    return out
 
 
 def _apply_teaches(
     session: Session,
     rows: list[dict[str, object]],
     *,
-    table_ids: list[str],
+    col_ids_by_table: dict[str, dict[str, str]],
     run_id: str,
 ) -> list[dict[str, object]]:
-    """Apply reject / add / alias hierarchy overlays to the g3 row set.
+    """Apply reject / add / alias hierarchy overlays to the discovered row set.
 
-    reject drops the g3 structure with a matching ``(table_id, member-set)``
-    (kind-agnostic — a member-set is one structure); add asserts a ``manual``
-    drilldown, alias a ``manual`` alias. A manual assert overrides a same-signature
-    g3 row (clears ``needs_confirmation``). Keyed by signature so the result stays
-    one row per ``(signature, run_id)``.
+    reject drops the structure with a matching ``(table_id, member-set)``
+    (kind-agnostic — a member-set is one structure, drilldown, alias or role);
+    add asserts a ``manual`` drilldown, alias a ``manual`` alias. A manual assert
+    overrides a same-signature discovered row (clears ``needs_confirmation``).
+    Member column ids resolve through the candidate maps built during discovery;
+    a member outside the candidate universe resolves to ``""`` rather than
+    failing the teach.
     """
     by_sig: dict[str, dict[str, object]] = {str(r["signature"]): r for r in rows}
 
@@ -360,7 +489,7 @@ def _apply_teaches(
     # re-queries per action, so load each once).
     specs = {a: hierarchy_overlay_specs(session, a) for a in ("reject", "add", "alias")}
 
-    # reject: drop any g3 structure whose table + member-set matches.
+    # reject: drop any discovered structure whose table + member-set matches.
     rejected: set[tuple[str, frozenset[str]]] = {
         (spec.table_id, frozenset(spec.members)) for spec in specs["reject"]
     }
@@ -372,14 +501,13 @@ def _apply_teaches(
         }
 
     # add → manual drilldown, alias → manual alias (ordered members preserved).
-    col_ids = _member_column_ids(session, table_ids, run_id)
     for action, kind in (("add", "drilldown"), ("alias", "alias")):
         for spec in specs[action]:
             members = spec.members
             if kind == "drilldown" and len(members) < 2:
                 logger.info("hierarchy_teach_skipped", reason="drilldown_needs_2_levels", spec=spec)
                 continue
-            names = col_ids.get(spec.table_id, {})
+            names = col_ids_by_table.get(spec.table_id, {})
             sig = f"{kind}:{spec.table_id}:" + "|".join(sorted(members))
             by_sig[sig] = {
                 "run_id": run_id,
@@ -408,98 +536,270 @@ def _view_structures(
     view_name: str,
     run_id: str,
     by_name: dict[str, _Candidate],
-    cand_names: list[str],
-    scan: tuple[int, dict[str, int], dict[tuple[int, int], int]],
+    scan: _ViewScan,
+    frame: pl.DataFrame,
 ) -> list[dict[str, object]]:
-    """The drill-down + alias row dicts for one enriched view from its g3 scan.
+    """The drill-down + alias + role row dicts for one enriched view (stack v4).
 
     A module-level helper (not a closure in the per-view loop) so its inner
     functions bind these parameters, not loop variables.
     """
-    n_rows, singles, joints = scan
-    pairs: dict[tuple[str, str], _Pair] = {
-        (cand_names[i], cand_names[j]): _Pair(
-            d_a=singles[cand_names[i]], d_b=singles[cand_names[j]], d_ab=d_ij
-        )
-        for (i, j), d_ij in joints.items()
-    }
+    cand_names = sorted(by_name)
 
-    # Constant columns (< MIN_DISTINCT_DIMENSION distinct) are dropped from BOTH
-    # roles: not a meaningful axis, and as a DEPENDENT a constant is trivially
-    # determined by everything, manufacturing junk edges. Born-loud on each drop.
-    eligible = [c for c in cand_names if singles[c] >= MIN_DISTINCT_DIMENSION]
+    # -- 1. null policy + eligibility (born-loud on every drop) --------------
+    eligible: list[str] = []
     for c in cand_names:
-        if singles[c] < MIN_DISTINCT_DIMENSION:
+        if scan.d2[c] < MIN_DISTINCT_DIMENSION:
             logger.info(
-                "hierarchy_column_excluded", column=c, reason="constant", distinct=singles[c]
+                "hierarchy_column_excluded", column=c, reason="constant", distinct=scan.d2[c]
             )
+            continue
+        if scan.d_sql[c] <= 1 < scan.d2[c]:
+            # Null-coded column ({value, NULL}): SQL sees a constant, the null
+            # lane keeps it — NULL is a category for every row statistic below.
+            logger.info("hierarchy_null_coded_column", column=c, distinct_sql=scan.d_sql[c])
+        eligible.append(c)
     if len(eligible) < 2:
         return []
-    elig_pairs = {(a, b): p for (a, b), p in pairs.items() if a in eligible and b in eligible}
 
-    # Collapse 1:1 aliases first, then detect hierarchies on canonical axes.
-    groups, rep = _alias_groups(eligible, elig_pairs)
+    codes = {c: stats.codes_of(frame.get_column(c)) for c in eligible}
+    strs = {c: frame.get_column(c).fill_null("␀").to_numpy() for c in eligible}
+    n_sample = frame.height
 
-    # A column is rejected as a DETERMINANT (it may still be a dependent/coarsest
-    # level) when it is too coarse to determine non-trivially (≤2 distinct) or
-    # near-key (each value ~unique → spurious FD). Born-loud on every exclusion.
-    def _bad_determinant(col: str) -> bool:
-        d = singles[col]
+    # Null policy, edge arm (DAT-757 lane): a NULL is DATA when the column is
+    # null-coded (its value domain is degenerate — nullness carries the signal)
+    # and MISSINGNESS otherwise (join-miss / ragged rows) — edge statistics then
+    # use pairwise deletion, which rescues true edges under partial nulls
+    # without letting a sparse dependent assert from nothing (support floor).
+    null_coded = {c for c in eligible if scan.d_sql[c] <= 1 < scan.d2[c]}
+    null_mask = {
+        c: frame.get_column(c).is_null().to_numpy() for c in eligible if c not in null_coded
+    }
+
+    pair_arrays_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, int, int]] = {}
+
+    def edge_arrays(s: str, t: str) -> tuple[np.ndarray, np.ndarray, int, int]:
+        """(codes_s, codes_t, d_s, d_t) over the pairwise-complete rows (edge arm).
+
+        The distinct counts are taken on the SAME rows the statistics run on —
+        full-view null-aware counts would let a null-degraded copy of a level
+        read as strictly finer (its NULL category inflates the count by one) and
+        interpose as a fake level between its base and the base's determinant.
+        """
+        key = (s, t)
+        if key not in pair_arrays_cache:
+            masks = [null_mask[c] for c in (s, t) if c in null_mask]
+            if masks and (drop := np.logical_or.reduce(masks)).any():
+                keep = ~drop
+                cs, ct = codes[s][keep], codes[t][keep]
+                d_s = len(np.unique(cs)) if len(cs) else 0
+                d_t = len(np.unique(ct)) if len(ct) else 0
+                pair_arrays_cache[key] = (cs, ct, d_s, d_t)
+            else:
+                pair_arrays_cache[key] = (codes[s], codes[t], scan.d2[s], scan.d2[t])
+        return pair_arrays_cache[key]
+
+    g3_cache: dict[tuple[str, str], float] = {}
+
+    def row_g3(a: str, b: str) -> float:
+        if (a, b) not in g3_cache:
+            ca, cb, _, _ = edge_arrays(a, b)
+            g3_cache[(a, b)] = stats.row_g3(ca, cb) if len(ca) else 1.0
+        return g3_cache[(a, b)]
+
+    # Full-scan determinant guards (a column may still be a dependent/coarsest
+    # level), born-loud once per column. Full-view distincts, never the sample —
+    # a sampled fold key must not read as near-key (the rel-hm lesson).
+    bad_det: set[str] = set()
+    for c in eligible:
+        d = scan.d2[c]
         if d < MIN_DISTINCT_DETERMINANT:
-            logger.info(
-                "hierarchy_determinant_excluded", column=col, reason="too_coarse", distinct=d
-            )
-            return True
-        if n_rows and d >= NEAR_KEY_FRAC * n_rows:
+            logger.info("hierarchy_determinant_excluded", column=c, reason="too_coarse", distinct=d)
+            bad_det.add(c)
+        elif scan.n and d >= NEAR_KEY_FRAC * scan.n:
             logger.info(
                 "hierarchy_determinant_excluded",
-                column=col,
+                column=c,
                 reason="near_key",
                 distinct=d,
-                rows=n_rows,
+                rows=scan.n,
             )
-            return True
-        return False
+            bad_det.add(c)
 
-    # Directed FD edges on canonical reps: a → b when a determines b (g3 ≈ 0)
-    # AND a is strictly finer (more distinct) — finest → coarsest drill direction.
-    edges: set[tuple[str, str]] = set()
-    for (a, b), pair in elig_pairs.items():
-        ra, rb = rep[a], rep[b]
-        if ra == rb:  # same alias group — not a level relationship
-            continue
-        fwd, bwd = pair.g3(forward=True), pair.g3(forward=False)
-        if fwd <= FD_MAX_G3 and pair.d_a > pair.d_b and not _bad_determinant(a):
-            edges.add((ra, rb))
-        elif bwd <= FD_MAX_G3 and pair.d_b > pair.d_a and not _bad_determinant(b):
-            edges.add((rb, ra))
+    # -- 2. effect screens ----------------------------------------------------
+    cand_alias: list[tuple[str, str]] = []
+    cand_edge: list[tuple[str, str]] = []
+    for i, a in enumerate(eligible):
+        for b in eligible[i + 1 :]:
+            fwd, bwd = scan.pair_g3(a, b)
+            if fwd <= FD_MAX_G3 and bwd <= FD_MAX_G3:
+                cand_alias.append((a, b))
+            for s, t in ((a, b), (b, a)):
+                if s in bad_det:
+                    continue
+                cs, ct, d_s, d_t = edge_arrays(s, t)
+                if d_s <= d_t:  # finest → coarsest, on the rows the stats see
+                    continue
+                if len(cs) < MIN_SUPPORT_ROWS and len(cs) < n_sample:
+                    logger.info(
+                        "hierarchy_edge_excluded",
+                        determinant=s,
+                        dependent=t,
+                        reason="null_support",
+                        complete_rows=len(cs),
+                    )
+                    continue
+                if row_g3(s, t) > FD_MAX_G3:
+                    continue
+                # -- 3. λ floor: the vacuous-skew kill (edge arm only) --------
+                lam = stats.gk_lambda(cs, ct)
+                if lam < LAMBDA_MIN:
+                    logger.info(
+                        "hierarchy_edge_excluded",
+                        determinant=s,
+                        dependent=t,
+                        reason="vacuous_skew",
+                        gk_lambda=round(lam, 3),
+                    )
+                    continue
+                cand_edge.append((s, t))
 
-    reduced = _transitive_reduction(edges)
+    # -- 4. permutation p + BH over the view's screened family ----------------
+    # Edge tests run on the pairwise-complete rows their screen used; alias
+    # tests on the full null-as-category codes (pair-count semantics). The
+    # candidates fan across a bounded thread pool: each task derives its own
+    # generator (_pair_rng) and only READS the pre-warmed caches (edge_arrays
+    # was populated for every cand_edge pair during screening), so the results
+    # are byte-identical at any worker count.
+    tasks: list[tuple[str, str, str]] = [("e", a, b) for a, b in cand_edge]
+    for a, b in cand_alias:
+        tasks += [("a", a, b), ("a", b, a)]
 
-    # Per-edge g3 (on the original measured columns behind each rep) for scoring.
-    # ``pairs`` keys are always (lex-smaller, lex-larger) because
-    # ``cand_names = sorted(by_name)`` — so ``forward=(a, b) in pairs`` resolves
-    # which endpoint is ``d_a`` in the stored ``_Pair``. (If cand_names ever stops
-    # being lexicographically sorted, this direction test must be revisited.)
-    def _edge_g3(a: str, b: str) -> float:
-        pair = pairs.get((a, b)) or pairs.get((b, a))
-        if pair is None:
-            return 0.0
-        return pair.g3(forward=(a, b) in pairs)
+    def perm_task(task: tuple[str, str, str]) -> tuple[tuple[str, str, str], float]:
+        arm, a, b = task
+        if arm == "e":
+            ca, cb, _, _ = edge_arrays(a, b)
+        else:
+            ca, cb = codes[a], codes[b]
+        return task, stats.perm_pvalue(ca, cb, _pair_rng(arm, a, b))
+
+    p_by_task: dict[tuple[str, str, str], float] = {}
+    if tasks:
+        with ThreadPoolExecutor(max_workers=_PERM_WORKERS) as pool:
+            for task, p in pool.map(perm_task, tasks):
+                p_by_task[task] = p
+
+    pvals: dict[tuple[str, str, str], float] = {t: p_by_task[t] for t in p_by_task if t[0] == "e"}
+    for a, b in cand_alias:
+        # A 1:1 claim needs significant dependence in BOTH directions.
+        pvals[("a", a, b)] = max(p_by_task[("a", a, b)], p_by_task[("a", b, a)])
+    accepted = stats.bh_reject(pvals, m_family=max(1, len(pvals)), q=Q_FDR)
+    acc_edges = {(a, b) for k, a, b in accepted if k == "e"}
+    acc_alias = {(a, b) for k, a, b in accepted if k == "a"}
+
+    # -- 5. disagreement-set role check on near-copies (alias arm) ------------
+    needs_conf = scan.n < MIN_SUPPORT_ROWS
+    out: list[dict[str, object]] = []
+    merged: list[tuple[str, str]] = []
+    # A near-copy pair that is NOT merged (role / undecidable) is the same domain
+    # seen twice — never a level relationship. Its direct edge (a near-identity FD
+    # that trivially passes the edge screen) is suppressed at assembly.
+    same_domain: set[frozenset[str]] = set()
 
     def _member(col: str) -> dict[str, object]:
         c = by_name[col]
         return {
             "column_name": c.column_name,
             "column_id": c.column_id,
-            "distinct_count": singles[col],
+            "distinct_count": scan.d2[col],
         }
 
-    needs_conf = n_rows < MIN_SUPPORT_ROWS
-    out: list[dict[str, object]] = []
+    for a, b in sorted(acc_alias):
+        dis = (strs[a] != strs[b]).astype(np.int64)
+        rate = float(dis.mean())
+        if rate == 0.0 or rate > ROLE_MAX_DISAGREE:
+            # Exact copy, or a relabeling bijection (code ↔ name): a true alias.
+            merged.append((a, b))
+            continue
+        contexts = {c: codes[c] for c in eligible if c not in (a, b)}
+        result = stats.role_verdict(dis, contexts, codes[b], _pair_rng("role", a, b))
+        logger.info(
+            "hierarchy_role_check",
+            a=a,
+            b=b,
+            verdict=result.verdict.value,
+            disagree_rate=round(rate, 5),
+            k=result.k_disagree,
+            t1_p=result.t1_p,
+            t1_context=result.t1_context,
+            t2_p=result.t2_p,
+        )
+        if result.verdict is RoleVerdict.DIRT:
+            merged.append((a, b))
+            continue
+        same_domain.add(frozenset((a, b)))
+        if result.verdict is RoleVerdict.ROLE:
+            group = sorted((a, b))
+            out.append(
+                {
+                    "run_id": run_id,
+                    "table_id": fact_table_id,
+                    "kind": "role",
+                    "members": [_member(c) for c in group],
+                    "canonical_label": f"{group[0]} ⇄ {group[1]}",
+                    "signature": f"role:{fact_table_id}:" + "|".join(group),
+                    "score": rate,
+                    "detection_source": "g3",
+                    "needs_confirmation": needs_conf,
+                }
+            )
+            continue
+        # VALUE_SYSTEMATIC / ABSTAIN: undecidable from data — surface, don't merge.
+        group = sorted((a, b))
+        out.append(
+            {
+                "run_id": run_id,
+                "table_id": fact_table_id,
+                "kind": "alias",
+                "members": [_member(c) for c in group],
+                "canonical_label": group[0],
+                "signature": f"alias:{fact_table_id}:" + "|".join(group),
+                "score": rate,
+                "detection_source": "g3",
+                "needs_confirmation": True,
+            }
+        )
+
+    # -- 6. assemble: union-find → edges on reps → reduction → chains ---------
+    parent = {c: c for c in eligible}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in merged:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[min(ra, rb)] = max(ra, rb)
+    members: dict[str, list[str]] = {}
+    for c in eligible:
+        members.setdefault(find(c), []).append(c)
+    groups = [sorted(g) for g in members.values() if len(g) >= 2]
+    rep = {c: sorted(g)[0] for g in members.values() for c in g}
+
+    edges: set[tuple[str, str]] = set()
+    for a, b in acc_edges:
+        if frozenset((a, b)) in same_domain:
+            continue
+        ra, rb = rep[a], rep[b]
+        if ra != rb:
+            edges.add((ra, rb))
+    reduced = _transitive_reduction(edges)
 
     for chain in _maximal_chains(reduced):
-        score = max(_edge_g3(chain[k], chain[k + 1]) for k in range(len(chain) - 1))
+        score = max(row_g3(chain[k], chain[k + 1]) for k in range(len(chain) - 1))
         out.append(
             {
                 "run_id": run_id,
@@ -516,11 +816,12 @@ def _view_structures(
         logger.info("hierarchy_drilldown", view=view_name, chain=chain, score=round(score, 4))
 
     for group in groups:
-        # Representative-pair score. For a 3+ member group every pair already passed
-        # the alias threshold in union-find, so the first pair's g3 bounds the group
-        # (≤ FD_MAX_G3) — a faithful, conservative score.
-        gpair = pairs.get((group[0], group[1])) or pairs.get((group[1], group[0]))
-        score = max(gpair.g3(forward=True), gpair.g3(forward=False)) if gpair else 0.0
+        pair_scores = [
+            max(scan.pair_g3(group[i], group[j]))
+            for i in range(len(group))
+            for j in range(i + 1, len(group))
+            if (group[i], group[j]) in scan.joints or (group[j], group[i]) in scan.joints
+        ]
         out.append(
             {
                 "run_id": run_id,
@@ -529,11 +830,22 @@ def _view_structures(
                 "members": [_member(c) for c in group],
                 "canonical_label": group[0],
                 "signature": f"alias:{fact_table_id}:" + "|".join(sorted(group)),
-                "score": score,
+                "score": max(pair_scores) if pair_scores else 0.0,
                 "detection_source": "g3",
                 "needs_confirmation": needs_conf,
             }
         )
-        logger.info("hierarchy_alias", view=view_name, group=group, score=round(score, 4))
+        logger.info("hierarchy_alias", view=view_name, group=group)
 
+    logger.info(
+        "hierarchy_view_decided",
+        view=view_name,
+        n_rows=scan.n,
+        n_sample=n_sample,
+        eligible=len(eligible),
+        screened_edges=len(cand_edge),
+        screened_aliases=len(cand_alias),
+        asserted_edges=len(acc_edges),
+        merged_aliases=len(merged),
+    )
     return out

@@ -125,11 +125,13 @@ MIN_SUPPORT_ROWS = 100
 # bijection is MERGED (axes collapsed) only when the judge is at least this
 # confident it is one dimension. Below it — a coincidental bijection, a grey
 # call, or a judge that could not answer — the pair is surfaced as a
-# needs_confirmation alias and NOT collapsed. The house "act on ≥ 0.8, surface
-# the rest" point; the identity gate separates true aliases (≥0.95) from
-# coincidental ones (≤0.05) with a wide margin, so the exact value is not
-# delicate (DAT-762 comment 16785 operating curve).
-IDENTITY_MERGE_MIN = 0.8
+# needs_confirmation alias and NOT collapsed. Auto-merge is the irreversible,
+# silently-corrupting action, so its floor is the prompt's DECISIVE band
+# (dimension_alias.yaml: 0.85-1.0); anything the judge rates merely "probable"
+# (0.5-0.8) is surfaced, not merged. The identity gate separates true aliases
+# (≥0.95) from coincidental ones (≤0.05) with a wide margin, so the exact value
+# is not delicate (DAT-762 comment 16785 operating curve).
+IDENTITY_MERGE_MIN = 0.85
 
 # Sample values per column sent to the identity judge (evidence, not a decision
 # surface). These columns were already sent to the LLM by the semantic phase, so

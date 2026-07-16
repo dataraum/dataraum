@@ -90,11 +90,11 @@ def classify_metric_extracts(
     for step_id, step in graph.steps.items():
         if step.step_type != StepType.EXTRACT or step.source is None:
             continue
-        resolved = grounded_select(library, workspace_id, step)
+        resolved = _grounded_select(library, workspace_id, step)
         if resolved is None:
             return None
-        select_expr, relation, _where = resolved
-        fact_id = fact_table_id(session, relation)
+        select_expr, relation = resolved
+        fact_id = _fact_table_id(session, relation)
         if fact_id is None:
             return None
         calls = parse_aggregate_calls(select_expr, duckdb_conn)
@@ -108,20 +108,10 @@ def classify_metric_extracts(
     return extract_classes
 
 
-def grounded_select(
+def _grounded_select(
     library: SnippetLibrary, workspace_id: str, step: GraphStep
-) -> tuple[str, str, list[str]] | None:
-    """The extract's healthy grounded ``(select_expr, relation, where)`` from its snippet.
-
-    Shared grounding-resolution primitive (also used by the period resolver,
-    DAT-785): recovers the parts an EXTRACT step actually grounded to, or ``None``
-    when it has no healthy snippet.
-
-    ``where`` is the persisted predicate list (``parts["where"]``, possibly empty)
-    — the SAME filter the executed flow SUM applies (``compose_extract_sql``). The
-    period resolver needs it to observe the flow's window over exactly the rows the
-    SUM scans, not the whole column; the additivity classifier ignores it.
-    """
+) -> tuple[str, str] | None:
+    """The extract's healthy grounded ``(select_expr, relation)`` from its snippet."""
     if step.source is None:
         return None
     match = library.find_by_key(
@@ -143,16 +133,11 @@ def grounded_select(
     relation = relations[0]
     if not expr or not relation:
         return None
-    where = [str(p) for p in (parts.get("where") or []) if p]
-    return expr, relation, where
+    return expr, relation
 
 
-def fact_table_id(session: Session, relation: str) -> str | None:
+def _fact_table_id(session: Session, relation: str) -> str | None:
     """The fact table an extract reads.
-
-    Shared grounding-resolution primitive (also used by the period resolver,
-    DAT-785): maps a grounded relation NAME (enriched view or typed table) to the
-    base fact ``table_id`` whose columns carry the analysis facts.
 
     Usually an enriched view (`EnrichedView.view_name` — latest-only, and unique
     by construction via the `enriched_{duckdb_path}` naming convention, not a DB

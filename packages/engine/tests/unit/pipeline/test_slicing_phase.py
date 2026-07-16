@@ -454,7 +454,7 @@ class TestRunTimeAxisFill:
         session.add(
             StatisticalProfile(
                 column_id=date_col.column_id,
-                layer="typed",
+                layer="enriched",
                 total_count=300,
                 null_count=0,
                 distinct_count=300,
@@ -667,7 +667,7 @@ class TestRunTimeAxisFill:
         session.add(
             StatisticalProfile(
                 column_id=date_col.column_id,
-                layer="typed",
+                layer="enriched",
                 total_count=300,
                 null_count=0,
                 distinct_count=300,  # > 200 → dropped from context_data["tables"]

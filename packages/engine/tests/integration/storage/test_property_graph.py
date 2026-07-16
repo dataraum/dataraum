@@ -179,7 +179,7 @@ def _seed(engine: Engine) -> None:
             " to_column_id, relationship_type, cardinality, confidence, confirmation_source, "
             " detected_at) "
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
-            f"'foreign_key', 'many_to_one', 0.9, 'judge', '{TS}')"
+            f"'foreign_key', 'many-to-one', 0.9, 'judge', '{TS}')"
         )
     # has_dimension: three facts each sliced by their own account_id FK, all resolving
     # the referenced identity dimension_table_id='t2' (the accounts dim). journal (t1)
@@ -216,7 +216,7 @@ def _seed(engine: Engine) -> None:
             " to_column_id, relationship_type, cardinality, confidence, confirmation_source, "
             " detected_at) "
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
-            f"'foreign_key', 'many_to_one', 0.9, 'judge', '{TS}')"
+            f"'foreign_key', 'many-to-one', 0.9, 'judge', '{TS}')"
         )
     # t1 carries a DECLARED time-axis set with the anchor at index 1 (NOT 0) and an
     # attribute date mixed in — the scrambled-order proof (DAT-780): a positional

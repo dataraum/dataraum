@@ -120,6 +120,7 @@ class TestStatisticalModels:
 
         profile = StatisticalProfile(
             column=column,
+            layer="typed",
             total_count=1000,
             null_count=50,
             distinct_count=800,
@@ -175,7 +176,7 @@ class TestStatisticalModels:
         decision = TypeDecision(
             column=column,
             decided_type="DOUBLE",
-            decision_source="auto",
+            decision_source="automatic",
             decided_by="system",
             decision_reason="High confidence from pattern detection",
         )
@@ -186,7 +187,7 @@ class TestStatisticalModels:
         saved = result.scalar_one()
 
         assert saved.decided_type == "DOUBLE"
-        assert saved.decision_source == "auto"
+        assert saved.decision_source == "automatic"
 
 
 class TestSemanticModels:
@@ -264,9 +265,9 @@ class TestTopologicalModels:
             to_table_id=customer_table.table_id,
             to_column_id=id_col.column_id,
             relationship_type="foreign_key",
-            cardinality="n:1",
+            cardinality="many-to-one",
             confidence=0.95,
-            detection_method="tda",
+            detection_method="candidate",
             evidence={"overlap_rate": 0.98},
         )
         session.add(relationship)
@@ -276,7 +277,7 @@ class TestTopologicalModels:
         saved = result.scalar_one()
 
         assert saved.relationship_type == "foreign_key"
-        assert saved.cardinality == "n:1"
+        assert saved.cardinality == "many-to-one"
         assert saved.confidence == 0.95
 
     def test_relationship_type_check_constraint(self, session: Session):
@@ -298,7 +299,9 @@ class TestTopologicalModels:
 
         def _rel(relationship_type: str, detection_method: str) -> Relationship:
             # detection_method varies per row to sidestep the run-grain unique
-            # constraint (run_id, from_column_id, to_column_id, detection_method).
+            # constraint (run_id, from_column_id, to_column_id, detection_method) —
+            # every value here must itself be real (ck_relationships_detection_method,
+            # DAT-802), so the 4 rows below exhaust the closed detection_method set.
             return Relationship(
                 from_table_id=sales_table.table_id,
                 from_column_id=customer_id_col.column_id,
@@ -310,12 +313,17 @@ class TestTopologicalModels:
             )
 
         # Every value a real writer produces is admitted.
-        for i, real_value in enumerate(("foreign_key", "hierarchy", "candidate")):
-            session.add(_rel(real_value, detection_method=f"method_{i}"))
+        real_detection_methods = ("candidate", "llm", "manual")
+        for relationship_type, detection_method in zip(
+            ("foreign_key", "hierarchy", "candidate"), real_detection_methods, strict=True
+        ):
+            session.add(_rel(relationship_type, detection_method=detection_method))
         session.flush()
 
-        # A value outside the closed vocabulary is rejected by the CHECK.
-        session.add(_rel("semantic_reference", detection_method="method_dead"))
+        # A value outside the closed vocabulary is rejected by the CHECK — the
+        # row's detection_method ('keeper', the one real value unused above) is
+        # itself valid, so the rejection is proven to come from relationship_type.
+        session.add(_rel("semantic_reference", detection_method="keeper"))
         with pytest.raises(IntegrityError):
             session.flush()
         session.rollback()

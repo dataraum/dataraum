@@ -477,6 +477,7 @@ class TestImportPhase:
             StatisticalProfile(
                 column_id=typed_col_id,
                 run_id="run-v1",
+                layer="typed",
                 total_count=2,
                 null_count=0,
                 profile_data={},

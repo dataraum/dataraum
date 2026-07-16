@@ -50,15 +50,17 @@ class StatisticalProfile(Base):
     # and two coexisting runs' rows don't collide.
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_statistical_profiles_column_run"),
-        # Closed-vocabulary enforcement (DAT-802 audit): every writer — the primary
-        # profiling pass (``analysis/statistics/profiler.py``, which REQUIRES a
-        # typed table) and the enriched-views dimension profiling
-        # (``enriched_views_phase.py``) — produces only 'typed' / 'enriched'. The
-        # ``default="raw"`` below is vestigial (no writer has ever hit it — every
-        # constructor sets ``layer`` explicitly); left as-is (not this sweep's
-        # scope to change behavior), but the CHECK reflects reality, not the dead
-        # default, so a future caller that forgets to override it fails loud
-        # instead of silently mis-labeling a typed/enriched profile as raw.
+        # Closed-vocabulary enforcement (DAT-802 audit): every writer — production
+        # (the primary profiling pass, ``analysis/statistics/profiler.py``, which
+        # REQUIRES a typed table, and the enriched-views dimension profiling,
+        # ``enriched_views_phase.py``) and every test fixture, engine-wide —
+        # produces only 'typed' / 'enriched'. The former ``default="raw"`` was
+        # vestigial (verified: zero constructors, production or test, ever
+        # omitted ``layer=``) and actively misleading (implied 'raw' was a
+        # legitimate resting state); removed rather than kept dead, so a future
+        # caller that forgets to set ``layer`` fails loud immediately (a clear
+        # NOT NULL error) instead of silently defaulting to a value the CHECK
+        # would reject anyway.
         CheckConstraint("layer IN ('typed', 'enriched')", name="layer"),
     )
 
@@ -71,7 +73,8 @@ class StatisticalProfile(Base):
     )
 
     # Which stage produced this profile. Closed vocab: see ck_statistical_profiles_layer.
-    layer: Mapped[str] = mapped_column(String, nullable=False, default="raw")
+    # No default: every writer (production and test) must state it explicitly.
+    layer: Mapped[str] = mapped_column(String, nullable=False)
 
     # STRUCTURED: Queryable core dimensions
     total_count: Mapped[int] = mapped_column(Integer, nullable=False)

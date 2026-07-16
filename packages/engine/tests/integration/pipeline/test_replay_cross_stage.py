@@ -217,14 +217,18 @@ class TestCrossStageSurvival:
                 select(Column).where(Column.table_id == typed_table_id, Column.column_name == "id")
             ).scalar_one()
             id_col_id = id_col.column_id
-            # Simulate a begin_session / frame-ground finding attached to the
-            # typed column — a stage NOT in the add_source chain.
+            # Simulate a PRIOR add_source run's finding attached to the typed
+            # column — foreign to the re-type call below, which must not
+            # destructively wipe it. (DAT-637 moved catalogue/begin_session-grain
+            # findings to ColumnConcept — SemanticAnnotation is add_source-grain
+            # only, so 'llm' is the real value here, not a hypothetical
+            # cross-stage source.)
             session.add(
                 SemanticAnnotation(
                     annotation_id=str(uuid4()),
                     column_id=id_col_id,
                     semantic_role="identifier",
-                    annotation_source="teach",
+                    annotation_source="llm",
                     annotated_at=datetime.now(UTC),
                 )
             )

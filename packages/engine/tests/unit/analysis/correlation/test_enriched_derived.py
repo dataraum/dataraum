@@ -95,11 +95,17 @@ def _make_column(
     return c
 
 
-def _make_stat_profile(session: Session, column: Column, distinct_count: int = 10) -> None:
+def _make_stat_profile(
+    session: Session, column: Column, distinct_count: int = 10, layer: str = "typed"
+) -> None:
+    """``layer`` must match the profiled column's own Table.layer (e.g. 'enriched'
+    for a dimension column on a ``_make_view_table`` — the CHECK doesn't care, but
+    a mismatched fixture silently mistests the moment a read path starts
+    filtering on ``layer``, per ``enriched_views_phase.py``'s real write pattern)."""
     sp = StatisticalProfile(
         profile_id=str(uuid4()),
         column_id=column.column_id,
-        layer="typed",
+        layer=layer,
         distinct_count=distinct_count,
         null_count=0,
         total_count=200,
@@ -163,7 +169,7 @@ class TestDetectsEnrichedDerivedColumns:
         # Register dimension column via view_table
         view_table = _make_view_table(session, "enriched_orders")
         dim_col = _make_column(session, view_table, "products__unit_price", "DOUBLE")
-        _make_stat_profile(session, dim_col)
+        _make_stat_profile(session, dim_col, layer="enriched")
 
         ev = _make_enriched_view(
             session,
@@ -286,7 +292,7 @@ class TestDetectsEnrichedDerivedColumns:
 
         view_table = _make_view_table(session, "enriched_orders")
         dim_col = _make_column(session, view_table, "products__unit_price", "DOUBLE")
-        _make_stat_profile(session, dim_col)
+        _make_stat_profile(session, dim_col, layer="enriched")
 
         ev = _make_enriched_view(
             session,
@@ -314,7 +320,7 @@ class TestDetectsEnrichedDerivedColumns:
 
         view_table = _make_view_table(session, "enriched_orders")
         dim_col = _make_column(session, view_table, "products__unit_price", "DOUBLE")
-        _make_stat_profile(session, dim_col)
+        _make_stat_profile(session, dim_col, layer="enriched")
 
         ev = _make_enriched_view(
             session,

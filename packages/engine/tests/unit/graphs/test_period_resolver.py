@@ -1,16 +1,19 @@
 """``days_in_period`` derivation — the guards that hold on any substrate (DAT-785).
 
-The real derivation reads the Postgres read surface (``og_columns`` +
-``current_temporal_column_profiles``) and is exercised in
-``tests/integration/graphs/test_period_resolver.py``. These unit cases pin the
-pieces that are substrate-independent: the "no parameter → nothing to derive" and
-"no read surface → no override" short-circuits, the fallback string shape, and the
-default read off the graph.
+The real derivation runs a live WHERE-filtered window query in DuckDB over the flow's
+grounded relation and reads the axis/cadence off the Postgres read surface
+(``og_columns`` + ``current_temporal_column_profiles``); it is exercised in
+``tests/integration/graphs/test_period_resolver.py``. These unit cases pin the pieces
+that are substrate-independent: the "no parameter → nothing to derive" and "no read
+surface → no override" short-circuits, the fallback string shape, the default read off
+the graph, and the pure fencepost correction.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+import pytest
 
 from dataraum.graphs.models import (
     GraphMetadata,
@@ -25,6 +28,7 @@ from dataraum.graphs.models import (
 )
 from dataraum.graphs.period_resolver import (
     PeriodResolution,
+    _apply_fencepost,
     _default_days,
     _fallback,
     resolve_days_in_period,
@@ -117,3 +121,39 @@ def test_derived_resolution_carries_no_flag() -> None:
     resolution = PeriodResolution(days=273.0, flag=None, evidence={"derived": True})
     assert resolution.derived is True
     assert resolution.flag is None
+
+
+def test_fencepost_corrects_period_aggregated_span() -> None:
+    """12 month-end rows span ~334 days between endpoints but cover ~365 — the
+    fencepost extrapolates the missing 12th period: 334 × 12/11 ≈ 364.4."""
+    corrected = _apply_fencepost(334.0, 12)
+    assert corrected == pytest.approx(334.0 * 12 / 11)
+    assert corrected == pytest.approx(364.36, abs=0.1)
+
+
+def test_fencepost_is_negligible_for_transaction_grained_span() -> None:
+    """Daily transaction data: many periods → factor ≈ 1, so the corrected window
+    barely moves off the raw span (364 × 365/364 = 365)."""
+    corrected = _apply_fencepost(364.0, 365)
+    assert corrected == pytest.approx(365.0)
+    # Proportionally negligible (~0.3%), unlike the ~9% bump on 12-period aggregated
+    # data — the correction self-scales with the number of periods.
+    assert (corrected - 364.0) / 364.0 < 0.01
+
+
+def test_fencepost_refuses_a_single_period() -> None:
+    """One period gives no inter-period gap to correct against — fall loud, not a
+    fabricated window."""
+    assert _apply_fencepost(0.0, 1) is None
+    assert _apply_fencepost(100.0, 1) is None
+
+
+def test_fencepost_refuses_zero_or_missing_periods() -> None:
+    assert _apply_fencepost(100.0, 0) is None
+    assert _apply_fencepost(100.0, None) is None
+
+
+def test_fencepost_refuses_a_degenerate_span() -> None:
+    """A non-positive span (single-timestamp corpus) can't be corrected."""
+    assert _apply_fencepost(0.0, 4) is None
+    assert _apply_fencepost(-5.0, 4) is None

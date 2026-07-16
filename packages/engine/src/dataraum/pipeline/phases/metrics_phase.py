@@ -772,7 +772,6 @@ def _warm_generations_serial(
 def _assemble_metric(
     agent: GraphAgent,
     session: Session,
-    duckdb_conn: duckdb.DuckDBPyConnection,
     exec_ctx: _ExecutionContext,
     graph: TransformationGraph,
     bindings: dict[NodeKey, NodeDecision],
@@ -788,10 +787,16 @@ def _assemble_metric(
     non-Postgres bind with no read surface), in which case the graph default stands.
     A window that cannot be observed falls loud: the config default rides a visible
     verification flag on the executed artifact, never a silent 30.
+
+    The period resolver's live window query MUST run against the same DuckDB cursor
+    ``agent.assemble`` runs the flow SUM on — so it reads ``exec_ctx.duckdb_conn``,
+    the one home of the cursor, rather than a separately-threaded connection.
     """
     from dataraum.graphs.period_resolver import resolve_days_in_period
 
-    period = resolve_days_in_period(session, duckdb_conn, graph=graph, workspace_id=workspace_id)
+    period = resolve_days_in_period(
+        session, exec_ctx.duckdb_conn, graph=graph, workspace_id=workspace_id
+    )
     parameters = {"days_in_period": period.days} if period is not None else None
     result = agent.assemble(
         session, graph, exec_ctx, bindings, parameters=parameters, workspace_id=workspace_id
@@ -832,15 +837,21 @@ def _execute_metrics_serial(
     """
     out: list[MetricResult] = []
     for graph_id, graph, inspiration_id in prep:
-        result = _assemble_metric(
-            agent,
-            session,
-            exec_ctx.duckdb_conn,
-            exec_ctx,
-            graph,
-            bindings,
-            workspace_id=workspace_id,
-        )
+        # Guard each assembly exactly like the parallel sibling captures
+        # ``future.result()``: one metric raising (e.g. a bad grounded predicate
+        # reaching the period resolver's live query) must not crash the phase and
+        # roll back every sibling's already-recorded execute state.
+        try:
+            result = _assemble_metric(
+                agent,
+                session,
+                exec_ctx,
+                graph,
+                bindings,
+                workspace_id=workspace_id,
+            )
+        except Exception as exc:
+            result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
         out.append((graph_id, result, inspiration_id))
     return out
 
@@ -933,5 +944,5 @@ def _execute_isolated(
             vertical=vertical,
         )
         return _assemble_metric(
-            agent, session, cursor, exec_ctx, graph, bindings, workspace_id=schema_mapping_id
+            agent, session, exec_ctx, graph, bindings, workspace_id=schema_mapping_id
         )

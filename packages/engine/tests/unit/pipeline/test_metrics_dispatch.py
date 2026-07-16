@@ -101,6 +101,36 @@ class TestExecuteMetricsSerial:
         assert out[1][1].success is False
         assert out[1][1].error == "nope"
 
+    def test_exception_in_one_graph_captured_as_failure(self) -> None:
+        """An unexpected raise in one assembly (e.g. the DAT-785 period resolver's
+        live query blowing up) is captured as Result.fail for that graph, with the
+        siblings still dispatched — symmetric with the parallel path's guard, so one
+        metric can't crash the phase and roll back every sibling's execute state."""
+        agent = MagicMock()
+        agent.assemble.side_effect = [
+            Result.ok("ok"),
+            RuntimeError("simulated infra failure"),
+            Result.ok("ok2"),
+        ]
+        out = gep._execute_metrics_serial(
+            [
+                ("g0", _graph("g0"), None),
+                ("bad", _graph("bad"), "insp"),
+                ("g2", _graph("g2"), None),
+            ],
+            MagicMock(),
+            MagicMock(),
+            agent,
+            _WORKSPACE_ID,
+            {},
+        )
+        by_id = {gid: (r, iid) for gid, r, iid in out}
+        assert by_id["g0"][0].success is True
+        assert by_id["g2"][0].success is True
+        assert by_id["bad"][0].success is False
+        assert "simulated infra failure" in (by_id["bad"][0].error or "")
+        assert by_id["bad"][1] == "insp"
+
 
 # ---------------------------------------------------------------------------
 # Parallel dispatch

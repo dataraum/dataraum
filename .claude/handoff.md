@@ -132,6 +132,67 @@ bijections on the fact grain.
   axes.
 
 ---
+
+## DAT-785 — `days_in_period` is derived from the data, not the config 30 (metric VALUES change)
+
+**Branch:** `fix/dat-785-796-days-in-period-derive`. The working-capital metrics
+(`dpo`/`dso`/`dio`/`cash_conversion_cycle`) resolved `days_in_period` provided-or-default
+and emitted `SELECT 30 AS value` — DPO over a quarterly corpus still divided by 30.
+Now the constant is derived from the flow's observed data window, so **the numeric
+value of every dpo/dso/dio/ccc metric changes** on any corpus whose flow span ≠ 30
+days (i.e. essentially all of them). An eval asserting these metric values must
+re-baseline; nothing else about the pipeline shape moves.
+
+### The derivation (new `graphs/period_resolver.py`, called from `metrics_phase`)
+- **Flow = the extract whose measure resolves to `og_columns.materialization == 'flow'`**
+  — the vertical-neutral, authoritative stock/flow verdict (COALESCE of the
+  aggregation-lineage witness posterior over the concept prior). A flow accumulates
+  over a period and carries the window; a stock (or any non-`flow` measure) is
+  point-in-time and is excluded. This is NOT keyed on any finance field (the earlier
+  `source.statement == 'income_statement'` proxy was the DAT-785-reland defect — it was
+  dead on every non-finance vertical); `materialization` works on any vertical.
+- **Period = the flow's OWN FILTERED window, measured live.** COGS/revenue are
+  grounded by filtering the fact on a discriminator (`SUM(amount) WHERE account_type
+  IN ('COGS')`) — the common shape. So the window is NOT the precomputed whole-column
+  `span_days` (that MIN/MAX scans every row, while the SUM scans only the filtered
+  rows). The resolver runs a live `MIN/MAX/COUNT(DISTINCT date_trunc(grain, axis))`
+  over the flow's **anchor time axis**, against the SAME grounded relation in DuckDB
+  the SUM runs on and filtered by the SAME `WHERE` predicate (single source:
+  `formula_composer.compose_where_predicate`). The axis IDENTITY + its detected
+  cadence come from `og_columns.anchor_time_axis` (DAT-780, its one home) joined to
+  `current_temporal_column_profiles.detected_granularity` (DAT-783); the span itself
+  is measured live, never read from `span_days`.
+- **Fencepost correction.** `span = max − min` spans `n − 1` inter-period gaps, so it
+  undercounts by ~one period for period-aggregated flow data. The live query counts
+  the distinct periods `n`, and the window is `span × n / (n − 1)`. Self-scaling:
+  negligible for transaction-grained corpora (many periods → factor ≈ 1), ~one period
+  for aggregated corpora (12 month-end rows → 12/11). **This means a transaction-
+  grained corpus and a period-aggregated corpus of the SAME true window derive the
+  SAME `days_in_period`** — the eval baseline must not assume the raw endpoint span.
+  A single period (n < 2) or degenerate span falls loud (no gap to correct against).
+- The derived value is injected as the metric's `days_in_period` parameter at
+  assembly; the CONSTANT step emits `SELECT <days> AS value`.
+
+### Fall loud (K6) — the config default survives ONLY as a flagged fallback
+When no window can be observed — no operand resolves to a `flow` materialization, the flow never grounded,
+its relation is outside the analysis, its anchor axis is NULL (the DAT-801 header-date
+facts serve NULL), the axis has no temporal profile, its cadence is `irregular`/
+`unknown`, the filtered window is empty (no rows match the predicate) or a single
+period, or two flows disagree on the window — the metric keeps the config default (30)
+BUT appends a `verification_flag` naming the fallback, which surfaces unconditionally
+in the artifact's `state_reason` (execute-and-flag, like a DAT-699 flag). Never a
+silent 30. A clean derivation logs `metric_period_derived` and carries no flag.
+
+### Thresholds / substrate / cross-package
+No score thresholds changed. The read surface (`og_columns` + read views) is
+Postgres-only; on the SQLite unit substrate the resolver returns no override (the
+graph default stands) — production is always Postgres. The window query runs against
+the DuckDB `lake.typed` relation (the SUM's relation), NOT the Postgres read schema.
+No schema change (no new columns; `schema*.sql` and the drizzle mirror UNCHANGED). Two
+grounding-resolution helpers in `additivity_resolver.py` were promoted to public
+(`grounded_select` — now also surfacing `parts["where"]` — and `fact_table_id`) for
+reuse — no behavior change to the additivity classifier.
+
 ---
 
 ## DAT-780 — `time_columns` contract: event/attribute role + typed anchor (BREAKING LLM contract)

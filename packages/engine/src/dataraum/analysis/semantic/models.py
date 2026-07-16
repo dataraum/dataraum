@@ -53,7 +53,7 @@ class ColumnSemanticOutput(BaseModel):
         description=(
             "What real-world entity this column represents. Examples: "
             "'customer_id', 'product_name', 'order_date', 'transaction_amount', "
-            "'account_code', 'invoice_number'. Be specific to the domain."
+            "'location_code', 'ticket_number'. Be specific to the domain."
         )
     )
 
@@ -112,7 +112,7 @@ class ColumnSemanticOutput(BaseModel):
         le=1.0,
         description=(
             "Confidence (0.0–1.0) in temporal_behavior_claim. High (0.85–1.0) for "
-            "unambiguous domain language (balance, payment, revenue, closing_position). "
+            "unambiguous domain language (balance, payment, sale, headcount). "
             "Moderate (0.6–0.8) when the role implies it but the name is ambiguous. Low "
             "(0.2–0.4) for a weak signal. Set this low whenever you answer 'unsure'."
         ),
@@ -198,8 +198,8 @@ class TimeColumn(BaseModel):
         description=(
             "The kind of date this column holds — a CLOSED vocabulary the LLM "
             "commits per column (DAT-780). 'event' = WHEN the row's own event "
-            "occurred (order_date, ship_date, payment_date, a periodic-statement "
-            "period date) — a genuine time axis analysis may segment or roll up by. "
+            "occurred (order_date, ship_date, delivery_date, a recurring "
+            "reporting-period date) — a genuine time axis analysis may segment or roll up by. "
             "'attribute' = a date the row merely REFERS to, not when the row's "
             "event happened (due_date, valid_until, effective_from) — it gets "
             "coverage like any column but must never be used as a trend/event axis. "
@@ -242,7 +242,7 @@ class TableEntityOutput(BaseModel):
     entity_type: str = Field(
         description=(
             "What real-world entity this table represents. Examples: 'customers', "
-            "'orders', 'products', 'transactions', 'invoices', 'payments'"
+            "'orders', 'products', 'transactions', 'shipments', 'appointments'"
         )
     )
 
@@ -269,7 +269,7 @@ class TableEntityOutput(BaseModel):
         description=(
             "EVERY date column of the table, each tagged with a typed ``role`` "
             "(DAT-780). Emit event dates — when a row's own event occurred "
-            "(order_date, ship_date, delivery_date, a periodic-statement period "
+            "(order_date, ship_date, delivery_date, a recurring reporting-period "
             "date) — with role='event'; a denormalized table commonly has several, "
             "emit all. Emit attribute dates — a date the row merely refers to "
             "(due_date, valid_until, effective_from) — with role='attribute' so "

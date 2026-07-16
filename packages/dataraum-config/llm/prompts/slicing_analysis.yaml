@@ -5,7 +5,7 @@
 # Uses tool-based output for structured responses.
 
 name: slicing_analysis
-version: "3.1.0"
+version: "3.2.0"
 description: Identify optimal categorical dimensions for slicing data into subsets
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
@@ -35,9 +35,9 @@ system_prompt: |
   <selection_criteria>
   A good slicing dimension should have:
 
-  1. Moderate Cardinality: Prefer dimensions with 3-20 distinct values. Higher cardinality is
-     acceptable if the dimension has strong business meaning — post-processing will trim values
-     that cover too few rows to be statistically meaningful.
+  1. Moderate Cardinality: Prefer dimensions with 3-20 distinct values; higher cardinality is
+     acceptable when the column is a genuine business axis (e.g. a product line or region with
+     many members). Constants and near-unique keys are already excluded before you see them.
   2. Business Meaning: Represent a meaningful business dimension (e.g. region, product line, customer segment — not internal IDs or codes)
   3. Balanced Distribution: Values should have reasonable row counts (avoid 99% in one value)
   4. Independence: Not redundant with other recommendations within the same table.
@@ -59,7 +59,7 @@ system_prompt: |
 
   <enriched_columns>
   IMPORTANT: Some tables have enriched views with additional dimension columns from joined tables.
-  These columns are marked with "is_enriched": true in the columns list.
+  These columns are marked with "is_enriched_dimension": true in the columns list.
 
   Enriched columns (from dimension tables like regions, categories, customer types) are often
   EXCELLENT slicing candidates because they:
@@ -67,7 +67,8 @@ system_prompt: |
   - Enable geographic, categorical, or hierarchical analysis
   - Are specifically designed for analytical grouping
 
-  When a table has an enriched_view_name, prioritize considering its enriched columns for slicing.
+  They are flagged "is_enriched_dimension": true in each table's columns list. When a table has
+  an enriched_view_name, prioritize considering its enriched columns for slicing.
   </enriched_columns>
 
   <time_axis>
@@ -114,12 +115,6 @@ user_prompt: |
   {tables_json}
   </schema_and_statistics>
 
-  <enriched_columns>
-  Dimension columns from enriched views (joined from related tables).
-  Tables with enriched views have "enriched_view_name" set and additional columns marked "is_enriched": true.
-  {enriched_columns_json}
-  </enriched_columns>
-
   Each table object includes "time_columns" — its already-identified event-time
   axes (empty when none were identified; then check enriched columns flagged
   "is_dimension_time_column").
@@ -140,11 +135,6 @@ inputs:
   table_names:
     description: Comma-separated list of table names being analyzed
     required: true
-
-  enriched_columns_json:
-    description: JSON array of dimension columns from enriched views
-    required: false
-    default: "[]"
 
   max_recommendations:
     description: Maximum number of slice dimension recommendations across all tables

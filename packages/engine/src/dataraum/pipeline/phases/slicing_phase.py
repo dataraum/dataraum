@@ -32,6 +32,22 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Slice-candidate eligibility (DAT-805 — mirrors the hierarchies near-key gate).
+# The pre-filter's contract: every column reaching the LLM (hence every cataloged
+# SliceDefinition) is grain-safe to aggregate — no fan-out, not degenerate. It
+# excludes ONLY the DEFINITIVE extremes: a constant (nothing to partition) or a
+# near-UNIQUE key (~one row per group). The ceiling is a FRACTION of NON-NULL rows
+# (cardinality_ratio = distinct / non-null count — the _MAX_NULL_RATIO gate handles
+# nullness separately, so dividing by total rows would double-count it), never an
+# absolute count: an absolute cap drops a 400-value discriminator in a 10M-row
+# table while passing a 150-value near-key in 160 rows (the old `distinct > 200`
+# bug). Mid-cardinality columns are KEPT; thin per-group support is folded by the
+# driver-tree's min_support (the answer agent + metrics surface them as-is —
+# grain-safe, just fine-grained).
+_MIN_DISTINCT_DIMENSION = 2  # a single value (+ NULL bucket) is not a slice axis
+_NEAR_KEY_FRAC = 0.9  # distinct >= 0.9 * non-null rows => near-unique key (spurious)
+_MAX_NULL_RATIO = 0.5  # majority-NULL => most rows fall in the NULL bucket
+
 
 def _has_event_axis(time_columns: list[dict[str, Any]] | None) -> bool:
     """True when the entity already carries a genuine EVENT time axis (DAT-780).
@@ -404,25 +420,40 @@ class SlicingPhase(BasePhase):
         )
 
     def _pre_filter_columns(self, context_data: dict[str, Any]) -> None:
-        """Remove columns that are objectively bad slice candidates.
+        """Exclude columns that are DEFINITIVELY unusable as slice dimensions.
 
-        Mutates context_data in place, removing columns with:
-        - distinct_count > 200 (too high cardinality for slicing)
-        - null_ratio > 0.5 (majority NULL)
-        - cardinality_ratio > 0.5 (approaching identifier territory)
+        Mutates ``context_data`` in place. The pre-filter's contract is that
+        every column reaching the LLM — hence every cataloged ``SliceDefinition``
+        — is grain-safe AND useful to aggregate, so no downstream consumer
+        re-checks. It therefore drops ONLY the definitive extremes, born-loud:
 
-        Enriched dimension columns are exempt from the cardinality_ratio
-        check since they are specifically designed for analytical grouping.
+        - a **constant** (``< _MIN_DISTINCT_DIMENSION`` distinct — nothing to
+          partition);
+        - a **majority-NULL** column (``null_ratio > _MAX_NULL_RATIO`` — most
+          rows fall in the NULL bucket);
+        - a **near-unique key** (``cardinality_ratio >= _NEAR_KEY_FRAC`` — ~one
+          row per group, a degenerate slice). The ceiling is a FRACTION of rows,
+          never an absolute count (DAT-805: the old ``distinct > 200`` dropped a
+          400-value discriminator in a 10M-row table while passing a 150-value
+          near-key in 160 rows; the old ``cardinality_ratio > 0.5`` silently
+          killed legitimate mid-cardinality dimensions well below near-unique).
 
-        Preserves a ``col_id_by_name`` lookup per table so that
-        ``_propagate_enriched_dimensions`` can resolve FK column_ids
-        even after the FK column itself was filtered out.
+        The near-key check is uniform — an enriched dimension is grain-safe by its
+        join, but a near-unique enriched column (a raw date axis, a per-row name)
+        is just as useless a slice as an own near-key. Mid-cardinality columns are
+        KEPT; thin per-group support is folded downstream by the driver-tree, not
+        silently pre-dropped here.
+
+        Preserves a ``col_id_by_name`` lookup per table so
+        ``_propagate_enriched_dimensions`` and the DAT-491 time-axis validation
+        resolve column_ids even for a column the filter removed (a high-cardinality
+        date axis is exactly such a column).
         """
         for table_data in context_data.get("tables", []):
             original = table_data.get("columns", [])
 
-            # Snapshot column_id by name before filtering — propagation needs
-            # FK column_ids that the filter removes (high cardinality).
+            # Snapshot column_id by name before filtering — propagation + the
+            # DAT-491 time-axis check need FK/axis column_ids the filter removes.
             table_data["col_id_by_name"] = {
                 col["column_name"]: col.get("column_id", "")
                 for col in original
@@ -433,25 +464,47 @@ class SlicingPhase(BasePhase):
             for col in original:
                 distinct = col.get("distinct_count")
                 null_ratio = col.get("null_ratio")
+                null_count = col.get("null_count") or 0
                 card_ratio = col.get("cardinality_ratio")
-                is_enriched = col.get("is_enriched_dimension", False)
+                name = col.get("column_name")
 
-                if distinct is not None and distinct > 200:
+                # Floor: a constant has nothing to partition — but NULL is its own
+                # slice bucket, so a {value, NULL} column is a valid 2-way split, not
+                # a constant. distinct_count is null-blind (COUNT(DISTINCT col),
+                # profiler.py), so add the NULL category back before the floor.
+                if (
+                    distinct is not None
+                    and distinct + (1 if null_count else 0) < _MIN_DISTINCT_DIMENSION
+                ):
+                    logger.info(
+                        "slice_column_excluded", column=name, reason="constant", distinct=distinct
+                    )
                     continue
-                if null_ratio is not None and null_ratio > 0.5:
+                # Coverage: a majority-NULL column slices most rows into NULL.
+                if null_ratio is not None and null_ratio > _MAX_NULL_RATIO:
+                    logger.info(
+                        "slice_column_excluded",
+                        column=name,
+                        reason="mostly_null",
+                        null_ratio=null_ratio,
+                    )
                     continue
-                if not is_enriched and card_ratio is not None and card_ratio > 0.5:
+                # Ceiling: a near-UNIQUE column (distinct ~ rows) yields ~one row
+                # per group — a degenerate slice. Scale-invariant fraction, NOT an
+                # absolute count. Applied uniformly: an enriched dim is grain-safe
+                # by its join, but a near-unique enriched column (a raw date axis, a
+                # per-row name) is just as useless a slice as an own near-key.
+                if card_ratio is not None and card_ratio >= _NEAR_KEY_FRAC:
+                    logger.info(
+                        "slice_column_excluded",
+                        column=name,
+                        reason="near_key",
+                        cardinality_ratio=card_ratio,
+                    )
                     continue
 
                 filtered.append(col)
 
-            if len(filtered) < len(original):
-                logger.debug(
-                    "pre_filtered_columns",
-                    table=table_data.get("table_name"),
-                    removed=len(original) - len(filtered),
-                    kept=len(filtered),
-                )
             table_data["columns"] = filtered
 
     def _propagate_enriched_dimensions(

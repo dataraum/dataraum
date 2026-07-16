@@ -244,17 +244,42 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		expect(block).not.toContain("more");
 	});
 
-	it("renders an alias group as canonical ≡ others (group by canonical)", () => {
+	it("renders a CONFIRMED alias group as canonical ≡ others (group by canonical)", () => {
 		const hierarchies: CatalogHierarchyRow[] = [
 			{
 				tableId: "t1",
 				kind: "alias",
 				canonicalLabel: "region",
 				members: [{ column_name: "region" }, { column_name: "region_code" }],
+				needsConfirmation: false,
 			},
 		];
 		const block = formatCatalog(axes, hierarchies, addr);
 		expect(block).toContain('alias: "region" ≡ "region_code"');
+	});
+
+	it("surfaces an UNCONFIRMED alias as distinct — never a group-by-canonical instruction (DAT-762)", () => {
+		// A coincidental bijection the identity judge declined (needs_confirmation=true).
+		// Collapsing it would silently corrupt aggregations — the exact failure this lane
+		// prevents. The block must NOT tell the agent to group by one column.
+		const hierarchies: CatalogHierarchyRow[] = [
+			{
+				tableId: "t1",
+				kind: "alias",
+				canonicalLabel: "account_id",
+				members: [
+					{ column_name: "account_id" },
+					{ column_name: "opened_date" },
+				],
+				needsConfirmation: true,
+			},
+		];
+		const block = formatCatalog(axes, hierarchies, addr);
+		expect(block).toContain("UNCONFIRMED");
+		expect(block).toContain('"account_id"');
+		expect(block).toContain('"opened_date"');
+		expect(block).not.toContain("group by the canonical only");
+		expect(block).not.toContain('"account_id" ≡');
 	});
 
 	it("renders a drill-down chain coarse→fine, ordered by member level", () => {
@@ -268,6 +293,7 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 					{ column_name: "region", level: 1 },
 					{ column_name: "city", level: 2 },
 				],
+				needsConfirmation: false,
 			},
 		];
 		const block = formatCatalog(axes, hierarchies, addr);
@@ -288,6 +314,7 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 					{ column_name: "state", level: 0 },
 					{ column_name: "city", level: 1 },
 				],
+				needsConfirmation: false,
 			},
 		];
 		const block = formatCatalog(axes, hierarchies, addr);

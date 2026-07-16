@@ -80,6 +80,13 @@ features:
     model_tier: balanced
     thinking: true
 
+  # DAT-762: dimension-identity judge — the cross-fact conformed-dimension
+  # lane (conform/role judgment on names + attributes + meanings).
+  # Forced tool_choice suppresses thinking on the Anthropic API, so the v1
+  # judge is non-thinking by design (DAT-757 scorecard was graded that way).
+  dimension_identity_judgment:
+    model_tier: balanced
+
 # Cost controls
 limits:
   # Bumped 16000 -> 24000 with the Sonnet 5 swap: its tokenizer emits ~30% more

@@ -348,6 +348,7 @@ export interface CatalogHierarchyRow {
 	kind: string;
 	members: Array<{ column_name?: string | null; level?: number | null }>;
 	canonicalLabel: string | null;
+	needsConfirmation: boolean | null;
 }
 
 function hierarchyLine(h: CatalogHierarchyRow): string | null {
@@ -359,7 +360,16 @@ function hierarchyLine(h: CatalogHierarchyRow): string | null {
 		const canonical = h.canonicalLabel ?? names[0];
 		const others = names.filter((n) => n !== canonical);
 		if (others.length === 0) return null;
-		return `  alias: "${canonical}" ≡ ${others.map((n) => `"${n}"`).join(", ")} (group by the canonical only)`;
+		const otherList = others.map((n) => `"${n}"`).join(", ");
+		// DAT-762: only a CONFIRMED alias (needs_confirmation === false) may be
+		// collapsed to its canonical. A bijection the identity judge declined (or
+		// could not confirm) is 1:1 by coincidence, not identity — collapsing it
+		// would silently corrupt aggregations, the exact failure this lane exists to
+		// prevent. Surface it as distinct; never tell the agent to group by one.
+		if (h.needsConfirmation === false) {
+			return `  alias: "${canonical}" ≡ ${otherList} (group by the canonical only)`;
+		}
+		return `  possible-alias (UNCONFIRMED — do NOT merge): "${canonical}" and ${otherList} are 1:1 but were not confirmed to be the same dimension; treat them as distinct axes.`;
 	}
 	// Drill-down / FD chain. Order is `level`, not array position (DAT-779) — sort
 	// ascending by level before joining; fall back to the array index only if a
@@ -434,8 +444,10 @@ export function formatCatalog(
 	return (
 		"<dimensions>\n" +
 		"The workspace's natural analysis dimensions per table, and how they relate. " +
-		"For an alias group, group by the canonical column (don't double-count the " +
-		"same axis); to answer at a coarser level, roll a drill-down chain up along " +
+		"For a confirmed alias group, group by the canonical column (don't double-count the " +
+		"same axis). A possible-alias marked UNCONFIRMED is NOT a confirmed same-axis pair — " +
+		"treat those columns as distinct dimensions; never collapse or group them together. " +
+		"To answer at a coarser level, roll a drill-down chain up along " +
 		"its listed order. Each dimension shows its distinct-value COUNT and its [id: …] " +
 		"— not the values themselves. To ground a filter on one, call look_values with " +
 		"that id to fetch its exact values, then build an IN (...) over them. Never guess " +
@@ -467,6 +479,7 @@ export async function buildCatalogBlock(): Promise<string> {
 				kind: currentDimensionHierarchies.kind,
 				members: currentDimensionHierarchies.members,
 				canonicalLabel: currentDimensionHierarchies.canonicalLabel,
+				needsConfirmation: currentDimensionHierarchies.needsConfirmation,
 			})
 			.from(currentDimensionHierarchies),
 		// current_tables (DAT-677): the catalog axes are head-scoped already; the
@@ -510,6 +523,7 @@ export async function buildCatalogBlock(): Promise<string> {
 					? (h.members as Array<{ column_name?: string | null }>)
 					: [],
 				canonicalLabel: h.canonicalLabel ?? null,
+				needsConfirmation: h.needsConfirmation ?? null,
 			})),
 		tableAddressById,
 	);

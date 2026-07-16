@@ -34,7 +34,7 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column
 
-from .conftest import RUN, seed_sales, seed_view
+from .conftest import RUN, StubIdentityJudge, approving_judge, seed_sales, seed_view
 
 
 def _rows(session: Session, table_id: str, kind: str) -> list[DimensionHierarchy]:
@@ -58,17 +58,186 @@ def _levels(row: DimensionHierarchy) -> list[int]:
     return [m["level"] for m in row.members]
 
 
+class TestIdentityJudge:
+    """DAT-762: the within-view identity judge on relabeling bijections.
+
+    On the fact-grain view a folded key + its attributes REPEAT, so a code↔name
+    alias (``account_id ⇄ account_name``) and a COINCIDENTAL 1:1 (``account_id ⇄
+    opened_date``) both pass perm-BH as non-key bijections and reach the judge —
+    only meaning separates them. 120 rows (3 accounts × 40) keeps support above
+    ``MIN_SUPPORT_ROWS`` so ``needs_confirmation`` reflects the judge's call, not
+    thin support.
+    """
+
+    @staticmethod
+    def _fact_view(
+        session: Session,
+        duck: duckdb.DuckDBPyConnection,
+        *,
+        second: str,
+        mapping: dict[str, str],
+    ) -> str:
+        acct = [f"A{i % 3}" for i in range(120)]
+        cols = {
+            "account_id": acct,
+            second: [mapping[a] for a in acct],
+            "region": [["north", "south"][i % 2] for i in range(120)],  # inert, ⊥ account
+        }
+        return seed_view(session, duck, "facts", cols)
+
+    def test_relabeling_alias_merged_with_confidence(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A high identity confidence merges the axes and records the confidence."""
+        tid = self._fact_view(
+            real_session,
+            duck,
+            second="account_name",
+            mapping={"A0": "Cash", "A1": "Receivable", "A2": "Payable"},
+        )
+        stub = StubIdentityJudge(confidence=0.95)
+        discover_dimension_hierarchies(
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=stub
+        )
+        assert stub.calls, "the relabeling bijection must reach the judge"
+        aliases = {frozenset(_members(r)): r for r in _rows(real_session, tid, "alias")}
+        row = aliases[frozenset({"account_id", "account_name"})]
+        assert row.needs_confirmation is False  # merged (collapses in the driver tree)
+        assert row.identity_confidence == pytest.approx(0.95)
+
+    def test_coincidental_bijection_surfaced_not_merged(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A coincidental 1:1 the judge scores low surfaces needs_confirmation, uncollapsed."""
+        tid = self._fact_view(
+            real_session,
+            duck,
+            second="opened_date",
+            mapping={"A0": "2020-01-01", "A1": "2020-02-01", "A2": "2020-03-01"},
+        )
+        stub = StubIdentityJudge(confidence=0.03)
+        discover_dimension_hierarchies(
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=stub
+        )
+        aliases = {frozenset(_members(r)): r for r in _rows(real_session, tid, "alias")}
+        row = aliases[frozenset({"account_id", "opened_date"})]
+        assert row.needs_confirmation is True  # NOT collapsed (drivers skip these)
+        assert row.identity_confidence == pytest.approx(0.03)
+
+    def test_merge_boundary_is_pinned_to_identity_merge_min(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The merge boundary is IDENTITY_MERGE_MIN, regression-locked with HARDCODED
+        confidences bracketing it: 0.69 surfaces, 0.70 merges. Every other identity
+        test uses 0.95/0.03, so a silent drift of the floor anywhere in (0.03, 0.95)
+        — e.g. back to 0.85 or down to 0.5 — would pass them all; this one flips."""
+        from dataraum.analysis.hierarchies.processor import IDENTITY_MERGE_MIN
+
+        assert IDENTITY_MERGE_MIN == 0.7  # the validated operating point — change deliberately
+
+        mapping = {"A0": "Cash", "A1": "Receivable", "A2": "Payable"}
+        acct = [f"A{i % 3}" for i in range(120)]
+
+        def merged_at(view: str, conf: float) -> bool:
+            cols = {
+                "account_id": acct,
+                "account_name": [mapping[a] for a in acct],
+                "region": [["north", "south"][i % 2] for i in range(120)],  # inert, ⊥ account
+            }
+            tid = seed_view(real_session, duck, view, cols)
+            discover_dimension_hierarchies(
+                real_session,
+                duckdb_conn=duck,
+                table_ids=[tid],
+                run_id=RUN,
+                judge=StubIdentityJudge(confidence=conf),
+            )
+            row = {frozenset(_members(r)): r for r in _rows(real_session, tid, "alias")}[
+                frozenset({"account_id", "account_name"})
+            ]
+            return row.needs_confirmation is False  # False ⇒ merged (collapses in drivers)
+
+        assert merged_at("facts_below_floor", 0.69) is False  # just below → surfaced
+        assert merged_at("facts_at_floor", 0.70) is True  # at the floor → merged
+
+    def test_judge_failure_surfaces_not_merges(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """An unjudged bijection (failed call) is surfaced, never silently merged."""
+        tid = self._fact_view(
+            real_session,
+            duck,
+            second="opened_date",
+            mapping={"A0": "2020-01-01", "A1": "2020-02-01", "A2": "2020-03-01"},
+        )
+        stub = StubIdentityJudge(fail=True)
+        discover_dimension_hierarchies(
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=stub
+        )
+        aliases = {frozenset(_members(r)): r for r in _rows(real_session, tid, "alias")}
+        row = aliases[frozenset({"account_id", "opened_date"})]
+        assert row.needs_confirmation is True
+        assert row.identity_confidence is None  # absence of judgment, not a low score
+
+    def test_redelivery_verdict_flip_leaves_no_stale_merged_group(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A Temporal redelivery whose judge verdict FLIPS must not strand a prior
+        delivery's merged GROUP row. The alias-group signature depends on the
+        (nondeterministic) verdict, so without replace-semantics the delivery-1
+        3-member row would survive delivery-2's smaller group and drivers would
+        collapse it (needs_confirmation=False) — dropping the declined axis."""
+        acct = [f"A{i % 3}" for i in range(120)]
+        cols = {
+            "account_id": acct,
+            "account_code": acct,  # exact copy (rate 0) → merged without the judge
+            "account_name": [{"A0": "Cash", "A1": "Receivable", "A2": "Payable"}[a] for a in acct],
+        }
+        tid = seed_view(real_session, duck, "facts", cols)
+
+        class _Flip:
+            def __init__(self) -> None:
+                self.n = 0
+
+            def alias_identity(self, *, candidates: list[dict]):  # noqa: ANN202
+                from dataraum.analysis.hierarchies.judge import AliasIdentityVerdict
+                from dataraum.core.models.base import Result
+
+                self.n += 1
+                same = self.n == 1  # merge on delivery 1, decline on delivery 2
+                return Result.ok(
+                    [
+                        AliasIdentityVerdict(
+                            pair_ref=c["ref"],
+                            confidence=0.95 if same else 0.03,
+                            reason="flip",
+                        )
+                        for c in candidates
+                    ]
+                )
+
+        judge = _Flip()
+        for _ in range(2):  # same run_id — a success-redelivery
+            discover_dimension_hierarchies(
+                real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=judge
+            )
+            real_session.commit()
+
+        # After the flip, NO auto-collapsing (needs_confirmation=False) alias may
+        # still carry account_name — that stale row is the corruption.
+        confirmed = [r for r in _rows(real_session, tid, "alias") if r.needs_confirmation is False]
+        assert all("account_name" not in _members(r) for r in confirmed)
+
+
 class TestDiscoverDimensionHierarchies:
     def test_drilldown_chain_coarsest_to_finest_by_level(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_sales(real_session, duck)
-        assert (
-            discover_dimension_hierarchies(
-                real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
-            )
-            > 0
+        n = discover_dimension_hierarchies(
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
         )
+        assert n > 0
         drills = _rows(real_session, tid, "drilldown")
         assert len(drills) == 1
         row = drills[0]
@@ -93,7 +262,9 @@ class TestDiscoverDimensionHierarchies:
         level}, and ``level`` (0 = coarsest) is the authoritative order, not array
         position."""
         tid = seed_sales(real_session, duck)
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         row = _rows(real_session, tid, "drilldown")[0]
         for member in row.members:
             assert set(member) == {"column_name", "column_id", "distinct_count", "level"}
@@ -106,7 +277,9 @@ class TestDiscoverDimensionHierarchies:
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_sales(real_session, duck)
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         aliases = {tuple(_members(r)): r for r in _rows(real_session, tid, "alias")}
         assert ("zip", "zip_code") in aliases
         assert ("state", "state_name") in aliases
@@ -118,7 +291,9 @@ class TestDiscoverDimensionHierarchies:
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_sales(real_session, duck)
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         all_members = {
             m
             for r in _rows(real_session, tid, "drilldown") + _rows(real_session, tid, "alias")
@@ -134,7 +309,9 @@ class TestDiscoverDimensionHierarchies:
     ) -> None:
         # Below MIN_SUPPORT_ROWS (100): the chain is found but flagged, not asserted.
         tid = seed_sales(real_session, duck, rows_per_zip=2)  # 12 rows
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         drills = _rows(real_session, tid, "drilldown")
         assert drills and all(r.needs_confirmation for r in drills)
 
@@ -144,11 +321,11 @@ class TestDiscoverDimensionHierarchies:
         """Success-redelivery (same run_id) converges by upsert on (signature, run_id)."""
         tid = seed_sales(real_session, duck)
         first = discover_dimension_hierarchies(
-            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
         )
         real_session.commit()
         second = discover_dimension_hierarchies(
-            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
         )
         real_session.commit()
         assert first == second
@@ -162,12 +339,10 @@ class TestDiscoverDimensionHierarchies:
         tid = seed_sales(real_session, duck)
         real_session.execute(EnrichedView.__table__.update().values(is_grain_verified=False))
         real_session.flush()
-        assert (
-            discover_dimension_hierarchies(
-                real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN
-            )
-            == 0
+        n = discover_dimension_hierarchies(
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
         )
+        assert n == 0
 
 
 class TestStackV4:
@@ -191,7 +366,9 @@ class TestStackV4:
         tid = seed_view(
             real_session, duck, "skewed", {"det": det, "vacuous": vacuous, "flag": flag}
         )
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         chains = [_members(r) for r in _rows(real_session, tid, "drilldown")]
         # Stored coarse → fine: ``flag`` (2 distinct, coarsest) determines nothing
         # finer than ``det`` (50 distinct) — det → flag reversed for storage.
@@ -208,7 +385,9 @@ class TestStackV4:
             f"s{((i % 40) // 5 + 1) % 8}" if i % 500 == 0 else f"s{(i % 40) // 5}" for i in range(n)
         ]
         tid = seed_view(real_session, duck, "dirty_geo", {"city": city, "state": state})
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         drills = _rows(real_session, tid, "drilldown")
         # Coarse → fine: state (coarser) before city (finer).
         assert [_members(r) for r in drills] == [["state", "city"]]
@@ -238,7 +417,9 @@ class TestStackV4:
             "orders",
             {"soldto": soldto, "billto": billto, "channel": channel},
         )
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         roles = _rows(real_session, tid, "role")
         assert [_members(r) for r in roles] == [["billto", "soldto"]]
         assert roles[0].needs_confirmation is False
@@ -266,7 +447,9 @@ class TestStackV4:
         city = [f"c{i % 40}" for i in range(n)]
         state = [None if i % 10 == 0 else f"s{(i % 40) // 5}" for i in range(n)]
         tid = seed_view(real_session, duck, "null_geo", {"city": city, "state": state})
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         drills = _rows(real_session, tid, "drilldown")
         assert [_members(r) for r in drills] == [["state", "city"]]  # coarse → fine
 
@@ -282,7 +465,9 @@ class TestStackV4:
         # covering every city, so only SUPPORT is thin — not the FD structure.
         state = [f"s{(i % 20) // 5}" if (i // 20) % 5 == 0 else None for i in range(n)]
         tid = seed_view(real_session, duck, "sparse_geo", {"city": city, "state": state})
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         drills = _rows(real_session, tid, "drilldown")
         assert [_members(r) for r in drills] == [["state", "city"]]  # coarse → fine
         assert drills[0].needs_confirmation is True
@@ -302,7 +487,9 @@ class TestStackV4:
         tid = seed_view(
             real_session, duck, "customers", {"fn": fn, "active": list(fn), "city": city}
         )
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         aliases = [_members(r) for r in _rows(real_session, tid, "alias")]
         assert ["active", "fn"] in aliases
 
@@ -330,7 +517,9 @@ class TestStackV4:
             )
         )
         real_session.flush()
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         all_members = {
             m
             for kind in ("drilldown", "alias", "role")
@@ -355,7 +544,9 @@ class TestStackV4:
             {"state": state, "mystery": list(state)},
             register={"state"},
         )
-        discover_dimension_hierarchies(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+        discover_dimension_hierarchies(
+        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
         aliases = _rows(real_session, tid, "alias")
         assert [_members(r) for r in aliases] == [["mystery", "state"]]
         by_name = {m["column_name"]: m["column_id"] for m in aliases[0].members}

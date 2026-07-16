@@ -40,19 +40,21 @@ if TYPE_CHECKING:
 
 
 def _dpo_graph(*, with_period_param: bool = True) -> TransformationGraph:
-    """A dpo-shaped graph: a balance-sheet stock, an income-statement flow, a
-    period constant and the ratio × days formula."""
+    """A ratio-of-days-shaped graph: a stock operand, a flow operand, a period
+    constant and the ``(stock / flow) × days`` formula. Deliberately vertical-neutral
+    — nothing declares a finance ``statement`` (the resolver identifies the flow by the
+    resolved ``materialization`` verdict, never a statement field)."""
     steps = {
         "accounts_payable": GraphStep(
             step_id="accounts_payable",
             step_type=StepType.EXTRACT,
-            source=StepSource(standard_field="accounts_payable", statement="balance_sheet"),
+            source=StepSource(standard_field="accounts_payable"),
             aggregation="sum",
         ),
         "cost_of_goods_sold": GraphStep(
             step_id="cost_of_goods_sold",
             step_type=StepType.EXTRACT,
-            source=StepSource(standard_field="cost_of_goods_sold", statement="income_statement"),
+            source=StepSource(standard_field="cost_of_goods_sold"),
             aggregation="sum",
         ),
         "days_in_period": GraphStep(
@@ -108,13 +110,15 @@ def test_default_days_reads_the_declared_default() -> None:
 
 
 def test_fallback_keeps_the_default_but_flags_it_loudly() -> None:
-    resolution = _fallback(30.0, "no income-statement flow extract to observe a period from")
+    resolution = _fallback(
+        30.0, "no flow operand to observe a period from (no measure resolved to 'flow')"
+    )
     assert resolution.days == 30.0
     assert resolution.derived is False
     assert resolution.flag is not None
     # The flag names the config default AND why it fell back — never a silent 30.
     assert "config default 30" in resolution.flag
-    assert "no income-statement flow extract" in resolution.flag
+    assert "no flow operand" in resolution.flag
 
 
 def test_derived_resolution_carries_no_flag() -> None:

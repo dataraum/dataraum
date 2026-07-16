@@ -1,30 +1,32 @@
 """Derive a metric's ``days_in_period`` from the flow's observed data window (DAT-785).
 
-The working-capital metrics (dpo/dso/dio/ccc) turn a stock/flow ratio into days by
-multiplying it by ``days_in_period``: ``DPO = (AP / COGS) × days_in_period``. The
-period is therefore **the window the FLOW is measured over** — ``COGS /
-days_in_period`` is the daily purchase rate, and ``AP / daily_rate`` is the days of
-purchases outstanding. So ``days_in_period`` must equal the number of days the flow
-(COGS, revenue) was accumulated across, not a config constant.
+Some metrics turn a stock/flow ratio into a number of days by multiplying it by
+``days_in_period``: ``(stock / flow) × days_in_period``. ``flow / days_in_period`` is
+the flow's per-day rate, and ``stock / daily_rate`` is how many days of that flow the
+stock represents. So ``days_in_period`` must equal the number of days the flow was
+accumulated across — the window the FLOW is measured over — not a config constant.
 
-**The flow is the income-statement side.** Income-statement items (revenue, COGS)
-are flows by accounting definition — accumulated over a period; balance-sheet items
-(AR, AP, inventory) are stocks — point-in-time. The flow extract identifies itself
-structurally on the graph: ``source.statement == "income_statement"``. (Generalising
-flow identification to the data-grounded ``materialization`` verdict is P7's job;
-this ticket is P7's first concrete instance, not its node model.)
+**The flow is the measure whose resolved stock/flow verdict is ``flow``.** A flow is
+accumulated over a period (its value sums movements across a window); a stock is
+point-in-time (a level at an instant, with no accumulation window). Which is which is
+read from the authoritative, vertical-neutral ``og_columns.materialization`` verdict
+(``flow`` | ``stock``) — built in the read surface as the COALESCE of the
+aggregation-lineage witness posterior over the concept prior, normalized to
+flow/stock. Every EXTRACT operand is a candidate; the ones whose measure resolves to
+``flow`` carry the window, and a ``stock`` (or any non-``flow`` measure) is excluded —
+point-in-time, it contributes no window. Nothing here reads a domain-specific field:
+flow-vs-stock IS the ratio's structure, so the resolved verdict is the exact signal.
 
-**The window is the flow's OWN filtered rows, measured live.** COGS/revenue are
-grounded by filtering the fact on a discriminator (``SUM(amount) WHERE account_type
-IN ('COGS')``) — the common shape, not an edge case (the flow blueprint in
-``graph_sql_generation.yaml`` filters the fact by a discriminator). So the window
-cannot be read off the precomputed ``current_temporal_column_profiles.span_days``:
-that is a WHOLE-COLUMN MIN/MAX over every row, whereas the SUM scans only the
-filtered rows. Instead the resolver runs a live ``MIN/MAX/COUNT(DISTINCT period)``
-over the flow's anchor axis **filtered by the exact same WHERE predicate the SUM
-applies** (:func:`~dataraum.graphs.formula_composer.compose_where_predicate` is the
-single source of that filter), against the SAME grounded relation in DuckDB the SUM
-runs on. The window is therefore the flow's own filtered span, by construction.
+**The window is the flow's OWN filtered rows, measured live.** A flow is commonly
+grounded by filtering the fact on a discriminator (``SUM(amount) WHERE …``) — the
+common shape, not an edge case (the flow blueprint in ``graph_sql_generation.yaml``
+filters the fact by a discriminator). So the window cannot be read off the precomputed
+``current_temporal_column_profiles.span_days``: that is a WHOLE-COLUMN MIN/MAX over
+every row, whereas the SUM scans only the filtered rows. Instead the resolver runs a
+live ``MIN/MAX/COUNT(DISTINCT period)`` over the flow's anchor axis **filtered by the
+exact same WHERE predicate the SUM applies** (:func:`~dataraum.graphs.formula_composer.compose_where_predicate`
+is the single source of that filter), against the SAME grounded relation in DuckDB the
+SUM runs on. The window is therefore the flow's own filtered span, by construction.
 
 **Fencepost correction.** ``span = max − min`` measures first-datapoint-to-last, so
 it spans ``actual_periods − 1`` inter-period gaps and undercounts the true window by
@@ -43,12 +45,12 @@ cadence come from the Postgres read surface; the span itself is measured live in
 DuckDB over the filtered rows.
 
 **Fall loud (K6 — absence must never resolve to a plausible default).** When no flow
-window can be *observed* — the flow never grounded, its anchor axis is NULL (the
-DAT-801 header-date facts serve NULL), it has no temporal profile, its cadence is
-irregular/unknown, its filtered window is empty or a single period, or two flows
-disagree on a window — the config default survives ONLY as a declared fallback that
-is flagged in the answer (a verification flag on the executed artifact), never a
-silent 30.
+window can be *observed* — no operand resolves to a ``flow`` materialization, the flow
+never grounded, its anchor axis is NULL (the DAT-801 header-date facts serve NULL), it
+has no temporal profile, its cadence is irregular/unknown, its filtered window is empty
+or a single period, or two flows disagree on a window — the config default survives
+ONLY as a declared fallback that is flagged in the answer (a verification flag on the
+executed artifact), never a silent 30.
 
 The read surface (``og_columns`` + ``current_temporal_column_profiles``) is
 Postgres-only by construction (the SQLite test substrate has no read schema —
@@ -82,7 +84,11 @@ if TYPE_CHECKING:
 _log = get_logger(__name__)
 
 _PARAMETER = "days_in_period"
-_INCOME_STATEMENT = "income_statement"
+# The resolved stock/flow verdict that carries the accumulation window. Read from
+# ``og_columns.materialization`` — the ONE vertical-neutral flow/stock signal (a
+# COALESCE of the aggregation-lineage witness posterior over the concept prior); the
+# non-``flow`` measures (stocks, point-in-time levels) are excluded.
+_FLOW = "flow"
 
 # The detected-granularity labels that are valid DuckDB ``date_trunc`` period parts —
 # exactly the config granularity definitions (config/phases/temporal.yaml). The two
@@ -126,6 +132,23 @@ class _AxisWindow:
     actual_periods: int
 
 
+@dataclass(frozen=True)
+class _MeasureAxis:
+    """One measure column's resolved flow/stock verdict and its anchor axis + cadence.
+
+    ``materialization`` is the vertical-neutral ``og_columns`` verdict (``flow`` |
+    ``stock`` | ``None``) that decides whether this measure carries an accumulation
+    window. ``axis`` / ``grain`` are the anchor time axis and its detected cadence —
+    both ``None`` when the measure has no declared anchor (DAT-801) or the axis was
+    never temporally profiled, in which case a ``flow`` measure falls loud (its window
+    can't be observed) while a non-``flow`` measure is simply excluded.
+    """
+
+    materialization: str | None
+    axis: str | None
+    grain: str | None
+
+
 def resolve_days_in_period(
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -162,28 +185,29 @@ def resolve_days_in_period(
         _log.debug("period_no_read_surface", graph_id=graph.graph_id, dialect=dialect)
         return None
 
-    # Every income-statement EXTRACT is treated as a flow feeding the days_in_period
-    # window. Holds for the working-capital graphs that use the parameter (dpo/dso/dio/
-    # ccc — each income-statement extract IS a ratio operand): a graph that added an
-    # income-statement extract unrelated to the ratio would fold into reconciliation,
-    # so a future non-working-capital use of the parameter should scope this to the
-    # CONSTANT's dependency cone.
-    flow_steps = [
+    # Candidate operands: every grounded EXTRACT. Which of them is a FLOW — the one
+    # carrying the accumulation window — is decided PER MEASURE by its resolved
+    # ``og_columns.materialization == 'flow'`` verdict (read live in _observe_flow_step),
+    # never by a vertical convention; a stock (or any non-'flow' measure) is excluded,
+    # point-in-time with no window. Holds for the working-capital graphs that use the
+    # parameter (dpo/dso/dio/ccc — each flow extract IS a ratio operand): a graph that
+    # added a flow extract unrelated to the ratio would fold into reconciliation, so a
+    # future non-ratio use of the parameter should scope this to the CONSTANT's
+    # dependency cone.
+    extract_steps = [
         step
         for step in graph.steps.values()
-        if step.step_type == StepType.EXTRACT
-        and step.source is not None
-        and step.source.statement == _INCOME_STATEMENT
+        if step.step_type == StepType.EXTRACT and step.source is not None
     ]
-    if not flow_steps:
-        return _fallback(default, "no income-statement flow extract to observe a period from")
+    if not extract_steps:
+        return _fallback(default, "no extract operand to observe a period from")
 
     library = SnippetLibrary(session, workspace_id=workspace_id)
     read_schema = read_schema_name_for(schema_name_for(workspace_id))
     try:
         with session.begin_nested():
             return _derive_period(
-                session, duckdb_conn, library, read_schema, flow_steps, workspace_id, default
+                session, duckdb_conn, library, read_schema, extract_steps, workspace_id, default
             )
     except Exception as exc:  # noqa: BLE001 - degrade-to-flagged-default IS the contract
         # ANY failure inside the savepoint (missing read surface, malformed snippet,
@@ -201,27 +225,34 @@ def _derive_period(
     duckdb_conn: duckdb.DuckDBPyConnection,
     library: SnippetLibrary,
     read_schema: str,
-    flow_steps: list[GraphStep],
+    extract_steps: list[GraphStep],
     workspace_id: str,
     default: float,
 ) -> PeriodResolution:
     """Observe every flow measure's window and reconcile them to one derived period.
 
-    ccc feeds ONE shared days_in_period into dso+dio−dpo, so revenue and COGS (which
-    usually share the income-statement fact but can carry different per-measure
-    anchor axes, hence different windows) must ALL agree on one window — every
-    observation is collected flat and reconciled, never keyed by fact (which would
-    silently let the later flow's window overwrite the earlier's).
+    Each extract operand is classified live by its measure's ``materialization``: a
+    ``flow`` yields ≥1 window, a stock yields none (excluded). ccc feeds ONE shared
+    days_in_period into dso+dio−dpo, so its two flows (which usually share one fact
+    but can carry different per-measure anchor axes, hence different windows) must ALL
+    agree on one window — every observation is collected flat and reconciled, never
+    keyed by fact (which would silently let the later flow's window overwrite the
+    earlier's). A metric with NO flow operand at all falls loud, never a silent 30.
     """
     observations: list[_AxisWindow] = []
-    for step in flow_steps:
+    flow_extracts = 0
+    for step in extract_steps:
         outcome = _observe_flow_step(session, duckdb_conn, library, read_schema, step, workspace_id)
         if isinstance(outcome, str):
             return _fallback(default, outcome)
-        observations.extend(outcome)
-    if not observations:  # pragma: no cover - a non-empty flow always yields ≥1 window
-        return _fallback(default, "no flow window could be observed")
-    return _reconcile(observations, default, len(flow_steps))
+        if outcome:  # non-empty ⇒ this extract's measure resolved to 'flow'; a stock ⇒ []
+            flow_extracts += 1
+            observations.extend(outcome)
+    if not observations:
+        return _fallback(
+            default, "no flow operand to observe a period from (no measure resolved to 'flow')"
+        )
+    return _reconcile(observations, default, flow_extracts)
 
 
 def _observe_flow_step(
@@ -232,39 +263,54 @@ def _observe_flow_step(
     step: GraphStep,
     workspace_id: str,
 ) -> list[_AxisWindow] | str:
-    """Every anchor-axis window a single flow extract yields, or a fall-loud reason.
+    """Every anchor-axis window a single extract yields, or a fall-loud reason.
 
     Recovers the extract's grounded ``(select_expr, relation, where)``, resolves the
-    fact and its measure columns, reads each measure's anchor axis + cadence, and
-    measures the live filtered window per axis. A string is a fall-loud reason (the
-    flow did not ground / is outside the analysis / has no observable window).
+    fact and its measure columns, and reads each measure's resolved ``materialization``
+    verdict + anchor axis + cadence. Returns:
+
+    - the flow measures' live filtered windows (``≥1``) when this extract is a flow;
+    - an EMPTY list when no measure resolved to ``flow`` — a stock (or unclassified)
+      operand, excluded from the flow set (it contributes no window and is not itself a
+      fall-loud reason);
+    - a fall-loud reason string when the extract did not ground / is outside the
+      analysis / its expr didn't parse, or when a ``flow`` measure has no observable
+      window (null anchor axis, no temporal profile, no clean cadence, empty or
+      single-period filtered window).
     """
     field_name = step.source.standard_field if step.source else "?"
     resolved = grounded_select(library, workspace_id, step)
     if resolved is None:
-        return f"flow '{field_name}' did not ground"
+        return f"extract '{field_name}' did not ground"
     select_expr, relation, where = resolved
     fact_id = fact_table_id(session, relation)
     if fact_id is None:
-        return f"flow relation {relation!r} is outside the analysis"
+        return f"extract relation {relation!r} is outside the analysis"
     try:
         measure_cols = {
             col for call in parse_aggregate_calls(select_expr, duckdb_conn) for col in call.columns
         }
     except ValueError:
-        return f"flow select_expr for {relation!r} did not parse"
+        return f"extract select_expr for {relation!r} did not parse"
     if not measure_cols:
-        return f"flow on {relation!r} aggregates no column to anchor on"
-    axis_grains = _observe_axis_grains(session, read_schema, fact_id, measure_cols)
-    if not axis_grains:
-        return (
-            f"flow '{field_name}' has no observable anchor-axis span "
-            f"(null anchor time axis or no temporal profile)"
-        )
+        return f"extract on {relation!r} aggregates no column to anchor on"
+    measures = _read_measure_axes(session, read_schema, fact_id, measure_cols)
+    flows = [m for m in measures if m.materialization == _FLOW]
+    if not flows:
+        # No measure here resolves to a 'flow' verdict — a stock (point-in-time, no
+        # accumulation window) or an unclassified measure. Excluded from the flow set:
+        # it contributes no window, and its absence is NOT a fall-loud reason (a metric
+        # with no flow operand AT ALL falls loud once, in _derive_period).
+        return []
     where_clause = compose_where_predicate(where)
     windows: list[_AxisWindow] = []
-    for axis, grain in axis_grains:
-        window = _observe_window(duckdb_conn, relation, axis, grain, where_clause)
+    for measure in flows:
+        if measure.axis is None or measure.grain is None:
+            return (
+                f"flow '{field_name}' has no observable anchor-axis span "
+                f"(null anchor time axis or no temporal profile)"
+            )
+        window = _observe_window(duckdb_conn, relation, measure.axis, measure.grain, where_clause)
         if isinstance(window, str):
             return f"flow '{field_name}': {window}"
         windows.append(window)
@@ -381,47 +427,61 @@ def _fallback(default: float, reason: str) -> PeriodResolution:
     )
 
 
-def _observe_axis_grains(
+def _read_measure_axes(
     session: Session,
     read_schema: str,
     fact_table_id_: str,
     measure_cols: set[str],
-) -> list[tuple[str, str]]:
-    """Observed ``(anchor_axis, detected_granularity)`` per flow measure column.
+) -> list[_MeasureAxis]:
+    """Resolved ``(materialization, anchor_axis, detected_granularity)`` per measure column.
 
-    Reads the DAT-780 anchor from ``og_columns.anchor_time_axis`` for each of the
-    flow's measure column(s), self-joins to that axis column's own vertex to recover
-    its ``column_id``, and joins the head-resolved ``current_temporal_column_profiles``
-    for the axis's ``detected_granularity`` — the period bucket the live window query
-    counts distinct periods by. Returns one row per measure column whose anchor axis
-    resolves to a temporal profile — EMPTY when the measure columns are absent, their
-    anchor axis is NULL (a header-date fact, DAT-801), or the axis has no temporal
-    profile. An empty result falls loud, never a plausible default.
+    Reads each of the extract's measure column(s) from ``og_columns``: its resolved
+    ``materialization`` (the vertical-neutral flow/stock verdict — flow measures carry
+    the accumulation window, stocks are point-in-time), its DAT-780 anchor axis
+    (``anchor_time_axis``), and — via a LEFT self-join to that axis column's own vertex
+    and the head-resolved ``current_temporal_column_profiles`` — the axis's
+    ``detected_granularity`` (the period bucket the live window query counts distinct
+    periods by).
+
+    The joins are LEFT so a flow whose anchor axis is NULL (a header-date fact,
+    DAT-801) or whose axis was never temporally profiled STILL returns its
+    ``materialization`` row (``axis``/``grain`` ``None``): the caller falls loud on an
+    unobservable FLOW while excluding a stock, a distinction an inner join would erase.
+    An EMPTY result (the measure columns are absent from the read surface) surfaces no
+    ``flow`` verdict, so the extract is excluded like any non-flow; the metric then
+    falls loud only if NO extract in the graph yields a flow window
+    (:func:`_derive_period`), never a silent default.
 
     The span itself is deliberately NOT read here: ``span_days`` is a whole-column
     MIN/MAX, but the executed flow SUM is WHERE-filtered, so the window must be
-    measured live over the filtered rows (:func:`_observe_window`). Only the axis
-    identity and its cadence come from the read surface.
+    measured live over the filtered rows (:func:`_observe_window`). Only the flow/stock
+    verdict, the axis identity, and its cadence come from the read surface.
 
     Runs inside the caller's SAVEPOINT (:func:`resolve_days_in_period`), so a read
     failure rolls back the nested transaction and degrades to the flagged default.
     """
     stmt = text(
         # DISTINCT: several measure columns can share one anchor axis (a SUM(a)+SUM(b)
-        # extract), but the window is per (axis, cadence) — collapse duplicates so the
-        # identical live window query isn't re-run once per measure column.
-        f"SELECT DISTINCT m.anchor_time_axis, tp.detected_granularity "  # noqa: S608 - read_schema is an internal identifier
+        # extract), but the window is per (materialization, axis, cadence) — collapse
+        # duplicates so the identical live window query isn't re-run once per column.
+        f"SELECT DISTINCT m.materialization, m.anchor_time_axis, tp.detected_granularity "  # noqa: S608 - read_schema is an internal identifier
         f'FROM "{read_schema}".og_columns m '
-        f'JOIN "{read_schema}".og_columns ax '
+        f'LEFT JOIN "{read_schema}".og_columns ax '
         f"  ON ax.table_id = m.table_id AND ax.column_name = m.anchor_time_axis "
-        f'JOIN "{read_schema}".current_temporal_column_profiles tp '
+        f'LEFT JOIN "{read_schema}".current_temporal_column_profiles tp '
         f"  ON tp.column_id = ax.column_id "
         f"WHERE m.table_id = :fact_id "
         f"  AND m.column_name IN :measure_cols "
-        f"  AND m.anchor_time_axis IS NOT NULL "
-        f"ORDER BY m.anchor_time_axis, tp.detected_granularity"  # deterministic for the log evidence
+        f"ORDER BY m.materialization, m.anchor_time_axis, tp.detected_granularity"  # deterministic evidence
     ).bindparams(bindparam("measure_cols", expanding=True))
     rows = session.execute(
         stmt, {"fact_id": fact_table_id_, "measure_cols": sorted(measure_cols)}
     ).all()
-    return [(str(axis), str(grain)) for axis, grain in rows]
+    return [
+        _MeasureAxis(
+            materialization=str(mat) if mat is not None else None,
+            axis=str(axis) if axis is not None else None,
+            grain=str(grain) if grain is not None else None,
+        )
+        for mat, axis, grain in rows
+    ]

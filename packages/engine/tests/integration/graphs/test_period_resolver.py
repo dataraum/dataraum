@@ -1,17 +1,22 @@
 """``days_in_period`` derivation against a real read surface + DuckDB (DAT-785).
 
-Exercises the plumbing the unit guards can't reach: the flow snippet lookup, the
-relation → fact resolution, the axis/cadence read off the Postgres property graph
-(``og_columns.anchor_time_axis``, DAT-780; ``current_temporal_column_profiles``,
+Exercises the plumbing the unit guards can't reach: the extract snippet lookup, the
+relation → fact resolution, the flow/stock + axis/cadence read off the Postgres
+property graph (``og_columns.materialization`` — the vertical-neutral flow verdict;
+``og_columns.anchor_time_axis``, DAT-780; ``current_temporal_column_profiles``,
 DAT-783), and — the core of the fix — the LIVE window query in DuckDB over the
 flow's grounded relation, filtered by the exact WHERE predicate the flow SUM applies.
 
-The load-bearing case is ``test_where_filtered_window_ignores_the_unfiltered_span``:
-it proves the derived window is measured over the FILTERED rows, not the whole-column
-``span_days`` the old code read — the reviewer's Critical. The rest pin the happy
-path (a quarterly flow yields its fencepost-corrected window, NOT the config 30), the
-fencepost, and the fall-loud contract (K6): every way the window can't be observed
-keeps the config default but flags it, never a silent 30.
+The load-bearing cases: ``test_where_filtered_window_ignores_the_unfiltered_span``
+proves the derived window is measured over the FILTERED rows, not the whole-column
+``span_days`` the old code read (the reviewer's Critical); and
+``test_derives_flow_window_on_a_non_finance_shape_with_no_statement`` proves the flow
+is identified by its resolved ``materialization='flow'`` verdict with NO ``statement``
+field — the vertical-neutrality guard the PR-#503 revert demanded. The rest pin the
+happy path (a quarterly flow yields its fencepost-corrected window, NOT the config
+30), the fencepost, and the fall-loud contract (K6): every way the window can't be
+observed — including a stock-only metric with no flow operand — keeps the config
+default but flags it, never a silent 30.
 
 Seeds one controlled, fully-promoted workspace (no pipeline, no LLM): Postgres for
 the read surface (materialized read views + property graph, as the engine bootstrap
@@ -28,7 +33,7 @@ import pytest
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from dataraum.analysis.semantic.db_models import TableEntity
+from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.graphs.models import (
     GraphMetadata,
@@ -92,16 +97,21 @@ def _seed(
     cogs_from: str = "income_stmt",
     cogs_expr: str = "SUM(cogs)",
     cogs_where: list[str] | None = None,
+    cogs_temporal_behavior: str | None = "additive",
 ) -> str:
-    """Seed the Postgres read surface for an income-statement COGS flow.
+    """Seed the Postgres read surface for a COGS flow.
 
     ``ground_flow`` false leaves the flow extract without a snippet (ungrounded);
     ``declare_anchor`` false leaves the fact with no anchor time axis (the DAT-801
     null-anchor shape); ``profile_axis`` false leaves the axis column without a
-    temporal profile; ``with_revenue`` adds a second income-statement flow (dso's
-    revenue) on the same fact/axis. ``cogs_from`` / ``cogs_expr`` / ``cogs_where``
-    override the grounded snippet's parts (a ghost relation, a column-less aggregate,
-    a malformed expr, or a WHERE predicate). Returns the fact ``table_id``.
+    temporal profile; ``with_revenue`` adds a second flow (dso's revenue) on the same
+    fact/axis. ``cogs_from`` / ``cogs_expr`` / ``cogs_where`` override the grounded
+    snippet's parts (a ghost relation, a column-less aggregate, a malformed expr, or a
+    WHERE predicate). ``cogs_temporal_behavior`` seeds the measure column's
+    ``ColumnConcept`` so ``og_columns.materialization`` resolves — ``'additive'`` ⇒
+    ``flow`` (the derivation's signal), ``'point_in_time'`` ⇒ ``stock`` (excluded),
+    ``None`` leaves it unclassified (materialization NULL). Returns the fact
+    ``table_id``.
     """
     fact = Table(
         table_id="t_is",
@@ -122,6 +132,9 @@ def _seed(
         session.query(Column)
         .filter(Column.table_id == "t_is", Column.column_name == "posting_date")
         .one()
+    )
+    cogs_col = (
+        session.query(Column).filter(Column.table_id == "t_is", Column.column_name == "cogs").one()
     )
     # Promote the fact's generation head (current_columns + column-grain temporal
     # profiles) and the catalog head (current_table_entities).
@@ -181,6 +194,17 @@ def _seed(
                 gaps=[],
             )
         )
+    if cogs_temporal_behavior is not None:
+        # Catalogue-grain ColumnConcept (resolves under h_cat) → og_columns.materialization:
+        # 'additive' ⇒ 'flow' (the derivation's signal), 'point_in_time' ⇒ 'stock' (excluded).
+        session.add(
+            ColumnConcept(
+                column_id=cogs_col.column_id,
+                run_id=RUN,
+                temporal_behavior=cogs_temporal_behavior,
+                annotation_source="llm",
+            )
+        )
     if ground_flow:
         session.add(
             SQLSnippetRecord(
@@ -200,9 +224,24 @@ def _seed(
             )
         )
     if with_revenue:
-        # A second income-statement flow (dso's revenue) on the SAME fact, anchored
-        # to the SAME axis → the two ccc flows observe one window and agree.
+        # A second flow (dso's revenue) on the SAME fact, anchored to the SAME axis →
+        # the two ccc flows observe one window and agree. Its measure carries the same
+        # 'flow' materialization so the resolver identifies it as a flow.
         session.add(Column(table_id="t_is", column_name="revenue_amt", column_position=3))
+        session.flush()
+        revenue_col = (
+            session.query(Column)
+            .filter(Column.table_id == "t_is", Column.column_name == "revenue_amt")
+            .one()
+        )
+        session.add(
+            ColumnConcept(
+                column_id=revenue_col.column_id,
+                run_id=RUN,
+                temporal_behavior="additive",
+                annotation_source="llm",
+            )
+        )
         session.add(
             SQLSnippetRecord(
                 workspace_id=WS_ID,
@@ -253,6 +292,21 @@ def _seed_revenue_on_second_fact(session: Session) -> None:
         session.query(Column)
         .filter(Column.table_id == "t_is2", Column.column_name == "rev_date")
         .one()
+    )
+    rev_amt_col = (
+        session.query(Column)
+        .filter(Column.table_id == "t_is2", Column.column_name == "revenue_amt")
+        .one()
+    )
+    # revenue's measure resolves to a 'flow' materialization (its ColumnConcept
+    # resolves under h_cat, seeded by the _seed() call this pairs with).
+    session.add(
+        ColumnConcept(
+            column_id=rev_amt_col.column_id,
+            run_id=RUN,
+            temporal_behavior="additive",
+            annotation_source="llm",
+        )
     )
     session.add(
         TableEntity(
@@ -305,6 +359,118 @@ def _seed_revenue_on_second_fact(session: Session) -> None:
         )
     )
     session.commit()
+
+
+def _seed_non_finance(session: Session) -> str:
+    """Seed a NON-FINANCE flow: units shipped per quarter, no ``statement`` anywhere.
+
+    The vertical-neutrality regression guard's read surface — a manufacturing-shaped
+    fact whose flow measure is identified PURELY by its resolved
+    ``materialization='flow'`` verdict (a ColumnConcept ``temporal_behavior='additive'``),
+    with no ``statement`` on the snippet or the graph. Returns the fact ``table_id``.
+    """
+    session.add(
+        Table(
+            table_id="t_ship",
+            source_id=SRC,
+            table_name="shipments",
+            layer="typed",
+            duckdb_path="shipments",
+        )
+    )
+    session.add_all(
+        [
+            Column(table_id="t_ship", column_name="units", column_position=1),
+            Column(table_id="t_ship", column_name="ship_date", column_position=2),
+        ]
+    )
+    session.flush()
+    ship_date_col = (
+        session.query(Column)
+        .filter(Column.table_id == "t_ship", Column.column_name == "ship_date")
+        .one()
+    )
+    units_col = (
+        session.query(Column)
+        .filter(Column.table_id == "t_ship", Column.column_name == "units")
+        .one()
+    )
+    session.add_all(
+        [
+            MetadataSnapshotHead(
+                head_id="h_t_ship",
+                target="table:t_ship",
+                stage="generation",
+                run_id=RUN,
+                promoted_at=TS,
+            ),
+            MetadataSnapshotHead(
+                head_id="h_cat", target="catalog", stage="catalog", run_id=RUN, promoted_at=TS
+            ),
+        ]
+    )
+    session.add(
+        TableEntity(
+            table_id="t_ship",
+            run_id=RUN,
+            detected_entity_type="entity",
+            table_role="fact",
+            time_columns=[
+                {
+                    "column": "ship_date",
+                    "aspect": "shipment",
+                    "role": "event",
+                    "is_anchor": True,
+                    "note": "",
+                }
+            ],
+            detected_at=TS,
+        )
+    )
+    session.add(
+        TemporalColumnProfile(
+            profile_id="tp_ship",
+            column_id=ship_date_col.column_id,
+            run_id=RUN,
+            profiled_at=TS,
+            min_timestamp=MIN_TS,
+            max_timestamp=MAX_TS,
+            span_days=SPAN_DAYS,
+            detected_granularity="quarter",
+            granularity_confidence=0.9,
+            actual_periods=4,
+            gaps=[],
+        )
+    )
+    # The ONLY thing marking this measure as the flow: its resolved 'flow'
+    # materialization (additive ⇒ flow). No statement, no accounting convention.
+    session.add(
+        ColumnConcept(
+            column_id=units_col.column_id,
+            run_id=RUN,
+            temporal_behavior="additive",
+            annotation_source="llm",
+        )
+    )
+    session.add(
+        SQLSnippetRecord(
+            workspace_id=WS_ID,
+            schema_mapping_id=WS_ID,
+            snippet_type="extract",
+            standard_field="units_shipped",
+            statement=None,  # no statement — the flow is identified by materialization
+            aggregation="sum",
+            sql="SELECT SUM(units) AS value FROM shipments",
+            source="graph:throughput_days",
+            parts={
+                "select": [{"expr": "SUM(units)", "alias": "value"}],
+                "from": ["shipments"],
+                "where": [],
+            },
+        )
+    )
+    session.commit()
+    return "t_ship"
 
 
 # --- DuckDB relation seeding (the flow SUM's real relation) -------------------
@@ -368,11 +534,19 @@ def _create_income_stmt2(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("INSERT INTO income_stmt2 VALUES (?, ?)", [500.0 * (i + 1), dt])
 
 
-def _dpo_graph(*, flow_statement: str = "income_statement") -> TransformationGraph:
-    """A dpo-shaped graph with a period parameter and one flow extract.
+def _create_shipments(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create ``lake.typed.shipments`` with the 4 quarter-end unit-shipment rows."""
+    conn.execute("CREATE TABLE shipments (units DOUBLE, ship_date TIMESTAMP)")
+    for i, dt in enumerate(_Q_DATES):
+        conn.execute("INSERT INTO shipments VALUES (?, ?)", [10.0 * (i + 1), dt])
 
-    ``flow_statement`` lets a test flip the flow off the income statement to prove
-    the "no flow to observe" fall-loud path.
+
+def _dpo_graph() -> TransformationGraph:
+    """A dpo-shaped graph with a period parameter and one COGS extract.
+
+    Whether that extract is the FLOW is decided by its measure's resolved
+    ``materialization`` verdict (seeded via :func:`_seed`), not the ``statement`` field
+    — ``statement`` here is only the snippet-lookup key that grounds the extract.
     """
     return TransformationGraph(
         graph_id="dpo",
@@ -386,7 +560,9 @@ def _dpo_graph(*, flow_statement: str = "income_statement") -> TransformationGra
             "cost_of_goods_sold": GraphStep(
                 step_id="cost_of_goods_sold",
                 step_type=StepType.EXTRACT,
-                source=StepSource(standard_field="cost_of_goods_sold", statement=flow_statement),
+                source=StepSource(
+                    standard_field="cost_of_goods_sold", statement="income_statement"
+                ),
                 aggregation="sum",
             ),
             "days_in_period": GraphStep(
@@ -441,6 +617,45 @@ def _ccc_graph() -> TransformationGraph:
                 step_type=StepType.FORMULA,
                 expression="(revenue / cost_of_goods_sold) * days_in_period",
                 depends_on=["revenue", "cost_of_goods_sold", "days_in_period"],
+                output_step=True,
+            ),
+        },
+    )
+
+
+def _throughput_graph() -> TransformationGraph:
+    """A NON-FINANCE metric graph: one flow extract with NO ``statement`` field, a
+    period constant, and a formula scaling the flow by the derived window. The flow is
+    identified purely by its resolved ``materialization='flow'`` verdict — the
+    vertical-neutrality regression guard for the DAT-785 re-land."""
+    return TransformationGraph(
+        graph_id="throughput_days",
+        version="1",
+        metadata=GraphMetadata(
+            name="throughput_days",
+            description="",
+            category="operations",
+            source=GraphSource.SYSTEM,
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="throughput_days", unit="days"),
+        parameters=[ParameterDef(name="days_in_period", param_type="integer", default=30)],
+        steps={
+            "units_shipped": GraphStep(
+                step_id="units_shipped",
+                step_type=StepType.EXTRACT,
+                source=StepSource(standard_field="units_shipped"),  # NO statement field
+                aggregation="sum",
+            ),
+            "days_in_period": GraphStep(
+                step_id="days_in_period",
+                step_type=StepType.CONSTANT,
+                parameter="days_in_period",
+            ),
+            "throughput_days": GraphStep(
+                step_id="throughput_days",
+                step_type=StepType.FORMULA,
+                expression="units_shipped * days_in_period",
+                depends_on=["units_shipped", "days_in_period"],
                 output_step=True,
             ),
         },
@@ -506,25 +721,25 @@ def test_where_filtered_window_ignores_the_unfiltered_span(
     assert resolution.evidence["filtered_span_days"] == pytest.approx(SPAN_DAYS)
 
 
-def test_no_income_statement_flow_falls_loud(
+def test_no_flow_operand_falls_loud(
     integration_engine: Engine,
     pg_session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:
-    """A metric with a period parameter but no flow to observe keeps 30, flagged."""
-    _seed(pg_session)
+    """A metric whose only operand resolves to a STOCK materialization (point-in-time,
+    no accumulation window) has no flow to observe — keeps 30, flagged. The resolved
+    ``materialization`` verdict, not any statement field, decides flow vs stock: the
+    stock is excluded and the metric falls loud."""
+    _seed(pg_session, cogs_temporal_behavior="point_in_time")  # measure resolves to 'stock'
     _create_income_stmt(duckdb_conn)
     _boot(integration_engine)
     resolution = resolve_days_in_period(
-        pg_session,
-        duckdb_conn,
-        graph=_dpo_graph(flow_statement="balance_sheet"),
-        workspace_id=WS_ID,
+        pg_session, duckdb_conn, graph=_dpo_graph(), workspace_id=WS_ID
     )
     assert resolution is not None
     assert resolution.days == 30.0
     assert resolution.derived is False
-    assert "no income-statement flow extract" in (resolution.flag or "")
+    assert "no flow operand" in (resolution.flag or "")
 
 
 def test_ungrounded_flow_falls_loud(
@@ -752,3 +967,30 @@ def test_ccc_flows_disagreeing_on_window_fall_loud(
     assert resolution.days == 30.0
     assert resolution.derived is False
     assert "disagree on the period window" in (resolution.flag or "")
+
+
+def test_derives_flow_window_on_a_non_finance_shape_with_no_statement(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """VERTICAL-NEUTRALITY regression guard — the whole reason PR #503 was reverted.
+
+    A non-finance metric (units shipped per quarter) whose flow is identified PURELY
+    by its resolved ``materialization='flow'`` verdict, with NO ``statement`` field on
+    the graph OR the grounded snippet, derives its quarterly window (273 →
+    fencepost-corrected 364), NOT the config 30. Proves the derivation works with zero
+    finance convention — the defect that reverted PR #503 (identifying the flow via the
+    finance-only ``statement == 'income_statement'``) cannot recur."""
+    _seed_non_finance(pg_session)
+    _create_shipments(duckdb_conn)
+    _boot(integration_engine)
+    resolution = resolve_days_in_period(
+        pg_session, duckdb_conn, graph=_throughput_graph(), workspace_id=WS_ID
+    )
+    assert resolution is not None
+    assert resolution.derived is True
+    assert resolution.flag is None
+    assert resolution.days == pytest.approx(CORRECTED_DAYS)
+    assert resolution.days != 30
+    assert resolution.evidence["anchor_time_axis"] == ["ship_date"]

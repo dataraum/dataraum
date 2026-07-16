@@ -16,9 +16,13 @@ days (i.e. essentially all of them). An eval asserting these metric values must
 re-baseline; nothing else about the pipeline shape moves.
 
 ### The derivation (new `graphs/period_resolver.py`, called from `metrics_phase`)
-- **Flow = the income-statement extract** (`source.statement == "income_statement"`):
-  revenue for dso, COGS for dpo/dio — flows by accounting definition; balance-sheet
-  items are stocks. Structural signal on the graph, not a data-granularity label.
+- **Flow = the extract whose measure resolves to `og_columns.materialization == 'flow'`**
+  — the vertical-neutral, authoritative stock/flow verdict (COALESCE of the
+  aggregation-lineage witness posterior over the concept prior). A flow accumulates
+  over a period and carries the window; a stock (or any non-`flow` measure) is
+  point-in-time and is excluded. This is NOT keyed on any finance field (the earlier
+  `source.statement == 'income_statement'` proxy was the DAT-785-reland defect — it was
+  dead on every non-finance vertical); `materialization` works on any vertical.
 - **Period = the flow's OWN FILTERED window, measured live.** COGS/revenue are
   grounded by filtering the fact on a discriminator (`SUM(amount) WHERE account_type
   IN ('COGS')`) — the common shape. So the window is NOT the precomputed whole-column
@@ -42,7 +46,7 @@ re-baseline; nothing else about the pipeline shape moves.
   assembly; the CONSTANT step emits `SELECT <days> AS value`.
 
 ### Fall loud (K6) — the config default survives ONLY as a flagged fallback
-When no window can be observed — no income-statement flow, the flow never grounded,
+When no window can be observed — no operand resolves to a `flow` materialization, the flow never grounded,
 its relation is outside the analysis, its anchor axis is NULL (the DAT-801 header-date
 facts serve NULL), the axis has no temporal profile, its cadence is `irregular`/
 `unknown`, the filtered window is empty (no rows match the predicate) or a single

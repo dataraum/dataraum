@@ -158,7 +158,6 @@ _ALIAS_INPUT = {
     "verdicts": [
         {
             "pair_ref": "0",
-            "same_dimension": True,
             "confidence": 0.95,
             "reason": "an id and its name for the same entity",
         }
@@ -183,7 +182,6 @@ def test_alias_identity_happy_path() -> None:
 
     assert result.success
     (verdict,) = result.unwrap()
-    assert verdict.same_dimension is True
     assert verdict.confidence == 0.95
 
 
@@ -206,7 +204,7 @@ def test_alias_confidence_out_of_range_is_malformed() -> None:
 
     with pytest.raises(ValidationError):
         AliasIdentityBatchOutput.model_validate(
-            {"verdicts": [{"pair_ref": "0", "same_dimension": True, "confidence": 1.7, "reason": "x"}]}
+            {"verdicts": [{"pair_ref": "0", "confidence": 1.7, "reason": "x"}]}
         )
 
 

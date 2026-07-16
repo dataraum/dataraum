@@ -122,16 +122,25 @@ MIN_ROWS_NEARKEY = 10
 MIN_SUPPORT_ROWS = 100
 
 # The within-view identity judge's operating point (DAT-762): a relabeling
-# bijection is MERGED (axes collapsed) only when the judge is at least this
-# confident it is one dimension. Below it — a coincidental bijection, a grey
-# call, or a judge that could not answer — the pair is surfaced as a
-# needs_confirmation alias and NOT collapsed. Auto-merge is the irreversible,
-# silently-corrupting action, so its floor is the prompt's DECISIVE band
-# (dimension_alias.yaml: 0.85-1.0); anything the judge rates merely "probable"
-# (0.5-0.8) is surfaced, not merged. The identity gate separates true aliases
-# (≥0.95) from coincidental ones (≤0.05) with a wide margin, so the exact value
-# is not delicate (DAT-762 comment 16785 operating curve).
-IDENTITY_MERGE_MIN = 0.85
+# bijection is MERGED (axes collapsed) only when the judge's identity confidence
+# is at least this high; below it the pair is surfaced as a needs_confirmation
+# alias and NOT collapsed. Auto-merge is the irreversible, silently-corrupting
+# action.
+#
+# The confidence is a DIRECTIONAL, evidence-anchored number (dimension_alias.yaml,
+# modelled on the semantic agent's name-readability convention): how clearly the
+# names and values show the pair to be ONE entity re-encoded, from a clear
+# coincidence at 0.0 to a clear alias at 1.0, decoupled from the always-true 1:1.
+#
+# The floor mirrors the semantic relationship judge's REL_CONFIRM_MIN = 0.7
+# (semantic/processor.py): that judge is also verdict-in-confidence and lands
+# bimodally — coincidental low, aliases high, an empty dead zone between — where
+# 0.7 sits IN the dead zone, the judge's own decision boundary, not a top-band
+# cutoff that would discard the gradation and reduce the float to a boolean.
+# Confirmed on held-out data (DAT-762 re-histogram): true aliases 0.95-0.98,
+# coincidental bijections (held-out + constructed) 0.03-0.10 — a +0.85 gap with
+# the whole 0.2-0.9 range empty, so 0.7 sits in it and no coincidental merges.
+IDENTITY_MERGE_MIN = 0.7
 
 # Sample values per column sent to the identity judge (evidence, not a decision
 # surface). These columns were already sent to the LLM by the semantic phase, so
@@ -1120,7 +1129,7 @@ def _view_structures(
     for a, b in to_judge:
         v = id_verdicts.get((a, b))
         conf = v.confidence if v is not None else None
-        if v is not None and v.same_dimension and v.confidence >= IDENTITY_MERGE_MIN:
+        if v is not None and v.confidence >= IDENTITY_MERGE_MIN:
             merged.append((a, b))
             merge_conf[frozenset((a, b))] = v.confidence
             logger.info(
@@ -1157,7 +1166,6 @@ def _view_structures(
             a=a,
             b=b,
             merged=False,
-            same_dimension=None if v is None else v.same_dimension,
             confidence=None if conf is None else round(conf, 3),
         )
 

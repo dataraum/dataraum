@@ -40,16 +40,29 @@ system_prompt: |
   - Decide from the columns' authored meanings first (they say what each column
     IS in its business model), then the names, then the sample values. A pair
     whose two sides are plainly different KINDS of thing (an entity and a
-    time, an entity and an amount) is COINCIDENTAL however cleanly it lines up.
-  - Return a confidence in [0.0, 1.0] — the house convention — that the pair is
-    the SAME dimension (an ALIAS):
-      0.85-1.0  decisive (a clear alias near 1.0; a clearly coincidental pair
-                near 0.0);
-      0.5-0.8   probable but not certain from the evidence shown;
-      0.2-0.4   you are guessing — the evidence does not distinguish the cases.
-    Downstream systems gate on this number: the confident ones are merged, the
-    rest surfaced to a human. A confident-looking call on thin evidence is worse
-    than an honest middling one.
+    time, an entity and a quantity, two distinct attributes) is COINCIDENTAL
+    however cleanly it lines up.
+  - Return a confidence in [0.0, 1.0] for HOW CLEARLY the names and paired
+    values show the two columns to be ONE entity re-encoded. This measures the
+    clarity of the identity in the evidence — NOT how strongly the columns are
+    associated, and NOT that the 1:1 holds (it always does; that is the premise,
+    not evidence). The number runs from a clear coincidence at 0.0 to a clear
+    alias at 1.0:
+      0.85-1.0  the two names are a code/label pair of the SAME noun and the
+                values read as one thing encoded twice — e.g. a code "DE" and a
+                name "Germany", or a numeric level and its text label.
+      0.5-0.8   plausibly one entity but only by inference — a name you must
+                interpret, or values consistent with an encoding yet also with a
+                mere strong association.
+      0.0-0.4   the names denote DIFFERENT attributes whose 1:1 is a fact about
+                THESE rows, not about what the columns ARE — e.g. a category and
+                a status, or an identifier and a created-date.
+    Score by what the evidence shows, not by how sure you feel: a clean
+    coincidence is still a coincidence and belongs low however decisively the
+    columns line up. Downstream, pairs at or above the merge floor collapse to
+    one axis and the rest are surfaced to a human — a confident identity on
+    columns that merely align silently corrupts every aggregation that drills on
+    them, so it is the costly error.
   - Every verdict carries a one-sentence reason.
   </rules>
 

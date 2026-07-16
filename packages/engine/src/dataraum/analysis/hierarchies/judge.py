@@ -78,16 +78,23 @@ class ConformBatchOutput(BaseModel):
 
 
 class AliasIdentityVerdict(BaseModel):
-    """One within-view bijection verdict: is the pair one dimension?"""
+    """One within-view bijection verdict: how clearly is the pair one dimension?
+
+    The verdict is carried by ``confidence`` alone — a directional, evidence-
+    anchored number (near 1.0 a clear alias, near 0.0 a clear coincidence). There
+    is no separate accept/decline flag: the finder merges iff ``confidence`` clears
+    the merge floor, the relationship-judge pattern (verdict-in-confidence).
+    """
 
     pair_ref: str = Field(description="The candidate pair's ref echoed back verbatim")
-    same_dimension: bool = Field(
-        description="True if the bijection is one dimension (a true relabeling alias)"
-    )
     confidence: float = Field(
         ge=0.0,
         le=1.0,
-        description="Calibrated [0,1] confidence that the pair is one dimension (house convention)",
+        description=(
+            "Calibrated [0,1] identity confidence: how clearly the names and values "
+            "show the pair to be ONE entity re-encoded — near 1.0 a clear alias, near "
+            "0.0 a clear coincidence (house convention)"
+        ),
     )
     reason: str = Field(description="One sentence of grounds")
 
@@ -161,8 +168,10 @@ class DimensionIdentityJudge(LLMFeature):
             context=context,
             tool_name="judge_aliases",
             tool_description=(
-                "Return a same_dimension verdict with a calibrated [0,1] confidence "
-                "and a one-sentence reason for every candidate bijection pair listed."
+                "Return a calibrated [0,1] identity confidence and a one-sentence "
+                "reason for every candidate bijection pair — high when the names and "
+                "values plainly show one entity re-encoded, low when they are "
+                "different attributes that merely align 1:1."
             ),
             output_model=AliasIdentityBatchOutput,
         )

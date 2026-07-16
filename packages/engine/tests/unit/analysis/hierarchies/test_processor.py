@@ -88,14 +88,14 @@ class TestIdentityJudge:
     def test_relabeling_alias_merged_with_confidence(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        """A confident same-dimension call merges the axes and records the confidence."""
+        """A high identity confidence merges the axes and records the confidence."""
         tid = self._fact_view(
             real_session,
             duck,
             second="account_name",
             mapping={"A0": "Cash", "A1": "Receivable", "A2": "Payable"},
         )
-        stub = StubIdentityJudge(same_dimension=True, confidence=0.95)
+        stub = StubIdentityJudge(confidence=0.95)
         discover_dimension_hierarchies(
             real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=stub
         )
@@ -108,14 +108,14 @@ class TestIdentityJudge:
     def test_coincidental_bijection_surfaced_not_merged(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        """A coincidental 1:1 the judge rejects surfaces needs_confirmation, uncollapsed."""
+        """A coincidental 1:1 the judge scores low surfaces needs_confirmation, uncollapsed."""
         tid = self._fact_view(
             real_session,
             duck,
             second="opened_date",
             mapping={"A0": "2020-01-01", "A1": "2020-02-01", "A2": "2020-03-01"},
         )
-        stub = StubIdentityJudge(same_dimension=False, confidence=0.03)
+        stub = StubIdentityJudge(confidence=0.03)
         discover_dimension_hierarchies(
             real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=stub
         )
@@ -173,7 +173,6 @@ class TestIdentityJudge:
                     [
                         AliasIdentityVerdict(
                             pair_ref=c["ref"],
-                            same_dimension=same,
                             confidence=0.95 if same else 0.03,
                             reason="flip",
                         )

@@ -30,18 +30,15 @@ class StubIdentityJudge:
     """A ``DimensionIdentityJudge`` stand-in for the discovery tests.
 
     Discovery calls only ``alias_identity``; this returns one verdict per
-    candidate with the configured ``same_dimension`` / ``confidence`` (default:
-    approve at 0.95 — the pre-DAT-762 behavior, so an existing alias test that
-    expects a relabeling bijection to merge still passes). Set
-    ``same_dimension=False`` to exercise the coincidental-bijection reject path;
-    ``fail=True`` returns a failed Result (the judge-unavailable posture — the
-    pair must surface, never merge). ``calls`` records each candidate batch.
+    candidate at the configured ``confidence`` (default: 0.95 — a clear alias, so
+    an existing alias test that expects a relabeling bijection to merge still
+    passes). The verdict is confidence-only (DAT-762): a low ``confidence`` (e.g.
+    0.03) exercises the coincidental-bijection surface path; ``fail=True`` returns
+    a failed Result (the judge-unavailable posture — the pair must surface, never
+    merge). ``calls`` records each candidate batch.
     """
 
-    def __init__(
-        self, *, same_dimension: bool = True, confidence: float = 0.95, fail: bool = False
-    ) -> None:
-        self._same = same_dimension
+    def __init__(self, *, confidence: float = 0.95, fail: bool = False) -> None:
         self._conf = confidence
         self._fail = fail
         self.calls: list[list[dict]] = []
@@ -54,12 +51,7 @@ class StubIdentityJudge:
             return Result.fail("stub judge unavailable")
         return Result.ok(
             [
-                AliasIdentityVerdict(
-                    pair_ref=c["ref"],
-                    same_dimension=self._same,
-                    confidence=self._conf,
-                    reason="stub",
-                )
+                AliasIdentityVerdict(pair_ref=c["ref"], confidence=self._conf, reason="stub")
                 for c in candidates
             ]
         )

@@ -169,13 +169,17 @@ class Concept(Base):
             "kind IN (" + ", ".join(f"'{v}'" for v in _CONCEPT_KIND_VALUES) + ")",
             name="kind",
         ),
-        # Lifecycle-source vocabulary (DAT-802): the full documented domain
-        # (class docstring) — 'seed' (concept_store.py, engine) and 'frame'
-        # (cockpit ``concept-write.ts``, direct Drizzle write) are live today;
-        # 'teach' is the declared-but-unbuilt third authoring path (frame/teach
-        # parity, DAT-729-adjacent) — included so its eventual writer doesn't need
-        # a CHECK migration to land.
-        CheckConstraint("source IS NULL OR source IN ('seed', 'frame', 'teach')", name="source"),
+        # Lifecycle-source vocabulary (DAT-802): the full LIVE domain — 'seed'
+        # (concept_store.py, engine) and 'frame' (cockpit ``concept-write.ts``,
+        # direct Drizzle write). NOT 'teach': DAT-728 (Done) explicitly retired
+        # the ``concept`` teach type — "the config_overlay concept-family
+        # (concept/concept_property/rebind) retires read AND write" — and the
+        # cockpit's own ``teach-routing.ts`` documents the same call ("the
+        # concept vocabulary is no longer a teach type — config→DB moved it to
+        # the typed concepts table the frame stage writes"). The class
+        # docstring's inline ``# 'seed' | 'frame' | 'teach'`` comment is stale;
+        # narrowed to what DAT-728 actually left live, not the aspirational list.
+        CheckConstraint("source IS NULL OR source IN ('seed', 'frame')", name="source"),
     )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -189,7 +193,9 @@ class Concept(Base):
     unit_from_concept: Mapped[str | None] = mapped_column(String)
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
-    source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'frame' | 'teach'
+    # Closed vocab: see ck_concepts_source. NOT 'teach' — DAT-728 retired the
+    # concept teach type; only 'seed' | 'frame' are live writers.
+    source: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

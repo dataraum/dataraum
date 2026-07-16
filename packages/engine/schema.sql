@@ -33,7 +33,7 @@ CREATE TABLE concepts (
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_concepts PRIMARY KEY (concept_id), 
 	CONSTRAINT ck_concepts_kind CHECK (kind IN ('dimension', 'entity', 'measure', 'unit')), 
-	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame', 'teach'))
+	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame'))
 );
 
 CREATE UNIQUE INDEX uq_concept_active ON concepts (vertical, name) WHERE superseded_at IS NULL;

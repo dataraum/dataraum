@@ -288,7 +288,7 @@ class SurrogateKeyIntent(Base):
         # confirmed path (``_build_surrogate_intent``) explicitly falls back to no
         # intent when the measurement is ``'many-to-many'`` (never mint a proven
         # fan-out as a key); the declined path only ever carries a
-        # ``find_composite_key_rescue`` hint, which by construction never returns a
+        # ``rescue_fanout_to_composite`` hint, which by construction never returns a
         # many-to-many ``CompositeKey`` either (composite.py's rescue loop). NULL
         # when no DuckDB connection was available at confirmation time.
         CheckConstraint(

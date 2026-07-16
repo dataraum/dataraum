@@ -171,6 +171,104 @@ class TestDiscoverDrivers:
         dims = _candidate_dims(real_session, tid, RUN)
         assert a in dims and b in dims  # unconfirmed redundancy → both axes kept
 
+    def test_unelected_canonical_keeps_surviving_member(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-806: when the alias canonical is a raw-FK near-key the slicing gate
+        excluded (never a SliceDefinition), the surviving ELECTED member is the
+        dimension's only representative — it must NOT be discarded against the absent
+        canonical, which would orphan the axis and starve the driver-tree
+        (``too_few_candidates``)."""
+        tid = _seed(real_session, duck)
+        member = next(d for d in ALL_DIMS if d != "D_e25")  # an elected slice
+        real_session.add(
+            DimensionHierarchy(
+                run_id=RUN,
+                table_id=tid,
+                kind="alias",
+                members=[
+                    {
+                        "column_name": "account_id",
+                        "column_id": "",
+                        "distinct_count": 900,
+                        "level": 0,
+                    },
+                    {"column_name": member, "column_id": "", "distinct_count": 900, "level": 1},
+                ],
+                canonical_label="account_id",  # a near-key FK — excluded from slices
+                signature=f"alias:{tid}:account_id|{member}",
+                g3=0.0,
+            )
+        )
+        real_session.flush()
+        dims = _candidate_dims(real_session, tid, RUN)
+        assert member in dims  # surviving elected member kept, not orphaned
+        assert "account_id" not in dims  # the un-elected canonical never was a candidate
+
+    def test_multi_member_class_collapses_to_one_when_canonical_unelected(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-806: a ≥2-elected alias class whose canonical (a near-key FK) is NOT a
+        slice collapses to exactly ONE elected representative — not zero (orphan), not
+        two (double-count). Exercises the discard branch the single-member case skips."""
+        tid = _seed(real_session, duck)
+        a, b = [d for d in ALL_DIMS if d != "D_e25"][:2]  # two elected slices
+        real_session.add(
+            DimensionHierarchy(
+                run_id=RUN,
+                table_id=tid,
+                kind="alias",
+                members=[
+                    {
+                        "column_name": "account_id",
+                        "column_id": "",
+                        "distinct_count": 900,
+                        "level": 0,
+                    },
+                    {"column_name": a, "column_id": "", "distinct_count": 900, "level": 1},
+                    {"column_name": b, "column_id": "", "distinct_count": 900, "level": 2},
+                ],
+                canonical_label="account_id",  # un-elected near-key FK
+                signature=f"alias:{tid}:account_id|{a}|{b}",
+                g3=0.0,
+            )
+        )
+        real_session.flush()
+        dims = _candidate_dims(real_session, tid, RUN)
+        assert len([d for d in (a, b) if d in dims]) == 1  # exactly one survives
+        assert "account_id" not in dims
+
+    def test_overlapping_confirmed_groups_collapse_order_independently(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-806 (review): two confirmed alias groups sharing a member (a manual
+        teach overlapping an auto group — ``needs_confirmation=False``, no overlap
+        guard) form ONE equivalence class → exactly one survivor, independent of the
+        ORDER-BY-less query's row order. The per-group collapse yields two survivors."""
+        tid = _seed(real_session, duck)
+        a, b, c = [d for d in ALL_DIMS if d != "D_e25"][:3]  # three elected slices
+        for members, canon, sig in (
+            ([a, b], a, f"alias:{tid}:{a}|{b}"),  # G1: a ≡ b
+            ([b, c], c, f"alias:{tid}:{b}|{c}"),  # G2: b ≡ c → a~b~c is one class
+        ):
+            real_session.add(
+                DimensionHierarchy(
+                    run_id=RUN,
+                    table_id=tid,
+                    kind="alias",
+                    members=[
+                        {"column_name": m, "column_id": "", "distinct_count": 3, "level": i}
+                        for i, m in enumerate(members)
+                    ],
+                    canonical_label=canon,
+                    signature=sig,
+                    g3=0.0,
+                )
+            )
+        real_session.flush()
+        dims = _candidate_dims(real_session, tid, RUN)
+        assert len([d for d in (a, b, c) if d in dims]) == 1  # one class → one rep
+
     def test_end_to_end_ranks_drivers(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:

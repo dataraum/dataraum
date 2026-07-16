@@ -5,6 +5,26 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-806 — driver `_candidate_dims` no longer orphans a dimension whose alias canonical is a slicing-excluded near-key (driver rankings populate)
+
+**Branch:** `feat/dat-806-candidate-dims-orphan`. `drivers/processor.py::_candidate_dims`
+collapsed a confirmed 1:1 alias group to its `canonical_label`, discarding the other
+members. But the canonical is sorted-first and can be a raw-FK near-key (`account_id`)
+the slicing gate correctly excludes from `SliceDefinition`s — so the surviving elected
+member (`account_id__name`) was discarded against an absent canonical, deleting the
+dimension. On the finance corpus this dropped `journal_lines`/`trial_balance` from 2
+candidates to 1 → `driver_too_few_candidates` → **all driver rankings empty** (surfaced
+by the DAT-805 smoke). Fix: collapse only when ≥2 members are ELECTED, keeping one
+representative (canonical if elected, else sorted-first elected) — never orphan.
+
+**What changes for eval:** driver rankings now populate for facts whose only dimension
+attaches via an alias whose canonical was filtered upstream — expect `ranked_dimensions`
+/ `interesting_slices` to be non-empty for `journal_lines` (debit/credit/net_amount) and
+`trial_balance` (balances) on the finance corpus, where they were `n_rows=0`, ranked=0
+before. No schema change.
+
+---
+
 ## DAT-762 — persisted bus matrix (cross-fact conform lane)
 
 **Branch:** `feat/dat-762-dimension-identity-lane`. The `dimension_hierarchies`

@@ -115,12 +115,17 @@ def _enriched_view_name(session: Session, fact_table_id: str, run_id: str) -> st
 def _candidate_dims(session: Session, fact_table_id: str, run_id: str) -> list[str]:
     """This run's grain-safe slice dimensions, with CONFIRMED alias groups collapsed.
 
-    A DAT-537 1:1 alias group is a redundant axis — keep only its canonical member so
-    it doesn't compete as a separate candidate (the de-confounding the spike deferred).
-    Only CONFIRMED aliases collapse: a ``needs_confirmation`` alias is an UNCONFIRMED
-    redundancy (a coincidental bijection the DAT-762 identity judge declined, or an
-    undecidable role-check near-copy), and collapsing it would silently drop a real
-    axis the flag says we are not sure about — the safe default keeps both.
+    A DAT-537 1:1 alias group is a redundant axis. Confirmed groups are union-found
+    into equivalence classes (so a manual teach that overlaps an auto-detected group
+    collapses as ONE class, independent of row order), and each class keeps only ONE
+    of its ELECTED members so the rest don't compete as separate candidates (the
+    de-confounding the spike deferred). The representative is an elected canonical when
+    one exists, else the sorted-first elected member: the canonical may be a raw-FK
+    near-key the slicing gate excluded, so collapsing to it would orphan the whole
+    dimension (DAT-806). Only CONFIRMED aliases collapse: a ``needs_confirmation``
+    alias is an UNCONFIRMED redundancy (a coincidental bijection the DAT-762 identity
+    judge declined, or an undecidable role-check near-copy), and collapsing it would
+    silently drop a real axis the flag says we are not sure about — keep both.
     """
     defs = session.execute(
         select(SliceDefinition.column_name).where(
@@ -139,11 +144,56 @@ def _candidate_dims(session: Session, fact_table_id: str, run_id: str) -> list[s
             DimensionHierarchy.needs_confirmation.is_(False),
         )
     ).scalars()
+    # Union-find over every confirmed alias group's members: overlapping groups
+    # (a manual teach that partially covers an auto-detected group — ``overlay.py``
+    # sets no overlap guard, and ``_apply_teaches`` writes ``needs_confirmation=False``)
+    # must collapse as ONE equivalence class, independent of row order. Discarding
+    # per-group while reading the live ``candidates`` set would make the survivor set
+    # (hence the driver candidate set) depend on the ORDER-BY-less query order —
+    # varying across Temporal redeliveries. Same connected-component discipline the
+    # hierarchy assembly uses.
+    parent: dict[str, str] = {}
+    canonicals: set[str] = set()
+
+    def _root(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # path-halving
+            x = parent[x]
+        return x
+
     for group in aliases:
-        for member in group.members:
-            name = member.get("column_name")
-            if name and name != group.canonical_label:
-                candidates.discard(name)
+        members = [
+            name for m in group.members if isinstance(name := m.get("column_name"), str) and name
+        ]
+        if not members:
+            continue
+        canonicals.add(group.canonical_label)
+        for m in members[1:]:
+            parent[_root(members[0])] = _root(m)
+
+    classes: dict[str, list[str]] = {}
+    for col in parent:
+        classes.setdefault(_root(col), []).append(col)
+
+    for members in classes.values():
+        # Keep ONE representative among the class's ELECTED members (1:1 aliases
+        # partition identically, so the choice is immaterial for ranking). With 0-or-1
+        # elected there is nothing redundant to drop — critically, when the canonical
+        # is an un-elected raw-FK near-key the slicing gate excluded, the surviving
+        # member is the class's ONLY representative and must NOT be orphaned (DAT-806).
+        elected = sorted(m for m in members if m in candidates)
+        if len(elected) < 2:
+            continue
+        # Prefer an elected canonical — a manual teach's canonical is the user's chosen
+        # label, NOT sorted-first (``_apply_teaches`` sets it to ``ordered[0]``), so
+        # respect it over blind alphabetical order; else the sorted-first elected
+        # member. Deterministic → rerun-stable.
+        elected_canon = [m for m in elected if m in canonicals]
+        keeper = elected_canon[0] if elected_canon else elected[0]
+        for m in elected:
+            if m != keeper:
+                candidates.discard(m)
     return sorted(candidates)
 
 

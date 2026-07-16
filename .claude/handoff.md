@@ -99,8 +99,9 @@ bijections on the fact grain.
   teach) and on judge-failure. `schema.sql` regenerated (additive); read view is
   `SELECT r.*` so `current_dimension_hierarchies` carries it. **Cockpit drizzle
   mirror still needs `bun run db:pull:metadata` before the PR** (schema-drift CI).
-- **Posture:** confident (≥ `IDENTITY_MERGE_MIN` = 0.8) → merge (axes collapse in
-  the driver tree), `identity_confidence` set on the group (weakest judged pair).
+- **Posture:** confident (≥ `IDENTITY_MERGE_MIN` = 0.85, the prompt's DECISIVE
+  band) → merge (axes collapse in the driver tree), `identity_confidence` set on
+  the group (weakest judged pair).
   Grey / coincidental / **judge unavailable** → surfaced as a `needs_confirmation`
   alias that is NOT collapsed (absence of judgment is not a merge). Confidence is
   the deliverable for agents + the operating-model UI, not a hard decision.

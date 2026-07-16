@@ -116,13 +116,13 @@ class BusinessCycleAnalysis(BaseModel):
 class CycleSummaryOutput(BaseModel):
     """Flat cycle summary — no nested objects."""
 
-    cycle_name: str = Field(description="Descriptive name, e.g., 'Accounts Receivable Cycle'")
+    cycle_name: str = Field(description="Descriptive name, e.g., 'Order Fulfillment Cycle'")
     cycle_type: str = Field(
         description=(
             "Type identifier in snake_case. Use a key from the KNOWN BUSINESS CYCLE TYPES "
             "vocabulary (provided in context) when the cycle matches a known type. "
             "For cycles not in the vocabulary, use a descriptive snake_case identifier "
-            "(e.g., bank_reconciliation, trial_balance_reporting, expense_reimbursement). "
+            "(e.g., order_fulfillment, incident_resolution, employee_onboarding). "
             "Do NOT use generic labels like 'custom' or 'other'."
         )
     )
@@ -160,7 +160,7 @@ class StageEntryOutput(BaseModel):
     """Flat stage — references a cycle by name."""
 
     cycle_name: str = Field(description="Name of the cycle this stage belongs to")
-    stage_name: str = Field(description="Name of this stage, e.g., 'Invoice Created'")
+    stage_name: str = Field(description="Name of this stage, e.g., 'Order Shipped'")
     stage_order: int = Field(description="Position in cycle (1, 2, 3...)")
     indicator_column: str | None = Field(
         default=None, description="Column that indicates this stage"

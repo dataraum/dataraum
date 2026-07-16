@@ -1715,7 +1715,7 @@ def _build_column_notes(col: ColumnContext) -> str:
     if col.semantic_role == "measure" and col.numeric_min is not None:
         rng = f"Range: {col.numeric_min:g}..{col.numeric_max:g}."
         if col.numeric_min < 0:
-            rng += " Signed (has negatives) — SUM nets debits/credits."
+            rng += " Signed (has negatives) — SUM nets positive and negative values."
         notes.append(rng)
 
     if col.is_derived and col.derived_formula:

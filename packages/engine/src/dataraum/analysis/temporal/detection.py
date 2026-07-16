@@ -81,6 +81,8 @@ def calculate_expected_periods(
     min_ts: datetime,
     max_ts: datetime,
     granularity: str,
+    *,
+    config: dict[str, Any],
 ) -> int:
     """Calculate expected number of periods for a time range.
 
@@ -88,6 +90,10 @@ def calculate_expected_periods(
         min_ts: Start of time range
         max_ts: End of time range
         granularity: Detected granularity
+        config: Temporal config dict (from config/phases/temporal.yaml) — the
+            same ``granularity.definitions`` source ``infer_granularity`` reads,
+            so the two functions share one home for per-granularity seconds
+            instead of each hardcoding its own copy.
 
     Returns:
         Expected number of periods
@@ -95,22 +101,18 @@ def calculate_expected_periods(
     delta = max_ts - min_ts
     total_seconds = delta.total_seconds()
 
-    granularity_seconds = {
-        "second": 1,
-        "minute": 60,
-        "hour": 3600,
-        "day": 86400,
-        "week": 604800,
-        "weekly": 604800,
-        "month": 2592000,
-        "monthly": 2592000,
-        "quarter": 7776000,
-        "quarterly": 7776000,
-        "year": 31536000,
-        "yearly": 31536000,
-        "irregular": 1,
-        "unknown": 1,
+    # Per-granularity expected seconds, sourced from config — same definitions
+    # list infer_granularity uses to classify a granularity in the first place.
+    granularity_seconds: dict[str, float] = {
+        name: expected_seconds
+        for name, expected_seconds, _tolerance in config["granularity"]["definitions"]
     }
+    # "irregular"/"unknown" are infer_granularity's sentinels for "no definition
+    # matched" / "no median gap" — they're not granularities, so config has no
+    # entry for them; keep the 1-second fallback that makes their expected-period
+    # count track total elapsed seconds.
+    granularity_seconds.setdefault("irregular", 1)
+    granularity_seconds.setdefault("unknown", 1)
 
     seconds = granularity_seconds.get(granularity, 86400)
     return int(total_seconds / seconds) + 1
@@ -197,7 +199,7 @@ def analyze_basic_temporal(
         granularity, confidence = infer_granularity(median_gap, min_gap, max_gap, config=config)
 
         # Calculate expected periods based on granularity
-        expected_periods = calculate_expected_periods(min_ts, max_ts, granularity)
+        expected_periods = calculate_expected_periods(min_ts, max_ts, granularity, config=config)
 
         # Calculate completeness
         completeness_ratio = distinct_count / expected_periods if expected_periods > 0 else 1.0

@@ -98,6 +98,12 @@ ROLE_MAX_DISAGREE = 0.05
 MIN_DISTINCT_DIMENSION = 2
 MIN_DISTINCT_DETERMINANT = 3
 NEAR_KEY_FRAC = 0.9
+# The near-key determinant screen only fires on a table of at least this many
+# rows: on a tiny table a genuine dimension's distinct/rows climbs toward 1.0
+# (account_id is already 27/332 = 0.081 on a 332-row trial_balance), so screening
+# by fraction alone would clip real dimensions on small tables (DAT-762 threshold
+# pin, comment 16786). Below it, a near-key column is surfaced, not excluded.
+MIN_ROWS_NEARKEY = 10
 
 # Structures resting on fewer rows than this are surfaced for confirmation
 # (``needs_confirmation``) rather than auto-asserted.
@@ -568,6 +574,7 @@ def _hierarchy_row(
     g3: float | None = None,
     role: stats.RoleResult | None = None,
     disagree_rate: float | None = None,
+    identity_confidence: float | None = None,
 ) -> dict[str, object]:
     """One dimension_hierarchies row dict with a HOMOGENEOUS key set (DAT-784).
 
@@ -600,6 +607,7 @@ def _hierarchy_row(
         "g3": g3,
         "role_verdict": role_verdict,
         "role_evidence": role_evidence,
+        "identity_confidence": identity_confidence,
         "detection_source": detection_source,
         "needs_confirmation": needs_confirmation,
     }
@@ -770,7 +778,7 @@ def _view_structures(
         if d < MIN_DISTINCT_DETERMINANT:
             logger.info("hierarchy_determinant_excluded", column=c, reason="too_coarse", distinct=d)
             bad_det.add(c)
-        elif scan.n and d >= NEAR_KEY_FRAC * scan.n:
+        elif scan.n >= MIN_ROWS_NEARKEY and d >= NEAR_KEY_FRAC * scan.n:
             logger.info(
                 "hierarchy_determinant_excluded",
                 column=c,

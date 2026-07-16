@@ -186,6 +186,17 @@ class DimensionHierarchy(Base):
     # conform/role judge consumes this; this task only PERSISTS it.
     role_evidence: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
+    # The within-view identity judge's calibrated confidence (DAT-762) that a
+    # relabeling-bijection alias group (values differ but 1:1 — code↔name) is ONE
+    # dimension, float [0,1] house convention. A perfect bijection is
+    # STATISTICALLY indistinguishable from a coincidental one (an entity key that
+    # lines up with a per-row timestamp), so only the judge separates them; a low
+    # value is WHY such an alias carries needs_confirmation and is not collapsed.
+    # NULL on rows the judge never sees: drilldown, role, exact-copy alias
+    # (values identical, unambiguous), the disagreement-set role-check aliases,
+    # and manual teaches.
+    identity_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # 'g3' (auto-discovered) | 'manual' (a teach add/alias assertion).
     detection_source: Mapped[str] = mapped_column(String, nullable=False, default="g3")
     # Low-support / borderline edges are surfaced for confirmation, not silently

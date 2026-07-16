@@ -284,6 +284,7 @@ CREATE TABLE dimension_hierarchies (
 	g3 FLOAT, 
 	role_verdict VARCHAR, 
 	role_evidence JSON, 
+	identity_confidence FLOAT, 
 	detection_source VARCHAR NOT NULL, 
 	needs_confirmation BOOLEAN NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 

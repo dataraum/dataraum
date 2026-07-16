@@ -350,7 +350,7 @@ class TestEnrichedViewsPhaseDuckLake:
                 from_column_id=fk_id,
                 to_column_id=pk_id,
                 relationship_type="foreign_key",
-                cardinality="many_to_one",
+                cardinality="many-to-one",
                 confidence=0.9,
                 detection_method="llm",
                 confirmation_source="judge",

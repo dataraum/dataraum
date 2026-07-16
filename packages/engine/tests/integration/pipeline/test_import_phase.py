@@ -51,7 +51,6 @@ def _seed_source(
             name=name,
             source_type=source_type,
             connection_config={"file_uris": [str(path)]},
-            status="configured",
         )
     )
     session.flush()
@@ -77,7 +76,6 @@ def _seed_db_source(
             source_type="db_recipe",
             connection_config=connection_config,
             backend="mssql",
-            status="configured",
         )
     )
     if with_raw_table:
@@ -204,7 +202,6 @@ class TestImportPhase:
             name="multi",
             source_type="csv",
             connection_config={"file_uris": [str(customers), str(orders)]},
-            status="configured",
         )
         session.add(source)
         session.flush()
@@ -477,6 +474,7 @@ class TestImportPhase:
             StatisticalProfile(
                 column_id=typed_col_id,
                 run_id="run-v1",
+                layer="typed",
                 total_count=2,
                 null_count=0,
                 profile_data={},

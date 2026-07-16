@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -53,6 +54,16 @@ class SliceDefinition(Base):
         Index("idx_slice_definitions_table", "table_id"),
         Index("idx_slice_definitions_column", "column_id"),
         Index("idx_slice_definitions_dim_table", "dimension_table_id"),
+        # Closed-vocabulary enforcement (DAT-802 enum-standard sweep): the ONLY
+        # value ``slicing_phase.py`` (the sole writer) ever produces today —
+        # numeric/date-bucket slice types are not yet built. Extending the CHECK
+        # is the cost of shipping a second slice type, same as any other closed
+        # vocabulary here.
+        CheckConstraint("slice_type IN ('categorical')", name="slice_type"),
+        # Detection-source vocabulary (DAT-802): the ONLY value any writer
+        # produces today — ``slicing_phase.py`` always sets 'llm' (matches the
+        # column default).
+        CheckConstraint("detection_source IN ('llm')", name="detection_source"),
     )
 
     slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))

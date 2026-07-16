@@ -105,14 +105,18 @@ def test_seed_is_idempotent(session: Session) -> None:
 
 
 def test_seed_does_not_clobber_a_superseded_edge(session: Session) -> None:
-    """A frame edit (supersede + insert) survives a re-seed — the race-safety contract.
+    """A superseded-and-reinserted active row survives a re-seed — the race-safety contract.
 
     The re-seed's ``ON CONFLICT DO NOTHING`` skips the edge whose active row is the
-    edit (same active partial-unique index as concepts), never overwriting it and
-    never RAISING on the collision.
+    replacement (same active partial-unique index as concepts), never overwriting it
+    and never RAISING on the collision. This is the mechanism a future edit path
+    (``frame``, P13 — not wired yet, so ``source`` stays 'seed'; DAT-802 narrowed
+    ``ck_concept_edges_source`` to the one live value) will rely on; the test proves
+    the DB-level supersede+insert contract independent of who eventually calls it.
     """
     assert ensure_concept_edges_seeded(session, "finance") == _FINANCE_TOTAL
-    # Supersede one active edge and insert a new active row in its place (source=frame).
+    # Supersede one active edge and insert a new active row in its place — simulating
+    # ANY future non-seed writer's edit, not tied to a specific source value.
     session.execute(
         update(ConceptEdge)
         .where(
@@ -123,13 +127,15 @@ def test_seed_does_not_clobber_a_superseded_edge(session: Session) -> None:
         )
         .values(superseded_at=datetime.now(UTC))
     )
+    replacement_id = "replacement-edge-id"
     session.add(
         ConceptEdge(
+            edge_id=replacement_id,
             vertical="finance",
             predicate=_DISJOINT,
             from_concept="accounts_payable",
             to_concept="accounts_receivable",
-            source="frame",
+            source="seed",
         )
     )
     session.flush()
@@ -143,7 +149,7 @@ def test_seed_does_not_clobber_a_superseded_edge(session: Session) -> None:
             ConceptEdge.superseded_at.is_(None),
         )
     ).scalar_one()
-    assert edited.source == "frame"  # the edit kept, not clobbered
+    assert edited.edge_id == replacement_id  # the replacement kept, not clobbered
 
 
 def test_seed_edges_reference_seeded_concept_names(session: Session) -> None:

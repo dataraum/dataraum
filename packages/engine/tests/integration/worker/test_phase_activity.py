@@ -132,7 +132,6 @@ def _seed_source(
                 name=name,
                 source_type="csv",
                 connection_config={"file_uris": file_uris},
-                status="configured",
             )
         )
 

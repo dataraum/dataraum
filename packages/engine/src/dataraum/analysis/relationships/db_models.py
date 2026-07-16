@@ -80,15 +80,27 @@ class Relationship(Base):
             "confirmation_source IN ('unconfirmed', 'judge', 'user', 'keeper')",
             name="confirmation_source",
         ),
-        # Orientation invariant (DAT-777): a persisted FK is stored many→one,
-        # child→parent — so ``from`` is always the many/fact side every downstream
-        # consumer assumes (og_references, the conformed-dim identity resolve, the
-        # cockpit fan-out caution). :meth:`oriented_row` FLIPS a ``one-to-many`` row;
-        # this CHECK makes the invariant STRUCTURAL — a mis-oriented row fails loud at
-        # flush even on a write path that bypasses the helper, so it cannot silently
-        # persist reversed through any of the three writers.
+        # Detection-method vocabulary (DAT-802 enum-standard sweep): the closed set
+        # every writer produces — ``detector.py`` ('candidate'), ``processor.py``
+        # llm-confirm path ('llm'), ``materialize.py`` overlay materialization
+        # ('manual' / 'keeper'). Sibling of ``confirmation_source`` in the same
+        # table/DAT-776 era that CHECK pass left uncovered.
         CheckConstraint(
-            "cardinality IS NULL OR cardinality <> 'one-to-many'",
+            "detection_method IS NULL OR detection_method IN "
+            "('candidate', 'llm', 'manual', 'keeper')",
+            name="detection_method",
+        ),
+        # Orientation invariant (DAT-777, upgraded DAT-802): a persisted FK is
+        # stored many→one, child→parent — so ``from`` is always the many/fact side
+        # every downstream consumer assumes (og_references, the conformed-dim
+        # identity resolve, the cockpit fan-out caution). :meth:`oriented_row`
+        # FLIPS a ``one-to-many`` row before persisting, so the full closed set a
+        # row can ever legally hold is exactly these three (plus NULL) —
+        # ``one-to-many`` is now structurally impossible, not merely rejected by a
+        # backstop. A mis-oriented row fails loud at flush even on a write path
+        # that bypasses the helper.
+        CheckConstraint(
+            "cardinality IS NULL OR cardinality IN ('one-to-one', 'many-to-one', 'many-to-many')",
             name="cardinality_oriented",
         ),
     )
@@ -267,6 +279,22 @@ class SurrogateKeyIntent(Base):
     __tablename__ = "surrogate_key_intents"
     __table_args__ = (
         UniqueConstraint("run_id", "intent_digest", name="uq_surrogate_intent_run_digest"),
+        # Verdict vocabulary (DAT-802): the only two values ``_confirmed_intent_row``
+        # / ``_declined_intent_rows`` (semantic/processor.py) ever write.
+        CheckConstraint("status IN ('confirmed', 'declined')", name="status"),
+        # Cardinality vocabulary (DAT-802): sourced exclusively from
+        # ``compute_composite_cardinality`` (code-computed, never LLM-echoed — the
+        # LLM only supplies which columns to include, via ``key_columns``). The
+        # confirmed path (``_build_surrogate_intent``) explicitly falls back to no
+        # intent when the measurement is ``'many-to-many'`` (never mint a proven
+        # fan-out as a key); the declined path only ever carries a
+        # ``rescue_fanout_to_composite`` hint, which by construction never returns a
+        # many-to-many ``CompositeKey`` either (composite.py's rescue loop). NULL
+        # when no DuckDB connection was available at confirmation time.
+        CheckConstraint(
+            "cardinality IS NULL OR cardinality IN ('one-to-one', 'one-to-many', 'many-to-one')",
+            name="cardinality",
+        ),
     )
 
     intent_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))

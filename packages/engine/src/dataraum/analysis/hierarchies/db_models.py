@@ -132,6 +132,16 @@ class DimensionHierarchy(Base):
             "role_verdict IN (" + ", ".join(f"'{v}'" for v in _ROLE_VERDICT_VALUES) + ")",
             name="role_verdict",
         ),
+        # Structure-kind vocabulary (DAT-802 enum-standard sweep): the three
+        # discriminator values ``_hierarchy_row`` (processor.py) ever writes — see
+        # the class docstring. Sibling of ``role_verdict`` in the same DAT-784
+        # commit era that the CHECK pass left uncovered (no Python enum exists for
+        # this one; hand-typed inline, matching the ``relationship_type`` precedent).
+        CheckConstraint("kind IN ('drilldown', 'alias', 'role')", name="kind"),
+        # Detection-source vocabulary (DAT-802): 'g3' (auto-discovered, the
+        # default) or 'manual' (a teach add/alias assertion) — the only two values
+        # ``processor.py`` ever writes.
+        CheckConstraint("detection_source IN ('g3', 'manual')", name="detection_source"),
     )
 
     hierarchy_id: Mapped[str] = mapped_column(

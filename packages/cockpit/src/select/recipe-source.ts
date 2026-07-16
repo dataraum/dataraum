@@ -109,8 +109,8 @@ function validateSpec(spec: RecipeSourceSpec): void {
  * corrupting — every upsert is idempotent (name UNIQUE + the `recipe_hash`
  * witness), and the caller (`server/import-sources.ts` via the widget's mutation)
  * keeps the import set on error, so re-running the same batch re-upserts the
- * already-written rows and starts the run. The orphaned rows sit at
- * `status=configured` until that retry imports them.
+ * already-written rows and starts the run. The orphaned rows sit registered
+ * with no typed tables under them until that retry imports them.
  */
 export async function persistRecipeSources(
 	specs: RecipeSourceSpec[],

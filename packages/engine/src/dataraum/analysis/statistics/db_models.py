@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -49,6 +50,18 @@ class StatisticalProfile(Base):
     # and two coexisting runs' rows don't collide.
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_statistical_profiles_column_run"),
+        # Closed-vocabulary enforcement (DAT-802 audit): every writer — production
+        # (the primary profiling pass, ``analysis/statistics/profiler.py``, which
+        # REQUIRES a typed table, and the enriched-views dimension profiling,
+        # ``enriched_views_phase.py``) and every test fixture, engine-wide —
+        # produces only 'typed' / 'enriched'. The former ``default="raw"`` was
+        # vestigial (verified: zero constructors, production or test, ever
+        # omitted ``layer=``) and actively misleading (implied 'raw' was a
+        # legitimate resting state); removed rather than kept dead, so a future
+        # caller that forgets to set ``layer`` fails loud immediately (a clear
+        # NOT NULL error) instead of silently defaulting to a value the CHECK
+        # would reject anyway.
+        CheckConstraint("layer IN ('typed', 'enriched')", name="layer"),
     )
 
     profile_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -59,9 +72,9 @@ class StatisticalProfile(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
 
-    # Layer indicator: "raw" or "typed"
-    # Determines which stage produced this profile
-    layer: Mapped[str] = mapped_column(String, nullable=False, default="raw")
+    # Which stage produced this profile. Closed vocab: see ck_statistical_profiles_layer.
+    # No default: every writer (production and test) must state it explicitly.
+    layer: Mapped[str] = mapped_column(String, nullable=False)
 
     # STRUCTURED: Queryable core dimensions
     total_count: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -171,8 +171,7 @@ function SourceCard({
 				{/* A connection shows its kind/backend; the Uploads umbrella spans
 				    many per-file sources, so a single type/backend is meaningless —
 				    show a neutral marker instead of any one file's metadata (or the
-				    hash). No status badge: the engine never updates `Source.status`
-				    post-import, so it read `configured` forever (DAT-431). */}
+				    hash). */}
 				{group.kind === "connection" ? (
 					<>
 						<Badge variant="outline" color="gray" tt="lowercase">

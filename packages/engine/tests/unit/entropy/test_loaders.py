@@ -359,6 +359,7 @@ class TestLoaderHeadFallback:
                 profile_id=str(uuid4()),
                 column_id="col-h3",
                 run_id="run-addsource",
+                layer="typed",
                 total_count=100,
                 null_count=0,
                 distinct_count=90,

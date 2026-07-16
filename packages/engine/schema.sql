@@ -12,7 +12,9 @@ CREATE TABLE concept_edges (
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
-	CONSTRAINT pk_concept_edges PRIMARY KEY (edge_id)
+	CONSTRAINT pk_concept_edges PRIMARY KEY (edge_id), 
+	CONSTRAINT ck_concept_edges_predicate CHECK (predicate IN ('disjoint_with', 'part_of', 'reconciles_with')), 
+	CONSTRAINT ck_concept_edges_source CHECK (source IS NULL OR source = 'seed')
 );
 
 CREATE UNIQUE INDEX uq_concept_edge_active ON concept_edges (vertical, predicate, from_concept, to_concept) WHERE superseded_at IS NULL;
@@ -29,7 +31,9 @@ CREATE TABLE concepts (
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
-	CONSTRAINT pk_concepts PRIMARY KEY (concept_id)
+	CONSTRAINT pk_concepts PRIMARY KEY (concept_id), 
+	CONSTRAINT ck_concepts_kind CHECK (kind IN ('dimension', 'entity', 'measure', 'unit')), 
+	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame'))
 );
 
 CREATE UNIQUE INDEX uq_concept_active ON concepts (vertical, name) WHERE superseded_at IS NULL;
@@ -85,7 +89,8 @@ CREATE TABLE lifecycle_artifacts (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	state_changed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_lifecycle_artifacts PRIMARY KEY (artifact_id), 
-	CONSTRAINT uq_lifecycle_artifact_identity UNIQUE (artifact_type, artifact_key, run_id)
+	CONSTRAINT uq_lifecycle_artifact_identity UNIQUE (artifact_type, artifact_key, run_id), 
+	CONSTRAINT ck_lifecycle_artifacts_state CHECK (state IN ('canonical', 'declared', 'executed', 'grounded'))
 );
 
 CREATE TABLE metadata_snapshot_head (
@@ -123,7 +128,6 @@ CREATE TABLE sources (
 	connection_config JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	status VARCHAR, 
 	stage VARCHAR, 
 	backend VARCHAR, 
 	discovered_schema JSON, 
@@ -192,6 +196,7 @@ CREATE TABLE tables (
 	last_profiled_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_tables PRIMARY KEY (table_id), 
 	CONSTRAINT uq_table_name_layer UNIQUE (table_name, layer), 
+	CONSTRAINT ck_tables_layer CHECK (layer IN ('raw', 'typed', 'quarantine', 'enriched')), 
 	CONSTRAINT fk_tables_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id)
 );
 
@@ -214,6 +219,7 @@ CREATE TABLE column_eligibility (
 	evaluated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_column_eligibility PRIMARY KEY (eligibility_id), 
 	CONSTRAINT uq_column_eligibility_column_run UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_column_eligibility_status CHECK (status IN ('ELIGIBLE', 'WARN', 'INELIGIBLE')), 
 	CONSTRAINT fk_column_eligibility_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_column_eligibility_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id)
 );
@@ -258,6 +264,8 @@ CREATE TABLE dimension_hierarchies (
 	CONSTRAINT pk_dimension_hierarchies PRIMARY KEY (hierarchy_id), 
 	CONSTRAINT uq_dimension_hierarchy_signature_run UNIQUE (signature, run_id), 
 	CONSTRAINT ck_dimension_hierarchies_role_verdict CHECK (role_verdict IN ('abstain', 'dirt', 'role', 'value_systematic')), 
+	CONSTRAINT ck_dimension_hierarchies_kind CHECK (kind IN ('drilldown', 'alias', 'role')), 
+	CONSTRAINT ck_dimension_hierarchies_detection_source CHECK (detection_source IN ('g3', 'manual')), 
 	CONSTRAINT fk_dimension_hierarchies_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
 );
 
@@ -326,6 +334,8 @@ CREATE TABLE surrogate_key_intents (
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_surrogate_key_intents PRIMARY KEY (intent_id), 
 	CONSTRAINT uq_surrogate_intent_run_digest UNIQUE (run_id, intent_digest), 
+	CONSTRAINT ck_surrogate_key_intents_status CHECK (status IN ('confirmed', 'declined')), 
+	CONSTRAINT ck_surrogate_key_intents_cardinality CHECK (cardinality IS NULL OR cardinality IN ('one-to-one', 'one-to-many', 'many-to-one')), 
 	CONSTRAINT fk_surrogate_key_intents_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_surrogate_key_intents_to_table_id_tables FOREIGN KEY(to_table_id) REFERENCES tables (table_id)
 );
@@ -346,6 +356,8 @@ CREATE TABLE table_entities (
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_table_entities PRIMARY KEY (entity_id), 
 	CONSTRAINT uq_table_entity_table_run UNIQUE (table_id, run_id), 
+	CONSTRAINT ck_table_entities_detection_source CHECK (detection_source IS NULL OR detection_source IN ('llm')), 
+	CONSTRAINT ck_table_entities_table_role CHECK (table_role IS NULL OR table_role IN ('dimension', 'fact', 'periodic_snapshot')), 
 	CONSTRAINT fk_table_entities_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
 );
 
@@ -388,6 +400,7 @@ CREATE TABLE column_concepts (
 	confidence FLOAT, 
 	CONSTRAINT pk_column_concepts PRIMARY KEY (concept_id), 
 	CONSTRAINT uq_column_concept UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_column_concepts_annotation_source CHECK (annotation_source IS NULL OR annotation_source IN ('llm')), 
 	CONSTRAINT fk_column_concepts_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
@@ -455,6 +468,9 @@ CREATE TABLE entropy_objects (
 	source_analysis_ids JSONB, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_entropy_objects PRIMARY KEY (object_id), 
+	CONSTRAINT ck_entropy_objects_layer CHECK (layer IN ('computational', 'semantic', 'structural', 'value')), 
+	CONSTRAINT ck_entropy_objects_dimension CHECK (dimension IN ('business_meaning', 'coverage', 'derived_values', 'dimensional', 'distribution', 'nulls', 'reconciliation', 'relations', 'temporal', 'types', 'units', 'variance')), 
+	CONSTRAINT ck_entropy_objects_sub_dimension CHECK (sub_dimension IN ('benford_compliance', 'cross_column_patterns', 'cross_table_consistency', 'dimension_coverage', 'formula_match', 'join_path_determinism', 'naming_clarity', 'null_ratio', 'null_semantics', 'relationship_discovery', 'relationship_quality', 'slice_conditional_null', 'slice_stability', 'temporal_behavior', 'time_role', 'type_fidelity', 'unit_declaration', 'unit_source')), 
 	CONSTRAINT fk_entropy_objects_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_entropy_objects_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
@@ -481,6 +497,7 @@ CREATE TABLE entropy_readiness (
 	top_drivers JSONB, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_entropy_readiness PRIMARY KEY (readiness_id), 
+	CONSTRAINT ck_entropy_readiness_band CHECK (band IN ('ready', 'investigate', 'blocked')), 
 	CONSTRAINT fk_entropy_readiness_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_entropy_readiness_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
@@ -546,7 +563,8 @@ CREATE TABLE relationships (
 	CONSTRAINT uq_relationship_columns_method UNIQUE (run_id, from_column_id, to_column_id, detection_method), 
 	CONSTRAINT ck_relationships_relationship_type CHECK (relationship_type IN ('foreign_key', 'hierarchy', 'candidate')), 
 	CONSTRAINT ck_relationships_confirmation_source CHECK (confirmation_source IN ('unconfirmed', 'judge', 'user', 'keeper')), 
-	CONSTRAINT ck_relationships_cardinality_oriented CHECK (cardinality IS NULL OR cardinality <> 'one-to-many'), 
+	CONSTRAINT ck_relationships_detection_method CHECK (detection_method IS NULL OR detection_method IN ('candidate', 'llm', 'manual', 'keeper')), 
+	CONSTRAINT ck_relationships_cardinality_oriented CHECK (cardinality IS NULL OR cardinality IN ('one-to-one', 'many-to-one', 'many-to-many')), 
 	CONSTRAINT fk_relationships_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_relationships_from_column_id_columns FOREIGN KEY(from_column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_relationships_to_table_id_tables FOREIGN KEY(to_table_id) REFERENCES tables (table_id), 
@@ -584,6 +602,7 @@ CREATE TABLE semantic_annotations (
 	confidence FLOAT, 
 	CONSTRAINT pk_semantic_annotations PRIMARY KEY (annotation_id), 
 	CONSTRAINT uq_column_semantic_annotation UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_semantic_annotations_annotation_source CHECK (annotation_source IS NULL OR annotation_source IN ('llm')), 
 	CONSTRAINT fk_semantic_annotations_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
@@ -607,6 +626,8 @@ CREATE TABLE slice_definitions (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 
 	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
+	CONSTRAINT ck_slice_definitions_slice_type CHECK (slice_type IN ('categorical')), 
+	CONSTRAINT ck_slice_definitions_detection_source CHECK (detection_source IN ('llm')), 
 	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_slice_definitions_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)
@@ -634,6 +655,7 @@ CREATE TABLE statistical_profiles (
 	profile_data JSON NOT NULL, 
 	CONSTRAINT pk_statistical_profiles PRIMARY KEY (profile_id), 
 	CONSTRAINT uq_statistical_profiles_column_run UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_statistical_profiles_layer CHECK (layer IN ('typed', 'enriched')), 
 	CONSTRAINT fk_statistical_profiles_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
@@ -719,6 +741,7 @@ CREATE TABLE type_decisions (
 	decision_reason VARCHAR, 
 	CONSTRAINT pk_type_decisions PRIMARY KEY (decision_id), 
 	CONSTRAINT uq_column_type_decision UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_type_decisions_decision_source CHECK (decision_source IN ('automatic', 'manual', 'fallback')), 
 	CONSTRAINT fk_type_decisions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 

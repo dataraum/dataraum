@@ -262,7 +262,6 @@ class PipelineTestHarness:
                     name=clean_name,
                     source_type=source_type,
                     connection_config={"file_uris": file_uris},
-                    status="configured",
                 )
                 session.add(source)
                 session.commit()

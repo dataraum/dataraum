@@ -769,59 +769,6 @@ def _warm_generations_serial(
 # ---------------------------------------------------------------------------
 
 
-def _assemble_metric(
-    agent: GraphAgent,
-    session: Session,
-    exec_ctx: _ExecutionContext,
-    graph: TransformationGraph,
-    bindings: dict[NodeKey, NodeDecision],
-    *,
-    workspace_id: str,
-) -> Result[GraphExecution]:
-    """Assemble one metric, deriving ``days_in_period`` from the data (DAT-785).
-
-    A working-capital metric's ``days_in_period`` is the window its flow (COGS,
-    revenue) was measured over — the observed span of the flow fact's anchor time
-    axis, not a config constant. :func:`resolve_days_in_period` reads it from the
-    substrate and returns ``None`` for a metric that has no such parameter (or a
-    non-Postgres bind with no read surface), in which case the graph default stands.
-    A window that cannot be observed falls loud: the config default rides a visible
-    verification flag on the executed artifact, never a silent 30.
-
-    The period resolver's live window query MUST run against the same DuckDB cursor
-    ``agent.assemble`` runs the flow SUM on — so it reads ``exec_ctx.duckdb_conn``,
-    the one home of the cursor, rather than a separately-threaded connection.
-    """
-    from dataraum.graphs.period_resolver import resolve_days_in_period
-
-    period = resolve_days_in_period(
-        session, exec_ctx.duckdb_conn, graph=graph, workspace_id=workspace_id
-    )
-    parameters = {"days_in_period": period.days} if period is not None else None
-    result = agent.assemble(
-        session, graph, exec_ctx, bindings, parameters=parameters, workspace_id=workspace_id
-    )
-    if period is not None and result.success and result.value is not None:
-        if period.flag:
-            # Never a silent fallback: the flag surfaces unconditionally through the
-            # artifact's state_reason (execute-and-flag), exactly like a DAT-699
-            # verification flag.
-            result.value.verification_flags.append(period.flag)
-            _log.warning(
-                "metric_period_fallback",
-                graph_id=graph.graph_id,
-                reason=period.evidence.get("reason"),
-            )
-        else:
-            _log.info(
-                "metric_period_derived",
-                graph_id=graph.graph_id,
-                days=period.days,
-                anchor_time_axis=period.evidence.get("anchor_time_axis"),
-            )
-    return result
-
-
 def _execute_metrics_serial(
     prep: list[MetricPrep],
     session: Session,
@@ -837,21 +784,7 @@ def _execute_metrics_serial(
     """
     out: list[MetricResult] = []
     for graph_id, graph, inspiration_id in prep:
-        # Guard each assembly exactly like the parallel sibling captures
-        # ``future.result()``: one metric raising (e.g. a bad grounded predicate
-        # reaching the period resolver's live query) must not crash the phase and
-        # roll back every sibling's already-recorded execute state.
-        try:
-            result = _assemble_metric(
-                agent,
-                session,
-                exec_ctx,
-                graph,
-                bindings,
-                workspace_id=workspace_id,
-            )
-        except Exception as exc:
-            result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
+        result = agent.assemble(session, graph, exec_ctx, bindings, workspace_id=workspace_id)
         out.append((graph_id, result, inspiration_id))
     return out
 
@@ -943,6 +876,4 @@ def _execute_isolated(
             catalogue_run_id=catalogue_run_id,
             vertical=vertical,
         )
-        return _assemble_metric(
-            agent, session, exec_ctx, graph, bindings, workspace_id=schema_mapping_id
-        )
+        return agent.assemble(session, graph, exec_ctx, bindings, workspace_id=schema_mapping_id)

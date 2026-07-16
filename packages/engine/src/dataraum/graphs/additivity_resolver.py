@@ -90,11 +90,11 @@ def classify_metric_extracts(
     for step_id, step in graph.steps.items():
         if step.step_type != StepType.EXTRACT or step.source is None:
             continue
-        resolved = _grounded_select(library, workspace_id, step)
+        resolved = grounded_select(library, workspace_id, step)
         if resolved is None:
             return None
         select_expr, relation = resolved
-        fact_id = _fact_table_id(session, relation)
+        fact_id = fact_table_id(session, relation)
         if fact_id is None:
             return None
         calls = parse_aggregate_calls(select_expr, duckdb_conn)
@@ -108,10 +108,15 @@ def classify_metric_extracts(
     return extract_classes
 
 
-def _grounded_select(
+def grounded_select(
     library: SnippetLibrary, workspace_id: str, step: GraphStep
 ) -> tuple[str, str] | None:
-    """The extract's healthy grounded ``(select_expr, relation)`` from its snippet."""
+    """The extract's healthy grounded ``(select_expr, relation)`` from its snippet.
+
+    Shared grounding-resolution primitive (also used by the period resolver,
+    DAT-785): recovers the parts an EXTRACT step actually grounded to, or ``None``
+    when it has no healthy snippet.
+    """
     if step.source is None:
         return None
     match = library.find_by_key(
@@ -136,8 +141,12 @@ def _grounded_select(
     return expr, relation
 
 
-def _fact_table_id(session: Session, relation: str) -> str | None:
+def fact_table_id(session: Session, relation: str) -> str | None:
     """The fact table an extract reads.
+
+    Shared grounding-resolution primitive (also used by the period resolver,
+    DAT-785): maps a grounded relation NAME (enriched view or typed table) to the
+    base fact ``table_id`` whose columns carry the analysis facts.
 
     Usually an enriched view (`EnrichedView.view_name` — latest-only, and unique
     by construction via the `enriched_{duckdb_path}` naming convention, not a DB

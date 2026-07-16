@@ -22,7 +22,7 @@ import asyncio
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -37,10 +37,13 @@ _VERTICAL = "finance"
 
 @dataclass
 class _StubGraph:
-    """Minimal graph stand-in. Only metadata.inspiration_snippet_id is read."""
+    """Minimal graph stand-in. metadata.inspiration_snippet_id and the (empty)
+    parameters list are read (the latter by the DAT-785 period resolver, which
+    no-ops on a graph with no ``days_in_period`` parameter)."""
 
     graph_id: str
     metadata: Any = None
+    parameters: list[Any] = field(default_factory=list)
 
 
 class _StubMetadata:

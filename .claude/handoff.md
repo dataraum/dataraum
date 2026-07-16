@@ -5,6 +5,49 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-785 — `days_in_period` is derived from the data, not the config 30 (metric VALUES change)
+
+**Branch:** `fix/dat-785-796-days-in-period-derive`. The working-capital metrics
+(`dpo`/`dso`/`dio`/`cash_conversion_cycle`) resolved `days_in_period` provided-or-default
+and emitted `SELECT 30 AS value` — DPO over a quarterly corpus still divided by 30.
+Now the constant is derived from the flow's observed data window, so **the numeric
+value of every dpo/dso/dio/ccc metric changes** on any corpus whose flow span ≠ 30
+days (i.e. essentially all of them). An eval asserting these metric values must
+re-baseline; nothing else about the pipeline shape moves.
+
+### The derivation (new `graphs/period_resolver.py`, called from `metrics_phase`)
+- **Flow = the income-statement extract** (`source.statement == "income_statement"`):
+  revenue for dso, COGS for dpo/dio — flows by accounting definition; balance-sheet
+  items are stocks. Structural signal on the graph, not a data-granularity label.
+- **Period = the flow's full-corpus span.** The flow extract sums its measure over
+  the whole relation (no time filter), so `days_in_period = span_days`
+  (`max_timestamp − min_timestamp`) of the flow fact's **anchor time axis**. Read
+  from `og_columns.anchor_time_axis` (DAT-780, its one home — not re-derived) joined
+  to `current_temporal_column_profiles.span_days` (DAT-783). NOT from
+  `detected_granularity` (`monthly→30` would just re-hardcode the constant behind a
+  label).
+- The derived value is injected as the metric's `days_in_period` parameter at
+  assembly; the CONSTANT step emits `SELECT <span> AS value`.
+
+### Fall loud (K6) — the config default survives ONLY as a flagged fallback
+When no window can be observed — no income-statement flow, the flow never grounded,
+its anchor axis is NULL (the DAT-801 header-date facts serve NULL), the axis has no
+temporal profile, the span is 0, or two flows disagree on a fact — the metric keeps
+the config default (30) BUT appends a `verification_flag` naming the fallback, which
+surfaces unconditionally in the artifact's `state_reason` (execute-and-flag, like a
+DAT-699 flag). Never a silent 30. A clean derivation logs `metric_period_derived`
+and carries no flag.
+
+### Thresholds / substrate / cross-package
+No score thresholds changed. The read surface (`og_columns` + read views) is
+Postgres-only; on the SQLite unit substrate the resolver returns no override (the
+graph default stands) — production is always Postgres. No schema change (no new
+columns; `schema*.sql` and the drizzle mirror UNCHANGED). Two grounding-resolution
+helpers in `additivity_resolver.py` were promoted to public (`grounded_select`,
+`fact_table_id`) for reuse — no behavior change.
+
+---
+
 ## DAT-780 — `time_columns` contract: event/attribute role + typed anchor (BREAKING LLM contract)
 
 **Branch:** `fix/dat-780-time-columns-event-attribute-anchor`. Hardens the

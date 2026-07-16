@@ -16,7 +16,7 @@ from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
 from dataraum.analysis.hierarchies.processor import discover_dimension_hierarchies
 from dataraum.storage import ConfigOverlay
 
-from .conftest import RUN, seed_sales
+from .conftest import RUN, approving_judge, seed_sales
 
 
 def _teach(session: Session, action: str, table_id: str, members: list[str]) -> None:
@@ -30,7 +30,10 @@ def _teach(session: Session, action: str, table_id: str, members: list[str]) -> 
 
 
 def _discover(session: Session, duck: duckdb.DuckDBPyConnection, tid: str) -> int:
-    return discover_dimension_hierarchies(session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+    n = discover_dimension_hierarchies(
+        session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+    )
+    return n
 
 
 def _by_members(session: Session, kind: str) -> dict[tuple[str, ...], DimensionHierarchy]:

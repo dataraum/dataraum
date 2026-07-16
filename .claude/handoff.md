@@ -5,6 +5,196 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-762 — persisted bus matrix (cross-fact conform lane)
+
+**Branch:** `feat/dat-762-dimension-identity-lane`. The `dimension_hierarchies`
+phase derives the bus matrix. Discovery itself stays deterministic and LLM-less;
+the phase's ONE LLM touchpoint is the cross-fact conform judgment, where no
+pairwise statistic can exist.
+
+**The veto lane was CUT before merge and never shipped.** Its premise — a
+deterministic value-only router pre-selecting which structures are
+names-judgeable — did not hold: the router's `classify_shape` was a regex over
+sampled values, not a shape classifier, and the judge was gated by the router
+AND primed with the router's own answer (`routed_class`), so its "veto 9/9" was
+ratification, not independent evidence. Do not read the earlier veto numbers as
+a baseline. `routing.py`, `hierarchy_veto.yaml`, `judge.veto()` and the
+`veto_lane` phase output do not exist.
+
+### What changed
+
+- **Bus matrix** (`analysis/hierarchies/bus_matrix.py`, table `bus_matrix`,
+  read view `current_bus_matrix`, catalog grain): one cell per fact ×
+  dimension exposure — `referenced` (structural, from slice identities; roles
+  = FK multiplicity; `confirmation_source` = weakest underlying relationship)
+  and `folded` (stats fold groups; CROSS-FACT identity decided by the conform
+  judge over names + attributes + `ColumnConcept.meaning`; abstain →
+  `needs_confirmation`). Two legs only — `attachment` is a CHECK-constrained
+  vocabulary of exactly `('folded', 'referenced')`.
+- **`degenerate` is NOT emitted.** It was a `classify_shape` consumer
+  ("near-key AND id-shaped") and died with the router. The near-key half is a
+  sound data fact; a future attempt can bring the concept back on typed
+  semantic evidence rather than a regex over samples. Along with the truth-side
+  `key_only` class (Layer-A blind-spot FKs — DAT-762 comments 16642/16643),
+  it is a recorded acceptance boundary, not a cell this writer emits.
+- **`conformed_group` is the identity key** (post-review): conform verdicts
+  are union-found; each conform-connected component gets one deterministic
+  group signature and ONE canonicalized label (first verdict wins; drift is
+  logged, never applied). Consumers — DAT-800 lineage included — join folded
+  cells on `conformed_group`, NEVER on `concept_label` (a label collision
+  across distinct groups must not merge them; label drift must not split).
+  Eval grades identity on the shared group, label share as canonicalization.
+- **Retry stability**: `derive_bus_matrix` deletes the run's cells before
+  insert (one transaction). A folded cell's signature carries its component's
+  member set, so if the run's structures changed between activity attempts (a
+  teach landing, or a structure the stats now surface undecided) an upsert
+  alone would strand attempt 1's cells under the promoted run.
+- **Judge construction**: standard agent pattern — the phase builds it
+  (`load_llm_config` + `create_provider`), misconfiguration FAILS the phase;
+  there is no judge-off configuration. A failed conform call leaves the cells
+  per-fact and unconformed (observable, stats stand); transient provider errors
+  ride to the Temporal retry.
+- **Phase outputs** carry `bus_matrix` (status, per-leg cell counts,
+  conform_pairs/conformed/abstained) — eval can assert lane liveness from the
+  phase output instead of PhaseLog. It carries `unanswered`: pair refs the
+  judge returned no verdict for (unjudged-but-observable, never
+  conform-by-omission). There is no `veto_lane` output.
+- `GraphExecutionContext.bus_matrix` exposes the cells (expose seam only).
+- Schema: new table `bus_matrix` (+ `current_bus_matrix` read view) —
+  additive; `schema.sql`/`schema_read.sql`/cockpit drizzle mirror regenerated.
+
+### Eval consumes
+
+- `calibration/test_dimension_identity_judge.py` — the CONFORM leg only
+  (0 false merges). The routing/veto legs
+  (`calibration/unit/test_dimension_identity_routing.py`, and the veto half of
+  the judge test) grade code that no longer exists — retire them with the
+  45-cell routing fixture, or re-aim them at the next attempt. The earlier
+  "composite 42–43/45, veto 9/9" numbers are void: the judge was gated by the
+  router and primed with its `routed_class`.
+- `calibration/test_bus_matrix_e2e.py` grades `current_bus_matrix` against
+  `metadata_truth.bus_matrix` / `folded_dimensions` on a completed run — needs
+  one clean-flat pipeline run on this code. Drop `degenerate_ids` from the
+  grading: the writer emits no degenerate cells (`attachment` is exactly
+  `folded` | `referenced`).
+
+### Within-view identity judge (NEW — a SECOND LLM touchpoint in this phase)
+
+The `dimension_hierarchies` discovery pass is **no longer LLM-less**. On the
+fact-grain enriched view a folded key and its attributes REPEAT, so a code↔name
+alias (`account_id ⇄ account_name`) and a COINCIDENTAL 1:1 (`account_id ⇄
+opened_date` — an entity key lining up with a per-row timestamp) are BOTH non-key
+bijections that pass g3+λ+perm-BH identically. Auto-merging the coincidental one
+collapsed two drill axes into one (silent number corruption). The finder now
+routes the `rate > ROLE_MAX_DISAGREE` bijections to a batched identity judge
+(`judge.alias_identity`, prompt `dimension_alias.yaml`) returning `same_dimension`
++ a **float confidence [0,1]**. Note KEY bijections on a dimension SOURCE table
+(`raceId ⇄ date`, both unique) never reach the judge — perm-BH already rejects
+them (FI stays 1.0 under every shuffle → p≈1.0); the FP class is NON-key
+bijections on the fact grain.
+
+- **New column `dimension_hierarchies.identity_confidence`** (FLOAT, nullable):
+  the judge's calibrated confidence a relabeling-bijection alias is one dimension.
+  NULL on rows the judge never sees (drilldown, role, exact-copy alias, manual
+  teach) and on judge-failure. `schema.sql` regenerated (additive); read view is
+  `SELECT r.*` so `current_dimension_hierarchies` carries it. **Cockpit drizzle
+  mirror still needs `bun run db:pull:metadata` before the PR** (schema-drift CI).
+- **Posture:** `identity_confidence` is a DIRECTIONAL, evidence-anchored number
+  (0.0 = clear coincidence, 1.0 = clear alias; verdict-in-confidence, no separate
+  bool — modelled on the semantic agent's name-readability convention). Confident
+  (≥ `IDENTITY_MERGE_MIN` = 0.7, mirroring `REL_CONFIRM_MIN`) → merge (axes
+  collapse in the driver tree), `identity_confidence` set on the group (weakest
+  judged pair). Below 0.7 / **judge unavailable** → surfaced as a
+  `needs_confirmation` alias that is NOT collapsed (absence of judgment is not a
+  merge). Confidence is the deliverable for agents + the operating-model UI.
+- **`drivers._candidate_dims` CHANGED — re-run driver calibration.** It now
+  collapses only `needs_confirmation=False` aliases (a needs_confirmation alias is
+  an unconfirmed redundancy; collapsing it would drop a real axis). This also
+  fixes a latent bug: role-check `value_systematic`/`abstain` aliases were being
+  silently collapsed despite being flagged never-merge. Driver rankings can
+  legitimately shift where such aliases existed — both axes now compete.
+
+### Eval to run
+
+- The redesigned (directional) identity confidence is validated on held-out data
+  (`scripts/probes/dat762-judge-context/rehist.py` + `rehist_report.py`,
+  dataraum-eval): true aliases 0.95–0.98, coincidental bijections 0.03–0.10 — a
+  +0.85 gap with the 0.2–0.9 range empty, so 0.7 sits in the dead zone. Real
+  aliases (numeric-encoding, id↔key, abbrev↔full) stay high; no over-correction.
+- **Gap the corpus can't close:** raw tables barely contain coincidental
+  equal-cardinality bijections (they arise on FACT-GRAIN views where folded keys
+  repeat and coincidentally align 1:1 with a per-row attribute). The held-out
+  validation leans on 1 real coincidental + a constructed panel. A clean-flat /
+  RelBench Tier-3 run is the way to assert on real fact-grain coincidental
+  bijections: `current_dimension_hierarchies.identity_confidence` should be high
+  on genuine folded code↔name aliases and low (`needs_confirmation`) on a folded
+  attribute that is 1:1 with its key, with the two columns kept as SEPARATE driver
+  axes.
+
+---
+
+## DAT-785 — `days_in_period` is derived from the data, not the config 30 (metric VALUES change)
+
+**Branch:** `fix/dat-785-796-days-in-period-derive`. The working-capital metrics
+(`dpo`/`dso`/`dio`/`cash_conversion_cycle`) resolved `days_in_period` provided-or-default
+and emitted `SELECT 30 AS value` — DPO over a quarterly corpus still divided by 30.
+Now the constant is derived from the flow's observed data window, so **the numeric
+value of every dpo/dso/dio/ccc metric changes** on any corpus whose flow span ≠ 30
+days (i.e. essentially all of them). An eval asserting these metric values must
+re-baseline; nothing else about the pipeline shape moves.
+
+### The derivation (new `graphs/period_resolver.py`, called from `metrics_phase`)
+- **Flow = the extract whose measure resolves to `og_columns.materialization == 'flow'`**
+  — the vertical-neutral, authoritative stock/flow verdict (COALESCE of the
+  aggregation-lineage witness posterior over the concept prior). A flow accumulates
+  over a period and carries the window; a stock (or any non-`flow` measure) is
+  point-in-time and is excluded. This is NOT keyed on any finance field (the earlier
+  `source.statement == 'income_statement'` proxy was the DAT-785-reland defect — it was
+  dead on every non-finance vertical); `materialization` works on any vertical.
+- **Period = the flow's OWN FILTERED window, measured live.** COGS/revenue are
+  grounded by filtering the fact on a discriminator (`SUM(amount) WHERE account_type
+  IN ('COGS')`) — the common shape. So the window is NOT the precomputed whole-column
+  `span_days` (that MIN/MAX scans every row, while the SUM scans only the filtered
+  rows). The resolver runs a live `MIN/MAX/COUNT(DISTINCT date_trunc(grain, axis))`
+  over the flow's **anchor time axis**, against the SAME grounded relation in DuckDB
+  the SUM runs on and filtered by the SAME `WHERE` predicate (single source:
+  `formula_composer.compose_where_predicate`). The axis IDENTITY + its detected
+  cadence come from `og_columns.anchor_time_axis` (DAT-780, its one home) joined to
+  `current_temporal_column_profiles.detected_granularity` (DAT-783); the span itself
+  is measured live, never read from `span_days`.
+- **Fencepost correction.** `span = max − min` spans `n − 1` inter-period gaps, so it
+  undercounts by ~one period for period-aggregated flow data. The live query counts
+  the distinct periods `n`, and the window is `span × n / (n − 1)`. Self-scaling:
+  negligible for transaction-grained corpora (many periods → factor ≈ 1), ~one period
+  for aggregated corpora (12 month-end rows → 12/11). **This means a transaction-
+  grained corpus and a period-aggregated corpus of the SAME true window derive the
+  SAME `days_in_period`** — the eval baseline must not assume the raw endpoint span.
+  A single period (n < 2) or degenerate span falls loud (no gap to correct against).
+- The derived value is injected as the metric's `days_in_period` parameter at
+  assembly; the CONSTANT step emits `SELECT <days> AS value`.
+
+### Fall loud (K6) — the config default survives ONLY as a flagged fallback
+When no window can be observed — no operand resolves to a `flow` materialization, the flow never grounded,
+its relation is outside the analysis, its anchor axis is NULL (the DAT-801 header-date
+facts serve NULL), the axis has no temporal profile, its cadence is `irregular`/
+`unknown`, the filtered window is empty (no rows match the predicate) or a single
+period, or two flows disagree on the window — the metric keeps the config default (30)
+BUT appends a `verification_flag` naming the fallback, which surfaces unconditionally
+in the artifact's `state_reason` (execute-and-flag, like a DAT-699 flag). Never a
+silent 30. A clean derivation logs `metric_period_derived` and carries no flag.
+
+### Thresholds / substrate / cross-package
+No score thresholds changed. The read surface (`og_columns` + read views) is
+Postgres-only; on the SQLite unit substrate the resolver returns no override (the
+graph default stands) — production is always Postgres. The window query runs against
+the DuckDB `lake.typed` relation (the SUM's relation), NOT the Postgres read schema.
+No schema change (no new columns; `schema*.sql` and the drizzle mirror UNCHANGED). Two
+grounding-resolution helpers in `additivity_resolver.py` were promoted to public
+(`grounded_select` — now also surfacing `parts["where"]` — and `fact_table_id`) for
+reuse — no behavior change to the additivity classifier.
+
+---
+
 ## DAT-780 — `time_columns` contract: event/attribute role + typed anchor (BREAKING LLM contract)
 
 **Branch:** `fix/dat-780-time-columns-event-attribute-anchor`. Hardens the
@@ -139,6 +329,8 @@ detectors (no injection/recall loop), but the temporal response shape changed.
   surfaces per-time-axis `span` + `largest gap` instead.
 - `is_stale` on static historical datasets is still wall-clock-based (age vs cadence) — a
   known semantic limitation noted for DAT-780/P5, not changed here.
+
+---
 
 ## DAT-794 — Layer-A relationship detection is now deterministic
 

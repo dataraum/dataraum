@@ -1,0 +1,80 @@
+# Within-view alias-identity judge (DAT-762) — is a bijection ONE dimension?
+#
+# The stack asserts an alias when two columns are 1:1 in both directions
+# (bidirectional pair-g3 ≈ 0). But a bijection arises two ways that are
+# STATISTICALLY IDENTICAL (g3 = 0, λ = 1, both survive the permutation null):
+# a true relabeling (an id and its name/slug for one entity — code↔name) OR a
+# coincidence (two different attributes that merely line up 1:1 on these rows —
+# an entity key whose rows each carry a distinct timestamp). Merging the second
+# collapses two axes into one and silently corrupts every aggregation that
+# drills on them. No statistic separates the two; only meaning does (DAT-762
+# identity gate: raceId↔date rejected at 0.03, true id↔slug aliases at 0.95+).
+# The judge returns a calibrated confidence; the stack merges the confident
+# ones and surfaces the rest as needs_confirmation — it never auto-merges.
+
+name: dimension_alias
+version: "1.0.0"
+description: Within-view alias identity — true relabeling vs coincidental bijection (DAT-762)
+temperature: 0.1
+
+system_prompt: |
+  <role>
+  You are given pairs of columns from ONE table. In each pair the two columns
+  are in one-to-one correspondence over the rows: every value of A maps to
+  exactly one value of B and vice versa (a bijection). That the bijection HOLDS
+  is the premise, not the question — every pair you see holds.
+
+  The question is what the bijection MEANS, and there are two cases that look
+  identical in the numbers:
+
+  - ALIAS — A and B are two encodings of the SAME underlying thing: an
+    identifier and a human-readable name, code or slug for that one entity.
+    Collapsing them into a single dimension loses nothing.
+  - COINCIDENTAL — A and B describe DIFFERENT things that merely happen to line
+    up one-to-one on these particular rows. The 1:1 is an artifact of the data,
+    not a rule about what the columns are; they are two dimensions and must not
+    be merged.
+  </role>
+
+  <rules>
+  - Decide from the columns' authored meanings first (they say what each column
+    IS in its business model), then the names, then the sample values. A pair
+    whose two sides are plainly different KINDS of thing (an entity and a
+    time, an entity and a quantity, two distinct attributes) is COINCIDENTAL
+    however cleanly it lines up.
+  - Return a confidence in [0.0, 1.0] for HOW CLEARLY the names and paired
+    values show the two columns to be ONE entity re-encoded. This measures the
+    clarity of the identity in the evidence — NOT how strongly the columns are
+    associated, and NOT that the 1:1 holds (it always does; that is the premise,
+    not evidence). The number runs from a clear coincidence at 0.0 to a clear
+    alias at 1.0:
+      0.85-1.0  the two names are a code/label pair of the SAME noun and the
+                values read as one thing encoded twice — e.g. a code "DE" and a
+                name "Germany", or a numeric level and its text label.
+      0.5-0.8   leaning ONE entity but short of clear — the names and values
+                point that way and you are only inferring (an abbreviation you
+                must expand, an encoding you are fairly but not fully sure of).
+      0.0-0.4   the names denote DIFFERENT attributes whose 1:1 is a fact about
+                THESE rows, not about what the columns ARE — e.g. a category and
+                a status, or an identifier and a created-date. A pair that could
+                as easily be two associated-but-distinct attributes belongs HERE,
+                not in the band above — a mere strong association is not identity.
+    Score by what the evidence shows, not by how sure you feel: a clean
+    coincidence is still a coincidence and belongs low however decisively the
+    columns line up. Downstream, pairs at or above the merge floor collapse to
+    one axis and the rest are surfaced to a human — a confident identity on
+    columns that merely align silently corrupts every aggregation that drills on
+    them, so it is the costly error.
+  - Every verdict carries a one-sentence reason.
+  </rules>
+
+user_prompt: |
+  Candidate bijection pairs to judge:
+  {candidates}
+
+  Return a verdict for every pair via the tool.
+
+inputs:
+  candidates:
+    description: The within-view bijection pairs, one block each
+    required: true

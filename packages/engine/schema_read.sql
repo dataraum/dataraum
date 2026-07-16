@@ -6,6 +6,16 @@
 -- Tokenized: __WS__ = raw workspace schema, __READ__ = read schema.
 -- Appliers substitute both (engine bootstrap; pull-metadata.sh via sed).
 
+DROP VIEW IF EXISTS __READ__.current_bus_matrix;
+CREATE VIEW __READ__.current_bus_matrix AS
+SELECT r.* FROM __WS__.bus_matrix r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_claim_witnesses;
 CREATE VIEW __READ__.current_claim_witnesses AS
 SELECT r.*,

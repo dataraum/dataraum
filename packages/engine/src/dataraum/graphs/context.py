@@ -182,6 +182,26 @@ class HierarchyContext:
 
 
 @dataclass
+class BusMatrixContext:
+    """One bus-matrix cell: a fact's dimension exposure (DAT-762).
+
+    The alignable drill-across surface for a SQL author: two facts sharing a
+    referenced dimension table or a conformed folded concept can be drilled
+    across on that axis. ``concept_label`` is reported context, never a decision
+    surface; ``confirmation_source`` is the relationships vocabulary at cell
+    grain (unconfirmed | judge | user | keeper).
+    """
+
+    fact_table: str
+    attachment: str  # 'referenced' | 'folded'
+    concept_label: str
+    roles: list[str]  # fact-side key columns carrying the exposure
+    attributes: list[str]
+    confirmation_source: str
+    needs_confirmation: bool = False
+
+
+@dataclass
 class DriverContext:
     """One measure's driver ranking, served to the GraphAgent (DAT-616).
 
@@ -317,6 +337,10 @@ class GraphExecutionContext:
     # Drill-down hierarchies + 1:1 aliases (from the g3 pass, DAT-537). Exposed for
     # the answer agent to drill / de-duplicate axes; prompt use lands in DAT-538.
     dimension_hierarchies: list[HierarchyContext] = field(default_factory=list)
+
+    # Bus-matrix cells (DAT-762): fact × dimension exposure — the drill-across
+    # surface. Expose seam only; prompt consumption follows the hierarchy path.
+    bus_matrix: list[BusMatrixContext] = field(default_factory=list)
 
     # Driver rankings per measure (DAT-616): which dims/values move each measure +
     # target_type. The engine GraphAgent served none before — the cockpit/engine
@@ -622,8 +646,14 @@ def build_execution_context(
                 DimensionHierarchy.run_id == run_id,
             )
             # Strongest (lowest g3) first; role-check rows have no g3 (NULL) and
-            # sort last, deterministically across Postgres/SQLite (DAT-784).
-            .order_by(DimensionHierarchy.g3.asc().nulls_last())
+            # sort last. The signature tiebreak makes ties (several rows at
+            # g3=0.0, manual teaches) fully deterministic — the sort is a
+            # determinism device, NOT a ranking policy (DAT-762 ruling): the
+            # substrate serves evidence, consumers rank with full information.
+            .order_by(
+                DimensionHierarchy.g3.asc().nulls_last(),
+                DimensionHierarchy.signature.asc(),
+            )
         )
         for hier in session.execute(hier_stmt).scalars().all():
             hier_tbl = table_map.get(hier.table_id)
@@ -642,6 +672,35 @@ def build_execution_context(
                         ],
                         canonical_label=hier.canonical_label,
                         needs_confirmation=hier.needs_confirmation,
+                    )
+                )
+
+    # 10b-bis. Load bus-matrix cells (DAT-762) — same run scoping; signature
+    # order is the determinism device (evidence, not ranking).
+    bus_matrix_contexts: list[BusMatrixContext] = []
+    if run_id is not None:
+        from dataraum.analysis.hierarchies.db_models import BusMatrixEntry
+
+        cell_stmt = (
+            select(BusMatrixEntry)
+            .where(
+                BusMatrixEntry.fact_table_id.in_(table_ids),
+                BusMatrixEntry.run_id == run_id,
+            )
+            .order_by(BusMatrixEntry.signature.asc())
+        )
+        for cell in session.execute(cell_stmt).scalars().all():
+            cell_tbl = table_map.get(cell.fact_table_id)
+            if cell_tbl:
+                bus_matrix_contexts.append(
+                    BusMatrixContext(
+                        fact_table=cell_tbl.table_name,
+                        attachment=cell.attachment,
+                        concept_label=cell.concept_label,
+                        roles=list(cell.roles),
+                        attributes=list(cell.attributes),
+                        confirmation_source=cell.confirmation_source,
+                        needs_confirmation=cell.needs_confirmation,
                     )
                 )
 
@@ -1120,6 +1179,7 @@ def build_execution_context(
         slice_value=slice_value,
         available_slices=slice_contexts,
         dimension_hierarchies=hierarchy_contexts,
+        bus_matrix=bus_matrix_contexts,
         drivers=driver_contexts,
         business_cycles=business_cycle_contexts,
         cycle_health=cycle_health_report,

@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from dataraum.analysis.hierarchies.db_models import BusMatrixEntry
 from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.lineage.models import CandidateDisposal
 from dataraum.analysis.lineage.reconcile import (
@@ -68,6 +69,8 @@ from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import duckdb
     from sqlalchemy.orm import Session
 
@@ -331,6 +334,73 @@ def _better(challenger: _Best, incumbent: _Best) -> bool:
     return challenger.winning_residual < incumbent.winning_residual
 
 
+def _shared_dimension_groups(
+    defs: Sequence[SliceDefinition],
+    conformed_cells: Sequence[BusMatrixEntry],
+) -> tuple[
+    dict[tuple[str, str], dict[str, list[SliceDefinition]]],
+    dict[tuple[str, str], str],
+]:
+    """Group this run's slices into cross-table dimension identities.
+
+    REFERENCED identities (DAT-756): group by the slice's referenced identity,
+    not its ``column_name``. Two facts share a dimension iff they reference the
+    SAME dim table at the SAME attribute — so the same conformed dimension
+    reached via differently-named FK columns is paired (the false-negative that
+    silently disabled this witness), and two unrelated same-named FOLDED
+    columns are not (the false-positive). ``{table -> [slices]}`` per identity:
+    one fact can carry MULTIPLE slices at the same identity — role-playing FKs
+    to one dim. Keep them all (a list, not last-write-wins): each is a distinct
+    bucketing lens the search competes.
+
+    FOLDED identities (DAT-800): a folded slice has no referenced identity, but
+    the run's conform judge may have asserted its CROSS-FACT identity — folded
+    bus-matrix cells carrying a ``conformed_group``. THAT group signature (the
+    conform-connected component) is the group key; ``concept_label`` is
+    display-only — keying on it would split a group whose verdicts drifted
+    labels and merge two distinct groups sharing a generic label, discarding
+    the judge's own DISTINCT verdict. Each cell's fold key names the fact's
+    physical grouping column, whose own FOLDED ``SliceDefinition`` is the same
+    lens object the referenced path uses. A conformed fold whose key column
+    was never sliced abstains loudly, never guesses.
+
+    Returns ``(groups, folded_labels)`` — groups include singletons (the caller
+    applies the >=2-tables filter); ``folded_labels`` maps each folded identity
+    to the judge's concept label for the persisted ``slice_dimension``.
+    """
+    defs_by_dim: dict[tuple[str, str], dict[str, list[SliceDefinition]]] = {}
+    for sd in defs:
+        if not sd.dimension_table_id:
+            continue
+        identity = (sd.dimension_table_id, sd.dimension_attribute or "")
+        defs_by_dim.setdefault(identity, {}).setdefault(sd.table_id, []).append(sd)
+
+    folded_slice = {(sd.table_id, sd.column_name): sd for sd in defs if not sd.dimension_table_id}
+    folded_labels: dict[tuple[str, str], str] = {}
+    cells_by_group: dict[str, list[BusMatrixEntry]] = {}
+    for cell in conformed_cells:
+        if cell.conformed_group:
+            cells_by_group.setdefault(cell.conformed_group, []).append(cell)
+    for group, cells in sorted(cells_by_group.items()):
+        identity = (f"folded:{group}", "")
+        for cell in cells:
+            key_col = cell.roles[0] if cell.roles else None
+            lens = folded_slice.get((cell.fact_table_id, key_col))
+            if lens is None:
+                logger.info(
+                    "lineage_folded_axis_unsliced",
+                    fact_table_id=cell.fact_table_id,
+                    column=key_col,
+                    concept=cell.concept_label,
+                )
+                continue
+            defs_by_dim.setdefault(identity, {}).setdefault(cell.fact_table_id, []).append(lens)
+        if identity in defs_by_dim:
+            # One label per group (the conform pass canonicalizes) — display only.
+            folded_labels[identity] = cells[0].concept_label
+    return defs_by_dim, folded_labels
+
+
 def discover_aggregation_lineage(
     session: Session,
     *,
@@ -372,26 +442,29 @@ def discover_aggregation_lineage(
         .scalars()
         .all()
     )
-    # Group by the slice's REFERENCED-dimension identity (DAT-756), not its
-    # ``column_name``. Two facts share a dimension iff they reference the SAME
-    # dim table at the SAME attribute — so the same conformed dimension reached
-    # via differently-named FK columns is paired (the false-negative that
-    # silently disabled this witness), and two unrelated same-named FOLDED columns
-    # are not (the false-positive). A folded slice (null ``dimension_table_id``)
-    # has no cross-table identity in Phase A and abstains (DAT-757).
-    # ``{table -> [slices]}`` per identity: one fact can carry MULTIPLE slices at the
-    # same identity — role-playing FKs to one dim (``kontonummer`` vs
-    # ``kontonummer_des_gegenkontos``, both -> accounts at ``land``). Keep them all
-    # (a list, not last-write-wins): each is a distinct bucketing lens the search
-    # competes; dropping one would silently lose a reconciliation candidate. Role
-    # disambiguation itself (bill-to vs ship-to as SEPARATE dimensions) is DAT-757 —
-    # here they share the Phase-A identity and are simply both tried.
-    defs_by_dim: dict[tuple[str, str], dict[str, list[SliceDefinition]]] = {}
-    for sd in defs:
-        if not sd.dimension_table_id:
-            continue
-        identity = (sd.dimension_table_id, sd.dimension_attribute or "")
-        defs_by_dim.setdefault(identity, {}).setdefault(sd.table_id, []).append(sd)
+    # Conformed identities the run's cross-fact judge asserted on FOLDED axes
+    # (DAT-800): the bus matrix — derived by ``dimension_hierarchies``, which
+    # runs before this phase — carries them; on a denormalized corpus these are
+    # the ONLY shared dimensions (the flat-shape inertness this closes).
+    # ``conformed_group`` (not ``confirmation_source``) is the filter: who
+    # asserted the underlying STRUCTURE (user teach vs stats) is orthogonal to
+    # whether the judge conformed its cross-fact IDENTITY — a user-taught fold
+    # the judge conformed participates.
+    conformed_cells = (
+        session.execute(
+            select(BusMatrixEntry)
+            .where(
+                BusMatrixEntry.run_id == run_id,
+                BusMatrixEntry.fact_table_id.in_(table_ids),
+                BusMatrixEntry.attachment == "folded",
+                BusMatrixEntry.conformed_group.is_not(None),
+            )
+            .order_by(BusMatrixEntry.signature)
+        )
+        .scalars()
+        .all()
+    )
+    defs_by_dim, folded_labels = _shared_dimension_groups(defs, conformed_cells)
     shared_dims = {ident: by_table for ident, by_table in defs_by_dim.items() if len(by_table) >= 2}
     if not shared_dims:
         logger.info("lineage_no_shared_dimension", identities=sorted(defs_by_dim))
@@ -399,7 +472,8 @@ def discover_aggregation_lineage(
 
     # Readable label per identity for the persisted ``slice_dimension`` + logs:
     # ``<dim table>.<attribute>`` (the conformed axis), not a per-fact column name
-    # (which now differs across the paired facts).
+    # (which now differs across the paired facts). Folded identities carry the
+    # judge's concept label.
     dim_names = {
         t.table_id: t.table_name
         for t in session.execute(
@@ -414,6 +488,7 @@ def discover_aggregation_lineage(
         )
         for ident in shared_dims
     }
+    labels.update({ident: label for ident, label in folded_labels.items() if ident in shared_dims})
 
     # Key/identifier columns are not quantities: a SUM over a key has no
     # meaning, and identical key sets reconcile trivially (identity noise).

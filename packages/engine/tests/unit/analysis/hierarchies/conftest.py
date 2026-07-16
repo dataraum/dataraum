@@ -17,11 +17,50 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from dataraum.analysis.hierarchies.judge import AliasIdentityVerdict
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
+from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table, init_database
 
 RUN = "session-run-1"
+
+
+class StubIdentityJudge:
+    """A ``DimensionIdentityJudge`` stand-in for the discovery tests.
+
+    Discovery calls only ``alias_identity``; this returns one verdict per
+    candidate at the configured ``confidence`` (default: 0.95 — a clear alias, so
+    an existing alias test that expects a relabeling bijection to merge still
+    passes). The verdict is confidence-only (DAT-762): a low ``confidence`` (e.g.
+    0.03) exercises the coincidental-bijection surface path; ``fail=True`` returns
+    a failed Result (the judge-unavailable posture — the pair must surface, never
+    merge). ``calls`` records each candidate batch.
+    """
+
+    def __init__(self, *, confidence: float = 0.95, fail: bool = False) -> None:
+        self._conf = confidence
+        self._fail = fail
+        self.calls: list[list[dict]] = []
+
+    def alias_identity(
+        self, *, candidates: list[dict]
+    ) -> Result[list[AliasIdentityVerdict]]:
+        self.calls.append(candidates)
+        if self._fail:
+            return Result.fail("stub judge unavailable")
+        return Result.ok(
+            [
+                AliasIdentityVerdict(pair_ref=c["ref"], confidence=self._conf, reason="stub")
+                for c in candidates
+            ]
+        )
+
+
+def approving_judge() -> StubIdentityJudge:
+    """Fresh stub that approves every relabeling bijection (default discovery judge)."""
+    return StubIdentityJudge()
+
 VIEW = "sales_enriched"
 
 # zip → (city, state): multiple zips per city, multiple cities per state — a real

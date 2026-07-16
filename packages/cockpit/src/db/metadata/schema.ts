@@ -75,6 +75,26 @@ export const configOverlay = metadataSchema
 		sql`SELECT overlay_id, type, payload, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.config_overlay`,
 	);
 
+export const currentBusMatrix = metadataSchema
+	.view("current_bus_matrix", {
+		entryId: varchar("entry_id"),
+		runId: varchar("run_id"),
+		factTableId: varchar("fact_table_id"),
+		attachment: varchar(),
+		conceptLabel: varchar("concept_label"),
+		dimensionTableId: varchar("dimension_table_id"),
+		roles: json(),
+		attributes: json(),
+		confirmationSource: varchar("confirmation_source"),
+		conformedGroup: varchar("conformed_group"),
+		needsConfirmation: boolean("needs_confirmation"),
+		signature: varchar(),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	})
+	.as(
+		sql`SELECT entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, roles, attributes, confirmation_source, conformed_group, needs_confirmation, signature, created_at FROM ws_00000000_0000_0000_0000_000000000001.bus_matrix r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentClaimWitnesses = metadataSchema
 	.view("current_claim_witnesses", {
 		claimWitnessId: varchar("claim_witness_id"),
@@ -208,12 +228,13 @@ export const currentDimensionHierarchies = metadataSchema
 		g3: doublePrecision(),
 		roleVerdict: varchar("role_verdict"),
 		roleEvidence: json("role_evidence"),
+		identityConfidence: doublePrecision("identity_confidence"),
 		detectionSource: varchar("detection_source"),
 		needsConfirmation: boolean("needs_confirmation"),
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	})
 	.as(
-		sql`SELECT hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, g3, role_verdict, role_evidence, detection_source, needs_confirmation, created_at FROM ws_00000000_0000_0000_0000_000000000001.dimension_hierarchies r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, g3, role_verdict, role_evidence, identity_confidence, detection_source, needs_confirmation, created_at FROM ws_00000000_0000_0000_0000_000000000001.dimension_hierarchies r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentDriverRankings = metadataSchema

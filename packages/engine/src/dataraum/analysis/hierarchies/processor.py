@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import polars as pl
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.analysis.hierarchies import stats
 from dataraum.analysis.hierarchies.db_models import (
@@ -590,6 +590,20 @@ def discover_dimension_hierarchies(
     # add/alias assert one.
     rows = _apply_teaches(session, rows, col_ids_by_table=col_ids_by_table, run_id=run_id)
 
+    # Delete-then-insert in ONE transaction (the derive_bus_matrix retry pattern).
+    # The §5b identity judge makes an alias GROUP's signature depend on a
+    # nondeterministic verdict, so a bare upsert keyed on the signature SET could
+    # strand a prior delivery's group row when a verdict flip changes the group's
+    # size — and drivers would collapse that stale needs_confirmation=False row,
+    # dropping a real axis (the corruption this lane exists to prevent). Replacing
+    # the run's rows wholesale makes the persisted set exactly the last delivery's;
+    # the upsert + unique constraint stay as the in-batch backstop.
+    session.execute(
+        delete(DimensionHierarchy).where(
+            DimensionHierarchy.run_id == run_id,
+            DimensionHierarchy.table_id.in_(table_ids),
+        )
+    )
     upsert(session, DimensionHierarchy, rows, index_elements=["signature", "run_id"])
     return len(rows)
 
@@ -743,11 +757,17 @@ def _apply_teaches(
 
 
 def _col_samples(frame: pl.DataFrame, col: str) -> list[str]:
-    """Up to ``_IDENTITY_SAMPLE_VALUES`` most-common non-null values, as strings."""
+    """Up to ``_IDENTITY_SAMPLE_VALUES`` most-common non-null values, as strings.
+
+    Count ties are broken by value (ascending) so the evidence block is
+    reproducible run-to-run — the judge input must not vary on undefined tie order
+    (``value_counts(sort=True)`` alone leaves ties unordered).
+    """
     s = frame.get_column(col).drop_nulls()
     if not len(s):
         return []
-    vc = s.value_counts(sort=True)
+    vc = s.value_counts()
+    vc = vc.sort(by=[vc.columns[1], vc.columns[0]], descending=[True, False])
     return [str(v) for v in vc[vc.columns[0]][:_IDENTITY_SAMPLE_VALUES].to_list()]
 
 
@@ -1110,6 +1130,11 @@ def _view_structures(
                 confidence=round(v.confidence, 3),
             )
             continue
+        # A non-merged bijection is a suspicious 1:1 pair, not a level relationship:
+        # suppress its direct edge at assembly, exactly as the role-check non-merged
+        # path does (an asymmetric-null pair could otherwise read finest→coarsest on
+        # the null-dropped rows and assert a spurious drilldown the judge declined).
+        same_domain.add(frozenset((a, b)))
         group = sorted((a, b))
         out.append(
             _hierarchy_row(

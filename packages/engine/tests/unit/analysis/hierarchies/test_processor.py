@@ -143,6 +143,56 @@ class TestIdentityJudge:
         assert row.needs_confirmation is True
         assert row.identity_confidence is None  # absence of judgment, not a low score
 
+    def test_redelivery_verdict_flip_leaves_no_stale_merged_group(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A Temporal redelivery whose judge verdict FLIPS must not strand a prior
+        delivery's merged GROUP row. The alias-group signature depends on the
+        (nondeterministic) verdict, so without replace-semantics the delivery-1
+        3-member row would survive delivery-2's smaller group and drivers would
+        collapse it (needs_confirmation=False) — dropping the declined axis."""
+        acct = [f"A{i % 3}" for i in range(120)]
+        cols = {
+            "account_id": acct,
+            "account_code": acct,  # exact copy (rate 0) → merged without the judge
+            "account_name": [{"A0": "Cash", "A1": "Receivable", "A2": "Payable"}[a] for a in acct],
+        }
+        tid = seed_view(real_session, duck, "facts", cols)
+
+        class _Flip:
+            def __init__(self) -> None:
+                self.n = 0
+
+            def alias_identity(self, *, candidates: list[dict]):  # noqa: ANN202
+                from dataraum.analysis.hierarchies.judge import AliasIdentityVerdict
+                from dataraum.core.models.base import Result
+
+                self.n += 1
+                same = self.n == 1  # merge on delivery 1, decline on delivery 2
+                return Result.ok(
+                    [
+                        AliasIdentityVerdict(
+                            pair_ref=c["ref"],
+                            same_dimension=same,
+                            confidence=0.95 if same else 0.03,
+                            reason="flip",
+                        )
+                        for c in candidates
+                    ]
+                )
+
+        judge = _Flip()
+        for _ in range(2):  # same run_id — a success-redelivery
+            discover_dimension_hierarchies(
+                real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=judge
+            )
+            real_session.commit()
+
+        # After the flip, NO auto-collapsing (needs_confirmation=False) alias may
+        # still carry account_name — that stale row is the corruption.
+        confirmed = [r for r in _rows(real_session, tid, "alias") if r.needs_confirmation is False]
+        assert all("account_name" not in _members(r) for r in confirmed)
+
 
 class TestDiscoverDimensionHierarchies:
     def test_drilldown_chain_coarsest_to_finest_by_level(

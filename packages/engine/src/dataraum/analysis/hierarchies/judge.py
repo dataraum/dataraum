@@ -1,12 +1,20 @@
-"""Dimension-identity judge (DAT-762) — the cross-fact conform lane.
+"""Dimension-identity judge (DAT-762) — the two gaps the statistics cannot reach.
 
-Stats DECIDE; this judge fills the one gap the statistics cannot reach. One
-judgment class ships here:
+Stats DECIDE; this judge fills the two identity questions no statistic can
+settle. Both ship here:
 
 - ``dimension_conform`` — cross-fact CONFORM/ROLE/DISTINCT/ABSTAIN where no
   pairwise statistic exists (different facts share no rows). Evidence is
   names + attribute sets + authored column meanings (DAT-769); meanings
   corroborate, never auto-confirm.
+- ``alias_identity`` — within-view, is a bijection ONE dimension (a true
+  relabeling, code↔name) or a COINCIDENTAL 1:1 (two different attributes that
+  merely line up on these rows — an entity key and a per-row timestamp)? A
+  perfect bijection is statistically indistinguishable from a coincidental one
+  (g3 = 0, λ = 1, both survive the permutation null), so only meaning separates
+  them. Returns a calibrated confidence; the finder merges the confident ones
+  and surfaces the rest as ``needs_confirmation`` — a coincidental merge would
+  collapse two drill axes into one and corrupt every aggregation over them.
 
 The seam is producer-agnostic on purpose: a producer submits evidence dicts
 and gets typed verdicts back; candidate selection lives with the producer,
@@ -69,6 +77,27 @@ class ConformBatchOutput(BaseModel):
     verdicts: list[ConformVerdict]
 
 
+class AliasIdentityVerdict(BaseModel):
+    """One within-view bijection verdict: is the pair one dimension?"""
+
+    pair_ref: str = Field(description="The candidate pair's ref echoed back verbatim")
+    same_dimension: bool = Field(
+        description="True if the bijection is one dimension (a true relabeling alias)"
+    )
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Calibrated [0,1] confidence that the pair is one dimension (house convention)",
+    )
+    reason: str = Field(description="One sentence of grounds")
+
+
+class AliasIdentityBatchOutput(BaseModel):
+    """Tool output: one identity verdict per submitted bijection pair."""
+
+    verdicts: list[AliasIdentityVerdict]
+
+
 class DimensionIdentityJudge(LLMFeature):
     """Forced-tool judge over the DAT-762 cross-fact conform judgment."""
 
@@ -108,6 +137,37 @@ class DimensionIdentityJudge(LLMFeature):
         )
         if not result.success:
             return Result.fail(result.error or "dimension_conform judgment failed")
+        return Result.ok(result.unwrap().verdicts)
+
+    def alias_identity(
+        self, *, candidates: list[dict[str, Any]]
+    ) -> Result[list[AliasIdentityVerdict]]:
+        """Within-view identity: is a bijection one dimension, or coincidental?
+
+        Args:
+            candidates: Each ``{ref, table, a, b, meanings}`` where ``a`` and
+                ``b`` are ``{name, distinct, samples}`` (the two bijective
+                columns) and ``meanings`` maps column name to its authored
+                meaning (may be empty — the judge then leans on names + values).
+
+        Returns:
+            One verdict per pair, or a failed Result on an unusable response.
+        """
+        if not candidates:
+            return Result.ok([])
+        context = {"candidates": self._format_alias_candidates(candidates)}
+        result = self._judge(
+            template="dimension_alias",
+            context=context,
+            tool_name="judge_aliases",
+            tool_description=(
+                "Return a same_dimension verdict with a calibrated [0,1] confidence "
+                "and a one-sentence reason for every candidate bijection pair listed."
+            ),
+            output_model=AliasIdentityBatchOutput,
+        )
+        if not result.success:
+            return Result.fail(result.error or "dimension_alias judgment failed")
         return Result.ok(result.unwrap().verdicts)
 
     def _judge[T: BaseModel](
@@ -185,4 +245,22 @@ class DimensionIdentityJudge(LLMFeature):
                 meanings: dict[str, str] = side.get("meanings") or {}
                 for col in sorted(meanings):
                     blocks.append(f"    {col}: {meanings[col]}")
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _format_alias_candidates(candidates: list[dict[str, Any]]) -> str:
+        """Render within-view bijection pairs as a deterministic text block."""
+        blocks: list[str] = []
+        for c in candidates:
+            blocks.append(f"- ref={c['ref']} table={c['table']}")
+            for side_name in ("a", "b"):
+                side = c[side_name]
+                samples = ", ".join(str(v) for v in side.get("samples", []))
+                blocks.append(
+                    f"    {side_name}: {side['name']} — {side['distinct']:,} distinct"
+                    + (f", e.g. {samples}" if samples else "")
+                )
+            meanings: dict[str, str] = c.get("meanings") or {}
+            for col in sorted(meanings):
+                blocks.append(f"      meaning[{col}]: {meanings[col]}")
         return "\n".join(blocks)

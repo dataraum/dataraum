@@ -152,3 +152,66 @@ def test_evidence_formatting_is_deterministic() -> None:
     assert "ref=p1" in text
     assert "fact=ledger" in text
     assert "acct_id: the entity key" in text
+
+
+_ALIAS_INPUT = {
+    "verdicts": [
+        {
+            "pair_ref": "0",
+            "same_dimension": True,
+            "confidence": 0.95,
+            "reason": "an id and its name for the same entity",
+        }
+    ]
+}
+_ALIAS_CANDIDATES = [
+    {
+        "ref": "0",
+        "table": "facts",
+        "a": {"name": "account_id", "distinct": 3, "samples": ["A0", "A1", "A2"]},
+        "b": {"name": "account_name", "distinct": 3, "samples": ["Cash", "Receivable", "Payable"]},
+        "meanings": {"account_id": "the account entity key"},
+    }
+]
+
+
+def test_alias_identity_happy_path() -> None:
+    provider = _provider(_response("judge_aliases", _ALIAS_INPUT))
+    judge = DimensionIdentityJudge(_config(), provider, _renderer())
+
+    result = judge.alias_identity(candidates=_ALIAS_CANDIDATES)
+
+    assert result.success
+    (verdict,) = result.unwrap()
+    assert verdict.same_dimension is True
+    assert verdict.confidence == 0.95
+
+
+def test_alias_identity_empty_candidates_short_circuits() -> None:
+    provider = _provider()  # converse would raise StopIteration if called
+    judge = DimensionIdentityJudge(_config(), provider, _renderer())
+
+    result = judge.alias_identity(candidates=[])
+
+    assert result.success and result.unwrap() == []
+    provider.converse.assert_not_called()
+
+
+def test_alias_confidence_out_of_range_is_malformed() -> None:
+    """A confidence outside [0,1] fails validation → the DAT-710 repair loop."""
+    import pytest
+    from pydantic import ValidationError
+
+    from dataraum.analysis.hierarchies.judge import AliasIdentityBatchOutput
+
+    with pytest.raises(ValidationError):
+        AliasIdentityBatchOutput.model_validate(
+            {"verdicts": [{"pair_ref": "0", "same_dimension": True, "confidence": 1.7, "reason": "x"}]}
+        )
+
+
+def test_alias_evidence_formatting_is_deterministic() -> None:
+    text = DimensionIdentityJudge._format_alias_candidates(_ALIAS_CANDIDATES)
+    assert "ref=0 table=facts" in text
+    assert "account_id — 3 distinct" in text
+    assert "meaning[account_id]: the account entity key" in text

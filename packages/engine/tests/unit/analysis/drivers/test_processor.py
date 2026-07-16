@@ -144,6 +144,33 @@ class TestDiscoverDrivers:
         assert "D_e25" in dims  # canonical kept
         assert ALIAS not in dims  # redundant axis collapsed out (DAT-537)
 
+    def test_needs_confirmation_alias_not_collapsed(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A needs_confirmation alias (the DAT-762 identity judge declined the merge,
+        or a role-check near-copy) is an UNCONFIRMED redundancy — collapsing it would
+        drop a real axis the flag says we are unsure about, so BOTH members survive."""
+        tid = _seed(real_session, duck)
+        a, b = [d for d in ALL_DIMS if d != "D_e25"][:2]
+        real_session.add(
+            DimensionHierarchy(
+                run_id=RUN,
+                table_id=tid,
+                kind="alias",
+                members=[
+                    {"column_name": a, "column_id": "", "distinct_count": 3, "level": 0},
+                    {"column_name": b, "column_id": "", "distinct_count": 3, "level": 1},
+                ],
+                canonical_label=a,
+                signature=f"alias:{tid}:{a}|{b}",
+                needs_confirmation=True,
+                identity_confidence=0.03,
+            )
+        )
+        real_session.flush()
+        dims = _candidate_dims(real_session, tid, RUN)
+        assert a in dims and b in dims  # unconfirmed redundancy → both axes kept
+
     def test_end_to_end_ranks_drivers(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:

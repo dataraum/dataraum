@@ -4,8 +4,10 @@ Session value phase: over each fact's grain-verified enriched view it runs the
 DAT-757 gate stack (row-g3 + λ + permutation-BH edges, pair-count aliases with
 the disagreement-set role check) across every dimension-like view column —
 measures are excluded by their ``semantic_role``, everything else is guarded
-by data-grounded checks, not caps. The discovery pass is deterministic and
-source-free; no LLM.
+by data-grounded checks, not caps. The stack is deterministic; its ONE LLM
+touchpoint is the within-view identity judge (DAT-762) on relabeling bijections
+— a code↔name alias and a coincidental 1:1 are statistically identical, so
+meaning decides whether the two axes collapse or surface for confirmation.
 
 DAT-762 Part 2 rides the same phase: after discovery the BUS MATRIX is derived
 and persisted (``bus_matrix`` — fact × dimension exposure as referenced/folded
@@ -95,6 +97,7 @@ class DimensionHierarchiesPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             table_ids=ctx.table_ids or [],
             run_id=run_id,
+            judge=judge,
         )
         # The bus matrix (DAT-762 Part 2) derives from what discovery just
         # persisted (fold groups) + the run's slice identities; the judge

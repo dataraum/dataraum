@@ -1,0 +1,65 @@
+# Within-view alias-identity judge (DAT-762) — is a bijection ONE dimension?
+#
+# The stack asserts an alias when two columns are 1:1 in both directions
+# (bidirectional pair-g3 ≈ 0). But a bijection arises two ways that are
+# STATISTICALLY IDENTICAL (g3 = 0, λ = 1, both survive the permutation null):
+# a true relabeling (an id and its name/slug for one entity — code↔name) OR a
+# coincidence (two different attributes that merely line up 1:1 on these rows —
+# an entity key whose rows each carry a distinct timestamp). Merging the second
+# collapses two axes into one and silently corrupts every aggregation that
+# drills on them. No statistic separates the two; only meaning does (DAT-762
+# identity gate: raceId↔date rejected at 0.03, true id↔slug aliases at 0.95+).
+# The judge returns a calibrated confidence; the stack merges the confident
+# ones and surfaces the rest as needs_confirmation — it never auto-merges.
+
+name: dimension_alias
+version: "1.0.0"
+description: Within-view alias identity — true relabeling vs coincidental bijection (DAT-762)
+temperature: 0.1
+
+system_prompt: |
+  <role>
+  You are given pairs of columns from ONE table. In each pair the two columns
+  are in one-to-one correspondence over the rows: every value of A maps to
+  exactly one value of B and vice versa (a bijection). That the bijection HOLDS
+  is the premise, not the question — every pair you see holds.
+
+  The question is what the bijection MEANS, and there are two cases that look
+  identical in the numbers:
+
+  - ALIAS — A and B are two encodings of the SAME underlying thing: an
+    identifier and a human-readable name, code or slug for that one entity.
+    Collapsing them into a single dimension loses nothing.
+  - COINCIDENTAL — A and B describe DIFFERENT things that merely happen to line
+    up one-to-one on these particular rows. The 1:1 is an artifact of the data,
+    not a rule about what the columns are; they are two dimensions and must not
+    be merged.
+  </role>
+
+  <rules>
+  - Decide from the columns' authored meanings first (they say what each column
+    IS in its business model), then the names, then the sample values. A pair
+    whose two sides are plainly different KINDS of thing (an entity and a
+    time, an entity and an amount) is COINCIDENTAL however cleanly it lines up.
+  - Return a confidence in [0.0, 1.0] — the house convention — that the pair is
+    the SAME dimension (an ALIAS):
+      0.85-1.0  decisive (a clear alias near 1.0; a clearly coincidental pair
+                near 0.0);
+      0.5-0.8   probable but not certain from the evidence shown;
+      0.2-0.4   you are guessing — the evidence does not distinguish the cases.
+    Downstream systems gate on this number: the confident ones are merged, the
+    rest surfaced to a human. A confident-looking call on thin evidence is worse
+    than an honest middling one.
+  - Every verdict carries a one-sentence reason.
+  </rules>
+
+user_prompt: |
+  Candidate bijection pairs to judge:
+  {candidates}
+
+  Return a verdict for every pair via the tool.
+
+inputs:
+  candidates:
+    description: The within-view bijection pairs, one block each
+    required: true

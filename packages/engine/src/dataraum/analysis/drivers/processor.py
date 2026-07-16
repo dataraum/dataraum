@@ -113,10 +113,14 @@ def _enriched_view_name(session: Session, fact_table_id: str, run_id: str) -> st
 
 
 def _candidate_dims(session: Session, fact_table_id: str, run_id: str) -> list[str]:
-    """This run's grain-safe slice dimensions, with alias groups collapsed to canonical.
+    """This run's grain-safe slice dimensions, with CONFIRMED alias groups collapsed.
 
     A DAT-537 1:1 alias group is a redundant axis — keep only its canonical member so
     it doesn't compete as a separate candidate (the de-confounding the spike deferred).
+    Only CONFIRMED aliases collapse: a ``needs_confirmation`` alias is an UNCONFIRMED
+    redundancy (a coincidental bijection the DAT-762 identity judge declined, or an
+    undecidable role-check near-copy), and collapsing it would silently drop a real
+    axis the flag says we are not sure about — the safe default keeps both.
     """
     defs = session.execute(
         select(SliceDefinition.column_name).where(
@@ -132,6 +136,7 @@ def _candidate_dims(session: Session, fact_table_id: str, run_id: str) -> list[s
             DimensionHierarchy.table_id == fact_table_id,
             DimensionHierarchy.run_id == run_id,
             DimensionHierarchy.kind == "alias",
+            DimensionHierarchy.needs_confirmation.is_(False),
         )
     ).scalars()
     for group in aliases:

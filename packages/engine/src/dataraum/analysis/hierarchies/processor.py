@@ -1,11 +1,17 @@
 """Dimension-identity discovery over the enriched views (DAT-761, stack v4 from DAT-757).
 
-Deterministic, no LLM. For each fact's grain-verified enriched view, EVERY
-dimension-like view column is a candidate (measures excluded by their
-``semantic_role`` — the additivity lane: ``revenue → tier`` is reliably asserted
-by every statistic, so measures never enter FD discovery). The upstream pipeline
-``max_columns`` limit is the only width cap; all other exclusions are
-data-grounded guards, each logged (born-loud).
+For each fact's grain-verified enriched view, EVERY dimension-like view column
+is a candidate (measures excluded by their ``semantic_role`` — the additivity
+lane: ``revenue → tier`` is reliably asserted by every statistic, so measures
+never enter FD discovery). The upstream pipeline ``max_columns`` limit is the
+only width cap; all other exclusions are data-grounded guards, each logged
+(born-loud).
+
+The statistics are deterministic and decide everything EXCEPT one class they
+cannot separate: a relabeling bijection (code ↔ name) and a coincidental 1:1
+(an entity key that lines up with a per-row timestamp) are identical to every
+statistic (g3 = 0, λ = 1, both survive the null). That one call is the identity
+judge (DAT-762 §5b); a failed call surfaces the pair, never merges it.
 
 The decision layer is the DAT-757 gate stack (32/32 on the adversarial matrix,
 100% recoverable-truth recall on rel-f1/rel-hm/rel-salt folded by their own FK
@@ -59,6 +65,7 @@ from dataraum.analysis.hierarchies.db_models import (
 from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
 from dataraum.analysis.hierarchies.stats import RoleVerdict
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
@@ -67,6 +74,11 @@ from dataraum.storage.upsert import upsert
 if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
+
+    from dataraum.analysis.hierarchies.judge import (
+        AliasIdentityVerdict,
+        DimensionIdentityJudge,
+    )
 
 logger = get_logger(__name__)
 
@@ -108,6 +120,22 @@ MIN_ROWS_NEARKEY = 10
 # Structures resting on fewer rows than this are surfaced for confirmation
 # (``needs_confirmation``) rather than auto-asserted.
 MIN_SUPPORT_ROWS = 100
+
+# The within-view identity judge's operating point (DAT-762): a relabeling
+# bijection is MERGED (axes collapsed) only when the judge is at least this
+# confident it is one dimension. Below it — a coincidental bijection, a grey
+# call, or a judge that could not answer — the pair is surfaced as a
+# needs_confirmation alias and NOT collapsed. The house "act on ≥ 0.8, surface
+# the rest" point; the identity gate separates true aliases (≥0.95) from
+# coincidental ones (≤0.05) with a wide margin, so the exact value is not
+# delicate (DAT-762 comment 16785 operating curve).
+IDENTITY_MERGE_MIN = 0.8
+
+# Sample values per column sent to the identity judge (evidence, not a decision
+# surface). These columns were already sent to the LLM by the semantic phase, so
+# this adds no new data exposure; kept small — names + cardinality carry most of
+# the signal (the identity gate ran on ≤8).
+_IDENTITY_SAMPLE_VALUES = 6
 
 # Row-statistics working set: rows × candidate columns pulled into memory
 # (the DAT-580 drivers precedent). Guards never depend on the sample.
@@ -474,12 +502,17 @@ def discover_dimension_hierarchies(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     run_id: str,
+    judge: DimensionIdentityJudge,
 ) -> int:
     """Run the stack-v4 identity pass over each enriched view; persist run-versioned.
 
-    Form-(a) writer (DAT-502): one row per ``(signature, run_id)``, UPSERTed;
-    deterministic (fixed permutation/sample seeds), so a redelivered run
-    converges. Returns the rows persisted.
+    Form-(a) writer (DAT-502): one row per ``(signature, run_id)``, UPSERTed. The
+    STATISTICS are deterministic (fixed permutation/sample seeds), so a redelivered
+    run converges; the ONE LLM touchpoint is the within-view identity judge on
+    relabeling bijections (DAT-762 §5b) — a code↔name alias and a coincidental 1:1
+    are statistically identical, so meaning decides whether the axes collapse. A
+    failed judge call surfaces those pairs as needs_confirmation, never merges them.
+    Returns the rows persisted.
     """
     enriched = (
         session.execute(
@@ -524,14 +557,30 @@ def discover_dimension_hierarchies(
         frame = _pull_sample(duckdb_conn, ev.view_name, cand_names, scan.n)
         if frame is None:
             continue
+        # Authored column meanings (DAT-769) for the identity judge — corroborating
+        # evidence over the fact's own + folded dim columns. Keyed by the view's
+        # column name via each candidate's resolved catalog id.
+        concepts = load_column_concepts(
+            session, [ev.fact_table_id, *(ev.dimension_table_ids or [])], run_id
+        )
+        meanings: dict[str, str] = {}
+        for cand in by_name.values():
+            concept = concepts.get(cand.column_id) if cand.column_id else None
+            if concept is not None and concept.meaning:
+                meanings[cand.column_name] = concept.meaning
         rows.extend(
             _view_structures(
                 fact_table_id=ev.fact_table_id,
+                table_name=table_by_id[ev.fact_table_id].table_name
+                if ev.fact_table_id in table_by_id
+                else ev.fact_table_id,
                 view_name=ev.view_name,
                 run_id=run_id,
                 by_name=by_name,
                 scan=scan,
                 frame=frame,
+                meanings=meanings,
+                judge=judge,
             )
         )
 
@@ -693,14 +742,63 @@ def _apply_teaches(
     return list(by_sig.values())
 
 
+def _col_samples(frame: pl.DataFrame, col: str) -> list[str]:
+    """Up to ``_IDENTITY_SAMPLE_VALUES`` most-common non-null values, as strings."""
+    s = frame.get_column(col).drop_nulls()
+    if not len(s):
+        return []
+    vc = s.value_counts(sort=True)
+    return [str(v) for v in vc[vc.columns[0]][:_IDENTITY_SAMPLE_VALUES].to_list()]
+
+
+def _judge_alias_identity(
+    judge: DimensionIdentityJudge,
+    *,
+    table_name: str,
+    pairs: list[tuple[str, str]],
+    scan: _ViewScan,
+    frame: pl.DataFrame,
+    meanings: dict[str, str],
+) -> dict[tuple[str, str], AliasIdentityVerdict]:
+    """Ask the identity judge which relabeling bijections are one dimension.
+
+    A FAILED call is not a judgment (the research posture): it returns ``{}`` and
+    every pair falls to the needs_confirmation path — an unjudged bijection is
+    surfaced, never silently auto-merged (that collapse would corrupt two axes).
+    """
+    candidates: list[dict[str, object]] = []
+    for i, (a, b) in enumerate(pairs):
+        pair_meanings = {c: meanings[c] for c in (a, b) if c in meanings}
+        candidates.append(
+            {
+                "ref": str(i),
+                "table": table_name,
+                "a": {"name": a, "distinct": scan.d2[a], "samples": _col_samples(frame, a)},
+                "b": {"name": b, "distinct": scan.d2[b], "samples": _col_samples(frame, b)},
+                "meanings": pair_meanings,
+            }
+        )
+    result = judge.alias_identity(candidates=candidates)
+    if not result.success:
+        logger.warning(
+            "hierarchy_alias_judge_failed", table=table_name, n=len(pairs), error=result.error
+        )
+        return {}
+    by_ref = {v.pair_ref: v for v in result.unwrap()}
+    return {pair: by_ref[str(i)] for i, pair in enumerate(pairs) if str(i) in by_ref}
+
+
 def _view_structures(
     *,
     fact_table_id: str,
+    table_name: str,
     view_name: str,
     run_id: str,
     by_name: dict[str, _Candidate],
     scan: _ViewScan,
     frame: pl.DataFrame,
+    meanings: dict[str, str],
+    judge: DimensionIdentityJudge | None,
 ) -> list[dict[str, object]]:
     """The drill-down + alias + role row dicts for one enriched view (stack v4).
 
@@ -891,6 +989,7 @@ def _view_structures(
     # object-array for every eligible column is gigabytes at the cells budget,
     # for a handful of consumers.
     to_check: list[tuple[str, str, np.ndarray, float]] = []
+    to_judge: list[tuple[str, str]] = []
     for a, b in sorted(acc_alias):
         dis = (
             (frame.get_column(a).fill_null("␀") != frame.get_column(b).fill_null("␀"))
@@ -898,9 +997,17 @@ def _view_structures(
             .astype(np.int64)
         )
         rate = float(dis.mean())
-        if rate == 0.0 or rate > ROLE_MAX_DISAGREE:
-            # Exact copy, or a relabeling bijection (code ↔ name): a true alias.
+        if rate == 0.0:
+            # Exact copy: identical values, unambiguously one column seen twice.
             merged.append((a, b))
+            continue
+        if rate > ROLE_MAX_DISAGREE:
+            # Relabeling bijection: values differ but 1:1. A true alias (code ↔
+            # name) and a COINCIDENTAL bijection (an entity key that lines up 1:1
+            # with a per-row timestamp) are statistically identical here — only
+            # meaning separates them. The identity judge decides below (§5b);
+            # merging on the statistic alone was the raceId↔date false identity.
+            to_judge.append((a, b))
             continue
         to_check.append((a, b, dis, rate))
 
@@ -972,6 +1079,61 @@ def _view_structures(
             )
         )
 
+    # -- 5b. within-view identity judge on relabeling bijections -------------
+    # The rate > ROLE_MAX_DISAGREE pairs are code↔name relabelings OR coincidental
+    # 1:1s — statistically identical, only meaning tells them apart (DAT-762). A
+    # confident same-dimension call merges (its axes collapse in the driver tree);
+    # everything else — a coincidental pair, a grey call, or a judge that could
+    # not answer — is surfaced as a needs_confirmation alias that is NOT collapsed
+    # (drivers skip needs_confirmation aliases). ``merge_conf`` carries each merged
+    # pair's confidence to its assembled group below.
+    merge_conf: dict[frozenset[str], float] = {}
+    id_verdicts = (
+        _judge_alias_identity(
+            judge, table_name=table_name, pairs=to_judge, scan=scan, frame=frame, meanings=meanings
+        )
+        if to_judge and judge is not None
+        else {}
+    )
+    for a, b in to_judge:
+        v = id_verdicts.get((a, b))
+        conf = v.confidence if v is not None else None
+        if v is not None and v.same_dimension and v.confidence >= IDENTITY_MERGE_MIN:
+            merged.append((a, b))
+            merge_conf[frozenset((a, b))] = v.confidence
+            logger.info(
+                "hierarchy_alias_judged",
+                view=view_name,
+                a=a,
+                b=b,
+                merged=True,
+                confidence=round(v.confidence, 3),
+            )
+            continue
+        group = sorted((a, b))
+        out.append(
+            _hierarchy_row(
+                run_id=run_id,
+                table_id=fact_table_id,
+                kind="alias",
+                members=_validated_members([_member(c, level=i) for i, c in enumerate(group)]),
+                canonical_label=group[0],
+                signature=f"alias:{fact_table_id}:" + "|".join(group),
+                detection_source="g3",
+                needs_confirmation=True,
+                identity_confidence=conf,
+            )
+        )
+        logger.info(
+            "hierarchy_alias_judged",
+            view=view_name,
+            a=a,
+            b=b,
+            merged=False,
+            same_dimension=None if v is None else v.same_dimension,
+            confidence=None if conf is None else round(conf, 3),
+        )
+
     # -- 6. assemble: union-find → edges on reps → reduction → chains ---------
     parent = {c: c for c in eligible}
 
@@ -1034,6 +1196,11 @@ def _view_structures(
             for j in range(i + 1, len(group))
             if (group[i], group[j]) in scan.joints or (group[j], group[i]) in scan.joints
         ]
+        # The group's identity confidence is its WEAKEST judged relabeling pair
+        # (min over merge_conf of pairs inside the group). NULL when the group has
+        # no judged pair — every merge was an exact copy (rate 0), unambiguous.
+        gset = set(group)
+        judged_conf = [c for fs, c in merge_conf.items() if fs <= gset]
         out.append(
             _hierarchy_row(
                 run_id=run_id,
@@ -1047,6 +1214,7 @@ def _view_structures(
                 g3=max(pair_scores) if pair_scores else 0.0,
                 detection_source="g3",
                 needs_confirmation=needs_conf,
+                identity_confidence=min(judged_conf) if judged_conf else None,
             )
         )
         logger.info("hierarchy_alias", view=view_name, group=group)

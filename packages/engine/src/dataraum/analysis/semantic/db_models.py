@@ -169,16 +169,16 @@ class Concept(Base):
             "kind IN (" + ", ".join(f"'{v}'" for v in _CONCEPT_KIND_VALUES) + ")",
             name="kind",
         ),
-        # Lifecycle-source vocabulary (DAT-802): the full LIVE domain — 'seed'
-        # (concept_store.py, engine) and 'frame' (cockpit ``concept-write.ts``,
-        # direct Drizzle write). NOT 'teach': DAT-728 (Done) explicitly retired
-        # the ``concept`` teach type — "the config_overlay concept-family
-        # (concept/concept_property/rebind) retires read AND write" — and the
-        # cockpit's own ``teach-routing.ts`` documents the same call ("the
-        # concept vocabulary is no longer a teach type — config→DB moved it to
-        # the typed concepts table the frame stage writes"). The class
-        # docstring's inline ``# 'seed' | 'frame' | 'teach'`` comment is stale;
-        # narrowed to what DAT-728 actually left live, not the aspirational list.
+        # Lifecycle-source vocabulary (DAT-802): the two LIVE writers — 'seed'
+        # (``concept_store.py:72``, engine) and 'frame' (cockpit
+        # ``concept-write.ts:84``'s ``writeConcept()``, a real Drizzle INSERT
+        # wired into the ``frame`` tool at ``tools/frame.ts:405`` and exercised
+        # by ``concept-write.integration.test.ts`` — not a generated view, not
+        # aspirational). NOT 'teach': DAT-728 (Done) explicitly retired the
+        # ``concept`` teach type. Deliberately narrower than ``ConceptEdge.source``
+        # (2 live writers here vs. 1 there) — don't copy that CHECK's value list
+        # onto this column; each column's set is its own writers, not a shared
+        # template.
         CheckConstraint("source IS NULL OR source IN ('seed', 'frame')", name="source"),
     )
 
@@ -193,8 +193,7 @@ class Concept(Base):
     unit_from_concept: Mapped[str | None] = mapped_column(String)
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
-    # Closed vocab: see ck_concepts_source. NOT 'teach' — DAT-728 retired the
-    # concept teach type; only 'seed' | 'frame' are live writers.
+    # Closed vocab: see ck_concepts_source — 'seed' | 'frame' are the two live writers.
     source: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
@@ -259,12 +258,19 @@ class ConceptEdge(Base):
             "predicate IN (" + ", ".join(f"'{v}'" for v in _CONCEPT_EDGE_PREDICATE_VALUES) + ")",
             name="predicate",
         ),
-        # Lifecycle-source vocabulary (DAT-802): the full documented domain (class
-        # docstring) — 'seed' (concept_edge_store.py) is the only live writer;
-        # 'frame' is the declared P13 authoring path and 'derived' is the
-        # DAT-800/801 aggregation-lineage producer's output (both out of scope
-        # here) — included so neither needs a CHECK migration to land.
-        CheckConstraint("source IS NULL OR source IN ('seed', 'derived', 'frame')", name="source"),
+        # Lifecycle-source vocabulary (DAT-802): 'seed' (``concept_edge_store.py:
+        # 104,126``) is the ONLY writer this column has today. 'derived' and
+        # 'frame' were the class docstring's future-authoring-path prose
+        # (DAT-800/801, P13) — not a live writer, not even a wired-but-dead
+        # cockpit code path (the cockpit's only ``concept_edges`` reference is
+        # the generated Drizzle mirror, ``schema.ts`` — a read view, not a
+        # writer). A CHECK admitting a value no writer produces is the exact
+        # defect this sweep exists to fix (the DAT-772 audit's
+        # ``relationship_type`` finding: "advertises values no writer
+        # produces"); the cost of a future writer needing a wider CHECK is one
+        # line + a re-dump landed by the PR that adds it (no migrations here —
+        # see the workspace CLAUDE.md's "no backwards-compat shims").
+        CheckConstraint("source IS NULL OR source = 'seed'", name="source"),
     )
 
     edge_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -278,7 +284,8 @@ class ConceptEdge(Base):
     tolerance: Mapped[float | None] = mapped_column(Float)
 
     # Lifecycle: workspace-persistent with supersession (mirrors Concept).
-    source: Mapped[str | None] = mapped_column(String)  # 'seed' | 'derived' | 'frame'
+    # Closed vocab: see ck_concept_edges_source — 'seed' is the only live writer.
+    source: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

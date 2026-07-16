@@ -14,7 +14,7 @@ CREATE TABLE concept_edges (
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_concept_edges PRIMARY KEY (edge_id), 
 	CONSTRAINT ck_concept_edges_predicate CHECK (predicate IN ('disjoint_with', 'part_of', 'reconciles_with')), 
-	CONSTRAINT ck_concept_edges_source CHECK (source IS NULL OR source IN ('seed', 'derived', 'frame'))
+	CONSTRAINT ck_concept_edges_source CHECK (source IS NULL OR source = 'seed')
 );
 
 CREATE UNIQUE INDEX uq_concept_edge_active ON concept_edges (vertical, predicate, from_concept, to_concept) WHERE superseded_at IS NULL;

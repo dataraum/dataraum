@@ -1,7 +1,7 @@
 """Bus-matrix derivation (DAT-762 Part 2) — fact × dimension exposure, per run.
 
 Runs inside the ``dimension_hierarchies`` phase AFTER structure discovery, over
-the same session scope. Three legs, one writer:
+the same session scope. Two legs, one writer:
 
 - **referenced** — purely structural: this run's ``SliceDefinition`` rows with a
   resolved ``dimension_table_id`` (DAT-756), grouped per (fact, dim table);
@@ -15,16 +15,12 @@ the same session scope. Three legs, one writer:
   CROSS-FACT identity over names + attribute sets + authored column meanings
   (``ColumnConcept.meaning``, DAT-769 — context evidence, never a bypass).
   Judge abstain → per-fact cells with ``needs_confirmation=True``, never an
-  asserted shared concept. Vetoed (``needs_confirmation``) and ``kind='role'``
+  asserted shared concept. Undecided (``needs_confirmation``) and ``kind='role'``
   structures never enter a component — role pairs are separate axes by design.
-- **degenerate** — near-key, id-shaped fact columns (the ``NEAR_KEY_FRAC``
-  guard's exclusions re-derived, shape-gated to idlike/code via the routing
-  classifier): the fact-grain operational identifier recorded as its own cell
-  so the abstention is visible.
 
-The conform lane mirrors the veto lane's error posture: a failed judgment is
-recorded (cells persist per-fact, unconformed), a PERMANENT provider error
-skips conform for the run, a TRANSIENT one propagates to the Temporal boundary.
+Error posture: a failed conform judgment is recorded (cells persist per-fact,
+unconformed), a PERMANENT provider error skips conform for the run, a TRANSIENT
+one propagates to the Temporal boundary.
 """
 
 from __future__ import annotations
@@ -34,17 +30,8 @@ from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import delete, select
 
-from dataraum.analysis.hierarchies import routing
 from dataraum.analysis.hierarchies.db_models import BusMatrixEntry, DimensionHierarchy
 from dataraum.analysis.hierarchies.judge import ConformVerdict, DimensionIdentityJudge
-from dataraum.analysis.hierarchies.processor import (
-    NEAR_KEY_FRAC,
-    column_evidence,
-    pull_sample,
-    quote_ident,
-    resolve_candidates,
-    view_columns,
-)
 from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
@@ -56,7 +43,6 @@ from dataraum.storage.upsert import upsert
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    import duckdb
     from sqlalchemy.orm import Session
 
 logger = get_logger(__name__)
@@ -64,10 +50,6 @@ logger = get_logger(__name__)
 # Weakest-first provenance rank (DAT-776 vocabulary at cell grain): a
 # referenced cell inherits the floor across its roles' relationships.
 _SOURCE_RANK = {"unconfirmed": 0, "judge": 1, "keeper": 2, "user": 3}
-
-# Degenerate cells are id-shaped only: a near-key prose or temporal column is
-# an attribute/timestamp, not an operational identifier.
-_DEGENERATE_SHAPES = frozenset({"idlike", "code"})
 
 # Conform candidates per judgment call: pairs grow O(components²) with
 # facts × fold groups, so the batch is chunked (the per-pair ref scheme keeps
@@ -79,15 +61,14 @@ _CONFORM_BATCH_MAX = 32
 class BusMatrixStats:
     """The bus-matrix derivation's observable outcome — a first-class phase output.
 
-    Same posture as ``VetoLaneStats``: the conform lane is advisory (cells exist
-    with or without cross-fact judgment), so a failed conform call must never
-    fail the phase — and must never die silently either.
+    The conform lane is advisory (cells exist with or without cross-fact
+    judgment), so a failed conform call must never fail the phase — and must
+    never die silently either.
     """
 
     status: str = "ran"  # ran | failed (the conform lane)
     referenced: int = 0
     folded: int = 0
-    degenerate: int = 0
     conform_pairs: int = 0
     conformed: int = 0
     abstained: int = 0
@@ -100,7 +81,6 @@ class BusMatrixStats:
             "status": self.status,
             "referenced": self.referenced,
             "folded": self.folded,
-            "degenerate": self.degenerate,
             "conform_pairs": self.conform_pairs,
             "conformed": self.conformed,
             "abstained": self.abstained,
@@ -143,7 +123,6 @@ class _FoldComponent:
 def derive_bus_matrix(
     session: Session,
     *,
-    duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     run_id: str,
     judge: DimensionIdentityJudge,
@@ -187,25 +166,17 @@ def derive_bus_matrix(
     )
     _conform_pass(session, components, run_id=run_id, judge=judge, stats=stats)
     rows += _folded_cells(components, run_id=run_id, stats=stats)
-    fold_member_cols = {c for comp in components for c in comp.members}
-    rows += _degenerate_cells(
-        session,
-        duckdb_conn,
-        enriched,
-        name_of,
-        run_id=run_id,
-        referenced_key_cols=referenced_key_cols,
-        fold_member_cols=fold_member_cols,
-        stats=stats,
-    )
 
-    # Retry stability: folded-cell identity depends on the LLM lanes (a veto
-    # changes component membership → member_key → signature), so a
-    # crash-after-commit redelivery with a flipped verdict would strand the
-    # first attempt's cells under the same run_id — invisible to the upsert,
-    # visible through ``current_bus_matrix``. Delete-then-insert in ONE
-    # transaction is exactly idempotent when row identity is not retry-stable;
-    # the upsert + unique constraint stay as the in-batch backstop.
+    # Retry stability: a folded cell's signature carries its component's member
+    # set, which is derived from this run's discovered structures — and those
+    # include the user's teach overlay, which can change BETWEEN activity
+    # attempts (a teach landing after a crash shifts component membership →
+    # member_key → signature). A redelivery would then strand the first
+    # attempt's cells under the same run_id — invisible to the upsert, visible
+    # through ``current_bus_matrix``. Delete-then-insert in ONE transaction
+    # replaces the run's cell set wholesale, so no cell this derivation did not
+    # emit can survive; the upsert + unique constraint stay as the in-batch
+    # backstop.
     session.execute(
         delete(BusMatrixEntry).where(
             BusMatrixEntry.run_id == run_id, BusMatrixEntry.fact_table_id.in_(fact_ids)
@@ -283,7 +254,7 @@ def _fold_components(
     A structure qualifies when every member is a FACT-OWN column (its
     ``column_id`` belongs to the fact — a joined ``fk__attr`` column resolves to
     the dim table's column and is the referenced leg's territory) and none is a
-    referenced slice key. Vetoed/undecided (``needs_confirmation``) and
+    referenced slice key. Undecided (``needs_confirmation``) and
     ``kind='role'`` structures never enter — abstain over assert.
     """
     fact_col_ids: dict[str, set[str]] = {fid: set() for fid in fact_ids}
@@ -430,7 +401,8 @@ def _conform_pass(
             result = judge.conform(candidates=chunk)
         except PermanentProviderError as e:
             # Permanent = a retry cannot help; transient errors deliberately
-            # propagate to the Temporal boundary (the veto lane's contract).
+            # propagate to the Temporal boundary, where the phase retry re-runs
+            # the deterministic stats identically and re-asks the judge.
             logger.warning("bus_matrix_conform_skipped", reason=str(e))
             stats.status = "failed"
             return
@@ -575,81 +547,4 @@ def _folded_cells(
             }
         )
     stats.folded = len(out)
-    return out
-
-
-def _degenerate_cells(
-    session: Session,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    enriched: Sequence[EnrichedView],
-    name_of: dict[str, str],
-    *,
-    run_id: str,
-    referenced_key_cols: set[str],
-    fold_member_cols: set[str],
-    stats: BusMatrixStats,
-) -> list[dict[str, object]]:
-    """Near-key, id-shaped fact columns → one degenerate cell each.
-
-    Re-derives the discovery pass's ``NEAR_KEY_FRAC`` exclusion with a light
-    per-view aggregate (no pair scan), then shape-gates on the routing
-    classifier's value evidence — a unique prose/timestamp column is an
-    attribute, not an operational identifier.
-    """
-    out: list[dict[str, object]] = []
-    for ev in sorted(enriched, key=lambda e: e.view_name):
-        view_cols = view_columns(duckdb_conn, ev.view_name)
-        if view_cols is None:
-            continue
-        by_name = resolve_candidates(session, ev, view_cols)
-        cand = sorted(
-            c
-            for c, meta in by_name.items()
-            if meta.column_id not in referenced_key_cols and c not in fold_member_cols
-        )
-        if not cand:
-            continue
-        parts = ["COUNT(*)"] + [
-            f"COUNT(DISTINCT {quote_ident(c)}), COUNT({quote_ident(c)})" for c in cand
-        ]
-        try:
-            row = duckdb_conn.execute(
-                f"SELECT {', '.join(parts)} FROM {quote_ident(ev.view_name)}"  # noqa: S608
-            ).fetchone()
-        except Exception as e:  # noqa: BLE001 — skip this view, logged (visible abstention)
-            logger.warning("bus_matrix_degenerate_scan_failed", view=ev.view_name, error=str(e))
-            continue
-        if row is None or not row[0]:
-            continue
-        n = int(row[0])
-        d_sql = {c: int(row[2 * i + 1]) for i, c in enumerate(cand)}
-        # The discovery guard's statistic is the NULL-AWARE distinct count
-        # (processor's d2: NULL is a groupable value) — match it exactly.
-        d2 = {c: d_sql[c] + (1 if int(row[2 * i + 2]) < n else 0) for i, c in enumerate(cand)}
-        near_keys = [c for c in cand if d2[c] >= NEAR_KEY_FRAC * n]
-        if not near_keys:
-            continue
-        frame = pull_sample(duckdb_conn, ev.view_name, near_keys, n)
-        if frame is None:
-            continue
-        for c in near_keys:
-            shape = routing.classify_shape(column_evidence(frame, c, n_rows=n, d_sql=d_sql))
-            if shape not in _DEGENERATE_SHAPES:
-                continue
-            out.append(
-                {
-                    "run_id": run_id,
-                    "fact_table_id": ev.fact_table_id,
-                    "attachment": "degenerate",
-                    "concept_label": c,
-                    "dimension_table_id": None,
-                    "roles": [c],
-                    "attributes": [],
-                    "confirmation_source": "unconfirmed",
-                    "conformed_group": None,
-                    "needs_confirmation": False,
-                    "signature": f"bus:degenerate:{ev.fact_table_id}:{c}",
-                }
-            )
-    stats.degenerate = len(out)
     return out

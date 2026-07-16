@@ -1,11 +1,10 @@
 """Bus-matrix derivation (DAT-762 Part 2) — scripted conform judge.
 
-Pins the three legs and the posture rules: referenced cells are structural
-with role multiplicity and a weakest-link provenance floor; folded cells come
-from the stats groups with cross-fact identity decided (or abstained) by the
-conform judge; degenerate cells are near-key AND id-shaped only; vetoed and
-role structures never become cells; a failed conform call keeps the per-fact
-cells and is observable.
+Pins the two legs and the posture rules: referenced cells are structural with
+role multiplicity and a weakest-link provenance floor; folded cells come from
+the stats groups with cross-fact identity decided (or abstained) by the
+conform judge; undecided and role structures never become cells; a failed
+conform call keeps the per-fact cells and is observable.
 """
 
 from __future__ import annotations
@@ -155,7 +154,6 @@ class TestReferencedLeg:
 
         n, stats = derive_bus_matrix(
             real_session,
-            duckdb_conn=duck,
             table_ids=[tid, dim_tid],
             run_id=RUN,
             judge=_conform_judge(),
@@ -189,9 +187,7 @@ class TestFoldedLeg:
             ]
         )
 
-        derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=[t1, t2], run_id=RUN, judge=judge
-        )
+        derive_bus_matrix(real_session, table_ids=[t1, t2], run_id=RUN, judge=judge)
 
         folded = [c for c in _cells(real_session) if c.attachment == "folded"]
         assert {c.fact_table_id for c in folded} == {t1, t2}
@@ -227,9 +223,7 @@ class TestFoldedLeg:
             ]
         )
 
-        derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=[t1, t2, t3], run_id=RUN, judge=judge
-        )
+        derive_bus_matrix(real_session, table_ids=[t1, t2, t3], run_id=RUN, judge=judge)
 
         folded = [c for c in _cells(real_session) if c.attachment == "folded"]
         assert {c.fact_table_id for c in folded} == {t1, t2, t3}
@@ -265,9 +259,7 @@ class TestFoldedLeg:
             ]
         )
 
-        derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=[t1, t2, t3, t4], run_id=RUN, judge=judge
-        )
+        derive_bus_matrix(real_session, table_ids=[t1, t2, t3, t4], run_id=RUN, judge=judge)
 
         folded = {c.fact_table_id: c for c in _cells(real_session) if c.attachment == "folded"}
         assert all(c.concept_label == "status" for c in folded.values())
@@ -289,9 +281,7 @@ class TestFoldedLeg:
             ]
         )
 
-        _, stats = derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=[t1, t2, t3], run_id=RUN, judge=judge
-        )
+        _, stats = derive_bus_matrix(real_session, table_ids=[t1, t2, t3], run_id=RUN, judge=judge)
 
         assert stats.conform_pairs == 3
         assert stats.unanswered == 2  # silence is visible, never uphold-by-omission
@@ -306,9 +296,7 @@ class TestFoldedLeg:
         ]
         judge = _conform_judge()
 
-        _, stats = derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=tids, run_id=RUN, judge=judge
-        )
+        _, stats = derive_bus_matrix(real_session, table_ids=tids, run_id=RUN, judge=judge)
 
         assert stats.conform_pairs == 36
         assert judge.conform.call_count == 2
@@ -327,9 +315,7 @@ class TestFoldedLeg:
         """
         tids = []
         for view in ("gl", "tb"):
-            tid = seed_view(
-                real_session, duck, view, {"k": ["1", "2", "3"], "v": ["x", "y", "z"]}
-            )
+            tid = seed_view(real_session, duck, view, {"k": ["1", "2", "3"], "v": ["x", "y", "z"]})
             ids = _col_ids(real_session, tid)
             _seed_structure(
                 real_session,
@@ -347,9 +333,7 @@ class TestFoldedLeg:
             ]
         )
 
-        derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=tids, run_id=RUN, judge=judge
-        )
+        derive_bus_matrix(real_session, table_ids=tids, run_id=RUN, judge=judge)
 
         folded = [c for c in _cells(real_session) if c.attachment == "folded"]
         assert all(c.confirmation_source == "user" for c in folded)
@@ -372,9 +356,7 @@ class TestFoldedLeg:
             ]
         )
 
-        _, stats = derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=[t1, t2], run_id=RUN, judge=judge
-        )
+        _, stats = derive_bus_matrix(real_session, table_ids=[t1, t2], run_id=RUN, judge=judge)
 
         folded = [c for c in _cells(real_session) if c.attachment == "folded"]
         assert len(folded) == 2  # both cells exist — abstain never erases the fold
@@ -383,7 +365,7 @@ class TestFoldedLeg:
         assert {c.concept_label for c in folded} == {"account_id", "acct_code"}  # own labels
         assert stats.abstained == 1
 
-    def test_vetoed_and_role_structures_never_become_cells(
+    def test_undecided_and_role_structures_never_become_cells(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
         tid = seed_view(
@@ -398,13 +380,12 @@ class TestFoldedLeg:
             tid,
             [("a", ids["a"], 2), ("b", ids["b"], 2)],
             kind="alias",
-            needs_confirmation=True,  # vetoed / undecided
+            needs_confirmation=True,  # the stats surfaced it undecided
         )
         _seed_structure(real_session, tid, [("c", ids["c"], 2), ("d", ids["d"], 2)], kind="role")
 
         _, stats = derive_bus_matrix(
             real_session,
-            duckdb_conn=duck,
             table_ids=[tid],
             run_id=RUN,
             judge=_conform_judge(),
@@ -428,7 +409,6 @@ class TestFoldedLeg:
 
         derive_bus_matrix(
             real_session,
-            duckdb_conn=duck,
             table_ids=[tid],
             run_id=RUN,
             judge=_conform_judge(),
@@ -445,9 +425,7 @@ class TestFoldedLeg:
         judge = MagicMock(spec=DimensionIdentityJudge)
         judge.conform.return_value = Result.fail("api down")
 
-        _, stats = derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=[t1, t2], run_id=RUN, judge=judge
-        )
+        _, stats = derive_bus_matrix(real_session, table_ids=[t1, t2], run_id=RUN, judge=judge)
 
         assert stats.status == "failed"
         folded = [c for c in _cells(real_session) if c.attachment == "folded"]
@@ -460,46 +438,11 @@ class TestFoldedLeg:
         tid = _seed_fold_fact(real_session, duck, "mega", key="account_id", attr="account_name")
         judge = _conform_judge()
 
-        _, stats = derive_bus_matrix(
-            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=judge
-        )
+        _, stats = derive_bus_matrix(real_session, table_ids=[tid], run_id=RUN, judge=judge)
 
         judge.conform.assert_not_called()
         assert stats.conform_pairs == 0
         assert stats.folded == 1  # the single-fact folded cell still exists
-
-
-class TestDegenerateLeg:
-    def test_near_key_idlike_yes_prose_no(
-        self, real_session: Session, duck: duckdb.DuckDBPyConnection
-    ) -> None:
-        n = 40
-        tid = seed_view(
-            real_session,
-            duck,
-            "gl",
-            {
-                "line_id": [f"JL-{i:05d}" for i in range(n)],  # near-key, id-shaped
-                "note": [
-                    f"a free text posting note number {i} with words" for i in range(n)
-                ],  # near-key, prose
-                "region": ["north" if i % 2 else "south" for i in range(n)],  # low-card
-            },
-        )
-
-        _, stats = derive_bus_matrix(
-            real_session,
-            duckdb_conn=duck,
-            table_ids=[tid],
-            run_id=RUN,
-            judge=_conform_judge(),
-        )
-
-        degenerate = [c for c in _cells(real_session) if c.attachment == "degenerate"]
-        assert [c.concept_label for c in degenerate] == ["line_id"]
-        assert stats.degenerate == 1
-        assert degenerate[0].roles == ["line_id"]
-        assert degenerate[0].attributes == []
 
 
 def test_rerun_converges(real_session: Session, duck: duckdb.DuckDBPyConnection) -> None:
@@ -507,7 +450,6 @@ def test_rerun_converges(real_session: Session, duck: duckdb.DuckDBPyConnection)
     for _ in range(2):
         derive_bus_matrix(
             real_session,
-            duckdb_conn=duck,
             table_ids=[tid],
             run_id=RUN,
             judge=_conform_judge(),
@@ -517,30 +459,27 @@ def test_rerun_converges(real_session: Session, duck: duckdb.DuckDBPyConnection)
     assert len(rows) == len({r.signature for r in rows})  # form-(a): one row per signature+run
 
 
-def test_retry_with_flipped_veto_leaves_no_stale_cells(
+def test_retry_with_changed_structure_leaves_no_stale_cells(
     real_session: Session, duck: duckdb.DuckDBPyConnection
 ) -> None:
-    """Folded-cell identity is NOT retry-stable (it rides LLM verdicts).
+    """A folded cell's signature carries its component's member set.
 
-    A crash-after-commit redelivery re-runs derive with the SAME run_id; if the
-    veto lane flips on a structure, the fold component's member_key — hence the
-    cell signature — changes, and an upsert alone would strand attempt 1's cell
+    A crash-after-commit redelivery re-runs derive with the SAME run_id. If the
+    run's structures changed in between — a teach landing, or a structure the
+    stats now surface as undecided — the fold component's member_key, hence the
+    cell signature, changes, and an upsert alone would strand attempt 1's cell
     under the promoted run. Delete-then-insert must leave only attempt 2's view.
     """
     tid = _seed_fold_fact(real_session, duck, "gl", key="account_id", attr="account_name")
-    derive_bus_matrix(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=_conform_judge()
-    )
+    derive_bus_matrix(real_session, table_ids=[tid], run_id=RUN, judge=_conform_judge())
     real_session.commit()
     assert [c for c in _cells(real_session) if c.attachment == "folded"] != []
 
-    # Attempt 2 sees the structure vetoed (needs_confirmation) — no fold group.
+    # Attempt 2 sees the structure surfaced undecided — no fold group.
     structure = real_session.execute(select(DimensionHierarchy)).scalar_one()
     structure.needs_confirmation = True
     real_session.flush()
-    derive_bus_matrix(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=_conform_judge()
-    )
+    derive_bus_matrix(real_session, table_ids=[tid], run_id=RUN, judge=_conform_judge())
     real_session.commit()
 
     assert [c for c in _cells(real_session) if c.attachment == "folded"] == []

@@ -1,8 +1,6 @@
 """Dimension-identity discovery over the enriched views (DAT-761, stack v4 from DAT-757).
 
-The statistical pass is deterministic; the DAT-762 veto lane (an injected
-``DimensionIdentityJudge``) is the one LLM touchpoint, advisory by contract.
-For each fact's grain-verified enriched view, EVERY
+Deterministic, no LLM. For each fact's grain-verified enriched view, EVERY
 dimension-like view column is a candidate (measures excluded by their
 ``semantic_role`` — the additivity lane: ``revenue → tier`` is reliably asserted
 by every statistic, so measures never enter FD discovery). The upstream pipeline
@@ -52,19 +50,17 @@ import numpy as np
 import polars as pl
 from sqlalchemy import select
 
-from dataraum.analysis.hierarchies import routing, stats
+from dataraum.analysis.hierarchies import stats
 from dataraum.analysis.hierarchies.db_models import (
     DimensionHierarchy,
     HierarchyMember,
     RoleEvidence,
 )
-from dataraum.analysis.hierarchies.judge import DimensionIdentityJudge
 from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
 from dataraum.analysis.hierarchies.stats import RoleVerdict
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
-from dataraum.llm.providers.base import PermanentProviderError
 from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
@@ -114,7 +110,7 @@ MIN_SAMPLE_ROWS = 50_000
 
 # Fixed seed: the permutation null must be identical across Temporal
 # success-redeliveries so the run-versioned upsert converges (the row sample is
-# deterministic by construction — bottom-k-by-hash, see pull_sample). Each
+# deterministic by construction — bottom-k-by-hash, see _pull_sample). Each
 # candidate derives its OWN generator from this seed + a stable digest of the
 # pair (see _pair_rng), so results are independent of iteration order and of
 # the permutation pool's worker count.
@@ -152,7 +148,7 @@ _MAX_PAIR_AGGS = 500
 _MAX_PERM_ROWS = 1_000_000
 
 
-def quote_ident(name: str) -> str:
+def _quote(name: str) -> str:
     """Quote a catalog identifier for DuckDB SQL, doubling embedded quotes.
 
     View column names descend from source CSV headers (VARCHAR-first load), so
@@ -195,17 +191,17 @@ class _ViewScan:
         return 1.0 - self.d2[a] / d_ab, 1.0 - self.d2[b] / d_ab
 
 
-def view_columns(duckdb_conn: duckdb.DuckDBPyConnection, view_name: str) -> list[str] | None:
+def _view_columns(duckdb_conn: duckdb.DuckDBPyConnection, view_name: str) -> list[str] | None:
     """The view's column names, or ``None`` if it is not queryable (logged)."""
     try:
-        rows = duckdb_conn.execute(f"DESCRIBE {quote_ident(view_name)}").fetchall()
+        rows = duckdb_conn.execute(f"DESCRIBE {_quote(view_name)}").fetchall()
     except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
         logger.warning("hierarchy_view_describe_failed", view=view_name, error=str(e))
         return None
     return [str(r[0]) for r in rows]
 
 
-def resolve_candidates(
+def _resolve_candidates(
     session: Session, ev: EnrichedView, view_cols: list[str]
 ) -> dict[str, _Candidate]:
     """Resolve view columns to source-column provenance and drop measures.
@@ -280,11 +276,11 @@ def _scan_view(
     the view is then skipped, a visible abstention.
     """
     parts = ["COUNT(*) AS n"]
-    parts += [f"COUNT(DISTINCT {quote_ident(c)}) AS d{i}" for i, c in enumerate(cols)]
-    parts += [f"COUNT({quote_ident(c)}) AS c{i}" for i, c in enumerate(cols)]
+    parts += [f"COUNT(DISTINCT {_quote(c)}) AS d{i}" for i, c in enumerate(cols)]
+    parts += [f"COUNT({_quote(c)}) AS c{i}" for i, c in enumerate(cols)]
     try:
         row = duckdb_conn.execute(
-            f"SELECT {', '.join(parts)} FROM {quote_ident(view_name)}"  # noqa: S608 — catalog names
+            f"SELECT {', '.join(parts)} FROM {_quote(view_name)}"  # noqa: S608 — catalog names
         ).fetchone()
         if row is None:
             return None
@@ -308,10 +304,10 @@ def _scan_view(
         for start in range(0, len(pairs), _MAX_PAIR_AGGS):
             chunk = pairs[start : start + _MAX_PAIR_AGGS]
             sql = ", ".join(
-                f"COUNT(DISTINCT ({quote_ident(a)}, {quote_ident(b)})) AS j{k}"
+                f"COUNT(DISTINCT ({_quote(a)}, {_quote(b)})) AS j{k}"
                 for k, (a, b) in enumerate(chunk)
             )
-            jrow = duckdb_conn.execute(f"SELECT {sql} FROM {quote_ident(view_name)}")  # noqa: S608
+            jrow = duckdb_conn.execute(f"SELECT {sql} FROM {_quote(view_name)}")  # noqa: S608
             fetched = jrow.fetchone()
             if fetched is None:
                 return None
@@ -323,7 +319,7 @@ def _scan_view(
     return _ViewScan(n=n, d2=d2, d_sql=d_sql, joints=joints)
 
 
-def pull_sample(
+def _pull_sample(
     duckdb_conn: duckdb.DuckDBPyConnection, view_name: str, cols: list[str], n_rows: int
 ) -> pl.DataFrame | None:
     """An aligned VARCHAR sample of the candidate columns for the row statistics.
@@ -343,13 +339,13 @@ def pull_sample(
     n_sample = max(MIN_SAMPLE_ROWS, MAX_SAMPLE_CELLS // max(len(cols), 1))
     sample = ""
     if n_rows > n_sample:
-        hash_cols = ", ".join(quote_ident(c) for c in cols)
+        hash_cols = ", ".join(_quote(c) for c in cols)
         sample = f" ORDER BY hash({hash_cols}) LIMIT {n_sample}"
         logger.info("hierarchy_view_sampled", view=view_name, full_n=n_rows, sample_n=n_sample)
-    select_cols = ", ".join(f"CAST({quote_ident(c)} AS VARCHAR) AS {quote_ident(c)}" for c in cols)
+    select_cols = ", ".join(f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in cols)
     try:
         table = duckdb_conn.execute(
-            f"SELECT {select_cols} FROM {quote_ident(view_name)}{sample}"  # noqa: S608 — catalog names
+            f"SELECT {select_cols} FROM {_quote(view_name)}{sample}"  # noqa: S608 — catalog names
         ).arrow()
     except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
         logger.warning("hierarchy_sample_pull_failed", view=view_name, error=str(e))
@@ -472,17 +468,12 @@ def discover_dimension_hierarchies(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     run_id: str,
-    judge: DimensionIdentityJudge,
-) -> tuple[int, VetoLaneStats]:
+) -> int:
     """Run the stack-v4 identity pass over each enriched view; persist run-versioned.
 
     Form-(a) writer (DAT-502): one row per ``(signature, run_id)``, UPSERTed;
-    the statistical pass is deterministic (fixed permutation/sample seeds), so
-    a redelivered run converges. ``judge`` is the DAT-762 veto lane, built by
-    the phase like every other agent (the ``synthesize_and_store_tables``
-    seam; unit tests pass a mock). Returns the rows persisted and the lane's
-    observable outcome (a phase output — a dead lane must be visible, never
-    silent).
+    deterministic (fixed permutation/sample seeds), so a redelivered run
+    converges. Returns the rows persisted.
     """
     enriched = (
         session.execute(
@@ -499,14 +490,13 @@ def discover_dimension_hierarchies(
         for t in session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars()
     }
 
-    lane = VetoLaneStats()
     rows: list[dict[str, object]] = []
     col_ids_by_table: dict[str, dict[str, str]] = {}
     for ev in enriched:
-        view_cols = view_columns(duckdb_conn, ev.view_name)
+        view_cols = _view_columns(duckdb_conn, ev.view_name)
         if view_cols is None:
             continue
-        by_name = resolve_candidates(session, ev, view_cols)
+        by_name = _resolve_candidates(session, ev, view_cols)
         col_ids_by_table.setdefault(ev.fact_table_id, {}).update(
             {c.column_name: c.column_id for c in by_name.values()}
         )
@@ -525,30 +515,19 @@ def discover_dimension_hierarchies(
         scan = _scan_view(duckdb_conn, ev.view_name, cand_names)
         if scan is None:
             continue
-        frame = pull_sample(duckdb_conn, ev.view_name, cand_names, scan.n)
+        frame = _pull_sample(duckdb_conn, ev.view_name, cand_names, scan.n)
         if frame is None:
             continue
-        view_rows = _view_structures(
-            fact_table_id=ev.fact_table_id,
-            view_name=ev.view_name,
-            run_id=run_id,
-            by_name=by_name,
-            scan=scan,
-            frame=frame,
-        )
-        # DAT-762: names-only veto on the routed classes, before the teach
-        # overlay (user assertions are never routed).
-        lane.absorb(
-            _judge_veto_pass(
-                view_rows,
+        rows.extend(
+            _view_structures(
+                fact_table_id=ev.fact_table_id,
                 view_name=ev.view_name,
+                run_id=run_id,
+                by_name=by_name,
+                scan=scan,
                 frame=frame,
-                n_rows=scan.n,
-                d_sql=scan.d_sql,
-                judge=judge,
             )
         )
-        rows.extend(view_rows)
 
     # Fold the user's durable hierarchy/alias teaches into this run (DAT-537),
     # mirroring relationship-overlay materialization minus keeper-lift-up + witness
@@ -557,263 +536,7 @@ def discover_dimension_hierarchies(
     rows = _apply_teaches(session, rows, col_ids_by_table=col_ids_by_table, run_id=run_id)
 
     upsert(session, DimensionHierarchy, rows, index_elements=["signature", "run_id"])
-    lane.finalize()
-    logger.info("hierarchy_veto_lane", **lane.as_output())
-    return len(rows), lane
-
-
-# Distinct-value sample size for the veto lane's shape classification —
-# matches the frozen acceptance fixture (dataraum-eval, SAMPLE_DISTINCT).
-_VETO_SAMPLE_VALUES = 200
-
-
-def column_evidence(
-    frame: pl.DataFrame, col: str, *, n_rows: int, d_sql: dict[str, int]
-) -> routing.ColumnEvidence:
-    """Routing evidence for one candidate column, deterministic.
-
-    Distinct counts are the null-blind SQL counts (the acceptance fixture's
-    semantics); sample values are a seeded subset of the frame's sorted
-    distinct values — a pure function of the column identity, never of
-    scheduling (the ``_pair_rng`` discipline).
-    """
-    s = frame.get_column(col)
-    distinct = s.drop_nulls().cast(pl.Utf8).unique().sort()
-    k = min(_VETO_SAMPLE_VALUES, len(distinct))
-    digest = int.from_bytes(hashlib.blake2b(f"veto:{col}".encode(), digest_size=8).digest(), "big")
-    rng = np.random.default_rng((_PERM_SEED, digest))
-    idx = rng.choice(len(distinct), size=k, replace=False) if k else np.array([], dtype=int)
-    return routing.ColumnEvidence(
-        n_rows=n_rows,
-        n_distinct=d_sql.get(col, len(distinct)),
-        dtype=str(s.dtype),
-        sample_values=sorted(str(distinct[int(i)])[:120] for i in idx),
-    )
-
-
-def _entity_keys(
-    view_rows: list[dict[str, object]],
-    evidence_of: dict[str, routing.ColumnEvidence],
-) -> set[str]:
-    """Members of stats-asserted alias groups whose partner is a human label.
-
-    The entity-key anchor (DAT-762 clean-flat lesson): ``account_id`` in an
-    alias with ``account_name`` is a dimension's own key — a drill chain it
-    anchors is the entity's internal hierarchy, not a quasi-identifier
-    artifact. Only the stack's confident merges anchor (g3 alias, no role
-    verdict, not surfaced-undecided); the shape/scale half of the predicate is
-    :func:`routing.is_entity_label_pair`.
-    """
-    keys: set[str] = set()
-    for row in view_rows:
-        if (
-            row["kind"] != "alias"
-            or row["detection_source"] != "g3"
-            or row["role_verdict"] is not None
-            or row["needs_confirmation"]
-        ):
-            continue
-        cols = [str(m["column_name"]) for m in cast("list[dict[str, object]]", row["members"])]
-        for m in cols:
-            if m in evidence_of and any(
-                p != m
-                and p in evidence_of
-                and routing.is_entity_label_pair(evidence_of[m], evidence_of[p])
-                for p in cols
-            ):
-                keys.add(m)
-    return keys
-
-
-def _route_row(
-    row: dict[str, object],
-    evidence_of: dict[str, routing.ColumnEvidence],
-    entity_keys: frozenset[str] | set[str] = frozenset(),
-) -> str | None:
-    """The veto class for one assembled structure row, or None (not judged).
-
-    Only stack-asserted structures are routable: manual/teach rows, the
-    role-check outcomes (``role_verdict`` set — the conform/role machinery's
-    territory, DAT-494), and rows the stats already surfaced
-    (``needs_confirmation`` — not an assertion, and a veto would be a no-op)
-    never reach the veto. Drilldown chains route per hop; alias groups route
-    per unordered pair. A chain containing an entity key (``entity_keys``,
-    from :func:`_entity_keys`) routes with ``entity_anchored=True`` — its
-    id-shaped hops are the entity's own levels.
-    """
-    if (
-        row["detection_source"] != "g3"
-        or row["role_verdict"] is not None
-        or row["needs_confirmation"]
-    ):
-        return None
-    members = cast("list[dict[str, object]]", row["members"])
-    # ``level`` is the sole carrier of order (DAT-779) — never array position:
-    # coarse→fine is level-ascending, and the hop direction below depends on it.
-    members = sorted(members, key=lambda m: cast("int", m["level"]))
-    cols = [str(m["column_name"]) for m in members]
-    if any(c not in evidence_of for c in cols):
-        return None
-    if row["kind"] == "drilldown":
-        anchored = any(c in entity_keys for c in cols)
-        for coarse, fine in zip(cols, cols[1:], strict=False):
-            klass = routing.route_edge(
-                evidence_of[fine], evidence_of[coarse], entity_anchored=anchored
-            )
-            if klass is not None:
-                return klass
-        return None
-    if row["kind"] == "alias":
-        for i in range(len(cols)):
-            for j in range(i + 1, len(cols)):
-                klass = routing.route_alias(evidence_of[cols[i]], evidence_of[cols[j]])
-                if klass is not None:
-                    return klass
-    return None
-
-
-@dataclass
-class VetoLaneStats:
-    """The veto lane's observable outcome — a first-class phase output.
-
-    The lane is advisory (stats decide), so a failed judgment call must never
-    fail the phase — but it must never die SILENTLY either (the DAT-536
-    inert-safeguard lesson): consumers see ``status`` + counts in the phase
-    outputs, and a liveness assertion can catch a lane that stopped running.
-    """
-
-    # Per-view status is test-facing: every production path derives the final
-    # value in ``finalize()`` after ``absorb()``-ing all views.
-    status: str = "ran"  # ran | failed | partial
-    views_judged: int = 0
-    views_failed: int = 0
-    routed: int = 0
-    vetoed: int = 0
-    # Routed structures the judge returned NO verdict for — uphold-by-omission
-    # must be visible in the phase outputs (a chronically truncating model).
-    unanswered: int = 0
-
-    def absorb(self, other: VetoLaneStats) -> None:
-        """Sum the counts; the final status is derived once all views are in."""
-        self.views_judged += other.views_judged
-        self.views_failed += other.views_failed
-        self.routed += other.routed
-        self.vetoed += other.vetoed
-        self.unanswered += other.unanswered
-
-    def finalize(self) -> None:
-        if self.views_failed == 0:
-            self.status = "ran"
-        elif self.views_judged > 0:
-            self.status = "partial"
-        else:
-            self.status = "failed"
-
-    def as_output(self) -> dict[str, object]:
-        return {
-            "status": self.status,
-            "views_judged": self.views_judged,
-            "views_failed": self.views_failed,
-            "routed": self.routed,
-            "vetoed": self.vetoed,
-            "unanswered": self.unanswered,
-        }
-
-
-def _judge_veto_pass(
-    view_rows: list[dict[str, object]],
-    *,
-    view_name: str,
-    frame: pl.DataFrame,
-    n_rows: int,
-    d_sql: dict[str, int],
-    judge: DimensionIdentityJudge,
-) -> VetoLaneStats:
-    """Route this view's asserted structures; one batched names-only veto call.
-
-    Stats DECIDE — a veto never deletes a row: the vetoed structure is
-    surfaced (``needs_confirmation=True``) with a structured log carrying the
-    judge's reason (the v1 audit trail; no new column). A PERMANENT provider
-    error skips the lane for this view (recorded in the returned stats, never
-    a phase failure — absence of judgment is not a judgment); a TRANSIENT
-    error propagates to the Temporal activity boundary, where the phase retry
-    re-runs the seed-deterministic stats identically and the judge gets its
-    second chance. Runs BEFORE teach materialization: user assertions are
-    never routed.
-    """
-    stats_out = VetoLaneStats()
-    if not view_rows:
-        return stats_out
-    evidence_of = {c: column_evidence(frame, c, n_rows=n_rows, d_sql=d_sql) for c in frame.columns}
-    entity_keys = _entity_keys(view_rows, evidence_of)
-    routed: list[dict[str, object]] = []
-    by_ref: dict[str, dict[str, object]] = {}
-    for row in view_rows:
-        klass = _route_row(row, evidence_of, entity_keys)
-        if klass is None:
-            continue
-        ref = str(row["signature"])
-        by_ref[ref] = row
-        members = cast("list[dict[str, object]]", row["members"])
-        # Level order, not array order (DAT-779) — the judge is told drilldown
-        # members read coarse→fine, so the rendering must guarantee it.
-        members = sorted(members, key=lambda m: cast("int", m["level"]))
-        routed.append(
-            {
-                "ref": ref,
-                "kind": row["kind"],
-                "members": [str(m["column_name"]) for m in members],
-                "routed_class": klass,
-            }
-        )
-    stats_out.routed = len(routed)
-    if not routed:
-        return stats_out
-    try:
-        result = judge.veto(
-            table_name=view_name, all_columns=list(frame.columns), structures=routed
-        )
-    except PermanentProviderError as e:
-        # Permanent = a retry cannot help (auth, bad request); transient errors
-        # deliberately PROPAGATE to the Temporal boundary — the phase retry
-        # re-runs the deterministic stats identically and re-asks the judge.
-        logger.warning("hierarchy_veto_skipped", view=view_name, reason=str(e))
-        stats_out.views_failed = 1
-        stats_out.status = "failed"
-        return stats_out
-    if not result.success:
-        logger.warning("hierarchy_veto_skipped", view=view_name, reason=result.error)
-        stats_out.views_failed = 1
-        stats_out.status = "failed"
-        return stats_out
-    stats_out.views_judged = 1
-    seen_refs: set[str] = set()
-    for verdict in result.unwrap():
-        vetoed_row = by_ref.get(verdict.structure_ref)
-        if vetoed_row is None:
-            logger.warning("hierarchy_veto_unknown_ref", view=view_name, ref=verdict.structure_ref)
-            continue
-        if verdict.structure_ref in seen_refs:
-            continue  # first verdict per ref wins; a duplicate never double-counts
-        seen_refs.add(verdict.structure_ref)
-        logger.info(
-            "hierarchy_veto",
-            view=view_name,
-            signature=vetoed_row["signature"],
-            verdict=verdict.verdict,
-            reason=verdict.reason,
-        )
-        if verdict.verdict == "veto":
-            vetoed_row["needs_confirmation"] = True
-            stats_out.vetoed += 1
-    # A routed structure with NO verdict stands unjudged — that is the
-    # correct posture (absence of judgment is not a judgment) but it must be
-    # OBSERVABLE, not uphold-by-omission (the DAT-536 inert-safeguard lesson).
-    missing = sorted(set(by_ref) - seen_refs)
-    if missing:
-        stats_out.unanswered = len(missing)
-        logger.warning("hierarchy_veto_unanswered", view=view_name, refs=missing)
-    return stats_out
+    return len(rows)
 
 
 def _validated_members(members: list[HierarchyMember]) -> list[dict[str, object]]:

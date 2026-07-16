@@ -2,8 +2,8 @@
 
 Pins the two contracts the phase itself owns: judge MISCONFIGURATION fails
 the phase (the standard agent posture — no judge-off state, no silent lane
-drop), and the ``veto_lane`` / ``bus_matrix`` stats ride the phase outputs
-with their documented keys (the lane's observability surface).
+drop), and the ``bus_matrix`` stats ride the phase outputs with their
+documented keys (the conform lane's observability surface).
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import duckdb
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.hierarchies.bus_matrix import BusMatrixStats
-from dataraum.analysis.hierarchies.processor import VetoLaneStats
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.dimension_hierarchies_phase import DimensionHierarchiesPhase
 from tests.conftest import baseline_run_id
@@ -78,7 +77,7 @@ def test_provider_creation_failure_fails_phase(
 @patch(f"{_MOD}.PromptRenderer")
 @patch(f"{_MOD}.create_provider")
 @patch(f"{_MOD}.load_llm_config")
-def test_outputs_carry_lane_and_bus_matrix(
+def test_outputs_carry_bus_matrix(
     load: MagicMock,
     _create: MagicMock,
     _renderer: MagicMock,
@@ -88,26 +87,21 @@ def test_outputs_carry_lane_and_bus_matrix(
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:
     load.return_value = _llm_config()
-    lane = VetoLaneStats(status="ran", views_judged=2, routed=3, vetoed=1)
     bus = BusMatrixStats(status="ran", referenced=1, folded=2, conform_pairs=1, conformed=1)
-    discover.return_value = (4, lane)
+    discover.return_value = 4
     derive.return_value = (3, bus)
 
     result = DimensionHierarchiesPhase()._run(_ctx(session, duckdb_conn))
 
     assert result.status == PhaseStatus.COMPLETED
     assert result.outputs["hierarchies"] == 4
-    assert result.outputs["veto_lane"] == lane.as_output()
     assert result.outputs["bus_matrix"] == bus.as_output()
+    assert "veto_lane" not in result.outputs
     # The documented observability keys — eval liveness asserts read these.
-    assert {"status", "views_judged", "views_failed", "routed", "vetoed", "unanswered"} <= set(
-        result.outputs["veto_lane"]
-    )
     assert {
         "status",
         "referenced",
         "folded",
-        "degenerate",
         "conform_pairs",
         "conformed",
         "abstained",

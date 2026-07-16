@@ -201,7 +201,7 @@ class DimensionHierarchy(Base):
 # CHECK strings in the offline DDL dump. ``confirmation_source`` is the
 # relationships vocabulary (DAT-776/#495) applied at cell grain — one vocabulary
 # across the catalog, so a consumer ranks provenance the same way everywhere.
-_ATTACHMENT_VALUES: tuple[str, ...] = ("degenerate", "folded", "referenced")
+_ATTACHMENT_VALUES: tuple[str, ...] = ("folded", "referenced")
 _CELL_CONFIRMATION_VALUES: tuple[str, ...] = ("judge", "keeper", "unconfirmed", "user")
 
 
@@ -222,15 +222,14 @@ class BusMatrixEntry(Base):
       CROSS-FACT identity — two facts folding the same concept — is decided by
       the conform judge over names + attribute sets + authored column meanings
       (no pairwise statistic exists across facts; the DAT-757 K/L cell class).
-    - ``attachment='degenerate'``: a fact-grain operational identifier with no
-      dimension table and no attribute set (near-key, id-shaped) — recorded so
-      the abstention is visible, never asserted as folded/referenced.
 
-    The truth-side vocabulary has a fourth kind, ``key_only`` (an FK column
-    surviving a REMOVED dimension table). Those columns sit exactly on the
-    Layer-A blind-spot classes (sparse/low-distinct FKs — DAT-762 comments
-    16642/16643), so v1 cannot derive them structurally; they are the recorded
-    acceptance boundary, not a cell this writer emits.
+    The truth-side vocabulary has two further kinds this writer does not emit.
+    ``key_only`` (an FK column surviving a REMOVED dimension table) sits exactly
+    on the Layer-A blind-spot classes (sparse/low-distinct FKs — DAT-762
+    comments 16642/16643), so v1 cannot derive it structurally. ``degenerate``
+    (a fact-grain operational identifier that is no dimension at all) needs a
+    typed semantic read of the column, not a regex over sampled values; both are
+    the recorded acceptance boundary, not cells this writer emits.
 
     ``confirmation_source`` is the relationships vocabulary (DAT-776) at cell
     grain: 'unconfirmed' (structural/stats derivation, no judgment passed),
@@ -275,7 +274,7 @@ class BusMatrixEntry(Base):
     attachment: Mapped[str] = mapped_column(String, nullable=False)
     # The dimension identity, by attachment: referenced → the dimension table's
     # name (structural); folded → the judge's canonical concept label on conform,
-    # else the fold-key column name; degenerate → the identifier column name.
+    # else the fold-key column name.
     # A reported label, never a decision surface (no consumer word-matches on it).
     concept_label: Mapped[str] = mapped_column(String, nullable=False)
     # Referenced cells only: the FK-target dimension table (NULL otherwise).
@@ -284,11 +283,10 @@ class BusMatrixEntry(Base):
     )
 
     # Fact-side key columns carrying the exposure, sorted (≥1): FK role columns
-    # (referenced), the fold key (folded), the identifier itself (degenerate).
+    # (referenced), the fold key (folded).
     roles: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     # Folded cells: the inlined attribute columns (sorted, fold key excluded).
     # Referenced cells: the exposed dimension attributes (enriched-view levels).
-    # Degenerate cells: empty.
     attributes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
     confirmation_source: Mapped[str] = mapped_column(
@@ -305,8 +303,8 @@ class BusMatrixEntry(Base):
     needs_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Run-grain dedup key: "bus:{attachment}:{fact_table_id}:{identity}" where
-    # identity is the dimension_table_id (referenced), the sorted member columns
-    # (folded), or the column name (degenerate).
+    # identity is the dimension_table_id (referenced) or the sorted member
+    # columns (folded).
     signature: Mapped[str] = mapped_column(String, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(

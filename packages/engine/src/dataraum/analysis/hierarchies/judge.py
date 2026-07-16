@@ -1,27 +1,20 @@
-"""Dimension-identity judge (DAT-762) — the class-routed LLM lane.
+"""Dimension-identity judge (DAT-762) — the cross-fact conform lane.
 
-Stats DECIDE, this judge vetoes or fills the gaps the statistics cannot see.
-Two judgment classes ship here, one per prompt:
+Stats DECIDE; this judge fills the one gap the statistics cannot reach. One
+judgment class ships here:
 
-- ``hierarchy_veto`` — names-only UPHOLD/VETO on structures the stack-v4
-  statistical pass ASSERTED, restricted by deterministic routing
-  (``routing.py``) to the classes the DAT-757 channel-ablation scorecard
-  measured as name-judgeable: quasi-identifier, free-text determinant,
-  proxy bijection. Evidence is identifiers only — the scorecard measured
-  that serving the judge statistics makes it worse on exactly these classes
-  (it rationalizes near-FD numbers into upholding).
 - ``dimension_conform`` — cross-fact CONFORM/ROLE/DISTINCT/ABSTAIN where no
   pairwise statistic exists (different facts share no rows). Evidence is
   names + attribute sets + authored column meanings (DAT-769); meanings
   corroborate, never auto-confirm.
 
-The seam is producer-agnostic on purpose (the aggregation-lineage convention
-veto rides it later): a producer submits evidence dicts and gets typed
-verdicts back; routing tables live with the producer, never here.
+The seam is producer-agnostic on purpose: a producer submits evidence dicts
+and gets typed verdicts back; candidate selection lives with the producer,
+never here.
 
 Posture rules (research record, DAT-757/762): no deterministic overrides of
-LLM judgments; a FAILED judgment call means the lane is skipped for that view
-and stats verdicts stand — absence of judgment is not a judgment.
+LLM judgments; a FAILED judgment call means the lane is skipped and the
+stats' verdicts stand — absence of judgment is not a judgment.
 """
 
 from __future__ import annotations
@@ -44,20 +37,6 @@ from dataraum.llm.providers.base import (
 from dataraum.llm.tool_repair import repair_tool_output
 
 logger = get_logger(__name__)
-
-
-class VetoVerdict(BaseModel):
-    """One names-only verdict on an asserted structure."""
-
-    structure_ref: str = Field(description="The structure's ref echoed back verbatim")
-    verdict: Literal["uphold", "veto"]
-    reason: str = Field(description="One sentence naming the class applied")
-
-
-class VetoBatchOutput(BaseModel):
-    """Tool output: one verdict per submitted structure."""
-
-    verdicts: list[VetoVerdict]
 
 
 class ConformVerdict(BaseModel):
@@ -91,7 +70,7 @@ class ConformBatchOutput(BaseModel):
 
 
 class DimensionIdentityJudge(LLMFeature):
-    """Forced-tool judge over the two DAT-762 judgment classes."""
+    """Forced-tool judge over the DAT-762 cross-fact conform judgment."""
 
     def __init__(
         self,
@@ -100,46 +79,6 @@ class DimensionIdentityJudge(LLMFeature):
         prompt_renderer: PromptRenderer | None = None,
     ) -> None:
         super().__init__(config, provider, prompt_renderer or PromptRenderer())
-
-    def veto(
-        self,
-        *,
-        table_name: str,
-        all_columns: list[str],
-        structures: list[dict[str, Any]],
-    ) -> Result[list[VetoVerdict]]:
-        """Names-only veto pass over routed structures of ONE table.
-
-        Args:
-            table_name: The fact/view the structures were asserted on.
-            all_columns: The table's full column-name list (the C2 evidence).
-            structures: Routed structures, each ``{ref, kind, members,
-                routed_class}`` — ``members`` is the ordered column-name list.
-
-        Returns:
-            One verdict per structure, or a failed Result on an unusable
-            response (the caller skips the lane, never fails the phase).
-        """
-        if not structures:
-            return Result.ok([])
-        context = {
-            "table_name": table_name,
-            "all_columns": ", ".join(all_columns),
-            "structures": self._format_structures(structures),
-        }
-        result = self._judge(
-            template="hierarchy_veto",
-            context=context,
-            tool_name="review_structures",
-            tool_description=(
-                "Return an UPHOLD or VETO verdict, with a one-sentence reason, "
-                "for every asserted structure listed."
-            ),
-            output_model=VetoBatchOutput,
-        )
-        if not result.success:
-            return Result.fail(result.error or "hierarchy_veto judgment failed")
-        return Result.ok(result.unwrap().verdicts)
 
     def conform(self, *, candidates: list[dict[str, Any]]) -> Result[list[ConformVerdict]]:
         """Cross-fact conform/role judgment over exposure pairs.
@@ -183,7 +122,7 @@ class DimensionIdentityJudge(LLMFeature):
         """One forced-tool judgment turn with the DAT-710 schema repair."""
         # Tier/effort from feature config (DAT-603) — an absent entry keeps the
         # defaults: balanced tier, API-default effort. `enabled` is deliberately
-        # not consulted: the veto lane rides every dimension_hierarchies run
+        # not consulted: the conform lane rides every dimension_hierarchies run
         # (the graph_sql_generation posture — not an optional feature).
         feature = self.config.features.dimension_identity_judgment
         tier = feature.model_tier if feature else "balanced"
@@ -230,17 +169,6 @@ class DimensionIdentityJudge(LLMFeature):
             if not repaired.success:
                 return Result.fail(f"Failed to parse {template} response: {repaired.error}")
             return Result.ok(repaired.unwrap())
-
-    @staticmethod
-    def _format_structures(structures: list[dict[str, Any]]) -> str:
-        """Render routed structures as a deterministic text block."""
-        lines: list[str] = []
-        for s in structures:
-            members = " -> ".join(str(m) for m in s["members"])
-            lines.append(
-                f"- ref={s['ref']} kind={s['kind']} routed_class={s['routed_class']}: {members}"
-            )
-        return "\n".join(lines)
 
     @staticmethod
     def _format_candidates(candidates: list[dict[str, Any]]) -> str:

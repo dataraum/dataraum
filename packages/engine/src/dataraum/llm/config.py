@@ -71,11 +71,11 @@ class LLMFeatures(BaseModel):
     graph_sql_generation: FeatureConfig | None = None
     # (sql_repair died with graph-path text repair, DAT-671 — the graph agent
     # heals by looping, never by rewriting a statement behind its grounding.)
-    # DAT-762: the class-routed dimension-identity judge (names-only veto on
-    # stats-asserted structures + cross-fact conform/role judgment). Tier/effort
-    # only — an absent entry keeps the defaults, and `enabled` is deliberately
-    # not consulted (the graph_sql_generation posture: the veto lane rides
-    # every dimension_hierarchies run, not an optional feature).
+    # DAT-762: the dimension-identity judge (cross-fact conform/role judgment
+    # over folded bus-matrix cells). Tier/effort only — an absent entry keeps
+    # the defaults, and `enabled` is deliberately not consulted (the
+    # graph_sql_generation posture: the conform lane rides every
+    # dimension_hierarchies run, not an optional feature).
     dimension_identity_judgment: FeatureConfig | None = None
 
 

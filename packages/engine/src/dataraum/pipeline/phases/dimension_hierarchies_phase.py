@@ -4,31 +4,23 @@ Session value phase: over each fact's grain-verified enriched view it runs the
 DAT-757 gate stack (row-g3 + λ + permutation-BH edges, pair-count aliases with
 the disagreement-set role check) across every dimension-like view column —
 measures are excluded by their ``semantic_role``, everything else is guarded
-by data-grounded checks, not caps. The statistical pass is deterministic and
-source-free.
-
-Since DAT-762 the phase additionally carries the class-routed VETO LANE: the
-stats decide; deterministic value-evidence routing selects the asserted
-structures in the classes the DAT-757 scorecard measured as names-judgeable
-(quasi-identifier, free-text determinant, proxy bijection), and a names-only
-LLM judge may veto them — vetoed structures are SURFACED
-(``needs_confirmation``), never deleted. The judge is built here exactly like
-every other phase agent (config + provider, misconfiguration fails the
-phase); a judgment call that fails mid-run skips the lane for that view with
-the statistical verdicts standing, recorded in the ``veto_lane`` output.
+by data-grounded checks, not caps. The discovery pass is deterministic and
+source-free; no LLM.
 
 DAT-762 Part 2 rides the same phase: after discovery the BUS MATRIX is derived
-and persisted (``bus_matrix`` — fact × dimension exposure as
-referenced/folded/degenerate cells). The referenced leg is structural (slice
-identities); the folded leg's cross-fact identity is the same judge's conform
-judgment; outcomes land in the ``bus_matrix`` output.
+and persisted (``bus_matrix`` — fact × dimension exposure as referenced/folded
+cells). The referenced leg is structural (slice identities); the folded leg's
+CROSS-FACT identity is the phase's one LLM touchpoint — the conform judge,
+built here exactly like every other phase agent (config + provider,
+misconfiguration fails the phase). A conform call that fails mid-run leaves
+the cells per-fact and unconformed, recorded in the ``bus_matrix`` output.
 
 Runs after ``slicing`` and before ``aggregation_lineage`` (the driver tree
 consumes the alias groups in DAT-545; role pairs deliberately stay separate
 axes). It also folds the user's durable hierarchy/alias teaches into this run
 (DAT-537), mirroring the relationship overlay materialization minus
-keeper-lift-up + witness — teaches land AFTER the veto lane, so user
-assertions are never routed to the judge.
+keeper-lift-up + witness (the stack is deterministic, so there is no
+silent-accept and no detect pool).
 """
 
 from __future__ import annotations
@@ -98,19 +90,17 @@ class DimensionHierarchiesPhase(BasePhase):
         judge = DimensionIdentityJudge(
             config=config, provider=provider, prompt_renderer=PromptRenderer()
         )
-        persisted, lane = discover_dimension_hierarchies(
+        persisted = discover_dimension_hierarchies(
             ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             table_ids=ctx.table_ids or [],
             run_id=run_id,
-            judge=judge,
         )
         # The bus matrix (DAT-762 Part 2) derives from what discovery just
-        # persisted (fold groups) + the run's slice identities; the same judge
+        # persisted (fold groups) + the run's slice identities; the judge
         # decides cross-fact folded identity (conform).
         cells, bus = derive_bus_matrix(
             ctx.session,
-            duckdb_conn=ctx.duckdb_conn,
             table_ids=ctx.table_ids or [],
             run_id=run_id,
             judge=judge,
@@ -118,15 +108,13 @@ class DimensionHierarchiesPhase(BasePhase):
         return PhaseResult.success(
             outputs={
                 "hierarchies": persisted,
-                "veto_lane": lane.as_output(),
                 "bus_matrix": bus.as_output(),
             },
             records_created=persisted + cells,
             summary=(
                 f"{persisted} dimension hierarchy/alias/role structure(s) discovered; "
-                f"veto lane {lane.status} ({lane.vetoed}/{lane.routed} routed vetoed); "
                 f"{cells} bus-matrix cell(s) "
-                f"({bus.referenced} referenced / {bus.folded} folded / "
-                f"{bus.degenerate} degenerate, conform {bus.status})"
+                f"({bus.referenced} referenced / {bus.folded} folded, "
+                f"conform {bus.status})"
             ),
         )

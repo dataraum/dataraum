@@ -187,14 +187,13 @@ class BusMatrixContext:
 
     The alignable drill-across surface for a SQL author: two facts sharing a
     referenced dimension table or a conformed folded concept can be drilled
-    across on that axis; a degenerate cell names the fact-grain identifier that
-    is NOT a dimension. ``concept_label`` is reported context, never a decision
+    across on that axis. ``concept_label`` is reported context, never a decision
     surface; ``confirmation_source`` is the relationships vocabulary at cell
     grain (unconfirmed | judge | user | keeper).
     """
 
     fact_table: str
-    attachment: str  # 'referenced' | 'folded' | 'degenerate'
+    attachment: str  # 'referenced' | 'folded'
     concept_label: str
     roles: list[str]  # fact-side key columns carrying the exposure
     attributes: list[str]

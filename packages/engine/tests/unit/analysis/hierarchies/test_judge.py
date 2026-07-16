@@ -9,17 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from dataraum.analysis.hierarchies.judge import (
-    ConformBatchOutput,
-    DimensionIdentityJudge,
-    VetoBatchOutput,
-)
-
-_VETO_INPUT = {
-    "verdicts": [{"structure_ref": "s1", "verdict": "veto", "reason": "id-shaped determinant"}]
-}
-# Live failure shape: a verdict entry missing its reason.
-_MALFORMED_VETO_INPUT = {"verdicts": [{"structure_ref": "s1", "verdict": "veto"}]}
+from dataraum.analysis.hierarchies.judge import ConformBatchOutput, DimensionIdentityJudge
 
 _CONFORM_INPUT = {
     "verdicts": [
@@ -30,6 +20,10 @@ _CONFORM_INPUT = {
             "reason": "same key and attribute set, meanings agree",
         }
     ]
+}
+# Live failure shape: a conform verdict missing its required concept_label.
+_MALFORMED_CONFORM_INPUT = {
+    "verdicts": [{"pair_ref": "p1", "verdict": "conform", "reason": "same thing"}]
 }
 
 
@@ -69,15 +63,6 @@ def _renderer() -> MagicMock:
     return renderer
 
 
-_STRUCTURES = [
-    {
-        "ref": "s1",
-        "kind": "alias",
-        "members": ["entry_key", "desc_entry"],
-        "routed_class": "proxy-bijection",
-    }
-]
-
 _CANDIDATES = [
     {
         "ref": "p1",
@@ -97,51 +82,6 @@ _CANDIDATES = [
 ]
 
 
-def test_veto_happy_path() -> None:
-    provider = _provider(_response("review_structures", _VETO_INPUT))
-    judge = DimensionIdentityJudge(_config(), provider, _renderer())
-
-    result = judge.veto(table_name="ledger", all_columns=["a", "b"], structures=_STRUCTURES)
-
-    assert result.success
-    (verdict,) = result.unwrap()
-    assert verdict.verdict == "veto"
-    assert verdict.structure_ref == "s1"
-
-
-def test_veto_empty_structures_short_circuits() -> None:
-    provider = _provider()  # converse would raise StopIteration if called
-    judge = DimensionIdentityJudge(_config(), provider, _renderer())
-
-    result = judge.veto(table_name="t", all_columns=[], structures=[])
-
-    assert result.success and result.unwrap() == []
-    provider.converse.assert_not_called()
-
-
-def test_veto_malformed_output_is_repaired(monkeypatch) -> None:
-    provider = _provider(_response("review_structures", _MALFORMED_VETO_INPUT))
-    repaired = VetoBatchOutput.model_validate(_VETO_INPUT)
-    repair = MagicMock(return_value=MagicMock(success=True, unwrap=lambda: repaired))
-    monkeypatch.setattr("dataraum.analysis.hierarchies.judge.repair_tool_output", repair)
-    judge = DimensionIdentityJudge(_config(), provider, _renderer())
-
-    result = judge.veto(table_name="t", all_columns=["a"], structures=_STRUCTURES)
-
-    assert result.success
-    assert result.unwrap()[0].verdict == "veto"
-    repair.assert_called_once()
-
-
-def test_veto_wrong_tool_fails_closed() -> None:
-    provider = _provider(_response("other_tool", _VETO_INPUT))
-    judge = DimensionIdentityJudge(_config(), provider, _renderer())
-
-    result = judge.veto(table_name="t", all_columns=["a"], structures=_STRUCTURES)
-
-    assert not result.success
-
-
 def test_conform_happy_path() -> None:
     provider = _provider(_response("judge_exposures", _CONFORM_INPUT))
     judge = DimensionIdentityJudge(_config(), provider, _renderer())
@@ -152,6 +92,39 @@ def test_conform_happy_path() -> None:
     (verdict,) = result.unwrap()
     assert verdict.verdict == "conform"
     assert verdict.concept_label == "account"
+
+
+def test_conform_empty_candidates_short_circuits() -> None:
+    provider = _provider()  # converse would raise StopIteration if called
+    judge = DimensionIdentityJudge(_config(), provider, _renderer())
+
+    result = judge.conform(candidates=[])
+
+    assert result.success and result.unwrap() == []
+    provider.converse.assert_not_called()
+
+
+def test_conform_malformed_output_is_repaired(monkeypatch) -> None:
+    provider = _provider(_response("judge_exposures", _MALFORMED_CONFORM_INPUT))
+    repaired = ConformBatchOutput.model_validate(_CONFORM_INPUT)
+    repair = MagicMock(return_value=MagicMock(success=True, unwrap=lambda: repaired))
+    monkeypatch.setattr("dataraum.analysis.hierarchies.judge.repair_tool_output", repair)
+    judge = DimensionIdentityJudge(_config(), provider, _renderer())
+
+    result = judge.conform(candidates=_CANDIDATES)
+
+    assert result.success
+    assert result.unwrap()[0].concept_label == "account"
+    repair.assert_called_once()
+
+
+def test_conform_wrong_tool_fails_closed() -> None:
+    provider = _provider(_response("other_tool", _CONFORM_INPUT))
+    judge = DimensionIdentityJudge(_config(), provider, _renderer())
+
+    result = judge.conform(candidates=_CANDIDATES)
+
+    assert not result.success
 
 
 def test_conform_batch_output_validates_abstain() -> None:
@@ -179,6 +152,3 @@ def test_evidence_formatting_is_deterministic() -> None:
     assert "ref=p1" in text
     assert "fact=ledger" in text
     assert "acct_id: the entity key" in text
-    veto_text = DimensionIdentityJudge._format_structures(_STRUCTURES)
-    assert "entry_key -> desc_entry" in veto_text
-    assert "routed_class=proxy-bijection" in veto_text

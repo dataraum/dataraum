@@ -218,7 +218,7 @@ CREATE TABLE bus_matrix (
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	CONSTRAINT pk_bus_matrix PRIMARY KEY (entry_id), 
 	CONSTRAINT uq_bus_matrix_signature_run UNIQUE (signature, run_id), 
-	CONSTRAINT ck_bus_matrix_attachment CHECK (attachment IN ('degenerate', 'folded', 'referenced')), 
+	CONSTRAINT ck_bus_matrix_attachment CHECK (attachment IN ('folded', 'referenced')), 
 	CONSTRAINT ck_bus_matrix_confirmation_source CHECK (confirmation_source IN ('judge', 'keeper', 'unconfirmed', 'user')), 
 	CONSTRAINT fk_bus_matrix_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_bus_matrix_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)

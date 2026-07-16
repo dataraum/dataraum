@@ -80,11 +80,10 @@ features:
     model_tier: balanced
     thinking: true
 
-  # DAT-762: dimension-identity judge — the class-routed LLM lane over the
-  # stack-v4 hierarchy verdicts (names-only veto) and cross-fact conformed
-  # dimensions (conform/role judgment on names + attributes + meanings).
+  # DAT-762: dimension-identity judge — the cross-fact conformed-dimension
+  # lane (conform/role judgment on names + attributes + meanings).
   # Forced tool_choice suppresses thinking on the Anthropic API, so the v1
-  # judges are non-thinking by design (DAT-757 scorecard was graded that way).
+  # judge is non-thinking by design (DAT-757 scorecard was graded that way).
   dimension_identity_judgment:
     model_tier: balanced
 

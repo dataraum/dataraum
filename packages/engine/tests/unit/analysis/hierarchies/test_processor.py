@@ -124,6 +124,42 @@ class TestIdentityJudge:
         assert row.needs_confirmation is True  # NOT collapsed (drivers skip these)
         assert row.identity_confidence == pytest.approx(0.03)
 
+    def test_merge_boundary_is_pinned_to_identity_merge_min(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The merge boundary is IDENTITY_MERGE_MIN, regression-locked with HARDCODED
+        confidences bracketing it: 0.69 surfaces, 0.70 merges. Every other identity
+        test uses 0.95/0.03, so a silent drift of the floor anywhere in (0.03, 0.95)
+        — e.g. back to 0.85 or down to 0.5 — would pass them all; this one flips."""
+        from dataraum.analysis.hierarchies.processor import IDENTITY_MERGE_MIN
+
+        assert IDENTITY_MERGE_MIN == 0.7  # the validated operating point — change deliberately
+
+        mapping = {"A0": "Cash", "A1": "Receivable", "A2": "Payable"}
+        acct = [f"A{i % 3}" for i in range(120)]
+
+        def merged_at(view: str, conf: float) -> bool:
+            cols = {
+                "account_id": acct,
+                "account_name": [mapping[a] for a in acct],
+                "region": [["north", "south"][i % 2] for i in range(120)],  # inert, ⊥ account
+            }
+            tid = seed_view(real_session, duck, view, cols)
+            discover_dimension_hierarchies(
+                real_session,
+                duckdb_conn=duck,
+                table_ids=[tid],
+                run_id=RUN,
+                judge=StubIdentityJudge(confidence=conf),
+            )
+            row = {frozenset(_members(r)): r for r in _rows(real_session, tid, "alias")}[
+                frozenset({"account_id", "account_name"})
+            ]
+            return row.needs_confirmation is False  # False ⇒ merged (collapses in drivers)
+
+        assert merged_at("facts_below_floor", 0.69) is False  # just below → surfaced
+        assert merged_at("facts_at_floor", 0.70) is True  # at the floor → merged
+
     def test_judge_failure_surfaces_not_merges(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:

@@ -51,12 +51,14 @@ system_prompt: |
       0.85-1.0  the two names are a code/label pair of the SAME noun and the
                 values read as one thing encoded twice — e.g. a code "DE" and a
                 name "Germany", or a numeric level and its text label.
-      0.5-0.8   plausibly one entity but only by inference — a name you must
-                interpret, or values consistent with an encoding yet also with a
-                mere strong association.
+      0.5-0.8   leaning ONE entity but short of clear — the names and values
+                point that way and you are only inferring (an abbreviation you
+                must expand, an encoding you are fairly but not fully sure of).
       0.0-0.4   the names denote DIFFERENT attributes whose 1:1 is a fact about
                 THESE rows, not about what the columns ARE — e.g. a category and
-                a status, or an identifier and a created-date.
+                a status, or an identifier and a created-date. A pair that could
+                as easily be two associated-but-distinct attributes belongs HERE,
+                not in the band above — a mere strong association is not identity.
     Score by what the evidence shows, not by how sure you feel: a clean
     coincidence is still a coincidence and belongs low however decisively the
     columns line up. Downstream, pairs at or above the merge floor collapse to

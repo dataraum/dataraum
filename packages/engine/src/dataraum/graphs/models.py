@@ -388,7 +388,7 @@ class ExtractGroundingOutput(BaseModel):
     grounding: str = Field(
         description="FIRST, commit to the evidence: which column grounds the concept, and "
         "the EXACT served values you selected from its Value set (or the complete "
-        "discriminator you filter on) — e.g. \"revenue via account_type = 'revenue' "
+        "discriminator you filter on) — e.g. \"volume via category = 'primary' "
         '(complete 5-value set)". Name the value-set entries verbatim; if you cannot, '
         "the concept is not grounded — fall loud instead of writing SQL around it."
     )
@@ -408,11 +408,11 @@ class ExtractGroundingOutput(BaseModel):
     select_expr: str = Field(
         description="The scalar value expression over the relation's columns using the "
         "step's aggregation, WITHOUT an alias (the system renders it AS value) — e.g. "
-        '"SUM(credit) - SUM(debit)". In the fall-loud case: "NULL".',
+        '"SUM(gross) - SUM(fees)". In the fall-loud case: "NULL".',
     )
     description: str = Field(
         description="One short line: what this extract computes and how it is filtered, "
-        "e.g. 'Total revenue: SUM(amount) where account_type IN (Revenue)'."
+        "e.g. 'Total volume: SUM(amount) where category IN (Primary)'."
     )
     assumptions: list[GraphAssumptionOutput] = Field(
         default_factory=list,

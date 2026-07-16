@@ -75,7 +75,6 @@ async function seed(sourceId: string): Promise<void> {
 			name,
 			sourceType: "csv",
 			connectionConfig: { file_uris: fileUris },
-			status: "configured",
 			createdAt: now,
 			updatedAt: now,
 		})

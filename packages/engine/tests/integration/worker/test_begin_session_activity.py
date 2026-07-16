@@ -195,7 +195,6 @@ def _build_typed_tables(manager: ConnectionManager, small_finance_path: Path) ->
                 name=f"sf_{source_id[:8]}",
                 source_type="csv",
                 connection_config={"file_uris": [str(p) for p in files]},
-                status="configured",
             )
         )
     run = RunRef(workspace_id="test", run_id=add_run_id)

@@ -636,14 +636,13 @@ export const sources = metadataSchema
 		connectionConfig: json("connection_config"),
 		createdAt: timestamp("created_at"),
 		updatedAt: timestamp("updated_at"),
-		status: varchar(),
 		stage: varchar(),
 		backend: varchar(),
 		discoveredSchema: json("discovered_schema"),
 		archivedAt: timestamp("archived_at"),
 	})
 	.as(
-		sql`SELECT source_id, name, source_type, connection_config, created_at, updated_at, status, stage, backend, discovered_schema, archived_at FROM ws_00000000_0000_0000_0000_000000000001.sources`,
+		sql`SELECT source_id, name, source_type, connection_config, created_at, updated_at, stage, backend, discovered_schema, archived_at FROM ws_00000000_0000_0000_0000_000000000001.sources`,
 	);
 
 export const sqlSnippets = metadataSchema

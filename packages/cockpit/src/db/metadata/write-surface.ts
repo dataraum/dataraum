@@ -54,7 +54,6 @@ export const sourcesWrite = rawSchema.table("sources", {
 	connectionConfig: jsonb("connection_config"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 	updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
-	status: varchar("status"),
 	stage: varchar("stage"),
 	backend: varchar("backend"),
 	discoveredSchema: jsonb("discovered_schema"),

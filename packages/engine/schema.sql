@@ -128,7 +128,6 @@ CREATE TABLE sources (
 	connection_config JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	status VARCHAR, 
 	stage VARCHAR, 
 	backend VARCHAR, 
 	discovered_schema JSON, 

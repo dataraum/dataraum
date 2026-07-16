@@ -82,10 +82,7 @@ const InventoryTable = z.object({
 	row_count: z.number().nullable(),
 	column_count: z.number(),
 	// Denormalized provenance — the inventory groups tables under their source
-	// (SourceCard), so each row carries its source's identity. No `status`: the
-	// engine never updates `Source.status` post-import (the scheduler that did was
-	// retired in DAT-369), so it's write-once noise — imported-ness is derivable
-	// from the typed tables under the source (DAT-431).
+	// (SourceCard), so each row carries its source's identity.
 	source_id: z.string(),
 	// db_recipe: the user-chosen connection name. Uploads: the uploaded FILE's
 	// name (the source row's name is the content-keyed `src_<digest>`, which is

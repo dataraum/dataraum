@@ -65,7 +65,6 @@ class Source(Base):
     )
 
     # Source management fields (onboarding)
-    status: Mapped[str | None] = mapped_column(String, nullable=True)
     # Journey stage the source has reached (DAT-378). The cockpit drives a source
     # through ``connect → frame → select → add_source`` before triggering the
     # workflow; this column is the persisted cursor the cockpit's journey

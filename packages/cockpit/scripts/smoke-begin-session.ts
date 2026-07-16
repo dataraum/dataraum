@@ -91,7 +91,6 @@ async function ingest(client: Client): Promise<string[]> {
 			name: `smoke_${sourceId.slice(0, 8)}`,
 			sourceType: "csv",
 			connectionConfig: { file_uris: fileUris },
-			status: "configured",
 			createdAt: now,
 			updatedAt: now,
 		})

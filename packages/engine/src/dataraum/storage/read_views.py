@@ -489,8 +489,7 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
 # REVOKE anything already granted; revoke manually when narrowing.
 _CONTROL_WRITE_GRANTS: dict[str, str] = {
     "sources": (
-        "SELECT, INSERT, "
-        "UPDATE (source_type, connection_config, status, stage, backend, updated_at)"
+        "SELECT, INSERT, UPDATE (source_type, connection_config, stage, backend, updated_at)"
     ),
     "config_overlay": "SELECT, INSERT, UPDATE",
     # concepts (DAT-728, config→DB): the typed concept vocabulary. `frame`

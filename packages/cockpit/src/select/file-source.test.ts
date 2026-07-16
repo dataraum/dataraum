@@ -23,7 +23,6 @@ const h = vi.hoisted(() => ({
 
 vi.mock("#/select/source-write", () => ({
 	STAGE_AFTER_SELECT: "add_source",
-	INITIAL_STATUS: "configured",
 	upsertSource: vi.fn(
 		async (v: {
 			name: string;

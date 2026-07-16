@@ -21,10 +21,6 @@ import { sourcesWrite } from "../db/metadata/write-surface";
 // cursor the journey readiness reads.
 export const STAGE_AFTER_SELECT = "add_source";
 
-// Initial source status — registered by the cockpit but not yet imported reads
-// `configured` (mirrors the integration seed in scripts/smoke-add-source.ts).
-export const INITIAL_STATUS = "configured";
-
 /**
  * UPSERT one `sources` row (on the UNIQUE name) and return its source_id.
  *
@@ -48,7 +44,6 @@ export async function upsertSource(values: {
 			name: values.name,
 			sourceType: values.sourceType,
 			connectionConfig: values.connectionConfig,
-			status: INITIAL_STATUS,
 			stage: STAGE_AFTER_SELECT,
 			backend: values.backend,
 			createdAt: values.now,
@@ -59,7 +54,6 @@ export async function upsertSource(values: {
 			set: {
 				sourceType: values.sourceType,
 				connectionConfig: values.connectionConfig,
-				status: INITIAL_STATUS,
 				stage: STAGE_AFTER_SELECT,
 				backend: values.backend,
 				updatedAt: values.now,

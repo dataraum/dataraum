@@ -99,12 +99,14 @@ bijections on the fact grain.
   teach) and on judge-failure. `schema.sql` regenerated (additive); read view is
   `SELECT r.*` so `current_dimension_hierarchies` carries it. **Cockpit drizzle
   mirror still needs `bun run db:pull:metadata` before the PR** (schema-drift CI).
-- **Posture:** confident (≥ `IDENTITY_MERGE_MIN` = 0.85, the prompt's DECISIVE
-  band) → merge (axes collapse in the driver tree), `identity_confidence` set on
-  the group (weakest judged pair).
-  Grey / coincidental / **judge unavailable** → surfaced as a `needs_confirmation`
-  alias that is NOT collapsed (absence of judgment is not a merge). Confidence is
-  the deliverable for agents + the operating-model UI, not a hard decision.
+- **Posture:** `identity_confidence` is a DIRECTIONAL, evidence-anchored number
+  (0.0 = clear coincidence, 1.0 = clear alias; verdict-in-confidence, no separate
+  bool — modelled on the semantic agent's name-readability convention). Confident
+  (≥ `IDENTITY_MERGE_MIN` = 0.7, mirroring `REL_CONFIRM_MIN`) → merge (axes
+  collapse in the driver tree), `identity_confidence` set on the group (weakest
+  judged pair). Below 0.7 / **judge unavailable** → surfaced as a
+  `needs_confirmation` alias that is NOT collapsed (absence of judgment is not a
+  merge). Confidence is the deliverable for agents + the operating-model UI.
 - **`drivers._candidate_dims` CHANGED — re-run driver calibration.** It now
   collapses only `needs_confirmation=False` aliases (a needs_confirmation alias is
   an unconfirmed redundancy; collapsing it would drop a real axis). This also
@@ -114,15 +116,20 @@ bijections on the fact grain.
 
 ### Eval to run
 
-- The identity gate holds through the SHIPPED prompt on fact-grain cases
-  (`scripts/probes/dat762-judge-context/fact_grain_gate.py`, dataraum-eval): true
-  code↔name aliases 0.95–0.97, coincidental bijections 0.03–0.15, margin +0.80.
-- Assert on `current_dimension_hierarchies.identity_confidence`: a clean-flat run
-  should carry high confidence on genuine folded code↔name aliases; a fixture
-  with a coincidental folded bijection (a folded attr that is 1:1 with its key on
-  clean data — e.g. an account opened-date) should surface `needs_confirmation`
-  with a low `identity_confidence`, and its two columns must remain SEPARATE
-  driver axes.
+- The redesigned (directional) identity confidence is validated on held-out data
+  (`scripts/probes/dat762-judge-context/rehist.py` + `rehist_report.py`,
+  dataraum-eval): true aliases 0.95–0.98, coincidental bijections 0.03–0.10 — a
+  +0.85 gap with the 0.2–0.9 range empty, so 0.7 sits in the dead zone. Real
+  aliases (numeric-encoding, id↔key, abbrev↔full) stay high; no over-correction.
+- **Gap the corpus can't close:** raw tables barely contain coincidental
+  equal-cardinality bijections (they arise on FACT-GRAIN views where folded keys
+  repeat and coincidentally align 1:1 with a per-row attribute). The held-out
+  validation leans on 1 real coincidental + a constructed panel. A clean-flat /
+  RelBench Tier-3 run is the way to assert on real fact-grain coincidental
+  bijections: `current_dimension_hierarchies.identity_confidence` should be high
+  on genuine folded code↔name aliases and low (`needs_confirmation`) on a folded
+  attribute that is 1:1 with its key, with the two columns kept as SEPARATE driver
+  axes.
 
 ---
 ---

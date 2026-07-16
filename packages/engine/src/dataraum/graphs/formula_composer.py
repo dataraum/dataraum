@@ -32,23 +32,39 @@ _BINOP_SQL: dict[type[ast.operator], str] = {
 }
 
 
+def compose_where_predicate(where: list[str]) -> str | None:
+    """AND-compose an EXTRACT's persisted WHERE predicates into one clause body.
+
+    Returns the predicate string to place after ``WHERE`` (never the keyword
+    itself), or ``None`` when there is nothing to filter on. Multiple predicates
+    AND-compose, each parenthesized so an OR inside one leaf can never bleed
+    across leaves.
+
+    This is the SINGLE source of the filter the executed flow SUM applies
+    (:func:`compose_extract_sql` renders it verbatim). The period resolver
+    (DAT-785) filters the same relation with the SAME clause so its window query
+    provably scans the exact rows the SUM aggregates — never the whole column.
+    """
+    preds = [p.strip() for p in where if p and p.strip()]
+    if not preds:
+        return None
+    return preds[0] if len(preds) == 1 else " AND ".join(f"({p})" for p in preds)
+
+
 def compose_extract_sql(select_expr: str, relation: str | None, where: list[str]) -> str:
     """Render an EXTRACT's clause parts to its scalar SQL (DAT-671, parts-at-source).
 
     The parts are the persisted artifact; this render is the ONE place they
     become a string on the engine side (the cockpit drill builder composes its
     own variants — sliced, pinned — from the same parts, never parsing SQL).
-    Multiple predicates AND-compose, each parenthesized so an OR inside one
-    leaf can never bleed across leaves; a null relation is the fall-loud shape
-    (``SELECT NULL AS value``, no FROM).
+    A null relation is the fall-loud shape (``SELECT NULL AS value``, no FROM).
     """
     sql = f"SELECT {select_expr} AS value"
     if relation:
         sql += f"\nFROM {relation}"
-    preds = [p.strip() for p in where if p and p.strip()]
-    if preds:
-        joined = preds[0] if len(preds) == 1 else " AND ".join(f"({p})" for p in preds)
-        sql += f"\nWHERE {joined}"
+    clause = compose_where_predicate(where)
+    if clause:
+        sql += f"\nWHERE {clause}"
     return sql
 
 

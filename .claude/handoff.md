@@ -133,6 +133,37 @@ bijections on the fact grain.
 
 ---
 
+## DAT-805 — slicing pre-filter: scale-invariant near-key gate, not an absolute count (which columns get sliced changes)
+
+**Branch:** `feat/dat-805-slicing-gate-to-evidence`. `SlicingPhase._pre_filter_columns`
+decided slice-dimension candidacy with a scale-BLIND `distinct_count > 200` cut plus a
+too-aggressive `cardinality_ratio > 0.5`. Replaced with the hierarchies near-key
+discipline (#500):
+
+- **Floor** — a constant (`distinct < 2`) is not an axis.
+- **Coverage** — a majority-NULL column (`null_ratio > 0.5`) is excluded.
+- **Ceiling** — a near-UNIQUE key (`cardinality_ratio >= 0.9`) is excluded — a FRACTION
+  of rows, never an absolute count. Applied UNIFORMLY (no enriched exemption): a
+  near-unique enriched column, e.g. a raw date axis, is dropped like any own near-key.
+- Every drop is **born-loud** (`slice_column_excluded` at INFO), not a silent debug.
+
+**What changes for eval — the SET of elected slice dimensions moves:** (a) high-cardinality
+but low-ratio discriminators (a 400-value region in a big table) are now KEPT (were dropped
+by `>200`); (b) mid-cardinality columns in the 0.5–0.9 ratio band are now KEPT (were dropped
+by `>0.5`); (c) constants are now DROPPED (were kept — there was no floor). Net: higher
+recall of legitimate dimensions; near-unique keys still excluded.
+
+**Calibration to re-verify** on the eval corpora: a valid high-cardinality discriminator is
+elected; a near-unique key / constant / majority-NULL column is NOT; a null-coded `{value,
+NULL}` binary (distinct_count 1 but a real 2-way split) IS kept (DAT-805 F1). The DAT-491/720
+time-axis *fill* is unchanged (a near-unique enriched date axis is dropped from slice
+candidates but still resolvable via the pre-filter `col_id_by_name` snapshot) — but note a
+low-ratio date (`cardinality_ratio < 0.9`, e.g. a header date shared across many line-items)
+is now slice-**eligible** where the old `distinct > 200` deterministically shielded it, so
+confirm the LLM does not elect a raw date as a slice dimension. No backfill; recreate test DBs.
+
+---
+
 ## DAT-785 — `days_in_period` is derived from the data, not the config 30 (metric VALUES change)
 
 **Branch:** `fix/dat-785-796-days-in-period-derive`. The working-capital metrics

@@ -208,6 +208,261 @@ def _columns_by_name(table_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {c["column_name"]: c for c in table_data["columns"]}
 
 
+class TestPreFilterColumns:
+    """DAT-805: the slice-candidate gate excludes ONLY the definitive extremes —
+    constant, majority-NULL, near-unique key — on a scale-invariant near-key
+    FRACTION of rows, never an absolute distinct count. Mid-cardinality columns
+    (the recall the old ``distinct > 200`` / ``cardinality_ratio > 0.5`` cuts
+    silently killed) survive to the LLM; the near-key check is uniform (no
+    enriched exemption).
+    """
+
+    @staticmethod
+    def _survivors(*columns: dict[str, Any]) -> set[str]:
+        ctx: dict[str, Any] = {"tables": [{"table_name": "t", "columns": list(columns)}]}
+        SlicingPhase()._pre_filter_columns(ctx)
+        return {c["column_name"] for c in ctx["tables"][0]["columns"]}
+
+    def test_high_distinct_low_ratio_discriminator_survives(self) -> None:
+        # Recall recovery: 5000 distinct in a 10M-row table (ratio ~0) is a fine
+        # discriminator the old absolute ``distinct > 200`` cut wrongly dropped.
+        assert self._survivors(
+            {
+                "column_name": "region_code",
+                "distinct_count": 5000,
+                "cardinality_ratio": 0.0005,
+                "null_ratio": 0.0,
+            }
+        ) == {"region_code"}
+
+    def test_mid_cardinality_survives(self) -> None:
+        # 0.6 is well below near-unique; the old ``cardinality_ratio > 0.5`` cut
+        # silently killed it. Downstream folds thin support.
+        assert self._survivors(
+            {
+                "column_name": "sub_segment",
+                "distinct_count": 60,
+                "cardinality_ratio": 0.6,
+                "null_ratio": 0.1,
+            }
+        ) == {"sub_segment"}
+
+    def test_near_unique_key_excluded(self) -> None:
+        assert (
+            self._survivors(
+                {
+                    "column_name": "txn_ref",
+                    "distinct_count": 9500,
+                    "cardinality_ratio": 0.95,
+                    "null_ratio": 0.0,
+                }
+            )
+            == set()
+        )
+
+    def test_constant_excluded(self) -> None:
+        assert (
+            self._survivors(
+                {
+                    "column_name": "only_value",
+                    "distinct_count": 1,
+                    "cardinality_ratio": 0.0001,
+                    "null_ratio": 0.0,
+                }
+            )
+            == set()
+        )
+
+    def test_majority_null_excluded(self) -> None:
+        assert (
+            self._survivors(
+                {
+                    "column_name": "sparse",
+                    "distinct_count": 10,
+                    "cardinality_ratio": 0.02,
+                    "null_ratio": 0.7,
+                }
+            )
+            == set()
+        )
+
+    def test_near_unique_enriched_column_also_excluded(self) -> None:
+        # No enriched exemption on the near-key check: a raw enriched date axis is
+        # near-unique and just as useless a slice as an own near-key.
+        assert (
+            self._survivors(
+                {
+                    "column_name": "invoice_id__date",
+                    "is_enriched_dimension": True,
+                    "distinct_count": 300,
+                    "cardinality_ratio": 1.0,
+                    "null_ratio": 0.0,
+                }
+            )
+            == set()
+        )
+
+    def test_low_cardinality_enriched_dimension_survives(self) -> None:
+        assert self._survivors(
+            {
+                "column_name": "account_id__account_type",
+                "is_enriched_dimension": True,
+                "distinct_count": 6,
+                "cardinality_ratio": 0.0001,
+                "null_ratio": 0.0,
+            }
+        ) == {"account_id__account_type"}
+
+    def test_missing_stats_pass_through(self) -> None:
+        # No profile (None stats) — the gate can't judge, so the column is served.
+        assert self._survivors({"column_name": "unprofiled"}) == {"unprofiled"}
+
+    def test_dropped_column_preserved_in_snapshot(self) -> None:
+        # DAT-491: a dropped near-key date axis stays resolvable for the time-axis
+        # validation via the pre-filter ``col_id_by_name`` snapshot.
+        ctx: dict[str, Any] = {
+            "tables": [
+                {
+                    "table_name": "t",
+                    "columns": [
+                        {
+                            "column_name": "entry_date",
+                            "column_id": "c1",
+                            "distinct_count": 400,
+                            "cardinality_ratio": 1.0,
+                            "null_ratio": 0.0,
+                        }
+                    ],
+                }
+            ]
+        }
+        SlicingPhase()._pre_filter_columns(ctx)
+        assert ctx["tables"][0]["columns"] == []
+        assert ctx["tables"][0]["col_id_by_name"] == {"entry_date": "c1"}
+
+    def test_null_coded_binary_survives(self) -> None:
+        # {value, NULL} is a valid 2-way split — distinct_count is null-blind (=1),
+        # but the NULL bucket makes it a real dimension (not a constant).
+        assert self._survivors(
+            {
+                "column_name": "flag",
+                "distinct_count": 1,
+                "null_count": 400,
+                "cardinality_ratio": 0.0001,
+                "null_ratio": 0.4,
+            }
+        ) == {"flag"}
+
+    def test_true_constant_no_nulls_excluded(self) -> None:
+        assert (
+            self._survivors(
+                {
+                    "column_name": "only_value",
+                    "distinct_count": 1,
+                    "null_count": 0,
+                    "cardinality_ratio": 0.0001,
+                    "null_ratio": 0.0,
+                }
+            )
+            == set()
+        )
+
+    def test_near_key_fraction_boundary(self) -> None:
+        # >= 0.9 drops; just below survives.
+        assert (
+            self._survivors(
+                {
+                    "column_name": "a",
+                    "distinct_count": 90,
+                    "cardinality_ratio": 0.9,
+                    "null_ratio": 0.0,
+                }
+            )
+            == set()
+        )
+        assert self._survivors(
+            {"column_name": "b", "distinct_count": 89, "cardinality_ratio": 0.89, "null_ratio": 0.0}
+        ) == {"b"}
+
+    def test_null_ratio_boundary(self) -> None:
+        # > 0.5 drops; exactly 0.5 survives.
+        assert self._survivors(
+            {"column_name": "a", "distinct_count": 5, "cardinality_ratio": 0.01, "null_ratio": 0.5}
+        ) == {"a"}
+        assert (
+            self._survivors(
+                {
+                    "column_name": "b",
+                    "distinct_count": 5,
+                    "cardinality_ratio": 0.01,
+                    "null_ratio": 0.51,
+                }
+            )
+            == set()
+        )
+
+    def test_distinct_floor_boundary(self) -> None:
+        # distinct 2 survives; distinct 1 (no NULL) is a constant.
+        assert self._survivors(
+            {
+                "column_name": "a",
+                "distinct_count": 2,
+                "null_count": 0,
+                "cardinality_ratio": 0.01,
+                "null_ratio": 0.0,
+            }
+        ) == {"a"}
+        assert (
+            self._survivors(
+                {
+                    "column_name": "b",
+                    "distinct_count": 1,
+                    "null_count": 0,
+                    "cardinality_ratio": 0.01,
+                    "null_ratio": 0.0,
+                }
+            )
+            == set()
+        )
+
+    def test_exclusions_are_born_loud(self) -> None:
+        # Every drop emits slice_column_excluded with its reason (no silent debug).
+        ctx: dict[str, Any] = {
+            "tables": [
+                {
+                    "table_name": "t",
+                    "columns": [
+                        {
+                            "column_name": "k",
+                            "distinct_count": 100,
+                            "null_count": 0,
+                            "cardinality_ratio": 0.99,
+                            "null_ratio": 0.0,
+                        },
+                        {
+                            "column_name": "c",
+                            "distinct_count": 1,
+                            "null_count": 0,
+                            "cardinality_ratio": 0.001,
+                            "null_ratio": 0.0,
+                        },
+                        {
+                            "column_name": "n",
+                            "distinct_count": 5,
+                            "null_count": 0,
+                            "cardinality_ratio": 0.05,
+                            "null_ratio": 0.8,
+                        },
+                    ],
+                }
+            ]
+        }
+        with capture_logs() as logs:
+            SlicingPhase()._pre_filter_columns(ctx)
+        excl = {(e["column"], e["reason"]) for e in logs if e["event"] == "slice_column_excluded"}
+        assert excl == {("k", "near_key"), ("c", "constant"), ("n", "mostly_null")}
+
+
 class TestBuildContextDataTimeAxis:
     """Part A: the DAT-491 time-axis context ``_build_context_data`` assembles."""
 
@@ -432,14 +687,14 @@ class TestRunTimeAxisFill:
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
     ) -> None:
-        """A real date axis is high-cardinality and prompt-prefiltered — fill still lands.
+        """A real date axis is near-unique and prompt-prefiltered — fill still lands.
 
-        ``_pre_filter_columns`` drops ``distinct_count > 200`` columns as
-        slice-DIMENSION candidates, and a time axis is exactly such a column.
-        Validating the agent's choice against the filtered list deterministically
-        rejected every real enriched date axis (the live DAT-491 false-reject:
-        ``journal_lines`` ← ``entry_id__date``); the check must run against the
-        unfiltered universe instead.
+        ``_pre_filter_columns`` drops near-unique columns (``cardinality_ratio >=
+        _NEAR_KEY_FRAC``) as slice-DIMENSION candidates, and a raw date axis is
+        exactly such a column. Validating the agent's choice against the filtered
+        list deterministically rejected every real enriched date axis (the live
+        DAT-491 false-reject: ``journal_lines`` ← ``entry_id__date``); the check
+        must run against the unfiltered universe instead.
         """
         from dataraum.analysis.statistics.db_models import StatisticalProfile
 
@@ -648,13 +903,14 @@ class TestRunTimeAxisFill:
         duckdb_conn: duckdb.DuckDBPyConnection,
     ) -> None:
         """DAT-720: the backstop must read the pre-filter axis stash, not the
-        prompt-filtered columns. A real date axis is high-cardinality, so
+        prompt-filtered columns. A real date axis is near-unique, so
         ``_pre_filter_columns`` drops it from ``context_data["tables"]`` (the
-        ``distinct_count > 200`` slice-dimension cut). The FIRST fix read those
-        filtered columns and fired 0×; the stash (``dimension_time_axes``, built
-        before the filter) is what makes the deterministic fill survive. With the
-        agent returning empty AND the axis pre-filtered, the backstop must still
-        fill it — this guards against a regression to reading the filtered list.
+        near-key slice-dimension cut, ``cardinality_ratio >= _NEAR_KEY_FRAC``). The
+        FIRST fix read those filtered columns and fired 0×; the stash
+        (``dimension_time_axes``, built before the filter) is what makes the
+        deterministic fill survive. With the agent returning empty AND the axis
+        pre-filtered, the backstop must still fill it — this guards against a
+        regression to reading the filtered list.
         """
         from dataraum.analysis.statistics.db_models import StatisticalProfile
 
@@ -670,9 +926,9 @@ class TestRunTimeAxisFill:
                 layer="enriched",
                 total_count=300,
                 null_count=0,
-                distinct_count=300,  # > 200 → dropped from context_data["tables"]
+                distinct_count=300,
                 null_ratio=0.0,
-                cardinality_ratio=1.0,
+                cardinality_ratio=1.0,  # near-unique → dropped from context_data["tables"]
                 profile_data={},
             )
         )

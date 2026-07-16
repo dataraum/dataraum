@@ -96,7 +96,6 @@ class SlicingAgent(LLMFeature):
             "tables_json": json.dumps(tables, indent=2),
             "num_tables": len(tables),
             "table_names": ", ".join(t["table_name"] for t in tables),
-            "enriched_columns_json": json.dumps(context_data.get("enriched_columns", []), indent=2),
             "max_recommendations": constraints.get("max_recommendations", 6),
         }
 

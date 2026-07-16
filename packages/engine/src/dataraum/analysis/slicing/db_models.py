@@ -33,9 +33,13 @@ class SliceDefinition(Base):
     """The dimension catalog: one recommended aggregation/filter dimension per row.
 
     Each record is a dimension a fact can be sliced/grouped by — grain-safe by
-    construction (the slicing phase pre-filters fan-out/near-unique columns before
-    the LLM, so a cataloged dimension is always safe to aggregate; DAT-538 removed
-    the redundant always-true ``grain_safe`` flag). The durable output of the
+    construction: the slicing phase excludes constants, near-unique keys, and
+    majority-NULL columns before the LLM (DAT-805, a scale-invariant near-key
+    fraction — not an absolute count), and enriched dimensions are grain-verified
+    FK joins, so a cataloged dimension is always grain-safe to aggregate — thin
+    per-group support is folded by the driver-tree's ``min_support`` (the answer
+    agent + metrics page surface a mid-cardinality dim as-is; DAT-538 removed the
+    redundant always-true ``grain_safe`` flag). The durable output of the
     slicing phase, consumed downstream by the answer agent, the metrics page, and
     the driver-tree engine (DAT-545). Slice *materialization* was removed (DAT-536):
     the structural_reconciliation substrate is aggregated inline over the enriched

@@ -11,14 +11,33 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from dataraum.entropy.dimensions import Dimension, Layer, SubDimension
 from dataraum.storage import Base
 
 # Use JSONB for PostgreSQL, JSON for SQLite (JSON handles serialization automatically)
 JSON_TYPE = JSONB().with_variant(JSON, "sqlite")
+
+# Closed-vocabulary CHECK values (DAT-802 enum-standard sweep), derived from the
+# single-home enums in ``entropy.dimensions`` — every detector's ``layer`` /
+# ``dimension`` / ``sub_dimension`` is already ``isinstance``-asserted against
+# these at registration (``detectors/base.py``); this is the DB-enforced backstop
+# (the DAT-784 pattern). Sorted for a deterministic CHECK string in the dump.
+_LAYER_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in Layer))
+_DIMENSION_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in Dimension))
+_SUB_DIMENSION_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in SubDimension))
 
 
 class EntropyObjectRecord(Base):
@@ -29,6 +48,23 @@ class EntropyObjectRecord(Base):
     """
 
     __tablename__ = "entropy_objects"
+    __table_args__ = (
+        # Closed-vocabulary enforcement (DAT-802 enum-standard sweep): derived from
+        # the Layer/Dimension/SubDimension enums, the single home — every detector
+        # is already ``isinstance``-asserted against them at registration
+        # (``detectors/base.py``); this is the DB-enforced backstop.
+        CheckConstraint(
+            "layer IN (" + ", ".join(f"'{v}'" for v in _LAYER_VALUES) + ")", name="layer"
+        ),
+        CheckConstraint(
+            "dimension IN (" + ", ".join(f"'{v}'" for v in _DIMENSION_VALUES) + ")",
+            name="dimension",
+        ),
+        CheckConstraint(
+            "sub_dimension IN (" + ", ".join(f"'{v}'" for v in _SUB_DIMENSION_VALUES) + ")",
+            name="sub_dimension",
+        ),
+    )
 
     object_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
@@ -95,6 +131,14 @@ class EntropyReadinessRecord(Base):
     """
 
     __tablename__ = "entropy_readiness"
+    __table_args__ = (
+        # Closed-vocabulary enforcement (DAT-802 enum-standard sweep): the 3
+        # values ``LossConfig.band()`` (``entropy/loss.py``, the single chokepoint
+        # every ``band=`` write reads from) can ever return — hardcoded in its
+        # body, not (yet) its own enum; hand-typed inline, matching the
+        # ``relationship_type`` precedent.
+        CheckConstraint("band IN ('ready', 'investigate', 'blocked')", name="band"),
+    )
 
     readiness_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())

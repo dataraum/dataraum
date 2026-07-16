@@ -9,7 +9,16 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
@@ -33,6 +42,11 @@ class ColumnEligibilityRecord(Base):
     # at-least-once retries and two coexisting runs' rows don't collide.
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_column_eligibility_column_run"),
+        # Closed-vocabulary enforcement (DAT-802 enum-standard sweep): the 3
+        # values declared by ``column_eligibility.yaml`` (rule ``status`` +
+        # ``default_status``) and returned verbatim by ``evaluate_rules`` /
+        # ``extract_metrics`` fallback — config-derived, never LLM-touched.
+        CheckConstraint("status IN ('ELIGIBLE', 'WARN', 'INELIGIBLE')", name="status"),
     )
 
     eligibility_id: Mapped[str] = mapped_column(

@@ -33,10 +33,17 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, String, Text, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, DateTime, Float, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from dataraum.lifecycle.transitions import ArtifactState
 from dataraum.storage.base import Base
+
+# Closed-vocabulary CHECK values (DAT-802 enum-standard sweep), derived from
+# ArtifactState, the single home (``lifecycle/transitions.py`` — every
+# ``declare_artifact`` / ``transition`` write goes through ``.value`` on this
+# enum). Sorted for a deterministic CHECK string in the offline DDL dump.
+_ARTIFACT_STATE_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in ArtifactState))
 
 
 class LifecycleArtifact(Base):
@@ -72,6 +79,13 @@ class LifecycleArtifact(Base):
             "artifact_key",
             "run_id",
             name="uq_lifecycle_artifact_identity",
+        ),
+        # Closed-vocabulary enforcement (DAT-802 enum-standard sweep): derived
+        # from ArtifactState, the single home — the DB-enforced backstop for the
+        # typed state machine ``lifecycle/transitions.py`` already governs app-side.
+        CheckConstraint(
+            "state IN (" + ", ".join(f"'{v}'" for v in _ARTIFACT_STATE_VALUES) + ")",
+            name="state",
         ),
     )
 

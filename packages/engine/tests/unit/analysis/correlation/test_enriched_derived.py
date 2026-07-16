@@ -99,6 +99,7 @@ def _make_stat_profile(session: Session, column: Column, distinct_count: int = 1
     sp = StatisticalProfile(
         profile_id=str(uuid4()),
         column_id=column.column_id,
+        layer="typed",
         distinct_count=distinct_count,
         null_count=0,
         total_count=200,

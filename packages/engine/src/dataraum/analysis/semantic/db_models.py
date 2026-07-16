@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -95,6 +96,16 @@ class ConceptEdgePredicate(StrEnum):
     RECONCILES_WITH = "reconciles_with"
 
 
+# Closed-vocabulary CHECK values (DAT-802 enum-standard sweep), each derived from
+# its single-home enum above so the CHECK and the enum can never drift (the
+# DAT-784 pattern). Sorted for a deterministic CHECK string in the offline DDL dump.
+_CONCEPT_KIND_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in ConceptKind))
+_TABLE_ROLE_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in TableRole))
+_CONCEPT_EDGE_PREDICATE_VALUES: tuple[str, ...] = tuple(
+    sorted(v.value for v in ConceptEdgePredicate)
+)
+
+
 def derive_table_role(
     is_fact: bool,
     grain_columns: Sequence[str],
@@ -148,6 +159,23 @@ class Concept(Base):
             postgresql_where=text("superseded_at IS NULL"),
             sqlite_where=text("superseded_at IS NULL"),
         ),
+        # Closed-vocabulary enforcement (DAT-802): derived from ConceptKind, the
+        # single home (see ``concept_store.py``'s seed validation against
+        # ``_VALID_KINDS`` and the cockpit's independently-typed TS mirror,
+        # ``write-surface.ts`` / ``concept-write.ts``'s ``CONCEPT_KINDS`` — two
+        # app-level guards converging on one physical column with no DB backstop
+        # until now).
+        CheckConstraint(
+            "kind IN (" + ", ".join(f"'{v}'" for v in _CONCEPT_KIND_VALUES) + ")",
+            name="kind",
+        ),
+        # Lifecycle-source vocabulary (DAT-802): the full documented domain
+        # (class docstring) — 'seed' (concept_store.py, engine) and 'frame'
+        # (cockpit ``concept-write.ts``, direct Drizzle write) are live today;
+        # 'teach' is the declared-but-unbuilt third authoring path (frame/teach
+        # parity, DAT-729-adjacent) — included so its eventual writer doesn't need
+        # a CHECK migration to land.
+        CheckConstraint("source IS NULL OR source IN ('seed', 'frame', 'teach')", name="source"),
     )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -215,6 +243,22 @@ class ConceptEdge(Base):
             postgresql_where=text("superseded_at IS NULL"),
             sqlite_where=text("superseded_at IS NULL"),
         ),
+        # Closed-vocabulary enforcement (DAT-802): derived from ConceptEdgePredicate,
+        # the single home. ``concept_edge_store.py`` (seed) only ever writes
+        # PART_OF/DISJOINT_WITH today; RECONCILES_WITH is the declared third
+        # predicate the aggregation-lineage reconciliation producer (DAT-800/801,
+        # out of this sweep's scope) will emit — included so that fenced work
+        # doesn't need a CHECK migration to land.
+        CheckConstraint(
+            "predicate IN (" + ", ".join(f"'{v}'" for v in _CONCEPT_EDGE_PREDICATE_VALUES) + ")",
+            name="predicate",
+        ),
+        # Lifecycle-source vocabulary (DAT-802): the full documented domain (class
+        # docstring) — 'seed' (concept_edge_store.py) is the only live writer;
+        # 'frame' is the declared P13 authoring path and 'derived' is the
+        # DAT-800/801 aggregation-lineage producer's output (both out of scope
+        # here) — included so neither needs a CHECK migration to land.
+        CheckConstraint("source IS NULL OR source IN ('seed', 'derived', 'frame')", name="source"),
     )
 
     edge_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -249,6 +293,14 @@ class SemanticAnnotation(Base):
     # current; readers head-resolve rather than assume one row per column.
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_column_semantic_annotation"),
+        # Closed-vocabulary enforcement (DAT-802): the ONLY value any writer
+        # produces today is 'llm' (semantic/processor.py, the sole writer). The
+        # 'manual' / 'config_override' values below were aspirational — no manual
+        # or config-override write path exists (DAT-772 audit's doc-drift finding);
+        # narrowed to reality rather than encoded from the stale comment.
+        CheckConstraint(
+            "annotation_source IS NULL OR annotation_source IN ('llm')", name="annotation_source"
+        ),
     )
 
     annotation_id: Mapped[str] = mapped_column(
@@ -286,10 +338,9 @@ class SemanticAnnotation(Base):
     # treats these as NULL in generated SQL. None = not resolved / no rejects.
     null_tokens: Mapped[list[str] | None] = mapped_column(JSON)
 
-    # Provenance
-    annotation_source: Mapped[str | None] = mapped_column(
-        String
-    )  # 'llm', 'manual', 'config_override'
+    # Provenance. Closed vocab: see ck_semantic_annotations_annotation_source —
+    # 'llm' is the only value any writer produces today.
+    annotation_source: Mapped[str | None] = mapped_column(String)
     annotated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -346,7 +397,16 @@ class ColumnConcept(Base):
     # One row per column PER catalogue run (DAT-637): mirrors SemanticAnnotation's
     # run-versioned grain so coexisting begin_session runs don't collide; the
     # catalogue head names the current run.
-    __table_args__ = (UniqueConstraint("column_id", "run_id", name="uq_column_concept"),)
+    __table_args__ = (
+        UniqueConstraint("column_id", "run_id", name="uq_column_concept"),
+        # Closed-vocabulary enforcement (DAT-802): the ONLY value any writer
+        # produces today is 'llm' (``semantic_per_table``, the sole authoring
+        # path — this table's own docstring: "authored ONLY by semantic_per_table").
+        CheckConstraint(
+            "annotation_source IS NULL OR annotation_source IN ('llm')",
+            name="annotation_source",
+        ),
+    )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
@@ -380,7 +440,25 @@ class TableEntity(Base):
     # run-versioned and coexists across runs; this constraint (mirroring
     # ``uq_column_semantic_annotation``) makes "one row per ``(table_id, run_id)``"
     # a DB guarantee so the run-scoped readers can trust it.
-    __table_args__ = (UniqueConstraint("table_id", "run_id", name="uq_table_entity_table_run"),)
+    __table_args__ = (
+        UniqueConstraint("table_id", "run_id", name="uq_table_entity_table_run"),
+        # Closed-vocabulary enforcement (DAT-802): the ONLY value any writer
+        # produces today is 'llm' (semantic/processor.py, the sole writer).
+        # 'heuristic' / 'manual' were aspirational — no such write path exists
+        # (DAT-772 audit's doc-drift finding); narrowed to reality.
+        CheckConstraint(
+            "detection_source IS NULL OR detection_source IN ('llm')", name="detection_source"
+        ),
+        # Table-role vocabulary (DAT-802): derived from TableRole, the single home
+        # (see :func:`derive_table_role`, the sole writer via
+        # ``semantic/agent.py``).
+        CheckConstraint(
+            "table_role IS NULL OR table_role IN ("
+            + ", ".join(f"'{v}'" for v in _TABLE_ROLE_VALUES)
+            + ")",
+            name="table_role",
+        ),
+    )
     entity_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
     # Snapshot version axis (DAT-413): the run that wrote this row.
@@ -414,8 +492,9 @@ class TableEntity(Base):
     time_columns: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     identity_columns: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
 
-    # Provenance
-    detection_source: Mapped[str | None] = mapped_column(String)  # 'llm', 'heuristic', 'manual'
+    # Provenance. Closed vocab: see ck_table_entities_detection_source — 'llm' is
+    # the only value any writer produces today.
+    detection_source: Mapped[str | None] = mapped_column(String)
     detected_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

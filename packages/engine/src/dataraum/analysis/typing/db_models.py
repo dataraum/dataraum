@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -111,10 +112,14 @@ class TypeDecision(Base):
     Final type decision for a column after inference and optional human review.
     One decision per column.
 
-    Decision sources:
-    - 'automatic': System selected best TypeCandidate
-    - 'manual': Human override via UI/API
-    - 'override': Configuration-based override
+    Decision sources (DAT-802 audit corrected against the actual writers in
+    ``typing/resolution.py`` — the class comment previously claimed 'override',
+    which no writer has ever produced, and omitted 'fallback', which is real):
+    - 'automatic': System selected best TypeCandidate.
+    - 'manual': Human override, copied forward from a prior manual decision
+      (``resolution.py``'s only 'manual' producer copies an EXISTING manual row;
+      no fresh-write path exists in the engine today).
+    - 'fallback': No candidate met the confidence bar; the resolver fell back.
     """
 
     __tablename__ = "type_decisions"
@@ -122,7 +127,14 @@ class TypeDecision(Base):
     # this from ``column_id`` to ``(column_id, run_id)`` so two coexisting runs'
     # rows for the same column don't collide. The promoted head names which run is
     # current; readers head-resolve rather than assume one row per column.
-    __table_args__ = (UniqueConstraint("column_id", "run_id", name="uq_column_type_decision"),)
+    __table_args__ = (
+        UniqueConstraint("column_id", "run_id", name="uq_column_type_decision"),
+        # Closed-vocabulary enforcement (DAT-802): matches the corrected class
+        # docstring above, not the stale inline comment this replaces.
+        CheckConstraint(
+            "decision_source IN ('automatic', 'manual', 'fallback')", name="decision_source"
+        ),
+    )
 
     decision_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
@@ -130,9 +142,8 @@ class TypeDecision(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     decided_type: Mapped[str] = mapped_column(String, nullable=False)
-    decision_source: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # 'automatic', 'manual', 'override'
+    # Closed vocab: see ck_type_decisions_decision_source and the class docstring.
+    decision_source: Mapped[str] = mapped_column(String, nullable=False)
     decided_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

@@ -10,7 +10,16 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage.base import Base
@@ -83,10 +92,13 @@ class Source(Base):
 class Table(Base):
     """Tables from data sources.
 
-    A table can exist in different layers:
-    - 'raw': VARCHAR-first staging layer
-    - 'typed': After type resolution
-    - 'quarantine': Failed type casts
+    A table can exist in different layers (DAT-802 audit: the class comment
+    previously omitted 'enriched', a real layer ``enriched_views_phase.py``
+    writes on every fact table's dimension-widened view):
+    - 'raw': VARCHAR-first staging layer.
+    - 'typed': After type resolution.
+    - 'quarantine': Failed type casts.
+    - 'enriched': A fact table's dimension-widened view (``enriched_views_phase.py``).
     """
 
     __tablename__ = "tables"
@@ -96,12 +108,19 @@ class Table(Base):
     # source is an atomic content-keyed wrapper (how the table arrived), never a
     # disambiguator; two sources cannot each own an ``orders`` (import fails loud
     # and tells the user to retire the existing one first).
-    __table_args__ = (UniqueConstraint("table_name", "layer", name="uq_table_name_layer"),)
+    __table_args__ = (
+        UniqueConstraint("table_name", "layer", name="uq_table_name_layer"),
+        # Closed-vocabulary enforcement (DAT-802 enum-standard sweep): the 4
+        # values every writer produces (import/typing/surrogate-mint/enriched-views
+        # phases + the 3 source loaders) — see the class docstring above.
+        CheckConstraint("layer IN ('raw', 'typed', 'quarantine', 'enriched')", name="layer"),
+    )
 
     table_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
     table_name: Mapped[str] = mapped_column(String, nullable=False)
-    layer: Mapped[str] = mapped_column(String, nullable=False)  # 'raw', 'typed', 'quarantine'
+    # Closed vocab: see ck_tables_layer and the class docstring.
+    layer: Mapped[str] = mapped_column(String, nullable=False)
     # Unqualified DuckDB table name — NARROW, workspace-unique (e.g. ``orders``,
     # no source prefix — DAT-639). Schema is derived from ``layer`` via
     # ``dataraum.core.duckdb_naming.schema_for_layer``; cross-layer SQL composes

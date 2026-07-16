@@ -78,6 +78,51 @@ a baseline. `routing.py`, `hierarchy_veto.yaml`, `judge.veto()` and the
   grading: the writer emits no degenerate cells (`attachment` is exactly
   `folded` | `referenced`).
 
+### Within-view identity judge (NEW — a SECOND LLM touchpoint in this phase)
+
+The `dimension_hierarchies` discovery pass is **no longer LLM-less**. On the
+fact-grain enriched view a folded key and its attributes REPEAT, so a code↔name
+alias (`account_id ⇄ account_name`) and a COINCIDENTAL 1:1 (`account_id ⇄
+opened_date` — an entity key lining up with a per-row timestamp) are BOTH non-key
+bijections that pass g3+λ+perm-BH identically. Auto-merging the coincidental one
+collapsed two drill axes into one (silent number corruption). The finder now
+routes the `rate > ROLE_MAX_DISAGREE` bijections to a batched identity judge
+(`judge.alias_identity`, prompt `dimension_alias.yaml`) returning `same_dimension`
++ a **float confidence [0,1]**. Note KEY bijections on a dimension SOURCE table
+(`raceId ⇄ date`, both unique) never reach the judge — perm-BH already rejects
+them (FI stays 1.0 under every shuffle → p≈1.0); the FP class is NON-key
+bijections on the fact grain.
+
+- **New column `dimension_hierarchies.identity_confidence`** (FLOAT, nullable):
+  the judge's calibrated confidence a relabeling-bijection alias is one dimension.
+  NULL on rows the judge never sees (drilldown, role, exact-copy alias, manual
+  teach) and on judge-failure. `schema.sql` regenerated (additive); read view is
+  `SELECT r.*` so `current_dimension_hierarchies` carries it. **Cockpit drizzle
+  mirror still needs `bun run db:pull:metadata` before the PR** (schema-drift CI).
+- **Posture:** confident (≥ `IDENTITY_MERGE_MIN` = 0.8) → merge (axes collapse in
+  the driver tree), `identity_confidence` set on the group (weakest judged pair).
+  Grey / coincidental / **judge unavailable** → surfaced as a `needs_confirmation`
+  alias that is NOT collapsed (absence of judgment is not a merge). Confidence is
+  the deliverable for agents + the operating-model UI, not a hard decision.
+- **`drivers._candidate_dims` CHANGED — re-run driver calibration.** It now
+  collapses only `needs_confirmation=False` aliases (a needs_confirmation alias is
+  an unconfirmed redundancy; collapsing it would drop a real axis). This also
+  fixes a latent bug: role-check `value_systematic`/`abstain` aliases were being
+  silently collapsed despite being flagged never-merge. Driver rankings can
+  legitimately shift where such aliases existed — both axes now compete.
+
+### Eval to run
+
+- The identity gate holds through the SHIPPED prompt on fact-grain cases
+  (`scripts/probes/dat762-judge-context/fact_grain_gate.py`, dataraum-eval): true
+  code↔name aliases 0.95–0.97, coincidental bijections 0.03–0.15, margin +0.80.
+- Assert on `current_dimension_hierarchies.identity_confidence`: a clean-flat run
+  should carry high confidence on genuine folded code↔name aliases; a fixture
+  with a coincidental folded bijection (a folded attr that is 1:1 with its key on
+  clean data — e.g. an account opened-date) should surface `needs_confirmation`
+  with a low `identity_confidence`, and its two columns must remain SEPARATE
+  driver axes.
+
 ---
 ---
 

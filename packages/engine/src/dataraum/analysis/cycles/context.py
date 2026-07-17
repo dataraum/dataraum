@@ -633,11 +633,16 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         lines.append("## TEMPORAL PATTERNS")
         for tp in temporal:
             stale_str = " [STALE]" if tp.get("is_stale") else ""
+            # completeness is None on an irregular/unknown grain — there is no bucket to
+            # count, so the ratio is not computable (DAT-810). Say so; a missing number
+            # must not read as a number, and `:.0%` on None raises.
+            comp = tp["completeness"]
+            comp_str = f"{comp:.0%}" if comp is not None else "not computable (no grain)"
             lines.append(
                 f"- {tp['table_name']}.{tp['column_name']}: "
                 f"{tp['granularity']}, "
                 f"{tp['date_range_start']} to {tp['date_range_end']}, "
-                f"completeness={tp['completeness']:.0%}{stale_str}"
+                f"completeness={comp_str}{stale_str}"
             )
         lines.append("")
 

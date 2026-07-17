@@ -32,31 +32,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from dataraum.analysis.temporal.detection import DATE_TRUNC_GRAINS
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
     from dataraum.storage import Column
 
-# The closed vocabulary of ``detected_granularity``: the config granularity set
-# (config/phases/temporal.yaml ``granularity.definitions``) plus the two sentinels
-# ``infer_granularity`` emits — ``irregular`` (no definition matched) and ``unknown``
-# (no median gap). Sorted for a deterministic CHECK string in the offline DDL dump.
-_GRANULARITY_VALUES: tuple[str, ...] = tuple(
-    sorted(
-        (
-            "second",
-            "minute",
-            "hour",
-            "day",
-            "week",
-            "month",
-            "quarter",
-            "year",
-            "irregular",
-            "unknown",
-        )
-    )
-)
+# The closed vocabulary of ``detected_granularity``: the real grains (DATE_TRUNC_GRAINS
+# — the config granularity set, whose one home is the detection module that mints these
+# labels) plus the two sentinels ``infer_granularity`` emits when there is no grain at
+# all: ``irregular`` (no definition matched) and ``unknown`` (no median gap). Deriving
+# the union rather than re-typing the labels keeps the grain/sentinel split structural:
+# a value in here but NOT in DATE_TRUNC_GRAINS is exactly a value with no bucket, hence
+# with no completeness ratio (DAT-810).
+# Sorted for a deterministic CHECK string in the offline DDL dump.
+_GRANULARITY_VALUES: tuple[str, ...] = tuple(sorted(DATE_TRUNC_GRAINS | {"irregular", "unknown"}))
 
 
 class TemporalColumnProfile(Base):

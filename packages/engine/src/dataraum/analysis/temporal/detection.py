@@ -25,6 +25,21 @@ from dataraum.core.models.base import Result
 
 logger = get_logger(__name__)
 
+# The granularity labels that are valid DuckDB ``date_trunc`` period parts — exactly
+# the ``granularity.definitions`` names in config/phases/temporal.yaml, which is where
+# :func:`infer_granularity` mints them. ONE home for the label→``date_trunc``-part
+# mapping (label and part are spelled identically, so the set IS the mapping);
+# ``graphs.period_resolver`` reads it from here rather than keeping a second copy.
+#
+# The two sentinels ``irregular`` / ``unknown`` are deliberately absent: they are
+# infer_granularity's "no definition matched" / "no median gap" fallbacks, not
+# granularities. A column with no cadence has no bucket to count, so consumers fall
+# loud instead of bucketing by a meaningless grain (or injecting an invalid part into
+# a query).
+DATE_TRUNC_GRAINS: frozenset[str] = frozenset(
+    {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
+)
+
 
 def infer_granularity(
     median_gap_seconds: float | None,
@@ -77,45 +92,56 @@ def infer_granularity(
     return ("irregular", irregular_confidence)
 
 
-def calculate_expected_periods(
-    min_ts: datetime,
-    max_ts: datetime,
+def count_grain_periods(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    column_name: str,
     granularity: str,
-    *,
-    config: dict[str, Any],
-) -> int:
-    """Calculate expected number of periods for a time range.
+) -> tuple[int, int] | None:
+    """Count the present and the expected ``granularity`` buckets of a time column.
 
-    Args:
-        min_ts: Start of time range
-        max_ts: End of time range
-        granularity: Detected granularity
-        config: Temporal config dict (from config/phases/temporal.yaml) — the
-            same ``granularity.definitions`` source ``infer_granularity`` reads,
-            so the two functions share one home for per-granularity seconds
-            instead of each hardcoding its own copy.
+    Both halves of the completeness ratio, in ONE unit and from one pass:
+
+    - **actual** — how many grain buckets carry an observation.
+    - **expected** — how many grain buckets the ``[min, max]`` window contains, counted
+      on the CALENDAR (``date_diff`` between the truncated endpoints, inclusive), not
+      by dividing elapsed seconds by a nominal period length.
+
+    The calendar is the whole point. Config's per-granularity seconds are *nominal*
+    (a month is "2592000s" = 30 days), so seconds-division silently undercounts real
+    calendar buckets: Jan 1 / Feb 1 / Mar 1 spans 59 days, and 59/30 + 1 = 2 "months"
+    for 3 actual month buckets — a 1.5 ratio out of a denominator that never had the
+    same unit as the numerator. Those nominal seconds are for *inferring* the grain
+    (:func:`infer_granularity`), which is all they are accurate enough for; they must
+    never be the denominator (DAT-810).
+
+    So ``actual <= expected`` now holds by construction: every distinct bucket in the
+    data lies inside the closed window the expected count enumerates.
 
     Returns:
-        Expected number of periods
+        ``(actual, expected)``, or ``None`` when ``granularity`` is not a ``date_trunc``
+        part (the ``irregular``/``unknown`` sentinels) — no bucket exists to count, so
+        it falls loud rather than returning a plausible 0.
     """
-    delta = max_ts - min_ts
-    total_seconds = delta.total_seconds()
+    if granularity not in DATE_TRUNC_GRAINS:
+        return None
 
-    # Per-granularity expected seconds, sourced from config — same definitions
-    # list infer_granularity uses to classify a granularity in the first place.
-    granularity_seconds: dict[str, float] = {
-        name: expected_seconds
-        for name, expected_seconds, _tolerance in config["granularity"]["definitions"]
-    }
-    # "irregular"/"unknown" are infer_granularity's sentinels for "no definition
-    # matched" / "no median gap" — they're not granularities, so config has no
-    # entry for them; keep the 1-second fallback that makes their expected-period
-    # count track total elapsed seconds.
-    granularity_seconds.setdefault("irregular", 1)
-    granularity_seconds.setdefault("unknown", 1)
+    # `granularity` is a member of the closed DATE_TRUNC_GRAINS set (checked above),
+    # never caller input; table/column are internal catalog identifiers.
+    bucket = f"date_trunc('{granularity}', \"{column_name}\"::TIMESTAMP)"
+    row = duckdb_conn.execute(
+        f"""
+        SELECT
+            COUNT(DISTINCT {bucket}),
+            date_diff('{granularity}', MIN({bucket}), MAX({bucket})) + 1
+        FROM {table_name}
+        WHERE "{column_name}" IS NOT NULL
+    """  # noqa: S608
+    ).fetchone()
 
-    seconds = granularity_seconds.get(granularity, 86400)
-    return int(total_seconds / seconds) + 1
+    if not row or row[0] is None or row[1] is None:
+        return None
+    return int(row[0]), int(row[1])
 
 
 def analyze_basic_temporal(
@@ -148,6 +174,8 @@ def analyze_basic_temporal(
         stale_mult = config["staleness"]["stale_multiplier"]
         # Get min/max timestamps and count. Cast to TIMESTAMP so a DATE column
         # also yields a datetime (the model + DB column are DateTime-typed).
+        # `distinct_count` here is raw distinct INSTANTS — reported as-is, and
+        # deliberately NOT the completeness numerator (see below).
         result = duckdb_conn.execute(
             f"""
             SELECT
@@ -195,14 +223,27 @@ def analyze_basic_temporal(
 
         median_gap, min_gap, max_gap = gap_result if gap_result else (None, None, None)
 
-        # Infer granularity from median gap
+        # Infer granularity from median gap. This is why the bucket count below needs
+        # its own round-trip: the grain is not declared, it is inferred from the gaps,
+        # so it isn't known until the query above has run and cannot be folded into it.
         granularity, confidence = infer_granularity(median_gap, min_gap, max_gap, config=config)
 
-        # Calculate expected periods based on granularity
-        expected_periods = calculate_expected_periods(min_ts, max_ts, granularity, config=config)
+        # Both sides of the ratio in ONE unit: calendar grain buckets. `distinct_count`
+        # above is raw INSTANTS — a different unit, and dividing it by a period count is
+        # what let the ratio exceed 1 (a TIMESTAMP column with sub-grain resolution has
+        # more instants than buckets) and get clamped to a false "perfectly complete" 1.0.
+        periods = count_grain_periods(duckdb_conn, table_name, column_name, granularity)
+        actual_periods, expected_periods = periods if periods else (None, None)
 
-        # Calculate completeness
-        completeness_ratio = distinct_count / expected_periods if expected_periods > 0 else 1.0
+        # No clamp (DAT-810): actual and expected are both calendar bucket counts over
+        # the same closed window, so actual <= expected holds by construction and a >1
+        # ratio is unreachable. A clamp here could only hide the next unit mismatch —
+        # exactly what it did before — so it is gone rather than kept "for safety".
+        completeness_ratio = (
+            actual_periods / expected_periods
+            if actual_periods is not None and expected_periods
+            else None
+        )
 
         # Detect significant gaps
         sig_gap_mult = gap_cfg["significant_gap_multiplier"]
@@ -260,13 +301,12 @@ def analyze_basic_temporal(
         span_days = (max_ts - min_ts).total_seconds() / (24 * 3600)
 
         # Build completeness analysis
-        completeness_ratio_clamped = min(completeness_ratio, 1.0)
         largest_gap_days = max((g.gap_length_days for g in gaps), default=None) if gaps else None
 
         completeness = TemporalCompletenessAnalysis(
-            completeness_ratio=completeness_ratio_clamped,
+            completeness_ratio=completeness_ratio,
             expected_periods=expected_periods,
-            actual_periods=distinct_count,
+            actual_periods=actual_periods,
             gap_count=len(gaps),
             largest_gap_days=largest_gap_days,
             gaps=gaps,
@@ -306,7 +346,8 @@ def analyze_basic_temporal(
 
 
 __all__ = [
+    "DATE_TRUNC_GRAINS",
     "infer_granularity",
-    "calculate_expected_periods",
+    "count_grain_periods",
     "analyze_basic_temporal",
 ]

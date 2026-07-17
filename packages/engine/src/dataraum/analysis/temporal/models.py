@@ -43,13 +43,20 @@ class TemporalCompletenessAnalysis(BaseModel):
     """Temporal completeness analysis.
 
     Computed from the DISTINCT timestamps (robust to duplicate-per-day fact rows),
-    so ``actual_periods`` is the distinct-period count and the gaps are genuine
-    absences between consecutive present periods.
+    so the gaps are genuine absences between consecutive present periods.
+
+    ``actual_periods`` and ``expected_periods`` are both counts of **detected-grain
+    buckets** over the same ``[min, max]`` window, so ``completeness_ratio`` is
+    ``actual / expected`` in one unit and lands in [0, 1] by construction — no clamp
+    (DAT-810). The three are ``None`` together when the grain is ``irregular``/
+    ``unknown``: those have no bucket, so completeness over them is not computable and
+    falls loud rather than resolving to a plausible 1.0/0.0. The gap fields stay
+    populated — a gap is measured against the median gap, not against a grain.
     """
 
-    completeness_ratio: float  # 0-1
-    expected_periods: int
-    actual_periods: int
+    completeness_ratio: float | None  # 0-1, or None when the grain has no bucket
+    expected_periods: int | None
+    actual_periods: int | None
     gap_count: int
     largest_gap_days: float | None = None
     gaps: list[TemporalGapInfo] = Field(default_factory=list)

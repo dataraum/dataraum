@@ -13,7 +13,8 @@ from datetime import UTC, datetime, timedelta
 import duckdb
 import pytest
 
-from dataraum.analysis.temporal.detection import DATE_TRUNC_GRAINS, analyze_basic_temporal
+from dataraum.analysis.temporal.detection import analyze_basic_temporal
+from dataraum.analysis.temporal.models import DATE_TRUNC_GRAINS
 
 # Real thresholds mirrored from config/phases/temporal.yaml (self-contained — no
 # config bind-mount needed at unit-test time).
@@ -313,3 +314,33 @@ def test_single_distinct_timestamp_is_not_stale() -> None:
 
     assert v["median_gap_seconds"] is None
     assert v["is_stale"] is False
+
+
+def test_date_trunc_grains_match_the_real_config_definitions() -> None:
+    """DAT-810 contract: ``DATE_TRUNC_GRAINS`` is a hand-typed frozenset, but its whole
+    premise is that it equals ``granularity.definitions`` in the REAL
+    config/phases/temporal.yaml — the labels ``infer_granularity`` actually mints.
+
+    Nothing structural enforces that (config is YAML; ``db_models`` needs the constant at
+    class-body-eval time, so it cannot load config there). Without this test, adding or
+    renaming a grain in the YAML makes ``count_grain_periods`` silently return ``None``
+    for that grain — completeness quietly vanishes for real data, with no error. That is
+    precisely the "absence resolves to a plausible default" failure this ticket removed,
+    so the drift must fail LOUDLY in CI instead.
+
+    Also pins the inverse: the two sentinels are NOT grains and must never appear in the
+    config definitions.
+    """
+    from dataraum.core.config import load_phase_config
+
+    config = load_phase_config("temporal")
+    config_grains = {d[0] for d in config["granularity"]["definitions"]}
+
+    assert config_grains == set(DATE_TRUNC_GRAINS), (
+        "config/phases/temporal.yaml granularity.definitions has drifted from "
+        "DATE_TRUNC_GRAINS (analysis/temporal/models.py). Config-only labels silently "
+        "lose completeness; constant-only labels are dead. Reconcile both."
+    )
+    assert not ({"irregular", "unknown"} & config_grains), (
+        "irregular/unknown are infer_granularity's no-grain sentinels, not granularities"
+    )

@@ -67,7 +67,7 @@ from typing import TYPE_CHECKING, Any
 import duckdb
 from sqlalchemy import bindparam, text
 
-from dataraum.analysis.temporal.detection import DATE_TRUNC_GRAINS
+from dataraum.analysis.temporal.models import DATE_TRUNC_GRAINS
 from dataraum.core.logging import get_logger
 from dataraum.graphs.additivity import parse_aggregate_calls
 from dataraum.graphs.additivity_resolver import fact_table_id, grounded_select

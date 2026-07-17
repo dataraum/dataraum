@@ -17,6 +17,7 @@ from typing import Any
 import duckdb
 
 from dataraum.analysis.temporal.models import (
+    DATE_TRUNC_GRAINS,
     TemporalCompletenessAnalysis,
     TemporalGapInfo,
 )
@@ -24,21 +25,6 @@ from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 
 logger = get_logger(__name__)
-
-# The granularity labels that are valid DuckDB ``date_trunc`` period parts — exactly
-# the ``granularity.definitions`` names in config/phases/temporal.yaml, which is where
-# :func:`infer_granularity` mints them. ONE home for the label→``date_trunc``-part
-# mapping (label and part are spelled identically, so the set IS the mapping);
-# ``graphs.period_resolver`` reads it from here rather than keeping a second copy.
-#
-# The two sentinels ``irregular`` / ``unknown`` are deliberately absent: they are
-# infer_granularity's "no definition matched" / "no median gap" fallbacks, not
-# granularities. A column with no cadence has no bucket to count, so consumers fall
-# loud instead of bucketing by a meaningless grain (or injecting an invalid part into
-# a query).
-DATE_TRUNC_GRAINS: frozenset[str] = frozenset(
-    {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
-)
 
 
 def infer_granularity(
@@ -241,7 +227,7 @@ def analyze_basic_temporal(
         # exactly what it did before — so it is gone rather than kept "for safety".
         completeness_ratio = (
             actual_periods / expected_periods
-            if actual_periods is not None and expected_periods
+            if actual_periods is not None and expected_periods is not None
             else None
         )
 
@@ -346,7 +332,6 @@ def analyze_basic_temporal(
 
 
 __all__ = [
-    "DATE_TRUNC_GRAINS",
     "infer_granularity",
     "count_grain_periods",
     "analyze_basic_temporal",

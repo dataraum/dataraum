@@ -32,7 +32,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from dataraum.analysis.temporal.detection import DATE_TRUNC_GRAINS
+from dataraum.analysis.temporal.models import DATE_TRUNC_GRAINS
 from dataraum.storage import Base
 
 if TYPE_CHECKING:

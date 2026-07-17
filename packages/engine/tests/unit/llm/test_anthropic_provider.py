@@ -505,6 +505,17 @@ class TestStringifiedArgCoercion:
         )
         assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
 
+    def test_paraphrased_envelope_is_unwrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The wrapper key is not always the tool name. `submit_analysis` came back
+        # as {"analysis": {...}} — a PARAPHRASE — and the tool-name-keyed unwrap
+        # declined, so business_cycles validated to zero cycles while its phase
+        # reported success (DAT-795's all-or-nothing cycle collapse). Any lone
+        # top-level key the tool does not declare is an envelope.
+        coerced = self._converse_with_tool_use(
+            monkeypatch, {"emission": {"tables": [{"table_name": "t"}], "note": "ok"}}
+        )
+        assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
+
     def test_envelope_unwrap_then_coerces_inner(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Unwrap composes with stringified-arg coercion: an enveloped inner whose
         # container was itself stringified is still parsed.

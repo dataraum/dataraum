@@ -787,6 +787,252 @@ class TestEnrichedViewsPhaseDuckLake:
         assert dim_cols() == ["customer_id__country", "customer_id__name"]
         assert calls["n"] == 2, "a genuinely re-confirmed relationship is re-judged, not inherited"
 
+    @staticmethod
+    def _seed_fanout(session, duckdb_conn):
+        """Seed a fact with TWO proposed joins: one grain-preserving, one fan-out.
+
+        The good dim (``customers``) has a UNIQUE key → its LEFT JOIN keeps the
+        3-row grain. The fan-out dim (``customer_tags``) has DUPLICATE keys on the
+        join column → its LEFT JOIN inflates the fact (DAT-801). Both joins ride the
+        same fact FK (``customer_id``), so the drop is driven by the MEASURED
+        fan-out, not the cardinality label. Returns
+        ``(fact_id, good_dim_id, fanout_dim_id, canned)``.
+        """
+        from uuid import uuid4
+
+        from dataraum.analysis.views.builder import DimensionJoin
+        from dataraum.analysis.views.enrichment_models import (
+            EnrichmentAnalysisResult,
+            EnrichmentRecommendation,
+        )
+        from dataraum.storage import Column, Source, Table
+
+        duckdb_conn.execute(
+            'CREATE OR REPLACE TABLE lake.typed."csv__orders" AS '
+            "SELECT * FROM (VALUES (1, 10, 100.0), (2, 20, 200.0), (3, 10, 150.0)) "
+            "AS t(order_id, customer_id, amount)"
+        )
+        duckdb_conn.execute(
+            'CREATE OR REPLACE TABLE lake.typed."csv__customers" AS '
+            "SELECT * FROM (VALUES (10, 'Alice', 'US'), (20, 'Bob', 'UK')) "
+            "AS t(id, name, country)"
+        )
+        # Duplicate keys on cust_key → a one-to-many LEFT JOIN that fans the fact out.
+        duckdb_conn.execute(
+            'CREATE OR REPLACE TABLE lake.typed."csv__customer_tags" AS '
+            "SELECT * FROM (VALUES (10, 'vip'), (10, 'gold'), (20, 'new')) "
+            "AS t(cust_key, tag)"
+        )
+
+        source = Source(source_id=str(uuid4()), name="csv", source_type="csv")
+        session.add(source)
+        session.flush()
+
+        fact = Table(
+            table_id=str(uuid4()),
+            source_id=source.source_id,
+            table_name="orders",
+            layer="typed",
+            duckdb_path="csv__orders",
+            row_count=3,
+        )
+        good = Table(
+            table_id=str(uuid4()),
+            source_id=source.source_id,
+            table_name="customers",
+            layer="typed",
+            duckdb_path="csv__customers",
+            row_count=2,
+        )
+        fanout = Table(
+            table_id=str(uuid4()),
+            source_id=source.source_id,
+            table_name="customer_tags",
+            layer="typed",
+            duckdb_path="csv__customer_tags",
+            row_count=3,
+        )
+        session.add_all([fact, good, fanout])
+        session.flush()
+
+        for tbl, names in (
+            (fact, ("order_id", "customer_id", "amount")),
+            (good, ("id", "name", "country")),
+            (fanout, ("cust_key", "tag")),
+        ):
+            for pos, name in enumerate(names):
+                session.add(
+                    Column(
+                        column_id=str(uuid4()),
+                        table_id=tbl.table_id,
+                        column_name=name,
+                        column_position=pos,
+                        raw_type="VARCHAR",
+                        resolved_type="VARCHAR",
+                    )
+                )
+        session.flush()
+
+        canned = EnrichmentAnalysisResult(
+            recommendations=[
+                EnrichmentRecommendation(
+                    fact_table_id=fact.table_id,
+                    fact_table_name="orders",
+                    dimension_joins=[
+                        DimensionJoin(
+                            dim_table_name="customers",
+                            dim_duckdb_path="(rewritten by the phase)",
+                            fact_fk_column="customer_id",
+                            dim_pk_column="id",
+                            include_columns=["name", "country"],
+                            relationship_id="rel-good",
+                        ),
+                        DimensionJoin(
+                            dim_table_name="customer_tags",
+                            dim_duckdb_path="(rewritten by the phase)",
+                            fact_fk_column="customer_id",
+                            dim_pk_column="cust_key",
+                            include_columns=["tag"],
+                            relationship_id="rel-fanout",
+                        ),
+                    ],
+                    relationship_role="reference/lookup",
+                    confidence=0.9,
+                    reasoning="customers + tags both proposed",
+                    enrichment_columns=["name", "country", "tag"],
+                )
+            ],
+            summary="stub",
+            model_name="stub-model",
+        )
+        return fact.table_id, good.table_id, fanout.table_id, canned
+
+    def test_fanout_join_dropped_view_ships_with_survivors(
+        self, session, duckdb_conn, monkeypatch, capsys
+    ):
+        """A fan-out join drops the OFFENDING join and rebuilds; the view still ships (DAT-801).
+
+        Two joins are proposed for the fact: a grain-preserving one (``customers``,
+        unique key) and a fan-out one (``customer_tags``, duplicate keys). The view
+        must SHIP with the good join's columns, EXCLUDE the fan-out join's columns,
+        preserve the fact grain, and the drop must be logged born-loud. Under the
+        old all-or-nothing behavior the whole view was dropped instead.
+        """
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+
+        fact_id, good_id, fanout_id, canned = self._seed_fanout(session, duckdb_conn)
+        monkeypatch.setattr(
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
+        )
+
+        self._seed_fact_entity(session, table_id=fact_id, run_id="run-1")
+        self._seed_relationship(
+            session,
+            from_table_id=fact_id,
+            from_col="customer_id",
+            to_table_id=good_id,
+            to_col="id",
+            run_id="run-1",
+        )
+        self._seed_relationship(
+            session,
+            from_table_id=fact_id,
+            from_col="customer_id",
+            to_table_id=fanout_id,
+            to_col="cust_key",
+            run_id="run-1",
+        )
+
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=[fact_id, good_id, fanout_id],
+            run_id="run-1",
+        )
+        result = EnrichedViewsPhase().run(ctx)
+        assert result.status == PhaseStatus.COMPLETED, result.error
+
+        # The view SHIPS (not dropped) with exactly the good join's columns dropped
+        # to the survivors, and one join was dropped for fanning out.
+        assert result.outputs["enriched_views"] == 1
+        assert result.outputs["views_dropped"] == 0
+        assert result.outputs["joins_dropped"] == 1
+
+        view = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        assert view.is_grain_verified is True
+        assert sorted(view.dimension_columns or []) == [
+            "customer_id__country",
+            "customer_id__name",
+        ], "the good join's columns ship; the fan-out join's column is excluded"
+
+        # Physical view: grain preserved (3 fact rows), the good columns resolve,
+        # and the fan-out column is absent from the schema.
+        rows = duckdb_conn.execute(
+            'SELECT order_id, "customer_id__name", "customer_id__country" '
+            'FROM lake.typed."enriched_csv__orders" ORDER BY order_id'
+        ).fetchall()
+        assert rows == [(1, "Alice", "US"), (2, "Bob", "UK"), (3, "Alice", "US")]
+        view_columns = {
+            r[0]
+            for r in duckdb_conn.execute('DESCRIBE lake.typed."enriched_csv__orders"').fetchall()
+        }
+        assert "customer_id__tag" not in view_columns, "the fan-out column never ships"
+
+        # Born-loud: the drop names the fact, the neighbour, and expected-vs-actual.
+        err = capsys.readouterr().err
+        assert "enrichment_join_fans_out" in err
+        assert "customer_tags" in err
+
+    def test_all_good_joins_still_ship(self, session, duckdb_conn, monkeypatch):
+        """The all-grain-preserving case is unchanged: every proposed join ships.
+
+        Guards against the per-join filter over-dropping — with no fan-out, nothing
+        is dropped and the view carries both dimension columns.
+        """
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        monkeypatch.setattr(
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
+        )
+        self._seed_fact_entity(session, table_id=fact_id, run_id="run-1")
+        self._seed_relationship(
+            session,
+            from_table_id=fact_id,
+            from_col="customer_id",
+            to_table_id=dim_id,
+            to_col="id",
+            run_id="run-1",
+        )
+
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=[fact_id, dim_id],
+            run_id="run-1",
+        )
+        result = EnrichedViewsPhase().run(ctx)
+        assert result.status == PhaseStatus.COMPLETED, result.error
+        assert result.outputs["enriched_views"] == 1
+        assert result.outputs["joins_dropped"] == 0
+
+        view = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        assert view.is_grain_verified is True
+        assert sorted(view.dimension_columns or []) == [
+            "customer_id__country",
+            "customer_id__name",
+        ]
+
 
 class TestVersionedGrainConstraints:
     """The latest-only / run-grain invariants are DB-enforced, not app-level only.

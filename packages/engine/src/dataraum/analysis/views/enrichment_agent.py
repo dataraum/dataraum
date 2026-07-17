@@ -289,13 +289,13 @@ class EnrichmentAgent(LLMFeature):
             # join of that table gets the same column set.
             unified_dim_columns: dict[str, set[str]] = {}
             for enrichment in dataset.recommended_enrichments:
-                dim_name = enrichment.dimension_table
+                dim_name = enrichment.related_table
                 for col in enrichment.enrichment_columns:
                     if col.enrichment_value in ("high", "medium"):
                         unified_dim_columns.setdefault(dim_name, set()).add(col.column_name)
 
             for enrichment in dataset.recommended_enrichments:
-                dim_table_name = enrichment.dimension_table
+                dim_table_name = enrichment.related_table
                 dim_table_info = table_map.get(dim_table_name, {})
                 dim_table_id = dim_table_info.get("table_id", "")
                 dim_duckdb_path = dim_table_info.get("duckdb_path", "")
@@ -322,7 +322,7 @@ class EnrichmentAgent(LLMFeature):
                     dim_table_name=dim_table_name,
                     dim_duckdb_path=dim_duckdb_path,
                     fact_fk_column=enrichment.join_fact_column,
-                    dim_pk_column=enrichment.join_dimension_column,
+                    dim_pk_column=enrichment.join_related_column,
                     include_columns=include_columns,
                     relationship_id="",  # Will be filled by caller if needed
                 )
@@ -337,7 +337,7 @@ class EnrichmentAgent(LLMFeature):
                     fact_table_id=fact_table_id,
                     fact_table_name=fact_table_name,
                     dimension_joins=[dimension_join],
-                    dimension_type=enrichment.dimension_type,
+                    relationship_role=enrichment.relationship_role,
                     confidence=enrichment.confidence,
                     reasoning=enrichment.reasoning,
                     enrichment_columns=enrichment_columns,

@@ -12,12 +12,12 @@ from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_s
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
 from dataraum.analysis.views.enrichment_models import (
-    DimensionEnrichmentOutput,
     EnrichmentAnalysisOutput,
     EnrichmentAnalysisResult,
     EnrichmentColumnOutput,
     EnrichmentRecommendation,
     MainDatasetOutput,
+    RelatedTableJoinOutput,
 )
 
 __all__ = [
@@ -33,6 +33,6 @@ __all__ = [
     "EnrichmentAnalysisResult",
     "EnrichmentColumnOutput",
     "EnrichmentRecommendation",
-    "DimensionEnrichmentOutput",
+    "RelatedTableJoinOutput",
     "MainDatasetOutput",
 ]

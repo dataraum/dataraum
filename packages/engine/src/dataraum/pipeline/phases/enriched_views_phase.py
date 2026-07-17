@@ -407,7 +407,7 @@ class EnrichedViewsPhase(BasePhase):
                     if rec.fact_table_id == fact_table.table_id:
                         evidence = {
                             "llm_reasoning": rec.reasoning,
-                            "dimension_type": rec.dimension_type,
+                            "relationship_role": rec.relationship_role,
                             "enrichment_columns": rec.enrichment_columns,
                             "model_name": llm_recommendations.model_name,
                         }

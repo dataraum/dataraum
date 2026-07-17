@@ -265,7 +265,7 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-1",
                         )
                     ],
-                    dimension_type="reference",
+                    relationship_role="reference/lookup",
                     confidence=0.9,
                     reasoning="customers names/regions enrich orders",
                     enrichment_columns=["name", "country"],
@@ -501,7 +501,7 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-1",
                         )
                     ],
-                    dimension_type="reference",
+                    relationship_role="reference/lookup",
                     confidence=0.9,
                     reasoning="contradictory re-judgment",
                     enrichment_columns=["name"],

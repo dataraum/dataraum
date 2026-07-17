@@ -67,6 +67,7 @@ from typing import TYPE_CHECKING, Any
 import duckdb
 from sqlalchemy import bindparam, text
 
+from dataraum.analysis.temporal.models import DATE_TRUNC_GRAINS
 from dataraum.core.logging import get_logger
 from dataraum.graphs.additivity import parse_aggregate_calls
 from dataraum.graphs.additivity_resolver import fact_table_id, grounded_select
@@ -89,16 +90,6 @@ _PARAMETER = "days_in_period"
 # COALESCE of the aggregation-lineage witness posterior over the concept prior); the
 # non-``flow`` measures (stocks, point-in-time levels) are excluded.
 _FLOW = "flow"
-
-# The detected-granularity labels that are valid DuckDB ``date_trunc`` period parts —
-# exactly the config granularity definitions (config/phases/temporal.yaml). The two
-# sentinels ``irregular`` / ``unknown`` (temporal detection's no-cadence fallbacks)
-# are deliberately excluded: a column with no clean cadence has no period to count or
-# fencepost-correct against, so the resolver falls loud rather than bucket by a
-# meaningless grain (or inject an invalid identifier into the window query).
-_DATE_TRUNC_GRAINS: frozenset[str] = frozenset(
-    {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
-)
 
 
 @dataclass(frozen=True)
@@ -333,7 +324,7 @@ def _observe_window(
     filtered window is empty (no rows match the predicate), or it collapses to a
     single period (no gap to fencepost-correct against).
     """
-    if grain not in _DATE_TRUNC_GRAINS:
+    if grain not in DATE_TRUNC_GRAINS:
         return f"anchor axis {axis!r} cadence {grain!r} has no clean period to correct against"
     sql = (
         f'SELECT MIN("{axis}"), MAX("{axis}"), '  # noqa: S608 - identifiers are internal catalog names

@@ -186,6 +186,58 @@ def test_format_context_for_prompt_renders_grain_column_names() -> None:
     assert "grain: columns" not in rendered
 
 
+def test_format_context_for_prompt_renders_uncomputable_completeness() -> None:
+    """DAT-810 regression: a temporal profile whose grain is irregular/unknown carries
+    ``completeness=None`` — no bucket exists, so the ratio is not computable and the
+    three fields fall loud together. Rendering it with ``:.0%`` raised ``TypeError:
+    unsupported format string passed to NoneType.__format__``, crashing the whole
+    business-cycles phase (``format_context_for_prompt`` is called unguarded from
+    ``cycles/agent.py`` → ``business_cycles_phase.py``). The absence must render as
+    absence, never as a number."""
+    context = {
+        "tables": [{"table_name": "events", "row_count": 10, "columns": []}],
+        "temporal_profiles": [
+            {
+                "table_name": "events",
+                "column_name": "occurred_at",
+                "granularity": "irregular",
+                "date_range_start": "2025-01-01",
+                "date_range_end": "2026-02-11",
+                "completeness": None,
+                "is_stale": False,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "completeness=not computable (no grain)" in rendered
+    assert "completeness=0%" not in rendered
+    assert "completeness=100%" not in rendered
+
+
+def test_format_context_for_prompt_renders_known_completeness_as_percent() -> None:
+    """The computable case is unchanged — a real grain still renders its ratio."""
+    context = {
+        "tables": [{"table_name": "events", "row_count": 10, "columns": []}],
+        "temporal_profiles": [
+            {
+                "table_name": "events",
+                "column_name": "occurred_at",
+                "granularity": "day",
+                "date_range_start": "2025-01-01",
+                "date_range_end": "2025-01-31",
+                "completeness": 0.909,
+                "is_stale": True,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "completeness=91% [STALE]" in rendered
+
+
 @pytest.fixture
 def ledger_with_derivations(session):
     """A ledger table with a debit/credit/net triple + derivation rows.

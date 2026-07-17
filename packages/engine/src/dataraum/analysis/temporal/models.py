@@ -19,6 +19,31 @@ from pydantic import BaseModel, Field
 
 from dataraum.core.models.base import ColumnRef
 
+# The granularity labels that are valid DuckDB ``date_trunc`` period parts — exactly
+# the ``granularity.definitions`` names in config/phases/temporal.yaml, which is where
+# :func:`~dataraum.analysis.temporal.detection.infer_granularity` mints them. ONE home
+# for the label→``date_trunc``-part mapping (label and part are spelled identically, so
+# the set IS the mapping); ``detection``, ``db_models`` and ``graphs.period_resolver``
+# all read it from here rather than keeping their own copies.
+#
+# It lives in this module, not in ``detection``, so the models/DDL layer can reach it
+# without importing ``duckdb`` — ``db_models`` needs it at class-body-eval time to build
+# the ``detected_granularity`` CHECK vocabulary.
+#
+# Sync with config is enforced by a contract test (``test_basic_temporal.py``), not by
+# reading the YAML here: ``db_models`` needs this at import time, and a config edit that
+# silently disabled completeness for a real grain is exactly the failure that test
+# catches loudly.
+#
+# The two sentinels ``irregular`` / ``unknown`` are deliberately absent: they are
+# infer_granularity's "no definition matched" / "no median gap" fallbacks, not
+# granularities. A column with no cadence has no bucket to count, so consumers fall
+# loud instead of bucketing by a meaningless grain (or injecting an invalid part into
+# a query).
+DATE_TRUNC_GRAINS: frozenset[str] = frozenset(
+    {"second", "minute", "hour", "day", "week", "month", "quarter", "year"}
+)
+
 # =============================================================================
 # Basic Temporal Detection Models
 # =============================================================================
@@ -43,13 +68,20 @@ class TemporalCompletenessAnalysis(BaseModel):
     """Temporal completeness analysis.
 
     Computed from the DISTINCT timestamps (robust to duplicate-per-day fact rows),
-    so ``actual_periods`` is the distinct-period count and the gaps are genuine
-    absences between consecutive present periods.
+    so the gaps are genuine absences between consecutive present periods.
+
+    ``actual_periods`` and ``expected_periods`` are both counts of **detected-grain
+    buckets** over the same ``[min, max]`` window, so ``completeness_ratio`` is
+    ``actual / expected`` in one unit and lands in [0, 1] by construction — no clamp
+    (DAT-810). The three are ``None`` together when the grain is ``irregular``/
+    ``unknown``: those have no bucket, so completeness over them is not computable and
+    falls loud rather than resolving to a plausible 1.0/0.0. The gap fields stay
+    populated — a gap is measured against the median gap, not against a grain.
     """
 
-    completeness_ratio: float  # 0-1
-    expected_periods: int
-    actual_periods: int
+    completeness_ratio: float | None  # 0-1, or None when the grain has no bucket
+    expected_periods: int | None
+    actual_periods: int | None
     gap_count: int
     largest_gap_days: float | None = None
     gaps: list[TemporalGapInfo] = Field(default_factory=list)

@@ -5,6 +5,48 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-810 — temporal completeness: both sides are grain buckets, the clamp is gone, and the fields can now be NULL (profile VALUES + nullability change)
+
+**Branch:** `fix/dat-810-grain-bucket-periods`. `analyze_basic_temporal` divided two
+different units and hid the result: `completeness_ratio = COUNT(DISTINCT raw_timestamp)
+/ expected_periods`, where the numerator was distinct raw **instants** and the
+denominator was **grain buckets**, then `min(ratio, 1.0)` clamped the overflow into a
+false "perfectly complete" 1.0.
+
+Both halves now come from one DuckDB pass over the same closed window —
+`COUNT(DISTINCT date_trunc(grain, col))` and `date_diff(grain, MIN(bucket), MAX(bucket))
++ 1` — so `actual <= expected` holds by construction and the clamp is deleted, not
+retained. `calculate_expected_periods` is gone: it carried a **second, independent** unit
+mismatch on the denominator, dividing elapsed seconds by config's *nominal* per-grain
+seconds (`phases/temporal.yaml:20` — `month = 2592000` = a flat 30 days). Jan 1 / Feb 1 /
+Mar 1 spans 59 days → `59/30 + 1 = 2` expected months against 3 real buckets → ratio 1.5.
+Config's nominal seconds now only *infer* the grain; they are never the denominator.
+
+**What changes for eval — three things:**
+
+1. **`actual_periods` changes meaning** — grain buckets, not distinct raw instants. Same
+   number whenever value resolution == detected grain (every DATE column, so the whole
+   finance corpus is unaffected); different for any TIMESTAMP column with sub-grain
+   resolution.
+2. **`completeness_ratio` values move** where the old ratio exceeded 1 and got clamped —
+   previously a false `1.0`, now the true present/expected fraction (e.g. 0.909).
+3. **All three fields are now nullable and NULL together** (`completeness_ratio`,
+   `expected_periods`, `actual_periods`) when the grain is the `irregular`/`unknown`
+   sentinel — no bucket exists, so completeness is not computable and falls loud rather
+   than resolving to a plausible 0.0/1.0. Gap fields stay populated (a gap is measured
+   against the median gap, not a grain). **No schema change** — the DB columns were
+   already nullable; `schema.sql` re-dumps byte-identical.
+
+**Calibration to re-verify:** a TIMESTAMP column with sub-grain resolution reports a true
+sub-1.0 ratio instead of a clamped 1.0; a clean daily/monthly column is unchanged; an
+irregular column yields NULL completeness rather than a number. Note the masking case can
+be **silent** — in the pinned fixture `gap_count` is 0 (the holes sit exactly *at* the
+2×median significance threshold), so completeness was the only signal carrying the
+absence. Any eval assertion that these fields are always numeric needs a nullable read.
+No backfill; recreate test DBs.
+
+---
+
 ## DAT-806 — driver `_candidate_dims` no longer orphans a dimension whose alias canonical is a slicing-excluded near-key (driver rankings populate)
 
 **Branch:** `feat/dat-806-candidate-dims-orphan`. `drivers/processor.py::_candidate_dims`

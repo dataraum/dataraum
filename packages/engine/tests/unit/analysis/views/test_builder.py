@@ -127,6 +127,32 @@ class TestBuildEnrichedViewSql:
             ("org__city_2", "vendors", "city"),
         ]
 
+    def test_dim_name_colliding_with_a_fact_column_is_disambiguated(self):
+        """A fact column ALREADY named like a generated {fk}__{col} dim name must not
+        collide with the f.* passthrough (DAT-811). Seeding the dedup with the fact's own
+        columns pushes the dim column to a suffixed name, so the view never emits two
+        identically-named columns (ambiguous ref + uq_table_column on registration)."""
+        joins = [
+            DimensionJoin(
+                dim_table_name="customers",
+                dim_duckdb_path='lake.typed."csv__customers"',
+                fact_fk_column="customer_id",
+                dim_pk_column="id",
+                include_columns=["name"],
+            )
+        ]
+        sql, dim_cols = build_enriched_view_sql(
+            view_fqn='lake.typed."enriched_csv__orders"',
+            fact_fqn='lake.typed."csv__orders"',
+            dimension_joins=joins,
+            # The fact ALREADY carries a column literally named "customer_id__name".
+            fact_column_names=("order_id", "customer_id", "customer_id__name"),
+        )
+        # The dim column is suffixed; the f.* passthrough keeps the bare name.
+        assert [c.name for c in dim_cols] == ["customer_id__name_2"]
+        assert dim_cols[0].source_column_name == "name"
+        assert 'AS "customer_id__name_2"' in sql
+
     def test_same_dim_table_joined_twice_produces_unique_column_names(self):
         """Same dimension table joined via two different FK columns gets distinct column names."""
         joins = [

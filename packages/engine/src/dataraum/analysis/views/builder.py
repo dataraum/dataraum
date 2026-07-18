@@ -43,6 +43,7 @@ def build_enriched_view_sql(
     view_fqn: str,
     fact_fqn: str,
     dimension_joins: list[DimensionJoin],
+    fact_column_names: tuple[str, ...] = (),
 ) -> tuple[str, list[EnrichedDimColumn]]:
     """Build the ``CREATE OR REPLACE VIEW`` SQL for an enriched view.
 
@@ -64,6 +65,12 @@ def build_enriched_view_sql(
         fact_fqn: Fully-qualified fact-table source.
         dimension_joins: Joins to include; each ``dim_duckdb_path`` is the
             dimension's FQN.
+        fact_column_names: The fact's OWN column names (carried through by ``f.*``). A
+            generated ``{fk}__{col}`` name that would collide with one of these is
+            disambiguated too, so the view never emits two identically-named columns —
+            an ambiguous column reference in the view AND a ``uq_table_column`` violation
+            when DAT-811 registers every served column. Empty = skip fact-name dedup
+            (callers that only assert on SQL shape).
 
     Returns:
         Tuple of ``(create_view_sql, dim_columns)`` where ``dim_columns`` is the list of
@@ -96,10 +103,12 @@ def build_enriched_view_sql(
     join_aliases = [get_unique_alias(join.dim_table_name) for join in dimension_joins]
 
     # Output column names must be unique by construction — the ``{fact_fk}__{col}``
-    # prefix does NOT guarantee it (two joins can share a fact column), and a
-    # duplicate would violate the enriched-layer ``uq_table_column`` on registration.
-    # Disambiguate with a numeric suffix, mirroring ``get_unique_alias``.
-    used_column_names: dict[str, int] = {}
+    # prefix does NOT guarantee it (two joins can share a fact column, OR a fact's own
+    # column can already be named like a generated dim name), and a duplicate would make
+    # the view column ambiguous AND violate the enriched-layer ``uq_table_column`` on
+    # registration. Seed the used set with the fact's OWN columns (``f.*``) so a colliding
+    # dim name is suffixed against them too, then disambiguate dim-vs-dim as we go.
+    used_column_names: dict[str, int] = dict.fromkeys(fact_column_names, 1)
 
     def get_unique_column_name(base: str) -> str:
         if base not in used_column_names:

@@ -275,6 +275,8 @@ CREATE TABLE columns (
 	CONSTRAINT fk_columns_source_column_id_columns FOREIGN KEY(source_column_id) REFERENCES columns (column_id) ON DELETE SET NULL
 );
 
+CREATE INDEX idx_columns_source_column_id ON columns (source_column_id);
+
 CREATE INDEX idx_columns_table ON columns (table_id);
 
 CREATE TABLE dimension_hierarchies (

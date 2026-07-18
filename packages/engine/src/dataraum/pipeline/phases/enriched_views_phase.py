@@ -401,8 +401,16 @@ class EnrichedViewsPhase(BasePhase):
                     reason="no qualifying dimension joins",
                 )
 
-            # Build view SQL from the grain-preserving survivors.
-            view_sql, dim_col_refs = build_enriched_view_sql(view_fqn, fact_fqn, fqn_joins)
+            # Build view SQL from the grain-preserving survivors. The fact's own column
+            # names seed the builder's dedup so a generated {fk}__{col} name that collides
+            # with an f.* column is disambiguated (else the view emits two same-named
+            # columns and DAT-811's per-column registration hits uq_table_column).
+            fact_col_names = tuple(
+                name for (tid, name) in col_id_by_name if tid == fact_id
+            )
+            view_sql, dim_col_refs = build_enriched_view_sql(
+                view_fqn, fact_fqn, fqn_joins, fact_col_names
+            )
             dim_columns = [c.name for c in dim_col_refs]
 
             # DAT-811: resolve each dim column's TYPED source column_id relationally —

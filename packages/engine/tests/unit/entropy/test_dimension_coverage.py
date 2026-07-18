@@ -173,6 +173,72 @@ class TestLoadData:
         assert "enriched_view" not in ctx.analysis_results
 
 
+class TestLoadNullRatesFiltersOrigin:
+    def test_fact_origin_columns_are_excluded(self, session):
+        """DAT-811: the enriched view now also registers the fact's own f.* columns
+        (origin='fact'); coverage measures only the JOINED dimensions. ``_load_null_rates``
+        returns the dim column and NEVER the fact-origin sibling under the SAME
+        view_table_id — a real-session proof the ``origin='dimension'`` filter discriminates
+        (a regression dropping it would surface the fact column here)."""
+        from uuid import uuid4
+
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+        from dataraum.storage import Column, Source, Table
+
+        src = Source(source_id=str(uuid4()), name="csv", source_type="csv")
+        session.add(src)
+        session.flush()
+        view_table = Table(
+            table_id=str(uuid4()),
+            source_id=src.source_id,
+            table_name="enriched_orders",
+            layer="enriched",
+            duckdb_path="enriched_orders",
+            row_count=10,
+        )
+        session.add(view_table)
+        session.flush()
+
+        dim = Column(
+            column_id=str(uuid4()),
+            table_id=view_table.table_id,
+            column_name="customers__country",
+            column_position=0,
+            origin="dimension",
+        )
+        fact = Column(
+            column_id=str(uuid4()),
+            table_id=view_table.table_id,
+            column_name="amount",
+            column_position=1,
+            origin="fact",
+        )
+        session.add_all([dim, fact])
+        session.flush()
+        for col, nr in ((dim, 0.2), (fact, 0.9)):
+            session.add(
+                StatisticalProfile(
+                    profile_id=str(uuid4()),
+                    column_id=col.column_id,
+                    run_id="run-1",
+                    layer="enriched",
+                    total_count=10,
+                    null_count=int(nr * 10),
+                    null_ratio=nr,
+                    profile_data={},
+                )
+            )
+        session.flush()
+
+        view = MagicMock()
+        view.view_table_id = view_table.table_id
+        ctx = DetectorContext(view_name="enriched_orders", session=session)
+
+        rates = DimensionCoverageDetector._load_null_rates(ctx, view)
+
+        assert rates == {"customers__country": 0.2}  # the fact-origin 'amount' is excluded
+
+
 class TestQueryFallback:
     def test_no_duckdb_conn_returns_1(self, detector: DimensionCoverageDetector):
         """Without duckdb_conn, null rate defaults to 1.0 (worst case)."""

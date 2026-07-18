@@ -255,4 +255,8 @@ class Column(Base):
 
 # Indexes for common queries
 Index("idx_columns_table", Column.table_id)
+# DAT-811 — the self-FK is ON DELETE SET NULL, so every typed-column delete (teardown,
+# reconcile, re-typing) must find the enriched columns referencing it; index the FK so
+# that is not a seq scan over `columns` per bulk delete.
+Index("idx_columns_source_column_id", Column.source_column_id)
 Index("idx_tables_source", Table.source_id)

@@ -47,6 +47,52 @@ No backfill; recreate test DBs.
 
 ---
 
+## DAT-801 — enriched views extend a fact by ANY useful FK neighbour (incl. its header), so header/line facts gain an event-time axis (enriched-view shape + witness recall change)
+
+**Branch:** `feat/dat-801-neutral-extension-rule`. The enrichment selection asked the LLM
+for *"valuable analytical dimensions (geographic/category/reference)"* — a framing a
+**header** (the parent record a line belongs to, carrying the line's event date) fails by
+definition. So a fact whose event time lives on a joined header, not on itself, got an
+enriched view with **no time column**, its measures served a NULL trend anchor, and the
+aggregation-lineage witness could never form for it (recall 0 on that class).
+
+**What changed (this branch — two pieces):**
+- **Enrichment prompt + contract reframed neutrally** (`enrichment_analysis.yaml` v2,
+  `enrichment_models.py`): *"what related data usefully extends this fact?"*. A
+  classification table and the fact's header are the SAME mechanism — a column carried
+  across a confirmed grain-preserving key join — so the contract names a `related_table`
+  (not a `dimension`) with an open `relationship_role` (was a closed
+  geographic/category/reference/temporal enum that structurally excluded a header).
+- **Grain safety:** a fan-out join now drops **that join** and the view rebuilds with the
+  survivors, instead of dropping the whole view (the reframe makes fan-out picks more
+  likely; the old all-or-nothing drop would delete a central fact's view entirely).
+
+Nothing else changed: the anchor and witness are served by **existing** pipeline
+machinery (DAT-491/720 fills the exposed header axis into the fact's `time_columns`;
+the DAT-565 reconciliation + DAT-780 witness then run unmodified). A first-cut
+`period_resolver` change to read the axis's cadence was written and **removed** before
+merge — reviewers found it couldn't express a lineage-inherited axis and reconstructed
+the `{fk}__{col}` name (collision-prone). That work is a separate follow-up (see below).
+
+**What this changes for eval — verified on the finance corpus (live begin_session, real
+LLM):** a fact whose date lives one FK away now gets that date exposed in its enriched
+view (its enriched-view **column set grows** — more `{fk}__{col}` columns, including the
+header date). The aggregation-lineage **witness now fires** for that class (was recall 0;
+finance: the trial_balance ↔ journal_lines reconciliation forms), and those measures now
+serve a **non-NULL flow anchor** (`anchor_time_axis`, verified). Enriched-view shape is
+LLM-judged, so assert the **column set / witness presence** for the header/line class,
+not exact columns; the wide/denormalized fixture is eval's to shape (per lead — build
+generic, grade shape-invariance in eval). No schema change. No backfill; recreate test DBs.
+
+**NOT in this change (follow-up):** the header axis is exposed on the enriched view but
+that view's columns are absent from `og_columns`/`current_columns` (DAT-811), so a
+measure's `days_in_period` **cadence** for a header-derived axis is not yet resolvable —
+those flows fall loud to the flagged config default (degradation-safe, never a silent
+wrong value). Metric *values* that depend on a data-derived `days_in_period` for a
+header-dated flow are therefore unchanged by this branch.
+
+---
+
 ## DAT-806 — driver `_candidate_dims` no longer orphans a dimension whose alias canonical is a slicing-excluded near-key (driver rankings populate)
 
 **Branch:** `feat/dat-806-candidate-dims-orphan`. `drivers/processor.py::_candidate_dims`

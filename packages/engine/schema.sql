@@ -270,6 +270,7 @@ CREATE TABLE columns (
 	source_column_id VARCHAR, 
 	CONSTRAINT pk_columns PRIMARY KEY (column_id), 
 	CONSTRAINT uq_table_column UNIQUE (table_id, column_name), 
+	CONSTRAINT ck_columns_origin CHECK (origin IS NULL OR origin IN ('fact', 'dimension')), 
 	CONSTRAINT fk_columns_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
 	CONSTRAINT fk_columns_source_column_id_columns FOREIGN KEY(source_column_id) REFERENCES columns (column_id) ON DELETE SET NULL
 );

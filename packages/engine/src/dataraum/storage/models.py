@@ -153,7 +153,13 @@ class Column(Base):
     """
 
     __tablename__ = "columns"
-    __table_args__ = (UniqueConstraint("table_id", "column_name", name="uq_table_column"),)
+    __table_args__ = (
+        UniqueConstraint("table_id", "column_name", name="uq_table_column"),
+        # DAT-811 — origin is a closed enum: NULL on base (typed/raw) columns, and 'fact'
+        # or 'dimension' on an enriched view's served columns. CHECK-enforced like
+        # Table.layer so an unknown value fails loud at write.
+        CheckConstraint("origin IS NULL OR origin IN ('fact', 'dimension')", name="origin"),
+    )
 
     column_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     table_id: Mapped[str] = mapped_column(

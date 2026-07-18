@@ -771,9 +771,7 @@ class TestEnrichedViewsPhaseDuckLake:
         ).scalar_one()
         assert v1.view_table_id is not None, "passthrough view is materialized in the catalog"
         pv_cols = list(
-            session.execute(
-                select(Column).where(Column.table_id == v1.view_table_id)
-            ).scalars()
+            session.execute(select(Column).where(Column.table_id == v1.view_table_id)).scalars()
         )
         assert {c.column_name for c in pv_cols} == {"order_id", "customer_id", "amount"}
         assert all(c.origin == "fact" for c in pv_cols)

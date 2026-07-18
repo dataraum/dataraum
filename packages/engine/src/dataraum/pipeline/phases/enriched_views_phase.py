@@ -44,7 +44,6 @@ from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.analysis.typing.recipe import store_recipe
 from dataraum.analysis.views.builder import (
     DimensionJoin,
-    EnrichedDimColumn,
     build_enriched_view_sql,
 )
 from dataraum.analysis.views.db_models import EnrichedView
@@ -405,9 +404,7 @@ class EnrichedViewsPhase(BasePhase):
             # names seed the builder's dedup so a generated {fk}__{col} name that collides
             # with an f.* column is disambiguated (else the view emits two same-named
             # columns and DAT-811's per-column registration hits uq_table_column).
-            fact_col_names = tuple(
-                name for (tid, name) in col_id_by_name if tid == fact_id
-            )
+            fact_col_names = tuple(name for (tid, name) in col_id_by_name if tid == fact_id)
             view_sql, dim_col_refs = build_enriched_view_sql(
                 view_fqn, fact_fqn, fqn_joins, fact_col_names
             )

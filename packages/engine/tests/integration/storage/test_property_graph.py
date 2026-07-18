@@ -87,7 +87,6 @@ _COLUMNS = [
     ("c_k1", "t1", "account_id", 2),
     ("c_k2", "t2", "account_id", 1),
     ("c_at", "t2", "account_type", 2),  # accounts dim attribute — a DAT-811 dim-column source
-
     ("c_k3", "t3", "group_id", 1),
     ("c_k3b", "t3", "account_id", 2),  # t3's own account_id — a cross-LEVEL accounts slice
     ("c_k4", "t4", "statement_id", 1),
@@ -424,9 +423,7 @@ def test_enriched_view_columns_carry_source_resolved_semantics(graph_engine: Eng
         "c.semantic_role AS role, c.materialization AS mat))"
     )
     with graph_engine.connect() as conn:
-        rows = {
-            (r.column_id, r.column_name, r.role, r.mat) for r in conn.execute(text(sql))
-        }
+        rows = {(r.column_id, r.column_name, r.role, r.mat) for r in conn.execute(text(sql))}
     assert rows == {
         # f.* passthrough measure: its OWN id (ec_amt, NOT the typed c_amt), semantics
         # resolved through source c_amt → measure + flow. This is what a MATCH-driven

@@ -505,26 +505,38 @@ class AnthropicProvider(LLMProvider):
                         }
                     )
                     coerced = original_input
+                    tool_schema = schemas_by_name.get(block.name)
                     # Envelope unwrap (Sonnet 5 under a forced tool_choice): the model
                     # intermittently wraps the WHOLE argument object under a single key
-                    # equal to the tool name — {"analyze_slicing": {<the real args>}}.
-                    # It is a valid tool call, but schema-validation at the call site
-                    # then finds no known top-level field and silently defaults every
-                    # field to empty (an empty ``recommendations`` list is
-                    # indistinguishable from "model declined"). This silently zeroed
-                    # slicing on a sampling-dependent fraction of runs → no slices →
-                    # dimension_hierarchies/aggregation_lineage/drivers all skipped, and
-                    # it hits EVERY forced-tool extractor (relationship judge,
-                    # reconciliation). Unwrap it here, once, for all of them.
-                    enveloped = coerced.get(block.name)
-                    if len(coerced) == 1 and isinstance(enveloped, dict):
-                        logger.warning(
-                            "tool_output_envelope_unwrapped",
-                            label=request.label,
-                            tool=block.name,
-                        )
-                        coerced = dict(enveloped)
-                    tool_schema = schemas_by_name.get(block.name)
+                    # — {"analyze_slicing": {<the real args>}}. It is a valid tool call,
+                    # but schema-validation at the call site then finds no known
+                    # top-level field and silently defaults every field to empty (an
+                    # empty ``recommendations`` list is indistinguishable from "model
+                    # declined"). This silently zeroed slicing on a sampling-dependent
+                    # fraction of runs → no slices → dimension_hierarchies/
+                    # aggregation_lineage/drivers all skipped, and it hits EVERY
+                    # forced-tool extractor (relationship judge, reconciliation).
+                    # Unwrap it here, once, for all of them.
+                    #
+                    # The wrapper key is NOT always the tool name: submit_analysis came
+                    # back as {"analysis": {...}} — a paraphrase — which zeroed
+                    # business_cycles (DAT-795's all-or-nothing cycle collapse). So key
+                    # on the SCHEMA, not the name: a lone top-level key that the tool
+                    # does not declare, carrying a dict, is an envelope by construction.
+                    # A single-property tool whose one declared key holds an object is
+                    # therefore left alone — that payload is legitimate, not wrapped.
+                    if len(coerced) == 1:
+                        (only_key,) = coerced
+                        enveloped = coerced[only_key]
+                        declared = (tool_schema or {}).get("properties") or {}
+                        if isinstance(enveloped, dict) and only_key not in declared:
+                            logger.warning(
+                                "tool_output_envelope_unwrapped",
+                                label=request.label,
+                                tool=block.name,
+                                envelope_key=only_key,
+                            )
+                            coerced = dict(enveloped)
                     if tool_schema is not None:
                         coerced = _coerce_stringified_args(
                             coerced, tool_schema, label=request.label

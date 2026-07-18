@@ -5,6 +5,46 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-812 — grounding resolvers consume DAT-811's self-describing view: header-dated `days_in_period` + dim-column additivity (metric-value change)
+
+**Branch:** `feat/dat-812-consume-served-columns`. The two shared grounding-resolution
+consumers now read a metric's measures off the enriched view's served columns (via
+`source_column_id`) instead of bouncing to the base fact by name. **This DOES change
+metric outputs** (unlike DAT-811, which was catalog-only).
+
+**What changed (all in `graphs/`, consumed by `metrics_phase`):**
+- **`period_resolver`** now reads flow measures off the enriched `view_table_id` and
+  resolves the anchor axis BY IDENTITY — `COALESCE(mal.event_time_axis_column_id,
+  <declared-name match>)` → the served column with that `source_column_id` gives the
+  name-in-relation, cadence from that source column's temporal profile. A **header-dated
+  flow now derives a real `days_in_period`** (e.g. finance `enriched_journal_lines`
+  measures anchor on the header `entry_id__date`, cadence `day`) instead of falling loud
+  to the flagged config default. The DAT-801 first cut's `{fk}__{col}` name
+  reconstruction (which collided) is gone.
+- **`additivity_resolver`** resolves each aggregated column's `temporal_behavior` through
+  the served column's `source_column_id`, so a measure aggregating a **DIM/header column**
+  classifies correctly instead of silently missing its `temporal_behavior` (previously the
+  by-name-on-the-fact lookup dropped it → a `SUM` could read UNKNOWN_TEMPORAL and strip
+  time). The `view_name → fact_table_id` name-on-fact bounce and its dead typed-table
+  fallback are retired (verified: all finance facts have an enriched view).
+
+### Calibration to run
+- **Working-capital metric values on the finance corpus** — `dpo`/`dso`/`dio`/`ccc`
+  `days_in_period`: a header/line-fact flow (journal_lines) should now derive its observed
+  window instead of the config default `30`. Confirm the derived value is data-plausible
+  and the fall-loud flag is ABSENT where a window is observable, PRESENT where it isn't.
+- **Additivity verdicts** for any metric aggregating a dim/header served column — its
+  `time_additive` should now reflect the header column's real `temporal_behavior`, not
+  UNKNOWN_TEMPORAL.
+
+### Thresholds / new fields
+None. No score thresholds, no new response fields, **no schema change** (no `schema.sql`
+/ drizzle churn — the design consumes the already-persisted
+`measure_aggregation_lineage.event_time_axis_column_id`). The unfiltered-window profile
+collapse was deferred to DAT-730.
+
+---
+
 ## DAT-811 — the enriched view is self-describing: og_columns now returns its FULL column set, semantics resolved via a typed source link (catalog surface, no metric-value change)
 
 **Branch:** `feat/dat-811-served-column-set`. An enriched view is `SELECT f.* + joined

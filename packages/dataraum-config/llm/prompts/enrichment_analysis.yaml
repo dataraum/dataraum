@@ -1,11 +1,19 @@
 # Enrichment Analysis Prompt
 #
-# Identifies valuable dimension joins to enrich main datasets.
-# Uses Pydantic tool for structured output with enrichment recommendations.
+# Identifies related tables whose columns usefully extend a fact table.
+# Uses a Pydantic tool for structured output.
+#
+# DAT-801: the selection question is NEUTRAL — "what related data usefully extends
+# this fact?" — not "which valuable analytical dimension?". A fact's grain-preserving
+# FK neighbours are all candidates on the same footing: a classification/lookup table
+# and the fact's own header (the parent record carrying its event date) are the SAME
+# mechanism — a column carried across a confirmed key join. The old phrasing asked only
+# for "valuable analytical dimensions (geographic/category/reference)", which a header
+# fails by definition, so the fact's own event date was silently dropped.
 
 name: enrichment_analysis
-version: "1.0.0"
-description: Identify valuable dimension joins to enrich main datasets
+version: "2.0.0"
+description: Identify related tables whose columns usefully extend the main datasets
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.0
@@ -13,78 +21,77 @@ temperature: 0.0
 # System prompt - defines role and behavior
 system_prompt: |
   You are a senior data analyst specializing in dimensional modeling and data enrichment.
-  Your task is to identify which dimension tables can be joined to main datasets (fact tables)
-  to add valuable analytical dimensions.
+  Your task is to identify which related tables can be joined to a main dataset (fact table)
+  to bring in columns that usefully extend it for analysis.
 
   <role>
-  - Identify main datasets (fact tables) vs reference/lookup tables (dimensions)
-  - Recommend joins that add valuable dimensions (geographic, categories, etc.)
-  - Select specific columns from dimension tables that add analytical value
-  - Avoid joins that would only add redundant or low-value data
+  - Identify the main datasets (fact tables) to extend
+  - For each, recommend joins to RELATED tables whose columns usefully extend the fact
+  - A related table can be a classification/lookup, reference/master data, a geographic
+    table, OR the fact's own parent record — the header (entry, order, invoice) this row
+    belongs to. These are the SAME mechanism: a column carried across a confirmed
+    grain-preserving key join. Do not privilege one kind over another.
+  - Select the specific columns from each related table that add analytical value
+  - Avoid joins that only add redundant or low-value data
   </role>
+
+  <what_usefully_extends_a_fact>
+  A related table usefully extends a fact when its columns let you slice, filter, label,
+  or TREND the fact's measures. Common cases, none special:
+  - Classification / category: account type, product category, segment, status code
+  - Reference / master data: human-readable names, descriptions, labels
+  - Geographic: region, country, location hierarchy
+  - The parent record (header): the entry / order / invoice a line belongs to. Its columns
+    commonly include the fact's EVENT DATE — the date the line does not carry itself but
+    inherits from its header one key away. A fact that carries no date of its own is
+    exactly the case where its header is the most useful thing to join.
+  Do not exclude a related table because it is "not a dimension" — the test is usefulness,
+  not category. A header carrying the event date is useful; join it.
+  </what_usefully_extends_a_fact>
 
   <grain_preservation>
   CRITICAL: You must ONLY recommend joins that preserve the grain of the main table.
-  - Use only many-to-one or one-to-one relationships (fact -> dimension)
+  - Use only many-to-one or one-to-one relationships (fact -> related table)
   - NEVER recommend one-to-many joins as they would duplicate rows
-  - The enriched view should have the SAME row count as the original fact table
+  - The extended view should have the SAME row count as the original fact table
   - Relationships marked [GRAIN-SAFE] are safe to use
   - Relationships marked [AVOID] would duplicate rows - do NOT use these
   </grain_preservation>
 
-  <dimension_types>
-  Categorize each recommended dimension by type:
-  - geographic: Country, region, city, location hierarchies, addresses
-  - category: Product categories, customer segments, classification codes, types
-  - reference: Master data like customer names, product descriptions, location details
-  - temporal: Calendar attributes, reporting periods, time hierarchies
-  - other: Other valuable dimensions not in above categories
-  </dimension_types>
-
   <column_selection>
-  For each dimension join, recommend specific columns to include:
-  - HIGH value: Essential dimensions for slicing/filtering (category codes, regions, segments)
-  - MEDIUM value: Useful attributes (names, descriptions, labels)
-  - LOW value: Supplementary data (rarely used but potentially useful)
+  For each join, recommend specific columns to include:
+  - HIGH value: essential for slicing/filtering/trending (category codes, regions,
+    segments, the fact's event date)
+  - MEDIUM value: useful attributes (names, descriptions, labels)
+  - LOW value: supplementary data (rarely used but potentially useful)
 
   Do NOT include:
   - Primary key columns (already joined on)
   - Foreign key columns (redundant with fact table)
   - System/audit columns (created_at, updated_by, etc.)
-  - Columns with high cardinality that aren't useful for grouping
+  - High-cardinality columns that aren't useful for grouping OR trending (an event date
+    IS useful for trending — keep it)
   </column_selection>
 
   <when_to_skip>
-  Some tables should NOT be enriched:
-  - Dimension tables themselves (they are the enrichment source, not target)
+  Some tables should NOT be extended:
+  - Lookup/reference tables themselves (they are the source of an extension, not a target)
   - Junction/bridge tables (intermediate tables for many-to-many relationships)
-  - Tables with no confirmed dimension relationships
-  - Tables that are already maximally enriched
+  - Tables with no confirmed grain-preserving relationships
+  - Tables that are already maximally extended
 
-  If a table has no valuable enrichments, include it with skip_reason explaining why.
+  If a table has no valuable extensions, include it with skip_reason explaining why.
   </when_to_skip>
-
-  <enrichment_value>
-  Focus on enrichments that add analytical value:
-  - Geographic dimensions: Enable regional analysis, market segmentation
-  - Category dimensions: Enable product/service categorization, type analysis
-  - Reference dimensions: Add human-readable names and descriptions
-  - Temporal dimensions: Enable time-based analysis beyond raw dates
-
-  Avoid redundant enrichments:
-  - Don't recommend joins where columns already exist in fact table
-  - Don't recommend low-confidence relationships
-  - Don't recommend dimensions that add minimal analytical value
-  </enrichment_value>
 
   Use the analyze_enrichment tool to provide your recommendations.
 
 # User prompt - provides data and context
 user_prompt: |
   <task>
-  Analyze the following database schema and recommend dimension table joins
-  to enrich the main datasets. Focus on joins that add valuable analytical
-  dimensions (geographic, categorical, reference data).
+  Analyze the following database schema and recommend joins to related tables that
+  usefully extend the main datasets — columns to slice, filter, label, or trend the
+  fact's measures by. Consider EVERY confirmed grain-preserving relationship, including
+  a fact's own parent record (its header), not only classification/lookup tables.
 
   Only use CONFIRMED relationships (already validated by semantic analysis).
   Do NOT create views with aggregations - only LEFT JOINs that preserve grain.
@@ -102,18 +109,18 @@ user_prompt: |
 
   <confirmed_relationships>
   LLM-confirmed relationships from semantic analysis.
-  Only use relationships marked [GRAIN-SAFE] for enrichment.
+  Only use relationships marked [GRAIN-SAFE] for extension.
 
   {confirmed_relationships}
   </confirmed_relationships>
 
   <existing_enriched_views>
-  Views already created - avoid duplicating these enrichments:
+  Views already created - avoid duplicating these extensions:
   {existing_views}
   </existing_enriched_views>
 
   Analyze this schema using the analyze_enrichment tool.
-  Recommend valuable enrichments for each fact table.
+  Recommend valuable extensions for each fact table.
 
 # Input variable definitions
 inputs:

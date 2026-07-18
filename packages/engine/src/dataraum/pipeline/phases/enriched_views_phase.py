@@ -12,9 +12,13 @@ the judge's behalf which already-verified relationships it was allowed to see
 it anyway (DAT-699). Confidence and cardinality are served as evidence; the
 judge decides.
 
-Post-creation: verifies row count matches fact table. Drops view if grain
-violated — grain is the view's CONTRACT (a fan-out view silently corrupts
-every downstream number), so this stays deterministic.
+Post-creation: grain is the view's CONTRACT (a fan-out view silently corrupts
+every downstream number). Because the view is a one-hop STAR (every dimension
+LEFT JOINs the fact, never another dimension), each join's fan-out is
+independent — so a grain violation drops the OFFENDING join and rebuilds from
+the survivors (DAT-801), never the fact's whole view. A belt-and-braces
+whole-view COUNT then asserts the composed grain; if it ever fails, the
+star-independence assumption broke and the view is dropped.
 """
 
 from __future__ import annotations
@@ -286,6 +290,7 @@ class EnrichedViewsPhase(BasePhase):
 
         views_created = 0
         views_dropped = 0
+        joins_dropped = 0
 
         for fact_entity in fact_entities:
             fact_table = tables_by_id.get(fact_entity.table_id)
@@ -346,15 +351,6 @@ class EnrichedViewsPhase(BasePhase):
                             )
                         )
 
-            dimension_joins: list[DimensionJoin] = [j for j, _ in joins_with_ids]
-
-            if not dimension_joins:
-                logger.info(
-                    "passthrough_enriched_view",
-                    fact_table=fact_table.table_name,
-                    reason="no qualifying dimension joins",
-                )
-
             # Name the view off the fact's narrow, workspace-unique duckdb_path
             # (``enriched_{table}`` — DAT-639). Table names are workspace-unique
             # (``uq_table_name_layer``), so two sources can't each own an
@@ -363,13 +359,45 @@ class EnrichedViewsPhase(BasePhase):
             view_name = f"enriched_{fact_table.duckdb_path}"
             view_fqn = _lake_fqn("enriched", view_name)
             fact_fqn = _lake_fqn("typed", fact_table.duckdb_path)
-            fqn_joins = [
-                replace(join, dim_duckdb_path=_lake_fqn("typed", dim.duckdb_path))
-                for join in dimension_joins
+
+            # Resolve each candidate join to its dimension FQN, carrying the stable
+            # column-pair so persistence tracks exactly what ships. A join whose dim
+            # table isn't in this session can't be resolved → dropped here (as before).
+            fqn_joins_with_ids = [
+                (replace(join, dim_duckdb_path=_lake_fqn("typed", dim.duckdb_path)), pair)
+                for join, pair in joins_with_ids
                 if (dim := tables_by_name.get(join.dim_table_name)) is not None and dim.duckdb_path
             ]
 
-            # Build view SQL
+            # DAT-801: a grain violation drops the OFFENDING join and rebuilds from
+            # the survivors — never the fact's whole view. The enriched view is a
+            # one-hop STAR (every dimension LEFT JOINs the fact, never another
+            # dimension — see ``build_enriched_view_sql``), so each join's fan-out is
+            # INDEPENDENT: a join whose isolated COUNT keeps the fact row count keeps
+            # it in the composed view, and composing grain-preservers preserves grain.
+            # Verifying each candidate ALONE is therefore sufficient for the whole
+            # view — no bisect. (DAT-801 reframed the prompt to join more neighbours,
+            # so a single fan-out pick used to cost a central fact its entire view.)
+            surviving = [
+                (join, pair)
+                for join, pair in fqn_joins_with_ids
+                if self._join_preserves_grain(ctx.duckdb_conn, fact_table, fact_fqn, join)
+            ]
+            joins_dropped += len(fqn_joins_with_ids) - len(surviving)
+
+            # Persistence + the view SQL now reflect the survivors only.
+            joins_with_ids = surviving
+            dimension_joins: list[DimensionJoin] = [join for join, _ in surviving]
+            fqn_joins = dimension_joins  # already FQN-resolved above
+
+            if not dimension_joins:
+                logger.info(
+                    "passthrough_enriched_view",
+                    fact_table=fact_table.table_name,
+                    reason="no qualifying dimension joins",
+                )
+
+            # Build view SQL from the grain-preserving survivors.
             view_sql, dim_columns = build_enriched_view_sql(view_fqn, fact_fqn, fqn_joins)
 
             # Create view in DuckDB
@@ -379,7 +407,10 @@ class EnrichedViewsPhase(BasePhase):
                 logger.warning("view_creation_failed", view_name=view_name, error=str(e))
                 continue
 
-            # Verify grain preservation
+            # Belt-and-braces (DAT-801): per-join filtering above already guarantees
+            # the grain, so this whole-view COUNT should never fail. If it does, the
+            # star-independence assumption broke — do NOT silently ship a fan-out view
+            # (grain is the view's CONTRACT). Log LOUD and drop the view.
             is_grain_verified = self._verify_grain(
                 ctx.duckdb_conn,
                 view_target=view_fqn,
@@ -387,11 +418,12 @@ class EnrichedViewsPhase(BasePhase):
             )
 
             if not is_grain_verified:
-                # Drop view — it would introduce duplicates
-                logger.warning(
-                    "grain_verification_failed",
+                logger.error(
+                    "grain_verification_failed_after_per_join_filter",
                     view_name=view_name,
+                    fact_table=fact_table.table_name,
                     expected_count=fact_table.row_count,
+                    surviving_joins=len(fqn_joins),
                 )
                 try:
                     ctx.duckdb_conn.execute(f"DROP VIEW IF EXISTS {view_fqn}")
@@ -407,7 +439,7 @@ class EnrichedViewsPhase(BasePhase):
                     if rec.fact_table_id == fact_table.table_id:
                         evidence = {
                             "llm_reasoning": rec.reasoning,
-                            "dimension_type": rec.dimension_type,
+                            "relationship_role": rec.relationship_role,
                             "enrichment_columns": rec.enrichment_columns,
                             "model_name": llm_recommendations.model_name,
                         }
@@ -536,6 +568,7 @@ class EnrichedViewsPhase(BasePhase):
             outputs={
                 "enriched_views": views_created,
                 "views_dropped": views_dropped,
+                "joins_dropped": joins_dropped,
                 "fact_tables": len(fact_entities),
             },
             records_processed=len(fact_entities),
@@ -928,6 +961,66 @@ class EnrichedViewsPhase(BasePhase):
             "confirmed_relationships": relationships_data,
             "existing_views": existing_views_data,
         }
+
+    @staticmethod
+    def _join_preserves_grain(
+        duckdb_conn: Any,
+        fact_table: Table,
+        fact_fqn: str,
+        join: DimensionJoin,
+    ) -> bool:
+        """Whether ONE dimension join, applied alone, preserves the fact grain (DAT-801).
+
+        The enriched view is a one-hop star (every dimension LEFT JOINs the fact,
+        never another dimension — ``build_enriched_view_sql``), so each join's
+        fan-out is independent: a join whose isolated ``COUNT(*)`` equals the fact
+        row count keeps the grain in the composed view too. This lets a grain
+        violation drop just the offending join and rebuild from the survivors,
+        instead of costing the fact its whole enriched view.
+
+        ``row_count is None`` → unmeasurable, keep the join (mirrors
+        ``_verify_grain``: can't verify → don't drop). A LEFT JOIN can only preserve
+        or inflate the fact's rows, so any COUNT above the expected count is a
+        fan-out (``one_to_many``). Both a fan-out and a probe that can't even execute
+        drop the join with a born-loud log naming the fact, the neighbour, and the
+        counts — a fan-out is a real topology fact, not debug noise.
+        """
+        expected = fact_table.row_count
+        if expected is None:
+            return True  # can't measure → don't drop (mirrors _verify_grain)
+
+        count_sql = (
+            f"SELECT COUNT(*) FROM {fact_fqn} AS f "
+            f"LEFT JOIN {join.dim_duckdb_path} AS d "
+            f'ON f."{join.fact_fk_column}" = d."{join.dim_pk_column}"'
+        )
+        try:
+            row = duckdb_conn.execute(count_sql).fetchone()
+        except Exception as e:
+            logger.warning(
+                "enrichment_join_probe_failed",
+                fact_table=fact_table.table_name,
+                dim_table=join.dim_table_name,
+                fact_fk_column=join.fact_fk_column,
+                dim_pk_column=join.dim_pk_column,
+                error=str(e),
+            )
+            return False
+
+        actual = row[0] if row else 0
+        if actual == expected:
+            return True
+
+        logger.warning(
+            "enrichment_join_fans_out",
+            fact_table=fact_table.table_name,
+            dim_table=join.dim_table_name,
+            fact_fk_column=join.fact_fk_column,
+            dim_pk_column=join.dim_pk_column,
+            expected_count=expected,
+            actual_count=actual,
+        )
+        return False
 
     @staticmethod
     def _verify_grain(

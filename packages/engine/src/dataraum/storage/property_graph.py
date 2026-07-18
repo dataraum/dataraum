@@ -172,6 +172,17 @@ def _element_view_sql(name: str) -> str:
         #      lateral; the save-time contract guarantees at most one such row.
         # NULL when neither exists. The COALESCE order IS the precedence, exactly like
         # materialization prefers the witness posterior over the concept prior.
+        #
+        # DAT-811 — the vertex set is the UNION of two branches:
+        #   TYPED    (current_columns): a column resolves its own semantics by its own
+        #     column_id, and the declared anchor comes from its own table's entity.
+        #   ENRICHED (current_enriched_columns): a served column of an enriched view. It
+        #     keeps its OWN column_id (the KEY must stay unique — a typed id must never
+        #     appear on two vertices), but resolves EVERY semantic (role, materialization,
+        #     anchor) THROUGH ``source_column_id`` — its typed source. So the enriched view
+        #     is self-describing: a MATCH over its table_id returns its full column set with
+        #     semantics attached, no walk back to origin tables. ``te`` joins the SOURCE
+        #     column's table so an f.* measure inherits the fact's declared anchor.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_columns AS\n"
             f"SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_name,\n"
@@ -188,6 +199,29 @@ def _element_view_sql(name: str) -> str:
             f"LEFT JOIN {READ_TOKEN}.current_measure_aggregation_lineage mal\n"
             f"       ON mal.measure_column_id = c.column_id\n"
             f"LEFT JOIN {READ_TOKEN}.current_table_entities te ON te.table_id = c.table_id\n"
+            f"LEFT JOIN LATERAL (\n"
+            f"    SELECT elem->>'column' AS column_name\n"
+            f"    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem\n"
+            f"    WHERE elem->>'role' = 'event' AND (elem->>'is_anchor')::boolean IS TRUE\n"
+            f"    LIMIT 1\n"
+            f"  ) declared_anchor ON TRUE\n"
+            f"UNION ALL\n"
+            f"SELECT ec.column_id::text AS column_id, ec.table_id::text AS table_id,"
+            f" ec.column_name,\n"
+            f"       sa.semantic_role,\n"
+            f"       COALESCE(\n"
+            f"         CASE mal.pattern WHEN 'per_period' THEN 'flow' WHEN 'cumulative' THEN 'stock' END,\n"
+            f"         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'\n"
+            f"                                   WHEN 'point_in_time' THEN 'stock' END\n"
+            f"       ) AS materialization,\n"
+            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis\n"
+            f"FROM {READ_TOKEN}.current_enriched_columns ec\n"
+            f"LEFT JOIN {READ_TOKEN}.current_semantic_annotations sa ON sa.column_id = ec.source_column_id\n"
+            f"LEFT JOIN {READ_TOKEN}.current_column_concepts cc ON cc.column_id = ec.source_column_id\n"
+            f"LEFT JOIN {READ_TOKEN}.current_measure_aggregation_lineage mal\n"
+            f"       ON mal.measure_column_id = ec.source_column_id\n"
+            f"LEFT JOIN {READ_TOKEN}.current_columns src ON src.column_id = ec.source_column_id\n"
+            f"LEFT JOIN {READ_TOKEN}.current_table_entities te ON te.table_id = src.table_id\n"
             f"LEFT JOIN LATERAL (\n"
             f"    SELECT elem->>'column' AS column_name\n"
             f"    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem\n"

@@ -416,3 +416,15 @@ WHERE EXISTS (
   WHERE t.table_id = c.table_id
     AND t.layer = 'typed'
 );
+
+DROP VIEW IF EXISTS __READ__.current_enriched_columns;
+CREATE VIEW __READ__.current_enriched_columns AS
+SELECT c.* FROM __WS__.columns c
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.enriched_views ev
+  JOIN __WS__.metadata_snapshot_head h
+    ON h.target = 'catalog'
+   AND h.stage = 'catalog'
+   AND h.run_id = ev.run_id
+  WHERE ev.view_table_id = c.table_id
+);

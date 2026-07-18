@@ -63,7 +63,7 @@ class TestEnrichedViewsIntegration:
         ]
 
         view = '"enriched_orders"'
-        sql, dim_cols = build_enriched_view_sql(view, "typed_orders", joins)
+        sql, _ = build_enriched_view_sql(view, "typed_orders", joins)
 
         duckdb_conn.execute(sql)
 
@@ -454,6 +454,62 @@ class TestEnrichedViewsPhaseDuckLake:
 
         assert calls["n"] == 1, "run 1 judged the one undecided relationship"
 
+        # DAT-811: the enriched view registers EVERY served column — the fact's own f.*
+        # passthrough columns AND the joined dim columns — each carrying its TYPED source
+        # column_id (resolved forward from the recipe, NEVER parsed from the {fk}__{col}
+        # name). That source id is the identity read views resolve semantics through.
+        from dataraum.storage import Column as _Column
+
+        def _src_id(table_id: str, name: str) -> str:
+            return session.execute(
+                select(_Column.column_id).where(
+                    _Column.table_id == table_id, _Column.column_name == name
+                )
+            ).scalar_one()
+
+        enriched_cols = (
+            session.execute(select(_Column).where(_Column.table_id == views[0].view_table_id))
+            .scalars()
+            .all()
+        )
+        by_name = {c.column_name: c for c in enriched_cols}
+        # No served column is left unclassified.
+        assert all(c.origin in ("fact", "dimension") for c in enriched_cols)
+
+        # The fact's own columns are carried through (origin='fact'), each linked to its
+        # typed fact source. They are NOT re-profiled — read views reach stats via the link.
+        assert {n for n, c in by_name.items() if c.origin == "fact"} == {
+            "order_id",
+            "customer_id",
+            "amount",
+        }
+        for n in ("order_id", "customer_id", "amount"):
+            assert by_name[n].source_column_id == _src_id(fact_id, n)
+
+        # The joined dim columns (origin='dimension') link their typed dim source — this is
+        # exactly the set the dims-only consumers now select via ``origin == 'dimension'``.
+        assert {n for n, c in by_name.items() if c.origin == "dimension"} == {
+            "customer_id__name",
+            "customer_id__country",
+        }
+        assert by_name["customer_id__name"].source_column_id == _src_id(dim_id, "name")
+        assert by_name["customer_id__country"].source_column_id == _src_id(dim_id, "country")
+
+        dims_only = (
+            session.execute(
+                select(_Column).where(
+                    _Column.table_id == views[0].view_table_id,
+                    _Column.origin == "dimension",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {c.column_name for c in dims_only} == {
+            "customer_id__name",
+            "customer_id__country",
+        }
+
         # --- Run 1 retry: same run_id is idempotent (no duplicate rows) ----
         run("run-1")
         assert len(enriched_views()) == 1, "a same-run retry must not duplicate the view definition"
@@ -706,10 +762,53 @@ class TestEnrichedViewsPhaseDuckLake:
         # Run 1: no relationship yet → passthrough view, zero dimension columns.
         run("run-1", with_rel=False)
         assert dim_cols() == []
+        # DAT-811: a passthrough view is STILL a full catalog citizen — it registers its
+        # f.* columns (origin='fact', linked to their typed source) and sets view_table_id,
+        # so og_tables/og_columns describe it too. No consumer special-cases "no enriched
+        # view → walk back to the typed table".
+        v1 = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        assert v1.view_table_id is not None, "passthrough view is materialized in the catalog"
+        pv_cols = list(
+            session.execute(select(Column).where(Column.table_id == v1.view_table_id)).scalars()
+        )
+        assert {c.column_name for c in pv_cols} == {"order_id", "customer_id", "amount"}
+        assert all(c.origin == "fact" for c in pv_cols)
+        for c in pv_cols:
+            src = session.execute(
+                select(Column.column_id).where(
+                    Column.table_id == fact_id, Column.column_name == c.column_name
+                )
+            ).scalar_one()
+            assert c.source_column_id == src
 
         # Run 2: a newly-confirmed relationship is judged in → its columns are ADDED.
         run("run-2", with_rel=True)
         assert dim_cols() == ["customer_id__country", "customer_id__name"], "grow on new confirm"
+        # Capture the dim columns' ids + confirm they were profiled, so the reject below
+        # can prove the underlying rows (not just the dimension_columns JSON) are deleted.
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        v2 = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        dim2_ids = [
+            c.column_id
+            for c in session.execute(
+                select(Column).where(
+                    Column.table_id == v2.view_table_id, Column.origin == "dimension"
+                )
+            ).scalars()
+        ]
+        assert len(dim2_ids) == 2
+        assert (
+            session.execute(
+                select(StatisticalProfile).where(StatisticalProfile.column_id.in_(dim2_ids))
+            )
+            .scalars()
+            .all()
+        ), "dim columns were profiled"
 
         # Run 3: the user rejects the relationship → its columns DROP (shrink), even though
         # the relationship is still structurally confirmed and already in `considered`.
@@ -731,6 +830,31 @@ class TestEnrichedViewsPhaseDuckLake:
         session.flush()
         run("run-3", with_rel=True)
         assert dim_cols() == [], "shrink on explicit reject"
+        # The shrink DELETES the stale dim Column + StatisticalProfile rows (not just the
+        # dimension_columns JSON summary) — the view is now a passthrough carrying only the
+        # fact's own f.* columns. (Senior review: this cleanup path was unreachable before
+        # DAT-811 made passthrough registration run, so it was newly load-bearing.)
+        assert (
+            session.execute(select(Column).where(Column.column_id.in_(dim2_ids))).scalars().all()
+            == []
+        ), "dim Column rows deleted on shrink"
+        assert (
+            session.execute(
+                select(StatisticalProfile).where(StatisticalProfile.column_id.in_(dim2_ids))
+            )
+            .scalars()
+            .all()
+            == []
+        ), "dim StatisticalProfiles deleted on shrink"
+        v3 = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        assert {
+            c.origin
+            for c in session.execute(
+                select(Column).where(Column.table_id == v3.view_table_id)
+            ).scalars()
+        } == {"fact"}, "view is now a passthrough citizen (fact columns only)"
 
     def test_dropped_then_reconfirmed_relationship_is_rejudged(
         self, session, duckdb_conn, monkeypatch

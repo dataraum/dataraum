@@ -46,6 +46,28 @@ LEFT JOIN LATERAL (
     FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem
     WHERE elem->>'role' = 'event' AND (elem->>'is_anchor')::boolean IS TRUE
     LIMIT 1
+  ) declared_anchor ON TRUE
+UNION ALL
+SELECT ec.column_id::text AS column_id, ec.table_id::text AS table_id, ec.column_name,
+       sa.semantic_role,
+       COALESCE(
+         CASE mal.pattern WHEN 'per_period' THEN 'flow' WHEN 'cumulative' THEN 'stock' END,
+         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
+                                   WHEN 'point_in_time' THEN 'stock' END
+       ) AS materialization,
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
+FROM __READ__.current_enriched_columns ec
+LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = ec.source_column_id
+LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = ec.source_column_id
+LEFT JOIN __READ__.current_measure_aggregation_lineage mal
+       ON mal.measure_column_id = ec.source_column_id
+LEFT JOIN __READ__.current_columns src ON src.column_id = ec.source_column_id
+LEFT JOIN __READ__.current_table_entities te ON te.table_id = src.table_id
+LEFT JOIN LATERAL (
+    SELECT elem->>'column' AS column_name
+    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem
+    WHERE elem->>'role' = 'event' AND (elem->>'is_anchor')::boolean IS TRUE
+    LIMIT 1
   ) declared_anchor ON TRUE;
 
 CREATE VIEW __READ__.og_concepts AS

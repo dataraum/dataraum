@@ -42,7 +42,10 @@ from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
 from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.analysis.typing.recipe import store_recipe
-from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
+from dataraum.analysis.views.builder import (
+    DimensionJoin,
+    build_enriched_view_sql,
+)
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
 from dataraum.analysis.views.enrichment_models import EnrichmentAnalysisResult
@@ -397,8 +400,28 @@ class EnrichedViewsPhase(BasePhase):
                     reason="no qualifying dimension joins",
                 )
 
-            # Build view SQL from the grain-preserving survivors.
-            view_sql, dim_columns = build_enriched_view_sql(view_fqn, fact_fqn, fqn_joins)
+            # Build view SQL from the grain-preserving survivors. The fact's own column
+            # names seed the builder's dedup so a generated {fk}__{col} name that collides
+            # with an f.* column is disambiguated (else the view emits two same-named
+            # columns and DAT-811's per-column registration hits uq_table_column).
+            fact_col_names = tuple(name for (tid, name) in col_id_by_name if tid == fact_id)
+            view_sql, dim_col_refs = build_enriched_view_sql(
+                view_fqn, fact_fqn, fqn_joins, fact_col_names
+            )
+            dim_columns = [c.name for c in dim_col_refs]
+
+            # DAT-811: resolve each dim column's TYPED source column_id relationally —
+            # (dim table, source column name) → column_id, forward from the recipe. The
+            # builder is the sole authority on the physical ``{fk}__{col}`` name, so this
+            # never reverse-parses it (which would collide when two joins share a prefix).
+            source_by_name: dict[str, str | None] = {}
+            for ref in dim_col_refs:
+                dim_table = tables_by_name.get(ref.dim_table_name)
+                source_by_name[ref.name] = (
+                    col_id_by_name.get((dim_table.table_id, ref.source_column_name))
+                    if dim_table
+                    else None
+                )
 
             # Create view in DuckDB
             try:
@@ -445,14 +468,16 @@ class EnrichedViewsPhase(BasePhase):
                         }
                         break
 
-            # Register and profile dimension columns (latest-only substrate:
-            # reconciled by view_name, prior columns/profiles replaced).
-            view_table = self._register_and_profile_dim_columns(
+            # Register every served column (f.* + dims) under the enriched table so the
+            # catalog describes the view completely (DAT-811); latest-only substrate,
+            # reconciled by view_name with dim profiles preserved across re-runs.
+            view_table = self._register_and_profile_served_columns(
                 ctx,
                 fact_table,
                 view_name,
                 view_fqn,
                 dim_columns,
+                source_by_name,
             )
 
             # Version the view DDL on the DAT-414 recipe substrate (emit → store →
@@ -603,39 +628,57 @@ class EnrichedViewsPhase(BasePhase):
                 return cand
         return None
 
-    def _register_and_profile_dim_columns(
+    def _register_and_profile_served_columns(
         self,
         ctx: PhaseContext,
         fact_table: Table,
         view_name: str,
         view_fqn: str,
         dim_columns: list[str],
+        source_by_name: dict[str, str | None],
     ) -> Table | None:
-        """Register enriched-layer Table + Column records for dimension columns and profile them.
+        """Register enriched-layer Table + Column records for EVERY served column of the view.
 
-        Latest-only substrate (DAT-415): the enriched ``Table`` is reconciled on
-        its ``(source, view_name, "enriched")`` unique key — reused across runs,
-        with its prior ``Column``s replaced. Since the FK children of ``columns``
-        no longer ``ON DELETE CASCADE`` (DAT-506), the prior run's
-        ``StatisticalProfile``s (and every other child) are deleted explicitly via
-        ``delete_column_dependents`` before the columns go. The view *definition*
-        is what is run-versioned (``EnrichedView`` + recipe DDL); the lake
-        substrate stays latest-only and is re-materialized from the versioned
-        recipe on a reset.
+        DAT-811: an enriched view is ``SELECT f.* + joined dim columns``. Every one of its
+        columns becomes a real ``Column`` row under the enriched table, so the catalog
+        (``og_columns``) describes the view COMPLETELY without walking back to origin
+        tables. Each row carries its typed ``source_column_id`` and an ``origin``:
+
+        * ``'fact'`` — the fact's own column, carried through by ``f.*``. On the
+          grain-preserving view its stats are identical to the source's by construction,
+          so it is NOT re-profiled; read views reach its profile/semantics through
+          ``source_column_id``. It gets its OWN ``column_id`` — the property-graph vertex
+          KEY must stay unique, so a typed id must never appear twice.
+        * ``'dimension'`` — a joined dim column. Profiled at enriched (fact) grain, whose
+          null/coverage differs from the dim table's own; ``source_column_id`` still links
+          the typed dim column for its semantics.
+
+        Latest-only substrate (DAT-415): the enriched ``Table`` is reconciled on its
+        ``(source, view_name, "enriched")`` unique key — reused across runs, its prior
+        ``Column``s reconciled by name (keep column_id + profile where the name survives,
+        drop what left the shape, mint the genuinely-new). Since the FK children of
+        ``columns`` no longer ``ON DELETE CASCADE`` (DAT-506), a dropped column's children
+        are cleared explicitly via ``delete_column_dependents`` before the ``delete``.
 
         Args:
             ctx: Phase context.
             fact_table: The fact table this view is based on.
             view_name: Bare name of the enriched DuckDB view (stored as duckdb_path).
             view_fqn: Fully-qualified view name, used to query the view (DESCRIBE / profile).
-            dim_columns: List of dimension column names in the view.
+            dim_columns: The joined dimension column names (the ``origin='dimension'`` set).
+            source_by_name: Dim-column name → its TYPED source ``column_id`` (DAT-811),
+                resolved forward from the join recipe — never parsed from the name.
+
+        A passthrough view (no dim joins) is transparently a full catalog citizen too: it
+        is ``SELECT *`` over the fact, so every served column is an ``origin='fact'``
+        passthrough (no dim columns) — ``og_tables`` still emits its vertex and
+        ``og_columns`` still returns its columns, so a consumer never has to special-case
+        "no enriched view → walk back to the typed table".
 
         Returns:
-            The enriched-layer Table record, or None if no dimension columns.
+            The enriched-layer Table record (None only if the view has no columns at all,
+            which a real fact never hits).
         """
-        if not dim_columns:
-            return None
-
         view_table = ctx.session.execute(
             select(Table).where(
                 Table.source_id == fact_table.source_id,
@@ -643,7 +686,6 @@ class EnrichedViewsPhase(BasePhase):
                 Table.layer == "enriched",
             )
         ).scalar_one_or_none()
-        existing: dict[str, Column] = {}
         if view_table is None:
             view_table = Table(
                 table_id=str(uuid4()),
@@ -656,42 +698,62 @@ class EnrichedViewsPhase(BasePhase):
             ctx.session.add(view_table)
             ctx.session.flush()
         else:
-            # Reconcile, don't replace (DAT-516): keep each dimension column (with its
-            # ``column_id`` AND its ``StatisticalProfile``) whose name survives in the new
-            # set, drop only columns whose join left the shape, add only genuinely-new ones.
-            # This preserves ``column_id`` across re-runs, so a consumer holding one (and the
-            # profiles those columns carry) is not silently invalidated by an unchanged shape.
-            # Dropped columns' FK children are cleared first (``columns`` no longer
-            # ``ON DELETE CASCADE`` — DAT-506) so the ``delete(Column)`` can't FK-violate.
             view_table.duckdb_path = view_name
             view_table.row_count = fact_table.row_count
-            existing = {
-                c.column_name: c
-                for c in ctx.session.execute(
-                    select(Column).where(Column.table_id == view_table.table_id)
-                ).scalars()
-            }
-            wanted = set(dim_columns)
-            removed = [c for name, c in existing.items() if name not in wanted]
-            if removed:
-                delete_column_dependents(ctx, [c.column_id for c in removed])
-                ctx.session.execute(
-                    delete(Column).where(Column.column_id.in_([c.column_id for c in removed]))
-                )
-                ctx.session.flush()
-                for c in removed:
-                    existing.pop(c.column_name)
 
-        # Get DuckDB types for dimension columns
+        # The physical served columns in view order — the ground truth for names + types.
+        # ``f.*`` fact columns come first (in fact order), then the joined dim columns.
         duckdb_cols = ctx.duckdb_conn.execute(f"DESCRIBE {view_fqn}").fetchall()
+        served_names = [row[0] for row in duckdb_cols]
         type_by_name = {row[0]: row[1] for row in duckdb_cols}
 
-        # Keep + reposition existing columns; mint only genuinely-new ones (DAT-516).
+        # Classify each served column + resolve its typed source (DAT-811). A dim column
+        # links its dim source (forward from the recipe); a fact passthrough links the
+        # same-named typed fact column.
+        dim_set = set(dim_columns)
+        fact_source_by_name = {
+            c.column_name: c.column_id
+            for c in ctx.session.execute(
+                select(Column).where(Column.table_id == fact_table.table_id)
+            ).scalars()
+        }
+
+        def origin_and_source(name: str) -> tuple[str, str | None]:
+            if name in dim_set:
+                return "dimension", source_by_name.get(name)
+            return "fact", fact_source_by_name.get(name)
+
+        # Reconcile by name (DAT-516): keep each surviving column's column_id (and profile),
+        # drop those whose shape left, mint the genuinely-new. Preserving column_id keeps a
+        # consumer holding one — and the profiles a dim column carries — valid across re-runs.
+        existing = {
+            c.column_name: c
+            for c in ctx.session.execute(
+                select(Column).where(Column.table_id == view_table.table_id)
+            ).scalars()
+        }
+        removed = [c for name, c in existing.items() if name not in set(served_names)]
+        if removed:
+            delete_column_dependents(ctx, [c.column_id for c in removed])
+            ctx.session.execute(
+                delete(Column).where(Column.column_id.in_([c.column_id for c in removed]))
+            )
+            ctx.session.flush()
+            for c in removed:
+                existing.pop(c.column_name)
+
+        # Keep + reposition existing columns; mint only genuinely-new ones. ``origin`` and
+        # ``source_column_id`` are refreshed on kept columns too — a re-run may newly resolve
+        # a source the prior run left unlinked.
         new_columns: list[Column] = []
-        for pos, col_name in enumerate(dim_columns):
+        new_dim_columns: list[Column] = []
+        for pos, col_name in enumerate(served_names):
+            origin, source_id = origin_and_source(col_name)
             kept = existing.get(col_name)
             if kept is not None:
                 kept.column_position = pos  # keep column_id + its profile; refresh order only
+                kept.origin = origin
+                kept.source_column_id = source_id
                 continue
             col_type = type_by_name.get(col_name, "VARCHAR")
             col = Column(
@@ -701,19 +763,24 @@ class EnrichedViewsPhase(BasePhase):
                 column_position=pos,
                 raw_type=col_type,
                 resolved_type=col_type,
+                origin=origin,
+                source_column_id=source_id,
             )
             ctx.session.add(col)
             new_columns.append(col)
+            if origin == "dimension":
+                new_dim_columns.append(col)
         ctx.session.flush()
 
-        # Profile ONLY the new columns. A kept column's join is unchanged, so its data —
-        # and thus its existing profile — is stable; re-profiling would just churn it.
-        # Per-column profiling failures are absorbed inside ``_profile_column_stats_parallel``
-        # (returns None → skipped); a genuine DB / IntegrityError on the column-set
-        # reconcile above is NOT swallowed — it propagates and fails the activity loud.
+        # Profile ONLY new DIMENSION columns. A fact passthrough's stats equal its source's
+        # on the grain-preserving view — nothing to profile; read views reach them through
+        # ``source_column_id``. A kept dim column's join is unchanged, so its profile is
+        # stable. Per-column failures are absorbed in ``_profile_column_stats_parallel``
+        # (None → skipped); a DB error on the reconcile above is NOT swallowed — it fails
+        # the activity loud.
         profiled_at = datetime.now(UTC)
         profiled_count = 0
-        for col in new_columns:
+        for col in new_dim_columns:
             # Bare name, NOT view_fqn: the profiler interpolates the path as
             # ONE quoted identifier, so a pre-quoted catalog.schema."name"
             # FQN parses as a zero-length identifier and every dim-column
@@ -752,9 +819,10 @@ class EnrichedViewsPhase(BasePhase):
                 profiled_count += 1
 
         logger.info(
-            "dim_columns_profiled",
+            "served_columns_registered",
             view_name=view_name,
-            columns=len(dim_columns),
+            served_columns=len(served_names),
+            dimension_columns=len(dim_columns),
             new_columns=len(new_columns),
             profiles=profiled_count,
         )

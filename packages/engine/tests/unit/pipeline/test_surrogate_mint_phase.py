@@ -692,7 +692,7 @@ def test_semantic_to_mint_to_enriched_join_holds_grain(session, lake) -> None:
         'LEFT JOIN lake.typed."coa" d ON f."account" = d."account_name"'
     ).fetchone()
     assert fanout is not None and fanout[0] == 10  # what the naive join would do
-    assert dim_cols == ["_sk__account__business_id__account_type"]
+    assert [c.name for c in dim_cols] == ["_sk__account__business_id__account_type"]
     # The enriched view serves the correct discriminator, grain-safe.
     typed = lake.execute(
         'SELECT DISTINCT "_sk__account__business_id__account_type" '

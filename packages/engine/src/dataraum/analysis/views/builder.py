@@ -22,11 +22,29 @@ class DimensionJoin:
     relationship_id: str = ""
 
 
+@dataclass(frozen=True)
+class EnrichedDimColumn:
+    """A dimension column exposed on an enriched view, with its typed source.
+
+    ``name`` is the physical view column (``{fk}__{col}``, numeric-suffix disambiguated
+    by :func:`build_enriched_view_sql`). The source is named *relationally* — by
+    ``(dim_table_name, source_column_name)`` — so the enriched_views phase resolves the
+    typed ``source_column_id`` (DAT-811) from the catalog WITHOUT ever reverse-parsing
+    ``name``. The builder is the single authority on both the SQL and these refs, so the
+    physical name here is byte-identical to the view's column.
+    """
+
+    name: str
+    dim_table_name: str
+    source_column_name: str
+
+
 def build_enriched_view_sql(
     view_fqn: str,
     fact_fqn: str,
     dimension_joins: list[DimensionJoin],
-) -> tuple[str, list[str]]:
+    fact_column_names: tuple[str, ...] = (),
+) -> tuple[str, list[EnrichedDimColumn]]:
     """Build the ``CREATE OR REPLACE VIEW`` SQL for an enriched view.
 
     Every table identity is a fully-qualified DuckDB name
@@ -47,9 +65,17 @@ def build_enriched_view_sql(
         fact_fqn: Fully-qualified fact-table source.
         dimension_joins: Joins to include; each ``dim_duckdb_path`` is the
             dimension's FQN.
+        fact_column_names: The fact's OWN column names (carried through by ``f.*``). A
+            generated ``{fk}__{col}`` name that would collide with one of these is
+            disambiguated too, so the view never emits two identically-named columns —
+            an ambiguous column reference in the view AND a ``uq_table_column`` violation
+            when DAT-811 registers every served column. Empty = skip fact-name dedup
+            (callers that only assert on SQL shape).
 
     Returns:
-        Tuple of ``(create_view_sql, dimension_column_names)``.
+        Tuple of ``(create_view_sql, dim_columns)`` where ``dim_columns`` is the list of
+        :class:`EnrichedDimColumn` refs (physical view name + its typed source), in view
+        order. Empty when the view is a bare ``SELECT *`` passthrough (no joins).
     """
     if not dimension_joins:
         # No joins — view is just the fact table.
@@ -58,7 +84,7 @@ def build_enriched_view_sql(
 
     # Build SELECT clause
     select_parts = ["f.*"]
-    dimension_column_names: list[str] = []
+    dim_columns: list[EnrichedDimColumn] = []
 
     # Track used aliases to avoid duplicates
     used_aliases: dict[str, int] = {}
@@ -77,10 +103,12 @@ def build_enriched_view_sql(
     join_aliases = [get_unique_alias(join.dim_table_name) for join in dimension_joins]
 
     # Output column names must be unique by construction — the ``{fact_fk}__{col}``
-    # prefix does NOT guarantee it (two joins can share a fact column), and a
-    # duplicate would violate the enriched-layer ``uq_table_column`` on registration.
-    # Disambiguate with a numeric suffix, mirroring ``get_unique_alias``.
-    used_column_names: dict[str, int] = {}
+    # prefix does NOT guarantee it (two joins can share a fact column, OR a fact's own
+    # column can already be named like a generated dim name), and a duplicate would make
+    # the view column ambiguous AND violate the enriched-layer ``uq_table_column`` on
+    # registration. Seed the used set with the fact's OWN columns (``f.*``) so a colliding
+    # dim name is suffixed against them too, then disambiguate dim-vs-dim as we go.
+    used_column_names: dict[str, int] = dict.fromkeys(fact_column_names, 1)
 
     def get_unique_column_name(base: str) -> str:
         if base not in used_column_names:
@@ -96,7 +124,13 @@ def build_enriched_view_sql(
         for col in join.include_columns:
             qualified_name = get_unique_column_name(f"{col_prefix}__{col}")
             select_parts.append(f'"{alias}"."{col}" AS "{qualified_name}"')
-            dimension_column_names.append(qualified_name)
+            dim_columns.append(
+                EnrichedDimColumn(
+                    name=qualified_name,
+                    dim_table_name=join.dim_table_name,
+                    source_column_name=col,
+                )
+            )
 
     select_clause = ",\n    ".join(select_parts)
 
@@ -117,7 +151,7 @@ def build_enriched_view_sql(
         f"{joins_sql}"
     )
 
-    return sql, dimension_column_names
+    return sql, dim_columns
 
 
 def _table_alias(table_name: str) -> str:

@@ -153,7 +153,13 @@ class Column(Base):
     """
 
     __tablename__ = "columns"
-    __table_args__ = (UniqueConstraint("table_id", "column_name", name="uq_table_column"),)
+    __table_args__ = (
+        UniqueConstraint("table_id", "column_name", name="uq_table_column"),
+        # DAT-811 — origin is a closed enum: NULL on base (typed/raw) columns, and 'fact'
+        # or 'dimension' on an enriched view's served columns. CHECK-enforced like
+        # Table.layer so an unknown value fails loud at write.
+        CheckConstraint("origin IS NULL OR origin IN ('fact', 'dimension')", name="origin"),
+    )
 
     column_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     table_id: Mapped[str] = mapped_column(
@@ -168,6 +174,28 @@ class Column(Base):
     resolved_type: Mapped[str | None] = mapped_column(
         String
     )  # Final decided type after type resolution
+
+    # DAT-811 — served-column identity for ENRICHED-view columns. An enriched view is
+    # ``SELECT f.* + joined dim columns``; every one of its columns is a real Column row
+    # so the catalog (``og_columns``) describes the view completely, WITHOUT walking back
+    # to origin tables. Both fields are NULL on base (typed/raw) columns, where the
+    # distinction is moot — they carry meaning only under an ``layer='enriched'`` table.
+    #   ``origin``           — how the column reached the view: ``'fact'`` (the fact's own
+    #                          column, carried through by ``f.*``) or ``'dimension'`` (added
+    #                          by a grain-preserving dim join). The discriminator the
+    #                          dims-only consumers filter on (``origin == 'dimension'``).
+    #   ``source_column_id`` — the TYPED source column this one projects. Read views resolve
+    #                          semantics (concept, role, anchor axis, granularity) THROUGH
+    #                          this link, so an enriched column inherits its source's meaning
+    #                          while keeping its OWN ``column_id`` (the property-graph vertex
+    #                          KEY must stay unique — a typed id must not appear twice). Set
+    #                          at the enriched_views phase from the join recipe — NEVER parsed
+    #                          from the ``{fk}__{col}`` name. SET NULL if the source is torn
+    #                          down; the enriched view is re-derived each run regardless.
+    origin: Mapped[str | None] = mapped_column(String)
+    source_column_id: Mapped[str | None] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="SET NULL")
+    )
 
     # Relationships
     table: Mapped[Table] = relationship(back_populates="columns")
@@ -227,4 +255,8 @@ class Column(Base):
 
 # Indexes for common queries
 Index("idx_columns_table", Column.table_id)
+# DAT-811 — the self-FK is ON DELETE SET NULL, so every typed-column delete (teardown,
+# reconcile, re-typing) must find the enriched columns referencing it; index the FK so
+# that is not a seq scan over `columns` per bulk delete.
+Index("idx_columns_source_column_id", Column.source_column_id)
 Index("idx_tables_source", Table.source_id)

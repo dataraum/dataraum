@@ -24,9 +24,11 @@ export const columns = metadataSchema
 		columnPosition: integer("column_position"),
 		rawType: varchar("raw_type"),
 		resolvedType: varchar("resolved_type"),
+		origin: varchar(),
+		sourceColumnId: varchar("source_column_id"),
 	})
 	.as(
-		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type FROM ws_00000000_0000_0000_0000_000000000001.columns`,
+		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type, origin, source_column_id FROM ws_00000000_0000_0000_0000_000000000001.columns`,
 	);
 
 export const conceptEdges = metadataSchema
@@ -165,9 +167,11 @@ export const currentColumns = metadataSchema
 		columnPosition: integer("column_position"),
 		rawType: varchar("raw_type"),
 		resolvedType: varchar("resolved_type"),
+		origin: varchar(),
+		sourceColumnId: varchar("source_column_id"),
 	})
 	.as(
-		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type FROM ws_00000000_0000_0000_0000_000000000001.columns c WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.tables t JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || t.table_id::text) AND h.stage::text = 'generation'::text WHERE t.table_id::text = c.table_id::text AND t.layer::text = 'typed'::text))`,
+		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type, origin, source_column_id FROM ws_00000000_0000_0000_0000_000000000001.columns c WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.tables t JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || t.table_id::text) AND h.stage::text = 'generation'::text WHERE t.table_id::text = c.table_id::text AND t.layer::text = 'typed'::text))`,
 	);
 
 export const currentDerivedColumns = metadataSchema
@@ -256,6 +260,22 @@ export const currentDriverRankings = metadataSchema
 	})
 	.as(
 		sql`SELECT ranking_id, run_id, measure_table_id, measure_column_id, measure_label, target_type, grain, entity, n_rows, ranked_dimensions, driver_paths, interesting_slices, secondary_dimensions, created_at FROM ws_00000000_0000_0000_0000_000000000001.driver_rankings r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
+export const currentEnrichedColumns = metadataSchema
+	.view("current_enriched_columns", {
+		columnId: varchar("column_id"),
+		tableId: varchar("table_id"),
+		columnName: varchar("column_name"),
+		originalName: varchar("original_name"),
+		columnPosition: integer("column_position"),
+		rawType: varchar("raw_type"),
+		resolvedType: varchar("resolved_type"),
+		origin: varchar(),
+		sourceColumnId: varchar("source_column_id"),
+	})
+	.as(
+		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type, origin, source_column_id FROM ws_00000000_0000_0000_0000_000000000001.columns c WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.enriched_views ev JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = ev.run_id::text WHERE ev.view_table_id::text = c.table_id::text))`,
 	);
 
 export const currentEnrichedViews = metadataSchema

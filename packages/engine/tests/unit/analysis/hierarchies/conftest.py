@@ -43,9 +43,7 @@ class StubIdentityJudge:
         self._fail = fail
         self.calls: list[list[dict]] = []
 
-    def alias_identity(
-        self, *, candidates: list[dict]
-    ) -> Result[list[AliasIdentityVerdict]]:
+    def alias_identity(self, *, candidates: list[dict]) -> Result[list[AliasIdentityVerdict]]:
         self.calls.append(candidates)
         if self._fail:
             return Result.fail("stub judge unavailable")
@@ -60,6 +58,7 @@ class StubIdentityJudge:
 def approving_judge() -> StubIdentityJudge:
     """Fresh stub that approves every relabeling bijection (default discovery judge)."""
     return StubIdentityJudge()
+
 
 VIEW = "sales_enriched"
 

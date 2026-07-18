@@ -19,6 +19,7 @@ from dataraum.analysis.slicing.models import (
     SliceRecommendation,
     SlicingAnalysisResult,
 )
+from dataraum.analysis.views.served_columns import enriched_dimension_columns
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -704,9 +705,9 @@ class SlicingPhase(BasePhase):
             # Stats come from StatisticalProfile — no ad-hoc DuckDB queries needed.
             table_ev = ev_by_fact.get(table.table_id)
             if table_ev and table_ev.view_table_id and table_ev.dimension_columns:
-                # Load Column records for dimension columns
-                dim_col_stmt = select(Column).where(Column.table_id == table_ev.view_table_id)
-                dim_cols = list(ctx.session.execute(dim_col_stmt).scalars().all())
+                # Only the JOINED dimension columns — the enriched view also registers the
+                # fact's own f.* passthrough columns (DAT-811), already on this fact.
+                dim_cols = enriched_dimension_columns(ctx.session, table_ev.view_table_id)
                 dim_col_ids = [c.column_id for c in dim_cols]
 
                 # Load their StatisticalProfiles

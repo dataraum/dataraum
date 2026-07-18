@@ -263,8 +263,8 @@ class TestDiscoverDimensionHierarchies:
         position."""
         tid = seed_sales(real_session, duck)
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         row = _rows(real_session, tid, "drilldown")[0]
         for member in row.members:
             assert set(member) == {"column_name", "column_id", "distinct_count", "level"}
@@ -278,8 +278,8 @@ class TestDiscoverDimensionHierarchies:
     ) -> None:
         tid = seed_sales(real_session, duck)
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         aliases = {tuple(_members(r)): r for r in _rows(real_session, tid, "alias")}
         assert ("zip", "zip_code") in aliases
         assert ("state", "state_name") in aliases
@@ -292,8 +292,8 @@ class TestDiscoverDimensionHierarchies:
     ) -> None:
         tid = seed_sales(real_session, duck)
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         all_members = {
             m
             for r in _rows(real_session, tid, "drilldown") + _rows(real_session, tid, "alias")
@@ -310,8 +310,8 @@ class TestDiscoverDimensionHierarchies:
         # Below MIN_SUPPORT_ROWS (100): the chain is found but flagged, not asserted.
         tid = seed_sales(real_session, duck, rows_per_zip=2)  # 12 rows
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         drills = _rows(real_session, tid, "drilldown")
         assert drills and all(r.needs_confirmation for r in drills)
 
@@ -367,8 +367,8 @@ class TestStackV4:
             real_session, duck, "skewed", {"det": det, "vacuous": vacuous, "flag": flag}
         )
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         chains = [_members(r) for r in _rows(real_session, tid, "drilldown")]
         # Stored coarse → fine: ``flag`` (2 distinct, coarsest) determines nothing
         # finer than ``det`` (50 distinct) — det → flag reversed for storage.
@@ -386,8 +386,8 @@ class TestStackV4:
         ]
         tid = seed_view(real_session, duck, "dirty_geo", {"city": city, "state": state})
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         drills = _rows(real_session, tid, "drilldown")
         # Coarse → fine: state (coarser) before city (finer).
         assert [_members(r) for r in drills] == [["state", "city"]]
@@ -418,8 +418,8 @@ class TestStackV4:
             {"soldto": soldto, "billto": billto, "channel": channel},
         )
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         roles = _rows(real_session, tid, "role")
         assert [_members(r) for r in roles] == [["billto", "soldto"]]
         assert roles[0].needs_confirmation is False
@@ -448,8 +448,8 @@ class TestStackV4:
         state = [None if i % 10 == 0 else f"s{(i % 40) // 5}" for i in range(n)]
         tid = seed_view(real_session, duck, "null_geo", {"city": city, "state": state})
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         drills = _rows(real_session, tid, "drilldown")
         assert [_members(r) for r in drills] == [["state", "city"]]  # coarse → fine
 
@@ -466,8 +466,8 @@ class TestStackV4:
         state = [f"s{(i % 20) // 5}" if (i // 20) % 5 == 0 else None for i in range(n)]
         tid = seed_view(real_session, duck, "sparse_geo", {"city": city, "state": state})
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         drills = _rows(real_session, tid, "drilldown")
         assert [_members(r) for r in drills] == [["state", "city"]]  # coarse → fine
         assert drills[0].needs_confirmation is True
@@ -488,8 +488,8 @@ class TestStackV4:
             real_session, duck, "customers", {"fn": fn, "active": list(fn), "city": city}
         )
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         aliases = [_members(r) for r in _rows(real_session, tid, "alias")]
         assert ["active", "fn"] in aliases
 
@@ -518,8 +518,8 @@ class TestStackV4:
         )
         real_session.flush()
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         all_members = {
             m
             for kind in ("drilldown", "alias", "role")
@@ -545,8 +545,8 @@ class TestStackV4:
             register={"state"},
         )
         discover_dimension_hierarchies(
-        real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
-    )
+            real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
+        )
         aliases = _rows(real_session, tid, "alias")
         assert [_members(r) for r in aliases] == [["mystery", "state"]]
         by_name = {m["column_name"]: m["column_id"] for m in aliases[0].members}

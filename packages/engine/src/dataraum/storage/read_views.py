@@ -368,6 +368,33 @@ def _current_entity_view_statements() -> list[tuple[str, str]]:
                 f");"
             ),
         ),
+        # DAT-811 — the served columns of the CURRENT enriched views. Enriched columns are
+        # latest-only substrate (no generations, unlike typed): the ``enriched`` Table is
+        # reconciled in place each run, so the current set is every column whose table is a
+        # current enriched view. Scoped by the SAME (catalog, 'catalog') head that
+        # ``current_enriched_views`` uses (``enriched_views`` is _CATALOG_GRAIN), so a
+        # column surfaces iff its view's ``og_tables`` vertex does — but read off the BASE
+        # ``enriched_views`` (NOT the ``current_enriched_views`` read view), because the
+        # read schema is re-materialized DROP-then-CREATE in list order: a view depending on
+        # another read view would fail to drop. ``current_columns`` hard-filters
+        # ``layer='typed'`` and excludes these; this is the parallel surface ``og_columns``
+        # unions in so the catalog describes an enriched view completely.
+        # ``source_column_id`` rides along as the typed identity semantics resolve through.
+        (
+            "current_enriched_columns",
+            (
+                f"CREATE VIEW {READ_TOKEN}.current_enriched_columns AS\n"
+                f"SELECT c.* FROM {WS_TOKEN}.columns c\n"
+                f"WHERE EXISTS (\n"
+                f"  SELECT 1 FROM {WS_TOKEN}.enriched_views ev\n"
+                f"  JOIN {WS_TOKEN}.metadata_snapshot_head h\n"
+                f"    ON h.target = 'catalog'\n"
+                f"   AND h.stage = 'catalog'\n"
+                f"   AND h.run_id = ev.run_id\n"
+                f"  WHERE ev.view_table_id = c.table_id\n"
+                f");"
+            ),
+        ),
     ]
 
 

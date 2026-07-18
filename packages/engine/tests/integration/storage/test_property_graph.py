@@ -86,6 +86,7 @@ _COLUMNS = [
     ("c_amt2", "t1", "amount_declared", 3),
     ("c_k1", "t1", "account_id", 2),
     ("c_k2", "t2", "account_id", 1),
+    ("c_at", "t2", "account_type", 2),  # accounts dim attribute — a DAT-811 dim-column source
     ("c_k3", "t3", "group_id", 1),
     ("c_k3b", "t3", "account_id", 2),  # t3's own account_id — a cross-LEVEL accounts slice
     ("c_k4", "t4", "statement_id", 1),
@@ -138,6 +139,22 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             f"INSERT INTO columns (column_id, table_id, column_name, column_position) "
             f"VALUES ('{cid}', '{tid}', '{name}', {pos})"
+        )
+    # DAT-811: served columns of the enriched view t_enr (enriched_journal, v_1). Each is a
+    # real column vertex under the enriched table with its OWN column_id, carrying ``origin``
+    # and the typed ``source_column_id`` og_columns resolves semantics through:
+    #   ec_amt — f.* passthrough of the fact measure c_amt (origin='fact'): inherits
+    #            semantic_role='measure' + materialization='flow' from its source.
+    #   ec_at  — joined dim column account_id__account_type (origin='dimension') sourced
+    #            from the accounts attribute c_at (unannotated → NULL semantics).
+    for cid, name, pos, origin, src in [
+        ("ec_amt", "amount", 0, "fact", "c_amt"),
+        ("ec_at", "account_id__account_type", 1, "dimension", "c_at"),
+    ]:
+        stmts.append(
+            "INSERT INTO columns "
+            "(column_id, table_id, column_name, column_position, origin, source_column_id) "
+            f"VALUES ('{cid}', 't_enr', '{name}', {pos}, '{origin}', '{src}')"
         )
     # has_role: amount / amount_declared are measures, account_id a key.
     for cid, role in [("c_amt", "measure"), ("c_amt2", "measure"), ("c_k1", "key")]:
@@ -360,7 +377,9 @@ def test_measure_anchor_time_axis_prefers_the_witness(graph_engine: Engine) -> N
     COALESCE order (mirrors materialization's witness-over-claim precedence)."""
     sql = (
         f"SELECT anchor FROM GRAPH_TABLE ({_graph_ref()} "
-        "MATCH (c IS column_node WHERE c.column_name = 'amount') "
+        # Scope to the typed fact vertex: DAT-811 adds an enriched 'amount' vertex on
+        # t_enr (same name, own id) that inherits the same witness axis via its source.
+        "MATCH (c IS column_node WHERE c.column_name = 'amount' AND c.table_id = 't1') "
         "COLUMNS (c.anchor_time_axis AS anchor))"
     )
     with graph_engine.connect() as conn:
@@ -387,6 +406,32 @@ def test_measure_anchor_time_axis_falls_back_to_declared_anchor(graph_engine: En
     with graph_engine.connect() as conn:
         rows = conn.execute(text(sql)).all()
     assert rows == [("txn_date",)]
+
+
+def test_enriched_view_columns_carry_source_resolved_semantics(graph_engine: Engine) -> None:
+    """DAT-811 AC: an enriched view's served columns are column vertices UNDER the enriched
+    table, each keeping its OWN column_id (the KEY stays unique — a typed id never appears
+    twice) but resolving EVERY semantic THROUGH its typed ``source_column_id``. A MATCH over
+    the enriched table_id returns its full served set with semantics attached — the view is
+    self-describing, no walk back to origin tables (the ``og_derived_from`` lesson: a
+    structurally-dead surface is invisible without a MATCH-returns-rows test).
+    """
+    sql = (
+        f"SELECT column_id, column_name, role, mat FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS column_node WHERE c.table_id = 't_enr') "
+        "COLUMNS (c.column_id AS column_id, c.column_name AS column_name, "
+        "c.semantic_role AS role, c.materialization AS mat))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.column_id, r.column_name, r.role, r.mat) for r in conn.execute(text(sql))}
+    assert rows == {
+        # f.* passthrough measure: its OWN id (ec_amt, NOT the typed c_amt), semantics
+        # resolved through source c_amt → measure + flow. This is what a MATCH-driven
+        # GraphAgent (P9) and the cadence resolver (DAT-812) will read off the view.
+        ("ec_amt", "amount", "measure", "flow"),
+        # joined dim column: surfaces with its own id; source c_at is unannotated → NULL.
+        ("ec_at", "account_id__account_type", None, None),
+    }
 
 
 def test_references_edges_match_the_fk_topology(graph_engine: Engine) -> None:

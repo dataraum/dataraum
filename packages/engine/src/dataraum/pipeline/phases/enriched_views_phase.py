@@ -672,21 +672,16 @@ class EnrichedViewsPhase(BasePhase):
             source_by_name: Dim-column name → its TYPED source ``column_id`` (DAT-811),
                 resolved forward from the join recipe — never parsed from the name.
 
+        A passthrough view (no dim joins) is transparently a full catalog citizen too: it
+        is ``SELECT *`` over the fact, so every served column is an ``origin='fact'``
+        passthrough (no dim columns) — ``og_tables`` still emits its vertex and
+        ``og_columns`` still returns its columns, so a consumer never has to special-case
+        "no enriched view → walk back to the typed table".
+
         Returns:
-            The enriched-layer Table record, or None if the view has no dimension joins.
-
-        Scope boundary (DAT-811): a passthrough view (no dim joins) is ``SELECT *`` over the
-        fact — it adds no column the typed fact doesn't already carry, and the typed fact is
-        fully in ``og_columns``. So it deliberately gets NO enriched vertex/columns; a no-dim
-        fact's served relation IS the typed fact — both ``agent.py::_build_schema_info`` (via
-        a DuckDB DESCRIBE, catalog-independent today) and ``additivity_resolver.fact_table_id``
-        resolve it that way. Graph-native (P9 / DAT-734) grounding of no-dim facts must
-        resolve them to the typed vertex, or DAT-734 decides to register passthrough columns.
+            The enriched-layer Table record (None only if the view has no columns at all,
+            which a real fact never hits).
         """
-        if not dim_columns:
-            logger.info("passthrough_view_no_catalog_rows", view_name=view_name)
-            return None
-
         view_table = ctx.session.execute(
             select(Table).where(
                 Table.source_id == fact_table.source_id,

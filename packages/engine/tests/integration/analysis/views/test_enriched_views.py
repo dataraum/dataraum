@@ -762,6 +762,28 @@ class TestEnrichedViewsPhaseDuckLake:
         # Run 1: no relationship yet → passthrough view, zero dimension columns.
         run("run-1", with_rel=False)
         assert dim_cols() == []
+        # DAT-811: a passthrough view is STILL a full catalog citizen — it registers its
+        # f.* columns (origin='fact', linked to their typed source) and sets view_table_id,
+        # so og_tables/og_columns describe it too. No consumer special-cases "no enriched
+        # view → walk back to the typed table".
+        v1 = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        assert v1.view_table_id is not None, "passthrough view is materialized in the catalog"
+        pv_cols = list(
+            session.execute(
+                select(Column).where(Column.table_id == v1.view_table_id)
+            ).scalars()
+        )
+        assert {c.column_name for c in pv_cols} == {"order_id", "customer_id", "amount"}
+        assert all(c.origin == "fact" for c in pv_cols)
+        for c in pv_cols:
+            src = session.execute(
+                select(Column.column_id).where(
+                    Column.table_id == fact_id, Column.column_name == c.column_name
+                )
+            ).scalar_one()
+            assert c.source_column_id == src
 
         # Run 2: a newly-confirmed relationship is judged in → its columns are ADDED.
         run("run-2", with_rel=True)

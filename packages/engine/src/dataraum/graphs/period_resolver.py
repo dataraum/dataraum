@@ -483,12 +483,19 @@ def _read_measure_axes(
         f"         ON mal.measure_column_id = measure.measure_source_id"
         f'  LEFT JOIN "{read_schema}".current_enriched_columns named'
         f"         ON named.table_id = :view_id AND named.column_name = measure.anchor_time_axis"
-        f") SELECT DISTINCT anchored.materialization, served_axis.column_name AS axis,"
+        # served_axis is a scalar subquery, NOT a join: a role-playing dimension
+        # (DAT-756) can serve ONE source column under two ``{fk}__{col}`` names (no
+        # UNIQUE(table_id, source_column_id)), and a join would fan the anchor into two
+        # rows — a false "flows disagree" in _reconcile. Pick one deterministically
+        # (ORDER BY name); either name scans the same source data, so the window is
+        # identical. NULL when the anchor source is not served on THIS relation (a
+        # lineage-inherited axis the view never joins → no observable live window).
+        f") SELECT DISTINCT anchored.materialization,"
+        f'       (SELECT sa.column_name FROM "{read_schema}".current_enriched_columns sa'
+        f"         WHERE sa.table_id = :view_id AND sa.source_column_id = anchored.anchor_source_id"
+        f"         ORDER BY sa.column_name LIMIT 1) AS axis,"
         f"       tp.detected_granularity AS grain"
         f" FROM anchored"
-        f'  LEFT JOIN "{read_schema}".current_enriched_columns served_axis'
-        f"         ON served_axis.table_id = :view_id"
-        f"        AND served_axis.source_column_id = anchored.anchor_source_id"
         f'  LEFT JOIN "{read_schema}".current_temporal_column_profiles tp'
         f"         ON tp.column_id = anchored.anchor_source_id"
         f" ORDER BY anchored.materialization, axis, grain"  # deterministic evidence

@@ -2,9 +2,10 @@
 
 Bridges the pure classifier (:mod:`dataraum.graphs.additivity`) to the workspace
 catalog. For each of a metric's EXTRACT leaves it reads the grounded snippet's
-``select_expr`` (the aggregate seam), resolves the base columns to their fact
-``temporal_behavior`` and the fact's periodic-snapshot grain, classifies, and
-rolls the per-extract atoms up through the DAG.
+``select_expr`` (the aggregate seam), resolves each aggregated SERVED column to its
+typed source's ``temporal_behavior`` (DAT-812 — via ``source_column_id``, so a
+DIM/header-column measure resolves too) and the fact's periodic-snapshot grain,
+classifies, and rolls the per-extract atoms up through the DAG.
 
 Returns ``None`` when the metric cannot be classified — an extract that never
 grounded (no healthy snippet / no parts) or reads a relation outside the current
@@ -19,6 +20,7 @@ Temporal redelivery can never pick an arbitrary run's behaviour.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -34,7 +36,7 @@ from dataraum.graphs.additivity import (
 )
 from dataraum.graphs.models import StepType
 from dataraum.query.snippet_library import SnippetLibrary
-from dataraum.storage import Column, Table
+from dataraum.storage import Column
 
 if TYPE_CHECKING:
     import duckdb
@@ -94,13 +96,15 @@ def classify_metric_extracts(
         if resolved is None:
             return None
         select_expr, relation, _where = resolved
-        fact_id = fact_table_id(session, relation)
-        if fact_id is None:
+        served = served_relation(session, relation)
+        if served is None:
             return None
         calls = parse_aggregate_calls(select_expr, duckdb_conn)
         columns = {col for call in calls for col in call.columns}
-        temporal = _temporal_by_column(session, fact_id, columns, catalogue_run_id)
-        snapshot = _fact_is_snapshot(session, fact_id, catalogue_run_id)
+        temporal = _temporal_by_served_column(
+            session, served.columns_table_id, columns, catalogue_run_id
+        )
+        snapshot = _fact_is_snapshot(session, served.fact_table_id, catalogue_run_id)
         is_ratio = select_expr_is_ratio(select_expr, duckdb_conn)
         extract_classes[step_id] = classify_extract(calls, temporal, snapshot, is_ratio=is_ratio)
     if not extract_classes:
@@ -147,50 +151,65 @@ def grounded_select(
     return expr, relation, where
 
 
-def fact_table_id(session: Session, relation: str) -> str | None:
-    """The fact table an extract reads.
+@dataclass(frozen=True)
+class ServedRelation:
+    """A grounded relation resolved to its enriched view + base fact (DAT-812).
 
-    Shared grounding-resolution primitive (also used by the period resolver,
-    DAT-785): maps a grounded relation NAME (enriched view or typed table) to the
-    base fact ``table_id`` whose columns carry the analysis facts.
+    ``columns_table_id`` is the enriched view's OWN table — where the self-describing
+    served columns live (DAT-811: the fact's ``f.*`` passthrough columns AND the joined
+    dimension/header columns, each carrying a typed ``source_column_id``). Read the
+    aggregated measures off THIS table so a dim/header-column measure is visible.
+    ``fact_table_id`` is the base fact the view derives from — needed only for
+    fact-grain reads (the periodic-snapshot role), a property of the fact itself.
+    """
 
-    Usually an enriched view (`EnrichedView.view_name` — latest-only, and unique
-    by construction via the `enriched_{duckdb_path}` naming convention, not a DB
-    constraint). A fact with no confirmed dimensions has no enriched view, so the
-    extract reads the typed table directly (the schema fallback in
-    `GraphAgent._build_schema_info`) — resolve that by table name / duckdb_path,
-    scoped to `layer == "typed"`: a fact's raw and typed rows carry the SAME
-    `table_name` AND `duckdb_path` (DAT-639 dropped layer-prefixing), so without
-    the layer filter `.first()` would pick between them arbitrarily; metrics run
-    on the typed layer (as `BasePhase.table_ids_for_ctx` scopes).
+    columns_table_id: str
+    fact_table_id: str
+
+
+def served_relation(session: Session, relation: str) -> ServedRelation | None:
+    """Resolve a grounded relation NAME to its enriched view + base fact (DAT-812).
+
+    Shared grounding-resolution primitive (also used by the period resolver): a
+    grounded EXTRACT reads an ENRICHED VIEW — post-DAT-811 EVERY fact has one (a
+    dim-less fact gets a passthrough ``SELECT *`` view, and ``GraphAgent`` grounds on
+    view names whenever any view exists), so the relation maps to its ``EnrichedView``
+    row. Returns the view table (whose served columns describe the relation) and the
+    base fact, or ``None`` when no current enriched view is named ``relation`` (or it
+    never materialized) — the caller then classifies nothing rather than guess.
     """
     row = session.execute(
-        select(EnrichedView.fact_table_id).where(EnrichedView.view_name == relation)
-    ).first()
-    if row:
-        return str(row[0])
-    row = session.execute(
-        select(Table.table_id).where(
-            Table.layer == "typed",
-            (Table.table_name == relation) | (Table.duckdb_path == relation),
+        select(EnrichedView.view_table_id, EnrichedView.fact_table_id).where(
+            EnrichedView.view_name == relation, EnrichedView.view_table_id.isnot(None)
         )
     ).first()
-    return str(row[0]) if row else None
+    if row is None:
+        return None
+    return ServedRelation(columns_table_id=str(row[0]), fact_table_id=str(row[1]))
 
 
-def _temporal_by_column(
-    session: Session, fact_table_id: str, column_names: set[str], run_id: str
+def _temporal_by_served_column(
+    session: Session, view_table_id: str, column_names: set[str], run_id: str
 ) -> dict[str, str | None]:
-    """``temporal_behavior`` per fact base column, pinned to the catalogue run."""
+    """``temporal_behavior`` per served view column, via its typed source (DAT-812).
+
+    An enriched view's served columns (DAT-811) each carry a ``source_column_id`` to
+    the typed column they project — the fact's own ``f.*`` columns AND the joined
+    dimension/header columns. ``temporal_behavior`` (``column_concepts``) lives on that
+    SOURCE column, pinned to the catalogue run, so a DIM/header-column measure resolves
+    correctly instead of silently missing (it is not on the fact, so the retired
+    by-name-on-the-fact lookup dropped it). Keyed by the served column NAME as it
+    appears in the view relation — exactly what the ``select_expr`` references.
+    """
     if not column_names:
         return {}
     rows = session.execute(
         select(Column.column_name, ColumnConcept.temporal_behavior)
         .join(
             ColumnConcept,
-            (ColumnConcept.column_id == Column.column_id) & (ColumnConcept.run_id == run_id),
+            (ColumnConcept.column_id == Column.source_column_id) & (ColumnConcept.run_id == run_id),
         )
-        .where(Column.table_id == fact_table_id, Column.column_name.in_(column_names))
+        .where(Column.table_id == view_table_id, Column.column_name.in_(column_names))
     ).all()
     return {row[0]: row[1] for row in rows}
 

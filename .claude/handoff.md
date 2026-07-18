@@ -5,6 +5,56 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-811 — the enriched view is self-describing: og_columns now returns its FULL column set, semantics resolved via a typed source link (catalog surface, no metric-value change)
+
+**Branch:** `feat/dat-811-served-column-set`. An enriched view is `SELECT f.* + joined
+dim columns`. Before this, only the dim columns got catalog `Column` rows, and even
+those were filtered out of the read surface (`current_columns` is `layer='typed'`), so
+`og_columns` over an enriched `table_id` returned **0 rows** — the view had a table
+vertex (DAT-774) but no columns the catalog could see. This is the substrate DAT-812
+(header-dated `days_in_period` cadence) needs.
+
+**What changed:**
+- **Two new `columns` fields** (additive; `schema.sql` + cockpit drizzle mirror
+  regenerated): `origin` — a CHECK-enforced enum `'fact' | 'dimension'`, NULL on base
+  (typed/raw) columns; `source_column_id` — a self-FK (`ON DELETE SET NULL`) to the
+  TYPED source column an enriched column projects.
+- **The enriched_views phase now registers EVERY served column** (the fact's own `f.*`
+  passthrough columns AND the joined dim columns) under the enriched table, built from
+  the view's `DESCRIBE`. Each carries `origin` + `source_column_id`, resolved FORWARD
+  from the join recipe (never `{fk}__{col}` name-parsing). f.* columns get `origin='fact'`
+  and are NOT re-profiled (their stats equal the source's on the grain-preserving view);
+  dim columns keep `origin='dimension'` and their fact-grain profile (unchanged).
+- **New read view `current_enriched_columns`** + an `og_columns` UNION branch: enriched
+  columns surface with their OWN `column_id` (the property-graph vertex KEY stays unique)
+  but resolve `semantic_role` / `materialization` / `anchor_time_axis` THROUGH
+  `source_column_id`. A MATCH over an enriched `table_id` now returns its full served set
+  with semantics attached.
+
+**What this means for eval:**
+- **No metric VALUE change.** `period_resolver` — the one production `og_columns`
+  reader — scopes `m.table_id`/`ax.table_id` to the TYPED fact id, so the new enriched
+  rows are invisible to it. The header-dated cadence fix that DOES move values is DAT-812
+  (blocked on this), not here.
+- **The dims-only detectors are behaviorally unchanged but their query changed.**
+  `dimension_coverage` (entropy detector), the slicing time-axis append, and the enriched
+  derived-columns pass now filter `origin='dimension'`, so they see exactly the added
+  dimensions and never the fact's own f.* columns. Re-verify `dimension_coverage` recall
+  did not regress (it should be identical — the fact columns were never registered before,
+  so the filtered set equals the old set).
+- **`og_columns` over an enriched table now returns rows** (was 0). Any eval/probe that
+  MATCHed an enriched table's columns and got nothing will now get the full set; anything
+  asserting a measure's semantics off the enriched view reads them resolved-via-source.
+- No backfill; recreate test DBs (the two new columns + CHECK).
+
+**NOT in this change (follow-up):** `additivity_resolver`'s `view_name → fact_table_id`
+name lookup is NOT retired here. Retiring the bounce means rewriting measure
+classification (`_temporal_by_column`) to read off the self-describing view via
+`source_column_id` — measure-classification work shared with `period_resolver`, folded
+into the DAT-812 "consume the substrate" line rather than ballooning this ticket.
+
+---
+
 ## DAT-810 — temporal completeness: both sides are grain buckets, the clamp is gone, and the fields can now be NULL (profile VALUES + nullability change)
 
 **Branch:** `fix/dat-810-grain-bucket-periods`. `analyze_basic_temporal` divided two

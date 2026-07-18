@@ -50,7 +50,13 @@ class TestBuildEnrichedViewSql:
         assert 'AS "customer_id__country"' in sql
         assert 'LEFT JOIN lake.typed."csv__customers"' in sql
         assert 'ON f."customer_id"' in sql
-        assert dim_cols == ["customer_id__name", "customer_id__country"]
+        assert [c.name for c in dim_cols] == ["customer_id__name", "customer_id__country"]
+        # Each ref names its typed source relationally (dim table + source column) —
+        # what the phase resolves to source_column_id, never parsed from the name.
+        assert [(c.dim_table_name, c.source_column_name) for c in dim_cols] == [
+            ("customers", "name"),
+            ("customers", "country"),
+        ]
 
     def test_multiple_dimension_joins(self):
         """View with multiple dimension joins."""
@@ -79,10 +85,11 @@ class TestBuildEnrichedViewSql:
             dimension_joins=joins,
         )
 
+        names = [c.name for c in dim_cols]
         assert sql.count("LEFT JOIN") == 2
-        assert "customer_id__name" in dim_cols
-        assert "product_id__product_name" in dim_cols
-        assert "product_id__category" in dim_cols
+        assert "customer_id__name" in names
+        assert "product_id__product_name" in names
+        assert "product_id__category" in names
         assert len(dim_cols) == 3
 
     def test_colliding_column_names_are_made_unique(self):
@@ -109,8 +116,16 @@ class TestBuildEnrichedViewSql:
             fact_fqn='lake.typed."csv__txn"',
             dimension_joins=joins,
         )
-        assert len(dim_cols) == len(set(dim_cols))  # no duplicates
-        assert dim_cols == ["org__city", "org__city_2"]
+        names = [c.name for c in dim_cols]
+        assert len(names) == len(set(names))  # no duplicates
+        assert names == ["org__city", "org__city_2"]
+        # The collision the physical name cannot resolve (both are ``org__city``): the
+        # forward refs map each disambiguated name to its DISTINCT source table, so the
+        # phase links them correctly without reverse-parsing (the DAT-811/812 defect).
+        assert [(c.name, c.dim_table_name, c.source_column_name) for c in dim_cols] == [
+            ("org__city", "customers", "city"),
+            ("org__city_2", "vendors", "city"),
+        ]
 
     def test_same_dim_table_joined_twice_produces_unique_column_names(self):
         """Same dimension table joined via two different FK columns gets distinct column names."""
@@ -140,11 +155,12 @@ class TestBuildEnrichedViewSql:
         )
 
         # All four columns must be distinct — no duplicates
-        assert len(dim_cols) == len(set(dim_cols)), f"Duplicate column names: {dim_cols}"
-        assert "kontonummer_des_gegenkontos__beschriftung" in dim_cols
-        assert "kontonummer_des_gegenkontos__zusfkt" in dim_cols
-        assert "kontonummer_des_kontos__beschriftung" in dim_cols
-        assert "kontonummer_des_kontos__zusfkt" in dim_cols
+        names = [c.name for c in dim_cols]
+        assert len(names) == len(set(names)), f"Duplicate column names: {names}"
+        assert "kontonummer_des_gegenkontos__beschriftung" in names
+        assert "kontonummer_des_gegenkontos__zusfkt" in names
+        assert "kontonummer_des_kontos__beschriftung" in names
+        assert "kontonummer_des_kontos__zusfkt" in names
         # SQL aliases for the two joins must also be distinct
         assert sql.count("LEFT JOIN") == 2
 

@@ -63,7 +63,7 @@ class TestEnrichedViewsIntegration:
         ]
 
         view = '"enriched_orders"'
-        sql, dim_cols = build_enriched_view_sql(view, "typed_orders", joins)
+        sql, _ = build_enriched_view_sql(view, "typed_orders", joins)
 
         duckdb_conn.execute(sql)
 
@@ -453,6 +453,35 @@ class TestEnrichedViewsPhaseDuckLake:
         assert len(enriched_tables) == 1
 
         assert calls["n"] == 1, "run 1 judged the one undecided relationship"
+
+        # DAT-811: every registered enriched column is a dimension column carrying its
+        # TYPED source column_id — resolved forward from the join recipe, NEVER parsed
+        # from the {fk}__{col} name. This is the identity read views resolve semantics
+        # (concept, role, anchor axis, granularity) through.
+        from dataraum.storage import Column as _Column
+
+        src_id_of = {
+            name: session.execute(
+                select(_Column.column_id).where(
+                    _Column.table_id == dim_id, _Column.column_name == name
+                )
+            ).scalar_one()
+            for name in ("name", "country")
+        }
+        enriched_cols = (
+            session.execute(select(_Column).where(_Column.table_id == views[0].view_table_id))
+            .scalars()
+            .all()
+        )
+        assert {c.column_name for c in enriched_cols} == {
+            "customer_id__name",
+            "customer_id__country",
+        }
+        assert all(c.origin == "dimension" for c in enriched_cols)
+        assert {c.column_name: c.source_column_id for c in enriched_cols} == {
+            "customer_id__name": src_id_of["name"],
+            "customer_id__country": src_id_of["country"],
+        }
 
         # --- Run 1 retry: same run_id is idempotent (no duplicate rows) ----
         run("run-1")

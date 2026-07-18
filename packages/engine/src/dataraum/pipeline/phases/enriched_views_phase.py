@@ -42,7 +42,11 @@ from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
 from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.analysis.typing.recipe import store_recipe
-from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
+from dataraum.analysis.views.builder import (
+    DimensionJoin,
+    EnrichedDimColumn,
+    build_enriched_view_sql,
+)
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
 from dataraum.analysis.views.enrichment_models import EnrichmentAnalysisResult
@@ -398,7 +402,21 @@ class EnrichedViewsPhase(BasePhase):
                 )
 
             # Build view SQL from the grain-preserving survivors.
-            view_sql, dim_columns = build_enriched_view_sql(view_fqn, fact_fqn, fqn_joins)
+            view_sql, dim_col_refs = build_enriched_view_sql(view_fqn, fact_fqn, fqn_joins)
+            dim_columns = [c.name for c in dim_col_refs]
+
+            # DAT-811: resolve each dim column's TYPED source column_id relationally —
+            # (dim table, source column name) → column_id, forward from the recipe. The
+            # builder is the sole authority on the physical ``{fk}__{col}`` name, so this
+            # never reverse-parses it (which would collide when two joins share a prefix).
+            source_by_name: dict[str, str | None] = {}
+            for ref in dim_col_refs:
+                dim_table = tables_by_name.get(ref.dim_table_name)
+                source_by_name[ref.name] = (
+                    col_id_by_name.get((dim_table.table_id, ref.source_column_name))
+                    if dim_table
+                    else None
+                )
 
             # Create view in DuckDB
             try:
@@ -453,6 +471,7 @@ class EnrichedViewsPhase(BasePhase):
                 view_name,
                 view_fqn,
                 dim_columns,
+                source_by_name,
             )
 
             # Version the view DDL on the DAT-414 recipe substrate (emit → store →
@@ -610,6 +629,7 @@ class EnrichedViewsPhase(BasePhase):
         view_name: str,
         view_fqn: str,
         dim_columns: list[str],
+        source_by_name: dict[str, str | None],
     ) -> Table | None:
         """Register enriched-layer Table + Column records for dimension columns and profile them.
 
@@ -629,6 +649,11 @@ class EnrichedViewsPhase(BasePhase):
             view_name: Bare name of the enriched DuckDB view (stored as duckdb_path).
             view_fqn: Fully-qualified view name, used to query the view (DESCRIBE / profile).
             dim_columns: List of dimension column names in the view.
+            source_by_name: Physical dim-column name → its TYPED source ``column_id``
+                (DAT-811), resolved forward from the join recipe. ``None`` for a column
+                whose source could not be resolved (defensive; should not occur for a
+                surviving join). Persisted as ``Column.source_column_id`` so read views
+                resolve the column's semantics through its typed source.
 
         Returns:
             The enriched-layer Table record, or None if no dimension columns.
@@ -687,11 +712,16 @@ class EnrichedViewsPhase(BasePhase):
         type_by_name = {row[0]: row[1] for row in duckdb_cols}
 
         # Keep + reposition existing columns; mint only genuinely-new ones (DAT-516).
+        # Every registered column is a joined dimension column (``origin='dimension'``,
+        # DAT-811) carrying its typed ``source_column_id``; both are refreshed on a kept
+        # column too, since a re-run may resolve a source the prior run left unlinked.
         new_columns: list[Column] = []
         for pos, col_name in enumerate(dim_columns):
             kept = existing.get(col_name)
             if kept is not None:
                 kept.column_position = pos  # keep column_id + its profile; refresh order only
+                kept.origin = "dimension"
+                kept.source_column_id = source_by_name.get(col_name)
                 continue
             col_type = type_by_name.get(col_name, "VARCHAR")
             col = Column(
@@ -701,6 +731,8 @@ class EnrichedViewsPhase(BasePhase):
                 column_position=pos,
                 raw_type=col_type,
                 resolved_type=col_type,
+                origin="dimension",
+                source_column_id=source_by_name.get(col_name),
             )
             ctx.session.add(col)
             new_columns.append(col)

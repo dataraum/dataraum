@@ -30,6 +30,13 @@ vertex (DAT-774) but no columns the catalog could see. This is the substrate DAT
   but resolve `semantic_role` / `materialization` / `anchor_time_axis` THROUGH
   `source_column_id`. A MATCH over an enriched `table_id` now returns its full served set
   with semantics attached.
+- **Passthrough (no-dim) views are full catalog citizens too.** A fact with no confirmed
+  dim joins gets a passthrough enriched view (`SELECT * FROM fact`); it now registers its
+  `f.*` columns (`origin='fact'`) and sets `view_table_id`, so **`og_tables` emits an
+  enriched vertex for EVERY fact** (was: only dim-enriched facts) and `og_columns` returns
+  its columns. An eval that counts enriched tables/views, or asserts "a no-dim fact has no
+  enriched view", must update. `EnrichedView.dimension_columns` stays `[]` for a
+  passthrough, so the dims-only surfaces are unchanged.
 
 **What this means for eval:**
 - **No metric VALUE change.** `period_resolver` — the one production `og_columns`

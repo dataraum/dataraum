@@ -21,6 +21,7 @@ from dataraum.analysis.correlation.db_models import (
 )
 from dataraum.analysis.correlation.models import DerivedColumn
 from dataraum.analysis.statistics.db_models import StatisticalProfile
+from dataraum.analysis.views.served_columns import enriched_dimension_columns
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
@@ -348,18 +349,14 @@ def detect_enriched_derived_columns(
         if not fact_columns:
             return Result.ok([])
 
-        # 2. Get the JOINED dimension columns from Column records (registered during the
-        # enriched_views phase). The enriched view now also registers the fact's own f.*
-        # passthrough columns (DAT-811) — already counted in ``fact_columns`` below — so
-        # ``origin='dimension'`` selects only the added ones and avoids double-counting.
+        # 2. Get the JOINED dimension columns (registered during the enriched_views phase).
+        # The enriched view also registers the fact's own f.* passthrough columns (DAT-811),
+        # already counted in ``fact_columns`` below — the helper filters them out so they
+        # are not double-counted.
         dim_columns: list[Column] = []
 
         if enriched_view.view_table_id:
-            dim_stmt = select(Column).where(
-                Column.table_id == enriched_view.view_table_id,
-                Column.origin == "dimension",
-            )
-            dim_columns = list(session.execute(dim_stmt).scalars().all())
+            dim_columns = enriched_dimension_columns(session, enriched_view.view_table_id)
 
         # 3. Load statistical profiles for fact + dimension columns (degenerate filtering)
         all_col_ids = [c.column_id for c in fact_columns] + [c.column_id for c in dim_columns]

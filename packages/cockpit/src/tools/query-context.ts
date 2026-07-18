@@ -18,11 +18,12 @@
 // ingestion-internal.
 //
 // An enriched view's columns come from a LIVE `DESCRIBE` on the READ_ONLY lake
-// reader (mirroring the engine's `_describe_table`), NOT the column metadata: the
-// view is `SELECT f.*, <dim cols>` but the engine registers Column metadata for
-// the dim columns ONLY, so a metadata read would hide the fact's measures. DESCRIBE
-// returns the full set (names + types, no `[meaning:]` tags — the engine drops them
-// too); a lake-read failure falls back to the typed tables. The pure `formatSchema`
+// reader (mirroring the engine's `_describe_table`). Post-DAT-811 the engine registers
+// Column metadata for the FULL served set (fact `f.*` + dim columns, each linked to its
+// typed source), so a metadata read is now possible — reading it (and attaching
+// `[meaning:]` tags via `source_column_id`) is a deferred simplification (DAT-812,
+// "consume the substrate"). For now DESCRIBE returns names + types (no `[meaning:]`
+// tags); a lake-read failure falls back to the typed tables. The pure `formatSchema`
 // + `preferEnriched` are unit-tested; the Drizzle reads + the DESCRIBE are
 // smoke/integration-covered.
 

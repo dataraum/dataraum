@@ -786,6 +786,29 @@ class TestEnrichedViewsPhaseDuckLake:
         # Run 2: a newly-confirmed relationship is judged in → its columns are ADDED.
         run("run-2", with_rel=True)
         assert dim_cols() == ["customer_id__country", "customer_id__name"], "grow on new confirm"
+        # Capture the dim columns' ids + confirm they were profiled, so the reject below
+        # can prove the underlying rows (not just the dimension_columns JSON) are deleted.
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        v2 = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        dim2_ids = [
+            c.column_id
+            for c in session.execute(
+                select(Column).where(
+                    Column.table_id == v2.view_table_id, Column.origin == "dimension"
+                )
+            ).scalars()
+        ]
+        assert len(dim2_ids) == 2
+        assert (
+            session.execute(
+                select(StatisticalProfile).where(StatisticalProfile.column_id.in_(dim2_ids))
+            )
+            .scalars()
+            .all()
+        ), "dim columns were profiled"
 
         # Run 3: the user rejects the relationship → its columns DROP (shrink), even though
         # the relationship is still structurally confirmed and already in `considered`.
@@ -807,6 +830,31 @@ class TestEnrichedViewsPhaseDuckLake:
         session.flush()
         run("run-3", with_rel=True)
         assert dim_cols() == [], "shrink on explicit reject"
+        # The shrink DELETES the stale dim Column + StatisticalProfile rows (not just the
+        # dimension_columns JSON summary) — the view is now a passthrough carrying only the
+        # fact's own f.* columns. (Senior review: this cleanup path was unreachable before
+        # DAT-811 made passthrough registration run, so it was newly load-bearing.)
+        assert (
+            session.execute(select(Column).where(Column.column_id.in_(dim2_ids))).scalars().all()
+            == []
+        ), "dim Column rows deleted on shrink"
+        assert (
+            session.execute(
+                select(StatisticalProfile).where(StatisticalProfile.column_id.in_(dim2_ids))
+            )
+            .scalars()
+            .all()
+            == []
+        ), "dim StatisticalProfiles deleted on shrink"
+        v3 = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        assert {
+            c.origin
+            for c in session.execute(
+                select(Column).where(Column.table_id == v3.view_table_id)
+            ).scalars()
+        } == {"fact"}, "view is now a passthrough citizen (fact columns only)"
 
     def test_dropped_then_reconfirmed_relationship_is_rejudged(
         self, session, duckdb_conn, monkeypatch

@@ -704,8 +704,13 @@ class SlicingPhase(BasePhase):
             # Stats come from StatisticalProfile — no ad-hoc DuckDB queries needed.
             table_ev = ev_by_fact.get(table.table_id)
             if table_ev and table_ev.view_table_id and table_ev.dimension_columns:
-                # Load Column records for dimension columns
-                dim_col_stmt = select(Column).where(Column.table_id == table_ev.view_table_id)
+                # Load the JOINED dimension columns only — the enriched view now also
+                # registers the fact's own f.* passthrough columns (DAT-811), which are
+                # already on this fact; ``origin='dimension'`` selects the added ones.
+                dim_col_stmt = select(Column).where(
+                    Column.table_id == table_ev.view_table_id,
+                    Column.origin == "dimension",
+                )
                 dim_cols = list(ctx.session.execute(dim_col_stmt).scalars().all())
                 dim_col_ids = [c.column_id for c in dim_cols]
 

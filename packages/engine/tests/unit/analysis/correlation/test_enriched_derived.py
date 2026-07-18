@@ -80,7 +80,11 @@ def _make_table(session: Session, name: str, source_id: str = "src1") -> Table:
 
 
 def _make_column(
-    session: Session, table: Table, name: str, resolved_type: str = "DOUBLE"
+    session: Session,
+    table: Table,
+    name: str,
+    resolved_type: str = "DOUBLE",
+    origin: str | None = None,
 ) -> Column:
     c = Column(
         column_id=str(uuid4()),
@@ -89,6 +93,7 @@ def _make_column(
         column_position=0,
         raw_type="VARCHAR",
         resolved_type=resolved_type,
+        origin=origin,
     )
     session.add(c)
     session.flush()
@@ -168,7 +173,9 @@ class TestDetectsEnrichedDerivedColumns:
 
         # Register dimension column via view_table
         view_table = _make_view_table(session, "enriched_orders")
-        dim_col = _make_column(session, view_table, "products__unit_price", "DOUBLE")
+        dim_col = _make_column(
+            session, view_table, "products__unit_price", "DOUBLE", origin="dimension"
+        )
         _make_stat_profile(session, dim_col, layer="enriched")
 
         ev = _make_enriched_view(
@@ -266,7 +273,7 @@ class TestDetectsEnrichedDerivedColumns:
 
         # Register VARCHAR dimension column via view_table
         view_table = _make_view_table(session, "enriched_varchar")
-        _make_column(session, view_table, "dim__name", "VARCHAR")
+        _make_column(session, view_table, "dim__name", "VARCHAR", origin="dimension")
 
         ev = _make_enriched_view(
             session,
@@ -291,7 +298,9 @@ class TestDetectsEnrichedDerivedColumns:
         _make_stat_profile(session, col_total)
 
         view_table = _make_view_table(session, "enriched_orders")
-        dim_col = _make_column(session, view_table, "products__unit_price", "DOUBLE")
+        dim_col = _make_column(
+            session, view_table, "products__unit_price", "DOUBLE", origin="dimension"
+        )
         _make_stat_profile(session, dim_col, layer="enriched")
 
         ev = _make_enriched_view(
@@ -319,7 +328,9 @@ class TestDetectsEnrichedDerivedColumns:
         _make_stat_profile(session, col_total)
 
         view_table = _make_view_table(session, "enriched_orders")
-        dim_col = _make_column(session, view_table, "products__unit_price", "DOUBLE")
+        dim_col = _make_column(
+            session, view_table, "products__unit_price", "DOUBLE", origin="dimension"
+        )
         _make_stat_profile(session, dim_col, layer="enriched")
 
         ev = _make_enriched_view(

@@ -158,12 +158,14 @@ def _seed(
                 column_name="invoice_id__date",
                 column_position=0,
                 resolved_type="DATE",
+                origin="dimension",
             ),
             Column(
                 table_id=view_table.table_id,
                 column_name="invoice_id__status",
                 column_position=1,
                 resolved_type="VARCHAR",
+                origin="dimension",
             ),
         ]
     )

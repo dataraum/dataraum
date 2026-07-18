@@ -454,33 +454,60 @@ class TestEnrichedViewsPhaseDuckLake:
 
         assert calls["n"] == 1, "run 1 judged the one undecided relationship"
 
-        # DAT-811: every registered enriched column is a dimension column carrying its
-        # TYPED source column_id — resolved forward from the join recipe, NEVER parsed
-        # from the {fk}__{col} name. This is the identity read views resolve semantics
-        # (concept, role, anchor axis, granularity) through.
+        # DAT-811: the enriched view registers EVERY served column — the fact's own f.*
+        # passthrough columns AND the joined dim columns — each carrying its TYPED source
+        # column_id (resolved forward from the recipe, NEVER parsed from the {fk}__{col}
+        # name). That source id is the identity read views resolve semantics through.
         from dataraum.storage import Column as _Column
 
-        src_id_of = {
-            name: session.execute(
+        def _src_id(table_id: str, name: str) -> str:
+            return session.execute(
                 select(_Column.column_id).where(
-                    _Column.table_id == dim_id, _Column.column_name == name
+                    _Column.table_id == table_id, _Column.column_name == name
                 )
             ).scalar_one()
-            for name in ("name", "country")
-        }
+
         enriched_cols = (
             session.execute(select(_Column).where(_Column.table_id == views[0].view_table_id))
             .scalars()
             .all()
         )
-        assert {c.column_name for c in enriched_cols} == {
+        by_name = {c.column_name: c for c in enriched_cols}
+        # No served column is left unclassified.
+        assert all(c.origin in ("fact", "dimension") for c in enriched_cols)
+
+        # The fact's own columns are carried through (origin='fact'), each linked to its
+        # typed fact source. They are NOT re-profiled — read views reach stats via the link.
+        assert {n for n, c in by_name.items() if c.origin == "fact"} == {
+            "order_id",
+            "customer_id",
+            "amount",
+        }
+        for n in ("order_id", "customer_id", "amount"):
+            assert by_name[n].source_column_id == _src_id(fact_id, n)
+
+        # The joined dim columns (origin='dimension') link their typed dim source — this is
+        # exactly the set the dims-only consumers now select via ``origin == 'dimension'``.
+        assert {n for n, c in by_name.items() if c.origin == "dimension"} == {
             "customer_id__name",
             "customer_id__country",
         }
-        assert all(c.origin == "dimension" for c in enriched_cols)
-        assert {c.column_name: c.source_column_id for c in enriched_cols} == {
-            "customer_id__name": src_id_of["name"],
-            "customer_id__country": src_id_of["country"],
+        assert by_name["customer_id__name"].source_column_id == _src_id(dim_id, "name")
+        assert by_name["customer_id__country"].source_column_id == _src_id(dim_id, "country")
+
+        dims_only = (
+            session.execute(
+                select(_Column).where(
+                    _Column.table_id == views[0].view_table_id,
+                    _Column.origin == "dimension",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {c.column_name for c in dims_only} == {
+            "customer_id__name",
+            "customer_id__country",
         }
 
         # --- Run 1 retry: same run_id is idempotent (no duplicate rows) ----

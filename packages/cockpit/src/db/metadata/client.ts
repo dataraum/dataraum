@@ -23,9 +23,20 @@ import { SQL } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql";
 
 import { config } from "../../config";
+import { baseConfig } from "../../config.base";
 import { relations } from "./relations";
 
-const client = new SQL(config.metadataDatabaseUrl);
+// PORTAL MODE (DAT-819): this module still EVALUATES on the portal — the
+// server bundle's route graph is eager, and the workspace `config` export
+// throws on ACCESS there — but no portal surface ever queries engine
+// metadata. The fence hostname keeps that born-loud: if a portal path ever
+// does query, the connection fails naming the fence instead of a real DSN.
+// (bun's SQL connects lazily, so constructing with it is free.)
+const PORTAL_FENCE_DSN = "postgres://portal-mode-has-no-workspace-metadata";
+
+const client = new SQL(
+	baseConfig.portalMode ? PORTAL_FENCE_DSN : config.metadataDatabaseUrl,
+);
 
 // drizzle 1.0 takes a single options object. `relations` already encodes
 // every table reference (via defineRelations(schema, ...)), so we don't need
@@ -33,7 +44,9 @@ const client = new SQL(config.metadataDatabaseUrl);
 // .select().from(...) calls.
 export const metadataDb = drizzle({ client, relations });
 
-const writeClient = new SQL(config.metadataWriterDatabaseUrl);
+const writeClient = new SQL(
+	baseConfig.portalMode ? PORTAL_FENCE_DSN : config.metadataWriterDatabaseUrl,
+);
 
 // No `relations`: the write surface is four hand-declared control tables
 // (./write-surface.ts) addressed directly with .select()/.insert()/.update().

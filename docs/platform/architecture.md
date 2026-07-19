@@ -137,22 +137,40 @@ flowchart TB
     subgraph WS["workspace &lt;id&gt;"]
         direction LR
         C["1 engine container"]
-        Q["1 Temporal task queue<br/>engine-&lt;id&gt;"]
+        CC["1 cockpit container"]
+        SD["1 subdomain<br/>&lt;sub&gt;.&lt;domain&gt;"]
+        Q["2 Temporal task queues<br/>engine-&lt;id&gt; · cockpit-&lt;id&gt;"]
         SCH["1 Postgres schema<br/>ws_&lt;id&gt;"]
         CAT["1 DuckLake catalog schema<br/>in the shared catalog DB"]
         LAKE["1 S3 prefix<br/>s3://bucket/&lt;id&gt;/"]
     end
 ```
 
-Each workspace runs its **own engine container**, which bootstraps that workspace's
-connection manager and DuckLake anchor at startup and polls **exactly** its own queue
-(`engine-<id>`). Adding a workspace is, mechanically, a registry row plus one more engine
-service. This is what makes the platform horizontally scalable and multi-tenant — see
+Each workspace runs its **own engine container** and its **own cockpit container**
+(DD/51740673). The engine bootstraps that workspace's connection manager and DuckLake
+anchor at startup and polls exactly its own queue (`engine-<id>`); the cockpit boots with
+a single workspace identity (`DATARAUM_WORKSPACE_ID`) and never resolves the workspace
+per request — its activity worker polls `cockpit-<id>`, and every `cockpit_db` query is
+scoped to the boot workspace. Adding a workspace is, mechanically, a registry row plus
+one engine + one cockpit service plus a Caddy route. See
 [Deployment](../operations/deployment.md) for how this maps to running containers and to
 the cloud.
 
-The cockpit is a single app that serves all workspaces; it routes each request to the
-right workspace's queue, schema, catalog, and lake prefix based on the registry.
+## Ingress and identity
+
+Caddy is the installation's one ingress: each workspace's cockpit is served on its own
+subdomain (`ws1.<domain>`), and the bare parent domain serves the **portal** — the same
+cockpit image in a second role (`DATARAUM_PORTAL_MODE=1`) that owns login and membership
+routing. Caddy routes are `@id`-tagged and managed through its admin API
+(`src/portal/caddy.ts`), which is the seam the provisioner (DAT-820) uses to make a
+workspace reachable.
+
+Identity is **better-auth**, self-hosted in `cockpit_db` (its `user` table *is* the
+`users` table; `memberships` FKs onto it). The portal issues the session cookie on the
+parent domain; every workspace cockpit verifies it locally against the shared session
+rows and enforces **membership of its own workspace** in global request middleware — an
+authenticated non-member is bounced back to the portal. See
+[ADR-0022](../adr/0022-portal-auth-better-auth.md).
 
 ## The containers, concretely
 
@@ -164,7 +182,12 @@ A default local stack is:
 | `seaweedfs` (+ `seaweedfs-init`) | the S3 object store + one-shot bucket creation |
 | `temporal` (+ `temporal-admin-tools`, `temporal-create-namespace`, `temporal-ui`) | the Temporal server, schema setup, namespace registration, and web UI |
 | `engine-worker` | the engine analysis worker for workspace 1 (one per workspace) |
-| `cockpit` (+ `cockpit-migrate`) | the web app + its co-located activity-only worker; migrations run once first |
+| `cockpit` (+ `cockpit-migrate`) | workspace 1's web app + its co-located activity-only worker; migrations run once first |
+| `caddy` | the ingress: per-workspace subdomains + the portal's parent domain (`caddy/caddy.json`; admin API = the provisioner seam) |
+| `portal` | the cockpit image in portal mode — login + membership routing on the parent domain |
+
+The `multi-workspace` profile adds workspace 2's pair (`engine-worker-2`, `cockpit-2`)
+for the two-workspace smoke.
 
 The engine has **no healthcheck port** — its health is the Temporal worker heartbeat, not
 an HTTP probe. See [Running the stack](../getting-started/running-the-stack.md) to bring

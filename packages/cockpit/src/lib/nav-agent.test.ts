@@ -15,6 +15,9 @@ vi.mock("@tanstack/ai-anthropic", () => ({
 	createAnthropicChat: h.createAnthropicChat,
 }));
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "sk-test" } }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 
 import { classifyOpeningMessage } from "#/lib/nav-agent";
 

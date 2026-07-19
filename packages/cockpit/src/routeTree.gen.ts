@@ -17,6 +17,7 @@ import { Route as ApiShippedMetricDagRouteImport } from './routes/api/shipped-me
 import { Route as ApiRunningRunsRouteImport } from './routes/api/running-runs'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
 import { Route as ApiProbeSqlRouteImport } from './routes/api/probe-sql'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiChatStreamRouteImport } from './routes/api/chat-stream'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
@@ -26,6 +27,7 @@ import { Route as ApiDrillNodeRouteImport } from './routes/api/drill/node'
 import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
 import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
 import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
 import { Route as appWorkspaceWsIdOperatingModelRouteImport } from './routes/(app)/workspace/$wsId/operating-model'
@@ -77,6 +79,11 @@ const ApiProbeSqlRoute = ApiProbeSqlRouteImport.update({
   path: '/api/probe-sql',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiChatStreamRoute = ApiChatStreamRouteImport.update({
   id: '/api/chat-stream',
   path: '/api/chat-stream',
@@ -120,6 +127,11 @@ const ApiDrillAxesRoute = ApiDrillAxesRouteImport.update({
 const ApiChartsAuthorRoute = ApiChartsAuthorRouteImport.update({
   id: '/api/charts/author',
   path: '/api/charts/author',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const appWorkspaceWsIdRouteRoute = appWorkspaceWsIdRouteRouteImport.update({
@@ -193,6 +205,7 @@ export interface FileRoutesByFullPath {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
@@ -200,6 +213,7 @@ export interface FileRoutesByFullPath {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
@@ -222,6 +236,7 @@ export interface FileRoutesByTo {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
@@ -229,6 +244,7 @@ export interface FileRoutesByTo {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
@@ -252,6 +268,7 @@ export interface FileRoutesById {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
@@ -259,6 +276,7 @@ export interface FileRoutesById {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
@@ -283,6 +301,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/health'
     | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
@@ -290,6 +309,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/workspace/$wsId'
+    | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
@@ -312,6 +332,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/health'
     | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
@@ -319,6 +340,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/workspace/$wsId'
+    | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
@@ -341,6 +363,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/health'
     | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
@@ -348,6 +371,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/(app)/workspace/$wsId'
+    | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
@@ -371,12 +395,14 @@ export interface RootRouteChildren {
   ApiAwaitingInputRoute: typeof ApiAwaitingInputRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiChatStreamRoute: typeof ApiChatStreamRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiProbeSqlRoute: typeof ApiProbeSqlRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
   ApiRunningRunsRoute: typeof ApiRunningRunsRoute
   ApiShippedMetricDagRoute: typeof ApiShippedMetricDagRoute
   ApiUploadRoute: typeof ApiUploadRoute
   ApiWorkflowProgressRoute: typeof ApiWorkflowProgressRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiChartsAuthorRoute: typeof ApiChartsAuthorRoute
   ApiDrillAxesRoute: typeof ApiDrillAxesRoute
   ApiDrillComposeRoute: typeof ApiDrillComposeRoute
@@ -442,6 +468,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiProbeSqlRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/chat-stream': {
       id: '/api/chat-stream'
       path: '/api/chat-stream'
@@ -503,6 +536,13 @@ declare module '@tanstack/react-router' {
       path: '/api/charts/author'
       fullPath: '/api/charts/author'
       preLoaderRoute: typeof ApiChartsAuthorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(app)/workspace/$wsId': {
@@ -650,12 +690,14 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAwaitingInputRoute: ApiAwaitingInputRoute,
   ApiChatRoute: ApiChatRoute,
   ApiChatStreamRoute: ApiChatStreamRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiProbeSqlRoute: ApiProbeSqlRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
   ApiRunningRunsRoute: ApiRunningRunsRoute,
   ApiShippedMetricDagRoute: ApiShippedMetricDagRoute,
   ApiUploadRoute: ApiUploadRoute,
   ApiWorkflowProgressRoute: ApiWorkflowProgressRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiChartsAuthorRoute: ApiChartsAuthorRoute,
   ApiDrillAxesRoute: ApiDrillAxesRoute,
   ApiDrillComposeRoute: ApiDrillComposeRoute,
@@ -667,10 +709,11 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
+import type { startInstance } from './start.ts'
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

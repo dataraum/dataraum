@@ -118,6 +118,9 @@ jobs:
               working-directory: packages/cockpit
               env:
                   COCKPIT_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/cockpit_db
+                  # Base (mode-shared) config (DAT-819) — required by every
+                  # suite that touches the cockpit_db client or registry.
+                  BETTER_AUTH_SECRET: dataraum-dev-secret
                   METADATA_DATABASE_URL: postgres://ws_00000000_0000_0000_0000_000000000001_reader:cockpit-reader-dev@127.0.0.1:5432/dataraum
                   METADATA_WRITER_DATABASE_URL: postgres://ws_00000000_0000_0000_0000_000000000001_writer:cockpit-writer-dev@127.0.0.1:5432/dataraum
                   METADATA_ADMIN_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/dataraum

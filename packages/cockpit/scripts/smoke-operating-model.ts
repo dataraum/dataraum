@@ -31,7 +31,7 @@ import { z } from "zod";
 
 import { cockpitDb } from "#/db/cockpit/client";
 import { recordRun } from "#/db/cockpit/runs";
-import { users, workspaces } from "#/db/cockpit/schema";
+import { workspaces } from "#/db/cockpit/schema";
 import { metadataDb, metadataWriteDb } from "#/db/metadata/client";
 import {
 	currentLifecycleArtifacts,
@@ -78,10 +78,8 @@ async function ingest(client: Client): Promise<string[]> {
 
 	// The workspace registry carries the vertical (DAT-506): seed it = finance so
 	// the begin_session / operating_model drivers source the right ontology.
-	await cockpitDb
-		.insert(users)
-		.values({ id: "default", displayName: "Default user" })
-		.onConflictDoNothing();
+	// (No user row: better-auth owns identity (DAT-819) and nothing in this
+	// flow FKs users.)
 	await cockpitDb
 		.insert(workspaces)
 		.values({

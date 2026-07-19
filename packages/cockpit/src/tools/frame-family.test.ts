@@ -16,6 +16,9 @@ vi.mock("#/config", () => ({
 		dataraumConfigPath: "/nonexistent",
 	},
 }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 vi.mock("#/db/metadata/client", () => ({
 	metadataDb: { insert: vi.fn(() => ({ values: vi.fn() })) },
 }));

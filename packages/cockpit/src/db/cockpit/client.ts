@@ -6,9 +6,12 @@
 
 import { SQL } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql";
-import { config } from "../../config";
+// Base config, NOT the workspace config: cockpit_db is the shared control
+// plane and the PORTAL role needs this client too (DAT-819) — the workspace
+// config throws in portal mode.
+import { baseConfig } from "../../config.base";
 
-const client = new SQL(config.cockpitDatabaseUrl);
+const client = new SQL(baseConfig.cockpitDatabaseUrl);
 
 // The control-plane tables (DAT-461) live in ./schema.ts; callers import the
 // table objects directly and use `cockpitDb.insert(...)` / `.select(...)`. We do

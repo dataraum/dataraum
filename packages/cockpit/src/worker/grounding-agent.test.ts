@@ -21,6 +21,9 @@ vi.mock("#/config", () => ({
 		return { anthropicApiKey: h.apiKey };
 	},
 }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 vi.mock("#/db/metadata/grounding-readiness", () => ({
 	readGroundingReadiness: vi.fn(async () => h.readiness),
 }));

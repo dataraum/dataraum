@@ -37,18 +37,103 @@ import type { ChartConfig } from "#/charts/chart-config";
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 
 /**
- * A control-plane user (DAT-817) — the identity the portal logs in and routes by
- * (DD/51740673). Replaces the DAT-460 `actors` placeholder (same seam, real
- * name): a single seeded `default` row until the portal's login lands (Phase 6),
- * which also decides the auth model (credential store vs OIDC) and adds its
- * columns then — this table deliberately carries no credential/identity claim
- * columns yet.
+ * A control-plane user — better-auth's `user` model IS the users table
+ * (DAT-819, auth decision on the ticket): one identity model, no parallel
+ * journals. better-auth (self-hosted, Drizzle adapter with `usePlural`) owns
+ * the rows — sign-up/sign-in write here — while our control plane FKs onto
+ * `id` (`memberships`). Field keys are better-auth's canonical model fields
+ * (the adapter resolves columns by TS key); column names follow the
+ * schema-wide snake_case convention. The DAT-817 seeded-`default`-row
+ * placeholder (and its `display_name`) retired with this cut — `name` is the
+ * display name now.
+ *
+ * The auth surface stays thin by design (SSO via better-auth's OIDC/SSO
+ * plugin only when a customer needs it; Kinde is the long-term managed-cloud
+ * direction) — nothing outside src/auth/ may depend on better-auth internals
+ * beyond these table shapes.
  */
 export const users = pgTable("users", {
 	id: varchar("id").primaryKey(),
-	displayName: varchar("display_name").notNull(),
+	name: varchar("name").notNull(),
+	email: varchar("email").notNull().unique(),
+	emailVerified: boolean("email_verified").notNull().default(false),
+	image: varchar("image"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+	updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
 });
+
+/**
+ * A better-auth login session (DAT-819) — one row per issued session cookie;
+ * `token` is the cookie's session identifier. Lives in the shared cockpit_db
+ * so EVERY per-workspace cockpit verifies the portal-issued parent-domain
+ * cookie against the same rows (auth/auth.ts). Unrelated to the retired
+ * DAT-562 analytical `sessions` table — that was run-grouping; this is auth.
+ */
+export const sessions = pgTable(
+	"sessions",
+	{
+		id: varchar("id").primaryKey(),
+		expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+		token: varchar("token").notNull().unique(),
+		ipAddress: varchar("ip_address"),
+		userAgent: varchar("user_agent"),
+		userId: varchar("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+		updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
+	},
+	(t) => [index("sessions_user_idx").on(t.userId)],
+);
+
+/**
+ * A better-auth credential/provider account (DAT-819): the `credential`
+ * provider row carries the scrypt password hash; an SSO provider row (the
+ * deliberately-unbuilt seam) would carry its tokens. One user may hold many.
+ */
+export const accounts = pgTable(
+	"accounts",
+	{
+		id: varchar("id").primaryKey(),
+		accountId: varchar("account_id").notNull(),
+		providerId: varchar("provider_id").notNull(),
+		userId: varchar("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		accessToken: varchar("access_token"),
+		refreshToken: varchar("refresh_token"),
+		idToken: varchar("id_token"),
+		accessTokenExpiresAt: timestamp("access_token_expires_at", {
+			mode: "date",
+		}),
+		refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+			mode: "date",
+		}),
+		scope: varchar("scope"),
+		password: varchar("password"),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+		updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
+	},
+	(t) => [index("accounts_user_idx").on(t.userId)],
+);
+
+/**
+ * better-auth verification store (DAT-819) — short-lived identifier/value
+ * pairs (email verification, password reset). Pure better-auth plumbing; no
+ * cockpit code reads it.
+ */
+export const verifications = pgTable(
+	"verifications",
+	{
+		id: varchar("id").primaryKey(),
+		identifier: varchar("identifier").notNull(),
+		value: varchar("value").notNull(),
+		expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+		updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
+	},
+	(t) => [index("verifications_identifier_idx").on(t.identifier)],
+);
 
 /**
  * The workspace registry — the source of truth for "which workspace", replacing

@@ -9,6 +9,9 @@ import { describe, expect, it, vi } from "vitest";
 // adapter; mock the env-dependent ones so the pure helper test needs no env and
 // opens no connection (sets no process.env — see registry.test.ts).
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "test" } }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import {

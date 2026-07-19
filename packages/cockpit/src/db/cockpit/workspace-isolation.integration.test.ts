@@ -38,6 +38,14 @@ const REQUIRED_DEFAULTS: Record<string, string> = {
 	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
 	S3_SECRET_ACCESS_KEY:
 		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
+	// Base (mode-shared) config (DAT-819). The dev creds make the seed's
+	// credential-user path run for real — same defaults the compose stack uses,
+	// so the row this writes is the one a live stack would hold anyway.
+	BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "dataraum-dev-secret",
+	DATARAUM_DEV_USER_EMAIL:
+		process.env.DATARAUM_DEV_USER_EMAIL ?? "dev@dataraum.dev",
+	DATARAUM_DEV_USER_PASSWORD:
+		process.env.DATARAUM_DEV_USER_PASSWORD ?? "dataraum-dev",
 };
 for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
 	if (!process.env[k]) process.env[k] = v;
@@ -181,21 +189,38 @@ describe.skipIf(!STACK_AVAILABLE)(
 			await db.delete(schema.workspaces).where(eq(schema.workspaces.id, WS_B));
 		});
 
-		it("registry: resolves the boot workspace and seeds the default user + membership", async () => {
+		it("registry: resolves the boot workspace and seeds the dev user + membership (DAT-819)", async () => {
 			const { eq, and } = drizzle;
 			expect(await registry.resolveActiveWorkspace()).toBe(WS_A);
+			// The dev credential user exists under the dev email (id may be the
+			// deterministic seed id OR an earlier manual sign-up's — the seed
+			// adopts either; the email is the identity anchor).
+			const devEmail = process.env.DATARAUM_DEV_USER_EMAIL as string;
 			const [user] = await db
 				.select({ id: schema.users.id })
 				.from(schema.users)
-				.where(eq(schema.users.id, registry.DEFAULT_USER_ID))
+				.where(eq(schema.users.email, devEmail))
 				.limit(1);
-			expect(user?.id).toBe(registry.DEFAULT_USER_ID);
+			expect(user?.id).toBeTruthy();
+			// Its credential account carries better-auth's sign-up shape with the
+			// (re-asserted) scrypt hash — the row a portal login verifies against.
+			const [account] = await db
+				.select({ password: schema.accounts.password })
+				.from(schema.accounts)
+				.where(
+					and(
+						eq(schema.accounts.userId, user.id),
+						eq(schema.accounts.providerId, "credential"),
+					),
+				)
+				.limit(1);
+			expect(account?.password).toBeTruthy();
 			const [membership] = await db
 				.select({ role: schema.memberships.role })
 				.from(schema.memberships)
 				.where(
 					and(
-						eq(schema.memberships.userId, registry.DEFAULT_USER_ID),
+						eq(schema.memberships.userId, user.id),
 						eq(schema.memberships.workspaceId, WS_A),
 					),
 				)

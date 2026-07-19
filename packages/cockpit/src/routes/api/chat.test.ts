@@ -25,6 +25,9 @@ vi.mock("#/lib/chat-bus", () => ({
 	subscribe: () => () => {},
 	hasSubscribers: () => false,
 }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 // The driver tools (via the registry) + workspace-context import the cockpit
 // control plane (DAT-461/506); mock the seams so the route import never loads the

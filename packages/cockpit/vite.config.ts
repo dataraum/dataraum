@@ -35,6 +35,10 @@ const config = defineConfig({
 			plugins: [
 				"./src/server/plugins/otel.ts",
 				"./src/server/plugins/orchestration-worker.ts",
+				// Workspace-registry boot seed (DAT-819): the membership gate
+				// fronts every request, so the (idempotent) seed that creates
+				// the dev login user must not depend on a request arriving.
+				"./src/server/plugins/registry-seed.ts",
 			],
 			rollupConfig: {
 				external: [

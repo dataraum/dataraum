@@ -4,7 +4,7 @@
 # Single-call agent — no exploration tools, all context is pre-assembled.
 
 name: business_cycles
-version: "2.0.0"
+version: "2.1.0"
 description: Detect business cycles from pre-computed pipeline metadata
 
 # Temperature (low for consistent structured output)
@@ -26,7 +26,7 @@ system_prompt: |
 
   1. **Domain Vocabulary** — Known business cycle types with typical stages, completion indicators, and aliases. Use this as a reference framework for classifying detected cycles.
   2. **Dataset Summary** — Table counts, relationship counts, fact/dimension counts, and overall graph pattern.
-  3. **Entity Classifications** — Fact vs dimension table types with grain columns.
+  3. **Entity Classifications** — Fact vs dimension table types with grain columns and each table's recurring identity columns (the entity-identifying columns flows ride on).
   4. **Categorical Dimensions** — Pre-identified status/type columns with their values and counts. These are strong cycle indicators (e.g., a status column: open/complete/cancelled).
   5. **Derived Numeric Relationships** — Arithmetic relationships the pipeline found to hold between columns, each with a match rate (how often it holds). A cycle that completes on a NUMERIC condition rather than a status value grounds on one of these.
   6. **Column Meanings** — every column's authored business meaning with measured facts and related ontology concepts. Use these to ground a cycle's completion concepts on real columns instead of guessing column names.
@@ -35,7 +35,7 @@ system_prompt: |
   9. **Graph Topology** — Schema structure analysis: hub tables (central, 3+ connections), leaf tables (dimensions), bridge tables, isolated tables, and overall pattern (star_schema, hub_and_spoke, etc.).
   10. **Temporal Patterns** — Date ranges, granularity, and completeness per date column.
   11. **Quality Signals** — Data quality grades and anomalies for columns with issues.
-  12. **Column Semantics** — Business concepts, semantic roles, and descriptions per column.
+  12. **Column Semantics** — Business concepts, semantic roles, and descriptions per column. Each annotation carries an annotation_confidence that encodes how much the column NAME communicates (a low value flags an unreadable name, not weak data evidence). Identity and relationship-endpoint columns additionally carry value samples from the data.
   </context_description>
 
   A cycle can complete in two ways. Some complete on a STATUS value; others on a
@@ -61,6 +61,7 @@ system_prompt: |
 
   - **Cite only what the context shows.** Every column, value, status, and relationship you reference MUST appear verbatim in the metadata above. Never invent a `status_column`, a `completion_value`, an `indicator_value`, or a relationship that isn't served — an improvised reference will be rejected.
   - **Ground completion concepts through the meanings.** Ground a cycle's completion concept on columns via the COLUMN MEANINGS or DERIVED NUMERIC RELATIONSHIPS; do not guess a column by name.
+  - **Determine entity types from evidence.** An entity flow's entity_type — which party or object participates in the cycle — must rest on served evidence: the identity columns' value samples, the confirmed relationships, and the table classifications. A low annotation_confidence means the column name is unreadable, not that the column is undecidable — read its samples. Do not carry an upstream hedge (a description offering two entities) into a confident cycle label: if the served evidence decides the entity, commit to it; if it does not, keep the flow's entity_type honest and lower the cycle's confidence accordingly. The choice between counterparty-direction cycle types (who owes whom) follows the entity determination, never the flow shape alone.
   - **Don't force-fit.** If a declared cycle type has no status signal AND no derived-relationship/ mapping that grounds its completion, DO NOT emit it. Omitting it leaves it honestly "not detected" — that is the correct outcome, not a failure to paper over.
   - **Confidence is honest signal strength.** A cycle grounded on a strong, unambiguous signal is high-confidence; one resting on a weak or partial signal is low-confidence. Downstream consumers gate on this number — a confident-looking detection on thin evidence is worse than a flagged one.
   </grounding_discipline>

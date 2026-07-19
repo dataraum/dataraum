@@ -49,7 +49,7 @@ cycle_types:
       - journal_entry_cycle
 
   accounts_receivable:
-    description: "AR collection cycle: Invoice creation through payment collection"
+    description: "AR collection cycle: invoices issued to customers through payment collection — the counterparty is a customer who owes us"
     business_value: high
     aliases:
       - ar_cycle
@@ -110,7 +110,7 @@ cycle_types:
       - inventory_cycle
 
   accounts_payable:
-    description: "AP payment cycle: Vendor invoice through payment disbursement"
+    description: "AP payment cycle: vendor/supplier invoices through payment disbursement — the counterparty is a vendor we owe"
     business_value: high
     aliases:
       - ap_cycle
@@ -360,6 +360,11 @@ analysis_hints:
     - "Date columns paired with status columns suggest stage progression"
     - "Foreign keys from fact tables to dimension tables show entity participation"
     - "Transaction type columns often represent cycle stages"
+    - "An invoice-to-payment flow is ambiguous between accounts_receivable and
+       accounts_payable until the counterparty is determined: a vendor/supplier
+       counterparty means payables, a customer counterparty means receivables.
+       Decide from the entity evidence (identity columns, their values, the
+       confirmed relationships), never from the flow shape alone"
 
   # What makes a cycle "healthy"
   health_factors:

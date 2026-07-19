@@ -49,7 +49,7 @@ class DataSampler:
             key = (table_name, column_name)
 
             # Check if column matches sensitive pattern
-            if self._is_sensitive(column_name):
+            if self.is_sensitive(column_name):
                 # Redact sensitive columns
                 samples[key] = ["<REDACTED>"] * min(
                     self.config.redacted_sample_count, self.config.max_sample_values
@@ -64,8 +64,12 @@ class DataSampler:
 
         return samples
 
-    def _is_sensitive(self, column_name: str) -> bool:
+    def is_sensitive(self, column_name: str) -> bool:
         """Check if column name matches sensitive patterns.
+
+        Public: the cycle-detection context builder applies the same gate before
+        serving per-column value samples (it assembles samples from persisted
+        profiles rather than through :meth:`prepare_samples`).
 
         Args:
             column_name: Column name to check

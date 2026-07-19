@@ -155,6 +155,15 @@ metric outputs** (unlike DAT-811, which was catalog-only).
   time). The `view_name → fact_table_id` name-on-fact bounce and its dead typed-table
   fallback are retired (verified: all finance facts have an enriched view).
 
+### Determinism — three more sites fixed
+The prompt asks the judge for a stable orientation, so its input had to stop moving:
+`table_names_from_candidates` was a `set` (PYTHONHASHSEED-ordered, measured varying across
+four processes), and neither the candidate loader nor `_load_profiles` had an `ORDER BY`,
+so candidate-block order and `tables_json` order were Postgres physical order. All three
+ordered. A same-batch duplicate emission now logs `duplicate_row_dropped_in_batch` with
+both verdicts — if the judge contradicts itself on a pair's direction, that is now
+visible instead of folded away silently.
+
 ### Calibration to run
 - **Working-capital metric values on the finance corpus** — `dpo`/`dso`/`dio`/`ccc`
   `days_in_period`: a header/line-fact flow (journal_lines) should now derive its observed
@@ -2345,7 +2354,10 @@ endpoint, so `left_*`/`right_*` are the same metric on opposite sides:
 | `left_/right_key_coverage` | % of that side's DISTINCT values on the other | `left_value_containment`; the old `right_referential_integrity` |
 | `left_/right_orphan_count` | that side's rows that do not resolve | `orphan_count` (unprefixed, never flipped) |
 | `left_/right_total_count` | rows behind the RI ratio | `left_total_count` only |
-| `left_join_success_rate` | best join's from-side RI | `join_success_rate` (unprefixed, never flipped) |
+
+**`join_success_rate` is DELETED, not renamed.** It was the best join's left RI
+restated at table-pair grain; the per-column line carries that number for the direction
+actually stored. The judge's rendered block no longer has a `Join success rate:` line.
 
 Also gone: `total_count` in `_RI_EVIDENCE_KEYS` — nothing ever produced one, so
 `relationship_entropy`'s first denominator branch was dead. Unrelated and unchanged: the

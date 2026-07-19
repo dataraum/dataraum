@@ -97,7 +97,6 @@ describe.skipIf(!STACK_AVAILABLE)(
 			await db.insert(schema.workspaces).values({
 				id: WS_B,
 				name: "Workspace B (isolation probe)",
-				engineSchema: `ws_${WS_B}`,
 				state: "ready",
 			});
 			// title deliberately NULL: setConversationTitle's own `title IS NULL`

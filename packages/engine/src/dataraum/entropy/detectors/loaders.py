@@ -408,7 +408,7 @@ def _relationship_to_dict(rel: Any, table_names: dict[str, str]) -> dict[str, An
 _RI_EVIDENCE_KEYS = (
     "left_referential_integrity",
     "right_referential_integrity",
-    "orphan_count",
+    "left_orphan_count",
     "total_count",
     "left_total_count",
     "cardinality_verified",

@@ -63,11 +63,27 @@ def test_flip_swaps_every_directional_metric_generically() -> None:
         confidence=0.7,
         detection_method="candidate",
         confirmation_source="unconfirmed",
-        evidence={"left_uniqueness": 0.1, "right_uniqueness": 0.99, "orphan_count": 3},
+        evidence={
+            "left_uniqueness": 0.1,
+            "right_uniqueness": 0.99,
+            "left_orphan_count": 3,
+            "cardinality": "one-to-many",
+            "join_confidence": 0.7,
+        },
     )
     assert row["evidence"]["left_uniqueness"] == 0.99
     assert row["evidence"]["right_uniqueness"] == 0.1
-    assert row["evidence"]["orphan_count"] == 3  # non-directional key stays put
+    # The orphan count is a FROM-SIDE measurement, so it moves with its endpoint
+    # like every other prefixed metric. It was unprefixed before DAT-725 and
+    # therefore stayed put, leaving a stored row that read "L=100% RI" beside
+    # "orphans=3" — a reading that cannot be true, shipped to the judge and to
+    # the orphan-rate detector as fact.
+    assert "left_orphan_count" not in row["evidence"]
+    assert row["evidence"]["right_orphan_count"] == 3
+    # The evidence copy of the cardinality tracks the column it mirrors.
+    assert row["evidence"]["cardinality"] == "many-to-one"
+    # Symmetric measurements are untouched.
+    assert row["evidence"]["join_confidence"] == 0.7
 
 
 @pytest.mark.parametrize("cardinality", ["many-to-one", "many-to-many", None])
@@ -110,158 +126,77 @@ def _one_to_one_row(evidence: dict[str, object] | None) -> dict[str, object]:
     )
 
 
-def test_one_to_one_flips_when_emitted_from_the_referenced_side() -> None:
-    """Run-#2 A2 class: a 1:1 FK confirmed parent→child gets re-oriented.
+@pytest.mark.parametrize(
+    ("shape", "evidence"),
+    [
+        # A clean subset, emitted parent-first. The old rule swapped this and
+        # was right — but it cannot tell this shape from the next one.
+        (
+            "clean subset, emitted parent-first",
+            {"left_referential_integrity": 24.33, "right_referential_integrity": 100.0},
+        ),
+        # A child carrying ORPHAN values, emitted CORRECTLY child-first. It
+        # measures the same way round as the case above, so the old rule swapped
+        # it too — inverting a correct emission. joins.py deliberately admits
+        # these ("a dirty subset FK is still an FK") and the judge prompt
+        # deliberately confirms them.
+        (
+            "orphan-bearing child, emitted correctly",
+            {
+                "left_referential_integrity": 60.0,
+                "left_value_containment": 60.0,
+                "right_referential_integrity": 100.0,
+                "left_orphan_count": 2,
+                "cardinality_verified": True,
+            },
+        ),
+        # Identical value sets: containment is silent either way.
+        (
+            "dense bijection",
+            {"left_referential_integrity": 100.0, "right_referential_integrity": 100.0},
+        ),
+        # Completeness disagrees loudly. Still not this helper's call.
+        (
+            "symmetric containment, lopsided completeness",
+            {
+                "left_referential_integrity": 100.0,
+                "right_referential_integrity": 100.0,
+                "left_uniqueness": 1.0,
+                "right_uniqueness": 0.4698,
+            },
+        ),
+    ],
+)
+def test_one_to_one_is_never_re_oriented(shape: str, evidence: dict[str, object]) -> None:
+    """A 1:1 keeps the orientation it was written with, whatever the numbers say.
 
-    The referencing side of a 1:1 FK is wholly contained in the referenced
-    side (forward containment ~100%, reverse lower). A smaller forward than
-    reverse containment on the emission means it points parent→child — the
-    chokepoint swaps the endpoints and the directional evidence; cardinality
-    stays one-to-one. (RI-only evidence is the candidate-metrics shape, where
-    row-weighted equals distinct-weighted: both columns globally unique.)
+    The removed rule swapped when forward containment measured below reverse.
+    That reduces to "the from side has more distinct values" — right for a clean
+    subset, WRONG for a child with orphans, and the two are indistinguishable to
+    containment. Since it cannot separate them, it does not decide: direction
+    for a 1:1 belongs to the judge, which is told to reason from dependence
+    (``semantic_per_table``'s orientation section).
     """
-    row = _one_to_one_row(
-        {"left_referential_integrity": 24.0, "right_referential_integrity": 100.0}
-    )
-    assert (row["from_table_id"], row["from_column_id"]) == ("child_tbl", "child_col")
-    assert (row["to_table_id"], row["to_column_id"]) == ("parent_tbl", "parent_col")
-    assert row["cardinality"] == "one-to-one"
-    evidence = row["evidence"]
-    assert isinstance(evidence, dict)
-    assert evidence["left_referential_integrity"] == 100.0
-    assert evidence["right_referential_integrity"] == 24.0
-    # The swap leaves an audit trace — a re-oriented 1:1 row is otherwise
-    # indistinguishable from a kept emission (the cardinality label is
-    # unchanged, unlike the one-to-many flip).
-    assert evidence["orientation_swapped"] is True
-    # Unlike the one-to-many flip, no fan-out flag is fabricated: a 1:1 join
-    # never fans out in either direction, and the flag was not measured here.
-    assert "introduces_duplicates" not in evidence
+    row = _one_to_one_row(evidence)
+
+    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col"), shape
+    assert "orientation_swapped" not in row["evidence"], shape
 
 
-def test_one_to_one_distinct_containment_outranks_biased_row_weighted_ri() -> None:
-    """Duplicated ORPHAN rows must not invert a correct emission.
-
-    The 1:1 measurement only checks the matched population, so the from side
-    can carry duplicate rows of orphan values — row-weighted left RI then
-    under-states containment (30% here) and, compared against the
-    distinct-weighted right RI (42.9%), would wrongly swap a CORRECT
-    child→parent emission. The distinct-weighted ``left_value_containment``
-    (75%) is the like-for-like basis and must win.
-    """
+def test_one_to_one_evidence_is_carried_verbatim() -> None:
+    """No swap means no relabelling: per-side metrics stay on the side measured."""
     row = _one_to_one_row(
         {
-            "left_referential_integrity": 30.0,
-            "left_value_containment": 75.0,
-            "right_referential_integrity": 42.86,
-        }
-    )
-    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
-    evidence = row["evidence"]
-    assert isinstance(evidence, dict)
-    assert "orientation_swapped" not in evidence
-
-
-def test_one_to_one_containment_key_still_swaps_a_true_flip() -> None:
-    """The containment key decides in BOTH directions: a genuinely flipped
-    emission (forward containment below reverse) still swaps."""
-    row = _one_to_one_row(
-        {
-            "left_referential_integrity": 42.86,
-            "left_value_containment": 42.86,
-            "right_referential_integrity": 75.0,
-        }
-    )
-    assert (row["from_column_id"], row["to_column_id"]) == ("child_col", "parent_col")
-    evidence = row["evidence"]
-    assert isinstance(evidence, dict)
-    # The directional keys followed the swap.
-    assert evidence["right_value_containment"] == 42.86
-    assert evidence["left_referential_integrity"] == 75.0
-
-
-def test_one_to_one_contradicted_cardinality_never_swaps() -> None:
-    """``cardinality_verified is False`` means the declared one-to-one is
-    measurably wrong — the containment reasoning built on it does not hold,
-    so the emission stands."""
-    row = _one_to_one_row(
-        {
-            "left_referential_integrity": 24.0,
-            "right_referential_integrity": 100.0,
-            "cardinality_verified": False,
-        }
-    )
-    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
-
-
-def test_one_to_one_correct_emission_stays() -> None:
-    row = _one_to_one_row(
-        {"left_referential_integrity": 100.0, "right_referential_integrity": 24.0}
-    )
-    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
-
-
-def test_one_to_one_symmetric_keeps_the_judges_emission() -> None:
-    """Identical value sets AND no completeness measurement — nothing left to
-    orient on, so the judge's semantic emission stands."""
-    row = _one_to_one_row(
-        {"left_referential_integrity": 100.0, "right_referential_integrity": 100.0}
-    )
-    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
-
-
-def test_one_to_one_symmetric_containment_is_left_to_the_judge() -> None:
-    """Completeness is NOT re-decided here, even when it plainly disagrees.
-
-    The run-#5 pair: identical value sets (RI 100% both ways, so containment is
-    silent) with a sparse from side (0.47) against a complete to side (1.00).
-    The direction IS knowable from that asymmetry — a complete key cannot be the
-    child — but the call belongs to the judge, which is served both numbers and
-    told the rule in ``semantic_per_table``'s orientation section. A revision of
-    this helper briefly re-decided it here and was removed: a deterministic
-    shadow over a judgment the agent can make. This test pins that boundary, so
-    reintroducing the override fails loudly rather than quietly.
-    """
-    row = _one_to_one_row(
-        {
-            "left_referential_integrity": 100.0,
+            "left_referential_integrity": 24.33,
             "right_referential_integrity": 100.0,
             "left_uniqueness": 1.0,
             "right_uniqueness": 0.4698,
         }
     )
 
-    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
-    assert "orientation_swapped" not in row["evidence"]
-
-
-def test_one_to_one_uniqueness_rides_along_and_follows_its_endpoint() -> None:
-    """Per-side completeness is carried on the row (it is what a direction rests
-    on, and forensics needs it), and swaps with the endpoints like RI does."""
-    row = _one_to_one_row(
-        {
-            "left_referential_integrity": 24.0,
-            "right_referential_integrity": 100.0,
-            "left_uniqueness": 1.0,
-            "right_uniqueness": 0.4698,
-        }
-    )
-
-    # Containment (24 < 100) swaps this one.
-    assert (row["from_column_id"], row["to_column_id"]) == ("child_col", "parent_col")
-    assert row["evidence"]["left_uniqueness"] == 0.4698
-    assert row["evidence"]["right_uniqueness"] == 1.0
-
-
-def test_one_to_one_without_both_metrics_stays() -> None:
-    """A missing measurement is not a signal — no swap on partial evidence."""
-    for evidence in (
-        None,
-        {"left_referential_integrity": 24.0},
-        {"right_referential_integrity": 100.0},
-    ):
-        row = _one_to_one_row(evidence)
-        assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
+    assert row["evidence"]["left_uniqueness"] == 1.0
+    assert row["evidence"]["right_uniqueness"] == 0.4698
+    assert row["evidence"]["left_referential_integrity"] == 24.33
 
 
 def test_confirmation_source_is_passed_through_verbatim() -> None:

@@ -27,7 +27,7 @@ _CANDIDATE_EVIDENCE = {
     "statistical_confidence": 1.0,
     "algorithm": "exact",
     "left_referential_integrity": 80.0,
-    "orphan_count": 200,
+    "left_orphan_count": 200,
 }
 
 

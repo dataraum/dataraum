@@ -1024,7 +1024,7 @@ def test_materialize_confirm_on_candidate_only_pair_adopts_candidate_orientation
             confidence=0.7,
             detection_method="candidate",
             confirmation_source="unconfirmed",
-            evidence={"orphan_count": 3},
+            evidence={"left_orphan_count": 3},
         )
     )
     _overlay(session, "confirm", "cb", "ca")  # taught REVERSED (parent → child)
@@ -1038,4 +1038,4 @@ def test_materialize_confirm_on_candidate_only_pair_adopts_candidate_orientation
     assert manual.cardinality == "many-to-one"
     assert manual.confirmation_source == "user"
     assert manual.confidence == 1.0  # a user assertion, not the candidate's 0.7
-    assert manual.evidence["orphan_count"] == 3  # candidate measurement carried (DAT-699)
+    assert manual.evidence["left_orphan_count"] == 3  # candidate measurement carried (DAT-699)

@@ -36,7 +36,7 @@ def evaluate_join_candidate(
     Computes:
     - left_referential_integrity: % of table1 values with match in table2
     - right_referential_integrity: % of table2 values referenced by table1
-    - orphan_count: table1 values with no match
+    - left_orphan_count: table1 values with no match
     - cardinality_verified: whether detected cardinality matches actual
 
     Args:
@@ -63,10 +63,10 @@ def evaluate_join_candidate(
     left_result = duckdb_conn.execute(left_query).fetchone()
     if left_result and left_result[0] > 0:
         left_ri = (left_result[1] / left_result[0]) * 100
-        orphan_count = left_result[0] - left_result[1]
+        left_orphan_count = left_result[0] - left_result[1]
     else:
         left_ri = 0.0
-        orphan_count = 0
+        left_orphan_count = 0
 
     # Right referential integrity: % of table2 values that are referenced
     right_query = f"""
@@ -103,7 +103,7 @@ def evaluate_join_candidate(
         right_uniqueness=join_candidate.right_uniqueness,
         left_referential_integrity=round(left_ri, 2),
         right_referential_integrity=round(right_ri, 2),
-        orphan_count=orphan_count,
+        left_orphan_count=left_orphan_count,
         cardinality_verified=cardinality_verified,
     )
 
@@ -423,10 +423,13 @@ def compute_ri_metrics(
           (row-weighted — duplicate rows of an orphan value each count)
         - left_value_containment: % of from_table's DISTINCT values with a
           match (distinct-weighted — the containment of the from-side VALUE
-          SET in the to side, insensitive to row duplication; the orientation
-          basis for 1:1 rows at ``Relationship.oriented_row``, DAT-725)
+          SET in the to side, insensitive to row duplication). Nothing orients
+          on it: it is EVIDENCE, and no consumer currently carries it as far
+          as the judge (DAT-725).
         - right_referential_integrity: % of to_table values referenced
-        - orphan_count: from_table values with no match
+        - left_orphan_count: from_table ROWS with no match — a from-side
+          measurement, hence the prefix. It must flip with the pair; see
+          ``db_models.swap_directional_evidence``.
         - cardinality_verified: whether cardinality matches (if provided)
     """
     # Left referential integrity — row-weighted AND distinct-weighted in one
@@ -452,17 +455,17 @@ def compute_ri_metrics(
         left_result = duckdb_conn.execute(left_query).fetchone()
         if left_result and left_result[0] > 0:
             left_ri = (left_result[1] / left_result[0]) * 100
-            orphan_count = left_result[0] - left_result[1]
+            left_orphan_count = left_result[0] - left_result[1]
             left_total_count = left_result[0]
             if left_result[2] > 0:
                 left_containment = (left_result[3] / left_result[2]) * 100
         else:
             left_ri = 0.0
-            orphan_count = 0
+            left_orphan_count = 0
             left_total_count = 0
     except Exception:
         left_ri = None
-        orphan_count = None
+        left_orphan_count = None
 
     # Right referential integrity
     right_query = f'''
@@ -495,7 +498,7 @@ def compute_ri_metrics(
             round(left_containment, 2) if left_containment is not None else None
         ),
         "right_referential_integrity": round(right_ri, 2) if right_ri is not None else None,
-        "orphan_count": orphan_count,
+        "left_orphan_count": left_orphan_count,
         "left_total_count": left_total_count,
         "cardinality_verified": cardinality_verified,
     }

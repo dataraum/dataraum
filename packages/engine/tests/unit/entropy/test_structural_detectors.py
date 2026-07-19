@@ -232,7 +232,7 @@ class TestRelationshipEntropyDetector:
         context = self._context(
             {
                 "left_referential_integrity": 95.0,
-                "orphan_count": 50,
+                "left_orphan_count": 50,
                 "left_total_count": 1000,
                 "cardinality_verified": True,
             }
@@ -246,7 +246,7 @@ class TestRelationshipEntropyDetector:
         """Orphan count with total_count uses the ratio formula."""
         context = self._context(
             {
-                "orphan_count": 50,
+                "left_orphan_count": 50,
                 "left_total_count": 1000,
                 "cardinality_verified": True,
             }
@@ -262,7 +262,7 @@ class TestRelationshipEntropyDetector:
         The old `0.3 + orphan/1000` count fallback was theater (DAT-442 two-table); with
         no total_count and no left_referential_integrity there is nothing to measure.
         """
-        context = self._context({"orphan_count": 50, "cardinality_verified": True})
+        context = self._context({"left_orphan_count": 50, "cardinality_verified": True})
         assert detector.detect(context) == []
 
     def test_no_relationship_empty(self, detector: RelationshipEntropyDetector):

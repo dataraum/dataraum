@@ -179,7 +179,7 @@ def load_relationship_candidates_for_semantic(
                         "right_uniqueness": 1.0,
                         "left_referential_integrity": 100.0,
                         "right_referential_integrity": 85.0,
-                        "orphan_count": 5,
+                        "left_orphan_count": 5,
                         "cardinality_verified": True,
                     }
                 ]
@@ -276,8 +276,8 @@ def load_relationship_candidates_for_semantic(
                 jc["left_referential_integrity"] = evidence["left_referential_integrity"]
             if "right_referential_integrity" in evidence:
                 jc["right_referential_integrity"] = evidence["right_referential_integrity"]
-            if "orphan_count" in evidence:
-                jc["orphan_count"] = evidence["orphan_count"]
+            if "left_orphan_count" in evidence:
+                jc["left_orphan_count"] = evidence["left_orphan_count"]
             if "cardinality_verified" in evidence:
                 jc["cardinality_verified"] = evidence["cardinality_verified"]
 

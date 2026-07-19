@@ -51,7 +51,7 @@ def test_loader_serves_uniqueness_alongside_ri_metrics(session) -> None:
                 "right_uniqueness": 1.0,
                 "left_referential_integrity": 100.0,
                 "right_referential_integrity": 85.0,
-                "orphan_count": 0,
+                "left_orphan_count": 0,
                 "cardinality_verified": True,
             },
         )

@@ -26,7 +26,7 @@ class JoinCandidate(BaseModel):
     Evaluation metrics (populated by evaluator.py):
     - left_referential_integrity: % of FK values with matching PK
     - right_referential_integrity: % of PK values that are referenced
-    - orphan_count: FK values with no matching PK
+    - left_orphan_count: FK values with no matching PK
     - cardinality_verified: whether detected cardinality matches actual
     """
 
@@ -50,7 +50,7 @@ class JoinCandidate(BaseModel):
     # Evaluation metrics (populated by evaluator.py)
     left_referential_integrity: float | None = None  # 0-100%
     right_referential_integrity: float | None = None  # 0-100%
-    orphan_count: int | None = None
+    left_orphan_count: int | None = None
     cardinality_verified: bool | None = None
 
 

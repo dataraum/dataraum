@@ -195,8 +195,8 @@ def _store_candidates(
                 evidence["left_referential_integrity"] = jc.left_referential_integrity
             if jc.right_referential_integrity is not None:
                 evidence["right_referential_integrity"] = jc.right_referential_integrity
-            if jc.orphan_count is not None:
-                evidence["orphan_count"] = jc.orphan_count
+            if jc.left_orphan_count is not None:
+                evidence["left_orphan_count"] = jc.left_orphan_count
             if jc.cardinality_verified is not None:
                 evidence["cardinality_verified"] = jc.cardinality_verified
 

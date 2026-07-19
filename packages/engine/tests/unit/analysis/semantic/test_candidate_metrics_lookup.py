@@ -16,7 +16,7 @@ def _make_candidate(
     right_ri: float | None = None,
     introduces_duplicates: bool | None = None,
     join_success_rate: float | None = None,
-    orphan_count: int | None = None,
+    left_orphan_count: int | None = None,
     cardinality_verified: bool | None = None,
     left_uniqueness: float | None = None,
     right_uniqueness: float | None = None,
@@ -32,8 +32,8 @@ def _make_candidate(
         jc["left_referential_integrity"] = left_ri
     if right_ri is not None:
         jc["right_referential_integrity"] = right_ri
-    if orphan_count is not None:
-        jc["orphan_count"] = orphan_count
+    if left_orphan_count is not None:
+        jc["left_orphan_count"] = left_orphan_count
     if cardinality_verified is not None:
         jc["cardinality_verified"] = cardinality_verified
 

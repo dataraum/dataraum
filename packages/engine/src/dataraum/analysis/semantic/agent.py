@@ -590,14 +590,19 @@ class SemanticAgent(LLMFeature):
                     # Add evaluation metrics if available
                     left_ri = jc.get("left_referential_integrity")
                     right_ri = jc.get("right_referential_integrity")
-                    orphans = jc.get("orphan_count")
+                    orphans = jc.get("left_orphan_count")
                     verified = jc.get("cardinality_verified")
 
                     metrics = []
                     if left_ri is not None and right_ri is not None:
                         metrics.append(f"RI: L={left_ri:.0f}% R={right_ri:.0f}%")
-                    if orphans is not None and orphans > 0:
-                        metrics.append(f"orphans={orphans}")
+                    # Render a measured ZERO too. Suppressing it made "clean" and
+                    # "never measured" the same line, so the judge could not tell
+                    # an FK with no orphans from one whose orphans nobody counted
+                    # (DAT-725). ``L`` is the printed left column, matching the
+                    # left-prefixed metric it is measured on.
+                    if orphans is not None:
+                        metrics.append(f"L orphans={orphans}")
                     if verified is not None:
                         metrics.append(f"verified={verified}")
 

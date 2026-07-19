@@ -188,27 +188,33 @@ class Relationship(Base):
         cardinality is the signal (DAT-758): ``one-to-many`` means ``from`` is the
         ONE (parent/dim) side, so swap the endpoints — and the directional
         ``left_*``/``right_*`` evidence — to store ``many-to-one``. ``many-to-one``
-        is already correct. ``one-to-one`` is oriented by measured CONTAINMENT
-        asymmetry (DAT-725) — a 1:1 FK's REFERENCING side's value set is wholly
-        contained in the referenced side's, so its forward distinct-value
-        containment (~100%) exceeds the reverse; a smaller forward than reverse
-        means the emission points parent→child and is swapped.
+        is already correct. That normalisation is safe because it only rewrites
+        the writer's OWN measured cardinality label into canonical form — it
+        decides nothing.
 
-        **When containment is symmetric this helper deliberately does NOT decide.**
-        Identical value sets make containment silent, but the direction is still
-        knowable: the REFERENCED side of an FK must be a complete key, so of two
-        identical value sets the side with the lower ``uniq`` (a sparse nullable
-        FK, its ratio depressed by unmatched rows) is the child. That call
-        belongs to the JUDGE, which is served both sides' ``uniq`` and told this
-        rule in ``semantic_per_table``'s orientation section — not to a
-        deterministic second opinion here. A previous revision of this helper
-        did re-decide it from the same numbers; it was removed as a
-        deterministic shadow over a judgment the agent is equipped to make
-        (lead ruling, DAT-725). What remains here is containment, which is
-        direct structural evidence, plus the ``one-to-many`` normalisation
-        above. Only a DENSE bijection — both sides complete over identical value
-        sets — is undecidable from data at all; there direction is a modelling
-        question and the judge should say so rather than guess.
+        **``one-to-one`` is NOT re-oriented here.** A previous revision swapped a
+        1:1 when forward containment measured less than reverse. Reduce the
+        algebra and that condition is ``|from distinct| > |to distinct|`` — a
+        distinct-COUNT comparison, not the containment test its comment claimed.
+        It is right only when one value set is a clean subset of the other, and
+        it INVERTS a correct child→parent emission whenever the child carries
+        orphan values: child {1..5} against parent {1,2,3} measures forward 60 /
+        reverse 100 and is swapped, with ``cardinality_verified`` True.
+        ``joins.py`` deliberately admits such dirty subset FKs and the judge
+        prompt deliberately confirms them, so this module manufactures the very
+        inputs that rule breaks on. Containment CANNOT tell "child that is a
+        clean subset" from "child with orphans" — the two measure identically —
+        so declining to swap is the honest behaviour. Removed on that reasoning
+        (DAT-725 review), not kept because this corpus happens to hold only the
+        shape it gets right.
+
+        A 1:1's direction therefore rests with the JUDGE, which is told the rule
+        in ``semantic_per_table``'s orientation section: decide from DEPENDENCE
+        (which row cannot exist without the other), with the measured numbers as
+        corroboration. Caveat the removal exposes: the detector writes candidate
+        rows through this helper, and those already-oriented rows are what the
+        judge is later shown — so its ``from`` side is a presentation the judge
+        inherits, not a fact it derived.
 
         Direction only — the judge's EXISTENCE verdict is never touched here.
         ``many-to-many``/``None`` cannot be oriented. The DB backstop is
@@ -224,49 +230,12 @@ class Relationship(Base):
                 from_column_id,
             )
             cardinality = "many-to-one"
-            evidence = _swap_directional_evidence(evidence)
+            evidence = swap_directional_evidence(evidence)
             # A many-to-one child→parent join matches each child to exactly one
             # parent — it never fans out (the one-to-many parent→child join did).
+            # ``swap_directional_evidence`` dropped the measured-for-the-old-
+            # direction flag; this is the answer for the new one.
             evidence["introduces_duplicates"] = False
-        elif cardinality == "one-to-one":
-            # DISTINCT-weighted containment on both sides. The forward side
-            # prefers ``left_value_containment`` (compute_ri_metrics):
-            # row-weighted left RI under-states containment when the from side
-            # carries duplicate rows of ORPHAN values — duplication the 1:1
-            # measurement tolerates (it only checks the matched population) —
-            # and could invert a correct emission. The fallback to left RI is
-            # exact on the candidate-metrics path: a detector "one-to-one" means
-            # both columns are GLOBALLY unique, so row-weighted equals
-            # distinct-weighted there. The reverse side, right RI, is already
-            # distinct-weighted (% of to's distinct values referenced). Both
-            # metrics must be present and the declared cardinality must not be
-            # measurably contradicted (``cardinality_verified is False``);
-            # otherwise — or on a symmetric measurement — the emission stands:
-            # no fabricated signal, and no second opinion on a call that is the
-            # judge's (see the docstring).
-            forward = evidence.get("left_value_containment")
-            if forward is None:
-                forward = evidence.get("left_referential_integrity")
-            reverse = evidence.get("right_value_containment")
-            if reverse is None:
-                reverse = evidence.get("right_referential_integrity")
-            if (
-                evidence.get("cardinality_verified") is not False
-                and forward is not None
-                and reverse is not None
-                and forward < reverse
-            ):
-                from_table_id, from_column_id, to_table_id, to_column_id = (
-                    to_table_id,
-                    to_column_id,
-                    from_table_id,
-                    from_column_id,
-                )
-                evidence = _swap_directional_evidence(evidence)
-                # Audit trace: unlike the one-to-many flip (whose stored
-                # cardinality label proves a swap happened), a re-oriented 1:1
-                # row is otherwise indistinguishable from a kept emission.
-                evidence["orientation_swapped"] = True
         return {
             "run_id": run_id,
             "from_table_id": from_table_id,
@@ -282,15 +251,32 @@ class Relationship(Base):
         }
 
 
-def _swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Exchange every ``left_*``/``right_*`` metric when the FK endpoints flip.
+def swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Re-express a measurement dict for the OPPOSITE join direction.
 
-    Referential integrity, uniqueness and any other directional metric are named
-    for the FROM/TO endpoints; after the swap the old TO becomes FROM, so the
-    pairs exchange. An unpaired ``left_``/``right_`` key still moves — the metric
-    follows its endpoint. Only ``left_``/``right_``-PREFIXED keys are covered: an
-    unprefixed-but-directional metric (e.g. a bare ``orphan_count``) does NOT swap,
-    so a new evidence producer that needs orientation-following must use the prefix.
+    THE single implementation of the flip (DAT-725). Every measurement in the
+    dict was taken for one ordered pair; reversing the pair changes what each
+    one means, so all three classes of directional key are handled here:
+
+    - **Per-side metrics** — ``left_*``/``right_*`` exchange, because the old TO
+      becomes the new FROM. An unpaired prefixed key still moves; the metric
+      follows its endpoint.
+    - **``cardinality``** — ``one-to-many`` ⇄ ``many-to-one``. It reads as
+      from-side→to-side, so it inverts with the pair. (``one-to-one`` and
+      ``many-to-many`` are symmetric.) A caller that also stores cardinality in
+      a COLUMN must keep the two in step; ``Relationship.oriented_row`` does.
+    - **``introduces_duplicates``** — the fan-out answer for the measured
+      direction only, and NOT recoverable by flipping it: whether a join
+      multiplies rows depends on which side is scanned. Dropped, so a caller
+      that knows the new direction's answer sets it explicitly and one that
+      doesn't carries no claim rather than a reversed one.
+
+    This function is the reason directional metrics must be PREFIXED. A bare
+    directional key (``orphan_count`` before DAT-725) passes through unchanged
+    and silently keeps describing the side it is no longer on — which shipped
+    ``RI: L=100%`` next to ``orphans=8`` on the same stored row, to the judge
+    and to the orphan-rate detector alike. Prefix a new directional metric or
+    it will be wrong the first time a pair flips.
     """
     swapped: dict[str, Any] = {}
     for key, value in evidence.items():
@@ -298,9 +284,17 @@ def _swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             swapped["right_" + key[len("left_") :]] = value
         elif key.startswith("right_"):
             swapped["left_" + key[len("right_") :]] = value
+        elif key == "introduces_duplicates":
+            continue
+        elif key == "cardinality" and value in _CARDINALITY_FLIP:
+            swapped[key] = _CARDINALITY_FLIP[value]
         else:
             swapped[key] = value
     return swapped
+
+
+# ``one-to-one``/``many-to-many`` are symmetric — absent by design, not oversight.
+_CARDINALITY_FLIP = {"one-to-many": "many-to-one", "many-to-one": "one-to-many"}
 
 
 Index("idx_relationships_from", Relationship.from_table_id)

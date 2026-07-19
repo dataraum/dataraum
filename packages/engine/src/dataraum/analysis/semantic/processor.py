@@ -19,7 +19,10 @@ if TYPE_CHECKING:
 
 from dataraum.analysis.relationships.composite import rescue_fanout_to_composite
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
-from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
+from dataraum.analysis.relationships.db_models import (
+    SurrogateKeyIntent,
+    swap_directional_evidence,
+)
 from dataraum.analysis.relationships.evaluator import (
     compute_actual_cardinality,
     compute_composite_cardinality,
@@ -119,8 +122,8 @@ def _build_candidate_metrics_lookup(
                 metrics["left_referential_integrity"] = jc["left_referential_integrity"]
             if "right_referential_integrity" in jc:
                 metrics["right_referential_integrity"] = jc["right_referential_integrity"]
-            if "orphan_count" in jc:
-                metrics["orphan_count"] = jc["orphan_count"]
+            if "left_orphan_count" in jc:
+                metrics["left_orphan_count"] = jc["left_orphan_count"]
             if "cardinality_verified" in jc:
                 metrics["cardinality_verified"] = jc["cardinality_verified"]
             if "cardinality" in jc:
@@ -147,31 +150,18 @@ def _build_candidate_metrics_lookup(
 
             if metrics:
                 lookup[(table1, col1, table2, col2)] = metrics
-
-                # Build reverse entry with flipped direction-dependent fields
-                reverse = dict(metrics)
-                card = reverse.get("cardinality")
-                if card == "one-to-many":
-                    reverse["cardinality"] = "many-to-one"
-                elif card == "many-to-one":
-                    reverse["cardinality"] = "one-to-many"
-                # Swap left/right RI
-                left_ri = reverse.pop("left_referential_integrity", None)
-                right_ri = reverse.pop("right_referential_integrity", None)
-                if left_ri is not None:
-                    reverse["right_referential_integrity"] = left_ri
-                if right_ri is not None:
-                    reverse["left_referential_integrity"] = right_ri
-                # Uniqueness is per-side too — it follows its endpoint.
-                left_u = reverse.pop("left_uniqueness", None)
-                right_u = reverse.pop("right_uniqueness", None)
-                if left_u is not None:
-                    reverse["right_uniqueness"] = left_u
-                if right_u is not None:
-                    reverse["left_uniqueness"] = right_u
-                # introduces_duplicates is directional — drop from reverse
-                reverse.pop("introduces_duplicates", None)
-                lookup[(table2, col2, table1, col1)] = reverse
+                # The judge may emit the pair either way round, so the reverse
+                # key is served too — re-expressed for that direction through
+                # the ONE flip helper the persist path uses (DAT-725). This site
+                # used to hand-roll the swap over a per-metric list, which meant
+                # every metric not on the list kept describing the side it was
+                # no longer on: ``orphan_count`` was measured on the from side
+                # and carried through verbatim, so a judge that emitted the
+                # opposite direction stored ``L=100% RI`` beside ``orphans=2``
+                # — a reading that cannot be true, shipped to the orphan-rate
+                # detector as fact. Two flip implementations is one too many:
+                # prefix a directional metric and both sites get it right.
+                lookup[(table2, col2, table1, col1)] = swap_directional_evidence(metrics)
 
     return lookup
 

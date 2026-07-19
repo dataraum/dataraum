@@ -575,15 +575,24 @@ class TestSynthesizeAndStoreTables:
             == []
         )
 
-    def test_flipped_one_to_one_confirmation_persists_in_measured_direction(self, session) -> None:
+    def test_flipped_one_to_one_confirmation_persists_in_the_judges_direction(
+        self, session
+    ) -> None:
         """DAT-725 A2 class: the judge confirms a verified 1:1 pair FLIPPED.
 
-        The candidate carries measured RI (forward 100% / reverse coverage
-        24%); the judge emits parent→child at 0.95. The candidate-metrics
-        reverse entry hands the chokepoint the direction-correct evidence and
-        ``oriented_row`` re-orients: the persisted llm row's ``from`` is the
-        fully-contained (referencing) side, whatever direction the judge
-        emitted. The existence verdict (confidence, confirmed) is untouched.
+        The candidate is stored invoices→journal_entries carrying measured RI
+        (forward 100% / reverse coverage 24%); the judge emits the opposite
+        direction at 0.95. Its direction is what persists.
+
+        A previous revision re-oriented a 1:1 back onto the containment
+        measurement. That rule reduces to ``|from distinct| > |to distinct|``,
+        which cannot tell a child that is a CLEAN SUBSET of its parent from a
+        child carrying ORPHANS — the two measure identically, and it inverts
+        the second. So the direction is the judge's to decide from dependence
+        (``semantic_per_table``'s orientation section), and this path's job is
+        only to hand it evidence expressed for the direction it chose: the
+        reverse lookup entry, RI exchanged. The existence verdict (confidence,
+        confirmed) is untouched either way.
         """
         invoices = _table_with_columns(session, "invoices", ["entry_id"])
         entries = _table_with_columns(session, "journal_entries", ["entry_id"])
@@ -652,13 +661,15 @@ class TestSynthesizeAndStoreTables:
             .scalars()
             .one()
         )
-        # Re-oriented to the measured containment: from = invoices (contained side).
-        assert rel.from_table_id == invoices.table_id
-        assert rel.to_table_id == entries.table_id
+        # The judge's direction stands: from = journal_entries.
+        assert rel.from_table_id == entries.table_id
+        assert rel.to_table_id == invoices.table_id
         assert rel.cardinality == "one-to-one"
         assert rel.confidence == 0.95  # existence verdict untouched
-        assert rel.evidence["left_referential_integrity"] == 100.0
-        assert rel.evidence["right_referential_integrity"] == 24.0
+        # ...and the evidence is expressed for THAT direction, not the
+        # candidate's: the reverse lookup entry exchanged the two RI numbers.
+        assert rel.evidence["left_referential_integrity"] == 24.0
+        assert rel.evidence["right_referential_integrity"] == 100.0
 
     def test_dirty_one_to_one_without_candidate_keeps_correct_orientation(self, session) -> None:
         """Duplicated orphan rows must not invert a correct 1:1 emission on the

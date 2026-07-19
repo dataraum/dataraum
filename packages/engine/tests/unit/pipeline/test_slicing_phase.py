@@ -1502,6 +1502,113 @@ class TestDeterministicInventory:
             ("invoice_id__date", "timestamp"),
         }
 
+    def test_attribute_role_is_deliberately_kept(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """The exclusion set is EXACTLY {measure, timestamp} — 'attribute' stays.
+
+        An 'attribute' label is what a FOLDED descriptive dimension member draws
+        (account_name inlined next to its key); the role is an LLM's soft
+        per-table read, not a structural fact, so excluding it would re-open the
+        trap in its descriptive form. Pre-registered in the DAT-725 design.
+        """
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        account_name = Column(
+            table_id=seeded["fact"].table_id,
+            column_name="account_name",
+            column_position=7,
+            resolved_type="VARCHAR",
+        )
+        session.add(account_name)
+        session.flush()
+        session.add(
+            SemanticAnnotation(
+                column_id=account_name.column_id, run_id=None, semantic_role="attribute"
+            )
+        )
+        session.flush()
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        row = session.execute(
+            select(SliceDefinition).where(SliceDefinition.column_name == "account_name")
+        ).scalar_one()
+        assert row.detection_source == "structural"
+
+    def test_role_gate_scopes_to_promoted_generation_head(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """DAT-413 × DAT-725: coexisting annotation runs — the promoted generation
+        head decides which row feeds the existence gate. Head-flip guard: with
+        identical data, flipping the head flips eligibility; without run-scoping
+        an arbitrary scan-order row would win and existence would flap on exactly
+        the axis this rescope pins down.
+        """
+        from uuid import uuid4
+
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
+
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        amount_id = session.execute(
+            select(Column.column_id).where(
+                Column.table_id == seeded["fact"].table_id, Column.column_name == "amount"
+            )
+        ).scalar_one()
+        # A second, coexisting run's annotation disagrees: 'dimension', not 'measure'.
+        session.add(
+            SemanticAnnotation(column_id=amount_id, run_id="alt", semantic_role="dimension")
+        )
+        head = MetadataSnapshotHead(
+            head_id=str(uuid4()),
+            target=f"table:{seeded['fact'].table_id}",
+            stage=GENERATION_STAGE,
+            run_id=baseline_run_id(),  # the seeded 'measure' row's autofilled run
+        )
+        session.add(head)
+        session.flush()
+
+        # Head at the baseline run → the 'measure' row is current → excluded.
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        names_a = {
+            r.column_name
+            for r in session.execute(
+                select(SliceDefinition).where(SliceDefinition.run_id == "run-A")
+            ).scalars()
+        }
+        assert "amount" not in names_a
+
+        # Flip the head to the 'alt' run → the 'dimension' row is current → eligible.
+        head.run_id = "alt"
+        session.flush()
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-B"))
+        assert result.status == PhaseStatus.COMPLETED
+        names_b = {
+            r.column_name
+            for r in session.execute(
+                select(SliceDefinition).where(SliceDefinition.run_id == "run-B")
+            ).scalars()
+        }
+        assert "amount" in names_b
+
     def test_llm_config_missing_persists_inventory_and_backstop(
         self,
         mock_load_config: MagicMock,

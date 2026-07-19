@@ -64,10 +64,19 @@ _MAX_NULL_RATIO = 0.5  # majority-NULL => most rows fall in the NULL bucket
 # ``Literal["key", "measure", "dimension", "timestamp", "attribute"]``), read
 # from the persisted annotations — existing deterministic metadata, no LLM call.
 # The measure/timestamp cut is the semantic filter the LLM election used to
-# provide. Keys are deliberately KEPT: a FOLDED dimension key (account_id
-# inlined on a fact grain) is precisely a key with no resolved FK — gating on
-# "key without FK" would re-open the nondeterministic-existence hole this
-# rescope closes. Degenerate PKs already die as near-keys in the pre-filter.
+# provide. The set is EXACTLY {measure, timestamp} — pre-registered in the
+# DAT-725 design; the two deliberate keeps:
+# - ``key``: a FOLDED dimension key (account_id inlined on a fact grain) is
+#   precisely a key with no resolved FK — gating on "key without FK" would
+#   re-open the nondeterministic-existence hole this rescope closes.
+#   Degenerate PKs already die as near-keys in the pre-filter.
+# - ``attribute``: the label a FOLDED descriptive dimension member draws
+#   (account_name inlined next to its key) — the role is judged per-table by
+#   an LLM, so "not used for grouping" is a soft read, not a structural fact;
+#   excluding it would re-open the same hole in its descriptive form. A kept
+#   attribute is grain-safe by the pre-filter; the priority floor + the
+#   curation budget keep it out of LLM context, and the driver-tree's
+#   min_support folds it if its support is thin.
 _EXCLUDED_SLICE_ROLES = frozenset({"measure", "timestamp"})
 
 
@@ -748,13 +757,31 @@ class SlicingPhase(BasePhase):
             ).scalars():
                 dim_table_by_fk_col[rel.from_column_id] = rel.to_table_id
 
+        # Run-staleness scoping for the role gate (DAT-725 × DAT-413):
+        # ``SemanticAnnotation`` is run-versioned — a replay/teach leaves >1 row
+        # per column across runs — and ``semantic_role`` now gates slice
+        # EXISTENCE, so an arbitrary-run row pick would make existence flap on
+        # exactly the axis this rescope pins down. Filter every annotation
+        # through its table's promoted add_source generation head (the
+        # ``graphs/context.py`` ``_is_current`` pattern): a table with no
+        # promoted head keeps what's there — no "current" to scope to.
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
+
+        gen_head_by_table: dict[str, str | None] = {
+            tid: head_run_id(ctx.session, f"table:{tid}", GENERATION_STAGE)
+            for tid in set(table_ids) | dim_table_ids
+        }
+
+        def _is_current(ann_table_id: str, ann_run_id: str) -> bool:
+            want = gen_head_by_table.get(ann_table_id)
+            return want is None or ann_run_id == want
+
         # Dim source-column semantic roles, keyed (dim_table_id, column_name) —
         # the DAT-725 role gate needs a role for enriched ``fk__attr`` entries,
         # and enriched-view Column records carry no annotations of their own
         # (they are registered after the semantic phase). Resolve through the
         # view's relationship provenance to the DIM table's ``attr`` column,
-        # object-grain without a run filter (the hierarchies
-        # ``_resolve_candidates`` / drivers/persistence.py convention).
+        # head-scoped as above.
         dim_role_by_attr: dict[tuple[str, str], str] = {}
         if dim_table_ids:
             dim_col_ident = {
@@ -769,8 +796,9 @@ class SlicingPhase(BasePhase):
                         SemanticAnnotation.column_id.in_(list(dim_col_ident))
                     )
                 ).scalars():
-                    if ann.semantic_role is not None:
-                        dim_role_by_attr[dim_col_ident[ann.column_id]] = ann.semantic_role
+                    ann_table_id, ann_col_name = dim_col_ident[ann.column_id]
+                    if ann.semantic_role is not None and _is_current(ann_table_id, ann.run_id):
+                        dim_role_by_attr[(ann_table_id, ann_col_name)] = ann.semantic_role
 
         for table in tables:
             # Get columns for this table
@@ -810,9 +838,13 @@ class SlicingPhase(BasePhase):
                     col_dict["cardinality_ratio"] = profile.cardinality_ratio
                     col_dict["top_values"] = profile_data.get("top_values", [])
 
-            # Merge semantic annotations into columns
+            # Merge semantic annotations into columns — head-scoped via
+            # ``_is_current`` (see above): ``semantic_role`` gates existence now,
+            # so a stale run's coexisting row must not win an arbitrary scan.
             sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(col_ids))
             for ann in (ctx.session.execute(sem_stmt)).scalars().all():
+                if not _is_current(table.table_id, ann.run_id):
+                    continue
                 col_dict = col_dict_by_id.get(ann.column_id)
                 if col_dict:
                     col_dict["semantic_role"] = ann.semantic_role

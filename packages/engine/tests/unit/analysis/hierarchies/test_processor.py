@@ -64,9 +64,8 @@ class TestIdentityJudge:
     On the fact-grain view a folded key + its attributes REPEAT, so a code↔name
     alias (``account_id ⇄ account_name``) and a COINCIDENTAL 1:1 (``account_id ⇄
     opened_date``) both pass perm-BH as non-key bijections and reach the judge —
-    only meaning separates them. 120 rows (3 accounts × 40) keeps support above
-    ``MIN_SUPPORT_ROWS`` so ``needs_confirmation`` reflects the judge's call, not
-    thin support.
+    only meaning separates them; ``needs_confirmation`` reflects the judge's
+    call (the former tiny-view row blanket was deleted — DAT-725).
     """
 
     @staticmethod
@@ -304,16 +303,21 @@ class TestDiscoverDimensionHierarchies:
         assert "country" not in all_members
         assert "order_id" not in all_members
 
-    def test_low_support_flags_needs_confirmation(
+    def test_small_table_significant_chain_asserts(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        # Below MIN_SUPPORT_ROWS (100): the chain is found but flagged, not asserted.
+        # The tiny-view row blanket is gone (DAT-725, lead-confirmed): support is
+        # priced by perm-BH, and a 12-row EXACT chain is far beyond coincidence
+        # (an exact FD over 6 distinct zips has null probability ~1/6!), so it is
+        # ASSERTED. Structures whose evidence cannot reach significance are not
+        # emitted at all — needs_confirmation now comes only from the named paths
+        # (null-carved thin edges, judge VALUE_SYSTEMATIC/ABSTAIN, judge failure).
         tid = seed_sales(real_session, duck, rows_per_zip=2)  # 12 rows
         discover_dimension_hierarchies(
             real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN, judge=approving_judge()
         )
         drills = _rows(real_session, tid, "drilldown")
-        assert drills and all(r.needs_confirmation for r in drills)
+        assert drills and all(not r.needs_confirmation for r in drills)
 
     def test_rerun_is_idempotent(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

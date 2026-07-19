@@ -249,28 +249,24 @@ class ConceptEdge(Base):
             sqlite_where=text("superseded_at IS NULL"),
         ),
         # Closed-vocabulary enforcement (DAT-802): derived from ConceptEdgePredicate,
-        # the single home. ``concept_edge_store.py`` (seed) only ever writes
-        # PART_OF/DISJOINT_WITH today; RECONCILES_WITH is the declared third
-        # predicate the aggregation-lineage reconciliation producer (DAT-800/801,
-        # out of this sweep's scope) will emit — included so that fenced work
-        # doesn't need a CHECK migration to land.
+        # the single home. ``concept_edge_store.py`` (seed) writes
+        # PART_OF/DISJOINT_WITH; RECONCILES_WITH is emitted by the derived
+        # producer ``reconciles_with.py`` (DAT-727: aggregation-lineage witness
+        # + multi-grounding, concept-grain self-loops).
         CheckConstraint(
             "predicate IN (" + ", ".join(f"'{v}'" for v in _CONCEPT_EDGE_PREDICATE_VALUES) + ")",
             name="predicate",
         ),
-        # Lifecycle-source vocabulary (DAT-802): 'seed' (``concept_edge_store.py:
-        # 104,126``) is the ONLY writer this column has today. 'derived' and
-        # 'frame' were the class docstring's future-authoring-path prose
-        # (DAT-800/801, P13) — not a live writer, not even a wired-but-dead
-        # cockpit code path (the cockpit's only ``concept_edges`` reference is
-        # the generated Drizzle mirror, ``schema.ts`` — a read view, not a
-        # writer). A CHECK admitting a value no writer produces is the exact
-        # defect this sweep exists to fix (the DAT-772 audit's
-        # ``relationship_type`` finding: "advertises values no writer
-        # produces"); the cost of a future writer needing a wider CHECK is one
-        # line + a re-dump landed by the PR that adds it (no migrations here —
-        # see the workspace CLAUDE.md's "no backwards-compat shims").
-        CheckConstraint("source IS NULL OR source = 'seed'", name="source"),
+        # Lifecycle-source vocabulary (DAT-802): every admitted value has a live
+        # writer — 'seed' (``concept_edge_store.py``, the vertical's declared
+        # edges) and 'derived' (``reconciles_with.py``, DAT-727: the
+        # aggregation-lineage-witness + multi-grounding reconciles_with
+        # self-loops, reconciled at the end of the metrics phase). 'frame'
+        # (P13's cockpit authoring) stays OUT until that writer exists — a
+        # CHECK admitting a value no writer produces is the exact defect the
+        # DAT-802 sweep fixed (the DAT-772 ``relationship_type`` finding);
+        # widening is one line + a re-dump in the PR that adds the writer.
+        CheckConstraint("source IS NULL OR source IN ('derived', 'seed')", name="source"),
     )
 
     edge_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -284,7 +280,7 @@ class ConceptEdge(Base):
     tolerance: Mapped[float | None] = mapped_column(Float)
 
     # Lifecycle: workspace-persistent with supersession (mirrors Concept).
-    # Closed vocab: see ck_concept_edges_source — 'seed' is the only live writer.
+    # Closed vocab: see ck_concept_edges_source — 'seed' + 'derived' are the live writers.
     source: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)

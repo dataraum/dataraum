@@ -362,6 +362,15 @@ class MetricsPhase(BasePhase):
             catalogue_run_id=catalogue_run_id,
         )
 
+        # reconciles_with derivation (DAT-727 part c): with this run's grounding
+        # set settled, reconcile the concept-grain self-loop assertions — the
+        # aggregation-lineage witness (at the pinned catalogue run) and
+        # multi-grounding concepts — as source='derived' concept_edges rows
+        # (insert missing, supersede vanished; seed rows untouched).
+        from dataraum.analysis.semantic.reconciles_with import derive_reconciles_with
+
+        derive_reconciles_with(ctx.session, vertical=vertical, catalogue_run_id=catalogue_run_id)
+
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
         declared_stuck = sum(1 for a in artifacts.values() if a.state == "declared")

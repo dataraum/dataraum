@@ -448,6 +448,16 @@ def _grounding_stmts() -> list[str]:
             "INSERT INTO concepts (concept_id, vertical, name, kind, created_at) "
             f"VALUES ('{cid}', 'finance', '{cname}', 'measure', '{TS}')"
         )
+    # The DAT-727c derived reconciles_with SELF-LOOP (what derive_reconciles_with
+    # writes for account_balance's two healthy groundings): source='derived'
+    # (CHECK-admitted), from == to, resolved by og_concept_edges to one
+    # self-edge on the concept vertex.
+    stmts.append(
+        "INSERT INTO concept_edges "
+        "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
+        f"VALUES ('ce_rw', 'finance', 'reconciles_with', 'account_balance', "
+        f"'account_balance', 'derived', '{TS}')"
+    )
     for sid, field, statement, relation, select_expr, where, provenance, failed in _SNIPPETS:
         parts = json.dumps(extract_parts_dict(select_expr, relation, where))
         sql = compose_extract_sql(select_expr, relation, where)
@@ -951,6 +961,23 @@ def test_uses_edges_land_on_the_served_relations_columns(graph_engine: Engine) -
         ("sn_bs", "ec_amt", "amount", "measure"),
         ("sn_rev", "c_amt", "amount", "measure"),
     }
+
+
+def test_derived_reconciles_with_self_loop_resolves_in_the_graph(graph_engine: Engine) -> None:
+    """DAT-727c: the derived concept-grain self-loop (account_balance must tie
+    out across its groundings) binds as a concept_edge self-edge — both
+    endpoints resolve to the SAME active concept vertex, and the grounding
+    PAIR stays derivable from the grounded_by fan-out (no Grounding→Grounding
+    edge; one home)."""
+    sql = (
+        f"SELECT src, dst, pred FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS concept_node)-[e IS concept_edge "
+        "WHERE e.predicate = 'reconciles_with']->(b IS concept_node) "
+        "COLUMNS (a.concept_id AS src, b.concept_id AS dst, e.predicate AS pred))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst, r.pred) for r in conn.execute(text(sql))}
+    assert rows == {("con_bal", "con_bal", "reconciles_with")}
 
 
 def test_concept_groundings_and_their_columns_in_one_match(graph_engine: Engine) -> None:

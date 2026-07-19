@@ -15,21 +15,16 @@ import {
 	UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { CommandPalette } from "#/ui/command-palette";
 import { RunRailBadge } from "#/ui/runs/run-rail-badge";
 import { type Section, sections } from "#/ui/sections";
 import { tokens } from "#/ui/theme";
 
-/**
- * One rail icon. Branches on global vs workspace-scoped so each `Link` carries
- * concrete typed `to`/`params` (TanStack Router can't type-check a spread
- * union of link props). `wsId` is always defined (the shell falls back to the
- * active workspace), so workspace links resolve even from global routes like
- * /settings instead of dropping to `/`.
- */
-function RailItem({ section, wsId }: { section: Section; wsId: string }) {
+/** One rail icon. Every section is a fixed flat path (DAT-822) — one cockpit
+ * per workspace, so no link carries params. */
+function RailItem({ section }: { section: Section }) {
 	const Icon = section.icon;
 	// The Runs rail icon carries a badge — a yellow "Needs you (N)" count when the
 	// grounding loop parked runs for a human (DAT-553), else a processing dot while
@@ -37,64 +32,31 @@ function RailItem({ section, wsId }: { section: Section; wsId: string }) {
 	const icon = <Icon size={20} aria-hidden />;
 	const inner =
 		section.id === "workflows" ? <RunRailBadge>{icon}</RunRailBadge> : icon;
-	const common = {
-		variant: "subtle" as const,
-		size: "lg" as const,
-		"aria-label": section.label,
-		"data-testid": `rail-${section.id}`,
-	};
 
 	return (
 		<Tooltip label={section.label} position="right" withArrow>
-			{section.global ? (
-				<ActionIcon
-					{...common}
-					renderRoot={(props) => (
-						<Link
-							to={section.to}
-							activeProps={{ "data-active": "true" }}
-							{...props}
-						/>
-					)}
-				>
-					{inner}
-				</ActionIcon>
-			) : (
-				<ActionIcon
-					{...common}
-					renderRoot={(props) => (
-						<Link
-							to={section.to}
-							params={{ wsId }}
-							activeProps={{ "data-active": "true" }}
-							{...props}
-						/>
-					)}
-				>
-					{inner}
-				</ActionIcon>
-			)}
+			<ActionIcon
+				variant="subtle"
+				size="lg"
+				aria-label={section.label}
+				data-testid={`rail-${section.id}`}
+				renderRoot={(props) => (
+					<Link
+						to={section.to}
+						activeProps={{ "data-active": "true" }}
+						{...props}
+					/>
+				)}
+			>
+				{inner}
+			</ActionIcon>
 		</Tooltip>
 	);
 }
 
-export function CockpitShell({
-	children,
-	activeWorkspaceId,
-}: {
-	children: ReactNode;
-	activeWorkspaceId: string;
-}) {
+export function CockpitShell({ children }: { children: ReactNode }) {
 	const [paletteOpened, palette] = useDisclosure(false);
 	useHotkeys([["mod+K", () => palette.open()]]);
-
-	// wsId from the current route when it's workspace-scoped (`strict: false`
-	// lets the shell mount above routes that have none, e.g. /settings), else
-	// the active workspace. Always defined, so the rail's workspace links resolve
-	// even from a global route instead of falling back to "/".
-	const params = useParams({ strict: false });
-	const routeWsId = (params as { wsId?: string }).wsId;
-	const wsId = routeWsId ?? activeWorkspaceId;
 
 	return (
 		<>
@@ -134,7 +96,7 @@ export function CockpitShell({
 					{/* The six section icons. */}
 					<Stack gap="xs" align="center" data-testid="section-rail">
 						{sections.map((section) => (
-							<RailItem key={section.id} section={section} wsId={wsId} />
+							<RailItem key={section.id} section={section} />
 						))}
 					</Stack>
 				</AppShell.Navbar>

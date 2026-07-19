@@ -1,7 +1,7 @@
 // IO (DAT-632) — fetch the active workspace's state across the two clients
-// (`metadataDb` views in `ws_<id>` + cockpit_db `runs`) and hand the rows to the
-// pure `assembleBriefing`. No `wsId` param: the active workspace, like every tool
-// (the metadata client is pinned to one schema until per-request scoping, DAT-357).
+// (`metadataDb` views + cockpit_db `runs`) and hand the rows to the pure
+// `assembleBriefing`. No workspace param: the cockpit boots with a single
+// workspace identity and the metadata client's DB role resolves the schema.
 
 import { eq } from "drizzle-orm";
 import { resolveActiveWorkspaceRow } from "#/db/cockpit/registry";

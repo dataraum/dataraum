@@ -49,9 +49,7 @@ import {
 // (the cockpit route convention) so their cockpit_db + lake handlers are stripped
 // from the client bundle.
 
-export const Route = createFileRoute(
-	"/(app)/workspace/$wsId/reports/$reportId",
-)({
+export const Route = createFileRoute("/(app)/reports/$reportId")({
 	loader: async ({ params }) => {
 		const data = await loadReport({ data: params.reportId });
 		if (!data) throw notFound();
@@ -62,7 +60,6 @@ export const Route = createFileRoute(
 
 function ReportDetail() {
 	const { report, outdated } = Route.useLoaderData();
-	const { wsId } = Route.useParams();
 	const router = useRouter();
 	const navigate = useNavigate();
 	const rename = useServerFn(renameReportFn);
@@ -115,7 +112,7 @@ function ReportDetail() {
 		setBusy(true);
 		try {
 			await remove({ data: report.id });
-			navigate({ to: "/workspace/$wsId/reports", params: { wsId } });
+			navigate({ to: "/reports" });
 		} finally {
 			setBusy(false);
 		}

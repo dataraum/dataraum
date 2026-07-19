@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { SectionPlaceholder } from "#/ui/section-placeholder";
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/metadata")({
+export const Route = createFileRoute("/(app)/metadata")({
 	component: MetadataSection,
 });
 

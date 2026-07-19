@@ -21,24 +21,23 @@ import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiChatStreamRouteImport } from './routes/api/chat-stream'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
+import { Route as appWorkflowsRouteImport } from './routes/(app)/workflows'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
+import { Route as appOperatingModelRouteImport } from './routes/(app)/operating-model'
+import { Route as appMetadataRouteImport } from './routes/(app)/metadata'
+import { Route as appLibraryRouteImport } from './routes/(app)/library'
+import { Route as appGovernanceRouteImport } from './routes/(app)/governance'
+import { Route as appCockpitRouteRouteImport } from './routes/(app)/cockpit/route'
+import { Route as appReportsIndexRouteImport } from './routes/(app)/reports/index'
+import { Route as appCockpitIndexRouteImport } from './routes/(app)/cockpit/index'
 import { Route as ApiReportsMintRouteImport } from './routes/api/reports/mint'
 import { Route as ApiDrillNodeRouteImport } from './routes/api/drill/node'
 import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
 import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
 import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
-import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
-import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
-import { Route as appWorkspaceWsIdOperatingModelRouteImport } from './routes/(app)/workspace/$wsId/operating-model'
-import { Route as appWorkspaceWsIdMetadataRouteImport } from './routes/(app)/workspace/$wsId/metadata'
-import { Route as appWorkspaceWsIdLibraryRouteImport } from './routes/(app)/workspace/$wsId/library'
-import { Route as appWorkspaceWsIdGovernanceRouteImport } from './routes/(app)/workspace/$wsId/governance'
-import { Route as appWorkspaceWsIdCockpitRouteRouteImport } from './routes/(app)/workspace/$wsId/cockpit/route'
-import { Route as appWorkspaceWsIdReportsIndexRouteImport } from './routes/(app)/workspace/$wsId/reports/index'
-import { Route as appWorkspaceWsIdCockpitIndexRouteImport } from './routes/(app)/workspace/$wsId/cockpit/index'
-import { Route as appWorkspaceWsIdReportsReportIdRouteImport } from './routes/(app)/workspace/$wsId/reports/$reportId'
-import { Route as appWorkspaceWsIdCockpitConversationIdRouteImport } from './routes/(app)/workspace/$wsId/cockpit/$conversationId'
+import { Route as appReportsReportIdRouteImport } from './routes/(app)/reports/$reportId'
+import { Route as appCockpitConversationIdRouteImport } from './routes/(app)/cockpit/$conversationId'
 
 const appRouteRoute = appRouteRouteImport.update({
   id: '/(app)',
@@ -99,10 +98,50 @@ const ApiAwaitingInputRoute = ApiAwaitingInputRouteImport.update({
   path: '/api/awaiting-input',
   getParentRoute: () => rootRouteImport,
 } as any)
+const appWorkflowsRoute = appWorkflowsRouteImport.update({
+  id: '/workflows',
+  path: '/workflows',
+  getParentRoute: () => appRouteRoute,
+} as any)
 const appSettingsRoute = appSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
   getParentRoute: () => appRouteRoute,
+} as any)
+const appOperatingModelRoute = appOperatingModelRouteImport.update({
+  id: '/operating-model',
+  path: '/operating-model',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appMetadataRoute = appMetadataRouteImport.update({
+  id: '/metadata',
+  path: '/metadata',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appLibraryRoute = appLibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appGovernanceRoute = appGovernanceRouteImport.update({
+  id: '/governance',
+  path: '/governance',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appCockpitRouteRoute = appCockpitRouteRouteImport.update({
+  id: '/cockpit',
+  path: '/cockpit',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appReportsIndexRoute = appReportsIndexRouteImport.update({
+  id: '/reports/',
+  path: '/reports/',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appCockpitIndexRoute = appCockpitIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => appCockpitRouteRoute,
 } as any)
 const ApiReportsMintRoute = ApiReportsMintRouteImport.update({
   id: '/api/reports/mint',
@@ -134,74 +173,27 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
-const appWorkspaceWsIdRouteRoute = appWorkspaceWsIdRouteRouteImport.update({
-  id: '/workspace/$wsId',
-  path: '/workspace/$wsId',
+const appReportsReportIdRoute = appReportsReportIdRouteImport.update({
+  id: '/reports/$reportId',
+  path: '/reports/$reportId',
   getParentRoute: () => appRouteRoute,
 } as any)
-const appWorkspaceWsIdWorkflowsRoute =
-  appWorkspaceWsIdWorkflowsRouteImport.update({
-    id: '/workflows',
-    path: '/workflows',
-    getParentRoute: () => appWorkspaceWsIdRouteRoute,
-  } as any)
-const appWorkspaceWsIdOperatingModelRoute =
-  appWorkspaceWsIdOperatingModelRouteImport.update({
-    id: '/operating-model',
-    path: '/operating-model',
-    getParentRoute: () => appWorkspaceWsIdRouteRoute,
-  } as any)
-const appWorkspaceWsIdMetadataRoute =
-  appWorkspaceWsIdMetadataRouteImport.update({
-    id: '/metadata',
-    path: '/metadata',
-    getParentRoute: () => appWorkspaceWsIdRouteRoute,
-  } as any)
-const appWorkspaceWsIdLibraryRoute = appWorkspaceWsIdLibraryRouteImport.update({
-  id: '/library',
-  path: '/library',
-  getParentRoute: () => appWorkspaceWsIdRouteRoute,
-} as any)
-const appWorkspaceWsIdGovernanceRoute =
-  appWorkspaceWsIdGovernanceRouteImport.update({
-    id: '/governance',
-    path: '/governance',
-    getParentRoute: () => appWorkspaceWsIdRouteRoute,
-  } as any)
-const appWorkspaceWsIdCockpitRouteRoute =
-  appWorkspaceWsIdCockpitRouteRouteImport.update({
-    id: '/cockpit',
-    path: '/cockpit',
-    getParentRoute: () => appWorkspaceWsIdRouteRoute,
-  } as any)
-const appWorkspaceWsIdReportsIndexRoute =
-  appWorkspaceWsIdReportsIndexRouteImport.update({
-    id: '/reports/',
-    path: '/reports/',
-    getParentRoute: () => appWorkspaceWsIdRouteRoute,
-  } as any)
-const appWorkspaceWsIdCockpitIndexRoute =
-  appWorkspaceWsIdCockpitIndexRouteImport.update({
-    id: '/',
-    path: '/',
-    getParentRoute: () => appWorkspaceWsIdCockpitRouteRoute,
-  } as any)
-const appWorkspaceWsIdReportsReportIdRoute =
-  appWorkspaceWsIdReportsReportIdRouteImport.update({
-    id: '/reports/$reportId',
-    path: '/reports/$reportId',
-    getParentRoute: () => appWorkspaceWsIdRouteRoute,
-  } as any)
-const appWorkspaceWsIdCockpitConversationIdRoute =
-  appWorkspaceWsIdCockpitConversationIdRouteImport.update({
+const appCockpitConversationIdRoute =
+  appCockpitConversationIdRouteImport.update({
     id: '/$conversationId',
     path: '/$conversationId',
-    getParentRoute: () => appWorkspaceWsIdCockpitRouteRoute,
+    getParentRoute: () => appCockpitRouteRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/cockpit': typeof appCockpitRouteRouteWithChildren
+  '/governance': typeof appGovernanceRoute
+  '/library': typeof appLibraryRoute
+  '/metadata': typeof appMetadataRoute
+  '/operating-model': typeof appOperatingModelRoute
   '/settings': typeof appSettingsRoute
+  '/workflows': typeof appWorkflowsRoute
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
@@ -212,27 +204,25 @@ export interface FileRoutesByFullPath {
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
-  '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/cockpit/$conversationId': typeof appCockpitConversationIdRoute
+  '/reports/$reportId': typeof appReportsReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
-  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
-  '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
-  '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
-  '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
-  '/workspace/$wsId/operating-model': typeof appWorkspaceWsIdOperatingModelRoute
-  '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
-  '/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
-  '/workspace/$wsId/reports/$reportId': typeof appWorkspaceWsIdReportsReportIdRoute
-  '/workspace/$wsId/cockpit/': typeof appWorkspaceWsIdCockpitIndexRoute
-  '/workspace/$wsId/reports/': typeof appWorkspaceWsIdReportsIndexRoute
+  '/cockpit/': typeof appCockpitIndexRoute
+  '/reports/': typeof appReportsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/governance': typeof appGovernanceRoute
+  '/library': typeof appLibraryRoute
+  '/metadata': typeof appMetadataRoute
+  '/operating-model': typeof appOperatingModelRoute
   '/settings': typeof appSettingsRoute
+  '/workflows': typeof appWorkflowsRoute
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
@@ -243,28 +233,28 @@ export interface FileRoutesByTo {
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
-  '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/cockpit/$conversationId': typeof appCockpitConversationIdRoute
+  '/reports/$reportId': typeof appReportsReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
-  '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
-  '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
-  '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
-  '/workspace/$wsId/operating-model': typeof appWorkspaceWsIdOperatingModelRoute
-  '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
-  '/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
-  '/workspace/$wsId/reports/$reportId': typeof appWorkspaceWsIdReportsReportIdRoute
-  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitIndexRoute
-  '/workspace/$wsId/reports': typeof appWorkspaceWsIdReportsIndexRoute
+  '/cockpit': typeof appCockpitIndexRoute
+  '/reports': typeof appReportsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/(app)': typeof appRouteRouteWithChildren
+  '/(app)/cockpit': typeof appCockpitRouteRouteWithChildren
+  '/(app)/governance': typeof appGovernanceRoute
+  '/(app)/library': typeof appLibraryRoute
+  '/(app)/metadata': typeof appMetadataRoute
+  '/(app)/operating-model': typeof appOperatingModelRoute
   '/(app)/settings': typeof appSettingsRoute
+  '/(app)/workflows': typeof appWorkflowsRoute
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
@@ -275,29 +265,28 @@ export interface FileRoutesById {
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
-  '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/(app)/cockpit/$conversationId': typeof appCockpitConversationIdRoute
+  '/(app)/reports/$reportId': typeof appReportsReportIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
-  '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
-  '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
-  '/(app)/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
-  '/(app)/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
-  '/(app)/workspace/$wsId/operating-model': typeof appWorkspaceWsIdOperatingModelRoute
-  '/(app)/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
-  '/(app)/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
-  '/(app)/workspace/$wsId/reports/$reportId': typeof appWorkspaceWsIdReportsReportIdRoute
-  '/(app)/workspace/$wsId/cockpit/': typeof appWorkspaceWsIdCockpitIndexRoute
-  '/(app)/workspace/$wsId/reports/': typeof appWorkspaceWsIdReportsIndexRoute
+  '/(app)/cockpit/': typeof appCockpitIndexRoute
+  '/(app)/reports/': typeof appReportsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/cockpit'
+    | '/governance'
+    | '/library'
+    | '/metadata'
+    | '/operating-model'
     | '/settings'
+    | '/workflows'
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
@@ -308,27 +297,25 @@ export interface FileRouteTypes {
     | '/api/shipped-metric-dag'
     | '/api/upload'
     | '/api/workflow-progress'
-    | '/workspace/$wsId'
+    | '/cockpit/$conversationId'
+    | '/reports/$reportId'
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
     | '/api/drill/node'
     | '/api/reports/mint'
-    | '/workspace/$wsId/cockpit'
-    | '/workspace/$wsId/governance'
-    | '/workspace/$wsId/library'
-    | '/workspace/$wsId/metadata'
-    | '/workspace/$wsId/operating-model'
-    | '/workspace/$wsId/workflows'
-    | '/workspace/$wsId/cockpit/$conversationId'
-    | '/workspace/$wsId/reports/$reportId'
-    | '/workspace/$wsId/cockpit/'
-    | '/workspace/$wsId/reports/'
+    | '/cockpit/'
+    | '/reports/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/governance'
+    | '/library'
+    | '/metadata'
+    | '/operating-model'
     | '/settings'
+    | '/workflows'
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
@@ -339,27 +326,27 @@ export interface FileRouteTypes {
     | '/api/shipped-metric-dag'
     | '/api/upload'
     | '/api/workflow-progress'
-    | '/workspace/$wsId'
+    | '/cockpit/$conversationId'
+    | '/reports/$reportId'
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
     | '/api/drill/node'
     | '/api/reports/mint'
-    | '/workspace/$wsId/governance'
-    | '/workspace/$wsId/library'
-    | '/workspace/$wsId/metadata'
-    | '/workspace/$wsId/operating-model'
-    | '/workspace/$wsId/workflows'
-    | '/workspace/$wsId/cockpit/$conversationId'
-    | '/workspace/$wsId/reports/$reportId'
-    | '/workspace/$wsId/cockpit'
-    | '/workspace/$wsId/reports'
+    | '/cockpit'
+    | '/reports'
   id:
     | '__root__'
     | '/'
     | '/(app)'
+    | '/(app)/cockpit'
+    | '/(app)/governance'
+    | '/(app)/library'
+    | '/(app)/metadata'
+    | '/(app)/operating-model'
     | '/(app)/settings'
+    | '/(app)/workflows'
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
@@ -370,23 +357,16 @@ export interface FileRouteTypes {
     | '/api/shipped-metric-dag'
     | '/api/upload'
     | '/api/workflow-progress'
-    | '/(app)/workspace/$wsId'
+    | '/(app)/cockpit/$conversationId'
+    | '/(app)/reports/$reportId'
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
     | '/api/drill/node'
     | '/api/reports/mint'
-    | '/(app)/workspace/$wsId/cockpit'
-    | '/(app)/workspace/$wsId/governance'
-    | '/(app)/workspace/$wsId/library'
-    | '/(app)/workspace/$wsId/metadata'
-    | '/(app)/workspace/$wsId/operating-model'
-    | '/(app)/workspace/$wsId/workflows'
-    | '/(app)/workspace/$wsId/cockpit/$conversationId'
-    | '/(app)/workspace/$wsId/reports/$reportId'
-    | '/(app)/workspace/$wsId/cockpit/'
-    | '/(app)/workspace/$wsId/reports/'
+    | '/(app)/cockpit/'
+    | '/(app)/reports/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -496,12 +476,68 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAwaitingInputRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/(app)/workflows': {
+      id: '/(app)/workflows'
+      path: '/workflows'
+      fullPath: '/workflows'
+      preLoaderRoute: typeof appWorkflowsRouteImport
+      parentRoute: typeof appRouteRoute
+    }
     '/(app)/settings': {
       id: '/(app)/settings'
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof appSettingsRouteImport
       parentRoute: typeof appRouteRoute
+    }
+    '/(app)/operating-model': {
+      id: '/(app)/operating-model'
+      path: '/operating-model'
+      fullPath: '/operating-model'
+      preLoaderRoute: typeof appOperatingModelRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/metadata': {
+      id: '/(app)/metadata'
+      path: '/metadata'
+      fullPath: '/metadata'
+      preLoaderRoute: typeof appMetadataRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/library': {
+      id: '/(app)/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof appLibraryRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/governance': {
+      id: '/(app)/governance'
+      path: '/governance'
+      fullPath: '/governance'
+      preLoaderRoute: typeof appGovernanceRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/cockpit': {
+      id: '/(app)/cockpit'
+      path: '/cockpit'
+      fullPath: '/cockpit'
+      preLoaderRoute: typeof appCockpitRouteRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/reports/': {
+      id: '/(app)/reports/'
+      path: '/reports'
+      fullPath: '/reports/'
+      preLoaderRoute: typeof appReportsIndexRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/cockpit/': {
+      id: '/(app)/cockpit/'
+      path: '/'
+      fullPath: '/cockpit/'
+      preLoaderRoute: typeof appCockpitIndexRouteImport
+      parentRoute: typeof appCockpitRouteRoute
     }
     '/api/reports/mint': {
       id: '/api/reports/mint'
@@ -545,139 +581,59 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/(app)/workspace/$wsId': {
-      id: '/(app)/workspace/$wsId'
-      path: '/workspace/$wsId'
-      fullPath: '/workspace/$wsId'
-      preLoaderRoute: typeof appWorkspaceWsIdRouteRouteImport
+    '/(app)/reports/$reportId': {
+      id: '/(app)/reports/$reportId'
+      path: '/reports/$reportId'
+      fullPath: '/reports/$reportId'
+      preLoaderRoute: typeof appReportsReportIdRouteImport
       parentRoute: typeof appRouteRoute
     }
-    '/(app)/workspace/$wsId/workflows': {
-      id: '/(app)/workspace/$wsId/workflows'
-      path: '/workflows'
-      fullPath: '/workspace/$wsId/workflows'
-      preLoaderRoute: typeof appWorkspaceWsIdWorkflowsRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/operating-model': {
-      id: '/(app)/workspace/$wsId/operating-model'
-      path: '/operating-model'
-      fullPath: '/workspace/$wsId/operating-model'
-      preLoaderRoute: typeof appWorkspaceWsIdOperatingModelRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/metadata': {
-      id: '/(app)/workspace/$wsId/metadata'
-      path: '/metadata'
-      fullPath: '/workspace/$wsId/metadata'
-      preLoaderRoute: typeof appWorkspaceWsIdMetadataRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/library': {
-      id: '/(app)/workspace/$wsId/library'
-      path: '/library'
-      fullPath: '/workspace/$wsId/library'
-      preLoaderRoute: typeof appWorkspaceWsIdLibraryRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/governance': {
-      id: '/(app)/workspace/$wsId/governance'
-      path: '/governance'
-      fullPath: '/workspace/$wsId/governance'
-      preLoaderRoute: typeof appWorkspaceWsIdGovernanceRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/cockpit': {
-      id: '/(app)/workspace/$wsId/cockpit'
-      path: '/cockpit'
-      fullPath: '/workspace/$wsId/cockpit'
-      preLoaderRoute: typeof appWorkspaceWsIdCockpitRouteRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/reports/': {
-      id: '/(app)/workspace/$wsId/reports/'
-      path: '/reports'
-      fullPath: '/workspace/$wsId/reports/'
-      preLoaderRoute: typeof appWorkspaceWsIdReportsIndexRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/cockpit/': {
-      id: '/(app)/workspace/$wsId/cockpit/'
-      path: '/'
-      fullPath: '/workspace/$wsId/cockpit/'
-      preLoaderRoute: typeof appWorkspaceWsIdCockpitIndexRouteImport
-      parentRoute: typeof appWorkspaceWsIdCockpitRouteRoute
-    }
-    '/(app)/workspace/$wsId/reports/$reportId': {
-      id: '/(app)/workspace/$wsId/reports/$reportId'
-      path: '/reports/$reportId'
-      fullPath: '/workspace/$wsId/reports/$reportId'
-      preLoaderRoute: typeof appWorkspaceWsIdReportsReportIdRouteImport
-      parentRoute: typeof appWorkspaceWsIdRouteRoute
-    }
-    '/(app)/workspace/$wsId/cockpit/$conversationId': {
-      id: '/(app)/workspace/$wsId/cockpit/$conversationId'
+    '/(app)/cockpit/$conversationId': {
+      id: '/(app)/cockpit/$conversationId'
       path: '/$conversationId'
-      fullPath: '/workspace/$wsId/cockpit/$conversationId'
-      preLoaderRoute: typeof appWorkspaceWsIdCockpitConversationIdRouteImport
-      parentRoute: typeof appWorkspaceWsIdCockpitRouteRoute
+      fullPath: '/cockpit/$conversationId'
+      preLoaderRoute: typeof appCockpitConversationIdRouteImport
+      parentRoute: typeof appCockpitRouteRoute
     }
   }
 }
 
-interface appWorkspaceWsIdCockpitRouteRouteChildren {
-  appWorkspaceWsIdCockpitConversationIdRoute: typeof appWorkspaceWsIdCockpitConversationIdRoute
-  appWorkspaceWsIdCockpitIndexRoute: typeof appWorkspaceWsIdCockpitIndexRoute
+interface appCockpitRouteRouteChildren {
+  appCockpitConversationIdRoute: typeof appCockpitConversationIdRoute
+  appCockpitIndexRoute: typeof appCockpitIndexRoute
 }
 
-const appWorkspaceWsIdCockpitRouteRouteChildren: appWorkspaceWsIdCockpitRouteRouteChildren =
-  {
-    appWorkspaceWsIdCockpitConversationIdRoute:
-      appWorkspaceWsIdCockpitConversationIdRoute,
-    appWorkspaceWsIdCockpitIndexRoute: appWorkspaceWsIdCockpitIndexRoute,
-  }
-
-const appWorkspaceWsIdCockpitRouteRouteWithChildren =
-  appWorkspaceWsIdCockpitRouteRoute._addFileChildren(
-    appWorkspaceWsIdCockpitRouteRouteChildren,
-  )
-
-interface appWorkspaceWsIdRouteRouteChildren {
-  appWorkspaceWsIdCockpitRouteRoute: typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
-  appWorkspaceWsIdGovernanceRoute: typeof appWorkspaceWsIdGovernanceRoute
-  appWorkspaceWsIdLibraryRoute: typeof appWorkspaceWsIdLibraryRoute
-  appWorkspaceWsIdMetadataRoute: typeof appWorkspaceWsIdMetadataRoute
-  appWorkspaceWsIdOperatingModelRoute: typeof appWorkspaceWsIdOperatingModelRoute
-  appWorkspaceWsIdWorkflowsRoute: typeof appWorkspaceWsIdWorkflowsRoute
-  appWorkspaceWsIdReportsReportIdRoute: typeof appWorkspaceWsIdReportsReportIdRoute
-  appWorkspaceWsIdReportsIndexRoute: typeof appWorkspaceWsIdReportsIndexRoute
+const appCockpitRouteRouteChildren: appCockpitRouteRouteChildren = {
+  appCockpitConversationIdRoute: appCockpitConversationIdRoute,
+  appCockpitIndexRoute: appCockpitIndexRoute,
 }
 
-const appWorkspaceWsIdRouteRouteChildren: appWorkspaceWsIdRouteRouteChildren = {
-  appWorkspaceWsIdCockpitRouteRoute:
-    appWorkspaceWsIdCockpitRouteRouteWithChildren,
-  appWorkspaceWsIdGovernanceRoute: appWorkspaceWsIdGovernanceRoute,
-  appWorkspaceWsIdLibraryRoute: appWorkspaceWsIdLibraryRoute,
-  appWorkspaceWsIdMetadataRoute: appWorkspaceWsIdMetadataRoute,
-  appWorkspaceWsIdOperatingModelRoute: appWorkspaceWsIdOperatingModelRoute,
-  appWorkspaceWsIdWorkflowsRoute: appWorkspaceWsIdWorkflowsRoute,
-  appWorkspaceWsIdReportsReportIdRoute: appWorkspaceWsIdReportsReportIdRoute,
-  appWorkspaceWsIdReportsIndexRoute: appWorkspaceWsIdReportsIndexRoute,
-}
-
-const appWorkspaceWsIdRouteRouteWithChildren =
-  appWorkspaceWsIdRouteRoute._addFileChildren(
-    appWorkspaceWsIdRouteRouteChildren,
-  )
+const appCockpitRouteRouteWithChildren = appCockpitRouteRoute._addFileChildren(
+  appCockpitRouteRouteChildren,
+)
 
 interface appRouteRouteChildren {
+  appCockpitRouteRoute: typeof appCockpitRouteRouteWithChildren
+  appGovernanceRoute: typeof appGovernanceRoute
+  appLibraryRoute: typeof appLibraryRoute
+  appMetadataRoute: typeof appMetadataRoute
+  appOperatingModelRoute: typeof appOperatingModelRoute
   appSettingsRoute: typeof appSettingsRoute
-  appWorkspaceWsIdRouteRoute: typeof appWorkspaceWsIdRouteRouteWithChildren
+  appWorkflowsRoute: typeof appWorkflowsRoute
+  appReportsReportIdRoute: typeof appReportsReportIdRoute
+  appReportsIndexRoute: typeof appReportsIndexRoute
 }
 
 const appRouteRouteChildren: appRouteRouteChildren = {
+  appCockpitRouteRoute: appCockpitRouteRouteWithChildren,
+  appGovernanceRoute: appGovernanceRoute,
+  appLibraryRoute: appLibraryRoute,
+  appMetadataRoute: appMetadataRoute,
+  appOperatingModelRoute: appOperatingModelRoute,
   appSettingsRoute: appSettingsRoute,
-  appWorkspaceWsIdRouteRoute: appWorkspaceWsIdRouteRouteWithChildren,
+  appWorkflowsRoute: appWorkflowsRoute,
+  appReportsReportIdRoute: appReportsReportIdRoute,
+  appReportsIndexRoute: appReportsIndexRoute,
 }
 
 const appRouteRouteWithChildren = appRouteRoute._addFileChildren(

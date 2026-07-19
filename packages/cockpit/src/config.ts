@@ -83,10 +83,12 @@ const ConfigSchema = z.object({
 	ducklakeSkipInstall: z.boolean(),
 
 	// --- Temporal (optional for slice-1: the cockpit Temporal client lands in
-	// E4 (DAT-344), which flips these to required; no Temporal service yet) ---
+	// E4 (DAT-344), which flips these to required; no Temporal service yet).
+	// No task-queue knob: START queues are per-workspace, derived from the
+	// engine registry row; the worker's own queue is cockpit-<ws> from boot
+	// identity (DAT-818). ---
 	temporalHost: z.string().optional(),
 	temporalNamespace: z.string().optional(),
-	temporalTaskQueue: z.string().optional(),
 	// Temporal Web UI, embedded by the /workflows section. Defaults to the
 	// docker-compose dev address (CORS already allows :3000).
 	temporalUiUrl: z.string().min(1).default("http://localhost:8080"),
@@ -127,7 +129,6 @@ function loadConfig(): Config {
 		ducklakeSkipInstall: (process.env.DUCKLAKE_SKIP_INSTALL ?? "0") === "1",
 		temporalHost: process.env.TEMPORAL_HOST,
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
-		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,
 		temporalUiUrl: process.env.TEMPORAL_UI_URL,
 	});
 

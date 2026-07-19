@@ -8,7 +8,7 @@ import { loadSwitcher } from "./route.functions";
 // the composer as `typeNav`) — so the layout just pins the height and renders the
 // Outlet, no top strip, no header switcher.
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/cockpit")({
+export const Route = createFileRoute("/(app)/cockpit")({
 	loader: () => loadSwitcher(),
 	component: CockpitLayout,
 });

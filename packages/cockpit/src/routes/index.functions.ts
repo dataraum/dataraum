@@ -1,8 +1,8 @@
 // Server functions for the `/` route (DAT-819) — modal on the image's role.
-// Peeled out of the isomorphic route file so server-only reads (registry,
-// auth, cockpit_db) never ride into the client bundle; workspace-only modules
-// are additionally imported INSIDE handlers because loading them evaluates
-// the workspace config, which throws in portal mode.
+// Peeled out of the isomorphic route file so server-only reads (auth,
+// cockpit_db) never ride into the client bundle. Everything here is
+// base-config only — safe to evaluate in portal mode, which must never load
+// the workspace config.
 
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
@@ -29,17 +29,6 @@ export type PortalHome =
 	| { mode: "signin" }
 	// Portal, signed in: the user's workspaces from `memberships`.
 	| { mode: "list"; email: string; workspaces: PortalWorkspace[] };
-
-// `/` resolves the active workspace and sends the user straight to its
-// cockpit (workspace role). The id comes from the cockpit_db workspace
-// registry (DAT-461), seeded from DATARAUM_WORKSPACE_ID. Dynamic import: the
-// registry evaluates the workspace config, which portal mode must never load.
-export const getActiveWorkspaceId = createServerFn({ method: "GET" }).handler(
-	async () => {
-		const { resolveActiveWorkspace } = await import("#/db/cockpit/registry");
-		return resolveActiveWorkspace();
-	},
-);
 
 /**
  * The portal home state (DAT-819): role, session, and — signed in — the

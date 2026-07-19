@@ -163,13 +163,11 @@ export function AnswerResultWidget({
 }: {
 	state: Extract<CanvasState, { kind: "answer-result" }>;
 }) {
-	// strict:false — provenance is best-effort: read wsId/conversationId off the
+	// strict:false — provenance is best-effort: read conversationId off the
 	// current route when present (the answer surface lives in a conversation route).
 	const params = useParams({ strict: false }) as {
-		wsId?: string;
 		conversationId?: string;
 	};
-	const wsId = params.wsId;
 	const [saving, setSaving] = useState(false);
 	const [mintedId, setMintedId] = useState<string | null>(null);
 	const [mintFailed, setMintFailed] = useState(false);
@@ -227,37 +225,36 @@ export function AnswerResultWidget({
 
 	// The mint action rides in the grid's own toolbar (left of "View SQL") rather
 	// than floating above the grid — it's a peer of the result-surface actions.
-	const reportAction =
-		mintedId && wsId ? (
-			<Button
-				variant="light"
-				color="green"
-				size="compact-xs"
-				leftSection={<Library size={13} />}
-				data-testid="report-saved"
-				renderRoot={(props) => (
-					<Link
-						to="/workspace/$wsId/reports/$reportId"
-						params={{ wsId, reportId: mintedId }}
-						{...props}
-					/>
-				)}
-			>
-				Saved to Reports
-			</Button>
-		) : (
-			<Button
-				variant="subtle"
-				color="gray"
-				size="compact-xs"
-				leftSection={<Library size={13} />}
-				onClick={onMint}
-				loading={saving}
-				data-testid="report-mint"
-			>
-				Report
-			</Button>
-		);
+	const reportAction = mintedId ? (
+		<Button
+			variant="light"
+			color="green"
+			size="compact-xs"
+			leftSection={<Library size={13} />}
+			data-testid="report-saved"
+			renderRoot={(props) => (
+				<Link
+					to="/reports/$reportId"
+					params={{ reportId: mintedId }}
+					{...props}
+				/>
+			)}
+		>
+			Saved to Reports
+		</Button>
+	) : (
+		<Button
+			variant="subtle"
+			color="gray"
+			size="compact-xs"
+			leftSection={<Library size={13} />}
+			onClick={onMint}
+			loading={saving}
+			data-testid="report-mint"
+		>
+			Report
+		</Button>
+	);
 
 	return (
 		<div data-testid="canvas-answer-result">

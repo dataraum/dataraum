@@ -23,11 +23,7 @@ import {
 import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { authClient } from "#/auth/auth-client";
-import {
-	getActiveWorkspaceId,
-	getPortalHome,
-	type PortalHome,
-} from "./index.functions";
+import { getPortalHome, type PortalHome } from "./index.functions";
 
 export const Route = createFileRoute("/")({
 	validateSearch: (search: Record<string, unknown>) => ({
@@ -37,11 +33,9 @@ export const Route = createFileRoute("/")({
 	beforeLoad: async () => {
 		const home = await getPortalHome();
 		if (home.mode === "workspace") {
-			const wsId = await getActiveWorkspaceId();
-			throw redirect({
-				to: "/workspace/$wsId/cockpit",
-				params: { wsId },
-			});
+			// One cockpit per workspace (DD/51740673): the subdomain IS the
+			// workspace, so `/` goes straight to the flat cockpit URL.
+			throw redirect({ to: "/cockpit" });
 		}
 		return { home };
 	},

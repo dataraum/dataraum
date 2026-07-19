@@ -12,14 +12,13 @@ import { loadReports } from "./index.functions";
 // The loader's server fn lives in the sibling `index.functions.ts` (the cockpit
 // route convention) so the plugin strips its cockpit_db handler from the client bundle.
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/reports/")({
+export const Route = createFileRoute("/(app)/reports/")({
 	loader: () => loadReports(),
 	component: ReportsGallery,
 });
 
 function ReportsGallery() {
 	const reports = Route.useLoaderData();
-	const { wsId } = Route.useParams();
 
 	return (
 		<Stack p="md" gap="md" data-testid="reports-gallery">
@@ -43,8 +42,8 @@ function ReportsGallery() {
 							data-testid="report-card"
 							renderRoot={(props) => (
 								<Link
-									to="/workspace/$wsId/reports/$reportId"
-									params={{ wsId, reportId: r.id }}
+									to="/reports/$reportId"
+									params={{ reportId: r.id }}
 									{...props}
 								/>
 							)}

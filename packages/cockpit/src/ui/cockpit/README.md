@@ -1,6 +1,6 @@
 # Cockpit — the three-region agentic view (DAT-347, C1)
 
-The inner surface that fills the C0 shell's `/workspace/$wsId/cockpit` route. It
+The inner surface that fills the C0 shell's `/cockpit` route. It
 renders **strictly inside** that route component — the outer shell, theme,
 routing, and ⌘K belong to C0 (`src/ui/{app-shell,sections,theme}.ts[x]`).
 

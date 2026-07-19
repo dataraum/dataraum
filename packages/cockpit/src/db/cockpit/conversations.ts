@@ -232,9 +232,13 @@ export async function loadModelTranscript(
 }
 
 /**
- * Append messages to a conversation, idempotent by message id (a re-sent turn is
- * a no-op). `seq` continues from the conversation's current max so ordering is
- * stable; gaps from skipped duplicates are harmless.
+ * Append messages to a conversation, idempotent by message id WITHIN the
+ * conversation (a re-sent turn is a no-op). The conflict target is the
+ * composite PK `(conversation_id, id)` (DAT-822): message ids are client-minted
+ * and only unique per conversation, so the same id arriving in a DIFFERENT
+ * conversation is a genuine new row, not a duplicate. `seq` continues from the
+ * conversation's current max so ordering is stable; gaps from skipped
+ * duplicates are harmless.
  *
  * Known limitation (single-user assumption): the max(seq) read → insert is not
  * atomic, so two genuinely concurrent sends for the SAME conversation (e.g. two
@@ -267,7 +271,9 @@ export async function appendMessages(
 	await cockpitDb
 		.insert(conversationMessages)
 		.values(rows)
-		.onConflictDoNothing({ target: conversationMessages.id });
+		.onConflictDoNothing({
+			target: [conversationMessages.conversationId, conversationMessages.id],
+		});
 	const now = new Date();
 	await cockpitDb
 		.update(conversations)

@@ -81,9 +81,7 @@ describe("gateRequest (DAT-819)", () => {
 	});
 
 	it("redirects a signed-out HTML navigation to the portal", async () => {
-		const rejection = await gateRequest(
-			req("/workspace/x/cockpit", "text/html"),
-		);
+		const rejection = await gateRequest(req("/cockpit", "text/html"));
 		expect(rejection?.status).toBe(302);
 		expect(rejection?.headers.get("location")).toBe(
 			"http://dataraum.localhost",
@@ -99,16 +97,12 @@ describe("gateRequest (DAT-819)", () => {
 	it("passes an authenticated member through", async () => {
 		h.session = { user: { id: "u-1" } };
 		h.membershipRows = [{ userId: "u-1" }];
-		expect(
-			await gateRequest(req("/workspace/x/cockpit", "text/html")),
-		).toBeNull();
+		expect(await gateRequest(req("/cockpit", "text/html"))).toBeNull();
 	});
 
 	it("bounces an authenticated NON-member's navigation to the portal with ?denied=<ws>", async () => {
 		h.session = { user: { id: "u-2" } };
-		const rejection = await gateRequest(
-			req("/workspace/x/cockpit", "text/html"),
-		);
+		const rejection = await gateRequest(req("/cockpit", "text/html"));
 		expect(rejection?.status).toBe(302);
 		expect(rejection?.headers.get("location")).toBe(
 			"http://dataraum.localhost/?denied=ws-1",

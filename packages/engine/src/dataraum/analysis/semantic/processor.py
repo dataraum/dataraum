@@ -125,12 +125,15 @@ def _build_candidate_metrics_lookup(
                 metrics["cardinality_verified"] = jc["cardinality_verified"]
             if "cardinality" in jc:
                 metrics["cardinality"] = jc["cardinality"]
-            # Per-side completeness (utils.py puts it on the served jc). This is
-            # the ONLY signal that orients a SPARSE 1:1, whose value sets are
-            # identical so containment says nothing: the referenced side must be
-            # a complete key, so the less key-like side is the child. Dropping it
-            # here left ``Relationship.oriented_row`` blind on exactly the pairs
-            # the judge gets wrong (DAT-725 runs #2/#5).
+            # Per-side completeness (utils.py puts it on the served jc). Carried
+            # for EVIDENCE COMPLETENESS, not for a decision: no consumer orients
+            # on it — the judge is told the rule in ``semantic_per_table`` and
+            # decides. Dropping it meant a stored relationship did not carry the
+            # numbers its own direction was argued from, which is why diagnosing
+            # a wrong direction took a forensic dig through candidate rows
+            # (DAT-725 runs #2/#5). NOTE: ``left_value_containment`` — which
+            # ``oriented_row`` DOES read and says it prefers — is still not
+            # carried here, so the judge path falls back to row-weighted RI.
             if "left_uniqueness" in jc:
                 metrics["left_uniqueness"] = jc["left_uniqueness"]
             if "right_uniqueness" in jc:

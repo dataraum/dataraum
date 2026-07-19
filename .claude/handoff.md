@@ -2281,39 +2281,49 @@ None. No schema change.
 
 ---
 
-## DAT-725 — 1:1 orientation decided by completeness when containment is silent
+## DAT-725 — orientation: prompt clause, not a deterministic override
 
-**What changed.** `Relationship.oriented_row` now orients a one-to-one on TWO
-measured signals instead of one:
+**What changed, net.** An earlier revision of this entry described a completeness-based
+override in `Relationship.oriented_row` with an `_ORIENT_COMPLETENESS_MARGIN` constant.
+**That was removed — do not calibrate against it; it does not exist.**
 
-1. **Containment asymmetry** (unchanged, still first): a smaller forward than reverse
-   distinct-value containment means the emission points parent→child.
-2. **Completeness asymmetry** (new), consulted only when containment is symmetric or
-   absent: the referenced side of an FK must be a complete key, so of two identical
-   value sets the side with the LOWER uniqueness ratio is the child and belongs on
-   `from`. A from side measurably more key-like than its to side is backwards.
-   Margin `_ORIENT_COMPLETENESS_MARGIN = 0.01` — below it the two sides are equally
-   complete (the dense bijection), where direction is a modelling question, not a
-   measurement, and the emission stands.
+`semantic_per_table.yaml` 2.2.0: the orientation section's one-to-one guidance previously
+pointed the judge at containment, which is 100% in both directions on a bijection and so
+decides nothing — the judge then fell back to the order candidates were listed in. It now
+also covers the symmetric case, and where both sides are complete keys it directs the
+judge to the fact/dimension classification it makes in the same pass. NOTE: this clause is
+under review — see the open orientation question below.
 
-The previous docstring claimed uniqueness cannot orient a 1:1 because "both sides are
-unique". That holds only for a dense bijection; a sparse 1:1 (an ordinary nullable FK)
-has its ratio depressed by unmatched rows, and that is the discriminator.
+`semantic/processor.py::_build_candidate_metrics_lookup` carries per-side
+`left_uniqueness`/`right_uniqueness` through (swapped on the reverse entry). Evidence
+completeness only — nothing orients on it.
 
-`semantic/processor.py::_build_candidate_metrics_lookup` now carries
-`left_uniqueness`/`right_uniqueness` through (and swaps them on the reverse entry) —
-they were measured, served to the judge's prompt, and then dropped before reaching the
-chokepoint, which is why it was blind on exactly the pairs the judge got wrong.
+`business_cycles_phase.py`: a duplicate same-canonical-type emission is DROPPED loudly
+(`cycle_duplicate_canonical_type_dropped`), not merged. A merge was tried and reverted:
+unioning `tables_involved` while keeping the first emission's stages/evidence/confidence
+produced a row citing tables nothing in it supported, and silently widened `health.py`'s
+validation match set behind the cycle's score.
 
-Also: the `ORDER BY table_name` added earlier is reproducibility only and its comment now
-says so — it is explicitly NOT the orientation mechanism.
+`hierarchies/judge.py`: a `min_length=1` constraint on the judge batch models was tried
+and reverted. It routed an empty batch into the DAT-710 repair turn, which re-prompts
+without the candidate list — so the only schema-satisfying output is invented verdicts,
+and a fabricated alias verdict above the merge floor collapses two drill axes. Empty-batch
+handling is unchanged from before; the underlying instability is DAT-795/807.
+
+**OPEN (lead decision pending):** the `one-to-one` swap in `oriented_row` is under review.
+Two reviewers disagree — one showed it correctly re-orients a clean-subset 1:1, the other
+demonstrated on real DuckDB that it INVERTS a correct child→parent emission when the child
+carries orphans (both reduce to the same test: swap iff the from side has more distinct
+values). Until that is settled, treat 1:1 direction as unreliable in calibration and do not
+build new expectations on it.
 
 ### Calibration to run
 - **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`
-  (1.00 vs 0.47, identical value sets) flipped between runs #2/#5 and #3/#4. It should
-  now be stored child→parent regardless of which side the judge emits.
-- Watch for orientation changes on any other confirmed 1:1: this decides direction on
-  measured evidence where presentation order used to.
+  has flipped orientation between runs. The prompt is the only intentional change; watch
+  whether the judge orients it consistently on its own.
+- **`test_cycle_recall`** — unchanged expectations; the prompt bullet forbidding duplicate
+  same-type cycles is the operative change, not the phase.
 
 ### Thresholds / new fields
-`_ORIENT_COMPLETENESS_MARGIN = 0.01` (new, orientation only). No schema change.
+None. No schema change. (`_ORIENT_COMPLETENESS_MARGIN` was introduced and removed within
+the branch; it is not in the merged behaviour.)

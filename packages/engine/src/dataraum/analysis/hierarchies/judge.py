@@ -74,17 +74,15 @@ class ConformVerdict(BaseModel):
 class ConformBatchOutput(BaseModel):
     """Tool output: one verdict per submitted candidate pair.
 
-    ``min_length=1``: the judge is only ever invoked with a NON-EMPTY candidate
-    batch (``conform`` early-returns for an empty one), so a zero-verdict batch
-    is a MALFORMED response, never a judgment — ``abstain`` is the verdict for
-    "I cannot decide". Enforced at the model so the DAT-710 repair loop re-asks,
-    the same contract ``ConformVerdict._conform_requires_label`` relies on.
-    Without it a single degenerate tool call silently yields zero conformed
-    groups, which zeroes cross-fact identity and every aggregation lineage that
-    rides it while the phase still reports ``ran`` (DAT-725 run #5).
+    Emptiness is NOT constrained here — it is checked by the caller. A schema
+    ``min_length`` would route an empty batch into the DAT-710 repair turn,
+    which re-prompts with the validation error and the previous output but
+    WITHOUT the candidate list, so the only way to satisfy the constraint is to
+    INVENT verdicts. A fabricated verdict on a guessable ref is far worse than
+    the silence it would replace (DAT-725 review).
     """
 
-    verdicts: list[ConformVerdict] = Field(min_length=1)
+    verdicts: list[ConformVerdict]
 
 
 class AliasIdentityVerdict(BaseModel):
@@ -112,12 +110,15 @@ class AliasIdentityVerdict(BaseModel):
 class AliasIdentityBatchOutput(BaseModel):
     """Tool output: one identity verdict per submitted bijection pair.
 
-    ``min_length=1`` for the same reason as ``ConformBatchOutput``: the caller
-    early-returns on an empty candidate list, so an empty batch here is a
-    malformed response that would otherwise read as "no pair is an alias".
+    Emptiness is checked by the caller, never here — see
+    ``ConformBatchOutput``. The stakes are higher on this batch: alias refs are
+    ``str(i)`` ("0", "1", …), so a verdict invented by a context-free repair
+    turn would land on a REAL pair, and one above the merge floor collapses two
+    drill axes into one dimension — the exact corruption this module exists to
+    prevent (DAT-725 review).
     """
 
-    verdicts: list[AliasIdentityVerdict] = Field(min_length=1)
+    verdicts: list[AliasIdentityVerdict]
 
 
 class DimensionIdentityJudge(LLMFeature):

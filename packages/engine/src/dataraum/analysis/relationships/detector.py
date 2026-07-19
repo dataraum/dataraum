@@ -265,10 +265,9 @@ def _load_tables(
     # pair is presented as "left", and an unordered scan made that Postgres
     # physical row order. Same intent as the column ordering below.
     # This is reproducibility ONLY — it is deliberately NOT how orientation is
-    # decided. Presentation order previously became the de-facto answer whenever
-    # the judge had no data signal; that is now settled on measured evidence at
-    # ``Relationship.oriented_row`` (containment, then completeness). Ordering
-    # here must never be mistaken for a correctness guarantee.
+    # decided, and must never be mistaken for a correctness guarantee. Note the
+    # order DOES reach the judge: candidates are served from already-oriented
+    # stored rows, so this fixes which side it sees as "left".
     stmt = (
         select(Table.table_id, Table.table_name, Table.duckdb_path)
         .where(Table.table_id.in_(table_ids))

@@ -213,31 +213,3 @@ def test_alias_evidence_formatting_is_deterministic() -> None:
     assert "ref=0 table=facts" in text
     assert "account_id — 3 distinct" in text
     assert "meaning[account_id]: the account entity key" in text
-
-
-def test_conform_empty_batch_is_malformed() -> None:
-    """A zero-verdict batch FAILS validation — absence must fall loud.
-
-    The judge is only called with a non-empty candidate batch, so an empty
-    verdict list is a malformed response, not "nothing conforms" (``abstain``
-    is the verdict for "I cannot decide"). Validation routes it into the
-    DAT-710 repair loop and, if the judge still cannot answer, to a failed
-    Result — never to a silent zero, which would blank cross-fact identity and
-    every aggregation lineage riding on it (DAT-725 run #5).
-    """
-    import pytest
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        ConformBatchOutput.model_validate({"verdicts": []})
-
-
-def test_alias_empty_batch_is_malformed() -> None:
-    """Same contract on the alias judge: an empty batch is malformed, not 'no aliases'."""
-    import pytest
-    from pydantic import ValidationError
-
-    from dataraum.analysis.hierarchies.judge import AliasIdentityBatchOutput
-
-    with pytest.raises(ValidationError):
-        AliasIdentityBatchOutput.model_validate({"verdicts": []})

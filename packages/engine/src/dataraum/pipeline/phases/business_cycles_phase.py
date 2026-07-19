@@ -201,23 +201,27 @@ class BusinessCyclesPhase(BasePhase):
                     cycle_name=detected.cycle_name,
                 )
                 continue
-            # The persistence model holds ONE row per (session, canonical_type,
-            # run). When the LLM emits the same canonical type twice (the prompt
-            # asks for one), merge instead of silently dropping the later
-            # emission's participation: tables_involved unions (order-
-            # preserving); scalar fields keep the first emission's values.
+            # ONE row per (session, canonical_type, run). A duplicate emission
+            # is a PROMPT-CONTRACT violation (business_cycles.yaml: "Emit at
+            # most ONE cycle per cycle type") — so drop it loudly and keep the
+            # first, rather than blending the two. Merging was tried and
+            # reverted (DAT-725 review): unioning ``tables_involved`` while
+            # keeping the first emission's stages, evidence, confidence and
+            # completion_rate produces a row citing tables nothing in it
+            # supports — the mirror of the inconsistency the prompt forbids —
+            # and it silently widens ``health.py``'s validation match set, so
+            # the cycle's pass rate and VERIFIED/PARTIAL label shift to cover a
+            # process the kept emission never described.
             existing = detected_by_type.get(key)
             if existing is None:
                 detected_by_type[key] = detected
             else:
-                existing.tables_involved.extend(
-                    t for t in detected.tables_involved if t not in existing.tables_involved
-                )
                 _log.warning(
-                    "cycle_duplicate_canonical_type_merged",
+                    "cycle_duplicate_canonical_type_dropped",
                     canonical_type=key,
                     kept_cycle=existing.cycle_name,
-                    merged_cycle=detected.cycle_name,
+                    dropped_cycle=detected.cycle_name,
+                    dropped_tables=detected.tables_involved,
                 )
 
         # bind → execute per declared artifact; persist the grounded cycles.

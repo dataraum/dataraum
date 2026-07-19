@@ -341,7 +341,7 @@ class TestCycleLifecycleFlow:
 
     @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
     @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
-    def test_duplicate_canonical_type_merges_tables(
+    def test_duplicate_canonical_type_is_dropped_loudly(
         self,
         mock_types: MagicMock,
         mock_ground: MagicMock,
@@ -350,11 +350,13 @@ class TestCycleLifecycleFlow:
         workspace_table: Table,
         _mock_llm: None,
     ) -> None:
-        """Two same-type emissions persist ONE row whose tables_involved unions both.
+        """Two same-type emissions persist ONE row — the first, intact.
 
-        The (session, canonical_type, run) UNIQUE admits one row per type; a
-        duplicate emission's participation must merge, not silently drop.
-        Scalar fields keep the first emission's values.
+        A duplicate violates the prompt's one-cycle-per-type contract. The
+        second is dropped, not blended in: merging its ``tables_involved`` into
+        the first would leave a row citing tables that its own stages, evidence
+        and completion_rate never covered, and would widen the health check's
+        validation match set behind the cycle's score.
         """
         mock_types.return_value = {"period_close": {"business_value": "high"}}
         mock_ground.return_value = Result.ok(
@@ -383,9 +385,8 @@ class TestCycleLifecycleFlow:
         cycles = session.execute(select(DetectedBusinessCycle)).scalars().all()
         assert len(cycles) == 1
         assert cycles[0].canonical_type == "period_close"
-        # Ordered union: first emission's tables, then the second's new ones.
-        assert cycles[0].tables_involved == ["trial_balance", "general_ledger", "balance_sheet"]
-        # Scalar fields are first-wins.
+        # The kept emission is intact — no table it cannot account for.
+        assert cycles[0].tables_involved == ["trial_balance", "general_ledger"]
         assert cycles[0].completion_rate == 0.9
 
     @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")

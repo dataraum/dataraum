@@ -53,17 +53,19 @@ beforeEach(() => {
 	h.outboundCtor.mockClear();
 });
 
+// The boot plugin derives the per-workspace queue (`cockpit-<ws>`, DAT-818)
+// via cockpitTaskQueueFor; the worker itself just polls what it is given.
 const OPTS = {
 	address: "localhost:7233",
 	namespace: "default",
-	taskQueue: "cockpit-orchestration",
+	taskQueue: "cockpit-ws-1",
 };
 
 describe("startOrchestrationWorker telemetry gate (DAT-705)", () => {
 	it("builds the exact pre-OTel worker options when tracing is off", async () => {
 		await startOrchestrationWorker({ ...OPTS, traced: false });
 		const opts = h.createOpts as Record<string, unknown>;
-		expect(opts.taskQueue).toBe("cockpit-orchestration");
+		expect(opts.taskQueue).toBe("cockpit-ws-1");
 		expect("interceptors" in opts).toBe(false);
 	});
 

@@ -20,7 +20,7 @@ flowchart TB
         UI["chat surfaces + pages"]
         Agent["agentic LLM tier<br/>(TanStack AI → Anthropic)"]
         Client["Temporal client"]
-        AWk["co-located activity-only worker<br/>(cockpit-orchestration queue)"]
+        AWk["co-located activity-only worker<br/>(cockpit-&lt;workspace&gt; queue)"]
     end
 
     subgraph EWk["Engine container(s) — Python"]

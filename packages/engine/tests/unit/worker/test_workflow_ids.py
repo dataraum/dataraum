@@ -11,6 +11,7 @@ Temporal worker.
 from __future__ import annotations
 
 from dataraum.worker.contracts import (
+    cockpit_task_queue_for,
     operating_model_workflow_id,
     process_table_workflow_id,
 )
@@ -40,3 +41,15 @@ def test_operating_model_id_matches_the_cockpit_convention() -> None:
     convention so a drift on either side fails a test, not a live run.
     """
     assert operating_model_workflow_id("ws-1") == "operatingmodel-ws-1"
+
+
+def test_cockpit_task_queue_matches_the_cockpit_convention() -> None:
+    """`cockpit-<ws>` — the per-workspace cockpit activity queue (DAT-818).
+
+    The orchestration workflows derive the callback queue from their input
+    ``workspace_id``; the cockpit's activity-only worker derives the identical
+    name from its boot identity in ``src/temporal/task-queue.ts``
+    (``cockpitTaskQueueFor``). The literal here pins the hand-mirrored
+    convention — a drift strands callbacks on an unpolled queue.
+    """
+    assert cockpit_task_queue_for("ws-1") == "cockpit-ws-1"

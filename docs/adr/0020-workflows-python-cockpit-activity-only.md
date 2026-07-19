@@ -47,8 +47,9 @@ stays one stage + one assess. The engine children became native same-queue Pytho
 child workflows — the cross-language child hop is gone.
 
 The cockpit remains the Client — it starts the orchestration workflows by type name on
-the workspace's engine queue — and hosts an **activity-only** worker on its
-`cockpit-orchestration` queue: no workflow bundle, no vm sandbox, no
+the workspace's engine queue — and hosts an **activity-only** worker on its own
+per-workspace `cockpit-<ws>` queue, derived from the boot workspace identity on both
+sides (DAT-818; originally the singleton `cockpit-orchestration`): no workflow bundle, no vm sandbox, no
 `@temporalio/workflow` import anywhere in the package. Its four activities stay in
 TypeScript where their substrate lives (ADR-0003: the cockpit_db run writers
 `recordRun` / `markRunStatus` / `markRunAwaitingInput`; ADR-0004: the grounding-teach

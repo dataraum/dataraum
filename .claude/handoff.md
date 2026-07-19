@@ -29,11 +29,19 @@ jitter, B1 meanings truncation).
   candidate loader now serves the per-side uniqueness asymmetry (it was
   dropped, so the judge never saw its orientation evidence) with orientation
   instructed to be read off the measurements. Expect the run-#1/#2 dead-zone
-  declines (0.55 / 0.6 with "genuine sparse FK" reasoning) and 1:1
-  orientation flips to shrink. `REL_CONFIRM_MIN` stays 0.7 and there is NO
-  deterministic override of the judge — this is prompt+evidence, so residual
-  jitter remains possible (the deterministic-1:1-orientation fork is with the
-  owner/lead).
+  declines (0.55 / 0.6 with "genuine sparse FK" reasoning) to shrink.
+  `REL_CONFIRM_MIN` stays 0.7 and there is NO deterministic override of the
+  judge's EXISTENCE verdict.
+- **1:1 orientation is now deterministic where data decides** (fork approved
+  by the lead). The DAT-777 chokepoint (`oriented_row`) orients a measured
+  `one-to-one` row by containment asymmetry: `left RI < right RI` on the
+  emission means parent→child, so the endpoints and directional evidence
+  swap — the persisted `from` is always the fully-contained (referencing)
+  side. Run-#2 A2's flip class (verified 1:1 confirmed 0.95 in the flipped
+  direction against direction-exact truth) cannot recur when RI is measured
+  and asymmetric. Symmetric containment (identical value sets) keeps the
+  judge's emission — genuinely undecidable from data; direction-exact truth
+  on such a pair would be a teach scenario, not a detector bug.
 - **column_meanings coverage self-heals.** `semantic_per_table` now retries
   (≤2 re-prompts, scoped to the tables with uncovered columns) when the
   batched call under-covers `column_concepts`; clean-flat's 9/62-style

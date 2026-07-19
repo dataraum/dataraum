@@ -574,6 +574,91 @@ class TestSynthesizeAndStoreTables:
             == []
         )
 
+    def test_flipped_one_to_one_confirmation_persists_in_measured_direction(self, session) -> None:
+        """DAT-725 A2 class: the judge confirms a verified 1:1 pair FLIPPED.
+
+        The candidate carries measured RI (forward 100% / reverse coverage
+        24%); the judge emits parent→child at 0.95. The candidate-metrics
+        reverse entry hands the chokepoint the direction-correct evidence and
+        ``oriented_row`` re-orients: the persisted llm row's ``from`` is the
+        fully-contained (referencing) side, whatever direction the judge
+        emitted. The existence verdict (confidence, confirmed) is untouched.
+        """
+        invoices = _table_with_columns(session, "invoices", ["entry_id"])
+        entries = _table_with_columns(session, "journal_entries", ["entry_id"])
+        candidates = [
+            {
+                "table1": "invoices",
+                "table2": "journal_entries",
+                "join_columns": [
+                    {
+                        "column1": "entry_id",
+                        "column2": "entry_id",
+                        "confidence": 1.0,
+                        "cardinality": "one-to-one",
+                        "left_referential_integrity": 100.0,
+                        "right_referential_integrity": 24.0,
+                        "cardinality_verified": True,
+                    }
+                ],
+            }
+        ]
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    column_concepts=[
+                        ColumnConceptOutput(
+                            table_name="invoices", column_name="entry_id", meaning="link"
+                        ),
+                        ColumnConceptOutput(
+                            table_name="journal_entries", column_name="entry_id", meaning="key"
+                        ),
+                    ],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-flipped",
+                            from_table="journal_entries",  # the judge's flip
+                            from_column="entry_id",
+                            to_table="invoices",
+                            to_column="entry_id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.95,
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session,
+            agent,
+            [invoices.table_id, entries.table_id],
+            relationship_candidates=candidates,
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+        assert result.success
+
+        rel = (
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .one()
+        )
+        # Re-oriented to the measured containment: from = invoices (contained side).
+        assert rel.from_table_id == invoices.table_id
+        assert rel.to_table_id == entries.table_id
+        assert rel.cardinality == "one-to-one"
+        assert rel.confidence == 0.95  # existence verdict untouched
+        assert rel.evidence["left_referential_integrity"] == 100.0
+        assert rel.evidence["right_referential_integrity"] == 24.0
+
     def test_synthesized_relationship_gets_fan_trap_flag_from_data(self, session) -> None:
         """Regression: a synthesized (table_synthesis) relationship with NO structural
         candidate must still get introduces_duplicates computed EMPIRICALLY from the lake.

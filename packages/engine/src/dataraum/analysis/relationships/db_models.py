@@ -188,7 +188,18 @@ class Relationship(Base):
         cardinality is the signal (DAT-758): ``one-to-many`` means ``from`` is the
         ONE (parent/dim) side, so swap the endpoints — and the directional
         ``left_*``/``right_*`` evidence — to store ``many-to-one``. ``many-to-one``
-        is already correct; ``one-to-one`` is orientation-agnostic;
+        is already correct. ``one-to-one`` is oriented by measured CONTAINMENT
+        asymmetry (DAT-725): uniqueness cannot orient it (both sides unique —
+        that is what makes it 1:1), but containment can — a 1:1 FK's REFERENCING
+        side is wholly contained in the referenced side, so its forward RI
+        (~100%) exceeds the reverse coverage; ``left RI < right RI`` means the
+        emission points parent→child and is swapped, while symmetric containment
+        (identical value sets) is genuinely undecidable from data and the
+        writer's (judge's) emission stands. That closed the LAST orientation-
+        jitter path: many:1 flips already self-corrected here, yet a verified
+        1:1 was still confirmed in the FLIPPED direction at temperature 0
+        against direction-exact truth (DAT-725 run-#2 A2). Direction only — the
+        judge's EXISTENCE verdict is never touched here.
         ``many-to-many``/``None`` cannot be oriented. The DB backstop is
         ``ck_relationships_cardinality_oriented``: a mis-oriented ``one-to-many``
         row fails loud at flush even if a future writer bypasses this helper.
@@ -206,6 +217,19 @@ class Relationship(Base):
             # A many-to-one child→parent join matches each child to exactly one
             # parent — it never fans out (the one-to-many parent→child join did).
             evidence["introduces_duplicates"] = False
+        elif cardinality == "one-to-one":
+            # Both RI metrics must be present to decide; either missing — or a
+            # symmetric measurement — keeps the emission: no fabricated signal.
+            left_ri = evidence.get("left_referential_integrity")
+            right_ri = evidence.get("right_referential_integrity")
+            if left_ri is not None and right_ri is not None and left_ri < right_ri:
+                from_table_id, from_column_id, to_table_id, to_column_id = (
+                    to_table_id,
+                    to_column_id,
+                    from_table_id,
+                    from_column_id,
+                )
+                evidence = _swap_directional_evidence(evidence)
         return {
             "run_id": run_id,
             "from_table_id": from_table_id,

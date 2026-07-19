@@ -70,8 +70,8 @@ def test_flip_swaps_every_directional_metric_generically() -> None:
     assert row["evidence"]["orphan_count"] == 3  # non-directional key stays put
 
 
-@pytest.mark.parametrize("cardinality", ["many-to-one", "one-to-one", "many-to-many", None])
-def test_non_one_to_many_is_left_oriented(cardinality: str | None) -> None:
+@pytest.mark.parametrize("cardinality", ["many-to-one", "many-to-many", None])
+def test_unorientable_cardinalities_are_left_as_emitted(cardinality: str | None) -> None:
     row = Relationship.oriented_row(
         run_id="r1",
         from_table_id="a",
@@ -89,6 +89,75 @@ def test_non_one_to_many_is_left_oriented(cardinality: str | None) -> None:
     assert row["cardinality"] == cardinality
     # Untouched — no fabricated fan-out flag, no evidence swap.
     assert row["evidence"] == {"left_referential_integrity": 1.0}
+
+
+# --- 1:1 orientation from measured containment asymmetry (DAT-725). ----------
+
+
+def _one_to_one_row(evidence: dict[str, object] | None) -> dict[str, object]:
+    return Relationship.oriented_row(
+        run_id="r1",
+        from_table_id="parent_tbl",
+        from_column_id="parent_col",
+        to_table_id="child_tbl",
+        to_column_id="child_col",
+        relationship_type="foreign_key",
+        cardinality="one-to-one",
+        confidence=0.95,
+        detection_method="llm",
+        confirmation_source="judge",
+        evidence=evidence,
+    )
+
+
+def test_one_to_one_flips_when_emitted_from_the_referenced_side() -> None:
+    """Run-#2 A2 class: a 1:1 FK confirmed parent→child gets re-oriented.
+
+    The referencing side of a 1:1 FK is wholly contained in the referenced
+    side (forward RI ~100%, reverse coverage lower). ``left RI < right RI``
+    on the emission means it points parent→child — the chokepoint swaps the
+    endpoints and the directional evidence; cardinality stays one-to-one.
+    """
+    row = _one_to_one_row(
+        {"left_referential_integrity": 24.0, "right_referential_integrity": 100.0}
+    )
+    assert (row["from_table_id"], row["from_column_id"]) == ("child_tbl", "child_col")
+    assert (row["to_table_id"], row["to_column_id"]) == ("parent_tbl", "parent_col")
+    assert row["cardinality"] == "one-to-one"
+    evidence = row["evidence"]
+    assert isinstance(evidence, dict)
+    assert evidence["left_referential_integrity"] == 100.0
+    assert evidence["right_referential_integrity"] == 24.0
+    # Unlike the one-to-many flip, no fan-out flag is fabricated: a 1:1 join
+    # never fans out in either direction, and the flag was not measured here.
+    assert "introduces_duplicates" not in evidence
+
+
+def test_one_to_one_correct_emission_stays() -> None:
+    row = _one_to_one_row(
+        {"left_referential_integrity": 100.0, "right_referential_integrity": 24.0}
+    )
+    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
+
+
+def test_one_to_one_symmetric_keeps_the_judges_emission() -> None:
+    """Identical value sets are genuinely undecidable from data — the judge's
+    semantic emission is the only signal left, so it stands."""
+    row = _one_to_one_row(
+        {"left_referential_integrity": 100.0, "right_referential_integrity": 100.0}
+    )
+    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
+
+
+def test_one_to_one_without_both_metrics_stays() -> None:
+    """A missing measurement is not a signal — no swap on partial evidence."""
+    for evidence in (
+        None,
+        {"left_referential_integrity": 24.0},
+        {"right_referential_integrity": 100.0},
+    ):
+        row = _one_to_one_row(evidence)
+        assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
 
 
 def test_confirmation_source_is_passed_through_verbatim() -> None:

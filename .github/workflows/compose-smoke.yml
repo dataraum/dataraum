@@ -110,14 +110,17 @@ jobs:
             # `bun`'s SQL (vitest 5's bun-runtime support, vitest#10363) — plain
             # `bun run` launches vitest on Node and fails to resolve `bun`. Env is the
             # host-port view of the compose services (ports publish to the runner:
-            # postgres 5432, seaweedfs S3 8333), mirroring packages/infra/.env.example;
-            # METADATA/COCKPIT use the `dataraum` OWNER role (write access to ws_<id>),
-            # NOT the read-only cockpit_reader the cockpit container runs as.
+            # postgres 5432, seaweedfs S3 8333), mirroring packages/infra/.env.example.
+            # METADATA_* use the REAL per-workspace roles the engine bootstrap minted
+            # (DAT-816) — the app paths run with production grants; the ADMIN url is
+            # the owner role, used only by the suites' engine-emulation scaffolding.
             - name: Cockpit integration tests
               working-directory: packages/cockpit
               env:
                   COCKPIT_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/cockpit_db
-                  METADATA_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/dataraum
+                  METADATA_DATABASE_URL: postgres://ws_00000000_0000_0000_0000_000000000001_reader:cockpit-reader-dev@127.0.0.1:5432/dataraum
+                  METADATA_WRITER_DATABASE_URL: postgres://ws_00000000_0000_0000_0000_000000000001_writer:cockpit-writer-dev@127.0.0.1:5432/dataraum
+                  METADATA_ADMIN_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/dataraum
                   DATARAUM_WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
                   DATARAUM_CONFIG_PATH: ../dataraum-config
                   # Per-workspace lake prefix (DAT-505): the engine-worker writes

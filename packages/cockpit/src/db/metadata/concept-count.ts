@@ -12,7 +12,7 @@
 // the pipeline runs, so at pre-flight its on-disk count is what clears the guard.
 
 import { and, count, eq, isNull } from "drizzle-orm";
-import { metadataDb } from "./client";
+import { metadataWriteDb } from "./client";
 import { conceptsWrite } from "./write-surface";
 
 /**
@@ -21,7 +21,7 @@ import { conceptsWrite } from "./write-surface";
  * distinct live concepts).
  */
 export async function countActiveConcepts(vertical: string): Promise<number> {
-	const [row] = await metadataDb
+	const [row] = await metadataWriteDb
 		.select({ n: count() })
 		.from(conceptsWrite)
 		.where(

@@ -19,7 +19,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull, type SQL } from "drizzle-orm";
 
-import { metadataDb } from "./client";
+import { metadataWriteDb } from "./client";
 import { sqlSnippetsWrite } from "./write-surface";
 
 /**
@@ -98,7 +98,7 @@ export function queryKeyConditions(key: QuerySnippetKey): SQL {
 export async function saveQuerySnippet(
 	input: SaveQuerySnippetInput,
 ): Promise<SaveQuerySnippetResult> {
-	const existing = await metadataDb
+	const existing = await metadataWriteDb
 		.select({ snippetId: sqlSnippetsWrite.snippetId })
 		.from(sqlSnippetsWrite)
 		.where(queryKeyConditions(input))
@@ -109,7 +109,7 @@ export async function saveQuerySnippet(
 
 	const snippetId = randomUUID();
 	const now = new Date();
-	await metadataDb.insert(sqlSnippetsWrite).values({
+	await metadataWriteDb.insert(sqlSnippetsWrite).values({
 		snippetId,
 		workspaceId: input.workspaceId,
 		snippetType: "query",

@@ -17,7 +17,14 @@ import { z } from "zod";
 const ConfigSchema = z.object({
 	// --- Substrate (required) ---
 	cockpitDatabaseUrl: z.string().min(1),
+	// Engine metadata, per-workspace ROLE credentials (DAT-816): the reader
+	// role (search_path = ws_<id>_read, SELECT only) and the writer role
+	// (search_path = ws_<id>, control-table verbs). The role resolves the
+	// schema — the cockpit never derives a ws_<id> name. Separate connections
+	// by design: the read schema's pass-through views share names with the raw
+	// tables, so the two search_paths must not merge.
 	metadataDatabaseUrl: z.string().min(1),
+	metadataWriterDatabaseUrl: z.string().min(1),
 	// Plain non-empty string (not .uuid()) to match the engine, which accepts
 	// stable non-UUID ids (e.g. "test"); both sides must agree on the value.
 	dataraumWorkspaceId: z.string().min(1),
@@ -92,6 +99,7 @@ function loadConfig(): Config {
 	const parsed = ConfigSchema.safeParse({
 		cockpitDatabaseUrl: process.env.COCKPIT_DATABASE_URL,
 		metadataDatabaseUrl: process.env.METADATA_DATABASE_URL,
+		metadataWriterDatabaseUrl: process.env.METADATA_WRITER_DATABASE_URL,
 		dataraumWorkspaceId: process.env.DATARAUM_WORKSPACE_ID,
 		dataraumConfigPath: process.env.DATARAUM_CONFIG_PATH,
 		dataraumLakePath: process.env.DATARAUM_LAKE_PATH,

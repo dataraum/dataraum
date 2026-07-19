@@ -1,7 +1,7 @@
 // Control-plane WRITE surface on the raw ws_<id> schema (ADR-0008 / DAT-453).
 //
 // The generated mirror (./schema.ts) introspects the promoted-READ schema —
-// views only, by design: the cockpit_reader role cannot SELECT raw run-stamped
+// views only, by design: the reader role cannot SELECT raw run-stamped
 // tables. But four un-versioned CONTROL tables are deliberate cockpit writes:
 //
 //   sources         — register a data source before addSourceWorkflow
@@ -12,42 +12,28 @@
 // (DAT-506 removed `investigation_sessions` — the engine dropped the table + its
 // write grant; run-grouping is the cockpit's concern, in cockpit_db.)
 //
-// The engine bootstrap grants the reader role exactly these verbs on exactly
-// these tables (storage/read_views.py::_CONTROL_WRITE_GRANTS); everything else
-// raw stays unreachable. Hand-declared here (pull can't see them anymore) with
-// only the columns the cockpit writes/returns — the engine's SQLAlchemy models
-// stay the source of truth for the full shapes.
+// These tables ride `metadataWriteDb` (./client.ts) — the per-workspace WRITER
+// role, whose `search_path` the engine bootstrap pins to the raw ws_<id> schema
+// (DAT-816). The role resolves the schema, so the declarations are UNQUALIFIED
+// plain pgTable()s and no workspace literal exists here. The bootstrap grants
+// the writer exactly these verbs on exactly these tables
+// (storage/read_views.py::_CONTROL_WRITE_GRANTS); everything else raw stays
+// unreachable. Hand-declared (pull can't see them) with only the columns the
+// cockpit writes/returns — the engine's SQLAlchemy models stay the source of
+// truth for the full shapes.
 
 import {
 	integer,
 	json,
 	jsonb,
-	pgSchema,
+	pgTable,
 	text,
 	timestamp,
 	varchar,
 } from "drizzle-orm/pg-core";
 
-import { config } from "../../config";
-
-// Unit tests stub `#/config` with an empty object (vitest.config.ts contract),
-// so resolve the id defensively at module load; real boots always carry it
-// (zod-required) and the fallback matches the bootstrap workspace id.
-//
-// Read-path workspace scoping (DAT-505 boundary): WHICH ws_<id> schema to read is
-// resolved from the env-designated workspace here, NOT the cockpit_db registry.
-// In single-active-workspace the env id == the registry row id, so this is
-// correct. It binds the `pgSchema()` table objects at MODULE LOAD, which cannot
-// await a registry lookup — moving read-scoping to per-request registry
-// resolution is the DAT-357 switcher. DAT-505 only routed the WRITE/ROUTING side
-// (queue/container/S3 prefix) through the registry.
-const workspaceId: string =
-	config.dataraumWorkspaceId ?? "00000000-0000-0000-0000-000000000001";
-const rawSchemaName = `ws_${workspaceId.replaceAll("-", "_")}`;
-const rawSchema = pgSchema(rawSchemaName);
-
 /** Raw `sources` — INSERT (+ RETURNING) when registering a source. */
-export const sourcesWrite = rawSchema.table("sources", {
+export const sourcesWrite = pgTable("sources", {
 	sourceId: varchar("source_id").primaryKey(),
 	name: varchar("name").notNull(),
 	sourceType: varchar("source_type").notNull(),
@@ -62,7 +48,7 @@ export const sourcesWrite = rawSchema.table("sources", {
 
 /** Raw `config_overlay` — INSERT (teach) + UPDATE (supersede). No `session_id`
  * post-DAT-506 (the overlay vocabulary is workspace-scoped via the ws_<id> schema). */
-export const configOverlayWrite = rawSchema.table("config_overlay", {
+export const configOverlayWrite = pgTable("config_overlay", {
 	overlayId: varchar("overlay_id").primaryKey(),
 	type: varchar("type").notNull(),
 	payload: jsonb("payload").notNull(),
@@ -76,7 +62,7 @@ export const configOverlayWrite = rawSchema.table("config_overlay", {
  * columns the cockpit writes/reads — the engine SQLAlchemy `Concept` model owns
  * the full shape (identity `concept_id` minted here as a uuid; `source='frame'`).
  * The list columns are engine `JSON` (not JSONB). */
-export const conceptsWrite = rawSchema.table("concepts", {
+export const conceptsWrite = pgTable("concepts", {
 	conceptId: varchar("concept_id").primaryKey(),
 	vertical: varchar("vertical").notNull(),
 	name: varchar("name").notNull(),
@@ -100,7 +86,7 @@ export const conceptsWrite = rawSchema.table("concepts", {
  * cockpit never writes (provenance, input_fields, normalized_expression) are
  * omitted.
  */
-export const sqlSnippetsWrite = rawSchema.table("sql_snippets", {
+export const sqlSnippetsWrite = pgTable("sql_snippets", {
 	snippetId: varchar("snippet_id").primaryKey(),
 	workspaceId: varchar("workspace_id").notNull(),
 	snippetType: varchar("snippet_type").notNull(),

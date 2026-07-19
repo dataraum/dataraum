@@ -87,10 +87,14 @@ x-engine-worker-env: &engine-worker-env
   # Defaults to the in-stack otel-lgtm collector so composed dev traces work
   # out of the box.
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
-  # Password for the cockpit_reader role the bootstrap provisions with SELECT on
-  # ws_<id>_read ONLY (ADR-0008/DAT-453); the cockpit's METADATA_DATABASE_URL
-  # connects with it.
+  # Passwords for the two per-workspace roles the bootstrap mints (DAT-816):
+  # ws_<id>_reader (search_path = ws_<id>_read, SELECT only — the cockpit's
+  # METADATA_DATABASE_URL) and ws_<id>_writer (search_path = ws_<id>, exactly
+  # the control-table verbs — the cockpit's METADATA_WRITER_DATABASE_URL). The
+  # ROLE resolves the schema (ADR-0008/DAT-453 enforcement); role names embed
+  # the workspace id.
   METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
+  METADATA_WRITER_PASSWORD: ${METADATA_WRITER_PASSWORD:-cockpit-writer-dev}
 
 services:
   postgres:
@@ -388,11 +392,15 @@ services:
       # postgres first-boot by init-databases.sh. Holds workspaces
       # registry + chat history + ui_state.
       COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
-      # Engine metadata — read through the cockpit_reader role, which the
-      # engine bootstrap grants SELECT on ws_<id>_read ONLY (ADR-0008/DAT-453):
-      # the promoted-read views are the cockpit's entire metadata surface; raw
-      # run-stamped tables are not even visible to this connection.
-      METADATA_DATABASE_URL: postgresql://cockpit_reader:${METADATA_READER_PASSWORD:-cockpit-reader-dev}@postgres:5432/${POSTGRES_DB}
+      # Engine metadata — the two per-workspace ROLES the engine bootstrap
+      # mints (DAT-816). Each role's search_path resolves the schema, so the
+      # cockpit carries no ws_<id> literal in code: the reader sees the
+      # promoted-read views ONLY (ADR-0008/DAT-453 — raw run-stamped tables are
+      # not even visible); the writer holds exactly the control-table verbs.
+      # The role NAMES embed the workspace id — these URLs are the bootstrap
+      # workspace's; the provisioner (DAT-820) owns per-workspace wiring.
+      METADATA_DATABASE_URL: postgresql://ws_00000000_0000_0000_0000_000000000001_reader:${METADATA_READER_PASSWORD:-cockpit-reader-dev}@postgres:5432/${POSTGRES_DB}
+      METADATA_WRITER_DATABASE_URL: postgresql://ws_00000000_0000_0000_0000_000000000001_writer:${METADATA_WRITER_PASSWORD:-cockpit-writer-dev}@postgres:5432/${POSTGRES_DB}
       # Active workspace_id — same value the engine-worker bootstraps.
       # Drives `bun run db:pull:metadata` schemaFilter + the metadata
       # client's search_path resolution. Must match what the engine

@@ -65,12 +65,6 @@ export function assertBootWorkspace(workspaceId: string): void {
 	}
 }
 
-/** The engine's `ws_<id>` Postgres schema for a workspace id — mirrors the
- * metadata write-surface's derivation (underscores, not dashes). */
-function engineSchemaFor(workspaceId: string): string {
-	return `ws_${workspaceId.replaceAll("-", "_")}`;
-}
-
 /**
  * The engine's Temporal task queue for a workspace id (DAT-505) — one queue per
  * workspace, `engine-<workspace_id>`. Mirrors the engine's `task_queue_for`
@@ -104,7 +98,6 @@ async function seedRegistry(workspaceId: string): Promise<void> {
 		.values({
 			id: workspaceId,
 			name: `Workspace ${workspaceId}`,
-			engineSchema: engineSchemaFor(workspaceId),
 			vertical: DEFAULT_VERTICAL,
 			state: "ready" satisfies WorkspaceState,
 		})
@@ -193,7 +186,6 @@ export async function setActiveWorkspaceVertical(
 		.values({
 			id: workspaceId,
 			name: `Workspace ${workspaceId}`,
-			engineSchema: engineSchemaFor(workspaceId),
 			vertical,
 			state: "ready" satisfies WorkspaceState,
 		})

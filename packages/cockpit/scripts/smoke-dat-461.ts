@@ -37,16 +37,11 @@ async function main(): Promise<void> {
 	// 1. Registry seed + resolve.
 	const wsId = await resolveActiveWorkspace();
 	const [ws] = await cockpitDb
-		.select({ id: workspaces.id, engineSchema: workspaces.engineSchema })
+		.select({ id: workspaces.id })
 		.from(workspaces)
 		.where(eq(workspaces.id, wsId))
 		.limit(1);
 	assert.equal(ws?.id, wsId, "workspace seeded + resolved");
-	assert.equal(
-		ws?.engineSchema,
-		`ws_${wsId.replaceAll("-", "_")}`,
-		"engine schema derived",
-	);
 	const [user] = await cockpitDb
 		.select({ id: users.id })
 		.from(users)

@@ -18,7 +18,8 @@
 //
 // Run against the published compose ports, e.g.:
 //   COCKPIT_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/cockpit \
-//   METADATA_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/dataraum \
+//   METADATA_DATABASE_URL=postgresql://ws_00000000_0000_0000_0000_000000000001_reader:cockpit-reader-dev@localhost:5432/dataraum \
+//   METADATA_WRITER_DATABASE_URL=postgresql://ws_00000000_0000_0000_0000_000000000001_writer:cockpit-writer-dev@localhost:5432/dataraum \
 //   DATARAUM_WORKSPACE_ID=00000000-0000-0000-0000-000000000001 \
 //   DATARAUM_LAKE_PATH=/var/lib/dataraum/lake \
 //   ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
@@ -33,7 +34,7 @@ import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { engineTaskQueueFor } from "#/db/cockpit/registry";
 import { recordRun } from "#/db/cockpit/runs";
-import { metadataDb } from "#/db/metadata/client";
+import { metadataDb, metadataWriteDb } from "#/db/metadata/client";
 import { configOverlay } from "#/db/metadata/schema";
 import { sourcesWrite } from "#/db/metadata/write-surface";
 import { replay } from "#/tools/replay";
@@ -68,7 +69,7 @@ async function seed(sourceId: string): Promise<void> {
 	// Source.name is UNIQUE — keep it unique per run so the driver is repeatable.
 	const name = `source_${sourceId.slice(0, 8)}`;
 	const now = new Date();
-	await metadataDb
+	await metadataWriteDb
 		.insert(sourcesWrite)
 		.values({
 			sourceId,

@@ -27,7 +27,7 @@ import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
-import { metadataDb } from "../db/metadata/client";
+import { metadataWriteDb } from "../db/metadata/client";
 import { countActiveConcepts } from "../db/metadata/concept-count";
 import { conceptsWrite } from "../db/metadata/write-surface";
 
@@ -60,7 +60,7 @@ export type Vertical = z.infer<typeof Vertical>;
  * filters those out by builtin-name, and the builtin count uses it only as an
  * upper-bound richness hint. */
 async function conceptCountsByVertical(): Promise<Map<string, number>> {
-	const rows = await metadataDb
+	const rows = await metadataWriteDb
 		.select({ vertical: conceptsWrite.vertical, n: count() })
 		.from(conceptsWrite)
 		.where(isNull(conceptsWrite.supersededAt))

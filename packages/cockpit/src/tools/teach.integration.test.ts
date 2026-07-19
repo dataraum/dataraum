@@ -18,13 +18,18 @@
 //      by undo, never by a replay.
 //
 // Requires a running compose stack (postgres on 127.0.0.1:5432 with the
-// engine-created ws_<id>.config_overlay table). Skipped automatically when
-// METADATA_DATABASE_URL isn't set so unit-test CI without the stack stays
-// green.
+// engine-created ws_<id>.config_overlay table and the DAT-816 per-workspace
+// roles minted). Skipped automatically when the metadata role URLs aren't set
+// so unit-test CI without the stack stays green. The app path runs with the
+// real reader/writer roles; engine-side scaffolding (promoting/dropping a
+// snapshot head) rides METADATA_ADMIN_DATABASE_URL — a superuser connection
+// the app roles deliberately cannot express.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
+const STACK_AVAILABLE =
+	!!process.env.METADATA_DATABASE_URL &&
+	!!process.env.METADATA_WRITER_DATABASE_URL;
 
 // Stub the cockpit env so config.ts loads even when the test doesn't have
 // every var set (the DB-bound teach/undo import config transitively).
@@ -33,6 +38,7 @@ const REQUIRED_DEFAULTS: Record<string, string> = {
 		process.env.COCKPIT_DATABASE_URL ??
 		"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
 	METADATA_DATABASE_URL: process.env.METADATA_DATABASE_URL ?? "",
+	METADATA_WRITER_DATABASE_URL: process.env.METADATA_WRITER_DATABASE_URL ?? "",
 	DATARAUM_WORKSPACE_ID:
 		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
 	DATARAUM_LAKE_PATH:
@@ -59,8 +65,8 @@ describe.skipIf(!STACK_AVAILABLE)(
 		let undoTeach: any;
 		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
 		let getPendingOverlays: any;
-		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
-		let metadataDb: any;
+		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported Bun SQL client
+		let admin: any;
 
 		beforeAll(async () => {
 			// Dynamic imports so the missing-env skip works — top-level imports
@@ -70,17 +76,22 @@ describe.skipIf(!STACK_AVAILABLE)(
 			undoTeach = teachMod.undoTeach;
 			const helperMod = await import("../db/metadata/pending-overlays");
 			getPendingOverlays = helperMod.getPendingOverlays;
-			// The promotion anchor lives in the metadata schema (ws_<id>), reachable
-			// via the same postgres-js client the helper uses — not the cockpit_db
-			// (bun:sql) client, which can't load under vitest.
-			const clientMod = await import("../db/metadata/client");
-			metadataDb = clientMod.metadataDb;
+			// The promotion anchor lives in the raw metadata schema (ws_<id>),
+			// which NEITHER app role can write (the reader sees only the read
+			// schema; the writer holds only the control-table verbs) — scaffolding
+			// emulates the ENGINE side, so it needs the superuser connection.
+			const { SQL } = await import("bun");
+			admin = new SQL(
+				process.env.METADATA_ADMIN_DATABASE_URL ??
+					"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
+			);
 		});
 
 		afterAll(async () => {
 			// Best-effort: supersede every row this test family inserted so the
 			// shared workspace's overlay list stays clean for subsequent runs.
 			// Tests insert rows with the literal `name` prefix below.
+			await admin?.close();
 		});
 
 		it("teach inserts a row that pending-overlays returns; undo removes it from the active set", async () => {
@@ -138,17 +149,17 @@ describe.skipIf(!STACK_AVAILABLE)(
 		});
 
 		it("a teach is no longer pending once a later snapshot is promoted — pending is run-relative", async () => {
-			const { sql } = await import("drizzle-orm");
 			const stamp = Date.now();
 			const headId = `dat343_run_relative_head_${stamp}`;
-			// The metadata client sets no search_path (its generated SQL is
-			// schema-qualified via pgSchema), so raw DML must name the ws_<id> schema.
+			// Engine-emulation scaffolding: the superuser connection carries no
+			// role search_path, so raw DML must name the ws_<id> schema explicitly
+			// (mirroring the engine's own derivation — the app never does this).
 			// REQUIRED_DEFAULTS already populated this; fall back to the same default
 			// rather than "" so the schema name can't silently truncate to `ws_`.
 			const wsId =
 				process.env.DATARAUM_WORKSPACE_ID ??
 				"00000000-0000-0000-0000-000000000001";
-			const wsSchema = sql.identifier(`ws_${wsId.replaceAll("-", "_")}`);
+			const wsSchema = `ws_${wsId.replaceAll("-", "_")}`;
 
 			// Teach FIRST (created_at = now), so a promotion stamped after it is later.
 			const result = await teach({
@@ -176,10 +187,11 @@ describe.skipIf(!STACK_AVAILABLE)(
 			// client writes Dates as UTC — a tz skew the engine never has (it writes
 			// both columns as UTC). A unique target avoids the (target, stage) UNIQUE.
 			const promotedAt = new Date();
-			await metadataDb.execute(sql`
-				INSERT INTO ${wsSchema}.metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
-				VALUES (${headId}, ${`test:${stamp}`}, 'generation', ${`run_${stamp}`}, ${promotedAt})
-			`);
+			await admin.unsafe(
+				`INSERT INTO "${wsSchema}".metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
+				 VALUES ($1, $2, 'generation', $3, $4)`,
+				[headId, `test:${stamp}`, `run_${stamp}`, promotedAt],
+			);
 
 			try {
 				const afterRun = await getPendingOverlays();
@@ -191,8 +203,9 @@ describe.skipIf(!STACK_AVAILABLE)(
 			} finally {
 				// Drop the synthetic head so the anchor doesn't linger for other suites,
 				// and supersede the teach we left active.
-				await metadataDb.execute(
-					sql`DELETE FROM ${wsSchema}.metadata_snapshot_head WHERE head_id = ${headId}`,
+				await admin.unsafe(
+					`DELETE FROM "${wsSchema}".metadata_snapshot_head WHERE head_id = $1`,
+					[headId],
 				);
 				await undoTeach(result.overlay_id);
 			}

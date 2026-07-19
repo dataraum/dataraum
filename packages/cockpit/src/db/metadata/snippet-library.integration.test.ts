@@ -16,7 +16,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
+const STACK_AVAILABLE =
+	!!process.env.METADATA_DATABASE_URL &&
+	!!process.env.METADATA_WRITER_DATABASE_URL;
 
 // Stub the required cockpit env so config.ts loads (snippet-library imports the
 // metadata client → config). Gated on the stack so a skipped run never mutates
@@ -74,7 +76,12 @@ describe.skipIf(!STACK_AVAILABLE)("snippet-library reads (DAT-484)", () => {
 		const cfg = await import("../../config");
 		workspaceId = cfg.config.dataraumWorkspaceId;
 		const { SQL } = await import("bun");
-		sql = new SQL(process.env.METADATA_DATABASE_URL as string);
+		// Engine-emulation scaffolding (seed/cleanup raw ws_<id> rows): the app
+		// roles deliberately cannot express these — superuser connection.
+		sql = new SQL(
+			process.env.METADATA_ADMIN_DATABASE_URL ??
+				"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
+		);
 
 		await cleanup();
 		await seedFixture();

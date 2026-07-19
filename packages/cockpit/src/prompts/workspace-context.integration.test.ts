@@ -8,15 +8,19 @@
 // DAT-562 grain: the cockpit "session" is retired — the context block names the
 // workspace's imported tables + vertical, not a session. The workspace's tables are
 // the live per-table GENERATION heads (DAT-506); the fixture seeds the engine
-// source/table/run_tables + head via a raw (superuser) SQL connection (cockpit_reader
-// can't write run_tables) and the workspace row via cockpitDb.
+// source/table/run_tables + head via a raw superuser SQL connection
+// (METADATA_ADMIN_DATABASE_URL — neither app role can write run_tables) and the
+// workspace row via cockpitDb.
 //
-// Requires the compose stack (postgres on 127.0.0.1:5432). Self-skips when
-// METADATA_DATABASE_URL is unset so unit CI without the stack stays green.
+// Requires the compose stack (postgres on 127.0.0.1:5432) with the DAT-816
+// per-workspace roles minted. Self-skips when the metadata role URLs are unset
+// so unit CI without the stack stays green.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
+const STACK_AVAILABLE =
+	!!process.env.METADATA_DATABASE_URL &&
+	!!process.env.METADATA_WRITER_DATABASE_URL;
 
 // Stub the cockpit env so config.ts loads for the DB-bound imports.
 const REQUIRED_DEFAULTS: Record<string, string> = {
@@ -24,6 +28,7 @@ const REQUIRED_DEFAULTS: Record<string, string> = {
 		process.env.COCKPIT_DATABASE_URL ??
 		"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
 	METADATA_DATABASE_URL: process.env.METADATA_DATABASE_URL ?? "",
+	METADATA_WRITER_DATABASE_URL: process.env.METADATA_WRITER_DATABASE_URL ?? "",
 	DATARAUM_WORKSPACE_ID:
 		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
 	DATARAUM_LAKE_PATH:
@@ -67,11 +72,16 @@ describe.skipIf(!STACK_AVAILABLE)(
 			cockpitDb = (await import("../db/cockpit/client")).cockpitDb;
 			cockpitSchema = await import("../db/cockpit/schema");
 			const { SQL } = await import("bun");
-			sql = new SQL(process.env.METADATA_DATABASE_URL as string);
+			// Engine-emulation scaffolding (seed/cleanup raw ws_<id> rows): the app
+			// roles deliberately cannot express these — superuser connection.
+			sql = new SQL(
+				process.env.METADATA_ADMIN_DATABASE_URL ??
+					"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
+			);
 			buildWorkspaceContext = (await import("./workspace-context"))
 				.buildWorkspaceContext;
 
-			// Engine side (raw superuser SQL — cockpit_reader can't write run_tables):
+			// Engine side (raw superuser SQL — neither app role can write run_tables):
 			// source → table → run_tables. far-future created_at so this run's tables
 			// resolve regardless of other data.
 			await sql.unsafe(
@@ -112,7 +122,6 @@ describe.skipIf(!STACK_AVAILABLE)(
 				.values({
 					id: WS,
 					name: `Workspace ${WS}`,
-					engineSchema: SCHEMA,
 					vertical: "finance",
 				})
 				.onConflictDoUpdate({

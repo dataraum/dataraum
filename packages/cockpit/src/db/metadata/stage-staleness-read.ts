@@ -1,11 +1,11 @@
 // The DB read that feeds the pure stage-staleness logic (DAT-531). Split from
 // `stage-staleness.ts` so the pure module stays client-free (a unit test importing
 // the logic must not drag in the postgres client — the at-import hang trap). Both
-// reads are over engine metadata (read-only); the SQL is smoke-verified per the
+// reads are SELECTs over engine metadata; the SQL is smoke-verified per the
 // metadata-read convention (`grounding-readiness.ts` precedent).
 
 import { isNull } from "drizzle-orm";
-import { metadataDb } from "#/db/metadata/client";
+import { metadataDb, metadataWriteDb } from "#/db/metadata/client";
 import { metadataSnapshotHead } from "#/db/metadata/schema";
 import {
 	collapseHeads,
@@ -18,9 +18,9 @@ import { configOverlayWrite } from "#/db/metadata/write-surface";
 /**
  * Read the workspace's per-stage staleness (DAT-531): fetch the generation-head log
  * + the un-superseded teach overlays, collapse, derive. Workspace-scoped via the
- * `ws_<id>` metadata schema the read client binds (DAT-505). Degrades to "nothing
- * stale" on a read blip — a missing staleness hint is a soft advisory, it must
- * never break the monitor.
+ * metadata roles' search_paths (DAT-816). Degrades to "nothing stale" on a read
+ * blip — a missing staleness hint is a soft advisory, it must never break the
+ * monitor.
  */
 export async function readStageStaleness(): Promise<StageStaleness[]> {
 	try {
@@ -32,7 +32,10 @@ export async function readStageStaleness(): Promise<StageStaleness[]> {
 					promotedAt: metadataSnapshotHead.promotedAt,
 				})
 				.from(metadataSnapshotHead),
-			metadataDb
+			// Raw config_overlay rides the WRITER role (its search_path is the
+			// raw schema); the typed write-surface columns keep the non-null
+			// shape deriveStaleness expects.
+			metadataWriteDb
 				.select({
 					type: configOverlayWrite.type,
 					createdAt: configOverlayWrite.createdAt,

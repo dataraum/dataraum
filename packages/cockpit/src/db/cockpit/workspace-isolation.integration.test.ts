@@ -176,13 +176,15 @@ describe.skipIf(!STACK_AVAILABLE)(
 			await db
 				.delete(schema.uiState)
 				.where(inArray(schema.uiState.conversationId, [CONV_A, CONV_B]));
-			await db.delete(schema.conversationMessages).where(
-				inArray(schema.conversationMessages.conversationId, [
-					CONV_A,
-					CONV_A2,
-					CONV_B,
-				]),
-			);
+			await db
+				.delete(schema.conversationMessages)
+				.where(
+					inArray(schema.conversationMessages.conversationId, [
+						CONV_A,
+						CONV_A2,
+						CONV_B,
+					]),
+				);
 			await db
 				.delete(schema.runs)
 				.where(inArray(schema.runs.id, [RUN_B_RUNNING, RUN_B_AWAITING]));

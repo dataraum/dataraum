@@ -41,7 +41,11 @@ vi.mock("#/config", () => ({
 vi.mock("#/db/cockpit/schema", () => ({
 	users: { _t: "users", id: "id" },
 	workspaces: { _t: "workspaces", id: "id", vertical: "vertical" },
-	memberships: { _t: "memberships", userId: "user_id", workspaceId: "workspace_id" },
+	memberships: {
+		_t: "memberships",
+		userId: "user_id",
+		workspaceId: "workspace_id",
+	},
 }));
 
 vi.mock("drizzle-orm", () => ({ eq: (...a: unknown[]) => a }));

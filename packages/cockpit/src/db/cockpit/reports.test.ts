@@ -1,9 +1,10 @@
-// Unit tests for server-owned report persistence (DAT-624). Mocks the cockpit_db
-// client at the `#/` boundary (no DB). Covers the real logic the functions own:
-// mint with nullable-provenance defaulting, the live-only gallery filter
-// (deleted_at IS NULL) scoped + ordered by recency, getReport's missing/deleted →
-// null contract, and the rename/soft-delete guards. The real SQL is covered by the
-// Bun lane smoke.
+// Unit tests for server-owned report persistence (DAT-624; boot-workspace scope
+// DAT-817). Mocks the cockpit_db client at the `#/` boundary (no DB). Covers the
+// real logic the functions own: mint with nullable-provenance defaulting, the
+// live-only gallery filter (deleted_at IS NULL) scoped + ordered by recency,
+// getReport's missing/deleted → null contract, the rename/soft-delete guards,
+// and the DAT-817 boot-workspace fence on every by-id path. The real SQL is
+// covered by the workspace-isolation integration test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,7 +15,14 @@ const h = vi.hoisted(() => ({
 	selectResult: [] as Array<Record<string, unknown>>,
 }));
 
+vi.mock("#/config", () => ({
+	config: { dataraumWorkspaceId: "ws-1" },
+}));
+
 vi.mock("#/db/cockpit/schema", () => ({
+	users: { _t: "users", id: "id" },
+	workspaces: { _t: "workspaces", id: "id", vertical: "vertical" },
+	memberships: { _t: "memberships" },
 	reports: {
 		_t: "reports",
 		id: "id",
@@ -159,6 +167,19 @@ describe("createReport", () => {
 			parentId: null,
 		});
 	});
+
+	it("refuses a non-boot workspace born-loud (DAT-817)", async () => {
+		await expect(
+			createReport({
+				workspaceId: "ws-other",
+				title: "t",
+				summary: "s",
+				sql: "SELECT 1",
+				confidence,
+			}),
+		).rejects.toThrow(/cross-workspace query refused/);
+		expect(h.inserts).toEqual([]);
+	});
 });
 
 describe("listReports", () => {
@@ -180,8 +201,10 @@ describe("getReport", () => {
 	it("hydrates a live report, or null for a missing/soft-deleted id", async () => {
 		h.selectResult = [{ id: "r1", title: "a", confidence }];
 		expect(await getReport("r1")).toMatchObject({ id: "r1", title: "a" });
-		// The query excludes soft-deleted rows.
+		// The query excludes soft-deleted rows AND is boot-workspace fenced
+		// (DAT-817): a foreign report id behaves exactly like an unknown one.
 		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
+		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
 
 		h.selectResult = [];
 		expect(await getReport("missing")).toBeNull();
@@ -189,11 +212,12 @@ describe("getReport", () => {
 });
 
 describe("renameReport", () => {
-	it("updates only the title, scoped to live rows", async () => {
+	it("updates only the title, scoped to live rows in the boot workspace", async () => {
 		await renameReport("r1", "New title");
 		const upd = h.updates.find((u) => u.table === "reports");
 		expect(upd?.set).toEqual({ title: "New title" });
 		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
+		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
 	});
 });
 
@@ -206,6 +230,7 @@ describe("updateReportSummary", () => {
 			summaryFingerprint: "fp-new",
 		});
 		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
+		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
 	});
 });
 
@@ -216,14 +241,16 @@ describe("setReportFingerprint", () => {
 		expect(upd?.set).toEqual({ summaryFingerprint: "fp-backfill" });
 		expect(upd?.set.summary).toBeUndefined();
 		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
+		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
 	});
 });
 
 describe("softDeleteReport", () => {
-	it("sets deletedAt (guarded by deleted_at IS NULL → idempotent)", async () => {
+	it("sets deletedAt (guarded by deleted_at IS NULL → idempotent), workspace-fenced", async () => {
 		await softDeleteReport("r1");
 		const upd = h.updates.find((u) => u.table === "reports");
 		expect(upd?.set.deletedAt).toBeInstanceOf(Date);
 		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
+		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
 	});
 });

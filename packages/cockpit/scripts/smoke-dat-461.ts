@@ -21,9 +21,9 @@
 import assert from "node:assert/strict";
 import { and, eq } from "drizzle-orm";
 import { cockpitDb } from "#/db/cockpit/client";
-import { DEFAULT_ACTOR_ID, resolveActiveWorkspace } from "#/db/cockpit/registry";
+import { DEFAULT_USER_ID, resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { markRunStatus, recordRun } from "#/db/cockpit/runs";
-import { actors, runs, workspaces } from "#/db/cockpit/schema";
+import { memberships, runs, users, workspaces } from "#/db/cockpit/schema";
 
 // DAT-562/DAT-595: a run is recorded keyed by (workflowId, REAL runId) — the run row
 // carries the Temporal execution id directly (recorded post-start), no placeholder.
@@ -47,12 +47,25 @@ async function main(): Promise<void> {
 		`ws_${wsId.replaceAll("-", "_")}`,
 		"engine schema derived",
 	);
-	const [actor] = await cockpitDb
-		.select({ id: actors.id })
-		.from(actors)
-		.where(eq(actors.id, DEFAULT_ACTOR_ID))
+	const [user] = await cockpitDb
+		.select({ id: users.id })
+		.from(users)
+		.where(eq(users.id, DEFAULT_USER_ID))
 		.limit(1);
-	assert.equal(actor?.id, DEFAULT_ACTOR_ID, "default actor seeded");
+	assert.equal(user?.id, DEFAULT_USER_ID, "default user seeded");
+	// DAT-817: the seed also grants the default user membership in the boot
+	// workspace — what the portal (Phase 6) lists at login.
+	const [membership] = await cockpitDb
+		.select({ role: memberships.role })
+		.from(memberships)
+		.where(
+			and(
+				eq(memberships.userId, DEFAULT_USER_ID),
+				eq(memberships.workspaceId, wsId),
+			),
+		)
+		.limit(1);
+	assert.equal(membership?.role, "member", "default membership seeded");
 
 	// 2. recordRun: writes one `runs` row (DAT-562) keyed by (workflowId, real runId);
 	//    re-recording the same run is a UNIQUE no-op. The kind lives on the run row.
@@ -98,7 +111,7 @@ async function main(): Promise<void> {
 	assert.equal(r?.status, "completed", "run marked completed");
 
 	// Cleanup — delete the test runs (by their workflow ids). Leave the shared
-	// registry rows (workspace, default actor) intact.
+	// registry rows (workspace, default user, membership) intact.
 	await cockpitDb.delete(runs).where(eq(runs.workflowId, WF_1));
 	await cockpitDb.delete(runs).where(eq(runs.workflowId, WF_2));
 

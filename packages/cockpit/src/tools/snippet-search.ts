@@ -59,8 +59,9 @@ const SnippetMeta = z.object({
 	// as-is (validated leniently by the model's use).
 	input_fields: z.unknown(),
 	parameter_value: z.string().nullable(),
-	// DAT-616: the prior value→concept FILTER decisions ({concept:{column,filter,
-	// resolution}}) — reuse the same grounding instead of re-inventing it.
+	// DAT-616: the prior value→concept grounding decisions — contract v2
+	// (DAT-727): {concept: {measure_columns[], filter_columns[], filter}} —
+	// reuse the same columns/values instead of re-inventing the grounding.
 	column_mappings_basis: z.unknown(),
 });
 

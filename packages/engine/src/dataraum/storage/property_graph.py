@@ -466,7 +466,10 @@ def _element_view_sql(name: str) -> str:
         # DISTINCT ON dedupes a column enumerated by several concepts/roles into
         # ONE edge per (snippet, column) — PGQ needs a unique edge KEY — keeping
         # the measure reading when roles collide ('measure' sorts before
-        # 'filter'). role rides as the edge property.
+        # 'filter'). role rides as the edge property. Consumer caveat: a
+        # genuinely dual-role column (read AND filtered on, enumerated under
+        # both lists) therefore surfaces as role='measure' only — a consumer
+        # filtering strictly role='filter' can under-report it.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_uses AS\n"
             f"SELECT DISTINCT ON (g.snippet_id, col.column_id)\n"

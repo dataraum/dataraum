@@ -44,9 +44,13 @@ Seed rows are NEVER touched — the reconcile is scoped ``source='derived'``.
 it never reads ``current_*`` views: groundings are the un-versioned
 sql_snippets rows, the witness is pinned to the catalogue run, and the served
 relation→column resolution mirrors ``og_uses``' (property_graph.py) over the
-same typed substrate — enriched relation → the view's own served columns
-(matched by ``column_id`` or ``source_column_id``), typed relation → its
-columns by ``table_name``/``duckdb_path``.
+same typed substrate with the same scoping — enriched relation → the view's
+own served columns (``enriched_views`` is latest-only by schema,
+``UNIQUE(fact_table_id)``, so the raw read IS the current state; matched by
+``column_id`` or ``source_column_id``), typed relation → its columns by
+``table_name``/``duckdb_path`` behind a promoted ``(table:{id}, generation)``
+head (the ORM equivalent of ``current_tables`` — an unpromoted/retired typed
+table must not witness).
 """
 
 from __future__ import annotations
@@ -63,6 +67,7 @@ from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.query.snippet_models import SQLSnippetRecord
 from dataraum.storage.models import Column, Table
+from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
 from dataraum.storage.upsert import insert_if_absent
 
 logger = get_logger(__name__)
@@ -241,6 +246,15 @@ def _measures_witnessed_column(
             Table.layer == "typed",
             or_(Table.table_name == relation, Table.duckdb_path == relation),
             Column.column_name.in_(measure_names),
+            # The current_tables scoping, in ORM (in-run — no read views): only
+            # a typed table behind a promoted generation head resolves; an
+            # unpromoted or retired typed table must not witness.
+            select(MetadataSnapshotHead.head_id)
+            .where(
+                MetadataSnapshotHead.target == "table:" + Table.table_id,
+                MetadataSnapshotHead.stage == GENERATION_STAGE,
+            )
+            .exists(),
         )
     ).scalars()
     return any(column_id in witnessed_ids for column_id in typed)

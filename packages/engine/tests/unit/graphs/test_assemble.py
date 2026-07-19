@@ -293,3 +293,38 @@ def test_assemble_executes_and_flags_a_violated_declared_expectation() -> None:
     assert "declared expectation not met" in execution.verification_flags[0]
     assert "COGS should not be negative" in execution.verification_flags[0]
     provider.converse.assert_not_called()
+
+
+def test_cached_off_vocabulary_assumption_basis_degrades_never_wedges() -> None:
+    """Contract-v2 tightened GraphAssumptionOutput.basis to the AssumptionBasis
+    enum, but rows written BEFORE the cut persisted the model's raw string.
+    The cache-read reconstruction must coerce (warn + INFERRED), never raise —
+    a ValidationError here would wedge a HEALTHY snippet forever (first-writer-
+    wins keeps the row; the crash happens before any failed-save could flag it)."""
+    from dataraum.graphs.models import AssumptionBasis
+
+    revenue = _extract("revenue", "revenue")
+    graph = _graph("revenue", {"revenue": revenue})
+    cached = {
+        "revenue": {
+            "sql": "SELECT 1 AS value",
+            "description": "revenue",
+            "snippet_id": "s1",
+            "assumptions": [
+                {
+                    "dimension": "semantic.units",
+                    "target": "column:t.amount",
+                    "assumption": "currency is EUR",
+                    "basis": "vibes",  # pre-enum row: off-vocabulary raw string
+                    "confidence": 0.4,
+                }
+            ],
+        }
+    }
+    agent = _bare_agent(MagicMock())
+
+    code = agent._compose_metric_from_dag(graph, cached, {})
+
+    assert code is not None
+    assert [a.basis for a in code.assumptions] == [AssumptionBasis.INFERRED]
+    assert code.assumptions[0].confidence == 0.4  # the signal itself is kept

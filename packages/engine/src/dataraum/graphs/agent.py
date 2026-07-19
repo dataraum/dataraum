@@ -34,6 +34,7 @@ from dataraum.llm.prompts import PromptRenderer
 from dataraum.llm.providers.base import LLMProvider
 
 from .models import (
+    AssumptionBasis,
     ExtractGroundingOutput,
     FailedSnippetProvenance,
     GraphAssumptionOutput,
@@ -536,12 +537,27 @@ class GraphAgent(LLMFeature):
                 snippet = cached_snippets.get(step_id) or {}
                 description = snippet.get("description") or step_id
                 for a in snippet.get("assumptions") or []:
+                    # Defensive coercion at the CACHE-READ boundary: rows written
+                    # before basis was enum-typed (contract v2, DAT-727) persisted
+                    # the model's raw string, and this reconstruction runs on every
+                    # cache-assemble — a ValidationError here would wedge a HEALTHY
+                    # snippet forever (first-writer-wins never replaces it), so an
+                    # off-vocabulary value degrades to INFERRED with a warning
+                    # instead of crashing. New writes are enum-enforced at save.
+                    raw_basis = a.get("basis", "inferred")
+                    try:
+                        basis = AssumptionBasis(raw_basis)
+                    except ValueError:
+                        logger.warning(
+                            "unknown_cached_assumption_basis", basis=raw_basis, step_id=step_id
+                        )
+                        basis = AssumptionBasis.INFERRED
                     assumptions.append(
                         GraphAssumptionOutput(
                             dimension=a.get("dimension", "grounding.cached"),
                             target=a.get("target", f"step:{step_id}"),
                             assumption=a.get("assumption", ""),
-                            basis=a.get("basis", "inferred"),
+                            basis=basis,
                             confidence=a.get("confidence", 0.5),
                         )
                     )

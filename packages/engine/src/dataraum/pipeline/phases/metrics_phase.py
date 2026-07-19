@@ -367,9 +367,21 @@ class MetricsPhase(BasePhase):
         # aggregation-lineage witness (at the pinned catalogue run) and
         # multi-grounding concepts — as source='derived' concept_edges rows
         # (insert missing, supersede vanished; seed rows untouched).
+        # Fault-isolated like _persist_additivity_verdicts above, for the same
+        # reason: an unhandled failure here would fail the phase and roll the
+        # session back, discarding every metric's executed lifecycle state over
+        # a derived-vocabulary annotation. The SAVEPOINT keeps the
+        # insert+supersede pair atomic while a failure costs only this run's
+        # assertions (the next run re-derives them).
         from dataraum.analysis.semantic.reconciles_with import derive_reconciles_with
 
-        derive_reconciles_with(ctx.session, vertical=vertical, catalogue_run_id=catalogue_run_id)
+        try:
+            with ctx.session.begin_nested():
+                derive_reconciles_with(
+                    ctx.session, vertical=vertical, catalogue_run_id=catalogue_run_id
+                )
+        except Exception as e:
+            _log.warning("reconciles_with_derivation_failed", error=str(e))
 
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")

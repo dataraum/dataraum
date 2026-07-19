@@ -130,6 +130,36 @@ def test_phantom_enumeration_is_a_violation_under_parse(conn) -> None:
     assert any("'credit'" in v and "never" in v for v in violations)
 
 
+def test_role_mislabel_is_a_violation(conn) -> None:
+    """The enumeration is checked PER ROLE (role rides on the og_uses edge):
+    a where-only column enumerated under measure_columns fails BOTH ways —
+    filter_columns is incomplete AND the measure entry is a phantom."""
+    out = _output(
+        where=["account_type IN ('revenue')"],
+        basis=_basis("revenue", ["amount", "account_type"]),  # account_type mislabeled
+    )
+    violations = validate_grounding_basis(out, _SCHEMA, conn)
+    assert any(
+        "'account_type'" in v and "filter_columns" in v and "does not" in v for v in violations
+    )
+    assert any(
+        "'account_type'" in v and "measure_columns" in v and "never" in v for v in violations
+    )
+
+
+def test_dual_role_column_enumerated_under_both_roles_is_clean(conn) -> None:
+    """A column both read and filtered on appears under BOTH lists — honest,
+    not double-counted."""
+    out = _output(
+        select_expr="SUM(amount)",
+        where=["amount > 0"],
+        basis={
+            "revenue": ConceptGroundingBasis(measure_columns=["amount"], filter_columns=["amount"])
+        },
+    )
+    assert validate_grounding_basis(out, _SCHEMA, conn) == []
+
+
 def test_string_literal_containing_a_column_name_is_not_used(conn) -> None:
     """Parser precision: 'amount' inside a VALUE literal is not a column
     reference — the lexical net alone would flag it; the parse must not."""

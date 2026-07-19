@@ -9,9 +9,12 @@ SQL as a *source* of typed data is forbidden. This module is the enforcement:
 1. **Membership** — every enumerated column is a member of the served
    relation's schema (typed set-membership; the relation itself must be a
    served relation).
-2. **Completeness** — every relation column the emitted SQL parts actually
-   touch appears in the enumeration. The reference set is derived from the
-   parts as a *validator only*: DuckDB's catalog-free parse
+2. **Completeness, PER ROLE** — every column the ``select_expr`` reads appears
+   under ``measure_columns``, and every column the ``where`` predicates filter
+   on appears under ``filter_columns`` (a dual-role column must appear under
+   both). Role-checked because ``role`` is a real ``og_uses`` edge property —
+   a mislabeled enumeration would mislabel the graph. The reference sets are
+   derived from the parts as a *validator only*: DuckDB's catalog-free parse
    (``json_serialize_sql``, the DAT-713 seam) recovers the true column
    references — distinguishing identifiers from string literals and skipping
    subquery-internal names — and falls back to coarse lexical tokens matched
@@ -19,10 +22,10 @@ SQL as a *source* of typed data is forbidden. This module is the enforcement:
    parse (or no connection is available). Neither path ever *writes* a column
    name anywhere; a violation is fed back to the model for a repair turn
    (DAT-710 pattern) and the model fixes its own enumeration.
-3. **No phantoms** — an enumerated column the SQL never touches is a
-   violation too, but only when the parse succeeded (the lexical fallback
-   over-collects — a string literal containing a column name would make an
-   honest enumeration look phantom, so the check stays parse-gated).
+3. **No phantoms, PER ROLE** — an enumerated column its role's fragments never
+   touch is a violation too, but only when every fragment parsed (the lexical
+   fallback over-collects — a string literal containing a column name would
+   make an honest enumeration look phantom, so the check stays parse-gated).
 
 The fall-loud grounding shape (``relation: null`` / ``select_expr: "NULL"``)
 carries no columns and is exempt.
@@ -76,11 +79,13 @@ def validate_grounding_basis(
         ]
 
     basis = output.provenance.column_mappings_basis if output.provenance else {}
-    enumerated: set[str] = set()
+    measure_enumerated: set[str] = set()
+    filter_enumerated: set[str] = set()
     violations: list[str] = []
     for concept, entry in basis.items():
+        measure_enumerated.update(entry.measure_columns)
+        filter_enumerated.update(entry.filter_columns)
         for col in [*entry.measure_columns, *entry.filter_columns]:
-            enumerated.add(col)
             if col not in relation_columns:
                 violations.append(
                     f"column_mappings_basis['{concept}'] names '{col}', which is not a "
@@ -88,21 +93,34 @@ def validate_grounding_basis(
                     "verbatim, without table qualifiers"
                 )
 
-    used, parsed = _used_columns(output, relation_columns, duckdb_conn)
-    for col in sorted(used - enumerated):
+    select_used, where_used, parsed = _used_columns(output, relation_columns, duckdb_conn)
+    for col in sorted(select_used - measure_enumerated):
         violations.append(
-            f"the SQL parts reference '{output.relation}' column '{col}' but "
-            "column_mappings_basis does not enumerate it — every column the "
-            "select_expr/where touch must appear under its concept, by role"
+            f"select_expr reads '{output.relation}' column '{col}' but "
+            "column_mappings_basis does not enumerate it under measure_columns — "
+            "every column the select_expr reads must appear there, under its concept"
+        )
+    for col in sorted(where_used - filter_enumerated):
+        violations.append(
+            f"the where predicates filter on '{output.relation}' column '{col}' but "
+            "column_mappings_basis does not enumerate it under filter_columns — "
+            "every column the where predicates touch must appear there, under its concept"
         )
     if parsed:
         # Phantom check only among membership-valid names (invalid ones are
         # already flagged above) and only under a successful parse — the
         # lexical fallback over-collects, which would misread honest entries.
-        for col in sorted((enumerated & relation_columns) - used):
+        for col in sorted((measure_enumerated & relation_columns) - select_used):
             violations.append(
-                f"column_mappings_basis enumerates '{col}' but the SQL parts never "
-                "reference it — enumerate exactly the columns the SQL touches"
+                f"column_mappings_basis enumerates '{col}' under measure_columns but "
+                "select_expr never reads it — enumerate exactly the columns each "
+                "role's SQL touches"
+            )
+        for col in sorted((filter_enumerated & relation_columns) - where_used):
+            violations.append(
+                f"column_mappings_basis enumerates '{col}' under filter_columns but "
+                "the where predicates never touch it — enumerate exactly the columns "
+                "each role's SQL touches"
             )
     return violations
 
@@ -111,22 +129,23 @@ def _used_columns(
     output: ExtractGroundingOutput,
     relation_columns: set[str],
     duckdb_conn: duckdb.DuckDBPyConnection | None,
-) -> tuple[set[str], bool]:
-    """The relation columns the parts actually reference, and whether all parsed.
+) -> tuple[set[str], set[str], bool]:
+    """The relation columns each ROLE's fragments reference, and whether all parsed.
 
-    Per fragment (``select_expr`` + each ``where`` predicate): DuckDB's
-    catalog-free parse when it succeeds (identifier-precise), lexical tokens
-    otherwise. Both are intersected with the relation's known vocabulary, so a
-    subquery's *other-relation* names and SQL keywords can never enter; the
-    parse additionally excludes string literals and subquery-internal names
-    that happen to collide with relation columns.
+    Returns ``(select_used, where_used, all_parsed)`` — the ``select_expr``'s
+    references and the ``where`` predicates' references separately, because the
+    contract (and the ``og_uses`` edge's ``role`` property) is per-role. Per
+    fragment: DuckDB's catalog-free parse when it succeeds (identifier-precise),
+    lexical tokens otherwise. Both are intersected with the relation's known
+    vocabulary, so a subquery's *other-relation* names and SQL keywords can
+    never enter; the parse additionally excludes string literals and
+    subquery-internal names that happen to collide with relation columns.
     """
-    fragments = [output.select_expr, *output.where]
-    used: set[str] = set()
+
     all_parsed = True
-    for fragment in fragments:
-        if not fragment or not fragment.strip():
-            continue
+
+    def refs_of(fragment: str) -> set[str]:
+        nonlocal all_parsed
         try:
             if duckdb_conn is None:
                 raise ValueError("no DuckDB connection for the parse validator")
@@ -134,8 +153,16 @@ def _used_columns(
         except ValueError:
             all_parsed = False
             refs = {m.group(1) or m.group(0) for m in _TOKEN_RE.finditer(fragment)}
-        used |= refs & relation_columns
-    return used, all_parsed
+        return refs & relation_columns
+
+    select_used: set[str] = set()
+    if output.select_expr and output.select_expr.strip():
+        select_used = refs_of(output.select_expr)
+    where_used: set[str] = set()
+    for predicate in output.where:
+        if predicate and predicate.strip():
+            where_used |= refs_of(predicate)
+    return select_used, where_used, all_parsed
 
 
 def _parsed_column_refs(sql_expr: str, con: duckdb.DuckDBPyConnection) -> set[str]:

@@ -20,6 +20,7 @@ from dataraum.analysis.semantic.reconciles_with import derive_reconciles_with
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.query.snippet_models import SQLSnippetRecord
 from dataraum.storage.models import Column, Table
+from dataraum.storage.snapshot_head import MetadataSnapshotHead
 
 VERTICAL = "finance"
 CAT_RUN = "cat-run-1"
@@ -76,6 +77,11 @@ def _snippet(
 
 def _typed_table(session: Session, tid: str, name: str) -> None:
     session.add(Table(table_id=tid, source_id=_TEST_SOURCE_ID, table_name=name, layer="typed"))
+
+
+def _promote(session: Session, tid: str) -> None:
+    """A promoted (table:{id}, generation) head — the typed-branch scoping gate."""
+    session.add(MetadataSnapshotHead(target=f"table:{tid}", stage="generation", run_id=CAT_RUN))
 
 
 def _column(
@@ -211,6 +217,7 @@ def test_witness_resolves_through_the_enriched_views_served_column(session: Sess
 def test_witness_resolves_a_typed_relation_directly(session: Session) -> None:
     _concept(session, "revenue")
     _typed_table(session, "t_fact", "journal")
+    _promote(session, "t_fact")
     _column(session, "c_amt", "t_fact", "amount")
     _snippet(session, "s1", "revenue", "income_statement", "journal", measure_columns=["amount"])
     _witness(session, "c_amt", "t_fact")
@@ -222,11 +229,25 @@ def test_witness_resolves_a_typed_relation_directly(session: Session) -> None:
     assert _derived_loops(session) == {"revenue"}
 
 
+def test_unpromoted_typed_table_does_not_witness(session: Session) -> None:
+    """The current_tables scoping mirrored in ORM: a typed table with NO
+    promoted generation head must not resolve the grounding's relation."""
+    _concept(session, "revenue")
+    _typed_table(session, "t_fact", "journal")  # no _promote
+    _column(session, "c_amt", "t_fact", "amount")
+    _snippet(session, "s1", "revenue", "income_statement", "journal", measure_columns=["amount"])
+    _witness(session, "c_amt", "t_fact")
+    session.flush()
+
+    assert derive_reconciles_with(session, vertical=VERTICAL, catalogue_run_id=CAT_RUN) == (0, 0)
+
+
 def test_witness_at_another_run_or_v1_basis_asserts_nothing(session: Session) -> None:
     """Run-pinning + the clean contract cut: an unpinned-run witness is not
     THIS session's evidence, and a pre-v2 basis carries no arrays to resolve."""
     _concept(session, "revenue")
     _typed_table(session, "t_fact", "journal")
+    _promote(session, "t_fact")
     _column(session, "c_amt", "t_fact", "amount")
     _snippet(session, "s1", "revenue", "income_statement", "journal", v1_basis=True)
     _witness(session, "c_amt", "t_fact", run_id="other-run")

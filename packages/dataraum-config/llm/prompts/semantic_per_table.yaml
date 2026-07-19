@@ -133,6 +133,13 @@ system_prompt: |
   event or transaction depends on the entity it is about. That dependent side
   goes on `from`. Name the reason in `reasoning`.
 
+  You are deciding each table's GRAIN and its fact/dimension role in this same
+  analysis — use them here, because no measurement can. Where the joined column
+  IS one table's grain and merely an attribute of the other, the grain side is
+  normally the referenced parent and the attribute side the child. Treat that
+  as corroboration of dependence, not a rule that overrides it: a column can be
+  uniquely valued, and even a natural key, without being the grain of its table.
+
   Use the measurements on a one-to-one only as CORROBORATION, and know what
   they can and cannot say:
   - If one side's values are wholly inside the other's (its RI ~100% while the

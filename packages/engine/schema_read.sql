@@ -428,3 +428,25 @@ WHERE EXISTS (
    AND h.run_id = ev.run_id
   WHERE ev.view_table_id = c.table_id
 );
+
+DROP VIEW IF EXISTS __READ__.current_groundings;
+CREATE VIEW __READ__.current_groundings AS
+SELECT s.snippet_id,
+       s.standard_field AS concept,
+       s.statement,
+       s.aggregation,
+       s.parts->'from'->>0 AS relation,
+       s.parts->'select'->0->>'expr' AS select_expr,
+       (s.parts->'where')::text AS where_predicates,
+       s.description,
+       s.sql,
+       s.parts,
+       s.provenance,
+       (s.failure_count > 0) AS failed,
+       s.schema_mapping_id,
+       s.workspace_id,
+       s.created_at,
+       s.updated_at
+FROM __WS__.sql_snippets s
+WHERE s.snippet_type = 'extract'
+  AND s.source LIKE 'graph:%';

@@ -241,6 +241,22 @@ def test_current_entity_views_shape() -> None:
     assert "'table:' || t.table_id" in statements["current_columns"]
 
 
+def test_current_groundings_shape() -> None:
+    """DAT-727: the grounding surface over sql_snippets. Membership is the
+    cross-lane contract — graph-authored extracts ONLY (the cockpit's query:%
+    rows share the table and must never surface) — and so are the exposed
+    ``concept`` / ``relation`` columns the eval oracle reads. Reads the BASE
+    table (a read view may not depend on another read view — drop order)."""
+    statements = dict(read_view_statements())
+    sql = statements["current_groundings"]
+    assert f"FROM {WS_TOKEN}.sql_snippets" in sql
+    assert "snippet_type = 'extract'" in sql
+    assert "source LIKE 'graph:%'" in sql
+    assert "s.standard_field AS concept" in sql
+    assert "s.parts->'from'->>0 AS relation" in sql
+    assert "(s.failure_count > 0) AS failed" in sql
+
+
 def test_current_tables_returns_promoted_typed_representative_only() -> None:
     """DAT-655 semantics, executed live: one logical table across three layers
     plus an unpromoted typed table → ``current_tables`` returns exactly the

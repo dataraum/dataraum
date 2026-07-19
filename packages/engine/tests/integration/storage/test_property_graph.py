@@ -20,7 +20,15 @@ engine:
   (a node one hop past it stays unreached), the cycle guard fires (a back edge
   never re-enters its source) and the walk terminates, and the fixed-depth PGQ
   unroll agrees with the closure at the same depth;
-* the drop-before-refresh bootstrap is idempotent across a re-boot.
+* the drop-before-refresh bootstrap is idempotent across a re-boot;
+* the P2 grounding reification (DAT-727): ``current_groundings`` membership
+  (graph-authored extracts only — the cockpit's query rows never surface), the
+  Grounding vertex set incl. the ``failed`` discriminator, the clause-parts
+  round-trip (parity vs ``compose_extract_sql``), ``grounded_by`` with the
+  multi-grounding enumeration (``account_balance`` across trial_balance /
+  balance_sheet), and ``uses`` un-nested from the enforced provenance contract
+  onto the SERVED relation's column vertices (enriched columns for an enriched
+  relation — DAT-811; typed columns for the no-enriched-view fallback).
 
 These are the live half of ADR-0021; the pure DDL-shape tests live in
 ``tests/unit/storage/test_property_graph.py``.
@@ -325,9 +333,172 @@ def _seed(engine: Engine) -> None:
             "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
             f"VALUES ('{eid}', 'finance', 'part_of', '{frm}', '{to}', 'seed', '{TS}')"
         )
+    stmts.extend(_grounding_stmts())
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
+
+
+# Grounding fixtures (P2 / DAT-727): the snippet-KB rows current_groundings
+# surfaces and og_grounding reifies. Each spec is (snippet_id, standard_field,
+# statement, relation, select_expr, where[], provenance, failed) — sql + parts
+# are produced by the REAL render path (compose_extract_sql / extract_parts_dict),
+# so the parity test compares the graph's round-trip against the exact
+# production artifact.
+#
+# The finance multi-grounding AC case: account_balance grounded TWICE (via the
+# trial_balance statement and the balance_sheet statement) over the served
+# enriched view. Enumerated names are SERVED names (DAT-811): the view's own
+# columns — 'amount' (ec_amt, the f.* passthrough) and 'account_id__account_type'
+# (ec_at, the joined dim attribute) — exactly what the enforcement validated the
+# basis against at authoring. sn_rev reads the typed fact directly (the
+# no-enriched-view fallback branch → c_amt). sn_old is a healthy pre-v2 row:
+# still a Grounding vertex, but its v1 basis yields no uses edges and its field
+# names no active concept — no grounded_by edge either (the graph never
+# dangles). sn_fail is a retained DAT-543 failure: a vertex with failed=true,
+# reachable from its concept via grounded_by, with NO uses edges (its
+# provenance carries failure keys, no basis).
+_SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = [
+    (
+        "sn_tb",
+        "account_balance",
+        "trial_balance",
+        "enriched_journal",
+        "SUM(amount)",
+        [
+            "account_id__account_type IN ('asset','liability')",
+            "account_id__account_type IS NOT NULL",
+        ],
+        {
+            "column_mappings_basis": {
+                "account_balance": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": ["account_id__account_type"],
+                    "filter": "asset, liability",
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    (
+        "sn_bs",
+        "account_balance",
+        "balance_sheet",
+        "enriched_journal",
+        "SUM(amount)",
+        [],
+        {
+            "column_mappings_basis": {"account_balance": {"measure_columns": ["amount"]}},
+            "assumptions": [],
+        },
+        False,
+    ),
+    (
+        "sn_rev",
+        "revenue",
+        "income_statement",
+        "journal",  # the typed fact directly — no enriched view named 'journal'
+        "SUM(amount)",
+        [],
+        {
+            "column_mappings_basis": {"revenue": {"measure_columns": ["amount"]}},
+            "assumptions": [],
+        },
+        False,
+    ),
+    (
+        "sn_old",
+        "expenses",  # no active concept row → no grounded_by edge
+        "income_statement",
+        "enriched_journal",
+        "SUM(amount)",
+        [],
+        # Pre-v2 provenance shape: no measure_columns/filter_columns arrays →
+        # zero uses edges by construction (clean cut, no backfill).
+        {"column_mappings_basis": {"expenses": {"column": "amount"}}},
+        False,
+    ),
+    (
+        "sn_fail",
+        "revenue",
+        "balance_sheet",
+        "enriched_journal",
+        "SUM(amount)",
+        [],
+        # Retained DAT-543 failure: the typed failed payload — no basis.
+        {"failure_mode": "verifier_rejected", "failure_reason": "no support"},
+        True,
+    ),
+]
+
+
+def _grounding_stmts() -> list[str]:
+    """INSERT statements for the P2 grounding fixtures (see ``_SNIPPETS``)."""
+    import json
+
+    from dataraum.graphs.formula_composer import compose_extract_sql, extract_parts_dict
+
+    def lit(s: str) -> str:
+        return s.replace("'", "''")
+
+    stmts: list[str] = []
+    for cid, cname in [("con_bal", "account_balance"), ("con_rev", "revenue")]:
+        stmts.append(
+            "INSERT INTO concepts (concept_id, vertical, name, kind, created_at) "
+            f"VALUES ('{cid}', 'finance', '{cname}', 'measure', '{TS}')"
+        )
+    for sid, field, statement, relation, select_expr, where, provenance, failed in _SNIPPETS:
+        parts = json.dumps(extract_parts_dict(select_expr, relation, where))
+        sql = compose_extract_sql(select_expr, relation, where)
+        prov = f"'{lit(json.dumps(provenance))}'::json" if provenance else "NULL"
+        stmts.append(
+            "INSERT INTO sql_snippets "
+            "(snippet_id, workspace_id, snippet_type, standard_field, statement, "
+            " aggregation, schema_mapping_id, sql, description, source, provenance, "
+            " parts, execution_count, failure_count, created_at, updated_at) "
+            f"VALUES ('{sid}', 'test', 'extract', '{field}', '{statement}', 'sum', "
+            f"'test', '{lit(sql)}', 'd', 'graph:{field}', {prov}, "
+            f"'{lit(parts)}'::json, 0, {1 if failed else 0}, '{TS}', '{TS}')"
+        )
+    # A healthy pre-parts row: still a grounding (no backfill — it heals by
+    # re-authoring), surfacing with NULL relation/select_expr.
+    stmts.append(
+        "INSERT INTO sql_snippets "
+        "(snippet_id, workspace_id, snippet_type, standard_field, statement, "
+        " aggregation, schema_mapping_id, sql, description, source, "
+        " execution_count, failure_count, created_at, updated_at) "
+        "VALUES ('sn_nul', 'test', 'extract', 'expenses', 'cash_flow', 'sum', "
+        f"'test', 'SELECT 1', 'no parts', 'graph:expenses', 0, 0, '{TS}', '{TS}')"
+    )
+    # NEVER groundings (DAT-727 membership): the cockpit writes into the SAME
+    # table — a query-typed row (snippet_type='query') AND a query-SOURCED
+    # extract (source='query:%') must both stay off the surface, as must a
+    # per-metric formula composition.
+    stmts.append(
+        "INSERT INTO sql_snippets "
+        "(snippet_id, workspace_id, snippet_type, schema_mapping_id, sql, "
+        " description, source, execution_count, failure_count, created_at, updated_at) "
+        f"VALUES ('sn_qry', 'test', 'query', 'test', 'SELECT 2', 'q', 'query:exec_9', "
+        f"0, 0, '{TS}', '{TS}')"
+    )
+    stmts.append(
+        "INSERT INTO sql_snippets "
+        "(snippet_id, workspace_id, snippet_type, standard_field, statement, "
+        " aggregation, schema_mapping_id, sql, description, source, "
+        " execution_count, failure_count, created_at, updated_at) "
+        "VALUES ('sn_qext', 'test', 'extract', 'revenue', 'income_statement', 'avg', "
+        f"'test', 'SELECT 3', 'promoted', 'query:exec_9', 0, 0, '{TS}', '{TS}')"
+    )
+    stmts.append(
+        "INSERT INTO sql_snippets "
+        "(snippet_id, workspace_id, snippet_type, schema_mapping_id, sql, "
+        " description, source, normalized_expression, "
+        " execution_count, failure_count, created_at, updated_at) "
+        f"VALUES ('sn_frm', 'test', 'formula', 'test', 'SELECT 4', 'f', 'graph:margin', "
+        f"'a/b', 0, 0, '{TS}', '{TS}')"
+    )
+    return stmts
 
 
 def _boot(engine: Engine, schema: str) -> None:
@@ -645,6 +816,159 @@ def test_part_of_closure_walks_ancestors_and_guards_cycle(graph_engine: Engine) 
         rows = _part_of_closure(conn, _read_schema(), "cmp_a")
     assert rows == [("cmp_b", 1), ("cmp_c", 2)]
     assert "cmp_a" not in {dst for dst, _ in rows}  # cycle guard blocked the back edge
+
+
+# --- Grounding reification (P2 / DAT-727) -----------------------------------------
+
+
+def test_current_groundings_is_graph_authored_extracts_only(graph_engine: Engine) -> None:
+    """The cross-lane read contract: current_groundings = extract snippets from
+    the grounding pass (source graph:%), healthy AND retained-failed, with
+    (concept, relation) exposed. The cockpit's query-typed row (sn_qry), a
+    query-SOURCED extract (sn_qext), and a formula composition (sn_frm) never
+    surface."""
+    sql = f'SELECT snippet_id, concept, relation, failed FROM "{_read_schema()}".current_groundings'
+    with graph_engine.connect() as conn:
+        rows = {r.snippet_id: r for r in conn.execute(text(sql))}
+    assert set(rows) == {"sn_tb", "sn_bs", "sn_rev", "sn_old", "sn_fail", "sn_nul"}
+    assert rows["sn_tb"].concept == "account_balance"
+    assert rows["sn_tb"].relation == "enriched_journal"
+    assert rows["sn_rev"].relation == "journal"
+    assert rows["sn_nul"].relation is None  # pre-parts row: NULL, heals by re-authoring
+    assert {sid for sid, r in rows.items() if r.failed} == {"sn_fail"}
+
+
+def test_grounding_vertices_carry_the_failed_discriminator(graph_engine: Engine) -> None:
+    """Every grounding — healthy, pre-v2, pre-parts, retained-failed — is a
+    grounding_node; ``failed`` discriminates knowledge from a DAT-543 retained
+    failure ("why is this concept ungrounded?" is a graph question)."""
+    sql = (
+        f"SELECT sid, failed FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS grounding_node) COLUMNS (g.snippet_id AS sid, g.failed AS failed))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {r.sid: r.failed for r in conn.execute(text(sql))}
+    assert rows == {
+        "sn_tb": False,
+        "sn_bs": False,
+        "sn_rev": False,
+        "sn_old": False,
+        "sn_fail": True,
+        "sn_nul": False,
+    }
+
+
+def test_grounding_parts_round_trip_vs_compose_extract_sql(graph_engine: Engine) -> None:
+    """The P2 parity AC: the vertex properties (relation / select_expr /
+    where_predicates) re-render through compose_extract_sql to EXACTLY the
+    snippet's persisted sql — the graph is a lossless reading of the parts."""
+    import json
+
+    from dataraum.graphs.formula_composer import compose_extract_sql
+
+    props_sql = (
+        f"SELECT sid, relation, select_expr, where_predicates FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS grounding_node WHERE g.relation IS NOT NULL) "
+        "COLUMNS (g.snippet_id AS sid, g.relation AS relation, "
+        "g.select_expr AS select_expr, g.where_predicates AS where_predicates))"
+    )
+    with graph_engine.connect() as conn:
+        props = {r.sid: r for r in conn.execute(text(props_sql))}
+        persisted = dict(
+            conn.execute(text(f'SELECT snippet_id, sql FROM "{_read_schema()}".sql_snippets')).all()
+        )
+    assert set(props) == {"sn_tb", "sn_bs", "sn_rev", "sn_old", "sn_fail"}
+    for sid, row in props.items():
+        rendered = compose_extract_sql(
+            row.select_expr, row.relation, json.loads(row.where_predicates)
+        )
+        assert rendered == persisted[sid], sid
+    # The multi-predicate where[] round-trips as a JSON array, order preserved.
+    assert json.loads(props["sn_tb"].where_predicates) == [
+        "account_id__account_type IN ('asset','liability')",
+        "account_id__account_type IS NOT NULL",
+    ]
+
+
+def test_grounded_by_enumerates_each_concepts_groundings(graph_engine: Engine) -> None:
+    """grounded_by: concept → grounding, INNER-join resolved on the ACTIVE
+    concept. sn_old/sn_nul name no active concept → no edge (the graph never
+    dangles); the FAILED sn_fail keeps its edge — the failed attempt is
+    reachable from its concept, discriminated by the vertex property."""
+    sql = (
+        f"SELECT cname, sid FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node)-[e IS grounded_by]->(g IS grounding_node) "
+        "COLUMNS (c.name AS cname, g.snippet_id AS sid))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.cname, r.sid) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("account_balance", "sn_tb"),
+        ("account_balance", "sn_bs"),
+        ("revenue", "sn_rev"),
+        ("revenue", "sn_fail"),
+    }
+
+
+def test_multi_grounding_concepts_are_enumerable(graph_engine: Engine) -> None:
+    """The P2 multi-grounding AC (the finance ws shape): account_balance holds
+    TWO healthy groundings — trial_balance and balance_sheet — and a plain
+    aggregate over the PGQ match surfaces exactly it. revenue's second row is
+    a retained FAILURE, which the vertex filter excludes: failure retention
+    must never read as multi-grounding."""
+    sql = (
+        "SELECT cname, n FROM ("
+        f"  SELECT cname, count(*) AS n FROM GRAPH_TABLE ({_graph_ref()} "
+        "   MATCH (c IS concept_node)-[e IS grounded_by]->"
+        "         (g IS grounding_node WHERE NOT g.failed) "
+        "   COLUMNS (c.name AS cname, g.snippet_id AS sid)) "
+        "  GROUP BY cname"
+        ") multi WHERE n > 1"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.cname, r.n) for r in conn.execute(text(sql))}
+    assert rows == {("account_balance", 2)}
+
+
+def test_uses_edges_land_on_the_served_relations_columns(graph_engine: Engine) -> None:
+    """uses: grounding → column from the TYPED v2 basis, resolved onto the
+    SERVED relation's own column vertices (DAT-811): the enriched relation's
+    names resolve to its enriched columns (ec_amt, ec_at — semantics ride via
+    source_column_id), the typed relation to its typed column (c_amt). The
+    pre-v2 row (sn_old) has no arrays and the failed row (sn_fail) has no
+    basis → no edges, by construction."""
+    sql = (
+        f"SELECT sid, cid, cname, role FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS grounding_node)-[u IS uses]->(c IS column_node) "
+        "COLUMNS (g.snippet_id AS sid, c.column_id AS cid, "
+        "c.column_name AS cname, u.role AS role))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.sid, r.cid, r.cname, r.role) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("sn_tb", "ec_amt", "amount", "measure"),
+        ("sn_tb", "ec_at", "account_id__account_type", "filter"),
+        ("sn_bs", "ec_amt", "amount", "measure"),
+        ("sn_rev", "c_amt", "amount", "measure"),
+    }
+
+
+def test_concept_groundings_and_their_columns_in_one_match(graph_engine: Engine) -> None:
+    """The P2 headline AC verbatim: per concept, all its groundings and the
+    columns each uses — one 2-hop PGQ MATCH."""
+    sql = (
+        f"SELECT sid, cname FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node WHERE c.name = 'account_balance')"
+        "-[e IS grounded_by]->(g IS grounding_node)-[u IS uses]->(col IS column_node) "
+        "COLUMNS (g.snippet_id AS sid, col.column_name AS cname))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.sid, r.cname) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("sn_tb", "amount"),
+        ("sn_tb", "account_id__account_type"),
+        ("sn_bs", "amount"),
+    }
 
 
 def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:

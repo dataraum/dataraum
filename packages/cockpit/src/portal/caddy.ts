@@ -67,8 +67,12 @@ async function routeExists(
 
 /**
  * Make `<subdomain>.<parentDomain>` reach `upstream`: append the workspace's
- * `@id`-tagged route to the server's route array, replacing a pre-existing
- * route with the same id (idempotent re-provision).
+ * `@id`-tagged route to the server's route array, or PATCH the existing route
+ * in place (idempotent re-provision, no remove/re-add window during which the
+ * workspace would 404). The residual exists-then-write race is acceptable by
+ * contract: the provisioner (DAT-820) serializes per workspace (one Temporal
+ * workflow per workspace id), so concurrent calls for ONE workspace don't
+ * happen; calls for different workspaces touch disjoint ids.
  */
 export async function addWorkspaceRoute(
 	adminUrl: string,
@@ -77,17 +81,19 @@ export async function addWorkspaceRoute(
 	server: string = DEFAULT_SERVER,
 ): Promise<void> {
 	const id = workspaceRouteId(spec.workspaceId);
-	if (await routeExists(adminUrl, id, fetchImpl)) {
-		await removeWorkspaceRoute(adminUrl, spec.workspaceId, fetchImpl);
-	}
-	const res = await fetchImpl(
-		`${adminUrl}/config/apps/http/servers/${server}/routes`,
-		{
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(workspaceRoute(spec)),
-		},
-	);
+	const body = JSON.stringify(workspaceRoute(spec));
+	const target = (await routeExists(adminUrl, id, fetchImpl))
+		? // PATCH /id/<id> replaces the object in place.
+			{ url: `${adminUrl}/id/${id}`, method: "PATCH" }
+		: {
+				url: `${adminUrl}/config/apps/http/servers/${server}/routes`,
+				method: "POST",
+			};
+	const res = await fetchImpl(target.url, {
+		method: target.method,
+		headers: { "content-type": "application/json" },
+		body,
+	});
 	if (!res.ok) {
 		throw new Error(
 			`[caddy] adding route ${id} failed (${res.status}): ${await res.text()}`,

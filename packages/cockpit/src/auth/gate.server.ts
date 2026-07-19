@@ -26,8 +26,11 @@ import { auth } from "./auth";
 
 // The auth handler is public by definition (sign-in posts from the portal UI,
 // sign-out posts from a workspace cockpit, session reads); the health probe
-// is public because the compose healthcheck has no session.
-const PUBLIC_PREFIXES = ["/api/auth/", "/api/health"];
+// is public because the compose healthcheck has no session. Exact paths and
+// prefixes are matched separately so `/api/health` cannot accidentally
+// blanket a future `/api/health-adjacent` route.
+const PUBLIC_PREFIXES = ["/api/auth/"];
+const PUBLIC_PATHS = ["/api/health"];
 
 /** An HTML navigation (redirect to the portal) vs an API/RPC caller (bare
  * status — a fetch following a 302 into portal HTML would only garble the
@@ -47,7 +50,10 @@ function redirectTo(url: string): Response {
  */
 export async function gateRequest(request: Request): Promise<Response | null> {
 	const { pathname } = new URL(request.url);
-	if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+	if (
+		PUBLIC_PATHS.includes(pathname) ||
+		PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))
+	) {
 		return null;
 	}
 

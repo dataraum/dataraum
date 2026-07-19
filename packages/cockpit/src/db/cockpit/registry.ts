@@ -171,13 +171,24 @@ async function seedRegistry(workspaceId: string): Promise<void> {
 			.set({ password: passwordHash })
 			.where(eq(accounts.id, credentialAccount.id));
 	} else {
-		await cockpitDb.insert(accounts).values({
-			id: `${devUser.id}-credential`,
-			accountId: devUser.id,
-			providerId: "credential",
-			userId: devUser.id,
-			password: passwordHash,
-		});
+		await cockpitDb
+			.insert(accounts)
+			.values({
+				id: `${devUser.id}-credential`,
+				accountId: devUser.id,
+				providerId: "credential",
+				userId: devUser.id,
+				password: passwordHash,
+			})
+			// Concurrent boot-seeds (cockpit + cockpit-2 share the dev user and
+			// start unordered): both can SELECT-miss above and race this insert
+			// on the deterministic id. The loser converges by re-asserting its
+			// hash — same password, either scrypt hash verifies — instead of
+			// throwing mid-seed and skipping ITS workspace's membership below.
+			.onConflictDoUpdate({
+				target: accounts.id,
+				set: { password: passwordHash },
+			});
 	}
 	await cockpitDb
 		.insert(memberships)

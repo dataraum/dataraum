@@ -81,15 +81,17 @@ describe("addWorkspaceRoute", () => {
 		expect(calls[1]?.body).toEqual(workspaceRoute(SPEC));
 	});
 
-	it("replaces an existing route with the same id (idempotent re-provision)", async () => {
-		const { impl, calls } = fakeFetch((_url, method) =>
-			method === "GET"
-				? new Response("{}", { status: 200 })
-				: new Response("{}", { status: 200 }),
+	it("PATCHes an existing route in place (idempotent re-provision, no 404 window)", async () => {
+		const { impl, calls } = fakeFetch(
+			() => new Response("{}", { status: 200 }),
 		);
 		await addWorkspaceRoute(ADMIN, SPEC, impl);
 
-		expect(calls.map((c) => c.method)).toEqual(["GET", "DELETE", "POST"]);
+		expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+			`GET ${ADMIN}/id/${ID}`,
+			`PATCH ${ADMIN}/id/${ID}`,
+		]);
+		expect(calls[1]?.body).toEqual(workspaceRoute(SPEC));
 	});
 
 	it("throws loud with the admin API's error body on a failed add", async () => {

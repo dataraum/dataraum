@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # ``postgresql+psycopg://``; DuckDB's postgres extension wants the bare
     # ``postgresql://`` libpq form) and a parsed DSN type would re-serialize them.
     database_url: str
+    # ONE installation-wide DuckLake catalog database (DAT-815): every
+    # workspace's catalog lives in it as its own Postgres schema, selected via
+    # METADATA_SCHEMA at ATTACH time (ws_<id>, derived from
+    # ``dataraum_workspace_id`` in the worker bootstrap — never a per-workspace
+    # env var, and no per-workspace DB name in this URL).
     ducklake_catalog_url: str
     # ``str``, NOT ``Path``: this is a DuckLake DATA_PATH, an ``s3://bucket/prefix``
     # URI in production (DAT-388). ``Path`` collapses ``s3://`` to ``s3:/`` and

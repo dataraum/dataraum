@@ -271,7 +271,21 @@ def _stub_s3_secret() -> Generator[None]:
 
 
 @pytest.fixture(scope="session")
-def lake_anchor(lake_catalog_url: str, lake_data_path: str):
+def lake_metadata_schema() -> str:
+    """The per-workspace catalog schema every test ATTACH uses (DAT-815).
+
+    Same ``ws_<id>`` derivation as production (the worker bootstrap derives it
+    from the boot workspace id), applied to the suite's fixed test workspace —
+    so the whole suite exercises the METADATA_SCHEMA path, never the implicit
+    ``public`` layout.
+    """
+    from dataraum.server.workspace import schema_name_for
+
+    return schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+
+
+@pytest.fixture(scope="session")
+def lake_anchor(lake_catalog_url: str, lake_data_path: str, lake_metadata_schema: str):
     """Bootstrap the DuckLake anchor once for the whole pytest invocation.
 
     Pairs the session-scoped lake catalog DB with a session-scoped tmp DATA_PATH.
@@ -279,13 +293,13 @@ def lake_anchor(lake_catalog_url: str, lake_data_path: str):
     """
     from dataraum.server.storage import bootstrap_lake, teardown_lake
 
-    bootstrap_lake(lake_catalog_url, lake_data_path)
+    bootstrap_lake(lake_catalog_url, lake_data_path, metadata_schema=lake_metadata_schema)
     yield
     teardown_lake()
 
 
 @pytest.fixture
-def no_anchor(lake_anchor, lake_catalog_url: str, lake_data_path: str):
+def no_anchor(lake_anchor, lake_catalog_url: str, lake_data_path: str, lake_metadata_schema: str):
     """Tear down the session anchor for one test; restore it after.
 
     Use this for "before bootstrap" tests so other session-scoped consumers of
@@ -296,7 +310,7 @@ def no_anchor(lake_anchor, lake_catalog_url: str, lake_data_path: str):
 
     teardown_lake()
     yield
-    bootstrap_lake(lake_catalog_url, lake_data_path)
+    bootstrap_lake(lake_catalog_url, lake_data_path, metadata_schema=lake_metadata_schema)
 
 
 def clean_lake_layers() -> None:

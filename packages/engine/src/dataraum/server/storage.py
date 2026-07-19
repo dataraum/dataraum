@@ -1,7 +1,11 @@
 """DuckLake bootstrap and shared in-memory anchor for the worker process.
 
 DuckLake stores data as parquet files on an object store (DATA_PATH is an
-``s3://`` URI — DAT-388) with metadata in a Postgres catalog database. DuckDB
+``s3://`` URI — DAT-388) with metadata in a Postgres catalog database. The
+catalog database is ONE per installation (DAT-815): each workspace's catalog
+lives in it as its own Postgres schema, selected via ``METADATA_SCHEMA`` on
+the ATTACH. Snapshot chains are independent per schema, so workspaces share
+the database without sharing any catalog state (spike DAT-814). DuckDB
 clients access DuckLake by ATTACHing the catalog as an external database; the
 connection must first register the S3 secret + ``httpfs`` (see
 :func:`apply_s3_secret`) so DuckLake can resolve the ``s3://`` DATA_PATH.
@@ -228,7 +232,7 @@ def apply_s3_secret(conn: duckdb.DuckDBPyConnection, *, disable_local_fs: bool =
         conn.execute("SET disabled_filesystems='LocalFileSystem'")
 
 
-def bootstrap_lake(catalog_url: str, data_path: str) -> None:
+def bootstrap_lake(catalog_url: str, data_path: str, metadata_schema: str) -> None:
     """Open the process-wide DuckLake anchor.
 
     Idempotent: subsequent calls with the anchor already open are a no-op.
@@ -237,11 +241,18 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
     inaccessible, or the ATTACH fails.
 
     Args:
-        catalog_url: Postgres connection URL for the DuckLake catalog
-            (``postgresql://...``).
+        catalog_url: Postgres connection URL for the installation-wide DuckLake
+            catalog database (``postgresql://...``). ONE database per
+            installation (DAT-815); the workspace split happens via
+            ``metadata_schema``, not per-workspace DB names.
         data_path: ``s3://`` URI where DuckLake writes parquet files. The bucket
             must exist; the object-store secret is registered via
             :func:`apply_s3_secret` here, before the ATTACH.
+        metadata_schema: Postgres schema inside the catalog database that holds
+            THIS workspace's ``ducklake_*`` metadata tables (``ws_<id>``,
+            derived from the boot workspace id — ``schema_name_for``). The
+            ATTACH creates the schema itself on first use; no separate
+            ``CREATE SCHEMA`` step exists anywhere (spike DAT-814).
 
     Raises:
         RuntimeError: If bootstrap fails. The original DuckDB exception is
@@ -275,9 +286,10 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
 
         libpq = _pg_url_to_libpq(catalog_url)
         safe_data_path = _escape_sql_literal(data_path)
+        safe_metadata_schema = _escape_sql_literal(metadata_schema)
         attach_sql = (
             f"ATTACH 'ducklake:postgres:{libpq}' AS {LAKE_CATALOG_ALIAS} "
-            f"(DATA_PATH '{safe_data_path}')"
+            f"(DATA_PATH '{safe_data_path}', METADATA_SCHEMA '{safe_metadata_schema}')"
         )
         settings = get_settings()
         pool_max = settings.ducklake_pg_pool_max
@@ -329,7 +341,8 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             # test double recording call args — defers the close indefinitely).
             conn.close()
             raise RuntimeError(
-                f"DuckLake bootstrap failed (catalog_url={catalog_url}, data_path={data_path}): {e}"
+                f"DuckLake bootstrap failed (catalog_url={catalog_url}, "
+                f"data_path={data_path}, metadata_schema={metadata_schema}): {e}"
             ) from e
 
         _anchor = conn
@@ -337,6 +350,7 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             "ducklake_bootstrapped",
             catalog_url=catalog_url,
             data_path=data_path,
+            metadata_schema=metadata_schema,
             pg_pool_max=pool_max,
         )
 

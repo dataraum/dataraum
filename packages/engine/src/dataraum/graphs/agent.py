@@ -1251,6 +1251,27 @@ class GraphAgent(LLMFeature):
                     "expression": step.expression,
                     "aggregation": step.aggregation,
                     "depends_on": step.depends_on,
+                    # Declared post-execution expectations (DAT-792): served to the
+                    # authoring LLM so its grounding is consistent with what the
+                    # catalogue declares about the value (e.g. `value > 0`). The
+                    # post-hoc verifier stays the enforcement backstop (DAT-616).
+                    # Unrelated to ``ContextDocument.validations`` (graphs/context.py)
+                    # — those are executed data-quality rule RESULTS, not declared
+                    # per-step expectations.
+                    **(
+                        {
+                            "validations": [
+                                {
+                                    "condition": v.condition,
+                                    "severity": v.severity,
+                                    **({"message": v.message} if v.message else {}),
+                                }
+                                for v in step.validations
+                            ]
+                        }
+                        if step.validations
+                        else {}
+                    ),
                 }
                 for step_id, step in graph.steps.items()
             },

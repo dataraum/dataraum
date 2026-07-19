@@ -1,6 +1,6 @@
 name: "graph_sql_generation"
-version: "7.0"
-description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does)."
+version: "7.1"
+description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does). v7.1 (DAT-792): the graph spec serves the step's declared validations — catalogue-declared expectations on the executed value the grounding should be consistent with; enforced post-hoc by the verifier, never a filter to inject."
 temperature: 0.0
 
 # System prompt — defines the single job: ground ONE concept to one extract.
@@ -257,7 +257,7 @@ user_prompt: |
   {vertical_conventions}
   </domain_conventions>
 
-  <graph_specification description="The single concept to ground — its standard_field, statement, and aggregation.">
+  <graph_specification description="The single concept to ground — its standard_field, statement, and aggregation. A step may declare `validations`: the catalogue's declared expectations on the executed value (e.g. `value > 0`, with severity). Ground consistently with them — they can disambiguate sign conventions or which column carries the concept — but they are checked AFTER execution by the system, never predicates to add to the extract.">
   {graph_yaml}
   </graph_specification>
 
@@ -294,7 +294,7 @@ inputs:
   graph_yaml:
     type: "string"
     required: true
-    description: "The single concept's graph spec (standard_field, statement, aggregation)"
+    description: "The single concept's graph spec (standard_field, statement, aggregation, declared validations)"
   table_schema:
     type: "string"
     required: true

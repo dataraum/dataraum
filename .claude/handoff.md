@@ -2310,20 +2310,43 @@ without the candidate list — so the only schema-satisfying output is invented 
 and a fabricated alias verdict above the merge floor collapses two drill axes. Empty-batch
 handling is unchanged from before; the underlying instability is DAT-795/807.
 
-**OPEN (lead decision pending):** the `one-to-one` swap in `oriented_row` is under review.
-Two reviewers disagree — one showed it correctly re-orients a clean-subset 1:1, the other
-demonstrated on real DuckDB that it INVERTS a correct child→parent emission when the child
-carries orphans (both reduce to the same test: swap iff the from side has more distinct
-values). Until that is settled, treat 1:1 direction as unreliable in calibration and do not
-build new expectations on it.
+**RESOLVED by measurement — the `one-to-one` swap in `oriented_row` is DELETED.** A spike
+built every 1:1 shape as real DuckDB tables and ran the real detection path over both
+emitted orientations. The rule reduces to `swap iff |from distinct| > |to distinct|`
+(14/14 rows; `right_value_containment` exists nowhere, so `reverse` always falls back to
+right RI). It is right only on a clean subset and inverts a correct child→parent emission
+when the child carries orphans — the shape `joins.py` deliberately rescues and the prompt
+deliberately confirms. Over a balanced emission set: 6/12, identical to a no-op. No
+deterministic replacement exists: two configurations with opposite truth measure
+byte-identically across all 24 signals (orphans are counted on the from side only, so
+to-side orphans are invisible — 0 in both).
 
-### Calibration to run
-- **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`
-  has flipped orientation between runs. The prompt is the only intentional change; watch
-  whether the judge orients it consistently on its own.
-- **`test_cycle_recall`** — unchanged expectations; the prompt bullet forbidding duplicate
-  same-type cycles is the operative change, not the phase.
+**1:1 direction is therefore the judge's, decided from DEPENDENCE** (`semantic_per_table`
+2.3.0's orientation section, rewritten to lead with it and to state honestly what the
+numbers cannot settle). Calibration consequence: 1:1 orientation is now an LLM judgment,
+so expect run-to-run variation to track judge stability (DAT-795/807), not a code path.
+`bank_transactions.payment_id → payments` is the live instance.
 
 ### Thresholds / new fields
-None. No schema change. (`_ORIENT_COMPLETENESS_MARGIN` was introduced and removed within
-the branch; it is not in the merged behaviour.)
+**Evidence key renamed: `orphan_count` → `left_orphan_count`.** It is a FROM-SIDE
+measurement and was the one unprefixed directional key, so neither flip site moved it: a
+row whose pair flipped stored `L=100% RI` beside `orphans=N`. Anything reading relationship
+evidence for an orphan count must use the new key; `right_orphan_count` appears on a
+flipped row and means unreferenced TO-side rows (sparse reference — normal), never a
+defect. Unrelated: the `orphan_count` column in
+`verticals/finance/validations/orphan_transactions.yaml` is a validation SQL output
+column, a different namespace, unchanged.
+
+`swap_directional_evidence` (was private) is now the single flip implementation, used by
+both `oriented_row` and `processor._build_candidate_metrics_lookup`. It also mirrors the
+evidence copy of `cardinality` and drops `introduces_duplicates`.
+
+Judge-visible rendering: a measured zero now prints (`L orphans=0`) instead of being
+suppressed — "clean" and "never measured" used to render identically.
+
+### Calibration to run
+- **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`.
+  Orientation is now entirely the judge's; watch consistency across runs.
+- **`test_cycle_recall`** — unchanged expectations; the prompt bullet forbidding duplicate
+  same-type cycles is the operative change, not the phase.
+- Any check reading `orphan_count` from relationship evidence — rename it.

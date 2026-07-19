@@ -1,18 +1,20 @@
-"""Context builder for graph execution.
+"""Context builder for graph execution (DAT-734 — graph-shaped).
 
-Collects context from all analysis modules to provide the LLM
-with the information needed to generate SQL for graph execution.
-
-This module replaces the quality/context.py functionality for graph-specific
-use cases, with support for slice-based filtering.
+Assembles the GraphAgent's served context by GRAPH TRAVERSAL over the
+operating-model property graph (ADR-0021): concept → part_of subconcepts →
+groundings (grounded_by) → columns (uses), with disjoint_with /
+reconciles_with / conformed-dimension / references / materializes_as served AS
+STRUCTURE. The knowledge sections with no graph element yet — value sets,
+drivers, validation results, business cycles — are assembled from their typed
+rows alongside the traversal core (conventions ride their own prompt slot).
+``format_served_context`` renders the whole thing for the grounding prompt.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -23,7 +25,6 @@ if TYPE_CHECKING:
     import duckdb
 
     from dataraum.analysis.cycles.health import HealthReport
-    from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.graphs.field_mapping import ColumnMeaning
 
 logger = get_logger(__name__)
@@ -36,7 +37,14 @@ logger = get_logger(__name__)
 
 @dataclass
 class ColumnContext:
-    """Context for a single column."""
+    """One column's STRUCTURAL + quality facts for the served context (DAT-734).
+
+    Business semantics (meaning, unit source, temporal behaviour prose) are NOT
+    here — their one home is the column-meanings feed (``field_mappings``,
+    DAT-769), served in its own prompt block. This carries what that feed does
+    not: physical type, role, the graph-resolved materialization/anchor, value
+    enumeration, ranges, derivations, and quality/readiness flags.
+    """
 
     column_id: str
     column_name: str
@@ -45,11 +53,6 @@ class ColumnContext:
     # Type info
     data_type: str | None = None
     semantic_role: str | None = None  # key, measure, dimension, timestamp, etc.
-    entity_type: str | None = None  # customer, product, transaction, etc.
-
-    # Business concept mapping (from ontology, for metric calculations)
-    meaning: str | None = None  # catalogue-grain business characterization (DAT-769)
-    temporal_behavior: str | None = None  # 'additive' or 'point_in_time'
 
     # Graph-served semantics (og_columns, DAT-734): the resolved materializes_as
     # verdict ('flow' | 'stock' — witness posterior over concept prior) and the
@@ -77,15 +80,9 @@ class ColumnContext:
     is_stale: bool | None = None
     detected_granularity: str | None = None
 
-    # Business metadata (from SemanticAnnotation)
-    business_name: str | None = None
-    business_description: str | None = None
-    unit_source_column: str | None = None
-
     # Temporal bounds (from TemporalColumnProfile)
     min_timestamp: str | None = None
     max_timestamp: str | None = None
-    completeness_ratio: float | None = None
     # Coverage window + worst discontinuity — promoted from the temporal profile
     # (DAT-783) so the agent knows a time axis's span and whether it's gappy.
     span_days: float | None = None
@@ -127,17 +124,15 @@ class TableContext:
     # Columns
     columns: list[ColumnContext] = field(default_factory=list)
 
-    # Quality flags
-    flags: list[str] = field(default_factory=list)
-
-    # Entropy (from entropy layer)
-    table_entropy: dict[str, Any] | None = None  # Aggregated entropy scores
-    readiness_for_use: str | None = None  # ready, investigate, blocked
-
 
 @dataclass
 class RelationshipContext:
-    """Context for a table relationship."""
+    """One FK edge, served from the graph's ``refs`` relation (og_references).
+
+    Conformed-dimension fact↔fact pairs are excluded by the element view's own
+    typing (DAT-756) — they surface as :class:`ConformedDimensionContext`
+    instead, never as an FK.
+    """
 
     from_table: str
     from_column: str
@@ -146,13 +141,13 @@ class RelationshipContext:
     relationship_type: str
     cardinality: str | None = None
     confidence: float = 0.0
+    # The relationships confirmation vocabulary (unconfirmed | judge | user |
+    # keeper) — the agent's fall-loud gate for membership-subquery blueprints.
+    confirmation_source: str | None = None
 
     # DAT-616: joining on this edge fans out (one row matches many) → SUMming an
     # additive measure across the join double-counts. The second silent-wrong vector.
     introduces_duplicates: bool | None = None
-
-    # Entropy (from entropy layer)
-    relationship_entropy: dict[str, Any] | None = None  # Join path entropy
 
 
 @dataclass
@@ -165,47 +160,6 @@ class SliceContext:
     value_count: int = 0  # Number of distinct values
     business_context: str | None = None  # e.g., "Regional breakdown"
     distinct_values: list[str] = field(default_factory=list)  # Actual categorical values
-
-
-@dataclass
-class HierarchyContext:
-    """A discovered drill-down hierarchy, alias group or role pair (DAT-537/761).
-
-    The FD pass surfaces these over a fact's enriched view: a ``drilldown``
-    carries levels in ``level`` order (``state → city → zip``), an ``alias`` a
-    redundant-axis group collapsed to one canonical label, a ``role`` (DAT-761) a
-    role-playing near-copy pair (bill-to ⇄ pay-to) that must stay two separate
-    axes. Exposed for the answer agent / GraphAgent to drill and de-duplicate
-    axes; the prompt CONSUMPTION lands in DAT-538 (this is the expose seam).
-    """
-
-    kind: str  # 'drilldown' | 'alias' | 'role'
-    table_name: str
-    # ``members`` are read by each member's ``level`` (see the engine's
-    # HierarchyMember contract), NOT by the persisted array position (DAT-779).
-    members: list[str]
-    canonical_label: str
-    needs_confirmation: bool = False
-
-
-@dataclass
-class BusMatrixContext:
-    """One bus-matrix cell: a fact's dimension exposure (DAT-762).
-
-    The alignable drill-across surface for a SQL author: two facts sharing a
-    referenced dimension table or a conformed folded concept can be drilled
-    across on that axis. ``concept_label`` is reported context, never a decision
-    surface; ``confirmation_source`` is the relationships vocabulary at cell
-    grain (unconfirmed | judge | user | keeper).
-    """
-
-    fact_table: str
-    attachment: str  # 'referenced' | 'folded'
-    concept_label: str
-    roles: list[str]  # fact-side key columns carrying the exposure
-    attributes: list[str]
-    confirmation_source: str
-    needs_confirmation: bool = False
 
 
 @dataclass
@@ -392,55 +346,24 @@ class ConformedDimensionContext:
 
 @dataclass
 class GraphExecutionContext:
-    """Complete context for graph execution.
+    """Complete context for graph execution (DAT-734 — graph-shaped).
 
-    Provides the LLM with all information needed to generate SQL
-    for business or quality metric calculations.
+    The GraphAgent's served knowledge: the physical relations, the
+    operating-model graph's structure (concepts + groundings, references,
+    conformed axes), and the typed knowledge sections with no graph element yet
+    (value sets ride the columns; drivers, business cycles, validation results
+    are their own rows; conventions ride their own prompt slot).
     """
 
-    # Tables and their metadata
+    # Tables and their metadata (incl. per-column value sets + readiness flags)
     tables: list[TableContext] = field(default_factory=list)
 
-    # Relationships between tables
+    # FK edges from the graph's refs relation (og_references — conformed pairs
+    # excluded by the element view's typing, DAT-756).
     relationships: list[RelationshipContext] = field(default_factory=list)
-
-    # Graph topology
-    graph_pattern: str | None = None  # star_schema, mesh, chain, etc.
-    hub_tables: list[str] = field(default_factory=list)
-    leaf_tables: list[str] = field(default_factory=list)
-
-    # Aggregate statistics
-    total_tables: int = 0
-    total_columns: int = 0
-    total_relationships: int = 0
-
-    # Quality summary (aggregated from analysis modules)
-    quality_issues_by_severity: dict[str, int] = field(default_factory=dict)
-    quality_flags: list[str] = field(default_factory=list)
-
-    # Entropy summary (from entropy layer)
-    entropy_summary: dict[str, Any] | None = None  # Overall entropy and readiness
-
-    # Column summaries for contract evaluation (from entropy readiness)
-    column_summaries: dict[str, Any] = field(default_factory=dict)
-
-    # Overall entropy score (average from snapshot)
-    overall_entropy_score: float | None = None
-
-    # Slice context (if filtering by dimension)
-    slice_column: str | None = None
-    slice_value: str | None = None
 
     # Available slice dimensions (from slicing analysis)
     available_slices: list[SliceContext] = field(default_factory=list)
-
-    # Drill-down hierarchies + 1:1 aliases (from the g3 pass, DAT-537). Exposed for
-    # the answer agent to drill / de-duplicate axes; prompt use lands in DAT-538.
-    dimension_hierarchies: list[HierarchyContext] = field(default_factory=list)
-
-    # Bus-matrix cells (DAT-762): fact × dimension exposure — the drill-across
-    # surface. Expose seam only; prompt consumption follows the hierarchy path.
-    bus_matrix: list[BusMatrixContext] = field(default_factory=list)
 
     # Driver rankings per measure (DAT-616): which dims/values move each measure +
     # target_type. The engine GraphAgent served none before — the cockpit/engine
@@ -471,20 +394,11 @@ class GraphExecutionContext:
     # Column meaning feed (meaning + measurement facts, DAT-769) for metrics
     field_mappings: list[ColumnMeaning] = field(default_factory=list)
 
-    # Ontology concept vocabulary (DAT-616): the vertical's concepts with their
-    # indicators/exclude_patterns, so the SQL agent can map discriminator VALUES
-    # (e.g. which account_type values ARE revenue) to a concept inline on
-    # long-format data where field_mappings is empty. None when no vertical.
-    concept_vocabulary: str | None = None
-
     # Vertical conventions for the extraction consumer (DAT-645): verbatim,
     # LLM-facing domain guidance (e.g. the sign/natural-balance rule) the SQL
     # agent applies when authoring a measure. Opaque to the engine — see
     # OntologyConvention. Empty string when the vertical declares none.
     conventions: str = ""
-
-    # Metadata
-    built_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 # =============================================================================
@@ -497,28 +411,22 @@ def build_execution_context(
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     *,
-    slice_column: str | None = None,
-    slice_value: str | None = None,
     vertical: str | None = None,
     om_run_id: str | None = None,
     catalogue_run_id: str | None = None,
     workspace_id: str | None = None,
 ) -> GraphExecutionContext:
-    """Build execution context from all analysis modules.
+    """Build execution context: the graph traversal core + the typed sections.
 
-    Aggregates metadata from:
-    - Statistical profiles (null ratios, cardinality, outliers)
-    - Semantic annotations (roles, entity types)
-    - Temporal analysis (staleness, granularity)
-    - Relationship graph topology
-    - Quality issues from each pillar
+    Aggregates the operating-model property graph (concepts, groundings,
+    references, conformed axes, materialization) with the typed knowledge rows
+    (statistical profiles / value sets, semantic roles, temporal profiles,
+    slices, drivers, business cycles, validation results, readiness flags).
 
     Args:
         session: SQLAlchemy session
         table_ids: Tables to include in context
         duckdb_conn: Optional DuckDB connection for row counts
-        slice_column: Optional column to filter by (for slice metrics)
-        slice_value: Optional value to filter on (for slice metrics)
         vertical: Runtime vertical for the cycle-health computation (passed by the
             caller — the InvestigationSession lookup is gone, DAT-506).
         om_run_id: Explicit operating_model run for the cycle/validation/health
@@ -540,10 +448,6 @@ def build_execution_context(
     # Lazy imports to avoid circular dependencies
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
-    from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
-    from dataraum.analysis.relationships.graph_topology import (
-        analyze_graph_topology,
-    )
     from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
     from dataraum.analysis.slicing.db_models import SliceDefinition
     from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
@@ -562,11 +466,11 @@ def build_execution_context(
         return GraphExecutionContext()
 
     # 0. One traversal pass over the operating-model property graph (DAT-734):
-    # the concept neighbourhoods + groundings, conformed axes, column
-    # materialization/anchor, and each enriched view's dimension bases. None ⇒
-    # unreachable graph (non-PG dialect / no workspace) — sections stay empty,
-    # logged loud inside the loader.
-    graph_reads = _load_graph_reads(session, workspace_id, vertical)
+    # the concept neighbourhoods + groundings, references, conformed axes,
+    # column materialization/anchor, and each enriched view's dimension bases.
+    # None ⇒ unreachable graph (non-PG dialect / no workspace) — sections stay
+    # empty, logged loud inside the loader.
+    graph_reads = _load_graph_reads(session, workspace_id, vertical, table_ids)
 
     # 1. Load tables
     tables_stmt = select(Table).where(Table.table_id.in_(table_ids))
@@ -630,15 +534,6 @@ def build_execution_context(
             if _is_current(ann):
                 semantic[ann.column_id] = ann
 
-    # 5b. Load catalogue-grain concepts (DAT-637) from the begin_session catalogue
-    # head — a DIFFERENT run from the add_source column metadata above, so it is
-    # NOT scoped by ``_is_current`` (the generation head); it has its own run.
-    from dataraum.analysis.semantic.utils import load_column_concepts
-
-    concepts = (
-        load_column_concepts(session, table_ids, catalogue_run_id) if catalogue_run_id else {}
-    )
-
     # 6. Load temporal profiles
     temporal: dict[str, TemporalColumnProfile] = {}
     if column_ids:
@@ -677,16 +572,13 @@ def build_execution_context(
             detail="no promoted catalog run; entity/relationship context is empty",
         )
 
-    # 8 + 9. The run-versioned context — table entities (fact/dimension) and the
-    # defined relationships — is read ONLY when the promoted catalog run resolves.
-    # **Fail-closed (DAT-429):** with no resolved catalog run we MUST NOT fall back
-    # to a cross-run read — that would surface superseded entities/relationships
-    # into this context. Leave both empty instead. (The non-run-versioned field
-    # metadata above is keyed by the passed table/column ids and is unaffected.)
-    from dataraum.analysis.relationships.utils import load_defined_relationships
-
+    # 8. The run-versioned table entities (fact/dimension) are read ONLY when the
+    # promoted catalog run resolves. **Fail-closed (DAT-429):** with no resolved
+    # catalog run we MUST NOT fall back to a cross-run read — that would surface
+    # superseded entities into this context. Leave empty instead. (The
+    # non-run-versioned field metadata above is keyed by the passed table/column
+    # ids and is unaffected.)
     table_entities: dict[str, TableEntity] = {}
-    relationships_db: list[Relationship] = []
     if run_id is not None:
         for entity in session.execute(
             select(TableEntity).where(
@@ -694,40 +586,13 @@ def build_execution_context(
             )
         ).scalars():
             table_entities[entity.table_id] = entity
-        relationships_db = load_defined_relationships(session, table_ids, run_id=run_id)
 
-    # Build relationship contexts
-    relationships: list[RelationshipContext] = []
-    rel_list_for_topology: list[dict[str, Any]] = []
-
-    for rel in relationships_db:
-        from_table = table_map.get(rel.from_table_id)
-        to_table = table_map.get(rel.to_table_id)
-
-        if from_table and to_table:
-            # Get column names
-            from_col = next((c for c in columns if c.column_id == rel.from_column_id), None)
-            to_col = next((c for c in columns if c.column_id == rel.to_column_id), None)
-
-            if from_col and to_col:
-                relationships.append(
-                    RelationshipContext(
-                        from_table=from_table.table_name,
-                        from_column=from_col.column_name,
-                        to_table=to_table.table_name,
-                        to_column=to_col.column_name,
-                        relationship_type=rel.relationship_type or "unknown",
-                        cardinality=rel.cardinality,
-                        confidence=rel.confidence,
-                        introduces_duplicates=(rel.evidence or {}).get("introduces_duplicates"),
-                    )
-                )
-                rel_list_for_topology.append(
-                    {
-                        "table1": from_table.table_name,
-                        "table2": to_table.table_name,
-                    }
-                )
+    # 9. Relationships come from the GRAPH's refs relation (og_references over
+    # current_relationships, DAT-734): head-resolved like the old ORM read (same
+    # fail-closed behaviour — no promoted head ⇒ empty current_* views), with
+    # the conformed-dimension fact↔fact pairs excluded by the element view's own
+    # typing (they surface as conformed_dimensions instead, DAT-756).
+    relationships: list[RelationshipContext] = graph_reads.references if graph_reads else []
 
     # 10. Load slice definitions — run-versioned since DAT-448: scope to the
     # promoted catalog run (the begin_session run that derived them). With no
@@ -762,77 +627,6 @@ def build_execution_context(
                     distinct_values=slice_def.distinct_values or [],
                 )
             )
-
-    # 10b. Load dimension hierarchies + aliases (DAT-537) — run-versioned, same
-    # fail-closed discipline as the slices (scoped to the resolved catalog run;
-    # empty when none resolves). The expose seam for the answer agent; the GraphAgent
-    # prompt consumes them in DAT-538.
-    hierarchy_contexts: list[HierarchyContext] = []
-    if run_id is not None:
-        hier_stmt = (
-            select(DimensionHierarchy)
-            .where(
-                DimensionHierarchy.table_id.in_(table_ids),
-                DimensionHierarchy.run_id == run_id,
-            )
-            # Strongest (lowest g3) first; role-check rows have no g3 (NULL) and
-            # sort last. The signature tiebreak makes ties (several rows at
-            # g3=0.0, manual teaches) fully deterministic — the sort is a
-            # determinism device, NOT a ranking policy (DAT-762 ruling): the
-            # substrate serves evidence, consumers rank with full information.
-            .order_by(
-                DimensionHierarchy.g3.asc().nulls_last(),
-                DimensionHierarchy.signature.asc(),
-            )
-        )
-        for hier in session.execute(hier_stmt).scalars().all():
-            hier_tbl = table_map.get(hier.table_id)
-            if hier_tbl:
-                hierarchy_contexts.append(
-                    HierarchyContext(
-                        kind=hier.kind,
-                        table_name=hier_tbl.table_name,
-                        # Read by ``level`` (the HierarchyMember contract), never
-                        # array position (DAT-779).
-                        members=[
-                            str(m.get("column_name", ""))
-                            for m in sorted(
-                                hier.members, key=lambda m: cast("int", m.get("level", 0))
-                            )
-                        ],
-                        canonical_label=hier.canonical_label,
-                        needs_confirmation=hier.needs_confirmation,
-                    )
-                )
-
-    # 10b-bis. Load bus-matrix cells (DAT-762) — same run scoping; signature
-    # order is the determinism device (evidence, not ranking).
-    bus_matrix_contexts: list[BusMatrixContext] = []
-    if run_id is not None:
-        from dataraum.analysis.hierarchies.db_models import BusMatrixEntry
-
-        cell_stmt = (
-            select(BusMatrixEntry)
-            .where(
-                BusMatrixEntry.fact_table_id.in_(table_ids),
-                BusMatrixEntry.run_id == run_id,
-            )
-            .order_by(BusMatrixEntry.signature.asc())
-        )
-        for cell in session.execute(cell_stmt).scalars().all():
-            cell_tbl = table_map.get(cell.fact_table_id)
-            if cell_tbl:
-                bus_matrix_contexts.append(
-                    BusMatrixContext(
-                        fact_table=cell_tbl.table_name,
-                        attachment=cell.attachment,
-                        concept_label=cell.concept_label,
-                        roles=list(cell.roles),
-                        attributes=list(cell.attributes),
-                        confirmation_source=cell.confirmation_source,
-                        needs_confirmation=cell.needs_confirmation,
-                    )
-                )
 
     # 10c. Load driver rankings (DAT-616) — begin_session value-layer artifact
     # (DAT-546), run-versioned; same fail-closed catalog-run scoping as the slices.
@@ -1027,13 +821,11 @@ def build_execution_context(
     # 14. Load the column meaning feed (catalogue-grain, DAT-637/769)
     field_mappings = load_column_meanings(session, table_ids, catalogue_run_id=catalogue_run_id)
 
-    # 14b. Load the vertical's concept vocabulary (DAT-616). On long-format data the
-    # discriminating measure (`amount`) may carry only a generic meaning, so the feed
-    # is empty for the P&L concepts; serving the ontology lets the agent ground which
-    # discriminator VALUES are revenue/cogs/opex from the value-sets it's now fed.
-    concept_vocabulary: str | None = None
-    # Vertical conventions for the EXTRACTION consumer (DAT-645) — the sign rule
-    # etc. piped verbatim so the SQL agent grounds a credit-normal measure positive.
+    # 14b. Load the vertical's ontology — the conventions slot (DAT-645, piped
+    # verbatim) plus the definition garnish for the graph-served concepts below.
+    # On long-format data the discriminating measure (`amount`) may carry only a
+    # generic meaning, so the concept definitions (indicators/excludes) are what
+    # let the agent ground which discriminator VALUES mean each concept.
     conventions: str = ""
     ontology_obj: Any = None
     if vertical:
@@ -1044,7 +836,6 @@ def build_execution_context(
             # Concepts from the typed vocabulary table (DAT-728, config→DB);
             # conventions still come from YAML (not config→DB in this phase).
             ontology_obj = load_workspace_concepts(session, vertical)
-            concept_vocabulary = _format_concept_vocabulary(ontology_obj)
             conventions = OntologyLoader().format_conventions_for_prompt(ontology_obj, "extraction")
         except Exception as e:
             logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
@@ -1064,76 +855,21 @@ def build_execution_context(
             cc.indicators = list(onto.indicators or [])
             cc.exclude_patterns = list(onto.exclude_patterns or [])
 
-    # 15. Compute graph topology
-    table_names = [t.table_name for t in tables]
-    graph_structure = analyze_graph_topology(
-        table_ids=table_names,
-        relationships=rel_list_for_topology,
-    )
-
-    # 16. Build entropy context. The band is the single source of truth the
-    # terminal detect step persisted (DAT-399 slice D) — read it, don't recompute
-    # the noisy-OR. The contract gate uses the rollup-free raw evidence + that band.
-    from dataraum.entropy.views.readiness_context import (
-        ColumnReadinessResult,
-        build_column_evidence,
-        load_persisted_readiness,
-    )
+    # 16. Build the per-column readiness lookup. The band is the single source of
+    # truth the terminal detect step persisted (DAT-399 slice D) — read it, don't
+    # recompute the noisy-OR. Serves the ⛔ blocked / ⚠ investigate markers the
+    # grounding prompt's column-reliability contract reads.
+    from dataraum.entropy.views.readiness_context import load_persisted_readiness
 
     persisted = load_persisted_readiness(session, table_ids)
-
-    # Build column-level entropy lookup from the persisted readiness
     column_entropy_lookup: dict[str, dict[str, Any]] = {}
     for target, col_result in persisted.columns.items():
         # target is "column:table.col", extract "table.col"
         col_key = target.removeprefix("column:")
         column_entropy_lookup[col_key] = _column_readiness_to_dict(col_result)
 
-    # Build table-level entropy lookup aggregated from per-column readiness results
-    table_entropy_lookup: dict[str, dict[str, Any]] = {}
-    _table_columns: dict[str, list[ColumnReadinessResult]] = {}
-    for target, col_result in persisted.columns.items():
-        col_key = target.removeprefix("column:")
-        tbl_name = col_key.split(".")[0] if "." in col_key else col_key
-        _table_columns.setdefault(tbl_name, []).append(col_result)
-    for tbl_name, col_results in _table_columns.items():
-        table_entropy_lookup[tbl_name] = _table_readiness_to_dict(tbl_name, col_results)
-
-    # Build entropy summary from the persisted readiness
-    entropy_summary_dict: dict[str, Any] = {
-        "overall_readiness": persisted.overall_readiness,
-        "high_entropy_count": persisted.columns_blocked + persisted.columns_investigate,
-        "critical_entropy_count": persisted.columns_blocked,
-        "columns_blocked": persisted.columns_blocked,
-        "columns_investigate": persisted.columns_investigate,
-        "columns_ready": persisted.columns_ready,
-        "readiness_blockers": [
-            t.removeprefix("column:")
-            for t, c in persisted.columns.items()
-            if c.readiness == "blocked"
-        ],
-    }
-
-    # 16b. Build column summaries for contract evaluation: raw dimension scores
-    # from the rollup-free evidence, readiness band from the persisted rows.
-    from dataraum.entropy.views.query_context import network_to_column_summaries
-
-    # resolve_runs picks the head-resolved entropy rows — a re-adjudicated detector
-    # (e.g. temporal_behavior's third witness) must not show its stale add_source
-    # verdict to the agent (DAT-491). This is a query-time path (DAT-506).
-    evidence = build_column_evidence(session, table_ids, resolve_runs=True)
-    band_by_target = {target: col.readiness for target, col in persisted.columns.items()}
-    column_summaries = network_to_column_summaries(evidence, band_by_target=band_by_target)
-
-    # 16c. Overall entropy score from the raw evidence
-    overall_entropy_score: float | None = (
-        evidence.avg_entropy_score if evidence.total_columns > 0 else None
-    )
-
     # 17. Build table contexts
     table_contexts: list[TableContext] = []
-    quality_issues_by_severity: dict[str, int] = {}
-    quality_flags: list[str] = []
 
     for table_id in table_ids:
         table = table_map.get(table_id)
@@ -1144,16 +880,8 @@ def build_execution_context(
         row_count = None
         if duckdb_conn and table.duckdb_path:
             try:
-                # Apply slice filter if provided
-                if slice_column and slice_value:
-                    query = f"""
-                        SELECT COUNT(*) FROM "{table.duckdb_path}"
-                        WHERE "{slice_column}" = ?
-                    """
-                    result = duckdb_conn.execute(query, [slice_value]).fetchone()
-                else:
-                    query = f'SELECT COUNT(*) FROM "{table.duckdb_path}"'
-                    result = duckdb_conn.execute(query).fetchone()
+                query = f'SELECT COUNT(*) FROM "{table.duckdb_path}"'
+                result = duckdb_conn.execute(query).fetchone()
                 if result:
                     row_count = result[0]
             except Exception as e:
@@ -1167,7 +895,6 @@ def build_execution_context(
             stat_prof = stat_profiles.get(col.column_id)
             quality = stat_quality.get(col.column_id)
             sem_ann = semantic.get(col.column_id)
-            concept = concepts.get(col.column_id)
             temp_profile = temporal.get(col.column_id)
             type_dec = type_decisions.get(col.column_id)
 
@@ -1176,7 +903,7 @@ def build_execution_context(
             cardinality_ratio = stat_prof.cardinality_ratio if stat_prof else None
             # DAT-616: the value-set the agent needs to ground predicates lives in
             # the profile (distinct_count column + top_values in profile_data); the
-            # assembler used to drop it. Lift it so format_metadata_document can serve
+            # assembler used to drop it. Lift it so format_served_context can serve
             # the complete enumeration for low-cardinality categoricals.
             distinct_count = stat_prof.distinct_count if stat_prof else None
             profile_data = (stat_prof.profile_data or {}) if stat_prof else {}
@@ -1217,16 +944,6 @@ def build_execution_context(
             if is_derived:
                 flags.append("derived_column")
 
-            # Aggregate issue counts
-            if quality and quality.quality_data:
-                issues = quality.quality_data.get("quality_issues", [])
-                for issue in issues:
-                    sev = issue.get("severity", "warning") if isinstance(issue, dict) else "warning"
-                    quality_issues_by_severity[sev] = quality_issues_by_severity.get(sev, 0) + 1
-
-            if flags:
-                quality_flags.extend(flags)
-
             # Get entropy data for this column
             entropy_key = f"{table.table_name}.{col.column_name}"
             col_entropy = column_entropy_lookup.get(entropy_key)
@@ -1238,13 +955,8 @@ def build_execution_context(
                     table_name=table.table_name,
                     data_type=type_dec.decided_type if type_dec else None,
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
-                    entity_type=sem_ann.entity_type if sem_ann else None,
-                    meaning=concept.meaning if concept else None,
-                    # The RESOLVED stock/flow verdict (entropy/resolve.py re-bases
-                    # the ColumnConcept row at session_detect). Served as settled
-                    # fact — authoritative on its own (DAT-786 dropped the
-                    # parallel contested flag; see resolve_temporal_behavior).
-                    temporal_behavior=concept.temporal_behavior if concept else None,
+                    # The graph-resolved materializes_as verdict + anchor axis
+                    # (og_columns — witness posterior over concept prior).
                     materialization=(
                         graph_reads.materialization_by_column.get(col.column_id)
                         if graph_reads
@@ -1253,9 +965,6 @@ def build_execution_context(
                     anchor_time_axis=(
                         graph_reads.anchor_by_column.get(col.column_id) if graph_reads else None
                     ),
-                    business_name=sem_ann.business_name if sem_ann else None,
-                    business_description=sem_ann.business_description if sem_ann else None,
-                    unit_source_column=concept.unit_source_column if concept else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     distinct_count=distinct_count,
@@ -1272,7 +981,6 @@ def build_execution_context(
                     max_timestamp=str(temp_profile.max_timestamp)
                     if temp_profile and temp_profile.max_timestamp
                     else None,
-                    completeness_ratio=temp_profile.completeness_ratio if temp_profile else None,
                     span_days=temp_profile.span_days if temp_profile else None,
                     largest_gap_days=temp_profile.largest_gap_days if temp_profile else None,
                     is_derived=is_derived,
@@ -1284,14 +992,6 @@ def build_execution_context(
 
         # Get table entity info
         table_entity = table_entities.get(table_id)
-
-        # Generate table flags
-        table_flags: list[str] = []
-        if table_entity and table_entity.table_role:
-            table_flags.append(table_entity.table_role)
-
-        # Get table entropy data
-        tbl_entropy = table_entropy_lookup.get(table.table_name)
 
         # grain_columns is persisted as a bare JSON list of column names
         # (analysis/semantic/db_models.py TableEntity.grain_columns; DAT-775 —
@@ -1315,32 +1015,13 @@ def build_execution_context(
                 time_columns=(table_entity.time_columns or []) if table_entity else [],
                 identity_columns=((table_entity.identity_columns or []) if table_entity else []),
                 columns=column_contexts,
-                flags=table_flags,
-                table_entropy=tbl_entropy,
-                readiness_for_use=tbl_entropy.get("readiness") if tbl_entropy else None,
             )
         )
 
-    # Aggregate active assumptions across all columns
     return GraphExecutionContext(
         tables=table_contexts,
         relationships=relationships,
-        graph_pattern=graph_structure.pattern,
-        hub_tables=graph_structure.hub_tables,
-        leaf_tables=graph_structure.leaf_tables,
-        total_tables=len(table_contexts),
-        total_columns=sum(t.column_count for t in table_contexts),
-        total_relationships=len(relationships),
-        quality_issues_by_severity=quality_issues_by_severity,
-        quality_flags=list(set(quality_flags)),  # Deduplicate
-        entropy_summary=entropy_summary_dict,
-        column_summaries=column_summaries,
-        overall_entropy_score=overall_entropy_score,
-        slice_column=slice_column,
-        slice_value=slice_value,
         available_slices=slice_contexts,
-        dimension_hierarchies=hierarchy_contexts,
-        bus_matrix=bus_matrix_contexts,
         drivers=driver_contexts,
         business_cycles=business_cycle_contexts,
         cycle_health=cycle_health_report,
@@ -1349,7 +1030,6 @@ def build_execution_context(
         concepts=concept_contexts,
         conformed_dimensions=(graph_reads.conformed_dimensions if graph_reads else []),
         field_mappings=field_mappings,
-        concept_vocabulary=concept_vocabulary,
         conventions=conventions,
     )
 
@@ -1377,6 +1057,7 @@ class _GraphReads:
     """Internal carrier for one traversal pass over the operating-model graph."""
 
     concepts: list[ConceptContext] = field(default_factory=list)
+    references: list[RelationshipContext] = field(default_factory=list)
     conformed_dimensions: list[ConformedDimensionContext] = field(default_factory=list)
     materialization_by_column: dict[str, str] = field(default_factory=dict)
     anchor_by_column: dict[str, str] = field(default_factory=dict)
@@ -1543,6 +1224,59 @@ def _read_grounding_provenance(session: Session, read_schema: str) -> dict[str, 
         )
     ).all()
     return {str(r.snippet_id): r for r in rows}
+
+
+def _read_references(
+    session: Session,
+    read_schema: str,
+    tables: dict[str, tuple[str, str | None]],
+    columns: dict[str, Any],
+    table_ids: list[str],
+) -> list[RelationshipContext]:
+    """FK edges from ``og_references``, enriched with ``introduces_duplicates``.
+
+    The fan-out flag lives in ``current_relationships.evidence`` (measured by
+    the writers, DAT-790) — not a graph property — so this reads the element
+    view joined back to its source view by the shared local key. Endpoint names
+    resolve through the vertex maps; a miss drops the edge VISIBLY. Scoped to
+    edges between the context's tables (parity with the old per-context read).
+    """
+    rows = session.execute(
+        text(
+            f"SELECT r.relationship_id, r.from_table_id, r.to_table_id,\n"  # noqa: S608
+            f"       r.from_column_id, r.to_column_id, r.cardinality,\n"
+            f"       r.relationship_type, r.confidence, r.confirmation_source,\n"
+            f"       (cr.evidence ->> 'introduces_duplicates')::boolean AS introduces_duplicates\n"
+            f'FROM "{read_schema}".og_references r\n'
+            f'JOIN "{read_schema}".current_relationships cr\n'
+            f"  ON cr.relationship_id::text = r.relationship_id"
+        )
+    ).all()
+    wanted = set(table_ids)
+    out: list[RelationshipContext] = []
+    for r in rows:
+        if not (str(r.from_table_id) in wanted and str(r.to_table_id) in wanted):
+            continue
+        ft, tt = tables.get(str(r.from_table_id)), tables.get(str(r.to_table_id))
+        fc, tc = columns.get(str(r.from_column_id)), columns.get(str(r.to_column_id))
+        if ft is None or tt is None or fc is None or tc is None:
+            logger.warning("reference_endpoint_unresolved", relationship_id=str(r.relationship_id))
+            continue
+        out.append(
+            RelationshipContext(
+                from_table=ft[0],
+                from_column=str(fc.column_name),
+                to_table=tt[0],
+                to_column=str(tc.column_name),
+                relationship_type=str(r.relationship_type or "unknown"),
+                cardinality=r.cardinality,
+                confidence=float(r.confidence or 0.0),
+                confirmation_source=r.confirmation_source,
+                introduces_duplicates=r.introduces_duplicates,
+            )
+        )
+    out.sort(key=lambda x: (x.from_table, x.from_column, x.to_table, x.to_column))
+    return out
 
 
 def _read_conformed(
@@ -1738,7 +1472,10 @@ def _assemble_concept_contexts(
 
 
 def _load_graph_reads(
-    session: Session, workspace_id: str | None, vertical: str | None
+    session: Session,
+    workspace_id: str | None,
+    vertical: str | None,
+    table_ids: list[str],
 ) -> _GraphReads | None:
     """One traversal pass over the operating-model property graph (DAT-734).
 
@@ -1759,6 +1496,7 @@ def _load_graph_reads(
         grounding_rows = _read_grounding_rows(session, read_schema)
         use_rows = _read_use_rows(session, read_schema)
         provenance = _read_grounding_provenance(session, read_schema)
+        references = _read_references(session, read_schema, tables, columns, table_ids)
         conformed = _read_conformed(session, read_schema, tables)
         derived = _read_derived_from(session, read_schema, tables)
     except Exception as e:
@@ -1770,6 +1508,7 @@ def _load_graph_reads(
     )
     return _GraphReads(
         concepts=concepts,
+        references=references,
         conformed_dimensions=conformed,
         materialization_by_column={
             cid: str(r.materialization) for cid, r in columns.items() if r.materialization
@@ -1853,57 +1592,22 @@ def _column_readiness_to_dict(result: Any) -> dict[str, Any]:
     }
 
 
-def _table_readiness_to_dict(
-    table_name: str,
-    col_results: list[Any],
-) -> dict[str, Any]:
-    """Aggregate per-column readiness results into a table-level dict.
-
-    Args:
-        table_name: Table name
-        col_results: List of ColumnReadinessResult for this table
-
-    Returns:
-        Dict compatible with existing table_entropy consumers
-    """
-    if not col_results:
-        return {"readiness": "ready"}
-
-    blocked = [r for r in col_results if r.readiness == "blocked"]
-    investigate = [r for r in col_results if r.readiness == "investigate"]
-    risks = [r.worst_intent_risk for r in col_results]
-
-    if blocked:
-        readiness = "blocked"
-    elif investigate:
-        readiness = "investigate"
-    else:
-        readiness = "ready"
-
-    return {
-        "readiness": readiness,
-        "columns_blocked": len(blocked),
-        "columns_investigate": len(investigate),
-        "avg_worst_intent_risk": sum(risks) / len(risks),
-        "max_worst_intent_risk": max(risks),
-        "blocked_columns": [r.target.removeprefix("column:").split(".", 1)[-1] for r in blocked],
-    }
-
-
 # =============================================================================
-# Metadata Document Formatter
+# Served-Context Formatter (DAT-734 — the graph-shaped grounding document)
 # =============================================================================
 
 
-def format_metadata_document(
+def format_served_context(
     context: GraphExecutionContext,
     source_name: str = "dataset",
 ) -> str:
-    """Format execution context as a structured metadata document for LLM prompts.
+    """Render the served context for the grounding prompt (``{rich_context}``).
 
-    Produces a rich, pre-digested document with business names, descriptions,
-    quality narratives, entropy assumptions, and actionable notes. Replaces
-    both format_context_for_prompt() and format_entropy_for_prompt().
+    Graph structure served AS STRUCTURE — the concept graph (definitions,
+    part_of/disjoint/reconciles edges, groundings with their used columns), FK
+    references, conformed axes, materialization — plus the typed knowledge
+    sections with no graph element yet: value sets, drivers, business
+    processes, validation results (conventions ride their own prompt slot).
 
     Args:
         context: GraphExecutionContext from build_execution_context()
@@ -1917,47 +1621,12 @@ def format_metadata_document(
     # --- Overview ---
     lines.append(f"# Data Catalog: {source_name}")
     lines.append("")
-    lines.append("## Overview")
+    total_columns = sum(t.column_count for t in context.tables)
+    lines.append(f"{len(context.tables)} tables, {total_columns} columns.")
     lines.append("")
 
-    overview_parts = [f"{context.total_tables} tables, {context.total_columns} columns."]
-    if context.graph_pattern:
-        overview_parts.append(f"Schema: {context.graph_pattern}.")
-    if context.hub_tables:
-        overview_parts.append(f"Hub: {', '.join(context.hub_tables)}.")
-    if context.leaf_tables:
-        overview_parts.append(f"Leaves: {', '.join(context.leaf_tables)}.")
-    lines.append(" ".join(overview_parts))
-
-    # Temporal coverage from column profiles
-    temporal_info = _build_temporal_summary(context)
-    if temporal_info:
-        lines.append(temporal_info)
-
-    # Data readiness from entropy summary
-    readiness_info = _build_readiness_summary(context)
-    if readiness_info:
-        lines.append(readiness_info)
-
-    if context.slice_column:
-        lines.append(f"Active filter: {context.slice_column} = '{context.slice_value}'")
-
-    lines.append("")
-
-    # --- Business Concepts (ontology vocabulary, DAT-616) ---
-    # The concept→value grounding surface for long-format data: the agent maps a
-    # discriminator's values (served per-table under "Value sets") to these concepts.
-    if context.concept_vocabulary:
-        lines.append("## Business Concepts")
-        lines.append("")
-        lines.append(
-            "Vertical vocabulary. Ground each metric concept in specific column values "
-            "from the **Value sets** below — match by meaning, honoring `exclude` patterns; "
-            "do not improvise a substring filter."
-        )
-        lines.append("")
-        lines.append(context.concept_vocabulary)
-        lines.append("")
+    # --- Business Concepts (the traversal core, DAT-734) ---
+    _append_concepts(lines, context)
 
     # --- Tables ---
     lines.append("## Tables")
@@ -2030,17 +1699,19 @@ def format_metadata_document(
         if meta_parts:
             lines.append(" ".join(meta_parts))
 
-        # Column table
+        # Column table. Business meaning is NOT here — its one home is the
+        # COLUMN MEANINGS block (field_mappings, DAT-769). Materialization is
+        # the graph-resolved stock/flow verdict (og_columns, DAT-734).
         lines.append("")
-        lines.append("| Column | Type | Role | Description | Notes |")
-        lines.append("|--------|------|------|-------------|-------|")
+        lines.append("| Column | Type | Role | Materialization | Notes |")
+        lines.append("|--------|------|------|-----------------|-------|")
         for col in table.columns:
             col_type = col.data_type or ""
             col_role = col.semantic_role or ""
-            col_desc = _build_column_description(col)
+            col_mat = col.materialization or ""
             col_notes = _build_column_notes(col)
             lines.append(
-                f"| {col.column_name} | {col_type} | {col_role} | {col_desc} | {col_notes} |"
+                f"| {col.column_name} | {col_type} | {col_role} | {col_mat} | {col_notes} |"
             )
 
         # Value sets (DAT-616): complete enumeration of low-card categoricals, so the
@@ -2054,19 +1725,15 @@ def format_metadata_document(
     # --- Drivers (DAT-616) ---
     _append_drivers(lines, context)
 
-    # --- Relationships ---
+    # --- Relationships (the graph's refs edges) ---
     if context.relationships:
         lines.append("")
         lines.append("## Relationships")
         lines.append("")
-        lines.append("| From | To | Cardinality | Confidence |")
-        lines.append("|------|----|-------------|------------|")
+        lines.append("| From | To | Cardinality | Confidence | Confirmed |")
+        lines.append("|------|----|-------------|------------|-----------|")
         for rel in context.relationships:
             warning = ""
-            if rel.relationship_entropy and not rel.relationship_entropy.get(
-                "is_deterministic", True
-            ):
-                warning = " ⚠ non-deterministic"
             # DAT-616 fan-trap: joining here multiplies rows → SUMming an additive
             # measure across this join double-counts. Tell the agent to aggregate
             # before the join (or COUNT DISTINCT), not after. Reads the engine's
@@ -2076,11 +1743,26 @@ def format_metadata_document(
             # NULL = the probe was unavailable/failed — the caution is then silently
             # absent (unmeasured), never "verified safe".
             if rel.introduces_duplicates:
-                warning += " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
+                warning = " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
             lines.append(
                 f"| {rel.from_table}.{rel.from_column} | {rel.to_table}.{rel.to_column} "
-                f"| {rel.cardinality or '?'} | {rel.confidence:.2f}{warning} |"
+                f"| {rel.cardinality or '?'} | {rel.confidence:.2f} "
+                f"| {rel.confirmation_source or 'unconfirmed'}{warning} |"
             )
+
+    # --- Conformed dimensions (og_conformed_dimension, DAT-756) ---
+    if context.conformed_dimensions:
+        lines.append("")
+        lines.append("## Conformed Dimensions")
+        lines.append("")
+        lines.append(
+            "Facts sharing a dimension AXIS (same dimension table + attribute) — the "
+            "alignable drill-across surfaces. Comparing two facts goes through a shared "
+            "axis, never a direct fact-to-fact join."
+        )
+        for cd in context.conformed_dimensions:
+            attr = f".{cd.attribute}" if cd.attribute else ""
+            lines.append(f"- {cd.table_a} ↔ {cd.table_b} share {cd.dimension_table}{attr}")
 
     # --- Enriched Views ---
     if context.enriched_views:
@@ -2094,7 +1776,12 @@ def format_metadata_document(
         for ev in context.enriched_views:
             verified = " (grain verified)" if ev.is_grain_verified else ""
             lines.append(f"\n### {ev.view_name}{verified}")
-            lines.append(f"Fact table: {ev.fact_table}.")
+            fact_line = f"Fact table: {ev.fact_table}."
+            # derived_from bases (og_derived_from) — which dimension TABLES the
+            # view already joins, so the agent knows what it need not join again.
+            if ev.dimension_tables:
+                fact_line += f" Joins dimensions: {', '.join(ev.dimension_tables)}."
+            lines.append(fact_line)
             dims = ", ".join(ev.dimension_columns) if ev.dimension_columns else "none"
             lines.append(f"Joined columns: {dims}.")
 
@@ -2143,75 +1830,35 @@ def format_metadata_document(
     return "\n".join(lines)
 
 
-def _build_temporal_summary(context: GraphExecutionContext) -> str | None:
-    """Build temporal coverage line from column profiles."""
-    earliest = None
-    latest = None
-    granularity = None
-    completeness_values: list[float] = []
+def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
+    """Append the concept graph (DAT-734): definitions + edges + groundings.
 
-    for table in context.tables:
-        for col in table.columns:
-            if col.min_timestamp:
-                if earliest is None or col.min_timestamp < earliest:
-                    earliest = col.min_timestamp
-            if col.max_timestamp:
-                if latest is None or col.max_timestamp > latest:
-                    latest = col.max_timestamp
-            if col.detected_granularity and not granularity:
-                granularity = col.detected_granularity
-            if col.completeness_ratio is not None:
-                completeness_values.append(col.completeness_ratio)
-
-    if not earliest:
-        return None
-
-    parts = [f"Temporal coverage: {earliest} to {latest}"]
-    if granularity:
-        parts.append(f" ({granularity}")
-        if completeness_values:
-            avg = sum(completeness_values) / len(completeness_values)
-            parts.append(f", {avg:.0%} complete")
-        parts.append(")")
-    elif completeness_values:
-        avg = sum(completeness_values) / len(completeness_values)
-        parts.append(f" ({avg:.0%} complete)")
-
-    return "".join(parts) + "."
-
-
-def _build_readiness_summary(context: GraphExecutionContext) -> str | None:
-    """Build data readiness line from entropy summary."""
-    if not context.entropy_summary:
-        return None
-
-    summary = context.entropy_summary
-    readiness = summary.get("overall_readiness", "unknown")
-    blocked_count = summary.get("critical_entropy_count", 0)
-
-    return f"Data readiness: {readiness} ({blocked_count} blocked)."
-
-
-def _format_concept_vocabulary(ontology: Any) -> str | None:
-    """Format the vertical's ontology concepts for the SQL-grounding prompt (DAT-616).
-
-    Unlike ``OntologyLoader.format_concepts_for_prompt`` (semantic-phase use), this
-    also surfaces ``exclude_patterns`` — the agent needs them to resolve traps where a
-    value's surface form contradicts its concept (e.g. ``Cost Recovery Income`` is
-    revenue despite containing "cost"). Returns ``None`` when there is nothing to serve.
-
-    Args:
-        ontology: An ``OntologyDefinition`` (or None).
-
-    Returns:
-        Markdown bullet list of concepts, or None when no concepts are defined.
+    The traversal core served as structure. Definition surface (description /
+    indicators / excludes — the DAT-616 value-grounding aid, incl. traps like
+    ``Cost Recovery Income`` being revenue despite "cost") rides each concept;
+    the graph neighbourhood (part_of / disjoint_with / reconciles_with) and the
+    concept's PRIOR GROUNDINGS (relation + filter + value expression + used
+    columns; failures discriminated with the reason) follow as data lines.
     """
-    if ontology is None or not getattr(ontology, "concepts", None):
-        return None
+    if not context.concepts:
+        return
 
-    lines: list[str] = []
-    for concept in ontology.concepts:
+    lines.append("## Business Concepts")
+    lines.append("")
+    lines.append(
+        "Vertical vocabulary with its operating-model graph. Ground each metric concept "
+        "in specific column values from the **Value sets** below — match by meaning, "
+        "honoring `exclude` patterns; do not improvise a substring filter. A `grounded by` "
+        "entry is a PRIOR COMMITTED grounding of that concept — reuse its columns/filters "
+        "for the same concept unless the served evidence says it is wrong; a concept with "
+        "several groundings is measured on several relations, and `reconciles` means those "
+        "computations must tie out."
+    )
+    lines.append("")
+    for concept in context.concepts:
         line = f"- **{concept.name}**"
+        if concept.kind:
+            line += f" ({concept.kind})"
         if concept.description:
             line += f": {concept.description}"
         lines.append(line)
@@ -2219,7 +1866,44 @@ def _format_concept_vocabulary(ontology: Any) -> str | None:
             lines.append(f"  - indicators: {', '.join(concept.indicators)}")
         if concept.exclude_patterns:
             lines.append(f"  - exclude: {', '.join(concept.exclude_patterns)}")
-    return "\n".join(lines) if lines else None
+        if concept.part_of_parents:
+            part_of = ", ".join(concept.part_of_parents)
+            if concept.part_of_ancestry:
+                part_of += f" (→ {' → '.join(concept.part_of_ancestry)})"
+            lines.append(f"  - part of: {part_of}")
+        if concept.part_of_children:
+            lines.append(f"  - subconcepts: {', '.join(concept.part_of_children)}")
+        if concept.disjoint_with:
+            lines.append(f"  - disjoint with: {', '.join(concept.disjoint_with)}")
+        for rec in concept.reconciles_with:
+            tol = f" (tolerance {rec.tolerance:g})" if rec.tolerance is not None else ""
+            if rec.partner == concept.name:
+                lines.append(f"  - reconciles: across its own groundings{tol} — must tie out")
+            else:
+                lines.append(f"  - reconciles with: {rec.partner}{tol}")
+        healthy = [g for g in concept.groundings if not g.failed]
+        failed = [g for g in concept.groundings if g.failed]
+        if healthy:
+            lines.append("  - grounded by:")
+            for g in healthy:
+                lines.append(f"    - {_format_grounding(g)}")
+                if g.uses:
+                    uses = ", ".join(f"{u.column_name} ({u.role})" for u in g.uses)
+                    lines.append(f"      uses: {uses}")
+        for g in failed:
+            mode = g.failure_mode or "failed"
+            reason = g.failure_reason or "(no reason recorded)"
+            lines.append(f"  - failed attempt [{mode}]: {reason}")
+    lines.append("")
+
+
+def _format_grounding(g: GroundingContext) -> str:
+    """One healthy grounding as ``statement @ relation: select_expr WHERE ...``."""
+    label = f"{g.statement} @ {g.relation}" if g.statement else str(g.relation)
+    rendered = f"{label}: {g.select_expr}"
+    if g.where:
+        rendered += " WHERE " + " AND ".join(g.where)
+    return rendered
 
 
 # The "reasonable top" (DAT-621): a categorical dimension at/below this distinct count is
@@ -2324,44 +2008,13 @@ def _build_value_sets(table: TableContext) -> list[str]:
     return out
 
 
-def _build_column_description(col: ColumnContext) -> str:
-    """Build the column-description cell: label + description + concept + stock/flow.
-
-    Label, ``meaning``, and ``temporal_behavior`` are INDEPENDENT fields — a
-    named measure still has a concept and a reconciled stock/flow verdict. The old
-    ``if business_name / elif meaning`` made them mutually exclusive, so every
-    column that had a ``business_name`` (i.e. every grounded measure) silently lost BOTH
-    its concept and its ``temporal_behavior``. ``temporal_behavior`` is ALSO shown in the
-    Drivers section as ``target_type``; surfacing it here too is intentional — one
-    reconciled fact, rendered where the agent reads columns AND where it reads
-    aggregation guidance.
-    """
-    parts: list[str] = []
-    # Primary label: the business name, else the concept name.
-    if col.business_name:
-        parts.append(col.business_name)
-        if col.business_description:
-            parts.append(f": {col.business_description}")
-    elif col.meaning:
-        parts.append(col.meaning)
-
-    # Meaning context (when it isn't already the label) + stock/flow verdict.
-    tags: list[str] = []
-    if col.meaning and col.business_name:
-        tags.append(f"meaning: {col.meaning}")
-    if col.temporal_behavior:
-        tags.append(col.temporal_behavior)
-    if tags:
-        parts.append(f" ({', '.join(tags)})")
-    return "".join(parts)
-
-
 def _build_column_notes(col: ColumnContext) -> str:
-    """Build column notes from derived, unit, quality, and entropy data."""
-    notes = []
+    """Build column notes: range/sign, anchor axis, derivation, readiness, flags.
 
-    if col.unit_source_column:
-        notes.append(f"Unit source: {col.unit_source_column} (values may mix units — caveat).")
+    Business meaning / unit-source prose is NOT here — the column-meanings feed
+    (``field_mappings``) is its one home (DAT-769).
+    """
+    notes = []
 
     # DAT-616: measure range/sign — a negative min flags a signed measure (debit/credit),
     # where a bare SUM may not be the intended metric (a signed/net expression might be).
@@ -2370,6 +2023,11 @@ def _build_column_notes(col: ColumnContext) -> str:
         if col.numeric_min < 0:
             rng += " Signed (has negatives) — SUM nets positive and negative values."
         notes.append(rng)
+
+    # The measure's resolved anchor event-time axis (og_columns, DAT-780) — the
+    # axis it trends/accumulates by.
+    if col.semantic_role == "measure" and col.anchor_time_axis:
+        notes.append(f"Anchor axis: {col.anchor_time_axis}.")
 
     if col.is_derived and col.derived_formula:
         notes.append(f"Derived: {col.derived_formula}.")
@@ -2546,7 +2204,6 @@ __all__ = [
     "TableContext",
     "RelationshipContext",
     "SliceContext",
-    "HierarchyContext",
     "CycleStageContext",
     "EntityFlowContext",
     "BusinessCycleContext",
@@ -2559,5 +2216,5 @@ __all__ = [
     "GroundingUseContext",
     "GraphExecutionContext",
     "build_execution_context",
-    "format_metadata_document",
+    "format_served_context",
 ]

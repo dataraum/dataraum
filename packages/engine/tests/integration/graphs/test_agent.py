@@ -112,7 +112,6 @@ def _make_execution_context(
                 duckdb_name="test_data",
             ),
         ],
-        total_tables=1,
         field_mappings=[
             ColumnMeaning(
                 column_id="c1",

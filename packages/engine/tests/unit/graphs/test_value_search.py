@@ -28,7 +28,7 @@ def _context(conn: duckdb.DuckDBPyConnection | None = None) -> ExecutionContext:
             ),
         ],
     )
-    rich = GraphExecutionContext(tables=[coa], total_tables=1)
+    rich = GraphExecutionContext(tables=[coa])
     return ExecutionContext(
         duckdb_conn=conn if conn is not None else MagicMock(),
         schema_mapping_id="ws",
@@ -217,7 +217,7 @@ def _provider(*responses: MagicMock) -> MagicMock:
 
 
 def test_search_then_generate_grounds_with_the_searched_values(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     conn = duckdb.connect()
     conn.execute("CREATE TABLE coa AS SELECT * FROM (VALUES ('Depreciation')) v(account_name)")
@@ -246,7 +246,7 @@ def test_search_then_generate_grounds_with_the_searched_values(monkeypatch) -> N
 def test_search_budget_exhaustion_fails_loud(monkeypatch) -> None:
     """A model that never stops searching hits the budget and fails loud —
     the last allowed search's result carries the budget notice."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     conn = duckdb.connect()
     conn.execute("CREATE TABLE coa AS SELECT * FROM (VALUES ('Depreciation')) v(account_name)")

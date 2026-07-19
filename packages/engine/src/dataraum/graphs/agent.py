@@ -154,8 +154,6 @@ class ExecutionContext:
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         *,
-        slice_column: str | None = None,
-        slice_value: str | None = None,
         vertical: str | None = None,
         om_run_id: str | None = None,
         catalogue_run_id: str | None = None,
@@ -170,8 +168,6 @@ class ExecutionContext:
             session: SQLAlchemy session
             duckdb_conn: DuckDB connection for queries
             table_ids: List of table IDs to include in context
-            slice_column: Optional column to slice the context by.
-            slice_value: Optional value for the slice column.
             vertical: Runtime vertical for the cycle-health computation.
             om_run_id: Explicit operating_model run to read cycles/validation/cycle
                 health at — passed by the in-run metrics phase so the graph context
@@ -189,8 +185,6 @@ class ExecutionContext:
             session=session,
             table_ids=table_ids,
             duckdb_conn=duckdb_conn,
-            slice_column=slice_column,
-            slice_value=slice_value,
             vertical=vertical,
             om_run_id=om_run_id,
             catalogue_run_id=catalogue_run_id,
@@ -779,7 +773,7 @@ class GraphAgent(LLMFeature):
                 "Cannot generate SQL without the column meaning feed. "
                 "Run the semantic phase to author column meanings."
             )
-        from dataraum.graphs.context import format_metadata_document
+        from dataraum.graphs.context import format_served_context
         from dataraum.graphs.field_mapping import format_meanings_for_prompt
 
         # Built ONCE and shared by the prompt's <data_schema> block AND the
@@ -789,7 +783,7 @@ class GraphAgent(LLMFeature):
             "graph_yaml": graph_yaml,
             "table_schema": json.dumps(schema_info, indent=2),
             "parameters": json.dumps(parameters, indent=2),
-            "rich_context": format_metadata_document(context.rich_context),
+            "rich_context": format_served_context(context.rich_context),
             "field_mappings": format_meanings_for_prompt(context.rich_context.field_mappings),
             # DAT-616: feed back what prior runs learned for this concept — the
             # honest-fail reason + prior value→concept filter decisions.
@@ -1276,7 +1270,7 @@ class GraphAgent(LLMFeature):
         that arbitrary, count-less sample was the agent's only value view and is what it
         improvised filters from. The authoritative, complete value enumeration is now the
         per-column **Value sets** block in the rich-context metadata document
-        (`format_metadata_document`); this returns physical name + type only.
+        (`format_served_context`); this returns physical name + type only.
         """
         try:
             columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()

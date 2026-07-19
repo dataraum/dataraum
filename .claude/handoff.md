@@ -5,6 +5,45 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-725 Lane P9 (DAT-734) — graph context replaces flat at the GraphAgent; flat assembly DELETED (grounding-prompt content change)
+
+**Branch:** `feat/dat-725-lane-p9`. `graphs/context.py` now assembles the
+GraphAgent's served context by TRAVERSAL over the operating-model property
+graph (PGQ MATCH for grounded_by/uses/concept_edge, bounded recursive CTE for
+part_of ancestry, element views for the rest); `format_metadata_document` and
+every flat-only `GraphExecutionContext` field are GONE (`format_served_context`
+replaces it). Prompt `graph_sql_generation.yaml` → **v9.0**. v0.3.3 is the
+rollback tag — no A/B path, no switch.
+
+**What eval should expect:**
+- **The served-context AP oracle activates** (`test_served_context_ap_oracle`):
+  the Business Concepts section now serves each concept's PRIOR GROUNDINGS
+  (statement @ relation: select_expr WHERE …, plus the `uses` columns by role)
+  and its `reconciles_with` verdict — the AP-class concept surfaces BOTH
+  groundings + the tie-out line. Failed groundings serve as
+  `failed attempt [mode]: reason`.
+- **Prompt-content churn is expected** on any snapshotting eval: no Overview
+  topology/readiness lines; the column table is
+  `| Column | Type | Role | Materialization | Notes |` (business meaning is
+  single-homed in COLUMN MEANINGS; `temporal_behavior` wording replaced by the
+  graph's flow/stock `materialization`; measures carry an `Anchor axis:` note);
+  Relationships gained a `Confirmed` column (confirmation_source, NULL renders
+  `unconfirmed`) and are now sourced from `og_references` (conformed-dim
+  fact↔fact pairs no longer appear as FKs — they serve under a new
+  `## Conformed Dimensions` section); enriched views name their
+  dimension-table bases (`Joins dimensions: …`).
+- **Sections kept rule-stable:** Value sets (complete / NOT-enumerated /
+  near-constant markers), Drivers, Business Processes incl. Concept bindings,
+  Validation Results, `{vertical_conventions}` slot.
+- **NOT changed:** the snippet WRITE path (`graph:%` rows, parts/provenance
+  contract) — cockpit readers unaffected; `_build_schema_info`
+  (prefer-enriched) semantics; `{prior_context}`/`{field_mappings}`/
+  `{parameters}`/`{graph_yaml}` slots.
+- No schema change (read-only consumer of the landed P2 surfaces); no
+  backfill. Real-LLM grading = the owner's run #4.
+
+---
+
 ## DAT-725 Lane R — containment rescue re-based on key-ness; judge confidence = existence; meanings coverage retry (candidate-set + confirmation-behavior change)
 
 **Branch:** `feat/dat-725-lane-r`. Three robustness fixes on the

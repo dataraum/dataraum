@@ -145,7 +145,7 @@ def _generate(agent: GraphAgent) -> object:
 
 
 def test_valid_output_needs_no_repair(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_VALID_INPUT))
     agent = _agent_with(provider)
@@ -160,7 +160,7 @@ def test_stringified_field_is_repaired_by_the_model(monkeypatch) -> None:
     """The live kill: provenance as a JSON string. The repair turn carries the
     invalid input + the validation error, forces the tool, and the repaired
     output grounds the extract — the finished SQL is never discarded."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(_VALID_INPUT))
     agent = _agent_with(provider)
@@ -181,7 +181,7 @@ def test_stringified_field_is_repaired_by_the_model(monkeypatch) -> None:
 
 
 def test_second_validation_failure_fails_loud_with_both_errors(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(_STRINGIFIED_INPUT))
     agent = _agent_with(provider)
@@ -195,7 +195,7 @@ def test_second_validation_failure_fails_loud_with_both_errors(monkeypatch) -> N
 
 
 def test_repair_turn_without_tool_call_fails_loud(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(None))
     agent = _agent_with(provider)
@@ -217,7 +217,7 @@ def test_membership_violation_gets_a_contract_repair_turn(monkeypatch) -> None:
     """A schema-valid output enumerating a column the served relation does not
     have ('amout') is contract-repaired — the repair prompt names the violation
     and the repaired enumeration grounds the extract."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     bad = _with_basis(
         {"revenue": {"measure_columns": ["amout"], "filter_columns": ["account_type"]}}
@@ -240,7 +240,7 @@ def test_completeness_violation_gets_a_contract_repair_turn(monkeypatch) -> None
     """The SQL parts filter on account_type but the enumeration omits it — the
     completeness net (parts cross-check) catches it and the repair turn fixes
     the enumeration, not the SQL."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     incomplete = _with_basis({"revenue": {"measure_columns": ["amount"]}})
     provider = _provider(_tool_response(incomplete), _tool_response(_VALID_INPUT))
@@ -259,7 +259,7 @@ def test_contract_violation_after_repair_falls_into_failed_snippet_path(monkeypa
     """A still-violating repaired output falls loud (DAT-543): the authored SQL is
     retained flagged with mode='provenance_invalid' so prior_context can feed the
     exact violations back to the next authoring."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     incomplete = _with_basis({"revenue": {"measure_columns": ["amount"]}})
     provider = _provider(_tool_response(incomplete), _tool_response(incomplete))
@@ -279,7 +279,7 @@ def test_contract_violation_after_repair_falls_into_failed_snippet_path(monkeypa
 def test_fall_loud_grounding_is_exempt_from_the_contract(monkeypatch) -> None:
     """The fall-loud shape (relation null, select NULL) carries no columns —
     no contract check, no repair turn, the honest abstention passes through."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
     fall_loud = {
         "grounding": "revenue cannot be grounded: no served value names it",

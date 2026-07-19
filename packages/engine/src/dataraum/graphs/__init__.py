@@ -16,11 +16,13 @@ that is the usage example.
 from .agent import ExecutionContext, GeneratedCode, GraphAgent
 from .context import (
     ColumnContext,
+    ConceptContext,
     GraphExecutionContext,
+    GroundingContext,
     RelationshipContext,
     TableContext,
     build_execution_context,
-    format_metadata_document,
+    format_served_context,
 )
 from .entropy_behavior import (
     BehaviorMode,
@@ -60,9 +62,11 @@ __all__ = [
     "GraphExecutionContext",
     "TableContext",
     "ColumnContext",
+    "ConceptContext",
+    "GroundingContext",
     "RelationshipContext",
     "build_execution_context",
-    "format_metadata_document",
+    "format_served_context",
     # Entropy behavior
     "BehaviorMode",
     "EntropyAction",

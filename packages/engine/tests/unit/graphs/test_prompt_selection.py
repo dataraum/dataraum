@@ -64,7 +64,7 @@ def _mocks() -> tuple[MagicMock, MagicMock]:
 
 
 def test_extract_node_uses_the_grounding_prompt_on_balanced_tier(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr(
         "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
@@ -102,7 +102,7 @@ def test_feature_config_sets_tier_and_effort(monkeypatch) -> None:
     """DAT-603: the graph_sql_generation feature entry reaches the request."""
     from dataraum.llm.config import FeatureConfig
 
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr(
         "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
@@ -143,7 +143,7 @@ def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
     thinking feature offers the tool on auto and the prompt mandates the call."""
     from dataraum.llm.config import FeatureConfig
 
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr(
         "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
@@ -177,7 +177,7 @@ def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
     generate_sql calls; binding [0] silently could ground a superseded SQL —
     refuse instead (disable_parallel_tool_use makes this unreachable; the
     guard is the tripwire)."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr(
         "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )
@@ -238,7 +238,7 @@ def test_multi_step_graph_fails_loud_before_any_llm_call() -> None:
 def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
     """DAT-603: the model returns bare sql + description; THIS code binds it to
     the leaf's step_id — the DAT-664 id-paraphrase class is gone by construction."""
-    monkeypatch.setattr("dataraum.graphs.context.format_metadata_document", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr(
         "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
     )

@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "426ca470-cfd6-4d1d-b083-d4380f190465",
+  "id": "a3dab064-01da-4902-aaaa-a44537978896",
   "prevIds": [
-    "462bdbb9-c4c8-41b0-a519-012055528f33"
+    "1f6ef062-e134-43de-90a7-aa4996baf771"
   ],
   "ddl": [
     {
@@ -1640,6 +1640,17 @@
     },
     {
       "columns": [
+        "conversation_id",
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "conversation_messages_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "conversation_messages"
+    },
+    {
+      "columns": [
         "user_id",
         "workspace_id"
       ],
@@ -1657,16 +1668,6 @@
       "name": "accounts_pkey",
       "schema": "public",
       "table": "accounts",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "conversation_messages_pkey",
-      "schema": "public",
-      "table": "conversation_messages",
       "entityType": "pks"
     },
     {

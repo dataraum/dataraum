@@ -27,7 +27,7 @@ src/
 │   ├── cockpit/    # hand-written cockpit_db schema + client (TS-side persistence)
 │   └── metadata/   # GENERATED (bun run db:pull:metadata) — read-only Drizzle into the engine's ws_<id> schema
 ├── auth/           # better-auth instance + membership gate (DAT-819, ADR-0022) — the ONE auth seam
-├── portal/         # portal-role code: Caddy admin-API route management (the DAT-820 provisioner seam)
+├── portal/         # portal-role code (DAT-820 provisioner): workspace lifecycle (lifecycle.ts, durable+idempotent create/archive), the provisioning-driver seam (driver.ts; compose-driver.ts = docker), Caddy admin-API routes
 ├── routes/         # file-based TanStack Router routes
 ├── router.tsx      # Router + QueryClient wiring (setupRouterSsrQueryIntegration)
 ├── start.ts        # createStart instance — global request middleware (CSRF + the membership gate)

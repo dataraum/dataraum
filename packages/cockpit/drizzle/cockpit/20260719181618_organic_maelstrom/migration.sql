@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "workspaces_subdomain_live_uq" ON "workspaces" ("subdomain") WHERE subdomain is not null and state <> 'archived';

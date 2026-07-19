@@ -47,10 +47,12 @@ prefix:
   (payload field + session-row read + cockpit `select` pick) is DAT-506.
 - **Compose:** the engine-worker is parameterized per workspace via YAML anchors;
   a second workspace lives behind the `multi-workspace` profile.
-- **Deletion sweep:** `packages/infra/scripts/delete-workspace.sh` — stop
-  container → drop `ws_<id>` + `ws_<id>_read` schemas → drop the `ws_<id>`
-  catalog schema in the shared catalog DB (DAT-815) → delete the
-  `s3://<bucket>/<ws>/` prefix → cockpit_db rows (or `--soft` → `archived_at`).
+- **Deletion sweep:** the provisioner's archive operation (DAT-820, cockpit
+  `src/portal/lifecycle.ts`; it retired the `delete-workspace.sh` script) —
+  stop/remove the pair → drop `ws_<id>` + `ws_<id>_read` schemas → drop the
+  per-workspace roles → drop the `ws_<id>` catalog schema in the shared
+  catalog DB (DAT-815) → delete the `s3://<bucket>/<ws>/` prefix → registry
+  `state = 'archived'` (control-plane rows remain as the record).
 
 ## Consequences
 

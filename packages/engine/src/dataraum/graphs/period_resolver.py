@@ -434,20 +434,21 @@ def _read_measure_axes(
     * ``materialization`` — the vertical-neutral flow/stock verdict from ``og_columns``
       (flow measures carry the accumulation window, stocks are point-in-time), itself
       resolved through the served column's ``source_column_id``.
-    * the anchor axis BY IDENTITY, never by name (DAT-812): its typed SOURCE column is
-      ``COALESCE(mal.event_time_axis_column_id, named.source_column_id)`` — the DAT-778
-      lineage-witness event-axis id where a witness reconciled this measure (a header-
-      derived or lineage-inherited axis, off the queried fact), else the fact's declared
-      anchor matched among the served ``f.*`` columns by name (whose served name IS the
-      source name). This replaces the DAT-801 first cut's ``(fk)||'__'||col`` name
-      reconstruction, which collided when two joins shared a prefix.
-    * the axis's NAME-IN-RELATION for the live window scan — the served column whose
-      ``source_column_id`` is that anchor source (e.g. ``entry_id__date``) — and its
-      cadence, the anchor source column's ``detected_granularity``.
+    * the anchor axis, via ONE convention: ``og_columns.anchor_time_axis`` IS the served
+      column's NAME (the axis is exposed on the view — a header date as ``entry_id__date``,
+      an own event date as its ``f.*`` name). Match it against THIS view's served set —
+      names are unique per view (DAT-811) — to recover the served column, its typed
+      ``source_column_id`` (the identity), and thence its cadence. This is a name KEY into
+      a unique set, NOT the DAT-801 first cut's ``(fk)||'__'||col`` reconstruction (which
+      collided): the served column already exists; we look it up, we do not rebuild its
+      name. The persisted ``mal.event_time_axis_column_id`` is deliberately NOT consulted
+      — it duplicates the served column's own ``source_column_id`` and is NULL in practice
+      (the witness stores the served name, which never resolves to a typed column), and it
+      could only ever add an anchor that is not served on THIS relation — which has no
+      observable live window regardless.
 
-    The joins are LEFT so a flow whose anchor is unresolvable (null witness id + no
-    declared name match), or whose axis is not a served column of THIS relation (a
-    lineage-inherited axis the queried view never joins — no observable live window), or
+    The joins are LEFT so a flow whose anchor is not a served column of THIS relation (a
+    lineage-inherited axis the queried view never joins — no observable live window) or
     whose axis was never temporally profiled STILL returns its ``materialization`` row
     with ``axis``/``grain`` ``None``: the caller falls loud on an unobservable FLOW while
     excluding a stock, a distinction an inner join would erase. An EMPTY result (the
@@ -465,40 +466,25 @@ def _read_measure_axes(
     """
     stmt = text(
         # ``measure`` gives each aggregated served column its materialization + anchor
-        # name (source-resolved) + its OWN source id; ``anchored`` resolves the anchor's
-        # source column by identity (witness id ▸ declared-name match); the final SELECT
-        # DISTINCT reads the served axis NAME (for the live scan) + cadence off that
-        # anchor source. DISTINCT: several measures can share one anchor — collapse so
-        # the identical live window query isn't re-run once per column.
+        # NAME; ``axis_col`` matches that name against THIS view's served set (names are
+        # unique per view, DAT-811 — a name KEY into a unique set, never a join on
+        # source_column_id that a role-playing dimension could fan out) to recover the
+        # served column, whose OWN source_column_id yields the cadence. DISTINCT: several
+        # measures can share one anchor — collapse so the identical live window query
+        # isn't re-run once per column.
         f"WITH measure AS ("  # noqa: S608 - read_schema is an internal identifier
-        f"  SELECT m.materialization, m.anchor_time_axis, mec.source_column_id AS measure_source_id"
+        f"  SELECT m.materialization, m.anchor_time_axis"
         f'  FROM "{read_schema}".og_columns m'
-        f'  JOIN "{read_schema}".current_enriched_columns mec ON mec.column_id = m.column_id'
         f"  WHERE m.table_id = :view_id AND m.column_name IN :measure_cols"
-        f"), anchored AS ("
-        f"  SELECT measure.materialization,"
-        f"         COALESCE(mal.event_time_axis_column_id, named.source_column_id) AS anchor_source_id"
-        f"  FROM measure"
-        f'  LEFT JOIN "{read_schema}".current_measure_aggregation_lineage mal'
-        f"         ON mal.measure_column_id = measure.measure_source_id"
-        f'  LEFT JOIN "{read_schema}".current_enriched_columns named'
-        f"         ON named.table_id = :view_id AND named.column_name = measure.anchor_time_axis"
-        # served_axis is a scalar subquery, NOT a join: a role-playing dimension
-        # (DAT-756) can serve ONE source column under two ``{fk}__{col}`` names (no
-        # UNIQUE(table_id, source_column_id)), and a join would fan the anchor into two
-        # rows — a false "flows disagree" in _reconcile. Pick one deterministically
-        # (ORDER BY name); either name scans the same source data, so the window is
-        # identical. NULL when the anchor source is not served on THIS relation (a
-        # lineage-inherited axis the view never joins → no observable live window).
-        f") SELECT DISTINCT anchored.materialization,"
-        f'       (SELECT sa.column_name FROM "{read_schema}".current_enriched_columns sa'
-        f"         WHERE sa.table_id = :view_id AND sa.source_column_id = anchored.anchor_source_id"
-        f"         ORDER BY sa.column_name LIMIT 1) AS axis,"
+        f") SELECT DISTINCT measure.materialization, axis_col.column_name AS axis,"
         f"       tp.detected_granularity AS grain"
-        f" FROM anchored"
+        f" FROM measure"
+        f'  LEFT JOIN "{read_schema}".current_enriched_columns axis_col'
+        f"         ON axis_col.table_id = :view_id"
+        f"        AND axis_col.column_name = measure.anchor_time_axis"
         f'  LEFT JOIN "{read_schema}".current_temporal_column_profiles tp'
-        f"         ON tp.column_id = anchored.anchor_source_id"
-        f" ORDER BY anchored.materialization, axis, grain"  # deterministic evidence
+        f"         ON tp.column_id = axis_col.source_column_id"
+        f" ORDER BY measure.materialization, axis, grain"  # deterministic evidence
     ).bindparams(bindparam("measure_cols", expanding=True))
     rows = session.execute(
         stmt, {"view_id": view_table_id, "measure_cols": sorted(measure_cols)}

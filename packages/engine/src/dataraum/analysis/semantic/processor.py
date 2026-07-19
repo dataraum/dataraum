@@ -116,31 +116,29 @@ def _build_candidate_metrics_lookup(
             col1 = jc.get("column1", "")
             col2 = jc.get("column2", "")
 
-            # Extract evaluation metrics
-            metrics: dict[str, Any] = {}
-            if "left_referential_integrity" in jc:
-                metrics["left_referential_integrity"] = jc["left_referential_integrity"]
-            if "right_referential_integrity" in jc:
-                metrics["right_referential_integrity"] = jc["right_referential_integrity"]
-            if "left_orphan_count" in jc:
-                metrics["left_orphan_count"] = jc["left_orphan_count"]
-            if "cardinality_verified" in jc:
-                metrics["cardinality_verified"] = jc["cardinality_verified"]
-            if "cardinality" in jc:
-                metrics["cardinality"] = jc["cardinality"]
-            # Per-side completeness (utils.py puts it on the served jc). Carried
-            # for EVIDENCE COMPLETENESS, not for a decision: no consumer orients
-            # on it — the judge is told the rule in ``semantic_per_table`` and
-            # decides. Dropping it meant a stored relationship did not carry the
-            # numbers its own direction was argued from, which is why diagnosing
-            # a wrong direction took a forensic dig through candidate rows
-            # (DAT-725 runs #2/#5). NOTE: ``left_value_containment`` — which
-            # ``oriented_row`` DOES read and says it prefers — is still not
-            # carried here, so the judge path falls back to row-weighted RI.
-            if "left_uniqueness" in jc:
-                metrics["left_uniqueness"] = jc["left_uniqueness"]
-            if "right_uniqueness" in jc:
-                metrics["right_uniqueness"] = jc["right_uniqueness"]
+            # Every per-side measurement the served candidate carries, both
+            # sides of each pair. Carried for EVIDENCE COMPLETENESS, not for a
+            # decision: no consumer orients on any of it — the judge is told the
+            # rule in ``semantic_per_table`` and decides. Dropping them meant a
+            # stored relationship did not carry the numbers its own direction
+            # was argued from, which is why diagnosing a wrong direction took a
+            # forensic dig through candidate rows (DAT-725 runs #2/#5).
+            metrics: dict[str, Any] = {
+                key: jc[key]
+                for key in (
+                    "left_referential_integrity",
+                    "right_referential_integrity",
+                    "left_key_coverage",
+                    "right_key_coverage",
+                    "left_orphan_count",
+                    "right_orphan_count",
+                    "left_uniqueness",
+                    "right_uniqueness",
+                    "cardinality_verified",
+                    "cardinality",
+                )
+                if key in jc
+            }
 
             # Add relationship-level metrics
             if "left_join_success_rate" in candidate:

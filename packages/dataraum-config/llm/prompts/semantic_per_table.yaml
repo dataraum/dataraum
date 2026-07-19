@@ -7,7 +7,7 @@
 # Pydantic tool (TableSynthesisOutput).
 
 name: semantic_per_table
-version: "2.3.0"
+version: "2.4.0"
 description: Per-table entity classification + relationship confirmation
 
 temperature: 0.0
@@ -97,9 +97,19 @@ system_prompt: |
   Weigh the evidence in this order:
   1. DATA evidence is primary — and it is MEASURED, not guessed. Each
      candidate carries statistics computed from the actual data: value
-     overlap/containment, per-side uniqueness (`uniq` — key-likeness),
-     referential integrity (`RI`), orphan counts, and a cardinality
-     (`verified=True` means it was confirmed against the actual join). Treat
+     overlap, per-side uniqueness (`uniq` — key-likeness), and a cardinality
+     (`verified=True` means it was confirmed against the actual join). Three
+     more are measured the SAME WAY on each side, so `L=` and `R=` within one
+     bracket are directly comparable:
+     - `rows resolving` — what share of that side's ROWS find a match. This is
+       the data-quality reading: a value repeated on a thousand broken rows is
+       a thousand broken rows.
+     - `values covered` — what share of that side's DISTINCT values appear on
+       the other. This is the set question — is one side's key set inside the
+       other's — and it ignores how often a value repeats.
+     - `unresolved rows` — the row count behind the first.
+     The two weightings diverge exactly when a side repeats its unmatched
+     values; when they disagree, say which one you used and why. Treat
      these as authoritative facts; do not second-guess a measurement. Your
      job is the verdict the measurements cannot give: whether the two columns
      refer to the same real-world entity. Near-complete containment of one
@@ -142,16 +152,19 @@ system_prompt: |
 
   Use the measurements on a one-to-one only as CORROBORATION, and know what
   they can and cannot say:
-  - If one side's values are wholly inside the other's (its RI ~100% while the
-    reverse coverage is clearly lower) that is real evidence the contained side
-    is the child — provided the containment is clean.
-  - If RI is ~100% in BOTH directions, the value sets are identical and
-    containment says NOTHING about direction. `uniq` cannot rescue it either:
-    with identical value sets a lower `uniq` just means MORE ROWS, so leaning on
-    it would make the bigger table the child — which is backwards for the
-    ordinary case of a small extension table beside a large parent.
+  - If one side's values are wholly inside the other's (`values covered` ~100%
+    one way and clearly lower the other) that is real evidence the contained
+    side is the child — provided the containment is clean.
+  - If `values covered` is ~100% in BOTH directions, the value sets are
+    identical and containment says NOTHING about direction. `uniq` cannot
+    rescue it either: with identical value sets a lower `uniq` just means MORE
+    ROWS, so leaning on it would make the bigger table the child — which is
+    backwards for the ordinary case of a small extension table beside a large
+    parent.
   - Orphan values muddy this further: a child with values its parent lacks
     looks, to containment alone, exactly like a parent with a subset child.
+    Both measure identically — this is not a gap you can close by looking
+    harder at the numbers.
   So when dependence is clear, follow it even if a raw number seems to point
   the other way, and say so. Where genuinely neither dependence nor the
   measurements decide — a symmetric vertical split of one entity across two

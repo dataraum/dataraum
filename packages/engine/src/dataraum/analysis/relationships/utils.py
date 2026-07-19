@@ -271,13 +271,22 @@ def load_relationship_candidates_for_semantic(
             if "right_uniqueness" in evidence:
                 jc["right_uniqueness"] = evidence["right_uniqueness"]
 
-            # Add evaluation metrics if present in evidence
+            # Add evaluation metrics if present in evidence. Both sides of each
+            # pair are served: they are the same measurement on either endpoint
+            # (DAT-725), and serving only the left one meant a row whose
+            # endpoints had flipped rendered no orphan evidence at all.
             if "left_referential_integrity" in evidence:
                 jc["left_referential_integrity"] = evidence["left_referential_integrity"]
             if "right_referential_integrity" in evidence:
                 jc["right_referential_integrity"] = evidence["right_referential_integrity"]
+            if "left_key_coverage" in evidence:
+                jc["left_key_coverage"] = evidence["left_key_coverage"]
+            if "right_key_coverage" in evidence:
+                jc["right_key_coverage"] = evidence["right_key_coverage"]
             if "left_orphan_count" in evidence:
                 jc["left_orphan_count"] = evidence["left_orphan_count"]
+            if "right_orphan_count" in evidence:
+                jc["right_orphan_count"] = evidence["right_orphan_count"]
             if "cardinality_verified" in evidence:
                 jc["cardinality_verified"] = evidence["cardinality_verified"]
 

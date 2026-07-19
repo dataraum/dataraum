@@ -190,13 +190,21 @@ def _store_candidates(
                 "source": "value_overlap",
             }
 
-            # Add evaluation metrics if available
+            # Add evaluation metrics if available. Every one is per-SIDE and
+            # left/right-prefixed, so ``oriented_row``'s flip relabels them
+            # correctly — see ``db_models.swap_directional_evidence``.
             if jc.left_referential_integrity is not None:
                 evidence["left_referential_integrity"] = jc.left_referential_integrity
             if jc.right_referential_integrity is not None:
                 evidence["right_referential_integrity"] = jc.right_referential_integrity
+            if jc.left_key_coverage is not None:
+                evidence["left_key_coverage"] = jc.left_key_coverage
+            if jc.right_key_coverage is not None:
+                evidence["right_key_coverage"] = jc.right_key_coverage
             if jc.left_orphan_count is not None:
                 evidence["left_orphan_count"] = jc.left_orphan_count
+            if jc.right_orphan_count is not None:
+                evidence["right_orphan_count"] = jc.right_orphan_count
             if jc.cardinality_verified is not None:
                 evidence["cardinality_verified"] = jc.cardinality_verified
 

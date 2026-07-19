@@ -89,7 +89,10 @@ class RelationshipEntropyDetector(EntropyDetector):
         evidence = self._get_value(rel, "evidence", {}) or {}
         left_ri = evidence.get("left_referential_integrity")
         left_orphan_count = evidence.get("left_orphan_count")
-        total_count = evidence.get("total_count") or evidence.get("left_total_count")
+        # The from side's row count, matching the from-side orphan count above.
+        # A bare ``total_count`` was read here first; nothing ever produced one
+        # (DAT-725 audit), so the branch was dead.
+        total_count = evidence.get("left_total_count")
 
         if left_ri is not None:
             score = max(0.0, min(1.0, 1.0 - left_ri / 100.0))

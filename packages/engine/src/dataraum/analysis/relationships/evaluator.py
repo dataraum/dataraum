@@ -13,6 +13,7 @@ Uses parallel processing for large relationship sets to speed up evaluation.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple
 
 import duckdb
 
@@ -25,6 +26,74 @@ from dataraum.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+class DirectionMetrics(NamedTuple):
+    """How well one side's key resolves against the other's, one direction only.
+
+    Both weightings of the same question, because they answer different ones
+    and the codebase needs both:
+
+    - ``referential_integrity`` — ROW-weighted: what share of this side's ROWS
+      resolve. This is the data-quality number; a value repeated on a thousand
+      orphan rows is a thousand broken rows.
+    - ``key_coverage`` — DISTINCT-weighted: what share of this side's VALUE SET
+      appears on the other. This is the set-containment number, immune to row
+      duplication, and it is what "is one side's key set inside the other's"
+      actually means.
+    - ``orphan_count`` / ``total_count`` — the row counts behind the first.
+    """
+
+    referential_integrity: float
+    key_coverage: float
+    orphan_count: int
+    total_count: int
+
+
+def _measure_direction(
+    from_table: str,
+    from_column: str,
+    to_table: str,
+    to_column: str,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> DirectionMetrics:
+    """Measure ``from`` → ``to`` resolution. THE one measurement, run per side.
+
+    Called twice with the arguments swapped, so ``left_*`` and ``right_*`` are
+    genuinely the same metric on opposite endpoints. That symmetry is what makes
+    ``db_models.swap_directional_evidence`` a correct RELABELING: before DAT-725
+    the left number was row-weighted and the right one distinct-weighted, so a
+    flip renamed a coverage figure into an RI slot and every reader downstream
+    believed it — measured, 60.0 stored where that direction's own RI is 75.0,
+    scored by ``relationship_entropy`` as 0.40 instead of 0.25.
+
+    Uses a semi-join (``IN``), never ``LEFT JOIN`` + ``COUNT(*)``. The old form
+    multiplied this side's rows whenever the other side held duplicates of a
+    key, so the "row-weighted" ratio was taken over join output rows rather than
+    over this table's rows.
+    """
+    matches = f'(SELECT "{to_column}" FROM {to_table} WHERE "{to_column}" IS NOT NULL)'
+    query = f"""
+        SELECT
+            COUNT(*) AS total_rows,
+            COUNT(*) FILTER (WHERE t."{from_column}" IN {matches}) AS matched_rows,
+            COUNT(DISTINCT t."{from_column}") AS total_keys,
+            COUNT(DISTINCT t."{from_column}") FILTER (
+                WHERE t."{from_column}" IN {matches}
+            ) AS matched_keys
+        FROM {from_table} t
+        WHERE t."{from_column}" IS NOT NULL
+    """
+    row = duckdb_conn.execute(query).fetchone()
+    if not row or not row[0]:
+        return DirectionMetrics(0.0, 0.0, 0, 0)
+    total_rows, matched_rows, total_keys, matched_keys = row
+    return DirectionMetrics(
+        referential_integrity=round((matched_rows / total_rows) * 100, 2),
+        key_coverage=round((matched_keys / total_keys) * 100, 2) if total_keys else 0.0,
+        orphan_count=total_rows - matched_rows,
+        total_count=total_rows,
+    )
+
+
 def evaluate_join_candidate(
     join_candidate: JoinCandidate,
     table1_path: str,
@@ -33,10 +102,12 @@ def evaluate_join_candidate(
 ) -> JoinCandidate:
     """Evaluate a single join candidate with quality metrics.
 
-    Computes:
-    - left_referential_integrity: % of table1 values with match in table2
-    - right_referential_integrity: % of table2 values referenced by table1
-    - left_orphan_count: table1 values with no match
+    Measures BOTH directions with the same function, so every ``left_*`` metric
+    has a real ``right_*`` mirror and an endpoint flip is exact relabeling:
+
+    - left/right_referential_integrity: % of that side's ROWS that resolve
+    - left/right_key_coverage: % of that side's DISTINCT values on the other
+    - left/right_orphan_count: that side's rows that do not resolve
     - cardinality_verified: whether detected cardinality matches actual
 
     Args:
@@ -51,49 +122,8 @@ def evaluate_join_candidate(
     col1 = join_candidate.column1
     col2 = join_candidate.column2
 
-    # Left referential integrity: % of table1 values with match in table2
-    left_query = f"""
-        SELECT
-            COUNT(*) as total,
-            COUNT(*) FILTER (WHERE t2."{col2}" IS NOT NULL) as matched
-        FROM {table1_path} t1
-        LEFT JOIN {table2_path} t2 ON t1."{col1}" = t2."{col2}"
-        WHERE t1."{col1}" IS NOT NULL
-    """
-    left_result = duckdb_conn.execute(left_query).fetchone()
-    if left_result and left_result[0] > 0:
-        left_ri = (left_result[1] / left_result[0]) * 100
-        left_orphan_count = left_result[0] - left_result[1]
-    else:
-        left_ri = 0.0
-        left_orphan_count = 0
-
-    # Right referential integrity: % of table2 values that are referenced.
-    #
-    # NOT the mirror of ``left_referential_integrity``: this one is
-    # DISTINCT-weighted (what share of the to-side's keys is used — coverage),
-    # while the left one is ROW-weighted (what share of the from-side's rows
-    # resolves). The two answer different questions, so exchanging their names
-    # on an endpoint flip yields a number that is not the metric it then claims
-    # to be — measured on a real pair: 60.0 stored where the direction's own
-    # row-weighted RI is 75.0, which ``relationship_entropy`` turns into a 0.40
-    # score instead of 0.25. Making the flip exact means measuring BOTH
-    # directions the same way and giving coverage its own name; that changes
-    # what the judge is shown, so it is a lead decision, not a drive-by
-    # (DAT-725 parked).
-    right_query = f"""
-        SELECT
-            COUNT(DISTINCT t2."{col2}") as total_pk,
-            COUNT(DISTINCT t1."{col1}") as referenced_pk
-        FROM {table2_path} t2
-        LEFT JOIN {table1_path} t1 ON t2."{col2}" = t1."{col1}"
-        WHERE t2."{col2}" IS NOT NULL
-    """
-    right_result = duckdb_conn.execute(right_query).fetchone()
-    if right_result and right_result[0] > 0:
-        right_ri = (right_result[1] / right_result[0]) * 100
-    else:
-        right_ri = 0.0
+    left = _measure_direction(table1_path, col1, table2_path, col2, duckdb_conn)
+    right = _measure_direction(table2_path, col2, table1_path, col1, duckdb_conn)
 
     # Cardinality verification
     cardinality_verified = _verify_cardinality(
@@ -113,9 +143,12 @@ def evaluate_join_candidate(
         cardinality=join_candidate.cardinality,
         left_uniqueness=join_candidate.left_uniqueness,
         right_uniqueness=join_candidate.right_uniqueness,
-        left_referential_integrity=round(left_ri, 2),
-        right_referential_integrity=round(right_ri, 2),
-        left_orphan_count=left_orphan_count,
+        left_referential_integrity=left.referential_integrity,
+        right_referential_integrity=right.referential_integrity,
+        left_key_coverage=left.key_coverage,
+        right_key_coverage=right.key_coverage,
+        left_orphan_count=left.orphan_count,
+        right_orphan_count=right.orphan_count,
         cardinality_verified=cardinality_verified,
     )
 
@@ -430,72 +463,31 @@ def compute_ri_metrics(
         cardinality: Optional cardinality to verify (e.g., "one-to-many")
 
     Returns:
-        Dict with RI metrics:
-        - left_referential_integrity: % of from_table ROWS with a match
-          (row-weighted — duplicate rows of an orphan value each count)
-        - left_value_containment: % of from_table's DISTINCT values with a
-          match (distinct-weighted — the containment of the from-side VALUE
-          SET in the to side, insensitive to row duplication). Nothing orients
-          on it: it is EVIDENCE, and no consumer currently carries it as far
-          as the judge (DAT-725).
-        - right_referential_integrity: % of to_table values referenced
-        - left_orphan_count: from_table ROWS with no match — a from-side
-          measurement, hence the prefix. It must flip with the pair; see
-          ``db_models.swap_directional_evidence``.
+        Dict with the same per-side metrics :func:`evaluate_join_candidate`
+        produces, from the same :func:`_measure_direction` — both directions
+        measured identically, so an endpoint flip is exact relabeling:
+        - left/right_referential_integrity: % of that side's ROWS that resolve
+        - left/right_key_coverage: % of that side's DISTINCT values present on
+          the other — the value-set containment, immune to row duplication
+        - left/right_orphan_count, left/right_total_count: the row counts behind
+          the referential-integrity ratio
         - cardinality_verified: whether cardinality matches (if provided)
-    """
-    # Left referential integrity — row-weighted AND distinct-weighted in one
-    # scan. The two diverge exactly when the from side carries DUPLICATE rows
-    # of unmatched (orphan) values: row-weighted then under-states containment
-    # (a biased estimator of the value-set relation — same lesson as the
-    # DAT-794 uniqueness ratio), while COUNT(DISTINCT) is immune to the LEFT
-    # JOIN's row multiplication and to orphan duplication alike.
-    left_query = f'''
-        SELECT
-            COUNT(*) as total,
-            COUNT(*) FILTER (WHERE t2."{to_column}" IS NOT NULL) as matched,
-            COUNT(DISTINCT t1."{from_column}") as distinct_total,
-            COUNT(DISTINCT t1."{from_column}") FILTER (WHERE t2."{to_column}" IS NOT NULL)
-                as distinct_matched
-        FROM {from_table} t1
-        LEFT JOIN {to_table} t2 ON t1."{from_column}" = t2."{to_column}"
-        WHERE t1."{from_column}" IS NOT NULL
-    '''
-    left_total_count = None
-    left_containment = None
-    try:
-        left_result = duckdb_conn.execute(left_query).fetchone()
-        if left_result and left_result[0] > 0:
-            left_ri = (left_result[1] / left_result[0]) * 100
-            left_orphan_count = left_result[0] - left_result[1]
-            left_total_count = left_result[0]
-            if left_result[2] > 0:
-                left_containment = (left_result[3] / left_result[2]) * 100
-        else:
-            left_ri = 0.0
-            left_orphan_count = 0
-            left_total_count = 0
-    except Exception:
-        left_ri = None
-        left_orphan_count = None
 
-    # Right referential integrity
-    right_query = f'''
-        SELECT
-            COUNT(DISTINCT t2."{to_column}") as total_pk,
-            COUNT(DISTINCT t1."{from_column}") as referenced_pk
-        FROM {to_table} t2
-        LEFT JOIN {from_table} t1 ON t2."{to_column}" = t1."{from_column}"
-        WHERE t2."{to_column}" IS NOT NULL
-    '''
+        A measurement that raises leaves its whole side ``None``: absence is
+        ignorance, and a fabricated 0.0 would read as total breakage.
+    """
     try:
-        right_result = duckdb_conn.execute(right_query).fetchone()
-        if right_result and right_result[0] > 0:
-            right_ri = (right_result[1] / right_result[0]) * 100
-        else:
-            right_ri = 0.0
+        left: DirectionMetrics | None = _measure_direction(
+            from_table, from_column, to_table, to_column, duckdb_conn
+        )
     except Exception:
-        right_ri = None
+        left = None
+    try:
+        right: DirectionMetrics | None = _measure_direction(
+            to_table, to_column, from_table, from_column, duckdb_conn
+        )
+    except Exception:
+        right = None
 
     # Cardinality verification (if requested)
     cardinality_verified = None
@@ -505,13 +497,14 @@ def compute_ri_metrics(
         )
 
     return {
-        "left_referential_integrity": round(left_ri, 2) if left_ri is not None else None,
-        "left_value_containment": (
-            round(left_containment, 2) if left_containment is not None else None
-        ),
-        "right_referential_integrity": round(right_ri, 2) if right_ri is not None else None,
-        "left_orphan_count": left_orphan_count,
-        "left_total_count": left_total_count,
+        "left_referential_integrity": left.referential_integrity if left else None,
+        "right_referential_integrity": right.referential_integrity if right else None,
+        "left_key_coverage": left.key_coverage if left else None,
+        "right_key_coverage": right.key_coverage if right else None,
+        "left_orphan_count": left.orphan_count if left else None,
+        "right_orphan_count": right.orphan_count if right else None,
+        "left_total_count": left.total_count if left else None,
+        "right_total_count": right.total_count if right else None,
         "cardinality_verified": cardinality_verified,
     }
 

@@ -23,10 +23,12 @@ class JoinCandidate(BaseModel):
     - statistical_confidence: confidence in the Jaccard estimate (0-1)
     - algorithm: which algorithm was used (exact, minhash)
 
-    Evaluation metrics (populated by evaluator.py):
-    - left_referential_integrity: % of FK values with matching PK
-    - right_referential_integrity: % of PK values that are referenced
-    - left_orphan_count: FK values with no matching PK
+    Evaluation metrics (populated by evaluator.py). Every one is measured per
+    SIDE by the same function, so ``left_``/``right_`` are true mirrors and an
+    endpoint flip is exact relabeling (``db_models.swap_directional_evidence``):
+    - left/right_referential_integrity: % of that side's ROWS that resolve
+    - left/right_key_coverage: % of that side's DISTINCT values on the other
+    - left/right_orphan_count: that side's rows that do not resolve
     - cardinality_verified: whether detected cardinality matches actual
     """
 
@@ -48,9 +50,12 @@ class JoinCandidate(BaseModel):
     algorithm: str = "exact"  # exact or minhash ("sampled" only in pre-DAT-794 persisted evidence)
 
     # Evaluation metrics (populated by evaluator.py)
-    left_referential_integrity: float | None = None  # 0-100%
-    right_referential_integrity: float | None = None  # 0-100%
+    left_referential_integrity: float | None = None  # 0-100%, ROW-weighted
+    right_referential_integrity: float | None = None  # 0-100%, ROW-weighted
+    left_key_coverage: float | None = None  # 0-100%, DISTINCT-weighted
+    right_key_coverage: float | None = None  # 0-100%, DISTINCT-weighted
     left_orphan_count: int | None = None
+    right_orphan_count: int | None = None
     cardinality_verified: bool | None = None
 
 

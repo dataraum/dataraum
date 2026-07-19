@@ -592,22 +592,28 @@ class SemanticAgent(LLMFeature):
                     if left_uniq is not None and right_uniq is not None:
                         line += f" [uniq: L={left_uniq:.2f} R={right_uniq:.2f}]"
 
-                    # Add evaluation metrics if available
+                    # Add evaluation metrics if available. Each is measured the
+                    # same way on BOTH sides (DAT-725), so the two numbers in a
+                    # bracket are directly comparable — which is the whole point
+                    # for a judge weighing which side depends on the other.
                     left_ri = jc.get("left_referential_integrity")
                     right_ri = jc.get("right_referential_integrity")
-                    orphans = jc.get("left_orphan_count")
+                    left_cov = jc.get("left_key_coverage")
+                    right_cov = jc.get("right_key_coverage")
+                    left_orphans = jc.get("left_orphan_count")
+                    right_orphans = jc.get("right_orphan_count")
                     verified = jc.get("cardinality_verified")
 
                     metrics = []
                     if left_ri is not None and right_ri is not None:
-                        metrics.append(f"RI: L={left_ri:.0f}% R={right_ri:.0f}%")
+                        metrics.append(f"rows resolving: L={left_ri:.0f}% R={right_ri:.0f}%")
+                    if left_cov is not None and right_cov is not None:
+                        metrics.append(f"values covered: L={left_cov:.0f}% R={right_cov:.0f}%")
                     # Render a measured ZERO too. Suppressing it made "clean" and
                     # "never measured" the same line, so the judge could not tell
-                    # an FK with no orphans from one whose orphans nobody counted
-                    # (DAT-725). ``L`` is the printed left column, matching the
-                    # left-prefixed metric it is measured on.
-                    if orphans is not None:
-                        metrics.append(f"L orphans={orphans}")
+                    # an FK with no orphans from one whose orphans nobody counted.
+                    if left_orphans is not None and right_orphans is not None:
+                        metrics.append(f"unresolved rows: L={left_orphans} R={right_orphans}")
                     if verified is not None:
                         metrics.append(f"verified={verified}")
 

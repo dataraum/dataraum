@@ -673,15 +673,18 @@ class TestSynthesizeAndStoreTables:
 
     def test_dirty_one_to_one_without_candidate_keeps_correct_orientation(self, session) -> None:
         """Duplicated orphan rows must not invert a correct 1:1 emission on the
-        NO-candidate fallback path (senior-review critical, DAT-725).
+        NO-candidate fallback path (DAT-725).
 
         A volunteered 1:1 FK gets its evidence from ``compute_ri_metrics`` and
         its cardinality from ``compute_actual_cardinality`` — which only checks
-        the matched population, so the referencing side may carry duplicate
-        rows of orphan values. Row-weighted left RI (30%) then falls below the
-        distinct-weighted right RI (42.9%) and would wrongly swap the CORRECT
-        child→parent emission; the distinct-weighted ``left_value_containment``
-        (75%) is the like-for-like basis and keeps it.
+        the matched population, so the referencing side may carry duplicate rows
+        of orphan values. Nothing re-orients a 1:1 any more, so the judge's
+        emission stands; what this pins is that the evidence stored beside it is
+        measured the SAME WAY on both sides, which is what makes an endpoint
+        flip a correct relabeling. Row- and distinct-weighting diverge sharply
+        here (30% vs 75% on the child side) — that divergence is real and both
+        numbers are kept, rather than one being silently compared against the
+        other's counterpart.
         """
         import duckdb
 
@@ -751,9 +754,16 @@ class TestSynthesizeAndStoreTables:
         assert rel.from_table_id == detail.table_id  # NOT inverted
         assert rel.to_table_id == master.table_id
         assert rel.cardinality == "one-to-one"
-        assert rel.evidence["left_value_containment"] == 75.0
+        # Row-weighted: 3 of detail's 10 rows resolve; 3 of master's 7 do.
         assert rel.evidence["left_referential_integrity"] == 30.0
         assert rel.evidence["right_referential_integrity"] == pytest.approx(42.86)
+        # Distinct-weighted, the same question on the value SETS: 3 of detail's
+        # 4 keys exist in master. The gap to 30% is the duplicated orphan.
+        assert rel.evidence["left_key_coverage"] == 75.0
+        assert rel.evidence["right_key_coverage"] == pytest.approx(42.86)
+        # Both sides' unresolved rows, so a flip never loses the count.
+        assert rel.evidence["left_orphan_count"] == 7
+        assert rel.evidence["right_orphan_count"] == 4
         assert "orientation_swapped" not in rel.evidence
 
     def test_synthesized_relationship_gets_fan_trap_flag_from_data(self, session) -> None:

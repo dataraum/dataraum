@@ -48,11 +48,17 @@ class TestSnippetProvenance:
     def test_save_snippet_with_provenance(self, session: Session) -> None:
         """Provenance dict roundtrips through save_snippet."""
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
+        # The persisted contract-v2 basis shape (DAT-727): per-concept column
+        # enumeration by role — what _build_snippet_provenance model_dumps here.
         provenance = {
-            "was_repaired": False,
             "column_mappings_basis": {
-                "revenue": {"column": "t.amount", "resolution": "inferred_from_enriched_view"}
+                "revenue": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": ["account_type"],
+                    "filter": "account_type IN ('revenue')",
+                }
             },
+            "assumptions": [],
         }
 
         record = library.save_snippet(
@@ -68,7 +74,8 @@ class TestSnippetProvenance:
         )
 
         assert record.provenance == provenance
-        assert record.provenance["column_mappings_basis"]["revenue"]["column"] == "t.amount"
+        basis = record.provenance["column_mappings_basis"]["revenue"]
+        assert basis["measure_columns"] == ["amount"]
 
     def test_save_snippet_without_provenance(self, session: Session) -> None:
         """Provenance is None when not provided."""
@@ -86,7 +93,7 @@ class TestSnippetProvenance:
 
     def test_provenance_survives_find_by_key(self, session: Session) -> None:
         """Provenance is available after finding snippet by key."""
-        provenance = {"column_mappings_basis": {}, "was_repaired": False}
+        provenance = {"column_mappings_basis": {}, "assumptions": []}
         _add_snippet(session, SOURCE_ID, provenance=provenance)
 
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
@@ -108,7 +115,12 @@ class TestSnippetProvenance:
         session.flush()
 
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
-        new_provenance = {"column_mappings_basis": {"revenue": {}}, "was_repaired": True}
+        new_provenance = {
+            "column_mappings_basis": {
+                "revenue": {"measure_columns": ["new_amount"], "filter_columns": [], "filter": None}
+            },
+            "assumptions": [],
+        }
         updated = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(new_amount) FROM t",

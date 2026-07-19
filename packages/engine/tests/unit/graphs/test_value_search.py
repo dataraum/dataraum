@@ -126,6 +126,30 @@ _VALID_OUTPUT = {
     "where": ["account_name IN ('Depreciation')"],
     "select_expr": "SUM(amount)",
     "description": "Depreciation expense",
+    # Contract v2 (DAT-727): enumerate the columns the parts touch, by role.
+    "provenance": {
+        "column_mappings_basis": {
+            "depreciation": {
+                "measure_columns": ["amount"],
+                "filter_columns": ["account_name"],
+                "filter": "Depreciation",
+            }
+        },
+    },
+}
+
+# The relation's served schema — feeds the prompt AND the contract enforcement.
+_SCHEMA_INFO = {
+    "tables": [
+        {
+            "table_name": "t",
+            "columns": [
+                {"name": "amount", "type": "DECIMAL"},
+                {"name": "account_name", "type": "VARCHAR"},
+            ],
+            "row_count": 1,
+        }
+    ]
 }
 
 
@@ -173,7 +197,7 @@ def _loop_agent(provider: MagicMock) -> GraphAgent:
     config.limits.max_output_tokens_per_request = 4000
     config.features.graph_sql_generation = None
     agent.config = config  # type: ignore[attr-defined]
-    agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
+    agent._build_schema_info = MagicMock(return_value=_SCHEMA_INFO)  # type: ignore[method-assign]
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
     return agent
 
@@ -206,7 +230,7 @@ def test_search_then_generate_grounds_with_the_searched_values(monkeypatch) -> N
     )
     agent = _loop_agent(provider)
 
-    result = agent._generate_sql(MagicMock(), _graph(), _rich_exec_ctx(conn), {})
+    result = agent._generate_sql(MagicMock(), _graph(), _rich_exec_ctx(conn), {}, workspace_id="ws")
 
     assert result.success
     assert provider.converse.call_count == 2
@@ -230,7 +254,7 @@ def test_search_budget_exhaustion_fails_loud(monkeypatch) -> None:
     provider = _provider(*[_response("search_values", search) for _ in range(5)])
     agent = _loop_agent(provider)
 
-    result = agent._generate_sql(MagicMock(), _graph(), _rich_exec_ctx(conn), {})
+    result = agent._generate_sql(MagicMock(), _graph(), _rich_exec_ctx(conn), {}, workspace_id="ws")
 
     assert not result.success
     assert "search budget exhausted" in (result.error or "")

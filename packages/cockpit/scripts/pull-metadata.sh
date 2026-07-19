@@ -8,15 +8,17 @@
 # (create_all is additive) can never leak into the pulled mirror. Requires
 # docker + uv + bun on PATH; nothing else.
 #
-# Env (all optional):
-#   DATARAUM_WORKSPACE_ID   workspace id baked into pgSchema() — defaults to
-#                           the bootstrap id, matching infra/.env.example.
+# Workspace-neutral by design (DAT-816): at runtime the reader ROLE's
+# search_path resolves which ws_<id>_read schema a connection sees, so the
+# mirror must carry no workspace literal. The read views are materialized into
+# the scratch DB's `public` schema — drizzle then emits plain unqualified
+# pgView() exports — and the raw tables into a fixed `engine` schema, which is
+# what the introspected view bodies reference in place of ws_<id>.
 set -euo pipefail
 
 cd "$(dirname "$0")/.." # packages/cockpit
 
-WORKSPACE_ID="${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}"
-SCHEMA_NAME="ws_${WORKSPACE_ID//-/_}"
+RAW_SCHEMA="engine"
 PG_IMAGE="postgres:19beta1" # keep in lockstep with packages/infra/docker-compose.yml
 # Unique per run (parallel lanes regen concurrently); port is docker-assigned.
 CONTAINER="dataraum-schema-scratch-$$"
@@ -43,22 +45,21 @@ docker exec "$CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q || {
     exit 1
 }
 
-# 3. Materialize the schema from the dump (psql via the container — no host psql),
-#    then the promoted-read surface (ADR-0008/DAT-453): schema_read.sql is
-#    tokenized (__WS__ / __READ__); substitute and apply. The READ schema is
-#    what drizzle introspects below — the cockpit's whole metadata surface.
-READ_SCHEMA="${SCHEMA_NAME}_read"
+# 3. Materialize the raw schema from the dump (psql via the container — no host
+#    psql), then the promoted-read surface (ADR-0008/DAT-453): schema_read.sql
+#    is tokenized (__WS__ / __READ__); substitute and apply. The read views land
+#    in `public` — what drizzle introspects below, the cockpit's whole metadata
+#    surface — so the pull emits unqualified tables (zero ws_ literals, DAT-816).
 docker exec "$CONTAINER" psql -U postgres -d scratch -v ON_ERROR_STOP=1 \
-    -c "CREATE SCHEMA $SCHEMA_NAME" -c "CREATE SCHEMA $READ_SCHEMA" >/dev/null
+    -c "CREATE SCHEMA $RAW_SCHEMA" >/dev/null
 (
-    echo "SET search_path TO $SCHEMA_NAME;"
+    echo "SET search_path TO $RAW_SCHEMA;"
     cat ../engine/schema.sql
-    sed -e "s/__READ__/$READ_SCHEMA/g" -e "s/__WS__/$SCHEMA_NAME/g" ../engine/schema_read.sql
+    sed -e "s/__READ__/public/g" -e "s/__WS__/$RAW_SCHEMA/g" ../engine/schema_read.sql
 ) | docker exec -i "$CONTAINER" psql -U postgres -d scratch -v ON_ERROR_STOP=1 -f - >/dev/null
-echo "→ materialized $SCHEMA_NAME + $READ_SCHEMA in scratch Postgres"
+echo "→ materialized $RAW_SCHEMA (raw) + public (read views) in scratch Postgres"
 
 # 4. Pull + normalize + lint.
-export DATARAUM_WORKSPACE_ID="$WORKSPACE_ID"
 export METADATA_DATABASE_URL="postgresql://postgres:scratch@localhost:$PG_PORT/scratch"
 bun --bun drizzle-kit pull --config drizzle.config.metadata.ts
 bun run scripts/normalize-metadata-pull.mjs

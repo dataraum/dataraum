@@ -1,6 +1,6 @@
 # ADR-0006 — Team-lead operating model: parallel lanes, gates at the intent layer
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0023
 - **Date:** 2026-05-31
 - **Ticket:** —
 - **Design doc:** supersedes the per-lane checkpoint model implied by `/take`

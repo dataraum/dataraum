@@ -31,5 +31,5 @@ record). When code and an ADR disagree, the code wins and the ADR needs a supers
   decision is driven by a requirement — it is not itself a requirement.
 - No hand-maintained index — the directory listing *is* the index (a previous hand list
   here drifted out of date). Keep titles descriptive.
-- Two records (0005, 0006) are **internal process records** — how the repository is
-  developed — and are marked as such; the rest document product architecture.
+- Three records (0005, 0006, 0022) are **internal process records** — how the repository
+  is developed — and are marked as such; the rest document product architecture.

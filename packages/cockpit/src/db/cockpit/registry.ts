@@ -32,7 +32,9 @@ import { accounts, memberships, users, workspaces } from "./schema";
 const DEFAULT_VERTICAL = "_adhoc";
 
 /** The provisioner lifecycle of a workspace (DAT-817, DD/51740673). The retired
- * `archived_at` timestamp folds into `archiving`/`archived`. */
+ * `archived_at` timestamp folds into `archiving`/`archived`. Mirrored as
+ * `LifecycleState` in portal/lifecycle.ts (kept import-free of the workspace
+ * config chain) — change the two unions together. */
 export type WorkspaceState = "creating" | "ready" | "archiving" | "archived";
 
 /** A user's role in a workspace (DAT-817). `member` is the only role in v1;

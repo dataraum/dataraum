@@ -146,6 +146,14 @@ describe("workspaceSchemaName (engine mirror)", () => {
 		expect(() => workspaceSchemaName("x".repeat(60))).toThrow(/63-char/);
 		expect(() => workspaceSchemaName("bad id!")).toThrow(/identifier/);
 	});
+
+	it("rejects mixed-case ids (unquoted role identifiers case-fold)", () => {
+		// Postgres folds unquoted CREATE/DROP ROLE identifiers to lowercase but
+		// pg_roles lookups compare case-preserved literals: a mixed-case id
+		// would orphan its roles at archive and collide with the lowercase
+		// twin's roles at create. Refused at the boundary, both directions.
+		expect(() => workspaceSchemaName("MyDept3")).toThrow(/lowercase/);
+	});
 });
 
 describe("createWorkspace (DAT-820)", () => {
@@ -251,6 +259,32 @@ describe("createWorkspace (DAT-820)", () => {
 		expect(h.events).toEqual([]);
 	});
 
+	it("rejects a mixed-case workspace id before any effect", async () => {
+		const h = makeHarness();
+		await expect(
+			createWorkspace({ ...INPUT, workspaceId: "MyDept3" }, h.deps),
+		).rejects.toThrow(/lowercase/);
+		expect(h.events).toEqual([]);
+	});
+
+	it("refuses an unknown registry state (corrupt row, born-loud)", async () => {
+		const h = makeHarness();
+		h.rows.set(WS, {
+			id: WS,
+			name: "Dept 3",
+			vertical: "finance",
+			state: "limbo" as never,
+			subdomain: "ws3",
+			readerRole: null,
+			writerRole: null,
+			catalogSchema: null,
+		});
+		await expect(createWorkspace(INPUT, h.deps)).rejects.toThrow(
+			/unknown state 'limbo'/,
+		);
+		expect(h.events).toEqual([]);
+	});
+
 	it("rejects invalid subdomains and empty name/vertical", async () => {
 		const h = makeHarness();
 		await expect(
@@ -336,6 +370,14 @@ describe("archiveWorkspace (DAT-820)", () => {
 		).toHaveLength(2);
 		expect(h.catalogSql).toContain(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
 		expect(h.events).toContain(`s3.deletePrefix:${WS}/`);
+	});
+
+	it("rejects a mixed-case workspace id before any effect", async () => {
+		const h = makeHarness();
+		await expect(archiveWorkspace("MyDept3", h.deps)).rejects.toThrow(
+			/lowercase/,
+		);
+		expect(h.events).toEqual([]);
 	});
 
 	it("throws on an unknown workspace, no-ops on an archived one", async () => {

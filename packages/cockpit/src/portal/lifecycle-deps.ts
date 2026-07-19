@@ -160,7 +160,9 @@ async function deletePrefix(prefix: string): Promise<void> {
 
 // ── Per-workspace advisory lock (cockpit_db) ────────────────────────────────
 
-async function withWorkspaceLock<T>(
+/** Exported for the lock-contention integration test — production callers go
+ * through `runLifecycle`, which wires this in as the deps seam. */
+export async function withWorkspaceLock<T>(
 	workspaceId: string,
 	fn: () => Promise<T>,
 ): Promise<T> {
@@ -220,6 +222,8 @@ export async function runLifecycle<T>(
 			parentDomain: new URL(baseConfig.portalOrigin).hostname,
 		});
 	} finally {
-		await Promise.all([primary.close(), catalog.close()]);
+		// allSettled, not all: a close() failure must never mask the lifecycle
+		// op's own error as the reason the CLI/server fn reports.
+		await Promise.allSettled([primary.close(), catalog.close()]);
 	}
 }

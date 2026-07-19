@@ -241,15 +241,26 @@ export class ComposeDriver implements ProvisioningDriver {
 	/** The compose seed container for a service — the clone source. Stopped
 	 * containers count (only the recorded config is read). */
 	private async findReference(service: string): Promise<ContainerInspect> {
-		const [summary] = await this.listByLabels([
+		const matches = await this.listByLabels([
 			`com.docker.compose.project=${this.opts.project}`,
 			`com.docker.compose.service=${service}`,
 		]);
+		const [summary] = matches;
 		if (!summary) {
 			throw new Error(
 				`[provisioner] no container for compose service '${service}' in ` +
 					`project '${this.opts.project}' — the docker driver clones the ` +
 					"seed pair's config; bring the stack up first",
+			);
+		}
+		if (matches.length > 1) {
+			// Ambiguous clone source (a leftover crash-recovery container
+			// carrying the same labels): picking one silently could clone stale
+			// config — same loud posture as the missing-reference case.
+			throw new Error(
+				`[provisioner] ${matches.length} containers claim compose service ` +
+					`'${service}' in project '${this.opts.project}' — remove the ` +
+					"stale one(s); the clone source must be unambiguous",
 			);
 		}
 		const inspect = await this.api<ContainerInspect>(

@@ -120,9 +120,18 @@ export interface LifecycleResult {
 // storage/read_views.py — the registry RECORDS these; derivation authority
 // stays engine-side) ─────────────────────────────────────────────────────────
 
-const SCHEMA_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// LOWERCASE-only, stricter than the engine's schema pattern on purpose: the
+// role names derived from this stem are used as UNQUOTED identifiers in
+// CREATE/ALTER/DROP ROLE, which Postgres case-folds to lowercase — while
+// catalog lookups (`pg_roles.rolname`) compare case-preserved literals. A
+// mixed-case id would silently orphan its roles at archive and let two ids
+// differing only in case COLLIDE on one folded role name (rotating a live
+// workspace's password from another's create). Rejecting uppercase at this
+// boundary removes the whole class.
+const SCHEMA_NAME_PATTERN = /^[a-z_][a-z0-9_]*$/;
 
-/** `ws_<id-with-dashes-as-underscores>` — the engine's `schema_name_for`. */
+/** `ws_<id-with-dashes-as-underscores>` — the engine's `schema_name_for`,
+ * restricted to lowercase ids (see SCHEMA_NAME_PATTERN). */
 export function workspaceSchemaName(workspaceId: string): string {
 	const candidate = `ws_${workspaceId.replaceAll("-", "_")}`;
 	// The WRITER role (`<schema>_writer`, the longer suffix) must also fit
@@ -137,7 +146,7 @@ export function workspaceSchemaName(workspaceId: string): string {
 	if (!SCHEMA_NAME_PATTERN.test(candidate)) {
 		throw new Error(
 			`workspace id '${workspaceId}' is not a valid identifier stem — use a ` +
-				"UUID or [A-Za-z0-9-]+",
+				"lowercase UUID or [a-z0-9-]+",
 		);
 	}
 	return candidate;
@@ -215,6 +224,14 @@ export async function createWorkspace(
 				throw new Error(
 					`workspace ${workspaceId} is ${existing.state} — archived ids ` +
 						"are not reused; create with a fresh id",
+				);
+			}
+			if (existing.state !== "creating") {
+				// The column is a varchar; a value outside the four known states
+				// is registry corruption — born-loud, never "safely resumable".
+				throw new Error(
+					`workspace ${workspaceId} has unknown state '${existing.state}' — ` +
+						"refusing to provision over a corrupt registry row",
 				);
 			}
 			// `creating`: resume — fall through, converging the row to the

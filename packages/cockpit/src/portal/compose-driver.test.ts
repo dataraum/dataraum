@@ -327,6 +327,21 @@ describe("ComposeDriver.startPair (DAT-820)", () => {
 			/no container for compose service/,
 		);
 	});
+
+	it("fails loud when the reference is ambiguous (stale twin)", async () => {
+		const { driver } = driverWith((_method, path) => {
+			if (path.startsWith("/containers/json")) {
+				return json([
+					{ Id: "ref-a", Labels: {} },
+					{ Id: "ref-b", Labels: {} },
+				]);
+			}
+			throw new Error("unreachable");
+		});
+		await expect(driver.startPair(SPEC)).rejects.toThrow(
+			/2 containers claim compose service/,
+		);
+	});
 });
 
 describe("ComposeDriver.pairReady (DAT-820)", () => {
@@ -385,17 +400,22 @@ describe("ComposeDriver.pairReady (DAT-820)", () => {
 });
 
 describe("ComposeDriver.removePair (DAT-820)", () => {
-	it("tolerates concurrently-gone containers (404)", async () => {
-		const { driver, calls } = driverWith((method, path) => {
-			if (path.startsWith("/containers/json")) {
-				return json([{ Id: "gone", Labels: { [ROLE_LABEL]: "cockpit" } }]);
-			}
-			if (method === "DELETE") {
-				return new Response("no such container", { status: 404 });
-			}
-			throw new Error(`unexpected docker call: ${method} ${path}`);
-		});
-		await expect(driver.removePair(WS)).resolves.toBeUndefined();
-		expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+	it("tolerates concurrently-gone containers (404) and in-flight removals (409)", async () => {
+		for (const [status, body] of [
+			[404, "no such container"],
+			[409, "removal of container is already in progress"],
+		] as const) {
+			const { driver, calls } = driverWith((method, path) => {
+				if (path.startsWith("/containers/json")) {
+					return json([{ Id: "gone", Labels: { [ROLE_LABEL]: "cockpit" } }]);
+				}
+				if (method === "DELETE") {
+					return new Response(body, { status });
+				}
+				throw new Error(`unexpected docker call: ${method} ${path}`);
+			});
+			await expect(driver.removePair(WS)).resolves.toBeUndefined();
+			expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+		}
 	});
 });

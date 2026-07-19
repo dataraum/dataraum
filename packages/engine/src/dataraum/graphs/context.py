@@ -1480,8 +1480,11 @@ def format_metadata_document(
             # DAT-616 fan-trap: joining here multiplies rows → SUMming an additive
             # measure across this join double-counts. Tell the agent to aggregate
             # before the join (or COUNT DISTINCT), not after. Reads the engine's
-            # introduces_duplicates flag (the fan-trap check is the detector's job, not
-            # this renderer's — DAT-628: the LLM synthesis path doesn't yet populate it).
+            # introduces_duplicates flag — measuring it is the writers' job, not this
+            # renderer's: the LLM-synthesis path (DAT-628), the surrogate mint, and
+            # the manual-add materialize seam (DAT-790) all measure it empirically.
+            # NULL = the probe was unavailable/failed — the caution is then silently
+            # absent (unmeasured), never "verified safe".
             if rel.introduces_duplicates:
                 warning += " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
             lines.append(

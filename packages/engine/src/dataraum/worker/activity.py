@@ -545,12 +545,17 @@ def materialize_session_overlays(manager: ConnectionManager, run: RunRef) -> int
     run_id = run.run_id
     if run_id is None:
         raise RuntimeError("materialize_session_overlays requires a stamped run.run_id.")
-    with manager.session_scope() as session:
+    # The DuckDB cursor lets a never-detected manual add measure its join
+    # empirically at the materialize seam (DAT-790) — same lake access as the
+    # terminal detect pass above.
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
         table_ids = tables_for_run(session, run_id)
         if not table_ids:
             logger.warning("materialize_no_run_tables", run_id=run_id)
             return 0
-        count = materialize_relationship_overlays(session, run_id=run_id, table_ids=table_ids)
+        count = materialize_relationship_overlays(
+            session, run_id=run_id, table_ids=table_ids, duckdb_conn=cursor
+        )
     logger.info("session_materialize_done", run_id=run_id, count=count)
     return count
 

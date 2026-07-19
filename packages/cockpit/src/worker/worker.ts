@@ -3,8 +3,9 @@
 // Lifecycle: created once when the cockpit server process boots (the Nitro
 // plugin in src/server/plugins) and polls for the life of the process — so a
 // run advances with NO browser tab open (the pain-#2 / tab-independence fix).
-// It connects OUT to Temporal (no HTTP surface) and polls the cockpit's own
-// activity queue, distinct from the engine's per-workspace queues.
+// It connects OUT to Temporal (no HTTP surface) and polls this workspace's own
+// cockpit activity queue (`cockpit-<ws>`, DAT-818 — derived from the boot
+// identity, the cockpit-side twin of the engine's per-workspace queues).
 //
 // ACTIVITY-ONLY (ADR-0020): the orchestration WORKFLOWS run in Python on the
 // engine worker — Temporal strongly discourages workflow workers outside
@@ -32,7 +33,9 @@ export interface OrchestrationWorkerOptions {
 	address: string;
 	/** Temporal namespace (config.temporalNamespace). */
 	namespace: string;
-	/** The cockpit activity task queue (config.cockpitOrchestrationTaskQueue). */
+	/** The workspace's cockpit activity queue — `cockpit-<ws>`, derived by the
+	 * boot plugin via `cockpitTaskQueueFor(config.dataraumWorkspaceId)`
+	 * (DAT-818). */
 	taskQueue: string;
 	/** Attach the OTel activity interceptors (ADR-0019/DAT-705). The boot
 	 * plugin passes `getOtel() !== null` — an explicit flag rather than a

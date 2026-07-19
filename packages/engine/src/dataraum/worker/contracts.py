@@ -458,6 +458,23 @@ def operating_model_workflow_id(workspace_id: str) -> str:
 # The cockpit keeps an ACTIVITY-ONLY worker for the shapes further below.
 
 
+def cockpit_task_queue_for(workspace_id: str) -> str:
+    """The workspace's cockpit activity queue — ``cockpit-<ws>`` (DAT-818).
+
+    Each workspace's cockpit runs its own activity-only worker (one cockpit
+    per workspace, DD/51740673), so the orchestration workflows derive the
+    callback queue from their input ``workspace_id`` — nothing rides the wire.
+    Sibling of the engine's own ``engine-<ws>`` derivation
+    (``server.workspace.task_queue_for``); lives HERE because the determinism
+    sandbox imports only this engine-free module. The cockpit derives the
+    identical name from its boot identity in ``src/temporal/task-queue.ts`` —
+    a drift on either side strands callbacks on an unpolled queue, so a rename
+    here deploys with BOTH containers together (engine image + cockpit image),
+    never one side alone.
+    """
+    return f"cockpit-{workspace_id}"
+
+
 RunKind = Literal["onboarding", "begin_session", "replay"]
 """How a run originated — the cockpit's ``runs.kind`` column values (DAT-562)."""
 
@@ -469,22 +486,19 @@ class GroundingLoopInput(BaseModel):
     """Start payload of ``groundingLoopWorkflow`` (id ``grounding-<ws>``).
 
     The cockpit trigger (which has the request context) computes the derived
-    ids/queues and captures the conversation id, so the workflow stays free of
-    any workspace IO — it runs the import child + the bounded teach loop off
-    this payload alone. Triggered ONLY by the onboarding import (``select``); a
-    manual replay is a DIRECT engine start, not this loop.
+    ids and captures the conversation id, so the workflow stays free of any
+    workspace IO — it runs the import child + the bounded teach loop off
+    this payload alone. Both queues are derived, never on the wire: the
+    cockpit activity queue via :func:`cockpit_task_queue_for` over
+    ``workspace_id`` (DAT-818), and the engine children inherit this
+    workflow's own task queue. Triggered ONLY by the onboarding import
+    (``select``); a manual replay is a DIRECT engine start, not this loop.
     """
 
     workspace_id: str
     # The deterministic ENGINE child id (``addsource-<ws>``) the import + its
     # replays run under (reused across attempts; the SDK groups the iterations).
     workflow_id: str
-    # The queue the cockpit's activity-only worker polls — where the workflow
-    # schedules the cockpit_db writers + the grounding-teach agent. Cockpit
-    # config owns the value (COCKPIT_ORCHESTRATION_TASK_QUEUE), so it rides the
-    # payload rather than being hardcoded here. The engine children need no
-    # queue on the wire: they inherit this workflow's own task queue.
-    cockpit_task_queue: str
     # The source ids this run imports — a run is over a SET of objects (DAT-422).
     sources: list[str]
     # The workspace verticals (one today; born-loud on >1).
@@ -509,8 +523,6 @@ class SessionCascadeInput(BaseModel):
     workspace_id: str
     # The deterministic ENGINE child id for begin_session (``beginsession-<ws>``).
     workflow_id: str
-    # See :class:`GroundingLoopInput.cockpit_task_queue`.
-    cockpit_task_queue: str
     # The typed table ids to stage.
     tables: list[str]
     # The workspace verticals (one today; born-loud on >1).

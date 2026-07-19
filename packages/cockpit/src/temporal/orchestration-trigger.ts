@@ -7,9 +7,9 @@
 // worker, so each trigger starts them by type name on the workspace's OWN engine
 // queue — the same client-by-string pattern as the analysis workflows. The wire
 // payloads are engine-owned (hand-mirrored in ./types.ts); the trigger maps its
-// caller-facing camelCase spec onto them and injects the cockpit's activity
-// queue (`config.cockpitOrchestrationTaskQueue`), which the workflow schedules
-// the run writers + teach agent back onto.
+// caller-facing camelCase spec onto them. No cockpit queue rides the payload
+// (DAT-818): the workflow derives `cockpit-<ws>` from the payload's
+// workspace_id to schedule the run writers + teach agent back onto.
 //
 // Each trigger `start`s a workflow by its deterministic per-workspace id.
 // Single-flight is the workflow-id reuse policy (ALLOW_DUPLICATE once the prior
@@ -26,7 +26,6 @@
 
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 
-import { config } from "#/config";
 import { type RunKind, type RunStage, recordRun } from "#/db/cockpit/runs";
 import { AgentActionableError } from "#/tools/agent-error";
 import { getTemporalClient } from "./client";
@@ -64,7 +63,7 @@ export class RunAlreadyRunningError extends AgentActionableError {
 
 /** Caller-facing spec for {@link startGroundingLoop}. camelCase like the rest of
  * the cockpit; the trigger maps it onto the engine-owned snake_case wire payload
- * (`GroundingLoopInput` in ./types.ts) and injects the cockpit activity queue. */
+ * (`GroundingLoopInput` in ./types.ts). */
 export interface StartGroundingLoopSpec {
 	/** The workspace id — the routing key + the recordRun scope. */
 	workspaceId: string;
@@ -96,7 +95,6 @@ export function startGroundingLoop(
 	const input: GroundingLoopInput = {
 		workspace_id: spec.workspaceId,
 		workflow_id: spec.workflowId,
-		cockpit_task_queue: config.cockpitOrchestrationTaskQueue,
 		sources: spec.sources,
 		verticals: spec.verticals,
 		conversation_id: spec.conversationId,
@@ -140,7 +138,6 @@ export function startSessionCascade(
 	const input: SessionCascadeInput = {
 		workspace_id: spec.workspaceId,
 		workflow_id: spec.workflowId,
-		cockpit_task_queue: config.cockpitOrchestrationTaskQueue,
 		tables: spec.tables,
 		verticals: spec.verticals,
 		conversation_id: spec.conversationId,

@@ -11,6 +11,7 @@
 import { definePlugin } from "nitro";
 import { config } from "#/config";
 import { getOtel } from "#/otel";
+import { cockpitTaskQueueFor } from "#/temporal/task-queue";
 import { startOrchestrationWorker } from "#/worker/worker";
 
 export default definePlugin(() => {
@@ -24,7 +25,11 @@ export default definePlugin(() => {
 	startOrchestrationWorker({
 		address: config.temporalHost,
 		namespace: config.temporalNamespace,
-		taskQueue: config.cockpitOrchestrationTaskQueue,
+		// The queue is the boot identity (DAT-818): one cockpit per workspace
+		// polls `cockpit-<ws>`, so the engine-hosted orchestration workflows —
+		// which derive the same name from their input workspace_id — reach THIS
+		// workspace's cockpit and no other.
+		taskQueue: cockpitTaskQueueFor(config.dataraumWorkspaceId),
 		// The worker stays pure of `config` — the telemetry gate is resolved
 		// here (the otel plugin ran first, so this is a cache hit, never a
 		// second bootstrap).

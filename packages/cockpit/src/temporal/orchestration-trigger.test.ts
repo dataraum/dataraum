@@ -20,7 +20,6 @@ const h = vi.hoisted(() => {
 		config: {
 			temporalHost: "localhost:7233",
 			temporalNamespace: "default",
-			cockpitOrchestrationTaskQueue: "cockpit-orchestration",
 		} as Record<string, unknown>,
 		start: vi.fn(async () => ({ firstExecutionRunId: "exec-1" })),
 		close: vi.fn(async () => {}),
@@ -63,7 +62,6 @@ beforeEach(() => {
 	h.config = {
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
-		cockpitOrchestrationTaskQueue: "cockpit-orchestration",
 	};
 	h.start.mockClear();
 	h.start.mockResolvedValue({ firstExecutionRunId: "exec-1" });
@@ -90,7 +88,8 @@ describe("startGroundingLoop (DAT-609/708)", () => {
 		await startGroundingLoop(input);
 		// DAT-708: the workflow runs on the engine worker → started on the
 		// workspace's engine queue; the wire payload is the engine-owned mirror
-		// (snake_case) with the cockpit ACTIVITY queue injected from config.
+		// (snake_case). No cockpit queue rides it (DAT-818) — the workflow
+		// derives `cockpit-<ws>` from workspace_id.
 		expect(h.start).toHaveBeenCalledWith(
 			"groundingLoopWorkflow",
 			expect.objectContaining({
@@ -100,7 +99,6 @@ describe("startGroundingLoop (DAT-609/708)", () => {
 					{
 						workspace_id: "ws-1",
 						workflow_id: "addsource-ws-1",
-						cockpit_task_queue: "cockpit-orchestration",
 						sources: ["src-a"],
 						verticals: ["finance"],
 						conversation_id: "conv-1",
@@ -150,7 +148,6 @@ describe("startSessionCascade (DAT-609/708)", () => {
 					{
 						workspace_id: "ws-1",
 						workflow_id: "beginsession-ws-1",
-						cockpit_task_queue: "cockpit-orchestration",
 						tables: ["t1", "t2"],
 						verticals: ["finance"],
 						conversation_id: "conv-1",

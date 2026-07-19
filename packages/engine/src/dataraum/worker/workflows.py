@@ -78,6 +78,7 @@ with workflow.unsafe.imports_passed_through():
         TableProgress,
         TableScopedInput,
         TypingResult,
+        cockpit_task_queue_for,
         operating_model_workflow_id,
         process_table_workflow_id,
     )
@@ -898,10 +899,12 @@ class OperatingModelWorkflow:
 # they start, so the children are native Python→Python (no cross-language hop)
 # and inherit the parent's task queue. The four cockpit-bound activities
 # (cockpit_db run writers + the DAT-551 grounding-teach agent) are scheduled BY
-# NAME on the cockpit's activity-only queue (``cockpit_task_queue`` on the
-# payload) — same by-string idiom as the phase activities above, plus one
-# ``task_queue=`` kwarg. Neither workflow narrates: the cockpit's server-side
-# completion-watcher narrates on each run row's done edge.
+# NAME on the workspace's cockpit activity queue — ``cockpit-<ws>``, derived
+# from the input ``workspace_id`` via ``cockpit_task_queue_for`` (DAT-818: one
+# cockpit per workspace, so the queue is identity, not config) — same by-string
+# idiom as the phase activities above, plus one ``task_queue=`` kwarg. Neither
+# workflow narrates: the cockpit's server-side completion-watcher narrates on
+# each run row's done edge.
 
 # The cockpit_db run writers each stage is bracketed with — quick local writes,
 # so a short timeout; retried because losing the bracket (not the stage) is the
@@ -970,7 +973,6 @@ async def _run_stage[StageResultT: (AddSourceResult, BeginSessionResult, Operati
     stage: RunStage,
     kind: RunKind,
     conversation_id: str | None,
-    cockpit_task_queue: str,
 ) -> StageResultT | None:
     """Run one engine stage as a child workflow, bracketed by cockpit_db writes.
 
@@ -980,9 +982,11 @@ async def _run_stage[StageResultT: (AddSourceResult, BeginSessionResult, Operati
     the run in cockpit_db with the child's REAL execution id (DAT-595 —
     recording post-start under the reused ``addsource-<ws>``-style id keeps
     every run a distinct ``(workflowId, runId)`` row), await it, mark it
-    terminal. Returns the child's result, or None on failure — a failed stage
-    NEVER raises out of the workflow: the run is marked failed (if recorded)
-    and the caller stops (a failed stage has no clean follow-on).
+    terminal. The bracket writes land on the workspace's own cockpit activity
+    queue, derived from ``workspace_id`` (DAT-818). Returns the child's result,
+    or None on failure — a failed stage NEVER raises out of the workflow: the
+    run is marked failed (if recorded) and the caller stops (a failed stage has
+    no clean follow-on).
 
     ``ParentClosePolicy.ABANDON``: the orchestration workflow finishing (or
     being terminated) must not kill a running engine stage — let it complete
@@ -999,6 +1003,7 @@ async def _run_stage[StageResultT: (AddSourceResult, BeginSessionResult, Operati
     Accepted: that needs a total activity failure after 3 retries, and the
     engine work still completes.
     """
+    cockpit_task_queue = cockpit_task_queue_for(workspace_id)
     run_id: str | None = None
     try:
         child = await workflow.start_child_workflow(
@@ -1109,7 +1114,6 @@ class GroundingLoopWorkflow:
             stage="add_source",
             kind="onboarding",
             conversation_id=payload.conversation_id,
-            cockpit_task_queue=payload.cockpit_task_queue,
         )
         if imported is None:
             return  # import failed (already marked) — nothing to ground.
@@ -1124,12 +1128,13 @@ class GroundingLoopWorkflow:
             if payload.number_of_attempts is not None
             else _DEFAULT_GROUNDING_ATTEMPTS
         )
+        cockpit_task_queue = cockpit_task_queue_for(payload.workspace_id)
 
         try:
             verdict = await workflow.execute_activity(
                 "assessAndGround",
                 AssessAndGroundInput(tableIds=table_ids, attemptsRemaining=attempts_remaining),
-                task_queue=payload.cockpit_task_queue,
+                task_queue=cockpit_task_queue,
                 result_type=AssessAndGroundResult,
                 start_to_close_timeout=_GROUNDING_AGENT_TIMEOUT,
                 retry_policy=_GROUNDING_AGENT_RETRY,
@@ -1153,7 +1158,7 @@ class GroundingLoopWorkflow:
                 await workflow.execute_activity(
                     "markRunAwaitingInput",
                     args=[payload.workflow_id, step.note],
-                    task_queue=payload.cockpit_task_queue,
+                    task_queue=cockpit_task_queue,
                     start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
                     retry_policy=_COCKPIT_WRITE_RETRY,
                 )
@@ -1183,7 +1188,6 @@ class GroundingLoopWorkflow:
             GroundingLoopInput(
                 workspace_id=payload.workspace_id,
                 workflow_id=payload.workflow_id,
-                cockpit_task_queue=payload.cockpit_task_queue,
                 sources=payload.sources,
                 verticals=payload.verticals,
                 conversation_id=None,
@@ -1217,7 +1221,6 @@ class SessionCascadeWorkflow:
             stage="begin_session",
             kind="begin_session",
             conversation_id=payload.conversation_id,
-            cockpit_task_queue=payload.cockpit_task_queue,
         )
         if began is None:
             return
@@ -1243,5 +1246,4 @@ class SessionCascadeWorkflow:
             stage="operating_model",
             kind="begin_session",
             conversation_id=payload.conversation_id,
-            cockpit_task_queue=payload.cockpit_task_queue,
         )

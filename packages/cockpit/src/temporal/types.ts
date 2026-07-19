@@ -149,12 +149,11 @@ export interface GroundingLoopInput {
 	// The deterministic ENGINE child id (`addsource-<ws>`) the import + its
 	// replays run under (reused across attempts; the SDK groups the iterations).
 	workflow_id: string;
-	// The queue the cockpit's activity-only worker polls — where the workflow
-	// schedules the cockpit_db writers + the grounding-teach agent. Cockpit
-	// config owns the value, so it rides the payload (the trigger injects
-	// `config.cockpitOrchestrationTaskQueue`). The engine children need no queue
-	// on the wire — they inherit the workflow's own (engine) task queue.
-	cockpit_task_queue: string;
+	// No queue on the wire (DAT-818): the workflow derives the cockpit activity
+	// queue (`cockpit-<ws>`) from `workspace_id` via the engine's
+	// `cockpit_task_queue_for` (mirrored in ./task-queue.ts), and the engine
+	// children inherit the workflow's own (engine) task queue.
+
 	// The source ids this run imports — a run is over a SET of objects (DAT-422).
 	sources: string[];
 	// The workspace verticals (one today; born-loud on >1).
@@ -171,8 +170,6 @@ export interface SessionCascadeInput {
 	// The deterministic ENGINE child id for begin_session (`beginsession-<ws>`);
 	// the workflow derives the operating_model child id itself.
 	workflow_id: string;
-	// See GroundingLoopInput.cockpit_task_queue.
-	cockpit_task_queue: string;
 	// The typed table ids to stage.
 	tables: string[];
 	// The workspace verticals (one today; born-loud on >1).

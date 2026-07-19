@@ -75,18 +75,10 @@ const ConfigSchema = z.object({
 	// Temporal Web UI, embedded by the /workflows section. Defaults to the
 	// docker-compose dev address (CORS already allows :3000).
 	temporalUiUrl: z.string().min(1).default("http://localhost:8080"),
-	// The task queue the co-located ACTIVITY-ONLY worker polls (DAT-529, slimmed
-	// DAT-708). This is the cockpit's OWN queue for its Temporal activities (the
-	// cockpit_db run writers + the grounding-teach agent) — distinct from the
-	// engine's per-workspace `engine-<id>` queues, where the (Python) orchestration
-	// workflows that schedule these activities run. The trigger threads this value
-	// onto each orchestration workflow's start payload (`cockpit_task_queue`), so
-	// config here is the single source of the name. One fixed queue: the worker is
-	// a process singleton.
-	cockpitOrchestrationTaskQueue: z
-		.string()
-		.min(1)
-		.default("cockpit-orchestration"),
+	// The co-located ACTIVITY-ONLY worker's queue is NOT config (DAT-818): it is
+	// the workspace identity — `cockpit-<dataraumWorkspaceId>`, derived at boot
+	// via `temporal/task-queue.ts` — so callbacks route per workspace and no
+	// knob can point two cockpits at one queue.
 
 	// --- Observability (ADR-0019/DAT-705; optional — unset/empty = telemetry
 	// off). The OTLP endpoint IS the vendor seam: src/otel.ts bootstraps the
@@ -121,7 +113,6 @@ function loadConfig(): Config {
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,
 		temporalUiUrl: process.env.TEMPORAL_UI_URL,
-		cockpitOrchestrationTaskQueue: process.env.COCKPIT_ORCHESTRATION_TASK_QUEUE,
 		// `|| undefined`: an empty string (compose interpolation of an unset var)
 		// means OFF, never a half-configured exporter.
 		otelExporterOtlpEndpoint:

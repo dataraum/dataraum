@@ -522,10 +522,15 @@ class SemanticAgent(LLMFeature):
             lines.append(f"\n### {table1} <-> {table2}")
 
             # Add relationship-level evaluation metrics if available
-            join_success = rel.get("join_success_rate")
+            join_success = rel.get("left_join_success_rate")
             introduces_dups = rel.get("introduces_duplicates")
             if join_success is not None:
-                lines.append(f"Join success rate: {join_success:.1f}%")
+                # Measured LEFT→RIGHT, hence the label: it is the best join's
+                # left RI, and a pair whose endpoints flipped no longer carries
+                # it on this side. It used to be stored unprefixed and so
+                # survived a flip unchanged, printing "Join success rate: 100%"
+                # directly above "RI: L=60%" for the same pair (DAT-725).
+                lines.append(f"Join success rate (L->R): {join_success:.1f}%")
             if introduces_dups is not None:
                 lines.append(f"Introduces duplicates (fan trap): {introduces_dups}")
 

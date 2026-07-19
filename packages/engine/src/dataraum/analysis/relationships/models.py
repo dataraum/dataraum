@@ -58,7 +58,7 @@ class RelationshipCandidate(BaseModel):
     """A candidate relationship between two tables.
 
     Evaluation metrics (populated by evaluator.py):
-    - join_success_rate: % of rows from table1 that match in table2
+    - left_join_success_rate: % of rows from table1 that match in table2
     - introduces_duplicates: whether join multiplies rows (fan trap)
     """
 
@@ -67,7 +67,7 @@ class RelationshipCandidate(BaseModel):
     join_candidates: list[JoinCandidate] = Field(default_factory=list)
 
     # Evaluation metrics (populated by evaluator.py)
-    join_success_rate: float | None = None  # 0-100%
+    left_join_success_rate: float | None = None  # 0-100%
     introduces_duplicates: bool | None = None
 
 

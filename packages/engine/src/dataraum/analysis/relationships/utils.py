@@ -167,7 +167,7 @@ def load_relationship_candidates_for_semantic(
             {
                 "table1": "...",
                 "table2": "...",
-                "join_success_rate": 95.0,
+                "left_join_success_rate": 95.0,
                 "introduces_duplicates": False,
                 "join_columns": [
                     {
@@ -243,7 +243,7 @@ def load_relationship_candidates_for_semantic(
         # Get relationship-level metrics from first relationship's evidence
         # (these are the same for all relationships in the group)
         first_evidence = rels[0].evidence or {}
-        join_success_rate = first_evidence.get("join_success_rate")
+        left_join_success_rate = first_evidence.get("left_join_success_rate")
         introduces_duplicates = first_evidence.get("introduces_duplicates")
 
         # Build join columns list
@@ -290,8 +290,8 @@ def load_relationship_candidates_for_semantic(
         }
 
         # Add optional relationship-level metrics
-        if join_success_rate is not None:
-            candidate["join_success_rate"] = join_success_rate
+        if left_join_success_rate is not None:
+            candidate["left_join_success_rate"] = left_join_success_rate
         if introduces_duplicates is not None:
             candidate["introduces_duplicates"] = introduces_duplicates
 

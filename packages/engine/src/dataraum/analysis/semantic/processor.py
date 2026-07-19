@@ -143,8 +143,8 @@ def _build_candidate_metrics_lookup(
                 metrics["right_uniqueness"] = jc["right_uniqueness"]
 
             # Add relationship-level metrics
-            if "join_success_rate" in candidate:
-                metrics["join_success_rate"] = candidate["join_success_rate"]
+            if "left_join_success_rate" in candidate:
+                metrics["left_join_success_rate"] = candidate["left_join_success_rate"]
             if "introduces_duplicates" in candidate:
                 metrics["introduces_duplicates"] = candidate["introduces_duplicates"]
 

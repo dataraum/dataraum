@@ -201,8 +201,8 @@ def _store_candidates(
                 evidence["cardinality_verified"] = jc.cardinality_verified
 
             # Add relationship-level evaluation metrics
-            if candidate.join_success_rate is not None:
-                evidence["join_success_rate"] = candidate.join_success_rate
+            if candidate.left_join_success_rate is not None:
+                evidence["left_join_success_rate"] = candidate.left_join_success_rate
             if candidate.introduces_duplicates is not None:
                 evidence["introduces_duplicates"] = candidate.introduces_duplicates
 

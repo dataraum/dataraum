@@ -68,7 +68,19 @@ def evaluate_join_candidate(
         left_ri = 0.0
         left_orphan_count = 0
 
-    # Right referential integrity: % of table2 values that are referenced
+    # Right referential integrity: % of table2 values that are referenced.
+    #
+    # NOT the mirror of ``left_referential_integrity``: this one is
+    # DISTINCT-weighted (what share of the to-side's keys is used — coverage),
+    # while the left one is ROW-weighted (what share of the from-side's rows
+    # resolves). The two answer different questions, so exchanging their names
+    # on an endpoint flip yields a number that is not the metric it then claims
+    # to be — measured on a real pair: 60.0 stored where the direction's own
+    # row-weighted RI is 75.0, which ``relationship_entropy`` turns into a 0.40
+    # score instead of 0.25. Making the flip exact means measuring BOTH
+    # directions the same way and giving coverage its own name; that changes
+    # what the judge is shown, so it is a lead decision, not a drive-by
+    # (DAT-725 parked).
     right_query = f"""
         SELECT
             COUNT(DISTINCT t2."{col2}") as total_pk,
@@ -288,7 +300,7 @@ def evaluate_relationship_candidate(
     """Evaluate a relationship candidate with quality metrics.
 
     Computes:
-    - join_success_rate: % of table1 rows that match in table2
+    - left_join_success_rate: % of table1 rows that match in table2
     - introduces_duplicates: whether join multiplies rows (fan trap)
     - Also evaluates all join candidates
 
@@ -313,7 +325,7 @@ def evaluate_relationship_candidate(
             table1=candidate.table1,
             table2=candidate.table2,
             join_candidates=evaluated_joins,
-            join_success_rate=None,
+            left_join_success_rate=None,
             introduces_duplicates=None,
         )
 
@@ -321,7 +333,7 @@ def evaluate_relationship_candidate(
     best_join = max(evaluated_joins, key=lambda j: j.join_confidence)
 
     # Join success rate = left referential integrity of best join
-    join_success_rate = best_join.left_referential_integrity
+    left_join_success_rate = best_join.left_referential_integrity
 
     # Check for duplicate introduction (fan trap)
     introduces_duplicates = compute_introduces_duplicates(
@@ -336,7 +348,7 @@ def evaluate_relationship_candidate(
         table1=candidate.table1,
         table2=candidate.table2,
         join_candidates=evaluated_joins,
-        join_success_rate=join_success_rate,
+        left_join_success_rate=left_join_success_rate,
         introduces_duplicates=introduces_duplicates,
     )
 

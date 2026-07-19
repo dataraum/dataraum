@@ -34,14 +34,21 @@ jitter, B1 meanings truncation).
   judge's EXISTENCE verdict.
 - **1:1 orientation is now deterministic where data decides** (fork approved
   by the lead). The DAT-777 chokepoint (`oriented_row`) orients a measured
-  `one-to-one` row by containment asymmetry: `left RI < right RI` on the
-  emission means parent→child, so the endpoints and directional evidence
-  swap — the persisted `from` is always the fully-contained (referencing)
-  side. Run-#2 A2's flip class (verified 1:1 confirmed 0.95 in the flipped
-  direction against direction-exact truth) cannot recur when RI is measured
-  and asymmetric. Symmetric containment (identical value sets) keeps the
-  judge's emission — genuinely undecidable from data; direction-exact truth
-  on such a pair would be a teach scenario, not a detector bug.
+  `one-to-one` row by DISTINCT-value containment asymmetry: a smaller forward
+  than reverse containment on the emission means parent→child, so the
+  endpoints and directional evidence swap and the row is stamped
+  `evidence.orientation_swapped` — where both containment metrics are
+  measured and asymmetric, the persisted `from` is the fully-contained
+  (referencing) side. `compute_ri_metrics` now also emits
+  `left_value_containment` (distinct-weighted) as the forward basis — the
+  row-weighted left RI under-states containment under duplicated orphan rows
+  and would have inverted correct emissions on the no-candidate path. Run-#2
+  A2's flip class (verified 1:1 confirmed 0.95 in the flipped direction
+  against direction-exact truth) cannot recur when containment is measured
+  and asymmetric. Missing metrics, a measurably-contradicted cardinality, or
+  symmetric containment (identical value sets) keep the judge's emission —
+  genuinely undecidable from data; direction-exact truth on such a pair would
+  be a teach scenario, not a detector bug.
 - **column_meanings coverage self-heals.** `semantic_per_table` now retries
   (≤2 re-prompts, scoped to the tables with uncovered columns) when the
   batched call under-covers `column_concepts`; clean-flat's 9/62-style

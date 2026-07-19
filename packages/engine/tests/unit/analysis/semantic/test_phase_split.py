@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipDB
@@ -658,6 +659,91 @@ class TestSynthesizeAndStoreTables:
         assert rel.confidence == 0.95  # existence verdict untouched
         assert rel.evidence["left_referential_integrity"] == 100.0
         assert rel.evidence["right_referential_integrity"] == 24.0
+
+    def test_dirty_one_to_one_without_candidate_keeps_correct_orientation(self, session) -> None:
+        """Duplicated orphan rows must not invert a correct 1:1 emission on the
+        NO-candidate fallback path (senior-review critical, DAT-725).
+
+        A volunteered 1:1 FK gets its evidence from ``compute_ri_metrics`` and
+        its cardinality from ``compute_actual_cardinality`` — which only checks
+        the matched population, so the referencing side may carry duplicate
+        rows of orphan values. Row-weighted left RI (30%) then falls below the
+        distinct-weighted right RI (42.9%) and would wrongly swap the CORRECT
+        child→parent emission; the distinct-weighted ``left_value_containment``
+        (75%) is the like-for-like basis and keeps it.
+        """
+        import duckdb
+
+        detail = _table_with_columns(session, "detail", ["link_id"])
+        master = _table_with_columns(session, "master", ["link_id"])
+
+        conn = duckdb.connect()
+        conn.execute("ATTACH ':memory:' AS lake")
+        conn.execute("CREATE SCHEMA lake.typed")
+        conn.execute("CREATE TABLE lake.typed.detail (link_id INTEGER)")
+        # Matched values 1..3 once each (1:1 on the matched population) plus a
+        # duplicated orphan placeholder: 10 rows, 4 distinct, containment 3/4.
+        conn.execute(
+            "INSERT INTO lake.typed.detail "
+            "SELECT * FROM (VALUES (1), (2), (3)) UNION ALL SELECT 99 FROM range(7)"
+        )
+        conn.execute("CREATE TABLE lake.typed.master (link_id INTEGER)")
+        conn.execute("INSERT INTO lake.typed.master SELECT range + 1 FROM range(7)")
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    column_concepts=[
+                        ColumnConceptOutput(
+                            table_name="detail", column_name="link_id", meaning="link"
+                        ),
+                        ColumnConceptOutput(
+                            table_name="master", column_name="link_id", meaning="key"
+                        ),
+                    ],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-volunteered",
+                            from_table="detail",  # the CORRECT direction
+                            from_column="link_id",
+                            to_table="master",
+                            to_column="link_id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.9,
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session,
+            agent,
+            [detail.table_id, master.table_id],
+            duckdb_conn=conn,
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+        assert result.success
+
+        rel = (
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .one()
+        )
+        assert rel.from_table_id == detail.table_id  # NOT inverted
+        assert rel.to_table_id == master.table_id
+        assert rel.cardinality == "one-to-one"
+        assert rel.evidence["left_value_containment"] == 75.0
+        assert rel.evidence["left_referential_integrity"] == 30.0
+        assert rel.evidence["right_referential_integrity"] == pytest.approx(42.86)
+        assert "orientation_swapped" not in rel.evidence
 
     def test_synthesized_relationship_gets_fan_trap_flag_from_data(self, session) -> None:
         """Regression: a synthesized (table_synthesis) relationship with NO structural

@@ -419,27 +419,43 @@ def compute_ri_metrics(
 
     Returns:
         Dict with RI metrics:
-        - left_referential_integrity: % of from_table values with match
+        - left_referential_integrity: % of from_table ROWS with a match
+          (row-weighted — duplicate rows of an orphan value each count)
+        - left_value_containment: % of from_table's DISTINCT values with a
+          match (distinct-weighted — the containment of the from-side VALUE
+          SET in the to side, insensitive to row duplication; the orientation
+          basis for 1:1 rows at ``Relationship.oriented_row``, DAT-725)
         - right_referential_integrity: % of to_table values referenced
         - orphan_count: from_table values with no match
         - cardinality_verified: whether cardinality matches (if provided)
     """
-    # Left referential integrity
+    # Left referential integrity — row-weighted AND distinct-weighted in one
+    # scan. The two diverge exactly when the from side carries DUPLICATE rows
+    # of unmatched (orphan) values: row-weighted then under-states containment
+    # (a biased estimator of the value-set relation — same lesson as the
+    # DAT-794 uniqueness ratio), while COUNT(DISTINCT) is immune to the LEFT
+    # JOIN's row multiplication and to orphan duplication alike.
     left_query = f'''
         SELECT
             COUNT(*) as total,
-            COUNT(*) FILTER (WHERE t2."{to_column}" IS NOT NULL) as matched
+            COUNT(*) FILTER (WHERE t2."{to_column}" IS NOT NULL) as matched,
+            COUNT(DISTINCT t1."{from_column}") as distinct_total,
+            COUNT(DISTINCT t1."{from_column}") FILTER (WHERE t2."{to_column}" IS NOT NULL)
+                as distinct_matched
         FROM {from_table} t1
         LEFT JOIN {to_table} t2 ON t1."{from_column}" = t2."{to_column}"
         WHERE t1."{from_column}" IS NOT NULL
     '''
     left_total_count = None
+    left_containment = None
     try:
         left_result = duckdb_conn.execute(left_query).fetchone()
         if left_result and left_result[0] > 0:
             left_ri = (left_result[1] / left_result[0]) * 100
             orphan_count = left_result[0] - left_result[1]
             left_total_count = left_result[0]
+            if left_result[2] > 0:
+                left_containment = (left_result[3] / left_result[2]) * 100
         else:
             left_ri = 0.0
             orphan_count = 0
@@ -475,6 +491,9 @@ def compute_ri_metrics(
 
     return {
         "left_referential_integrity": round(left_ri, 2) if left_ri is not None else None,
+        "left_value_containment": (
+            round(left_containment, 2) if left_containment is not None else None
+        ),
         "right_referential_integrity": round(right_ri, 2) if right_ri is not None else None,
         "orphan_count": orphan_count,
         "left_total_count": left_total_count,

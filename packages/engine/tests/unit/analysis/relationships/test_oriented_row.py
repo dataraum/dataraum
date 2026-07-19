@@ -114,9 +114,11 @@ def test_one_to_one_flips_when_emitted_from_the_referenced_side() -> None:
     """Run-#2 A2 class: a 1:1 FK confirmed parent→child gets re-oriented.
 
     The referencing side of a 1:1 FK is wholly contained in the referenced
-    side (forward RI ~100%, reverse coverage lower). ``left RI < right RI``
-    on the emission means it points parent→child — the chokepoint swaps the
-    endpoints and the directional evidence; cardinality stays one-to-one.
+    side (forward containment ~100%, reverse lower). A smaller forward than
+    reverse containment on the emission means it points parent→child — the
+    chokepoint swaps the endpoints and the directional evidence; cardinality
+    stays one-to-one. (RI-only evidence is the candidate-metrics shape, where
+    row-weighted equals distinct-weighted: both columns globally unique.)
     """
     row = _one_to_one_row(
         {"left_referential_integrity": 24.0, "right_referential_integrity": 100.0}
@@ -128,9 +130,68 @@ def test_one_to_one_flips_when_emitted_from_the_referenced_side() -> None:
     assert isinstance(evidence, dict)
     assert evidence["left_referential_integrity"] == 100.0
     assert evidence["right_referential_integrity"] == 24.0
+    # The swap leaves an audit trace — a re-oriented 1:1 row is otherwise
+    # indistinguishable from a kept emission (the cardinality label is
+    # unchanged, unlike the one-to-many flip).
+    assert evidence["orientation_swapped"] is True
     # Unlike the one-to-many flip, no fan-out flag is fabricated: a 1:1 join
     # never fans out in either direction, and the flag was not measured here.
     assert "introduces_duplicates" not in evidence
+
+
+def test_one_to_one_distinct_containment_outranks_biased_row_weighted_ri() -> None:
+    """Duplicated ORPHAN rows must not invert a correct emission.
+
+    The 1:1 measurement only checks the matched population, so the from side
+    can carry duplicate rows of orphan values — row-weighted left RI then
+    under-states containment (30% here) and, compared against the
+    distinct-weighted right RI (42.9%), would wrongly swap a CORRECT
+    child→parent emission. The distinct-weighted ``left_value_containment``
+    (75%) is the like-for-like basis and must win.
+    """
+    row = _one_to_one_row(
+        {
+            "left_referential_integrity": 30.0,
+            "left_value_containment": 75.0,
+            "right_referential_integrity": 42.86,
+        }
+    )
+    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
+    evidence = row["evidence"]
+    assert isinstance(evidence, dict)
+    assert "orientation_swapped" not in evidence
+
+
+def test_one_to_one_containment_key_still_swaps_a_true_flip() -> None:
+    """The containment key decides in BOTH directions: a genuinely flipped
+    emission (forward containment below reverse) still swaps."""
+    row = _one_to_one_row(
+        {
+            "left_referential_integrity": 42.86,
+            "left_value_containment": 42.86,
+            "right_referential_integrity": 75.0,
+        }
+    )
+    assert (row["from_column_id"], row["to_column_id"]) == ("child_col", "parent_col")
+    evidence = row["evidence"]
+    assert isinstance(evidence, dict)
+    # The directional keys followed the swap.
+    assert evidence["right_value_containment"] == 42.86
+    assert evidence["left_referential_integrity"] == 75.0
+
+
+def test_one_to_one_contradicted_cardinality_never_swaps() -> None:
+    """``cardinality_verified is False`` means the declared one-to-one is
+    measurably wrong — the containment reasoning built on it does not hold,
+    so the emission stands."""
+    row = _one_to_one_row(
+        {
+            "left_referential_integrity": 24.0,
+            "right_referential_integrity": 100.0,
+            "cardinality_verified": False,
+        }
+    )
+    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
 
 
 def test_one_to_one_correct_emission_stays() -> None:

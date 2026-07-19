@@ -27,6 +27,7 @@ import {
 	integer,
 	jsonb,
 	pgTable,
+	primaryKey,
 	text,
 	timestamp,
 	uniqueIndex,
@@ -36,13 +37,14 @@ import type { ChartConfig } from "#/charts/chart-config";
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 
 /**
- * Who triggered control-plane work. A coarse identity seam (DAT-460): a single
- * seeded `default` row for now — NO auth, NO multi-user. Real actors/auth are
- * Phase 3 (DAT-357). The registry seeds the `default` row; run attribution
- * (`createdBy`) was carried by the retired `sessions` table (DAT-562) and had no
- * reader, so it is reintroduced on `runs` only when auth lands.
+ * A control-plane user (DAT-817) — the identity the portal logs in and routes by
+ * (DD/51740673). Replaces the DAT-460 `actors` placeholder (same seam, real
+ * name): a single seeded `default` row until the portal's login lands (Phase 6),
+ * which also decides the auth model (credential store vs OIDC) and adds its
+ * columns then — this table deliberately carries no credential/identity claim
+ * columns yet.
  */
-export const actors = pgTable("actors", {
+export const users = pgTable("users", {
 	id: varchar("id").primaryKey(),
 	displayName: varchar("display_name").notNull(),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
@@ -53,14 +55,21 @@ export const actors = pgTable("actors", {
  * the bare `DATARAUM_WORKSPACE_ID` env read. Seeded from that env var on first
  * resolve (registry.ts). `id` is the workspace key (the same value the engine is
  * bootstrapped with, e.g. `00000000-…-001`); `engineSchema` is the derived
- * `ws_<id>` Postgres schema the metadata client reads. Phase 1 is single-active-
- * workspace; the switcher + lifecycle are Phase 3 (DAT-357 — hence `archivedAt`).
+ * `ws_<id>` Postgres schema the metadata client reads.
+ *
+ * Multi-workspace control plane (DAT-817, DD/51740673): cockpit_db stays ONE
+ * shared database across all per-workspace cockpit containers, so this registry
+ * holds every workspace of the installation. `state` is the provisioner
+ * lifecycle (`creating → ready → archiving → archived` — the retired
+ * `archived_at` folds into it; a self-seeded boot workspace is live, hence the
+ * `ready` default). The resource record — `subdomain` (Caddy route, Phase 6),
+ * `readerRole` / `writerRole` (the per-workspace Postgres roles that resolve +
+ * fence the `ws_<id>` schemas), `catalogSchema` (the DuckLake catalog schema) —
+ * is minted by the provisioner (Phase 7), so all four stay NULL on an
+ * env-seeded workspace until then.
  *
  * `vertical` is the workspace's frame ontology (DAT-505): vertical is a WORKSPACE
- * property, not a per-add_source pick. The capability lands here (the column + the
- * boot-read via `resolveActiveWorkspaceRow`); the per-add_source vertical channel
- * (select.ts / the workflow payload) is retired in DAT-506 (Phase 5), which deletes
- * the session row that carries it today. Defaults to `_adhoc` (the no-vertical
+ * property, not a per-add_source pick. Defaults to `_adhoc` (the no-vertical
  * placeholder) so a freshly-seeded workspace is always valid.
  */
 export const workspaces = pgTable("workspaces", {
@@ -68,9 +77,41 @@ export const workspaces = pgTable("workspaces", {
 	name: varchar("name").notNull(),
 	engineSchema: varchar("engine_schema").notNull(),
 	vertical: varchar("vertical").notNull().default("_adhoc"),
+	// Provisioner lifecycle (DAT-817): creating | ready | archiving | archived.
+	// Typed as WorkspaceState (registry.ts) — varchar + TS union per the
+	// schema-wide convention (kind/status/stage columns), not a pgEnum.
+	state: varchar("state").notNull().default("ready"),
+	// Per-workspace resource record (DAT-817) — filled by the provisioner
+	// (Phase 7); NULL on an env-seeded workspace.
+	subdomain: varchar("subdomain"),
+	readerRole: varchar("reader_role"),
+	writerRole: varchar("writer_role"),
+	catalogSchema: varchar("catalog_schema"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
-	archivedAt: timestamp("archived_at", { mode: "date" }),
 });
+
+/**
+ * A user's membership in a workspace (DAT-817) — what the portal lists at login
+ * to route the user to their workspaces' subdomains (Phase 6, DD/51740673).
+ * One row per (user, workspace); `role` is a varchar + TS union
+ * (`MembershipRole`, registry.ts) with `member` the only role in v1 — finer
+ * roles are a portal-phase concern. The registry seeds the default user's
+ * membership in the boot workspace alongside the workspace row itself.
+ */
+export const memberships = pgTable(
+	"memberships",
+	{
+		userId: varchar("user_id")
+			.notNull()
+			.references(() => users.id),
+		workspaceId: varchar("workspace_id")
+			.notNull()
+			.references(() => workspaces.id),
+		role: varchar("role").notNull().default("member"),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+	},
+	(t) => [primaryKey({ columns: [t.userId, t.workspaceId] })],
+);
 
 /**
  * One Temporal run in a workspace — the reload-recovery substrate (DAT-462 reads

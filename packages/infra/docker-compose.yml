@@ -458,12 +458,12 @@ services:
       # mount + path are plumbing. Same package, same path as the engine.
       DATARAUM_CONFIG_PATH: /opt/dataraum/config
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Temporal (DAT-363 cornerstone for DAT-344). Optional in slice-1 — the
-      # cockpit's Zod config treats these as optional and the Temporal client
-      # lands in DAT-344; empty values keep the stack healthy until then.
+      # Temporal client (DAT-344). No TEMPORAL_TASK_QUEUE here: the cockpit
+      # routes workflows to per-workspace queues from the registry (DAT-505)
+      # and its own worker derives cockpit-<ws> from the boot identity
+      # (DAT-818) — the shared-queue config field is retired (DAT-822).
       TEMPORAL_HOST: ${TEMPORAL_HOST:-}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
-      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
       # OTLP telemetry sink (ADR-0019/DAT-705) — same seam as the engine
       # worker's; unset/empty = telemetry off.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
@@ -524,7 +524,6 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       TEMPORAL_HOST: ${TEMPORAL_HOST:-}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
-      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
     volumes:
       - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro

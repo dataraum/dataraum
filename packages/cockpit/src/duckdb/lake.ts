@@ -11,12 +11,12 @@
 // Postgres catalog and writes immutable parquet snapshots to DATA_PATH. A
 // reader on a SEPARATE process/instance (this cockpit) ATTACHing the same
 // catalog observes the latest COMMITTED snapshot — it does not share the
-// engine's in-memory write buffer. Two consequences, both acceptable for the
-// read verbs: (1) writes the engine has buffered but not CHECKPOINTed are not
-// yet visible here; the engine checkpoints at activity boundaries, so the
-// cockpit reads stage-complete state, which is exactly what the chat agent
-// reasons over. (2) Opening READ_ONLY means the cockpit never contends for the
-// catalog's write path. See the DAT-367 PR body for the full caveat.
+// engine's in-memory write buffer. Visibility is per committed snapshot, NOT
+// per CHECKPOINT (verified in the DAT-814 spike): small committed INSERTs land
+// as inlined data in the catalog itself and are readable here before the
+// engine flushes them to parquet, so the cockpit reads everything the engine
+// has committed. Uncommitted writes stay invisible, and opening READ_ONLY
+// means the cockpit never contends for the catalog's write path.
 //
 // Lifecycle: ONE lazily-opened, bootstrapped instance per process; a FRESH
 // connection PER request. A DuckDB connection runs statements serially — it is
@@ -35,7 +35,11 @@ import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
 import { config } from "../config";
 import { applyS3Secret } from "./s3-secret";
-import { buildDucklakeAttachSql, escapeSqlLiteral } from "./sql-escape";
+import {
+	buildDucklakeAttachSql,
+	ducklakeMetadataSchemaFor,
+	escapeSqlLiteral,
+} from "./sql-escape";
 
 // Alias the DuckLake catalog is ATTACHed under. Matches the engine's
 // `LAKE_CATALOG_ALIAS` so fully-qualified names (`lake.typed.orders`) resolve
@@ -54,10 +58,15 @@ let instancePromise: Promise<DuckDBInstance> | null = null;
  * {@link getLakeConnection}/{@link withLakeConnection}, never re-attach.
  */
 async function attachLakeReadOnly(conn: DuckDBConnection): Promise<void> {
+	// One catalog DB per installation (DAT-815): the workspace's catalog is the
+	// ws_<id> METADATA_SCHEMA inside it, derived from the cockpit's boot
+	// identity — the same schema the engine's writer ATTACH names for this
+	// workspace, so reader and writer see one catalog.
 	const attachSql = buildDucklakeAttachSql(
 		LAKE_ALIAS,
 		config.ducklakeCatalogUrl,
 		config.dataraumLakePath,
+		ducklakeMetadataSchemaFor(config.dataraumWorkspaceId),
 	);
 
 	// The container image pre-bakes ducklake at DUCKDB_EXTENSION_DIRECTORY and

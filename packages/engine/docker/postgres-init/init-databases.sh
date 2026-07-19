@@ -9,8 +9,8 @@
 # via METADATA_SCHEMA on the ATTACH (`ws_<id>`, derived from the workspace id
 # at boot). The ATTACH creates the schema itself (spike DAT-814), so nothing is
 # allocated per workspace here — a new workspace needs no Postgres first-boot
-# step at all. Teardown drops the workspace's schema
-# (packages/infra/scripts/delete-workspace.sh), never this database.
+# step at all. Teardown drops the workspace's schema (the provisioner's
+# archive op, DAT-820 — cockpit src/portal/lifecycle.ts), never this database.
 set -euo pipefail
 
 : "${DUCKLAKE_CATALOG_DB:?DUCKLAKE_CATALOG_DB must be set on the postgres service}"

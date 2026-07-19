@@ -113,8 +113,13 @@ class Settings(BaseSettings):
     # cockpit's metadata connection, so raw run-stamped tables are unreachable)
     # and ``<ws>_writer`` (search_path = ws_<id>, exactly the control-table
     # verbs). The ROLE resolves the schema; the cockpit carries no workspace
-    # literal. Compose overrides these; managed-Postgres deployments
-    # pre-provision the roles and the bootstrap's CREATE ROLE branch is skipped.
+    # literal. The value is PER WORKSPACE: one engine process serves one
+    # workspace, so its env carries that workspace's secret — the provisioner
+    # (DAT-820) mints a fresh pair per created workspace and injects them into
+    # the pair's container env (the boot re-asserts them onto the roles each
+    # start); the compose seed pair uses the shared dev defaults. Managed-
+    # Postgres deployments pre-provision the roles and the bootstrap's CREATE
+    # ROLE branch is skipped.
     metadata_reader_password: SecretStr = SecretStr("cockpit-reader-dev")
     metadata_writer_password: SecretStr = SecretStr("cockpit-writer-dev")
 

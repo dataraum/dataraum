@@ -36,8 +36,11 @@
 # the shared catalog DB (DAT-815) + one s3://<ws>/ prefix. These anchors hold
 # everything COMMON to every workspace's worker; each per-workspace service
 # (engine-worker, engine-worker-2, …) merges them and overrides only the three
-# routing knobs (workspace id, queue, lake prefix). Adding a workspace in dev =
-# a registry insert + one more service that merges these anchors.
+# routing knobs (workspace id, queue, lake prefix). Workspaces are CREATED by
+# the provisioner (DAT-820, `bun run workspace:create` / the portal role): it
+# clones the seed `engine-worker` + `cockpit` containers' config and overrides
+# the routing knobs + per-workspace secrets — these compose services are the
+# template, not something to hand-copy per workspace.
 x-engine-worker-base: &engine-worker-base
   build:
     context: ../engine
@@ -92,7 +95,10 @@ x-engine-worker-env: &engine-worker-env
   # METADATA_DATABASE_URL) and ws_<id>_writer (search_path = ws_<id>, exactly
   # the control-table verbs — the cockpit's METADATA_WRITER_DATABASE_URL). The
   # ROLE resolves the schema (ADR-0008/DAT-453 enforcement); role names embed
-  # the workspace id.
+  # the workspace id. The secret is PER CONTAINER = PER WORKSPACE: these
+  # shared dev values cover only the compose-defined seed pair(s); a
+  # provisioned workspace (DAT-820) gets its own minted secrets injected by
+  # the provisioning driver, overriding exactly these two vars.
   METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
   METADATA_WRITER_PASSWORD: ${METADATA_WRITER_PASSWORD:-cockpit-writer-dev}
 
@@ -532,13 +538,21 @@ services:
       timeout: 5s
       retries: 6
 
-  # ── Portal (DAT-819, DD/51740673) — login + membership routing ────────────
+  # ── Portal (DAT-819, DD/51740673) — login, membership routing, provisioner ─
   # The SAME cockpit image in its second role (DATARAUM_PORTAL_MODE=1): serves
   # the parent domain (http://dataraum.localhost through Caddy), owns better-auth
   # sign-in, lists the user's workspaces from cockpit_db memberships, and links
-  # each to its subdomain. Deliberately carries ONLY the base env (config.base.ts):
-  # no workspace identity, no metadata roles, no S3 — a workspace surface reached
-  # here fails born-loud by design. The provisioner (DAT-820) lands in this role.
+  # each to its subdomain. Carries the base env (config.base.ts) — no workspace
+  # identity, no metadata roles: a workspace surface reached here fails
+  # born-loud by design — PLUS the provisioner block (DAT-820,
+  # src/portal/provisioner-config.ts): the workspace-lifecycle ops live in this
+  # role, so it holds the INSTALLATION-admin surface. The docker socket mount is
+  # the compose provisioning driver's seam (root-equivalent on this host —
+  # dev/single-host posture; a real deployment swaps the driver, not the
+  # lifecycle). The provisioner CLONES the seed `engine-worker`/`cockpit`
+  # services' container config for every new workspace, so those two services
+  # double as the per-workspace env template — new env vars added to them flow
+  # into provisioned workspaces automatically.
   portal:
     build:
       context: ../cockpit
@@ -553,6 +567,24 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dataraum-dev-secret}
       DATARAUM_PORTAL_ORIGIN: ${DATARAUM_PORTAL_ORIGIN:-http://dataraum.localhost}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
+      # Provisioner (DAT-820) — installation-admin connections for the
+      # lifecycle ops: role mint + schema drops on the primary DB, catalog
+      # schema create/drop, Caddy route add/remove, S3 prefix sweep.
+      PROVISIONER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
+      CADDY_ADMIN_URL: http://caddy:2019
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+      # Compose driver knobs (defaults match this stack; see
+      # provisioner-config.ts for the reference-service defaults).
+      PROVISIONER_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-infra}
+    volumes:
+      # The Docker Engine API — the compose provisioning driver (DAT-820).
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:3000/api/health"]
       interval: 10s

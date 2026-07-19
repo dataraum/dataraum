@@ -25,6 +25,8 @@
 		"lint": "bun --bun biome lint",
 		"check": "bun --bun biome check",
 		"db:pull:metadata": "bash scripts/pull-metadata.sh",
+		"workspace:create": "bun scripts/provision-workspace.ts create",
+		"workspace:archive": "bun scripts/provision-workspace.ts archive",
 		"db:push:cockpit": "bun --bun drizzle-kit push --config drizzle.config.cockpit.ts",
 		"db:generate:cockpit": "bun --bun drizzle-kit generate --config drizzle.config.cockpit.ts",
 		"db:migrate:cockpit": "bun --bun drizzle-kit migrate --config drizzle.config.cockpit.ts"

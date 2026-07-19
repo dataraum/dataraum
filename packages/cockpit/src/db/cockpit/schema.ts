@@ -20,6 +20,7 @@
 // compose `cockpit-migrate` init service on the stack; manual for host dev).
 
 import type { UIMessage } from "@tanstack/ai-react";
+import { sql } from "drizzle-orm";
 import {
 	type AnyPgColumn,
 	boolean,
@@ -159,22 +160,34 @@ export const verifications = pgTable(
  * property, not a per-add_source pick. Defaults to `_adhoc` (the no-vertical
  * placeholder) so a freshly-seeded workspace is always valid.
  */
-export const workspaces = pgTable("workspaces", {
-	id: varchar("id").primaryKey(),
-	name: varchar("name").notNull(),
-	vertical: varchar("vertical").notNull().default("_adhoc"),
-	// Provisioner lifecycle (DAT-817): creating | ready | archiving | archived.
-	// Typed as WorkspaceState (registry.ts) — varchar + TS union per the
-	// schema-wide convention (kind/status/stage columns), not a pgEnum.
-	state: varchar("state").notNull().default("ready"),
-	// Per-workspace resource record (DAT-817) — filled by the provisioner
-	// (Phase 7); NULL on an env-seeded workspace.
-	subdomain: varchar("subdomain"),
-	readerRole: varchar("reader_role"),
-	writerRole: varchar("writer_role"),
-	catalogSchema: varchar("catalog_schema"),
-	createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
-});
+export const workspaces = pgTable(
+	"workspaces",
+	{
+		id: varchar("id").primaryKey(),
+		name: varchar("name").notNull(),
+		vertical: varchar("vertical").notNull().default("_adhoc"),
+		// Provisioner lifecycle (DAT-817): creating | ready | archiving | archived.
+		// Typed as WorkspaceState (registry.ts) — varchar + TS union per the
+		// schema-wide convention (kind/status/stage columns), not a pgEnum.
+		state: varchar("state").notNull().default("ready"),
+		// Per-workspace resource record (DAT-817) — filled by the provisioner
+		// (DAT-820); NULL on an env-seeded workspace.
+		subdomain: varchar("subdomain"),
+		readerRole: varchar("reader_role"),
+		writerRole: varchar("writer_role"),
+		catalogSchema: varchar("catalog_schema"),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+	},
+	(t) => [
+		// One live Caddy route per subdomain (DAT-820): two non-archived
+		// workspaces must never claim the same label. PARTIAL so an archived
+		// workspace keeps its subdomain as a historical record while freeing
+		// the label for reuse, and NULL (bare host-dev seed) stays unlimited.
+		uniqueIndex("workspaces_subdomain_live_uq")
+			.on(t.subdomain)
+			.where(sql`subdomain is not null and state <> 'archived'`),
+	],
+);
 
 /**
  * A user's membership in a workspace (DAT-817) — what the portal lists at login

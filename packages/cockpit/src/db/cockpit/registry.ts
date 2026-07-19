@@ -69,9 +69,9 @@ export function assertBootWorkspace(workspaceId: string): void {
  * The engine's Temporal task queue for a workspace id (DAT-505) — one queue per
  * workspace, `engine-<workspace_id>`. Mirrors the engine's `task_queue_for`
  * (server/workspace.py): the worker polls this exact queue and asserts the match
- * at boot, so the cockpit drivers MUST route `workflow.start` here (not the bare
- * `config.temporalTaskQueue`) for the run to land on the right worker. The id is
- * kept verbatim (raw UUID with dashes), matching the workflow-ID convention.
+ * at boot, so the cockpit drivers MUST route `workflow.start` here for the run
+ * to land on the right worker. The id is kept verbatim (raw UUID with dashes),
+ * matching the workflow-ID convention.
  */
 export function engineTaskQueueFor(workspaceId: string): string {
 	return `engine-${workspaceId}`;

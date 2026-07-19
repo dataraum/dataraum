@@ -84,11 +84,13 @@ psql_primary -c "DROP SCHEMA IF EXISTS \"${SCHEMA}_read\" CASCADE;"
 #    (DAT-815). No pg_terminate_backend sweep here: the catalog database is
 #    shared by EVERY workspace, so terminating its backends would kill sibling
 #    workspaces' live catalog pools. The stopped worker (step 1) holds no locks
-#    on this schema; idle reader connections don't either (locks release at
-#    transaction end), so the DROP proceeds without a terminate.
+#    on this schema; a still-running cockpit for THIS workspace normally doesn't
+#    either (its reader pool idles outside transactions), but a straggling
+#    in-flight read could — so a lock_timeout makes the DROP fail loud after 30s
+#    (stop the workspace's cockpit, re-run) instead of hanging on the lock.
 echo "==> [3/5] drop DuckLake catalog schema ${SCHEMA} in ${CATALOG_DB}"
 psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$CATALOG_DB" \
-  -c "DROP SCHEMA IF EXISTS \"${SCHEMA}\" CASCADE;"
+  -c "SET lock_timeout = '30s'; DROP SCHEMA IF EXISTS \"${SCHEMA}\" CASCADE;"
 
 # 4. Delete the workspace's S3 prefix (lake + uploads) via weed shell. The
 #    fs.rm -r removes everything under the workspace's <ws>/ prefix in the bucket.

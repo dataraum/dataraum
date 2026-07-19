@@ -83,10 +83,11 @@ per service.
 
 A [workspace](../platform/architecture.md#the-per-workspace-model) is the unit of
 isolation — its own engine container, Temporal queue (`engine-<id>`), Postgres schema
-(`ws_<id>`), DuckLake catalog DB, and `s3://bucket/<id>/` prefix. The
+(`ws_<id>`), DuckLake catalog schema (`ws_<id>` in the installation-wide catalog DB),
+and `s3://bucket/<id>/` prefix. The
 `x-engine-worker-base` anchor in `docker-compose.yml` is the per-workspace template:
 adding a workspace is a registry row plus one more engine service that merges the anchor
-and overrides the four routing knobs (workspace id, queue, catalog DB, lake prefix). The
+and overrides the three routing knobs (workspace id, queue, lake prefix). The
 cockpit is a **single** app that routes each request to the right workspace by the
 registry.
 

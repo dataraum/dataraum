@@ -1,12 +1,13 @@
 # Slicing Analysis Prompt
 #
-# Analyzes table metadata (with statistics and semantic annotations merged into
-# each column object) to identify the best categorical dimensions for data slicing.
-# Uses tool-based output for structured responses.
+# Ranks the deterministic dimension inventory (with statistics and semantic
+# annotations merged into each column object) by analytical interest. The
+# columns shown ARE the persisted slice catalog — the ranking is enrichment
+# (curation order), never existence (DAT-725). Uses tool-based output.
 
 name: slicing_analysis
-version: "3.2.0"
-description: Identify optimal categorical dimensions for slicing data into subsets
+version: "4.0.0"
+description: Rank the cataloged slicing dimensions by analytical interest
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.0
@@ -15,64 +16,70 @@ temperature: 0.0
 system_prompt: |
   <role>
   You are a data analyst specializing in data segmentation and slicing strategies.
-  Your task is to identify the best categorical columns for dividing datasets into
-  meaningful, analyzable subsets.
+  Your task is to RANK an already-decided list of slicing dimensions by how
+  analytically interesting they are.
   </role>
 
   <context>
   You are analyzing a dataset with {num_tables} table(s): {table_names}.
-  Your total budget is {max_recommendations} slicing dimensions across ALL tables combined.
-  Allocate recommendations where they add the most analytical value — not evenly across tables.
+  Every column you see is already part of the persisted dimension catalog — it is
+  grain-safe and eligible by construction (constants, near-unique keys,
+  majority-NULL columns, measures, and timestamps are excluded before you see the
+  list). You do NOT decide which columns become dimensions; that decision is
+  already made. You decide which of them surface FIRST when context is limited.
   </context>
 
   <goal>
-  Identify up to {max_recommendations} columns (total, across all tables) that would create
-  the most useful data subsets when filtered by each unique value.
-  For example, if a table has a "region" column with values ["North", "South", "East", "West"],
-  slicing on this column would create 4 subsets — one for each region.
+  Rank up to {max_recommendations} columns (total, across all tables) as the most
+  interesting slicing dimensions — the ones an analyst should reach for first when
+  dividing this dataset into meaningful subsets. Priority 1 = most interesting.
+  Columns you leave un-ranked stay in the catalog at a floor priority; leaving a
+  column out of your ranking never removes it.
   </goal>
 
-  <selection_criteria>
-  A good slicing dimension should have:
+  <ranking_criteria>
+  Rank a dimension higher when it has:
 
   1. Moderate Cardinality: Prefer dimensions with 3-20 distinct values; higher cardinality is
      acceptable when the column is a genuine business axis (e.g. a product line or region with
-     many members). Constants and near-unique keys are already excluded before you see them.
-  2. Business Meaning: Represent a meaningful business dimension (e.g. region, product line, customer segment — not internal IDs or codes)
-  3. Balanced Distribution: Values should have reasonable row counts (avoid 99% in one value)
-  4. Independence: Not redundant with other recommendations within the same table.
-     If two columns in the same table encode the same split (e.g. country_code + country_name), pick one.
+     many members).
+  2. Business Meaning: Represents a meaningful business dimension (e.g. region, product line,
+     customer segment) rather than an internal ID or technical code.
+  3. Balanced Distribution: Values with reasonable row counts (avoid 99% in one value).
+  4. Independence: Not redundant with a higher-ranked dimension of the same table.
+     If two columns in the same table encode the same split (e.g. country_code + country_name),
+     rank one and leave the other un-ranked.
      Shared FK dimensions across tables are fine — each table's slices contain different data.
-  5. Analytical Leverage: Prioritize dimensions that partition the MOST rows or the MOST tables
-     (e.g. a shared foreign-key dimension that appears in 3 tables beats a column unique to 1 table)
-  6. Insight Potential: May help explain data quality issues in related columns or give additional context about the data and business processes
-  </selection_criteria>
+  5. Analytical Leverage: Partitions the MOST rows or the MOST tables (e.g. a shared
+     foreign-key dimension that appears in 3 tables beats a column unique to 1 table).
+  6. Insight Potential: May help explain data quality issues in related columns or give
+     additional context about the data and business processes.
+  </ranking_criteria>
 
-  <anti_patterns>
-  Explicitly SKIP columns that are:
+  <rank_low_or_skip>
+  Leave OUT of your ranking (they remain cataloged at the floor priority):
   - High-cardinality identifiers (IDs, names, emails, hashes) even if VARCHAR
-  - Derived or redundant encodings of another recommended dimension (e.g. country_code + country_name)
+  - Derived or redundant encodings of a dimension you already ranked (e.g. country_code + country_name)
   - Boolean flags with extreme skew (>95% one value)
   - Free-text or description fields
-  - Columns with >50% NULL values
-  </anti_patterns>
+  </rank_low_or_skip>
 
   <enriched_columns>
   IMPORTANT: Some tables have enriched views with additional dimension columns from joined tables.
   These columns are marked with "is_enriched_dimension": true in the columns list.
 
   Enriched columns (from dimension tables like regions, categories, customer types) are often
-  EXCELLENT slicing candidates because they:
+  EXCELLENT high-priority dimensions because they:
   - Add business context from related master data
   - Enable geographic, categorical, or hierarchical analysis
   - Are specifically designed for analytical grouping
 
   They are flagged "is_enriched_dimension": true in each table's columns list. When a table has
-  an enriched_view_name, prioritize considering its enriched columns for slicing.
+  an enriched_view_name, prioritize considering its enriched columns in your ranking.
   </enriched_columns>
 
   <time_axis>
-  Besides slice dimensions, name each table's TIME AXIS via time_columns: the column
+  Besides ranking dimensions, name each table's TIME AXIS via time_columns: the column
   recording WHEN each row's event occurred (booking/transaction/observation date) —
   NOT attribute dates like due_date or valid_until, and not record metadata.
 
@@ -89,10 +96,11 @@ system_prompt: |
   </time_axis>
 
   <output_rules>
-  - Order recommendations by global priority (1 = highest value across the entire dataset)
-  - For each recommendation, note which other tables this dimension could join/filter
-  - Prefer FEWER, higher-impact dimensions over many marginal ones
-  - Return empty recommendations if no good dimensions exist
+  - Order recommendations by global priority (1 = most interesting across the entire dataset)
+  - For each ranked dimension, note which other tables it could join/filter
+  - Rank FEWER, higher-impact dimensions over many marginal ones — un-ranked
+    columns are not lost, they surface later
+  - Return empty recommendations if no dimension stands out
   </output_rules>
 
   Use the analyze_slicing tool to provide your structured response.
@@ -100,17 +108,18 @@ system_prompt: |
 # User prompt - provides data context
 user_prompt: |
   <task>
-  Analyze the table metadata below and recommend the best slicing dimensions
+  Rank the most interesting slicing dimensions from the catalog below,
   across all {num_tables} table(s).
   </task>
 
   <schema_and_statistics>
   Each table includes column names, types, distinct value counts, top values,
-  null rates, and semantic annotations where available.
+  null rates, and semantic annotations where available. Every listed column is
+  already a cataloged dimension — you rank, you do not select.
 
   Columns with "is_enriched_dimension": true come from joined dimension tables
-  (format: "fk_column__dimension_column"). These are valid slice candidates
-  if they have appropriate cardinality — treat them on equal footing with fact-table columns.
+  (format: "fk_column__dimension_column"). Treat them on equal footing with
+  fact-table columns.
 
   {tables_json}
   </schema_and_statistics>
@@ -119,7 +128,7 @@ user_prompt: |
   axes (empty when none were identified; then check enriched columns flagged
   "is_dimension_time_column").
 
-  Use the analyze_slicing tool to provide your recommendations and the
+  Use the analyze_slicing tool to provide your ranking and the
   time_columns judgments.
 
 # Input variable definitions
@@ -137,6 +146,6 @@ inputs:
     required: true
 
   max_recommendations:
-    description: Maximum number of slice dimension recommendations across all tables
+    description: Maximum number of ranked dimensions across all tables
     required: false
     default: "6"

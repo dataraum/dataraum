@@ -1,9 +1,16 @@
 """Slicing phase implementation.
 
-LLM-powered analysis to identify optimal data slicing dimensions:
-- Identifies categorical columns suitable for creating data subsets
-- Generates SQL for creating slice tables
-- Considers semantic meaning and statistical properties
+Persists the dimension inventory deterministically and ranks it with an LLM
+(DAT-725 rescope — existence vs. enrichment):
+
+- **Existence is deterministic**: every grain-safe pre-filter survivor
+  (DAT-805 gates) whose ``semantic_role`` is not measure/timestamp becomes a
+  ``SliceDefinition``. Same data + same code ⇒ the same persisted set.
+- **The agent is a ranker, not an elector**: its priority/context/reasoning/
+  confidence merge onto rows that exist regardless; un-ranked rows carry the
+  ``UNRANKED_SLICE_PRIORITY`` floor. LLM-unavailable modes (no config, feature
+  disabled) skip only the ranking — the inventory and the deterministic
+  time-axis backstop (DAT-720) still land.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from sqlalchemy import select
 from dataraum.analysis.slicing.agent import SlicingAgent
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.models import (
+    UNRANKED_SLICE_PRIORITY,
     SliceRecommendation,
     SlicingAnalysisResult,
 )
@@ -48,6 +56,17 @@ logger = get_logger(__name__)
 _MIN_DISTINCT_DIMENSION = 2  # a single value (+ NULL bucket) is not a slice axis
 _NEAR_KEY_FRAC = 0.9  # distinct >= 0.9 * non-null rows => near-unique key (spurious)
 _MAX_NULL_RATIO = 0.5  # majority-NULL => most rows fall in the NULL bucket
+
+# Semantic-role existence gate (DAT-725): eligibility = grain-safe pre-filter
+# survivors ∩ semantic_role ∉ this set. A closed vocabulary (semantic/models.py
+# ``Literal["key", "measure", "dimension", "timestamp", "attribute"]``), read
+# from the persisted annotations — existing deterministic metadata, no LLM call.
+# The measure/timestamp cut is the semantic filter the LLM election used to
+# provide. Keys are deliberately KEPT: a FOLDED dimension key (account_id
+# inlined on a fact grain) is precisely a key with no resolved FK — gating on
+# "key without FK" would re-open the nondeterministic-existence hole this
+# rescope closes. Degenerate PKs already die as near-keys in the pre-filter.
+_EXCLUDED_SLICE_ROLES = frozenset({"measure", "timestamp"})
 
 
 def _has_event_axis(time_columns: list[dict[str, Any]] | None) -> bool:
@@ -169,83 +188,81 @@ class SlicingPhase(BasePhase):
                 records_created=0,
             )
 
-        # Initialize LLM infrastructure. LLM intentionally unavailable (no config,
-        # feature disabled) is a documented operating mode — SKIP gracefully so a
-        # wired begin_session run proceeds, exactly like ``enriched_views``. A
-        # misconfiguration WITH the feature enabled (below) stays a loud failure.
+        # The deterministic inventory comes first (DAT-725): context + grain-safe
+        # pre-filter (DAT-805) + semantic-role gate. What survives IS the eligible
+        # set — persisted below whether or not a ranker runs, and exactly what the
+        # ranker sees ("rank the most interesting of these").
+        context_data = self._build_context_data(ctx, unsliced_tables)
+        self._pre_filter_columns(context_data)
+        self._exclude_non_dimension_roles(context_data)
+
+        # The agent is a RANKER (enrichment), not an elector. LLM intentionally
+        # unavailable (no config, feature disabled) is a documented operating
+        # mode — skip ONLY the ranking; the inventory and the deterministic
+        # time-axis backstop still land. A misconfiguration WITH the feature
+        # enabled (below) stays a loud failure.
+        slicing: SlicingAnalysisResult | None = None
+        ranking_skipped: str | None = None
         try:
             config = load_llm_config()
         except FileNotFoundError:
-            return PhaseResult.success(
-                outputs={"slice_definitions": 0, "message": "LLM config not found, skipping"},
-                records_processed=0,
-                records_created=0,
-                summary="skipped (LLM config not found)",
+            config = None
+            ranking_skipped = "LLM config not found"
+        if config is not None and (
+            not config.features.slicing_analysis or not config.features.slicing_analysis.enabled
+        ):
+            config = None
+            ranking_skipped = "slicing analysis disabled"
+
+        if config is not None:
+            # Create provider. Missing provider config / creation failures ARE
+            # misconfigurations now that the feature is enabled — fail loudly.
+            provider_config = config.providers.get(config.active_provider)
+            if not provider_config:
+                return PhaseResult.failed(f"Provider '{config.active_provider}' not configured")
+
+            try:
+                provider = create_provider(config.active_provider, provider_config.model_dump())
+            except Exception as e:
+                return PhaseResult.failed(f"Failed to create LLM provider: {e}")
+
+            agent = SlicingAgent(
+                config=config,
+                provider=provider,
+                prompt_renderer=PromptRenderer(),
             )
 
-        # Check if slicing analysis is enabled
-        if not config.features.slicing_analysis or not config.features.slicing_analysis.enabled:
-            return PhaseResult.success(
-                outputs={"slice_definitions": 0, "message": "slicing analysis disabled"},
-                records_processed=0,
-                records_created=0,
-                summary="skipped (slicing analysis disabled)",
+            # Pass config constraints so the prompt can reference them
+            context_data["constraints"] = {
+                "max_recommendations": ctx.config.get("max_recommendations", 6),
+            }
+
+            # Run the ranking
+            analysis_result = agent.analyze(
+                session=ctx.session,
+                table_ids=[t.table_id for t in unsliced_tables],
+                context_data=context_data,
             )
 
-        # Create provider. Missing provider config / creation failures ARE
-        # misconfigurations now that the feature is enabled — fail loudly.
-        provider_config = config.providers.get(config.active_provider)
-        if not provider_config:
-            return PhaseResult.failed(f"Provider '{config.active_provider}' not configured")
+            if not analysis_result.success:
+                return PhaseResult.failed(analysis_result.error or "Slicing analysis failed")
 
-        try:
-            provider = create_provider(config.active_provider, provider_config.model_dump())
-        except Exception as e:
-            return PhaseResult.failed(f"Failed to create LLM provider: {e}")
+            slicing = analysis_result.unwrap()
 
-        # Create other components
-        renderer = PromptRenderer()
-
-        # Create slicing agent
-        agent = SlicingAgent(
-            config=config,
-            provider=provider,
-            prompt_renderer=renderer,
-        )
-
-        # Build context data for the agent
-        context_data = self._build_context_data(ctx, unsliced_tables)
-
-        # Pre-filter columns: remove objectively bad slice candidates
-        # before sending to LLM (saves tokens, prevents bad recommendations)
-        self._pre_filter_columns(context_data)
-
-        # Pass config constraints so the prompt can reference them
-        context_data["constraints"] = {
-            "max_recommendations": ctx.config.get("max_recommendations", 6),
-        }
-
-        # Run slicing analysis
-        analysis_result = agent.analyze(
-            session=ctx.session,
-            table_ids=[t.table_id for t in unsliced_tables],
-            context_data=context_data,
-        )
-
-        if not analysis_result.success:
-            return PhaseResult.failed(analysis_result.error or "Slicing analysis failed")
-
-        slicing = analysis_result.unwrap()
-
-        # Propagate enriched FK dimension recommendations to other tables
-        # that share the same dimension column
-        slicing = self._propagate_enriched_dimensions(slicing, context_data)
+            # Propagate enriched FK dimension rankings to other tables that share
+            # the same dimension column (curation alignment — existence no longer
+            # depends on it: every fact's own eligible set is persisted anyway).
+            slicing = self._propagate_enriched_dimensions(slicing, context_data)
+        else:
+            logger.info("slice_ranking_skipped", reason=ranking_skipped)
 
         # Land the agent's time-axis judgments (DAT-491/565): seed
         # ``TableEntity.time_columns`` where semantic_per_table left it empty —
         # gap-closing only, never overriding the earlier judgment. Run-scoped:
         # this run's entity row, same version axis as the rest of the spine.
-        if slicing.time_columns:
+        # (Ranker-skipped runs land no agent judgments; the deterministic
+        # DAT-720 backstop below still fires.)
+        if slicing is not None and slicing.time_columns:
             from dataraum.analysis.semantic.db_models import TableEntity
 
             id_by_name = {t.table_name: t.table_id for t in unsliced_tables}
@@ -357,52 +374,85 @@ class SlicingPhase(BasePhase):
                     ]
                     logger.info("time_axis_filled_deterministic", table=name, columns=cols)
 
-        # Store slice definitions — form-(a) idempotent writer (DAT-502):
-        # in-batch dedup on ``uq_slice_def_table_column_run`` (the agent can
-        # emit a dimension twice; propagation adds more), then UPSERT so a
-        # Temporal success-redelivery (same run_id) converges. PK omitted so
-        # the model's Python-side default applies.
+        # Store slice definitions — the ELIGIBLE SET is the inventory (DAT-725):
+        # one row per grain-safe non-measure/non-timestamp column, with the
+        # ranker's output merged on as enrichment. Form-(a) idempotent writer
+        # (DAT-502): in-batch dedup on ``uq_slice_def_table_column_run``, then
+        # UPSERT so a Temporal success-redelivery (same run_id) converges. PK
+        # omitted so the model's Python-side default applies.
         run_id = ctx.require_run_id()
+
+        # The ranker's enrichment by (table_id, column_name). Grounding in the
+        # agent + propagation both operate on the same filtered context, so every
+        # rec targets an eligible row; ties keep the later rec (the pre-rescope
+        # writer's last-wins), a better (lower) rank always wins.
+        ranked: dict[tuple[str, str], SliceRecommendation] = {}
+        if slicing is not None:
+            for rec in slicing.recommendations:
+                if not rec.column_name:
+                    continue
+                prev = ranked.get((rec.table_id, rec.column_name))
+                if prev is None or rec.slice_priority <= prev.slice_priority:
+                    ranked[(rec.table_id, rec.column_name)] = rec
+
         # Referenced-dimension identity (DAT-756): the slice's ``column_id`` is the
         # fact's FK column; resolve its FK-target dim table from the enriched view's
         # relationship provenance. An enriched slice name is ``fk__attr`` — the prefix
         # is the FK column (``fk_role``), the suffix is the dim attribute/level. A
         # slice with no grain-safe FK resolves a null identity (folded — DAT-757).
+        # Same block as pre-rescope; it now iterates the eligible set (superset
+        # input) instead of the elected recommendations.
         dim_table_by_fk_col: dict[str, str] = context_data.get("dim_table_by_fk_col", {})
-        rows: dict[tuple[str, str | None, str], dict[str, Any]] = {}
-        for rec in slicing.recommendations:
-            dimension_table_id = dim_table_by_fk_col.get(rec.column_id)
-            dimension_attribute: str | None = None
-            fk_role: str | None = None
-            if dimension_table_id:
-                name = rec.column_name or ""
-                if "__" in name:
-                    # The enriched dim column is ``{fk_column}__{attr}`` (builder.py):
-                    # the FK column is the segment before the FIRST ``__``, matching
-                    # the codebase convention (``_propagate_enriched_dimensions``,
-                    # ``_build_context_data``). Assumes the FK column name itself has
-                    # no ``__`` — the same assumption every other split site makes.
-                    fk_role, dimension_attribute = name.split("__", 1)
+        rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for table_data in context_data.get("tables", []):
+            table_id = table_data.get("table_id", "")
+            for col in table_data.get("columns", []):
+                column_id = col.get("column_id") or ""
+                column_name = col.get("column_name") or ""
+                if not table_id or not column_id or not column_name:
+                    continue
+                dimension_table_id = dim_table_by_fk_col.get(column_id)
+                dimension_attribute: str | None = None
+                fk_role: str | None = None
+                if dimension_table_id:
+                    if "__" in column_name:
+                        # The enriched dim column is ``{fk_column}__{attr}`` (builder.py):
+                        # the FK column is the segment before the FIRST ``__``, matching
+                        # the codebase convention (``_propagate_enriched_dimensions``,
+                        # ``_build_context_data``). Assumes the FK column name itself has
+                        # no ``__`` — the same assumption every other split site makes.
+                        fk_role, dimension_attribute = column_name.split("__", 1)
+                    else:
+                        # Slicing directly by the FK key itself — no enriched attribute.
+                        fk_role = column_name or None
+                rank = ranked.get((table_id, column_name))
+                if rank is not None and rank.distinct_values:
+                    distinct_values = rank.distinct_values
                 else:
-                    # Slicing directly by the FK key itself — no enriched attribute.
-                    fk_role = name or None
-            rows[(rec.table_id, rec.column_name, run_id)] = {
-                "run_id": run_id,
-                "table_id": rec.table_id,
-                "column_id": rec.column_id,
-                "column_name": rec.column_name,
-                "dimension_table_id": dimension_table_id,
-                "dimension_attribute": dimension_attribute,
-                "fk_role": fk_role,
-                "slice_priority": rec.slice_priority,
-                "slice_type": "categorical",
-                "distinct_values": rec.distinct_values,
-                "value_count": rec.value_count,
-                "reasoning": rec.reasoning,
-                "business_context": rec.business_context,
-                "confidence": rec.confidence,
-                "detection_source": "llm",
-            }
+                    # Structural rows carry the profile's top values as the value
+                    # evidence (the same fallback the agent applies to a ranked row
+                    # without values); value_count stays the honest full distinct
+                    # count, which can exceed the bounded list.
+                    distinct_values = [
+                        str(v.get("value", "")) for v in (col.get("top_values") or [])
+                    ]
+                rows[(table_id, column_name, run_id)] = {
+                    "run_id": run_id,
+                    "table_id": table_id,
+                    "column_id": column_id,
+                    "column_name": column_name,
+                    "dimension_table_id": dimension_table_id,
+                    "dimension_attribute": dimension_attribute,
+                    "fk_role": fk_role,
+                    "slice_priority": rank.slice_priority if rank else UNRANKED_SLICE_PRIORITY,
+                    "slice_type": "categorical",
+                    "distinct_values": distinct_values,
+                    "value_count": rank.value_count if rank else col.get("distinct_count"),
+                    "reasoning": rank.reasoning if rank else None,
+                    "business_context": rank.business_context if rank else None,
+                    "confidence": rank.confidence if rank else None,
+                    "detection_source": "llm" if rank else "structural",
+                }
         upsert(
             ctx.session,
             SliceDefinition,
@@ -410,14 +460,20 @@ class SlicingPhase(BasePhase):
             index_elements=["table_id", "column_name", "run_id"],
         )
 
+        n_ranked = sum(1 for row in rows.values() if row["detection_source"] == "llm")
+        summary = f"{len(rows)} slice definitions ({n_ranked} ranked)"
+        if ranking_skipped:
+            summary += f" — ranking skipped: {ranking_skipped}"
         return PhaseResult.success(
             outputs={
-                "slice_definitions": len(slicing.recommendations),
+                "slice_definitions": len(rows),
+                "ranked": n_ranked,
                 "tables_analyzed": [t.table_name for t in unsliced_tables],
+                **({"message": f"ranking skipped: {ranking_skipped}"} if ranking_skipped else {}),
             },
             records_processed=len(unsliced_tables),
-            records_created=len(slicing.recommendations),
-            summary=f"{len(slicing.recommendations)} slice definitions",
+            records_created=len(rows),
+            summary=summary,
         )
 
     def _pre_filter_columns(self, context_data: dict[str, Any]) -> None:
@@ -507,6 +563,36 @@ class SlicingPhase(BasePhase):
                 filtered.append(col)
 
             table_data["columns"] = filtered
+
+    def _exclude_non_dimension_roles(self, context_data: dict[str, Any]) -> None:
+        """Drop measures and timestamps from the slice-candidate set (DAT-725).
+
+        Mutates ``context_data`` in place, AFTER ``_pre_filter_columns``:
+        eligibility = grain-safe survivors ∩ ``semantic_role ∉ _EXCLUDED_SLICE_
+        ROLES`` — the semantic filter the LLM election used to provide, now
+        served deterministically from the persisted annotations. What survives
+        is BOTH the persisted inventory and the ranker's candidate list, so the
+        prompt's "rank the most interesting of these" is literally true.
+
+        Columns with no annotation stay eligible (fail-open — no exclusion
+        evidence; annotations are object-grain metadata, not a gate). Keys stay:
+        a folded dimension key is a key with no FK (see ``_EXCLUDED_SLICE_ROLES``).
+        Exclusions are born loud, same as the pre-filter's.
+        """
+        for table_data in context_data.get("tables", []):
+            kept = []
+            for col in table_data.get("columns", []):
+                role = col.get("semantic_role")
+                if role in _EXCLUDED_SLICE_ROLES:
+                    logger.info(
+                        "slice_column_excluded",
+                        column=col.get("column_name"),
+                        reason="semantic_role",
+                        semantic_role=role,
+                    )
+                    continue
+                kept.append(col)
+            table_data["columns"] = kept
 
     def _propagate_enriched_dimensions(
         self,
@@ -652,6 +738,30 @@ class SlicingPhase(BasePhase):
             ).scalars():
                 dim_table_by_fk_col[rel.from_column_id] = rel.to_table_id
 
+        # Dim source-column semantic roles, keyed (dim_table_id, column_name) —
+        # the DAT-725 role gate needs a role for enriched ``fk__attr`` entries,
+        # and enriched-view Column records carry no annotations of their own
+        # (they are registered after the semantic phase). Resolve through the
+        # view's relationship provenance to the DIM table's ``attr`` column,
+        # object-grain without a run filter (the hierarchies
+        # ``_resolve_candidates`` / drivers/persistence.py convention).
+        dim_role_by_attr: dict[tuple[str, str], str] = {}
+        if dim_table_ids:
+            dim_col_ident = {
+                c.column_id: (c.table_id, c.column_name)
+                for c in ctx.session.execute(
+                    select(Column).where(Column.table_id.in_(list(dim_table_ids)))
+                ).scalars()
+            }
+            if dim_col_ident:
+                for ann in ctx.session.execute(
+                    select(SemanticAnnotation).where(
+                        SemanticAnnotation.column_id.in_(list(dim_col_ident))
+                    )
+                ).scalars():
+                    if ann.semantic_role is not None:
+                        dim_role_by_attr[dim_col_ident[ann.column_id]] = ann.semantic_role
+
         for table in tables:
             # Get columns for this table
             col_stmt = select(Column).where(Column.table_id == table.table_id)
@@ -752,6 +862,11 @@ class SlicingPhase(BasePhase):
                         "fk_column_name": fk_prefix,
                         "is_dimension_time_column": is_dim_time,
                     }
+                    # The dim SOURCE column's semantic role (DAT-725 gate input);
+                    # unresolvable provenance leaves it unset — fail-open eligible.
+                    dim_role = dim_role_by_attr.get((dim_table_id or "", dim_suffix or ""))
+                    if dim_role is not None:
+                        dim_entry["semantic_role"] = dim_role
                     dim_prof = dim_profiles.get(dim_col.column_id)
                     if dim_prof:
                         profile_data = dim_prof.profile_data or {}

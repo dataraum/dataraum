@@ -13,6 +13,23 @@ from pydantic import BaseModel, Field, field_validator
 
 from dataraum.core.models.base import DecisionSource
 
+# The priority floor for an un-ranked catalog row (DAT-725 rescope): existence is
+# deterministic (every grain-safe non-measure/non-timestamp column is persisted),
+# and the slicing agent only RANKS a curated subset (1 = most interesting). Rows
+# the ranker did not touch sort after every ranked row at the curation read
+# sites' ``ORDER BY slice_priority``. Well above any sane agent rank (the prompt
+# budget is ``max_recommendations``, deployed 12); a pathological larger rank
+# would merely interleave with the floor, never resurrect an election.
+UNRANKED_SLICE_PRIORITY = 1000
+
+# Curation read budget: how many catalog rows the LLM-facing context surfaces
+# (``ORDER BY slice_priority LIMIT budget`` at the cycles/graphs/validation reads
+# + the cockpit's ``<dimensions>`` block). Matches the DEPLOYED ranking budget
+# (``phases/slicing.yaml`` ``max_recommendations: 12``) so curated context stays
+# equivalent to the pre-rescope elected-set size while the persisted inventory
+# is complete. Existence consumers (drivers, lineage, bus_matrix) read UNbudgeted.
+CURATED_SLICE_BUDGET = 12
+
 
 class SliceRecommendation(BaseModel):
     """A recommended categorical slice dimension.
@@ -136,6 +153,8 @@ class SlicingAnalysisOutput(BaseModel):
 
 
 __all__ = [
+    "CURATED_SLICE_BUDGET",
+    "UNRANKED_SLICE_PRIORITY",
     "SliceRecommendation",
     "TableTimeColumnOutput",
     "SlicingAnalysisResult",

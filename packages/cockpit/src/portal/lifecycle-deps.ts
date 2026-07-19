@@ -62,12 +62,19 @@ const registry: WorkspaceRegistryOps = {
 				});
 		} catch (err) {
 			// The partial unique index (workspaces_subdomain_live_uq): another
-			// LIVE workspace already claims the label. Bun SQL surfaces the
-			// violated constraint on the error message and/or a `constraint`
-			// field depending on version — check both.
-			const detail = `${err instanceof Error ? err.message : String(err)} ${
-				(err as { constraint?: string }).constraint ?? ""
-			}`;
+			// LIVE workspace already claims the label. Drizzle wraps Bun's
+			// PostgresError (which carries `constraint`) in a DrizzleQueryError
+			// whose own message is just the params — walk the cause chain.
+			let detail = "";
+			for (
+				let cursor: unknown = err;
+				cursor instanceof Error;
+				cursor = cursor.cause
+			) {
+				detail += ` ${cursor.message} ${
+					(cursor as { constraint?: string }).constraint ?? ""
+				}`;
+			}
 			if (detail.includes("workspaces_subdomain_live_uq")) {
 				throw new Error(
 					`subdomain '${row.subdomain}' is already claimed by a live ` +

@@ -175,7 +175,7 @@ e2e budget: N runs granted YYYY-MM-DD | none (ask per run) · spent: …
 
 ## Substrate map      (Step 2 output: what exists, consumers, seams, in-scope satellites)
 ## Plan               (living: lanes, sequence, state)
-## Lane briefs        (per lane: goal · surface · approach · do-not-touch)
+## Lane briefs        (per lane: goal · surface · approach · do-not-touch · model·effort)
 ## Eval history       (date · trigger · scorecard row · verdict)
 ## Decisions          (fork · criterion · call · evidence)
 ## Checkpoint log     (date · what was reported)
@@ -200,11 +200,47 @@ hours, decides without asking, and absorbs discovery. Observed on the first slic
   start a fresh one: read the ledger HEAD, re-ground the slice's current surface (a short
   version of Step 2), and only then resume. An owner that inherits a compacted context
   without re-grounding will ask the lead things the ledger already answers.
-- **Lanes are model-agnostic** — they are scoped, briefed, and reviewed, so any capable
-  model runs them.
+- **Lanes are not model-agnostic** — pick each lane's tier deliberately; see below.
 - **When you catch yourself asking the lead for something the spec, ledger, or code can
   answer, that is the failure mode.** Re-read the ledger HEAD and decide. Reserve the lead
   for spec-level forks, budget, and merges to `main`.
+
+## Choosing a lane's model
+
+Fable costs 2× Opus 4.8 and ~3.3× Sonnet 5 per token ($10/$50 vs $5/$25 vs $3/$15 per
+MTok in/out; Haiku 4.5 is $1/$5). Running every lane on Fable is the reflex that makes an
+owner-driven slice expensive, and it buys nothing on work whose correctness a test can
+prove. Spend the tier where a wrong call would *survive*.
+
+**The rule: pick by what catches a mistake, not by how big the lane is.**
+
+| The lane's failure would be caught by… | Model · effort |
+|---|---|
+| A deterministic gate — types, tests, CI, a schema check | **Sonnet 5 · medium** |
+| Tests, but the approach still needs real judgment in code | **Sonnet 5 · high**, or **Opus 4.8 · high** if it spans modules |
+| Only a human or an LLM-judged oracle — nothing deterministic | **Fable · xhigh** |
+
+Concretely, on this codebase: renaming or deleting a dead surface, adapting tests to a
+changed signature, mirroring a worker contract into the cockpit, registering a phase
+against the 6-point checklist, a config→DB seed — all Sonnet. Anything touching **prompts,
+the evidence served to an LLM, or behaviour the eval grades semantically** is Fable: green
+tests prove nothing there, and a subtly-wrong call ships looking correct.
+
+Two more calls that follow from the same logic:
+
+- **The grounding fan-out (Step 2) runs on Sonnet.** It is high-volume reading; the
+  judgment lives in *your* synthesis of it, not in the readers.
+- **Reviewers match the lane's tier or sit one above it** — never below Sonnet · high, and
+  Fable for semantic lanes. The reviewers are what makes a cheap lane safe; paying for the
+  lane and skimping on its gate inverts the trade.
+
+**Escalate on evidence, not on suspicion.** A lane that fails its reviewers twice gets
+re-run one tier up with a sharper brief — do not nurse it at the cheap tier. And note the
+tell: **if you cannot write a brief specific enough for a Sonnet lane, the work is not
+mechanical** — that is a signal to raise the tier or re-cut the lane, never to hand a vague
+brief to a cheap model.
+
+Log `model · effort` per lane in the ledger so the tier mix is visible at checkpoints.
 
 ## Rules
 

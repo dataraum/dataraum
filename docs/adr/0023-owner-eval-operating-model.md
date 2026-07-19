@@ -136,5 +136,12 @@ Two weaknesses surfaced, both now addressed in `/own`:
 
 Continuity, not model tier, is the load-bearing variable: the role degrades when context is
 *inherited* rather than built. `/own` now forbids switching the owner model mid-slice and
-requires a fresh session with re-grounding when it changes. Owner runs on Fable; lanes are
-model-agnostic.
+requires a fresh session with re-grounding when it changes. The owner runs on Fable.
+
+Lane tiers are chosen per lane, not fixed: the owner picks by **what would catch the
+lane's mistake** — deterministic gate (types, tests, CI) → Sonnet; nothing deterministic
+(prompts, evidence served to an LLM, semantically-graded behaviour) → Fable. Fable costs 2×
+Opus and ~3.3× Sonnet per token, so the default of running every lane at the top tier is
+what makes an owner-driven slice expensive without buying correctness where a test already
+proves it. The grounding fan-out runs on Sonnet; reviewers sit at or above their lane's
+tier, because the review gate is what makes a cheap lane safe.

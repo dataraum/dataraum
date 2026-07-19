@@ -461,10 +461,28 @@ def _augment_candidates_with_composite_rescue(
 
 
 def _first_wins(rows: list[dict[str, Any]], key_fields: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Fold same-batch duplicate rows on the upsert key, keeping the first."""
+    """Fold same-batch duplicate rows on the upsert key, keeping the first.
+
+    Logs what it dropped. The judge is the sole authority on a 1:1's direction
+    (DAT-725), so if it emits the same pair twice with different verdicts, that
+    disagreement is the only signal that its orientation reasoning is unstable —
+    and this fold used to swallow it silently. "The judge was consistent" and
+    "the collision resolver hid a disagreement" looked identical from the
+    outside.
+    """
     folded: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in rows:
-        folded.setdefault(tuple(row[f] for f in key_fields), row)
+        key = tuple(row[f] for f in key_fields)
+        kept = folded.setdefault(key, row)
+        if kept is not row:
+            logger.warning(
+                "duplicate_row_dropped_in_batch",
+                key=key,
+                kept_confidence=kept.get("confidence"),
+                dropped_confidence=row.get("confidence"),
+                kept_cardinality=kept.get("cardinality"),
+                dropped_cardinality=row.get("cardinality"),
+            )
     return list(folded.values())
 
 

@@ -197,6 +197,17 @@ def load_relationship_candidates_for_semantic(
             (Relationship.from_table_id.in_(table_ids)) | (Relationship.to_table_id.in_(table_ids))
         )
 
+    # ORDERED. Unordered, the ``###`` candidate blocks reached the prompt in
+    # Postgres physical row order, so the same data could present the judge a
+    # different candidate list between runs while the prompt asks it to emit a
+    # stable orientation (DAT-725). Column pairs are re-sorted by overlap in the
+    # formatter; this fixes the order of the pairs themselves.
+    stmt = stmt.order_by(
+        Relationship.from_table_id,
+        Relationship.to_table_id,
+        Relationship.from_column_id,
+        Relationship.to_column_id,
+    )
     relationships = session.execute(stmt).scalars().all()
 
     if not relationships:

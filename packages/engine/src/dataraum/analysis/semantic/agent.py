@@ -151,8 +151,14 @@ class SemanticAgent(LLMFeature):
                 if cand.get("table2"):
                     table_names_from_candidates.add(cand["table2"])
             if table_names_from_candidates:
+                # SORTED. `list(set)` is PYTHONHASHSEED-dependent, so the graph
+                # roles rendered into the prompt reordered between processes —
+                # measured varying across four runs of identical data. The 1:1
+                # orientation design now rests on the judge, and the prompt asks
+                # it to emit the same direction every time; that is not a fair
+                # ask while its own input reshuffles per process (DAT-725).
                 graph_structure = analyze_graph_topology(
-                    table_ids=list(table_names_from_candidates),
+                    table_ids=sorted(table_names_from_candidates),
                     relationships=relationship_candidates,
                 )
 
@@ -376,6 +382,10 @@ class SemanticAgent(LLMFeature):
                     & (ColumnProfileModel.profiled_at == subq.c.max_profiled_at),
                 )
                 .where(Table.table_id.in_(table_ids))
+                # ORDERED: unordered, ``tables_json``'s table and column order
+                # was Postgres physical order, so the schema the judge reads
+                # could reshuffle between runs of identical data (DAT-725).
+                .order_by(Table.table_name, Column.column_position)
             )
 
             result = session.execute(stmt)

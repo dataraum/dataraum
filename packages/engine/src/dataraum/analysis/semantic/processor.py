@@ -630,6 +630,80 @@ def _build_surrogate_intent(
     }
 
 
+# Bounded re-prompts when the batched synthesis under-covers column_concepts
+# (DAT-725 B1). The contract is a meaning for EVERY column, but one wide batched
+# call can truncate (observed: 9/62 on a run whose siblings hit 62/62 — output
+# jitter under the warn-only contract). Each retry serves the SAME prompt scoped
+# to the tables that still have uncovered columns, so it is cheap; warn-only
+# stays the terminal state when the attempts are exhausted.
+CONCEPT_COVERAGE_RETRIES = 2
+
+
+def _missing_concept_keys(
+    column_map: dict[tuple[str, str], str],
+    column_concepts: list[ColumnConceptOutput],
+) -> list[tuple[str, str]]:
+    """Catalogue columns with no ``column_concepts`` entry, by (table, column) name."""
+    covered = {(cc.table_name, cc.column_name) for cc in column_concepts}
+    return sorted(k for k in column_map if k not in covered)
+
+
+def _retry_missing_column_concepts(
+    session: Session,
+    agent: SemanticAgent,
+    enrichment: SemanticEnrichmentResult,
+    *,
+    column_map: dict[tuple[str, str], str],
+    table_map: dict[str, str],
+    ontology: str,
+    relationship_candidates: list[dict[str, Any]] | None,
+) -> None:
+    """Fill column_concepts coverage gaps with bounded scoped re-prompts, in place.
+
+    Re-runs :meth:`SemanticAgent.synthesize_tables` for ONLY the tables that
+    still have uncovered columns and merges the retry's ``column_concepts``
+    entries for those still-missing columns into ``enrichment`` — the first
+    emission wins (a retry never overwrites), and the retry's tables/
+    relationships output is discarded: the full-catalogue first pass is
+    authoritative for those. Best-effort by contract — a failed retry logs and
+    stops (the first pass succeeded; coverage stays warn-only), and the caller
+    persists ONCE after the loop (idempotent writer, ADR-0010).
+    """
+    missing = _missing_concept_keys(column_map, enrichment.column_concepts)
+    for _attempt in range(CONCEPT_COVERAGE_RETRIES):
+        if not missing:
+            return
+        missing_tables = {t for t, _c in missing}
+        retry_table_ids = [tid for name, tid in table_map.items() if name in missing_tables]
+        if not retry_table_ids:
+            return
+        logger.info(
+            "column_meanings_coverage_retry",
+            missing=len(missing),
+            tables=sorted(missing_tables),
+        )
+        retry_result = agent.synthesize_tables(
+            session=session,
+            table_ids=retry_table_ids,
+            ontology=ontology,
+            relationship_candidates=[
+                c
+                for c in (relationship_candidates or [])
+                if c.get("table1") in missing_tables or c.get("table2") in missing_tables
+            ],
+        )
+        if not retry_result.success:
+            logger.warning("column_meanings_coverage_retry_failed", error=retry_result.error)
+            return
+        still_missing = set(missing)
+        enrichment.column_concepts.extend(
+            cc
+            for cc in retry_result.unwrap().column_concepts
+            if (cc.table_name, cc.column_name) in still_missing
+        )
+        missing = _missing_concept_keys(column_map, enrichment.column_concepts)
+
+
 # Confirm/decline threshold for the semantic judge's relationship verdict. The
 # judge encodes its verdict in ``confidence`` (there is no explicit accept/decline
 # field): the design intent is bimodal — declines ≤ 0.40 ("coincidental overlap;
@@ -893,6 +967,20 @@ def synthesize_and_store_tables(
         annotated_by = agent.provider.get_model_for_tier(
             agent.config.features.semantic_analysis.model_tier
         )
+        # Coverage retry (DAT-725 B1): fill truncation gaps BEFORE the single
+        # persist — bounded scoped re-prompts for the tables whose columns are
+        # still uncovered; a retry that fails or under-produces leaves the
+        # warn-only terminal state below untouched.
+        column_map = load_column_mappings(session, table_ids)
+        _retry_missing_column_concepts(
+            session,
+            agent,
+            enrichment,
+            column_map=column_map,
+            table_map=table_map,
+            ontology=ontology,
+            relationship_candidates=relationship_candidates,
+        )
         counts = persist_column_concepts(
             session,
             enrichment.column_concepts,
@@ -910,14 +998,13 @@ def synthesize_and_store_tables(
         # Coverage visibility (DAT-769): the contract is a meaning for EVERY
         # column, but a wide catalogue can exceed the output-token budget and the
         # model may self-ration to the first N columns — partial coverage must be
-        # VISIBLE, never silent. No hard threshold (that would be a tuned knob and
-        # the eval's consumer oracles grade the outcome); the warning names the
-        # uncovered columns so a wide-data run is diagnosable from the log.
-        column_map = load_column_mappings(session, table_ids)
+        # VISIBLE, never silent, and after the bounded retries it is the terminal
+        # state. No hard threshold (that would be a tuned knob and the eval's
+        # consumer oracles grade the outcome); the warning names the uncovered
+        # columns so a wide-data run is diagnosable from the log.
         total_columns = len(column_map)
         if counts.with_meaning < total_columns:
-            covered = {(cc.table_name, cc.column_name) for cc in enrichment.column_concepts}
-            missing = sorted(k for k in column_map if k not in covered)
+            missing = _missing_concept_keys(column_map, enrichment.column_concepts)
             logger.warning(
                 "column_meanings_partial_coverage",
                 with_meaning=counts.with_meaning,

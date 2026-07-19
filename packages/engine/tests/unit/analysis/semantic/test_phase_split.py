@@ -815,6 +815,146 @@ class TestSynthesizeAndStoreTables:
         assert "zero meaningful rows" in (result.error or "")
 
 
+class TestColumnConceptCoverageRetry:
+    """DAT-725 B1: bounded scoped re-prompts fill column_concepts truncation gaps.
+
+    One batched call can emit meanings for a fraction of the catalogue (output
+    truncation jitter under the warn-only contract). The processor re-prompts —
+    same prompt, scoped to the tables with uncovered columns — up to
+    CONCEPT_COVERAGE_RETRIES times, merges only the still-missing columns'
+    entries (first emission wins), and persists ONCE. Warn-only stays the
+    terminal state when retries exhaust.
+    """
+
+    @staticmethod
+    def _cc(table: str, column: str, meaning: str) -> ColumnConceptOutput:
+        return ColumnConceptOutput(table_name=table, column_name=column, meaning=meaning)
+
+    @staticmethod
+    def _enrichment(concepts: list[ColumnConceptOutput]) -> Result:
+        return Result.ok(
+            SemanticEnrichmentResult(
+                annotations=[], entity_detections=[], relationships=[], column_concepts=concepts
+            )
+        )
+
+    def _agent(self, results: list[Result]) -> MagicMock:
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(side_effect=results)
+        return agent
+
+    def test_retry_is_scoped_to_missing_tables_and_merges(self, session) -> None:
+        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
+        beta = _table_with_columns(session, "beta", ["b1", "b2"])
+        agent = self._agent(
+            [
+                # First (full-catalogue) call truncated: alpha covered, beta absent.
+                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "m2")]),
+                # Scoped retry supplies beta.
+                self._enrichment([self._cc("beta", "b1", "m3"), self._cc("beta", "b2", "m4")]),
+            ]
+        )
+        candidates = [
+            {"table1": "alpha", "table2": "beta", "join_columns": []},
+            {"table1": "alpha", "table2": "alpha", "join_columns": []},
+        ]
+
+        result = synthesize_and_store_tables(
+            session,
+            agent,
+            [alpha.table_id, beta.table_id],
+            relationship_candidates=candidates,
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2
+        retry_kwargs = agent.synthesize_tables.call_args_list[1].kwargs
+        # Scoped to the uncovered table only — same prompt, smaller catalogue.
+        assert retry_kwargs["table_ids"] == [beta.table_id]
+        # Candidates filtered to those involving a retried table.
+        assert retry_kwargs["relationship_candidates"] == [candidates[0]]
+        rows = session.execute(select(ColumnConceptDB)).scalars().all()
+        assert len(rows) == 4
+
+    def test_retry_exhaustion_stays_warn_only(self, session) -> None:
+        """Retries that never fill the gap end in the warn-only terminal state."""
+        alpha = _table_with_columns(session, "alpha", ["a1"])
+        beta = _table_with_columns(session, "beta", ["b1"])
+        partial = [self._cc("alpha", "a1", "m1")]
+        agent = self._agent([self._enrichment(partial) for _ in range(3)])
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success  # partial coverage never fails the phase
+        # Initial call + CONCEPT_COVERAGE_RETRIES scoped retries, then stop.
+        assert agent.synthesize_tables.call_count == 3
+        rows = session.execute(select(ColumnConceptDB)).scalars().all()
+        assert len(rows) == 1
+
+    def test_retry_never_overwrites_the_first_emission(self, session) -> None:
+        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
+        agent = self._agent(
+            [
+                self._enrichment([self._cc("alpha", "a1", "first")]),
+                # Retry re-emits a1 (already covered) alongside the missing a2.
+                self._enrichment(
+                    [self._cc("alpha", "a1", "second"), self._cc("alpha", "a2", "filled")]
+                ),
+            ]
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2
+        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
+        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
+        assert rows[cols["a1"]].meaning == "first"
+        assert rows[cols["a2"]].meaning == "filled"
+
+    def test_full_coverage_triggers_no_retry(self, session) -> None:
+        alpha = _table_with_columns(session, "alpha", ["a1"])
+        agent = self._agent([self._enrichment([self._cc("alpha", "a1", "m1")])])
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 1
+
+    def test_failed_retry_is_best_effort(self, session) -> None:
+        """A failing retry never fails the phase — the first pass stands."""
+        alpha = _table_with_columns(session, "alpha", ["a1"])
+        beta = _table_with_columns(session, "beta", ["b1"])
+        agent = self._agent(
+            [
+                self._enrichment([self._cc("alpha", "a1", "m1")]),
+                Result.fail("LLM down"),
+            ]
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2  # stopped after the failure
+        rows = session.execute(select(ColumnConceptDB)).scalars().all()
+        assert len(rows) == 1
+
+
 # ---------------------------------------------------------------------------
 # per-table parse / format helpers
 # ---------------------------------------------------------------------------

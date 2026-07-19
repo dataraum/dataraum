@@ -301,8 +301,13 @@ export const conversations = pgTable(
 /**
  * One persisted message per row (server appends; no blob rewrite). `message` is
  * the `UIMessage` verbatim so the transcript restores exactly; `id` is the
- * message's own id (PK → idempotent append by message id). `seq` orders within
- * the conversation. `modelOnly` rows are the refs channel (DAT-452 flip): fed to
+ * message's own id. The PK is composite `(conversation_id, id)` (DAT-822):
+ * message ids are CLIENT-minted (useChat), so they are only unique within a
+ * conversation — across conversations (and across the workspaces sharing
+ * cockpit_db) the same id can legitimately recur, and a global-id PK silently
+ * dropped such rows (DAT-813 live-smoke finding). Idempotent append stays: the
+ * insert's conflict target is this composite key. `seq` orders within the
+ * conversation. `modelOnly` rows are the refs channel (DAT-452 flip): fed to
  * the model via `buildModelMessages` but NEVER returned to the display transcript
  * — the leak the `agent-refs` text-marker convention used to prevent, now
  * impossible by construction. `role` is denormalized off `message` for filtering.
@@ -310,7 +315,7 @@ export const conversations = pgTable(
 export const conversationMessages = pgTable(
 	"conversation_messages",
 	{
-		id: varchar("id").primaryKey(),
+		id: varchar("id").notNull(),
 		conversationId: varchar("conversation_id")
 			.notNull()
 			.references(() => conversations.id),
@@ -321,6 +326,7 @@ export const conversationMessages = pgTable(
 		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
 	},
 	(t) => [
+		primaryKey({ columns: [t.conversationId, t.id] }),
 		index("conversation_messages_conversation_idx").on(t.conversationId, t.seq),
 	],
 );

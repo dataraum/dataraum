@@ -57,6 +57,9 @@ const WS_A = process.env.DATARAUM_WORKSPACE_ID as string;
 const u = Date.now().toString(36);
 const WS_B = `iso_b_ws_${u}`;
 const CONV_A = `iso_conv_a_${u}`;
+// Second boot-owned conversation — the DAT-822 composite-PK probe (the same
+// client-minted message id landing in two conversations).
+const CONV_A2 = `iso_conv_a2_${u}`;
 const CONV_B = `iso_conv_b_${u}`;
 const MSG_B = `iso_msg_b_${u}`;
 const WF_B = `iso_wf_b_${u}`;
@@ -156,11 +159,13 @@ describe.skipIf(!STACK_AVAILABLE)(
 				confidence,
 			});
 
-			// One boot-owned conversation for the positive paths (inserted directly
-			// under a deterministic id so cleanup can target it).
-			await db
-				.insert(schema.conversations)
-				.values({ id: CONV_A, workspaceId: WS_A, kind: "analyse" });
+			// Two boot-owned conversations: positive paths (A) + the DAT-822
+			// composite-PK probe (A2). Inserted directly under deterministic ids so
+			// cleanup can target them.
+			await db.insert(schema.conversations).values([
+				{ id: CONV_A, workspaceId: WS_A, kind: "analyse" },
+				{ id: CONV_A2, workspaceId: WS_A, kind: "analyse" },
+			]);
 		});
 
 		afterAll(async () => {
@@ -171,18 +176,20 @@ describe.skipIf(!STACK_AVAILABLE)(
 			await db
 				.delete(schema.uiState)
 				.where(inArray(schema.uiState.conversationId, [CONV_A, CONV_B]));
-			await db
-				.delete(schema.conversationMessages)
-				.where(
-					inArray(schema.conversationMessages.conversationId, [CONV_A, CONV_B]),
-				);
+			await db.delete(schema.conversationMessages).where(
+				inArray(schema.conversationMessages.conversationId, [
+					CONV_A,
+					CONV_A2,
+					CONV_B,
+				]),
+			);
 			await db
 				.delete(schema.runs)
 				.where(inArray(schema.runs.id, [RUN_B_RUNNING, RUN_B_AWAITING]));
 			await db.delete(schema.reports).where(eq(schema.reports.id, REPORT_B));
 			await db
 				.delete(schema.conversations)
-				.where(inArray(schema.conversations.id, [CONV_A, CONV_B]));
+				.where(inArray(schema.conversations.id, [CONV_A, CONV_A2, CONV_B]));
 			await db
 				.delete(schema.memberships)
 				.where(eq(schema.memberships.workspaceId, WS_B));
@@ -289,6 +296,43 @@ describe.skipIf(!STACK_AVAILABLE)(
 			expect(aTranscript.map((m: { id: string }) => m.id)).toContain(
 				`iso_msg_a_${u}`,
 			);
+		});
+
+		it("conversation_messages: the same client-minted id lands in two conversations; re-append within one stays a no-op (DAT-822)", async () => {
+			const { and, eq } = drizzle;
+			// Message ids are minted client-side (useChat) — only unique per
+			// conversation. Under the old global-id PK the second conversation's row
+			// was silently dropped by onConflictDoNothing (DAT-813 live-smoke
+			// finding); the composite (conversation_id, id) PK must accept it.
+			const sharedId = `iso_shared_${u}`;
+			await conversationsMod.appendMessages(CONV_A, [
+				{ message: { id: sharedId, role: "user", parts: [] } },
+			]);
+			await conversationsMod.appendMessages(CONV_A2, [
+				{ message: { id: sharedId, role: "user", parts: [] } },
+			]);
+			const landed = await db
+				.select({ conversationId: schema.conversationMessages.conversationId })
+				.from(schema.conversationMessages)
+				.where(eq(schema.conversationMessages.id, sharedId));
+			expect(
+				landed.map((r: { conversationId: string }) => r.conversationId).sort(),
+			).toEqual([CONV_A, CONV_A2].sort());
+
+			// Idempotency within a conversation is unchanged: a re-sent turn no-ops.
+			await conversationsMod.appendMessages(CONV_A, [
+				{ message: { id: sharedId, role: "user", parts: [] } },
+			]);
+			const inA = await db
+				.select({ id: schema.conversationMessages.id })
+				.from(schema.conversationMessages)
+				.where(
+					and(
+						eq(schema.conversationMessages.conversationId, CONV_A),
+						eq(schema.conversationMessages.id, sharedId),
+					),
+				);
+			expect(inA).toHaveLength(1);
 		});
 
 		it("ui_state: B's pin neither loads nor accepts writes from A", async () => {

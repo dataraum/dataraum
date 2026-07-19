@@ -224,8 +224,12 @@ describe("appendMessages", () => {
 			modelOnly: false,
 		});
 		expect(rows[1]).toMatchObject({ id: "m4", seq: 4, modelOnly: true });
-		// idempotent by message id
-		expect(h.conflicts[0]).toMatchObject({ target: "id" });
+		// Idempotent by message id WITHIN the conversation — the conflict target is
+		// the composite PK (DAT-822): client-minted ids recur across conversations,
+		// so a global-id target would silently drop legitimate rows.
+		expect(h.conflicts[0]).toMatchObject({
+			target: ["conversation_id", "id"],
+		});
 		// updatedAt bumped on the conversation, workspace-fenced (DAT-817)
 		const upd = h.updates.find((u) => u.table === "conversations");
 		expect(upd).toBeTruthy();

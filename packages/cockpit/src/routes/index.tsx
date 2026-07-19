@@ -11,6 +11,7 @@
 
 import {
 	Alert,
+	Badge,
 	Button,
 	Group,
 	Paper,
@@ -20,7 +21,12 @@ import {
 	TextInput,
 	Title,
 } from "@mantine/core";
-import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
+import {
+	createFileRoute,
+	Link,
+	redirect,
+	useRouter,
+} from "@tanstack/react-router";
 import { useState } from "react";
 import { authClient } from "#/auth/auth-client";
 import { getPortalHome, type PortalHome } from "./index.functions";
@@ -185,6 +191,16 @@ function WorkspaceList({
 								>
 									Open
 								</Button>
+							) : ws.state !== "ready" ? (
+								// Mid-lifecycle (DAT-821): visible with its state, not
+								// enterable — the provisioner flips it to `ready`.
+								<Badge
+									variant="light"
+									color={ws.state === "creating" ? "yellow" : "gray"}
+									className="shrink-0"
+								>
+									{ws.state}
+								</Badge>
 							) : (
 								<Text size="xs" c="dimmed" className="shrink-0">
 									no subdomain
@@ -194,6 +210,16 @@ function WorkspaceList({
 					</Paper>
 				))
 			)}
+			<Button
+				component={Link}
+				to="/create"
+				variant="light"
+				fullWidth
+				mt="xs"
+				data-testid="portal-new-workspace"
+			>
+				New workspace
+			</Button>
 			<Group justify="space-between" mt="xs">
 				<Text size="xs" c="dimmed">
 					{home.email}

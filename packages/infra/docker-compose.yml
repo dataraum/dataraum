@@ -581,7 +581,10 @@ services:
     volumes:
       - ./caddy/caddy.json:/etc/caddy/caddy.json:ro
     ports:
-      - "80:80"
+      # Override the host port when :80 is taken (CADDY_HTTP_PORT=8000 →
+      # http://dataraum.localhost:8000); DATARAUM_PORTAL_ORIGIN must then
+      # carry the same port so portal links and the cookie derivation agree.
+      - "${CADDY_HTTP_PORT:-80}:80"
       - "2019:2019"
     healthcheck:
       # `caddy version` proves the binary; the admin API proves the config

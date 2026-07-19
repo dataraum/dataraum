@@ -571,13 +571,20 @@ def _ensure_role(connection: Connection, role: str, password: str, search_path: 
     # Literal-quoting: doubling embedded single quotes is the only escape a
     # standard single-quoted literal needs; the DO body uses a tagged dollar
     # quote so a password containing ``$$`` cannot terminate it.
+    #
+    # Race-safe create: Postgres has no CREATE ROLE IF NOT EXISTS, and a
+    # check-then-create is a TOCTOU — two concurrent boots (multi-worker
+    # bring-up, supervisor restart) both pass the check and the loser errors.
+    # CREATE unconditionally and swallow duplicate_object: the loser's CREATE
+    # blocks on the winner's uncommitted row, then raises 42710, which the
+    # handler turns into "already there — fall through to the ALTERs".
     pw = password.replace("'", "''")
     connection.execute(
         text(
             "DO $dataraum_role$ BEGIN "
-            f"IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN "
             f"CREATE ROLE {role} LOGIN PASSWORD '{pw}'; "
-            "END IF; END $dataraum_role$;"
+            "EXCEPTION WHEN duplicate_object THEN NULL; "
+            "END $dataraum_role$;"
         )
     )
     connection.execute(text(f"ALTER ROLE {role} PASSWORD '{pw}'"))
@@ -606,16 +613,30 @@ def ensure_workspace_roles(
     views share names with the raw tables, so one merged search_path would make
     every unqualified name ambiguous about which surface it hits.
 
-    Idempotent, runs every boot (the read views are DROP+CREATEd each boot, so
-    the SELECT grants must be re-applied after). Requires CREATEROLE on the
-    bootstrap connection (true for the compose superuser; managed-Postgres
-    deployments pre-provision the roles instead). Replaces the cluster-global
-    ``cockpit_reader`` role — a pre-DAT-816 volume may retain that role; it is
-    simply no longer granted to or used.
+    Idempotent AND race-safe: concurrent bootstraps of the same workspace
+    (container restart under a supervisor, multi-worker bring-up) converge
+    without error. A transaction-scoped advisory lock serializes the whole
+    mint-and-grant section per workspace — CREATE ROLE has no IF NOT EXISTS
+    (``_ensure_role`` additionally swallows duplicate_object as the belt for
+    anything racing outside the lock), and concurrent GRANT/ALTER DEFAULT
+    PRIVILEGES on the same objects can die with "tuple concurrently updated",
+    which the lock prevents. Runs every boot (the read views are DROP+CREATEd
+    each boot, so the SELECT grants must be re-applied after). Requires
+    CREATEROLE on the bootstrap connection (true for the compose superuser;
+    managed-Postgres deployments pre-provision the roles instead). Replaces
+    the cluster-global ``cockpit_reader`` role — a pre-DAT-816 volume may
+    retain that role; it is simply no longer granted to or used.
     """
     read_schema = read_schema_name_for(workspace_schema)
     reader = reader_role_for(workspace_schema)
     writer = writer_role_for(workspace_schema)
+
+    # Held until the surrounding transaction commits; keyed per workspace so
+    # distinct workspaces mint in parallel (their roles/schemas never collide).
+    connection.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"dataraum_workspace_roles:{workspace_schema}"},
+    )
 
     _ensure_role(connection, reader, reader_password, search_path=read_schema)
     connection.execute(text(f'GRANT USAGE ON SCHEMA "{read_schema}" TO {reader}'))

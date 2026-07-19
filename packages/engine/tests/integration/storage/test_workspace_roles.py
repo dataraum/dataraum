@@ -15,11 +15,16 @@ pin the grant surface:
   the writer role;
 * the writer can write exactly the sanctioned control tables in its own raw
   schema (verbs pinned: an ungranted UPDATE fails), nothing in workspace B,
-  and nothing in the read schema (reader/writer stay separate clients).
+  and nothing in the read schema (reader/writer stay separate clients);
+* two CONCURRENT bootstraps of the same workspace converge without error —
+  CREATE ROLE has no IF NOT EXISTS, so the mint is serialized by a per-
+  workspace advisory lock + a duplicate_object-swallowing DO block (the
+  DAT-815 two-worker smoke caught the old check-then-create losing this race).
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Generator
 
 import pytest
@@ -192,3 +197,56 @@ def test_writer_writes_own_control_tables_only(two_workspaces: str) -> None:
         assert {"src-a", "src-a2"} <= names
     finally:
         admin.dispose()
+
+
+def test_concurrent_bootstraps_of_one_workspace_converge(two_workspaces: str) -> None:
+    """Two simultaneous ``ensure_workspace_roles`` for the SAME workspace both succeed.
+
+    The multi-worker compose bring-up (and a supervisor restarting a crashed
+    worker) boots the same workspace concurrently. CREATE ROLE is not atomic
+    with its existence check, and concurrent grants can die with "tuple
+    concurrently updated" — the per-workspace advisory lock + duplicate_object
+    handler must make both boots converge. Each iteration DROPs the roles first
+    so the CREATE path (the original race) is re-exercised, then a barrier
+    releases both threads into the mint at once.
+    """
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def _boot_once(pg_url: str) -> None:
+        engine = create_engine(pg_url, echo=False, future=True)
+        try:
+            barrier.wait(timeout=30)
+            with engine.begin() as conn:
+                ensure_workspace_roles(conn, WS_A, READER_PW, WRITER_PW)
+        except Exception as exc:  # noqa: BLE001 — collected and asserted below
+            errors.append(exc)
+        finally:
+            engine.dispose()
+
+    admin = create_engine(two_workspaces, echo=False, future=True)
+    try:
+        for _ in range(5):
+            with admin.begin() as conn:
+                for role in (reader_role_for(WS_A), writer_role_for(WS_A)):
+                    conn.execute(text(f"DROP OWNED BY {role}"))
+                    conn.execute(text(f"DROP ROLE {role}"))
+            threads = [
+                threading.Thread(target=_boot_once, args=(two_workspaces,)) for _ in range(2)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=60)
+            assert not errors, f"concurrent bootstrap raised: {errors!r}"
+    finally:
+        admin.dispose()
+
+    # Converged state: the reader logs in and resolves its read schema.
+    reader = _connect_as(two_workspaces, reader_role_for(WS_A), READER_PW)
+    try:
+        with reader.connect() as conn:
+            assert conn.execute(text("SHOW search_path")).scalar_one() == f"{WS_A}_read"
+            assert conn.execute(text("SELECT count(*) FROM sources")).scalar_one() >= 1
+    finally:
+        reader.dispose()

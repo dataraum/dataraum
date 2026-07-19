@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
+from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.graphs.models import (
     GraphMetadata,
     GraphSource,
@@ -259,8 +260,50 @@ def _seed(
                 },
             )
         )
+    _add_passthrough_view(session, fact_table_id="t_is", view_name="income_stmt")
     session.commit()
     return "t_is"
+
+
+def _add_passthrough_view(session: Session, *, fact_table_id: str, view_name: str) -> None:
+    """Register a passthrough enriched view over a fact under the catalog head.
+
+    Post-DAT-811 every fact grounds on its enriched view whose SERVED columns describe
+    it, and DAT-812 reads measures + anchors off those — so the resolver never bounces
+    to the base fact by name. This seeds a 1:1 passthrough view (``view_name`` IS the
+    grounded relation) whose ``f.*`` served columns mirror the fact's columns, each
+    carrying a ``source_column_id`` back to its typed source — the shape through which
+    ``materialization``, the anchor axis, and its cadence all resolve. The view table is
+    pure metadata (the live scan runs on the same DuckDB relation name); it surfaces in
+    ``current_enriched_columns`` via the catalog head (``h_cat``, ``run_id == RUN``)."""
+    view = Table(
+        table_id=f"tev_{fact_table_id}",
+        source_id=SRC,
+        table_name=view_name,
+        layer="enriched",
+        duckdb_path=view_name,
+    )
+    session.add(view)
+    session.flush()
+    session.add(
+        EnrichedView(
+            fact_table_id=fact_table_id,
+            view_table_id=view.table_id,
+            view_name=view_name,
+            run_id=RUN,
+        )
+    )
+    fact_cols = session.query(Column).filter(Column.table_id == fact_table_id).all()
+    for pos, col in enumerate(fact_cols):
+        session.add(
+            Column(
+                table_id=view.table_id,
+                column_name=col.column_name,
+                column_position=pos,
+                origin="fact",
+                source_column_id=col.column_id,
+            )
+        )
 
 
 def _seed_revenue_on_second_fact(session: Session) -> None:
@@ -358,6 +401,7 @@ def _seed_revenue_on_second_fact(session: Session) -> None:
             },
         )
     )
+    _add_passthrough_view(session, fact_table_id="t_is2", view_name="income_stmt2")
     session.commit()
 
 
@@ -469,8 +513,173 @@ def _seed_non_finance(session: Session) -> str:
             },
         )
     )
+    _add_passthrough_view(session, fact_table_id="t_ship", view_name="shipments")
     session.commit()
     return "t_ship"
+
+
+def _seed_declared_dim_anchor_flow(session: Session) -> None:
+    """The PRODUCTION header-dated shape (live finance `journal_lines`): the fact
+    DECLARES its anchor as the served header-date name ``entry_id__date`` (a dimension
+    served column, NOT a fact column), with NO reconciliation witness.
+
+    This is what the live corpus actually does — ``mal.event_time_axis_column`` is the
+    VIEW name ``entry_id__date``, which never resolves to a typed column, so
+    ``event_time_axis_column_id`` is NULL and the id branch of the COALESCE is empty.
+    The resolver's ``named`` match then lands the ``origin='dimension'`` served column
+    and resolves its source (`journal_entries.date`) by identity. A ``named.origin =
+    'fact'`` guard would wrongly exclude this path (VERIFIED: live journal_lines
+    resolves exactly this way)."""
+    session.add_all(
+        [
+            Table(
+                table_id="t_jl",
+                source_id=SRC,
+                table_name="journal_lines",
+                layer="typed",
+                duckdb_path="journal_lines",
+            ),
+            Table(
+                table_id="t_je",
+                source_id=SRC,
+                table_name="journal_entries",
+                layer="typed",
+                duckdb_path="journal_entries",
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            Column(table_id="t_jl", column_name="amount", column_position=1),
+            Column(table_id="t_je", column_name="date", column_position=1),
+        ]
+    )
+    session.add_all(
+        [
+            MetadataSnapshotHead(
+                head_id="h_t_jl",
+                target="table:t_jl",
+                stage="generation",
+                run_id=RUN,
+                promoted_at=TS,
+            ),
+            MetadataSnapshotHead(
+                head_id="h_t_je",
+                target="table:t_je",
+                stage="generation",
+                run_id=RUN,
+                promoted_at=TS,
+            ),
+            MetadataSnapshotHead(
+                head_id="h_cat", target="catalog", stage="catalog", run_id=RUN, promoted_at=TS
+            ),
+        ]
+    )
+    session.flush()
+    amount_col = (
+        session.query(Column)
+        .filter(Column.table_id == "t_jl", Column.column_name == "amount")
+        .one()
+    )
+    date_col = (
+        session.query(Column).filter(Column.table_id == "t_je", Column.column_name == "date").one()
+    )
+    session.add(
+        ColumnConcept(
+            column_id=amount_col.column_id,
+            run_id=RUN,
+            temporal_behavior="additive",
+            annotation_source="llm",
+        )
+    )
+    # The fact DECLARES the header-date SERVED name as its event anchor (DAT-801 shape) —
+    # og_columns' declared-anchor lateral surfaces `entry_id__date`, a dim served name.
+    session.add(
+        TableEntity(
+            table_id="t_jl",
+            run_id=RUN,
+            detected_entity_type="event",
+            table_role="fact",
+            time_columns=[
+                {
+                    "column": "entry_id__date",
+                    "aspect": "posting",
+                    "role": "event",
+                    "is_anchor": True,
+                    "note": "",
+                }
+            ],
+            detected_at=TS,
+        )
+    )
+    session.add(
+        TemporalColumnProfile(
+            profile_id="tp_entry_date",
+            column_id=date_col.column_id,
+            run_id=RUN,
+            profiled_at=TS,
+            min_timestamp=MIN_TS,
+            max_timestamp=MAX_TS,
+            span_days=SPAN_DAYS,
+            detected_granularity="quarter",
+            granularity_confidence=0.9,
+            actual_periods=4,
+            gaps=[],
+        )
+    )
+    view = Table(
+        table_id="tev_t_jl",
+        source_id=SRC,
+        table_name="enriched_journal_lines",
+        layer="enriched",
+        duckdb_path="enriched_journal_lines",
+    )
+    session.add(view)
+    session.flush()
+    session.add(
+        EnrichedView(
+            fact_table_id="t_jl",
+            view_table_id="tev_t_jl",
+            view_name="enriched_journal_lines",
+            run_id=RUN,
+        )
+    )
+    session.add_all(
+        [
+            Column(
+                table_id="tev_t_jl",
+                column_name="amount",
+                column_position=0,
+                origin="fact",
+                source_column_id=amount_col.column_id,
+            ),
+            Column(
+                table_id="tev_t_jl",
+                column_name="entry_id__date",
+                column_position=1,
+                origin="dimension",
+                source_column_id=date_col.column_id,
+            ),
+        ]
+    )
+    session.add(
+        SQLSnippetRecord(
+            workspace_id=WS_ID,
+            schema_mapping_id=WS_ID,
+            snippet_type="extract",
+            standard_field="amount_flow",
+            statement=None,
+            aggregation="sum",
+            sql="SELECT SUM(amount) AS value FROM enriched_journal_lines",
+            source="graph:header_dpo",
+            parts={
+                "select": [{"expr": "SUM(amount)", "alias": "value"}],
+                "from": ["enriched_journal_lines"],
+                "where": [],
+            },
+        )
+    )
+    session.commit()
 
 
 # --- DuckDB relation seeding (the flow SUM's real relation) -------------------
@@ -539,6 +748,16 @@ def _create_shipments(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("CREATE TABLE shipments (units DOUBLE, ship_date TIMESTAMP)")
     for i, dt in enumerate(_Q_DATES):
         conn.execute("INSERT INTO shipments VALUES (?, ?)", [10.0 * (i + 1), dt])
+
+
+def _create_enriched_journal_lines(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create ``lake.typed.enriched_journal_lines`` — the header-dated view relation.
+
+    The header date is served as ``entry_id__date`` (the FK-prefixed name), so the live
+    window scan runs ``MIN/MAX("entry_id__date")`` over these 4 quarter-end rows."""
+    conn.execute("CREATE TABLE enriched_journal_lines (amount DOUBLE, entry_id__date TIMESTAMP)")
+    for i, dt in enumerate(_Q_DATES):
+        conn.execute("INSERT INTO enriched_journal_lines VALUES (?, ?)", [100.0 * (i + 1), dt])
 
 
 def _dpo_graph() -> TransformationGraph:
@@ -656,6 +875,39 @@ def _throughput_graph() -> TransformationGraph:
                 step_type=StepType.FORMULA,
                 expression="units_shipped * days_in_period",
                 depends_on=["units_shipped", "days_in_period"],
+                output_step=True,
+            ),
+        },
+    )
+
+
+def _header_flow_graph() -> TransformationGraph:
+    """A metric with ONE header-dated flow scaled by the derived window (no statement)."""
+    return TransformationGraph(
+        graph_id="header_dpo",
+        version="1",
+        metadata=GraphMetadata(
+            name="header_dpo", description="", category="working_capital", source=GraphSource.SYSTEM
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="header_dpo", unit="days"),
+        parameters=[ParameterDef(name="days_in_period", param_type="integer", default=30)],
+        steps={
+            "amount_flow": GraphStep(
+                step_id="amount_flow",
+                step_type=StepType.EXTRACT,
+                source=StepSource(standard_field="amount_flow"),
+                aggregation="sum",
+            ),
+            "days_in_period": GraphStep(
+                step_id="days_in_period",
+                step_type=StepType.CONSTANT,
+                parameter="days_in_period",
+            ),
+            "out": GraphStep(
+                step_id="out",
+                step_type=StepType.FORMULA,
+                expression="amount_flow * days_in_period",
+                depends_on=["amount_flow", "days_in_period"],
                 output_step=True,
             ),
         },
@@ -994,3 +1246,29 @@ def test_derives_flow_window_on_a_non_finance_shape_with_no_statement(
     assert resolution.days == pytest.approx(CORRECTED_DAYS)
     assert resolution.days != 30
     assert resolution.evidence["anchor_time_axis"] == ["ship_date"]
+
+
+def test_derives_header_dated_flow_via_declared_dim_anchor(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The LIVE finance path: `anchor_time_axis` is a DIM served name (`entry_id__date`)
+    resolved via the `named` → dimension-served-column match, NOT the witness id.
+
+    In the real corpus the witness's `event_time_axis_column` is a VIEW name that never
+    resolves to a typed column, so `event_time_axis_column_id` is NULL and the id branch
+    of the COALESCE is empty; the resolution rides the served column's own
+    `source_column_id`. This is the exact shape a `named.origin='fact'` guard would have
+    broken. Derives the quarterly window (364), not the config 30."""
+    _seed_declared_dim_anchor_flow(pg_session)
+    _create_enriched_journal_lines(duckdb_conn)
+    _boot(integration_engine)
+    resolution = resolve_days_in_period(
+        pg_session, duckdb_conn, graph=_header_flow_graph(), workspace_id=WS_ID
+    )
+    assert resolution is not None
+    assert resolution.derived is True
+    assert resolution.flag is None
+    assert resolution.days == pytest.approx(CORRECTED_DAYS)
+    assert resolution.evidence["anchor_time_axis"] == ["entry_id__date"]

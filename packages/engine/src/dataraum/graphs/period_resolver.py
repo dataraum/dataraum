@@ -70,7 +70,7 @@ from sqlalchemy import bindparam, text
 from dataraum.analysis.temporal.models import DATE_TRUNC_GRAINS
 from dataraum.core.logging import get_logger
 from dataraum.graphs.additivity import parse_aggregate_calls
-from dataraum.graphs.additivity_resolver import fact_table_id, grounded_select
+from dataraum.graphs.additivity_resolver import grounded_select, served_relation
 from dataraum.graphs.formula_composer import compose_where_predicate
 from dataraum.graphs.models import StepType
 from dataraum.query.snippet_library import SnippetLibrary
@@ -274,8 +274,8 @@ def _observe_flow_step(
     if resolved is None:
         return f"extract '{field_name}' did not ground"
     select_expr, relation, where = resolved
-    fact_id = fact_table_id(session, relation)
-    if fact_id is None:
+    served = served_relation(session, relation)
+    if served is None:
         return f"extract relation {relation!r} is outside the analysis"
     try:
         measure_cols = {
@@ -285,7 +285,7 @@ def _observe_flow_step(
         return f"extract select_expr for {relation!r} did not parse"
     if not measure_cols:
         return f"extract on {relation!r} aggregates no column to anchor on"
-    measures = _read_measure_axes(session, read_schema, fact_id, measure_cols)
+    measures = _read_measure_axes(session, read_schema, served.columns_table_id, measure_cols)
     flows = [m for m in measures if m.materialization == _FLOW]
     if not flows:
         # No measure here resolves to a 'flow' verdict — a stock (point-in-time, no
@@ -421,52 +421,73 @@ def _fallback(default: float, reason: str) -> PeriodResolution:
 def _read_measure_axes(
     session: Session,
     read_schema: str,
-    fact_table_id_: str,
+    view_table_id: str,
     measure_cols: set[str],
 ) -> list[_MeasureAxis]:
-    """Resolved ``(materialization, anchor_axis, detected_granularity)`` per measure column.
+    """Resolved ``(materialization, served anchor axis, detected_granularity)`` per measure.
 
-    Reads each of the extract's measure column(s) from ``og_columns``: its resolved
-    ``materialization`` (the vertical-neutral flow/stock verdict — flow measures carry
-    the accumulation window, stocks are point-in-time), its DAT-780 anchor axis
-    (``anchor_time_axis``), and — via a LEFT self-join to that axis column's own vertex
-    and the head-resolved ``current_temporal_column_profiles`` — the axis's
-    ``detected_granularity`` (the period bucket the live window query counts distinct
-    periods by).
+    Reads each measure off the enriched VIEW's self-describing served columns (DAT-811)
+    — ``m.table_id = view_table_id`` — so a DIM/header-column measure is seen, not only
+    the fact's own ``f.*`` columns (which a fact-scoped read silently dropped). Per
+    measure column it resolves:
 
-    The joins are LEFT so a flow whose anchor axis is NULL (a header-date fact,
-    DAT-801) or whose axis was never temporally profiled STILL returns its
-    ``materialization`` row (``axis``/``grain`` ``None``): the caller falls loud on an
-    unobservable FLOW while excluding a stock, a distinction an inner join would erase.
-    An EMPTY result (the measure columns are absent from the read surface) surfaces no
-    ``flow`` verdict, so the extract is excluded like any non-flow; the metric then
-    falls loud only if NO extract in the graph yields a flow window
-    (:func:`_derive_period`), never a silent default.
+    * ``materialization`` — the vertical-neutral flow/stock verdict from ``og_columns``
+      (flow measures carry the accumulation window, stocks are point-in-time), itself
+      resolved through the served column's ``source_column_id``.
+    * the anchor axis, via ONE convention: ``og_columns.anchor_time_axis`` IS the served
+      column's NAME (the axis is exposed on the view — a header date as ``entry_id__date``,
+      an own event date as its ``f.*`` name). Match it against THIS view's served set —
+      names are unique per view (DAT-811) — to recover the served column, its typed
+      ``source_column_id`` (the identity), and thence its cadence. This is a name KEY into
+      a unique set, NOT the DAT-801 first cut's ``(fk)||'__'||col`` reconstruction (which
+      collided): the served column already exists; we look it up, we do not rebuild its
+      name. The persisted ``mal.event_time_axis_column_id`` is deliberately NOT consulted
+      — it duplicates the served column's own ``source_column_id`` and is NULL in practice
+      (the witness stores the served name, which never resolves to a typed column), and it
+      could only ever add an anchor that is not served on THIS relation — which has no
+      observable live window regardless.
+
+    The joins are LEFT so a flow whose anchor is not a served column of THIS relation (a
+    lineage-inherited axis the queried view never joins — no observable live window) or
+    whose axis was never temporally profiled STILL returns its ``materialization`` row
+    with ``axis``/``grain`` ``None``: the caller falls loud on an unobservable FLOW while
+    excluding a stock, a distinction an inner join would erase. An EMPTY result (the
+    measure columns are absent from the read surface) surfaces no ``flow`` verdict, so
+    the extract is excluded like any non-flow; the metric then falls loud only if NO
+    extract in the graph yields a flow window (:func:`_derive_period`).
 
     The span itself is deliberately NOT read here: ``span_days`` is a whole-column
-    MIN/MAX, but the executed flow SUM is WHERE-filtered, so the window must be
-    measured live over the filtered rows (:func:`_observe_window`). Only the flow/stock
-    verdict, the axis identity, and its cadence come from the read surface.
+    MIN/MAX, but the executed flow SUM is WHERE-filtered, so the window must be measured
+    live over the filtered rows (:func:`_observe_window`). Only the flow/stock verdict,
+    the axis identity, and its cadence come from the read surface.
 
     Runs inside the caller's SAVEPOINT (:func:`resolve_days_in_period`), so a read
     failure rolls back the nested transaction and degrades to the flagged default.
     """
     stmt = text(
-        # DISTINCT: several measure columns can share one anchor axis (a SUM(a)+SUM(b)
-        # extract), but the window is per (materialization, axis, cadence) — collapse
-        # duplicates so the identical live window query isn't re-run once per column.
-        f"SELECT DISTINCT m.materialization, m.anchor_time_axis, tp.detected_granularity "  # noqa: S608 - read_schema is an internal identifier
-        f'FROM "{read_schema}".og_columns m '
-        f'LEFT JOIN "{read_schema}".og_columns ax '
-        f"  ON ax.table_id = m.table_id AND ax.column_name = m.anchor_time_axis "
-        f'LEFT JOIN "{read_schema}".current_temporal_column_profiles tp '
-        f"  ON tp.column_id = ax.column_id "
-        f"WHERE m.table_id = :fact_id "
-        f"  AND m.column_name IN :measure_cols "
-        f"ORDER BY m.materialization, m.anchor_time_axis, tp.detected_granularity"  # deterministic evidence
+        # ``measure`` gives each aggregated served column its materialization + anchor
+        # NAME; ``axis_col`` matches that name against THIS view's served set (names are
+        # unique per view, DAT-811 — a name KEY into a unique set, never a join on
+        # source_column_id that a role-playing dimension could fan out) to recover the
+        # served column, whose OWN source_column_id yields the cadence. DISTINCT: several
+        # measures can share one anchor — collapse so the identical live window query
+        # isn't re-run once per column.
+        f"WITH measure AS ("  # noqa: S608 - read_schema is an internal identifier
+        f"  SELECT m.materialization, m.anchor_time_axis"
+        f'  FROM "{read_schema}".og_columns m'
+        f"  WHERE m.table_id = :view_id AND m.column_name IN :measure_cols"
+        f") SELECT DISTINCT measure.materialization, axis_col.column_name AS axis,"
+        f"       tp.detected_granularity AS grain"
+        f" FROM measure"
+        f'  LEFT JOIN "{read_schema}".current_enriched_columns axis_col'
+        f"         ON axis_col.table_id = :view_id"
+        f"        AND axis_col.column_name = measure.anchor_time_axis"
+        f'  LEFT JOIN "{read_schema}".current_temporal_column_profiles tp'
+        f"         ON tp.column_id = axis_col.source_column_id"
+        f" ORDER BY measure.materialization, axis, grain"  # deterministic evidence
     ).bindparams(bindparam("measure_cols", expanding=True))
     rows = session.execute(
-        stmt, {"fact_id": fact_table_id_, "measure_cols": sorted(measure_cols)}
+        stmt, {"view_id": view_table_id, "measure_cols": sorted(measure_cols)}
     ).all()
     return [
         _MeasureAxis(

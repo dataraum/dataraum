@@ -51,14 +51,22 @@ def _seed(
     select_expr: str,
     aggregation: str,
     bind_concepts: bool = True,
-    create_view: bool = True,
+    dim_served: list[tuple[str, str, str, str]] | None = None,
 ) -> TransformationGraph:
-    """Seed one fact + its columns/concepts/view/entity + the extract snippet, and
-    return a single-extract metric graph grounding ``field`` to it.
+    """Seed one fact + its enriched view + the extract snippet, and return a
+    single-extract metric graph grounding ``field`` to the view.
 
-    ``bind_concepts=False`` leaves the base columns without a ``ColumnConcept``
-    (an unresolved temporal_behavior); ``create_view=False`` leaves the fact
-    without an enriched view (a dimensionless fact the extract reads directly)."""
+    Post-DAT-811 every fact has an enriched view whose SERVED columns describe it
+    (DAT-812 reads measures off those). Each fact column in ``columns`` is mirrored as
+    an ``origin='fact'`` served column carrying a ``source_column_id`` back to the fact
+    column (an ``f.*`` passthrough). ``dim_served`` adds joined dimension/header served
+    columns as ``(served_name, dim_table, source_col_name, behavior)`` tuples — an
+    ``origin='dimension'`` served column sourced from a separate dim table's typed
+    column, the ``{fk}__{col}`` shape a fact-by-name lookup cannot see.
+
+    ``bind_concepts=False`` leaves the fact columns without a ``ColumnConcept`` (an
+    unresolved temporal_behavior that must resolve through ``source_column_id`` to
+    NULL, not silently to flow)."""
     source = Source(name=f"src_{fact_name}", source_type="csv")
     session.add(source)
     session.flush()
@@ -72,7 +80,26 @@ def _seed(
     )
     session.add(fact)
     session.flush()
-    for pos, (name, behavior) in enumerate(columns.items()):
+    view = Table(
+        table_id=str(uuid4()),
+        source_id=source.source_id,
+        table_name=view_name,
+        layer="enriched",
+        duckdb_path=view_name,
+        row_count=100,
+    )
+    session.add(view)
+    session.flush()
+    session.add(
+        EnrichedView(
+            fact_table_id=fact.table_id,
+            view_table_id=view.table_id,
+            view_name=view_name,
+            run_id=RUN,
+        )
+    )
+    pos = 0
+    for name, behavior in columns.items():
         col = Column(
             table_id=fact.table_id,
             column_name=name,
@@ -86,8 +113,51 @@ def _seed(
             session.add(
                 ColumnConcept(column_id=col.column_id, run_id=RUN, temporal_behavior=behavior)
             )
-    if create_view:
-        session.add(EnrichedView(fact_table_id=fact.table_id, view_name=view_name, run_id=RUN))
+        # The f.* served column on the view, sourced from the fact column.
+        session.add(
+            Column(
+                table_id=view.table_id,
+                column_name=name,
+                column_position=pos,
+                origin="fact",
+                source_column_id=col.column_id,
+            )
+        )
+        pos += 1
+    for served_name, dim_table_name, source_col_name, behavior in dim_served or []:
+        dim = Table(
+            table_id=str(uuid4()),
+            source_id=source.source_id,
+            table_name=dim_table_name,
+            layer="typed",
+            duckdb_path=dim_table_name,
+            row_count=50,
+        )
+        session.add(dim)
+        session.flush()
+        dim_col = Column(
+            table_id=dim.table_id,
+            column_name=source_col_name,
+            column_position=0,
+            raw_type="VARCHAR",
+            resolved_type="DECIMAL",
+        )
+        session.add(dim_col)
+        session.flush()
+        session.add(
+            ColumnConcept(column_id=dim_col.column_id, run_id=RUN, temporal_behavior=behavior)
+        )
+        # The origin='dimension' served column — sourced from a DIFFERENT table's column.
+        session.add(
+            Column(
+                table_id=view.table_id,
+                column_name=served_name,
+                column_position=pos,
+                origin="dimension",
+                source_column_id=dim_col.column_id,
+            )
+        )
+        pos += 1
     session.add(
         TableEntity(
             table_id=fact.table_id,
@@ -237,50 +307,36 @@ def test_unresolved_temporal_strips_time(
     assert verdict.time_reason == UNKNOWN_TEMPORAL
 
 
-def test_dimensionless_fact_resolves_to_typed_layer(
+def test_dim_column_measure_resolves_temporal_via_source(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection
 ) -> None:
-    """A fact with no enriched view resolves to its TYPED row, not the raw sibling.
+    """A measure aggregating a served DIM/header column resolves temporal_behavior
+    via ``source_column_id`` — the crux of DAT-812.
 
-    The typed and raw rows for a fact share the same table_name + duckdb_path
-    (DAT-639), so the fallback must pin `layer == "typed"` — the raw row carries
-    no ColumnConcept/TableEntity, and landing on it would wrongly strip time.
+    ``entry_id__amount`` is a header amount joined into the view; it is NOT a column
+    of the ``journal_lines`` fact, so the retired by-name-on-the-fact lookup dropped
+    it silently and the SUM classified as UNKNOWN_TEMPORAL (time stripped). Reading the
+    served column and resolving through its source (``journal_entries.amount``,
+    additive) now classifies it as an additive flow — summable across time.
     """
     graph = _seed(
         session,
         fact_name="journal_lines",
-        view_name="journal_lines",  # the extract reads the typed table directly
-        columns={"credit": "additive", "debit": "additive"},
+        view_name="enriched_journal_lines",
+        columns={"line_id": "point_in_time"},  # the fact carries no measure of its own
         grain_columns=["line_id"],
         time_columns=[],
         field="revenue",
-        select_expr="SUM(credit) - SUM(debit)",
+        select_expr="SUM(entry_id__amount)",  # aggregates the served HEADER amount
         aggregation="sum",
-        create_view=False,
+        dim_served=[("entry_id__amount", "journal_entries", "amount", "additive")],
     )
-    # The raw-layer sibling: identical name AND duckdb_path, no concepts.
-    raw_src = Source(name="raw_src", source_type="csv")
-    session.add(raw_src)
-    session.flush()
-    session.add(
-        Table(
-            table_id=str(uuid4()),
-            source_id=raw_src.source_id,
-            table_name="journal_lines",
-            layer="raw",
-            duckdb_path="journal_lines",
-            row_count=100,
-        )
-    )
-    session.commit()
-
     verdict = compute_metric_verdict(
         session, duckdb_conn, graph=graph, workspace_id=WS, catalogue_run_id=RUN
     )
     assert verdict is not None
-    # Additive only if we resolved the TYPED row (which has the flow concepts);
-    # the raw row would yield UNKNOWN_TEMPORAL and strip time.
-    assert verdict.time_additive is True
+    assert verdict.categorical_additive is True
+    assert verdict.time_additive is True  # additive header amount → summable across time
 
 
 def test_persist_is_fault_isolated(

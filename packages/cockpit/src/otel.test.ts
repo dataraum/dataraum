@@ -1,5 +1,5 @@
 // Unit tests for the OTel bootstrap gate (ADR-0019 / DAT-705, metrics
-// DAT-706). Mock #/config + the @opentelemetry SDK modules at the seam: the
+// DAT-706). Mock #/config.base + the @opentelemetry SDK modules at the seam: the
 // assertions are about the GATE (off = nothing constructed; on = one tracer
 // provider registered once + one meter provider set globally once) and the
 // OTLP URL derivation — never about the SDK's own behavior.
@@ -16,8 +16,10 @@ const h = vi.hoisted(() => ({
 	setGlobalMeterProvider: vi.fn(),
 }));
 
-vi.mock("#/config", () => ({
-	get config() {
+// otel.ts reads the mode-shared base config (DAT-819 — telemetry bootstraps
+// in portal mode too); `h.config` stays the stand-in object.
+vi.mock("#/config.base", () => ({
+	get baseConfig() {
 		return h.config;
 	},
 }));

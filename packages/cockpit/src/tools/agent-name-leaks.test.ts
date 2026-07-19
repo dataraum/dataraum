@@ -24,6 +24,9 @@ import { describe, expect, it, vi } from "vitest";
 // (with the `#/` alias — relative specifiers silently don't intercept) so the
 // pure projections run with no env and no connection.
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "test" } }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import { buildInventory, type InventoryTableRow } from "./list-tables";

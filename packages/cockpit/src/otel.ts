@@ -1,7 +1,7 @@
 // OpenTelemetry bootstrap (ADR-0019 / DAT-705, metrics DAT-706). SERVER-ONLY.
 //
 // Traces + metrics — log shipping lands with DAT-707. The single on/off
-// switch is OTEL_EXPORTER_OTLP_ENDPOINT (surfaced via config.ts):
+// switch is OTEL_EXPORTER_OTLP_ENDPOINT (surfaced via config.base.ts):
 // unset/empty = telemetry off and nothing here is constructed, so the
 // no-telemetry path stays byte-identical to before.
 //
@@ -33,7 +33,9 @@ import {
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
-import { config } from "#/config";
+// Base (mode-shared) config, NOT the workspace config: telemetry bootstraps
+// in portal mode too (DAT-819), and the workspace config throws there.
+import { baseConfig } from "#/config.base";
 
 // HMR / double-import guard, mirroring the orchestration-worker singleton: the
 // OTel api allows only ONE global provider registration per process, so a dev
@@ -68,7 +70,7 @@ export function getOtel(): NodeTracerProvider | null {
 	const existing = holder[SINGLETON];
 	if (existing !== undefined) return existing;
 
-	const endpoint = config.otelExporterOtlpEndpoint;
+	const endpoint = baseConfig.otelExporterOtlpEndpoint;
 	if (!endpoint) {
 		holder[SINGLETON] = null;
 		return null;

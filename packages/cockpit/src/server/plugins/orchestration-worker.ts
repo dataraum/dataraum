@@ -7,14 +7,31 @@
 // Registered via `nitro({ plugins: [...] })` in vite.config.ts. Fire-and-forget:
 // we never block boot on the Temporal connection, and a start failure is logged,
 // not fatal (the UI still serves; the singleton clears so a retry can happen).
+//
+// PORTAL MODE (DAT-819): the portal container is not a workspace — it has no
+// boot workspace identity and MUST NOT poll a `cockpit-<ws>` queue (a second
+// poller would steal that workspace's callbacks). The worker wiring below sits
+// behind a dynamic import so portal-mode boot never evaluates the workspace
+// config (#/config throws there, born-loud).
 
 import { definePlugin } from "nitro";
-import { config } from "#/config";
-import { getOtel } from "#/otel";
-import { cockpitTaskQueueFor } from "#/temporal/task-queue";
-import { startOrchestrationWorker } from "#/worker/worker";
+import { baseConfig } from "#/config.base";
 
-export default definePlugin(() => {
+export default definePlugin(async () => {
+	if (baseConfig.portalMode) {
+		return;
+	}
+	const [
+		{ config },
+		{ getOtel },
+		{ cockpitTaskQueueFor },
+		{ startOrchestrationWorker },
+	] = await Promise.all([
+		import("#/config"),
+		import("#/otel"),
+		import("#/temporal/task-queue"),
+		import("#/worker/worker"),
+	]);
 	if (!config.temporalHost || !config.temporalNamespace) {
 		console.warn(
 			"[orchestration-worker] TEMPORAL_HOST/TEMPORAL_NAMESPACE unset — " +

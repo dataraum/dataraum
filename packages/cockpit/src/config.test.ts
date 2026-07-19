@@ -16,6 +16,9 @@ const REQUIRED: Record<string, string> = {
 	S3_ACCESS_KEY_ID: "test-access-key",
 	S3_SECRET_ACCESS_KEY: "test-secret-key",
 	S3_BUCKET: "test-lake",
+	// Base (mode-shared) config (DAT-819): ./config imports ./config.base, so
+	// its required fields are part of the workspace baseline too.
+	BETTER_AUTH_SECRET: "test-auth-secret",
 };
 
 const OPTIONAL = [
@@ -28,6 +31,11 @@ const OPTIONAL = [
 	"TEMPORAL_TASK_QUEUE",
 	"TEMPORAL_UI_URL",
 	"OTEL_EXPORTER_OTLP_ENDPOINT",
+	"DATARAUM_PORTAL_MODE",
+	"DATARAUM_PORTAL_ORIGIN",
+	"DATARAUM_WORKSPACE_SUBDOMAIN",
+	"DATARAUM_DEV_USER_EMAIL",
+	"DATARAUM_DEV_USER_PASSWORD",
 ];
 
 function stubBaseline(): void {
@@ -103,20 +111,22 @@ describe("cockpit config (DAT-363)", () => {
 
 	it("keeps telemetry OFF for both unset AND empty OTLP endpoint (ADR-0019)", async () => {
 		// Empty string = compose interpolation of an unset var; `|| undefined`
-		// in loadConfig maps it to off, never a half-configured exporter.
+		// in loadBaseConfig maps it to off, never a half-configured exporter.
+		// (Field moved to config.base — DAT-819: the otel plugin boots in
+		// portal mode too.)
 		stubBaseline();
 		vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "");
-		const { config } = await import("./config");
+		const { baseConfig } = await import("./config.base");
 
-		expect(config.otelExporterOtlpEndpoint).toBeUndefined();
+		expect(baseConfig.otelExporterOtlpEndpoint).toBeUndefined();
 	});
 
 	it("parses the OTLP endpoint when set (the single telemetry switch)", async () => {
 		stubBaseline();
 		vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-lgtm:4318");
-		const { config } = await import("./config");
+		const { baseConfig } = await import("./config.base");
 
-		expect(config.otelExporterOtlpEndpoint).toBe("http://otel-lgtm:4318");
+		expect(baseConfig.otelExporterOtlpEndpoint).toBe("http://otel-lgtm:4318");
 	});
 
 	it("fails loud naming the field when a required var is missing", async () => {
@@ -131,5 +141,60 @@ describe("cockpit config (DAT-363)", () => {
 		vi.stubEnv("S3_ACCESS_KEY_ID", undefined as unknown as string);
 
 		await expect(import("./config")).rejects.toThrow(/s3AccessKeyId/);
+	});
+});
+
+describe("mode-shared base config (DAT-819)", () => {
+	it("parses in portal mode WITHOUT any workspace env", async () => {
+		// The portal container carries only the base fields — no metadata role
+		// URLs, no S3, no workspace id. Base config must stand alone.
+		vi.stubEnv("DATARAUM_PORTAL_MODE", "1");
+		vi.stubEnv("COCKPIT_DATABASE_URL", REQUIRED.COCKPIT_DATABASE_URL);
+		vi.stubEnv("BETTER_AUTH_SECRET", REQUIRED.BETTER_AUTH_SECRET);
+		vi.stubEnv("DATARAUM_PORTAL_ORIGIN", "http://dataraum.localhost");
+		const { baseConfig } = await import("./config.base");
+
+		expect(baseConfig.portalMode).toBe(true);
+		expect(baseConfig.portalOrigin).toBe("http://dataraum.localhost");
+		expect(baseConfig.authSecret).toBe(REQUIRED.BETTER_AUTH_SECRET);
+	});
+
+	it("defaults the portal origin to the bare host-dev address", async () => {
+		stubBaseline();
+		const { baseConfig } = await import("./config.base");
+
+		expect(baseConfig.portalMode).toBe(false);
+		expect(baseConfig.portalOrigin).toBe("http://localhost:3000");
+	});
+
+	it("throws born-loud when a workspace surface evaluates ./config in portal mode", async () => {
+		// The fence: portal-mode boot must never reach workspace config — a
+		// mis-routed workspace surface fails with the real reason, not a
+		// missing-env scavenger hunt.
+		stubBaseline();
+		vi.stubEnv("DATARAUM_PORTAL_MODE", "1");
+
+		await expect(import("./config")).rejects.toThrow(
+			/workspace config accessed in portal mode/,
+		);
+	});
+
+	it("fails loud when the auth secret is missing (required in BOTH modes)", async () => {
+		stubBaseline();
+		vi.stubEnv("BETTER_AUTH_SECRET", undefined as unknown as string);
+
+		await expect(import("./config.base")).rejects.toThrow(/authSecret/);
+	});
+
+	it("requires dev seed credentials to be non-empty when set", async () => {
+		// Compose interpolation of an unset var yields "" — that must read as
+		// ABSENT (no dev user), never as an empty-string credential.
+		stubBaseline();
+		vi.stubEnv("DATARAUM_DEV_USER_EMAIL", "");
+		vi.stubEnv("DATARAUM_DEV_USER_PASSWORD", "");
+		const { baseConfig } = await import("./config.base");
+
+		expect(baseConfig.devUserEmail).toBeUndefined();
+		expect(baseConfig.devUserPassword).toBeUndefined();
 	});
 });

@@ -8,6 +8,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({
 	config: { dataraumWorkspaceId: "ws-test", anthropicApiKey: "k" },
 }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 // query.ts reads the workspace vertical (for DAT-645 conventions) via the cockpit
 // registry, which transitively pulls the bun-SQL client — stub it so the unit

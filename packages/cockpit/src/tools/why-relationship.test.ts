@@ -8,6 +8,9 @@ import { describe, expect, it, vi } from "vitest";
 // Importing the tool pulls config.ts + the metadata client + the anthropic
 // adapter; mock the env-dependent ones (sets no process.env — see registry.test.ts).
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "test" } }));
+// Mode-shared base config (DAT-819) — reached transitively via the
+// registry/db seam; parsing the real one needs env this test does not set.
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import {

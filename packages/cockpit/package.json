@@ -54,6 +54,7 @@
     "@temporalio/worker": "^1.20.1",
     "@uwdata/mosaic-sql": "^0.28.1",
     "@xyflow/react": "^12.11.2",
+    "better-auth": "1.7.0-rc.1",
     "dompurify": "^3.4.11",
     "drizzle-orm": "1.0.0-rc.4-5d5b77c",
     "highlight.js": "^11.11.1",

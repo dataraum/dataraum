@@ -12,19 +12,18 @@
 // init service applies the SCHEMA only, and host dev (cockpit run outside docker)
 // has no init step at all — so the registry self-populates on first resolve,
 // idempotently, working identically everywhere. The seed runs ONCE per process
-// (memoized) so the default user + membership also appear on an installation
-// whose workspace row predates them — the old cold-path-only seed would skip a
-// warm registry forever.
+// (memoized) so the dev user + membership + subdomain also appear on an
+// installation whose workspace row predates them — a cold-path-only seed would
+// skip a warm registry forever. Identity itself is better-auth's (DAT-819):
+// the seed only provisions the DEV credential user when env asks for one;
+// production users arrive through the portal's sign-up.
 
-import { eq } from "drizzle-orm";
+import { hashPassword } from "better-auth/crypto";
+import { and, eq } from "drizzle-orm";
 import { config } from "../../config";
+import { baseConfig } from "../../config.base";
 import { cockpitDb } from "./client";
-import { memberships, users, workspaces } from "./schema";
-
-// The single coarse user (was the DAT-460 `actors` placeholder): no auth, no
-// multi-user yet. Seeded so the portal's login/membership routing (Phase 6,
-// DD/51740673) has a real identity row to start from.
-export const DEFAULT_USER_ID = "default";
+import { accounts, memberships, users, workspaces } from "./schema";
 
 // The no-vertical placeholder a cold-start workspace is seeded with (DAT-505) —
 // mirrors the engine's `_adhoc` and the schema column default. Vertical is a
@@ -86,26 +85,103 @@ export interface ActiveWorkspace {
 	vertical: string;
 }
 
-/** Idempotently seed the default user, the env-designated workspace row (live:
- * `state = 'ready'`), and the user's membership in it (DAT-817). */
+/** The deterministic row ids of the env-seeded DEV credential user (DAT-819).
+ * Exported for tests/smokes only — production users are better-auth-minted
+ * with generated ids. */
+export const DEV_USER_ID = "dev-user";
+
+/**
+ * Idempotently seed the env-designated workspace row (live: `state = 'ready'`,
+ * `subdomain` from DATARAUM_WORKSPACE_SUBDOMAIN so the portal can route here)
+ * and — when the dev credentials are configured (compose/host dev) — the dev
+ * user with its membership in this workspace (DAT-819).
+ *
+ * The dev user is written DIRECTLY (users + credential-account rows, the exact
+ * shape better-auth's own sign-up writes: providerId `credential`, accountId =
+ * user id, scrypt hash) rather than through `auth.api.signUpEmail`: the seed
+ * runs lazily inside whatever request first resolves the registry, and the
+ * sign-up endpoint would issue a session + set the dev user's cookie on THAT
+ * unrelated response. The env password is re-asserted on every seed (mirrors
+ * the engine re-setting the reader role's password each boot) so a changed
+ * DATARAUM_DEV_USER_PASSWORD takes effect without wiping the volume.
+ */
 async function seedRegistry(workspaceId: string): Promise<void> {
+	const subdomain = config.dataraumWorkspaceSubdomain;
+	const workspaceRow = cockpitDb.insert(workspaces).values({
+		id: workspaceId,
+		name: `Workspace ${workspaceId}`,
+		vertical: DEFAULT_VERTICAL,
+		state: "ready" satisfies WorkspaceState,
+		...(subdomain ? { subdomain } : {}),
+	});
+	if (subdomain) {
+		// The env-declared subdomain is truth for an env-seeded workspace (a
+		// pre-DAT-819 row carries NULL and would otherwise stay unroutable
+		// forever); everything else on a warm row stands.
+		await workspaceRow.onConflictDoUpdate({
+			target: workspaces.id,
+			set: { subdomain },
+		});
+	} else {
+		await workspaceRow.onConflictDoNothing({ target: workspaces.id });
+	}
+
+	const { devUserEmail, devUserPassword } = baseConfig;
+	if (!devUserEmail || !devUserPassword) {
+		return;
+	}
 	await cockpitDb
 		.insert(users)
-		.values({ id: DEFAULT_USER_ID, displayName: "Default user" })
-		.onConflictDoNothing({ target: users.id });
-	await cockpitDb
-		.insert(workspaces)
 		.values({
-			id: workspaceId,
-			name: `Workspace ${workspaceId}`,
-			vertical: DEFAULT_VERTICAL,
-			state: "ready" satisfies WorkspaceState,
+			id: DEV_USER_ID,
+			name: "Dev user",
+			email: devUserEmail,
+			emailVerified: true,
 		})
-		.onConflictDoNothing({ target: workspaces.id });
+		// No target: a manual sign-up may already own the EMAIL under a
+		// better-auth-generated id — either conflict (id or email) means the
+		// user exists and the row stands.
+		.onConflictDoNothing();
+	// Resolve the actual id for the dev email (ours, or the manual sign-up's).
+	const [devUser] = await cockpitDb
+		.select({ id: users.id })
+		.from(users)
+		.where(eq(users.email, devUserEmail))
+		.limit(1);
+	if (!devUser) {
+		throw new Error(
+			`[cockpit] dev user ${devUserEmail} missing after the idempotent seed`,
+		);
+	}
+	const passwordHash = await hashPassword(devUserPassword);
+	const [credentialAccount] = await cockpitDb
+		.select({ id: accounts.id })
+		.from(accounts)
+		.where(
+			and(
+				eq(accounts.userId, devUser.id),
+				eq(accounts.providerId, "credential"),
+			),
+		)
+		.limit(1);
+	if (credentialAccount) {
+		await cockpitDb
+			.update(accounts)
+			.set({ password: passwordHash })
+			.where(eq(accounts.id, credentialAccount.id));
+	} else {
+		await cockpitDb.insert(accounts).values({
+			id: `${devUser.id}-credential`,
+			accountId: devUser.id,
+			providerId: "credential",
+			userId: devUser.id,
+			password: passwordHash,
+		});
+	}
 	await cockpitDb
 		.insert(memberships)
 		.values({
-			userId: DEFAULT_USER_ID,
+			userId: devUser.id,
 			workspaceId,
 			role: "member" satisfies MembershipRole,
 		})
@@ -127,8 +203,9 @@ function ensureRegistrySeeded(workspaceId: string): Promise<void> {
 }
 
 /**
- * The active workspace ROW, read from the registry (seeding user + workspace +
- * membership once per boot). The single seam the drivers use to route a
+ * The active workspace ROW, read from the registry (seeding the workspace row
+ * — plus the dev user + membership when configured — once per boot). The
+ * single seam the drivers use to route a
  * workflow: it carries the per-workspace task queue (`engine-<id>`) and the
  * frame `vertical` alongside the id, so nothing re-derives routing from the
  * bare env var. Proven to exist as a `workspaces` row, so `runs.workspaceId`

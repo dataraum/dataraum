@@ -13,6 +13,7 @@
 import "@tanstack/react-start/server-only";
 
 import { z } from "zod";
+import { baseConfig } from "./config.base";
 
 const ConfigSchema = z.object({
 	// --- Substrate (required) ---
@@ -28,6 +29,13 @@ const ConfigSchema = z.object({
 	// Plain non-empty string (not .uuid()) to match the engine, which accepts
 	// stable non-UUID ids (e.g. "test"); both sides must agree on the value.
 	dataraumWorkspaceId: z.string().min(1),
+	// This workspace's subdomain label (DAT-819), e.g. `ws1` — the Caddy route
+	// `<subdomain>.<parent domain>` that reaches THIS cockpit. Seeded onto the
+	// registry row (registry.ts) so the portal can build the redirect URL.
+	// Optional: absent = the registry row keeps whatever the provisioner
+	// (DAT-820) minted, or NULL on a bare host-dev workspace (which the portal
+	// then cannot route to — direct :3000 access only).
+	dataraumWorkspaceSubdomain: z.string().min(1).optional(),
 	// The read-only config tree bind-mounted at DATARAUM_CONFIG_PATH (the same
 	// `/opt/dataraum/config` the engine resolves through `dataraum.core.config`).
 	// The cockpit reads it via `fs` — `list_verticals` scans `verticals/*` here.
@@ -87,20 +95,32 @@ const ConfigSchema = z.object({
 	// via `temporal/task-queue.ts` — so callbacks route per workspace and no
 	// knob can point two cockpits at one queue.
 
-	// --- Observability (ADR-0019/DAT-705; optional — unset/empty = telemetry
-	// off). The OTLP endpoint IS the vendor seam: src/otel.ts bootstraps the
-	// tracer provider from it and nothing else configures telemetry. ---
-	otelExporterOtlpEndpoint: z.string().optional(),
+	// (Observability moved to config.base.ts (DAT-819): the OTLP endpoint is
+	// installation-wide and the otel plugin bootstraps in portal mode too.)
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
 
 function loadConfig(): Config {
+	// Born-loud mode fence (DAT-819): a portal container has no workspace
+	// identity and deliberately no workspace env (metadata role URLs, S3, lake
+	// path), so ANY evaluation of this module in portal mode is a mis-routed
+	// workspace surface — fail with the real reason, not a env-var-missing
+	// scavenger hunt. Portal-safe fields live in config.base.ts.
+	if (baseConfig.portalMode) {
+		throw new Error(
+			"[cockpit] workspace config accessed in portal mode — a workspace-only " +
+				"surface (route, server fn, or worker) was reached on the portal. " +
+				"Portal code must import config.base instead.",
+		);
+	}
 	const parsed = ConfigSchema.safeParse({
 		cockpitDatabaseUrl: process.env.COCKPIT_DATABASE_URL,
 		metadataDatabaseUrl: process.env.METADATA_DATABASE_URL,
 		metadataWriterDatabaseUrl: process.env.METADATA_WRITER_DATABASE_URL,
 		dataraumWorkspaceId: process.env.DATARAUM_WORKSPACE_ID,
+		dataraumWorkspaceSubdomain:
+			process.env.DATARAUM_WORKSPACE_SUBDOMAIN || undefined,
 		dataraumConfigPath: process.env.DATARAUM_CONFIG_PATH,
 		dataraumLakePath: process.env.DATARAUM_LAKE_PATH,
 		ducklakeCatalogUrl: process.env.DUCKLAKE_CATALOG_URL,
@@ -121,10 +141,6 @@ function loadConfig(): Config {
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,
 		temporalUiUrl: process.env.TEMPORAL_UI_URL,
-		// `|| undefined`: an empty string (compose interpolation of an unset var)
-		// means OFF, never a half-configured exporter.
-		otelExporterOtlpEndpoint:
-			process.env.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
 	});
 
 	if (!parsed.success) {

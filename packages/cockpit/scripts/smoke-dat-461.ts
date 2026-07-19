@@ -20,8 +20,9 @@
 
 import assert from "node:assert/strict";
 import { and, eq } from "drizzle-orm";
+import { baseConfig } from "#/config.base";
 import { cockpitDb } from "#/db/cockpit/client";
-import { DEFAULT_USER_ID, resolveActiveWorkspace } from "#/db/cockpit/registry";
+import { resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { markRunStatus, recordRun } from "#/db/cockpit/runs";
 import { memberships, runs, users, workspaces } from "#/db/cockpit/schema";
 
@@ -42,25 +43,28 @@ async function main(): Promise<void> {
 		.where(eq(workspaces.id, wsId))
 		.limit(1);
 	assert.equal(ws?.id, wsId, "workspace seeded + resolved");
-	const [user] = await cockpitDb
-		.select({ id: users.id })
-		.from(users)
-		.where(eq(users.id, DEFAULT_USER_ID))
-		.limit(1);
-	assert.equal(user?.id, DEFAULT_USER_ID, "default user seeded");
-	// DAT-817: the seed also grants the default user membership in the boot
-	// workspace — what the portal (Phase 6) lists at login.
-	const [membership] = await cockpitDb
-		.select({ role: memberships.role })
-		.from(memberships)
-		.where(
-			and(
-				eq(memberships.userId, DEFAULT_USER_ID),
-				eq(memberships.workspaceId, wsId),
-			),
-		)
-		.limit(1);
-	assert.equal(membership?.role, "member", "default membership seeded");
+	// DAT-819: identity is better-auth's; the seed provisions the DEV credential
+	// user (+ membership in the boot workspace — what the portal lists at login)
+	// only when the dev creds are configured.
+	if (baseConfig.devUserEmail) {
+		const [user] = await cockpitDb
+			.select({ id: users.id })
+			.from(users)
+			.where(eq(users.email, baseConfig.devUserEmail))
+			.limit(1);
+		assert.ok(user?.id, "dev user seeded");
+		const [membership] = await cockpitDb
+			.select({ role: memberships.role })
+			.from(memberships)
+			.where(
+				and(
+					eq(memberships.userId, user.id),
+					eq(memberships.workspaceId, wsId),
+				),
+			)
+			.limit(1);
+		assert.equal(membership?.role, "member", "dev membership seeded");
+	}
 
 	// 2. recordRun: writes one `runs` row (DAT-562) keyed by (workflowId, real runId);
 	//    re-recording the same run is a UNIQUE no-op. The kind lives on the run row.

@@ -660,7 +660,7 @@ CREATE TABLE slice_definitions (
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 
 	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
 	CONSTRAINT ck_slice_definitions_slice_type CHECK (slice_type IN ('categorical')), 
-	CONSTRAINT ck_slice_definitions_detection_source CHECK (detection_source IN ('llm')), 
+	CONSTRAINT ck_slice_definitions_detection_source CHECK (detection_source IN ('llm', 'structural')), 
 	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_slice_definitions_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)

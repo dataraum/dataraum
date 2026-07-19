@@ -325,6 +325,16 @@ export async function buildSchemaBlock(): Promise<string> {
 // question up from city-grain data. The flat dimension list is a soft hint at the
 // columns worth grouping by. (A near-unique GROUP BY is handled separately, as a
 // run-time caveat in grain-note.ts — not here, and never as a block.)
+//
+// CURATED read (DAT-725): the engine persists the FULL deterministic dimension
+// inventory now (every grain-safe non-measure/non-timestamp column; the slicing
+// agent only ranks). This `<dimensions>` block stays curated: top-priority
+// budget only (`slice_priority` ascending, 1 = most interesting; un-ranked rows
+// carry a priority floor), `column_name` tiebreak for a deterministic cut.
+
+// Mirrors the engine's `CURATED_SLICE_BUDGET` (analysis/slicing/models.py) —
+// the deployed ranking budget (`phases/slicing.yaml` max_recommendations: 12).
+const CURATED_SLICE_BUDGET = 12;
 
 /** One catalogued slice axis (a natural analysis dimension). */
 export interface CatalogAxisRow {
@@ -473,7 +483,12 @@ export async function buildCatalogBlock(): Promise<string> {
 				columnName: currentSliceDefinitions.columnName,
 				distinctValues: currentSliceDefinitions.distinctValues,
 			})
-			.from(currentSliceDefinitions),
+			.from(currentSliceDefinitions)
+			.orderBy(
+				asc(currentSliceDefinitions.slicePriority),
+				asc(currentSliceDefinitions.columnName),
+			)
+			.limit(CURATED_SLICE_BUDGET),
 		metadataDb
 			.select({
 				tableId: currentDimensionHierarchies.tableId,

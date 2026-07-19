@@ -9,11 +9,12 @@ use cases, with support for slice-based filtering.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
@@ -49,6 +50,12 @@ class ColumnContext:
     # Business concept mapping (from ontology, for metric calculations)
     meaning: str | None = None  # catalogue-grain business characterization (DAT-769)
     temporal_behavior: str | None = None  # 'additive' or 'point_in_time'
+
+    # Graph-served semantics (og_columns, DAT-734): the resolved materializes_as
+    # verdict ('flow' | 'stock' — witness posterior over concept prior) and the
+    # measure's anchor event-time axis (witness axis over declared anchor).
+    materialization: str | None = None
+    anchor_time_axis: str | None = None
 
     # Statistical metrics
     null_ratio: float | None = None
@@ -288,6 +295,99 @@ class EnrichedViewContext:
     fact_table: str
     dimension_columns: list[str] = field(default_factory=list)
     is_grain_verified: bool = False
+    # Base dimension TABLES the view derives from (og_derived_from, DAT-734) —
+    # the graph's derived_from edges served as structure alongside the joined
+    # column names above.
+    dimension_tables: list[str] = field(default_factory=list)
+
+
+# =============================================================================
+# Graph-served structure (DAT-734 — the operating-model property graph read)
+# =============================================================================
+
+
+@dataclass
+class GroundingUseContext:
+    """One column a grounding touches (the ``uses`` edge, provenance contract v2)."""
+
+    column_name: str
+    table_name: str
+    role: str  # 'measure' | 'filter'
+
+
+@dataclass
+class GroundingContext:
+    """One reified grounding commitment (a ``grounding_node``, DAT-727).
+
+    The N-ary fact served AS STRUCTURE: the relation it reads, the filter, the
+    value expression, and the columns it ``uses`` — never recovered from SQL
+    text. A retained failure is served discriminated (``failed`` + mode/reason):
+    "why is this concept ungrounded?" is part of the served knowledge.
+    """
+
+    snippet_id: str
+    concept: str
+    relation: str | None
+    select_expr: str | None
+    where: list[str] = field(default_factory=list)
+    statement: str | None = None
+    aggregation: str | None = None
+    description: str | None = None
+    failed: bool = False
+    failure_mode: str | None = None
+    failure_reason: str | None = None
+    uses: list[GroundingUseContext] = field(default_factory=list)
+
+
+@dataclass
+class ConceptReconciliation:
+    """One ``reconciles_with`` verdict on a concept (concept_edges, P2/P4).
+
+    The landed shape (owner-ruled) derives concept-grain SELF-LOOPS for
+    multi-grounding tie-out (``partner == concept``); seed/declared rows may
+    name a distinct partner concept.
+    """
+
+    partner: str
+    tolerance: float | None = None
+
+
+@dataclass
+class ConceptContext:
+    """One vocabulary concept with its graph neighbourhood (DAT-734).
+
+    The traversal core: definition (typed ``concepts`` row + ontology garnish),
+    ``part_of`` subconcepts/parents (+ bounded transitive ancestry),
+    ``disjoint_with``, ``reconciles_with``, and the concept's groundings
+    (``grounded_by`` → ``uses``) — multi-grounding served first-class.
+    """
+
+    name: str
+    kind: str | None = None
+    description: str | None = None
+    indicators: list[str] = field(default_factory=list)
+    exclude_patterns: list[str] = field(default_factory=list)
+    part_of_children: list[str] = field(default_factory=list)  # subconcepts (1-hop)
+    part_of_parents: list[str] = field(default_factory=list)  # 1-hop targets
+    part_of_ancestry: list[str] = field(default_factory=list)  # transitive, depth 2..4
+    disjoint_with: list[str] = field(default_factory=list)
+    reconciles_with: list[ConceptReconciliation] = field(default_factory=list)
+    groundings: list[GroundingContext] = field(default_factory=list)
+
+
+@dataclass
+class ConformedDimensionContext:
+    """Two facts sharing a dimension AXIS (og_conformed_dimension, DAT-756).
+
+    The alignable drill-across surface, served as structure: both facts expose
+    the same resolved (dimension table, attribute) identity. Unordered pair —
+    one row per axis-sharing pair, not per direction.
+    """
+
+    table_a: str
+    table_b: str
+    dimension_table: str
+    attribute: str | None = None
 
 
 @dataclass
@@ -359,6 +459,15 @@ class GraphExecutionContext:
     # Enriched views (pre-joined fact + dimension tables)
     enriched_views: list[EnrichedViewContext] = field(default_factory=list)
 
+    # The traversal core (DAT-734): each vocabulary concept with its part_of /
+    # disjoint_with / reconciles_with neighbourhood and its groundings
+    # (grounded_by → uses), read from the operating-model property graph.
+    concepts: list[ConceptContext] = field(default_factory=list)
+
+    # Conformed dimension axes (og_conformed_dimension, DAT-756) — served as
+    # structure: which facts drill across on which shared (dim table, attribute).
+    conformed_dimensions: list[ConformedDimensionContext] = field(default_factory=list)
+
     # Column meaning feed (meaning + measurement facts, DAT-769) for metrics
     field_mappings: list[ColumnMeaning] = field(default_factory=list)
 
@@ -393,6 +502,7 @@ def build_execution_context(
     vertical: str | None = None,
     om_run_id: str | None = None,
     catalogue_run_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> GraphExecutionContext:
     """Build execution context from all analysis modules.
 
@@ -419,6 +529,10 @@ def build_execution_context(
             temporal_behavior, unit source). The metrics phase passes
             ``base_runs.relationship_run_id``. None ⇒ no concepts (object-grain
             column metadata still loads).
+        workspace_id: The workspace whose operating-model property graph the
+            traversal core reads (DAT-734) — resolves the read schema. In the
+            engine paths this is ``schema_mapping_id`` (DAT-506). None ⇒ the
+            graph-served sections stay empty (logged loud).
 
     Returns:
         GraphExecutionContext with all relevant metadata
@@ -446,6 +560,13 @@ def build_execution_context(
 
     if not table_ids:
         return GraphExecutionContext()
+
+    # 0. One traversal pass over the operating-model property graph (DAT-734):
+    # the concept neighbourhoods + groundings, conformed axes, column
+    # materialization/anchor, and each enriched view's dimension bases. None ⇒
+    # unreachable graph (non-PG dialect / no workspace) — sections stay empty,
+    # logged loud inside the loader.
+    graph_reads = _load_graph_reads(session, workspace_id, vertical)
 
     # 1. Load tables
     tables_stmt = select(Table).where(Table.table_id.in_(table_ids))
@@ -877,6 +998,13 @@ def build_execution_context(
                     fact_table=fact_table.table_name,
                     dimension_columns=ev.dimension_columns or [],
                     is_grain_verified=ev.is_grain_verified,
+                    # derived_from bases (og_derived_from, DAT-734) — the graph's
+                    # view → dimension-table edges served as structure.
+                    dimension_tables=(
+                        graph_reads.dimension_tables_by_view.get(ev.view_name, [])
+                        if graph_reads
+                        else []
+                    ),
                 )
             )
 
@@ -907,6 +1035,7 @@ def build_execution_context(
     # Vertical conventions for the EXTRACTION consumer (DAT-645) — the sign rule
     # etc. piped verbatim so the SQL agent grounds a credit-normal measure positive.
     conventions: str = ""
+    ontology_obj: Any = None
     if vertical:
         try:
             from dataraum.analysis.semantic.concept_store import load_workspace_concepts
@@ -914,11 +1043,26 @@ def build_execution_context(
 
             # Concepts from the typed vocabulary table (DAT-728, config→DB);
             # conventions still come from YAML (not config→DB in this phase).
-            ontology = load_workspace_concepts(session, vertical)
-            concept_vocabulary = _format_concept_vocabulary(ontology)
-            conventions = OntologyLoader().format_conventions_for_prompt(ontology, "extraction")
+            ontology_obj = load_workspace_concepts(session, vertical)
+            concept_vocabulary = _format_concept_vocabulary(ontology_obj)
+            conventions = OntologyLoader().format_conventions_for_prompt(ontology_obj, "extraction")
         except Exception as e:
             logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
+
+    # 14c. Garnish the graph-served concepts (DAT-734) with the ontology's
+    # description/indicators/exclude_patterns — the definition surface the agent
+    # maps discriminator VALUES with. The graph rows stay authoritative for
+    # membership (typed table, DAT-728); the ontology only decorates by name.
+    concept_contexts: list[ConceptContext] = graph_reads.concepts if graph_reads else []
+    if concept_contexts and ontology_obj is not None:
+        by_name = {c.name: c for c in getattr(ontology_obj, "concepts", None) or []}
+        for cc in concept_contexts:
+            onto = by_name.get(cc.name)
+            if onto is None:
+                continue
+            cc.description = onto.description or cc.description
+            cc.indicators = list(onto.indicators or [])
+            cc.exclude_patterns = list(onto.exclude_patterns or [])
 
     # 15. Compute graph topology
     table_names = [t.table_name for t in tables]
@@ -1101,6 +1245,14 @@ def build_execution_context(
                     # fact — authoritative on its own (DAT-786 dropped the
                     # parallel contested flag; see resolve_temporal_behavior).
                     temporal_behavior=concept.temporal_behavior if concept else None,
+                    materialization=(
+                        graph_reads.materialization_by_column.get(col.column_id)
+                        if graph_reads
+                        else None
+                    ),
+                    anchor_time_axis=(
+                        graph_reads.anchor_by_column.get(col.column_id) if graph_reads else None
+                    ),
                     business_name=sem_ann.business_name if sem_ann else None,
                     business_description=sem_ann.business_description if sem_ann else None,
                     unit_source_column=concept.unit_source_column if concept else None,
@@ -1194,9 +1346,438 @@ def build_execution_context(
         cycle_health=cycle_health_report,
         validations=validation_contexts,
         enriched_views=enriched_view_contexts,
+        concepts=concept_contexts,
+        conformed_dimensions=(graph_reads.conformed_dimensions if graph_reads else []),
         field_mappings=field_mappings,
         concept_vocabulary=concept_vocabulary,
         conventions=conventions,
+    )
+
+
+# =============================================================================
+# Property-graph reads (DAT-734) — the operating-model graph as context source
+# =============================================================================
+#
+# The traversal core reads the LANDED P2 property graph (ADR-0021), never the
+# base tables: PGQ ``MATCH`` for the fixed-hop edge reads (grounded_by, uses,
+# concept_edge), the bounded recursive CTE ONLY for the part_of transitive
+# closure, and plain reads of the ``og_*`` element views for vertex maps and
+# edges needing a non-graph property. Postgres-only (SQL/PGQ); on another
+# dialect or a failed read the graph sections come back EMPTY with a loud log —
+# assembly never crashes, and the eval's MATCH-returns-rows oracles catch a
+# structurally dead graph.
+
+# Depth cap for the part_of closure — the ADR-0021 bounded-CTE mechanism (the
+# P1 spike's ≈4 with a cycle guard; PGQ MATCH is fixed-depth and cannot walk it).
+_PART_OF_MAX_DEPTH = 4
+
+
+@dataclass
+class _GraphReads:
+    """Internal carrier for one traversal pass over the operating-model graph."""
+
+    concepts: list[ConceptContext] = field(default_factory=list)
+    conformed_dimensions: list[ConformedDimensionContext] = field(default_factory=list)
+    materialization_by_column: dict[str, str] = field(default_factory=dict)
+    anchor_by_column: dict[str, str] = field(default_factory=dict)
+    dimension_tables_by_view: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _graph_read_schema(session: Session, workspace_id: str | None) -> str | None:
+    """The workspace's read schema, or ``None`` when the graph is unreachable.
+
+    The operating-model property graph is Postgres-only (SQL/PGQ, ADR-0021) and
+    lives in the read schema. On another dialect (unit-test SQLite) or without a
+    workspace identity there is nothing to traverse — log and serve empty graph
+    sections, never crash context assembly.
+    """
+    bind = session.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        logger.debug("graph_context_skipped", reason="non-postgres dialect")
+        return None
+    if not workspace_id:
+        logger.warning("graph_context_skipped", reason="no workspace_id")
+        return None
+    from dataraum.server.workspace import schema_name_for
+    from dataraum.storage.read_views import read_schema_name_for
+
+    return read_schema_name_for(schema_name_for(workspace_id))
+
+
+def _read_og_tables(session: Session, read_schema: str) -> dict[str, tuple[str, str | None]]:
+    """Vertex map ``table_id → (table_name, layer)`` from ``og_tables``."""
+    rows = session.execute(
+        text(f'SELECT table_id, table_name, layer FROM "{read_schema}".og_tables')  # noqa: S608
+    ).all()
+    return {str(r.table_id): (str(r.table_name), r.layer) for r in rows}
+
+
+def _read_og_columns(session: Session, read_schema: str) -> dict[str, Any]:
+    """Vertex map ``column_id → row`` from ``og_columns`` (name, table, semantics)."""
+    rows = session.execute(
+        text(
+            f"SELECT column_id, table_id, column_name, materialization, anchor_time_axis\n"  # noqa: S608
+            f'FROM "{read_schema}".og_columns'
+        )
+    ).all()
+    return {str(r.column_id): r for r in rows}
+
+
+def _read_concept_rows(
+    session: Session, read_schema: str, vertical: str | None
+) -> list[tuple[str, str | None]]:
+    """Active vocabulary ``(name, kind)`` rows from ``og_concepts``, name-ordered."""
+    sql = f'SELECT name, kind FROM "{read_schema}".og_concepts'  # noqa: S608
+    params: dict[str, Any] = {}
+    if vertical:
+        sql += " WHERE vertical = :vertical"
+        params["vertical"] = vertical
+    sql += " ORDER BY name"
+    return [(str(r.name), r.kind) for r in session.execute(text(sql), params).all()]
+
+
+def _read_concept_edges(session: Session, read_schema: str) -> list[Any]:
+    """All concept_edge rows (part_of / disjoint_with / reconciles_with) via PGQ MATCH."""
+    return list(
+        session.execute(
+            text(
+                f'SELECT * FROM GRAPH_TABLE ("{read_schema}".operating_model\n'
+                "  MATCH (a IS concept_node)-[e IS concept_edge]->(b IS concept_node)\n"
+                "  COLUMNS (a.name AS from_name, e.predicate AS predicate,\n"
+                "           e.tolerance AS tolerance, b.name AS to_name))"
+            )
+        ).all()
+    )
+
+
+def _read_part_of_ancestry(session: Session, read_schema: str) -> dict[str, list[str]]:
+    """Transitive ``part_of`` ancestors per concept, depth 2..cap, nearest first.
+
+    The bounded recursive CTE over ``og_concept_edges`` — ADR-0021's closure
+    mechanism (PGQ MATCH is fixed-depth). Cycle guard: the walk never re-enters
+    a concept already on its path; depth capped at ``_PART_OF_MAX_DEPTH``.
+    1-hop parents are served separately (``part_of_parents``); this returns only
+    the strictly-transitive tail (depth ≥ 2).
+    """
+    rows = session.execute(
+        text(
+            f"""
+            WITH RECURSIVE part_of_walk AS (
+                SELECT e.from_concept_id AS descendant_id,
+                       e.to_concept_id AS ancestor_id,
+                       1 AS depth,
+                       ARRAY[e.from_concept_id, e.to_concept_id] AS path
+                FROM "{read_schema}".og_concept_edges e
+                WHERE e.predicate = 'part_of'
+                UNION ALL
+                SELECT w.descendant_id, e.to_concept_id, w.depth + 1,
+                       w.path || e.to_concept_id
+                FROM part_of_walk w
+                JOIN "{read_schema}".og_concept_edges e
+                  ON e.from_concept_id = w.ancestor_id
+                WHERE e.predicate = 'part_of'
+                  AND w.depth < {_PART_OF_MAX_DEPTH}
+                  AND e.to_concept_id <> ALL(w.path)
+            )
+            SELECT cd.name AS descendant, ca.name AS ancestor, MIN(w.depth) AS depth
+            FROM part_of_walk w
+            JOIN "{read_schema}".og_concepts cd ON cd.concept_id = w.descendant_id
+            JOIN "{read_schema}".og_concepts ca ON ca.concept_id = w.ancestor_id
+            GROUP BY cd.name, ca.name
+            HAVING MIN(w.depth) >= 2
+            ORDER BY cd.name, MIN(w.depth), ca.name
+            """  # noqa: S608 — read_schema is engine-derived, never user input
+        )
+    ).all()
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        out.setdefault(str(r.descendant), []).append(str(r.ancestor))
+    return out
+
+
+def _read_grounding_rows(session: Session, read_schema: str) -> list[Any]:
+    """Concept → grounding rows via PGQ MATCH over ``grounded_by``."""
+    return list(
+        session.execute(
+            text(
+                f'SELECT * FROM GRAPH_TABLE ("{read_schema}".operating_model\n'
+                "  MATCH (c IS concept_node)-[e IS grounded_by]->(g IS grounding_node)\n"
+                "  COLUMNS (c.name AS concept_name, g.snippet_id AS snippet_id,\n"
+                "           g.relation AS relation, g.select_expr AS select_expr,\n"
+                "           g.where_predicates AS where_predicates,\n"
+                "           g.statement AS statement, g.aggregation AS aggregation,\n"
+                "           g.description AS description, g.failed AS failed))"
+            )
+        ).all()
+    )
+
+
+def _read_use_rows(session: Session, read_schema: str) -> list[Any]:
+    """Grounding → column rows via PGQ MATCH over ``uses``."""
+    return list(
+        session.execute(
+            text(
+                f'SELECT * FROM GRAPH_TABLE ("{read_schema}".operating_model\n'
+                "  MATCH (g IS grounding_node)-[u IS uses]->(col IS column_node)\n"
+                "  COLUMNS (g.snippet_id AS snippet_id, u.role AS role,\n"
+                "           col.column_name AS column_name, col.table_id AS table_id))"
+            )
+        ).all()
+    )
+
+
+def _read_grounding_provenance(session: Session, read_schema: str) -> dict[str, Any]:
+    """``snippet_id → (concept, failed, failure_mode, failure_reason)`` from the source view.
+
+    ``current_groundings`` is the graph's membership authority; the failure keys
+    live in the provenance JSON (not vertex properties). Also the basis for the
+    dropped-edge check: a snippet here but absent from the ``grounded_by`` MATCH
+    names no ACTIVE concept — that edge dropped, and absence falls loud.
+    """
+    rows = session.execute(
+        text(
+            f"SELECT snippet_id, concept, failed,\n"  # noqa: S608
+            f"       provenance->>'failure_mode' AS failure_mode,\n"
+            f"       provenance->>'failure_reason' AS failure_reason\n"
+            f'FROM "{read_schema}".current_groundings'
+        )
+    ).all()
+    return {str(r.snippet_id): r for r in rows}
+
+
+def _read_conformed(
+    session: Session, read_schema: str, tables: dict[str, tuple[str, str | None]]
+) -> list[ConformedDimensionContext]:
+    """Unordered conformed-dimension axes from ``og_conformed_dimension``.
+
+    The view emits both directions and one row per slice-row pair; this dedupes
+    to one row per (fact pair, dim table, attribute). A vertex the tables map
+    cannot resolve drops the edge VISIBLY (warning), never silently.
+    """
+    rows = session.execute(
+        text(
+            f"SELECT DISTINCT from_table_id, to_table_id, dimension_table_id,\n"  # noqa: S608
+            f"       dimension_attribute\n"
+            f'FROM "{read_schema}".og_conformed_dimension'
+        )
+    ).all()
+    seen: set[tuple[str, str, str, str | None]] = set()
+    out: list[ConformedDimensionContext] = []
+    for r in rows:
+        a_id, b_id = sorted((str(r.from_table_id), str(r.to_table_id)))
+        key = (a_id, b_id, str(r.dimension_table_id), r.dimension_attribute)
+        if key in seen:
+            continue
+        seen.add(key)
+        a, b, dim = tables.get(a_id), tables.get(b_id), tables.get(str(r.dimension_table_id))
+        if a is None or b is None or dim is None:
+            logger.warning(
+                "conformed_dimension_endpoint_unresolved",
+                from_table_id=a_id,
+                to_table_id=b_id,
+                dimension_table_id=str(r.dimension_table_id),
+            )
+            continue
+        out.append(
+            ConformedDimensionContext(
+                table_a=a[0], table_b=b[0], dimension_table=dim[0], attribute=r.dimension_attribute
+            )
+        )
+    out.sort(key=lambda c: (c.table_a, c.table_b, c.dimension_table, c.attribute or ""))
+    return out
+
+
+def _read_derived_from(
+    session: Session, read_schema: str, tables: dict[str, tuple[str, str | None]]
+) -> dict[str, list[str]]:
+    """``view_name → [dimension base tables]`` from ``og_derived_from``."""
+    rows = session.execute(
+        text(
+            f"SELECT view_table_id, base_table_id, base_role\n"  # noqa: S608
+            f"FROM \"{read_schema}\".og_derived_from WHERE base_role = 'dimension'"
+        )
+    ).all()
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        view, base = tables.get(str(r.view_table_id)), tables.get(str(r.base_table_id))
+        if view is None or base is None:
+            logger.warning(
+                "derived_from_endpoint_unresolved",
+                view_table_id=str(r.view_table_id),
+                base_table_id=str(r.base_table_id),
+            )
+            continue
+        out.setdefault(view[0], []).append(base[0])
+    for bases in out.values():
+        bases.sort()
+    return out
+
+
+def _assemble_concept_contexts(
+    concept_rows: list[tuple[str, str | None]],
+    edge_rows: list[Any],
+    ancestry: dict[str, list[str]],
+    grounding_rows: list[Any],
+    use_rows: list[Any],
+    provenance: dict[str, Any],
+    tables: dict[str, tuple[str, str | None]],
+) -> list[ConceptContext]:
+    """Fold the traversal reads into per-concept contexts (deterministic order).
+
+    Loud-absence rules applied here:
+    - a ``current_groundings`` row absent from the ``grounded_by`` MATCH names no
+      active concept — the dropped edge is WARNED, never silently invisible;
+    - a healthy grounding with no ``uses`` rows (pre-v2 provenance / rename) is
+      served but WARNED — the graph could not enumerate its columns;
+    - a healthy grounding with no relation (pre-parts row) is skipped + WARNED.
+    """
+    # uses per snippet, resolved to (column, table, role) — endpoint misses are loud.
+    uses_by_snippet: dict[str, list[GroundingUseContext]] = {}
+    for r in use_rows:
+        table = tables.get(str(r.table_id))
+        if table is None:
+            logger.warning("uses_endpoint_unresolved", table_id=str(r.table_id))
+            continue
+        uses_by_snippet.setdefault(str(r.snippet_id), []).append(
+            GroundingUseContext(
+                column_name=str(r.column_name), table_name=table[0], role=str(r.role)
+            )
+        )
+
+    groundings_by_concept: dict[str, list[GroundingContext]] = {}
+    matched_snippets: set[str] = set()
+    for r in grounding_rows:
+        snippet_id = str(r.snippet_id)
+        matched_snippets.add(snippet_id)
+        failed = bool(r.failed)
+        if not failed and r.relation is None:
+            logger.warning(
+                "grounding_relation_missing", snippet_id=snippet_id, concept=str(r.concept_name)
+            )
+            continue
+        prov = provenance.get(snippet_id)
+        uses = sorted(
+            uses_by_snippet.get(snippet_id, []),
+            key=lambda u: (u.role, u.table_name, u.column_name),
+        )
+        if not failed and not uses:
+            logger.warning(
+                "grounding_uses_empty", snippet_id=snippet_id, concept=str(r.concept_name)
+            )
+        try:
+            where = json.loads(r.where_predicates) if r.where_predicates else []
+        except TypeError, ValueError:
+            logger.warning("grounding_where_unparsable", snippet_id=snippet_id)
+            where = []
+        groundings_by_concept.setdefault(str(r.concept_name), []).append(
+            GroundingContext(
+                snippet_id=snippet_id,
+                concept=str(r.concept_name),
+                relation=r.relation,
+                select_expr=r.select_expr,
+                where=[str(w) for w in where],
+                statement=r.statement,
+                aggregation=r.aggregation,
+                description=r.description,
+                failed=failed,
+                failure_mode=(prov.failure_mode if prov is not None else None),
+                failure_reason=(prov.failure_reason if prov is not None else None),
+                uses=uses,
+            )
+        )
+
+    # Absence falls loud: a grounding the graph could not attach to any active
+    # concept (name resolves no og_concepts row) — the edge dropped visibly.
+    for snippet_id, prov in provenance.items():
+        if snippet_id not in matched_snippets:
+            logger.warning(
+                "grounding_concept_unresolved", snippet_id=snippet_id, concept=str(prov.concept)
+            )
+
+    children: dict[str, list[str]] = {}
+    parents: dict[str, list[str]] = {}
+    disjoint: dict[str, set[str]] = {}
+    reconciles: dict[str, list[ConceptReconciliation]] = {}
+    for e in edge_rows:
+        frm, to = str(e.from_name), str(e.to_name)
+        if e.predicate == "part_of":
+            children.setdefault(to, []).append(frm)
+            parents.setdefault(frm, []).append(to)
+        elif e.predicate == "disjoint_with":
+            # Stored in both directions — enumerate from the from-side only.
+            disjoint.setdefault(frm, set()).add(to)
+        elif e.predicate == "reconciles_with":
+            # Self-loop (from == to) = the derived multi-grounding tie-out; a
+            # cross pair (seed/declared, both directions stored) reads from the
+            # from-side. Either way one row per (concept, partner).
+            reconciles.setdefault(frm, []).append(
+                ConceptReconciliation(
+                    partner=to,
+                    tolerance=float(e.tolerance) if e.tolerance is not None else None,
+                )
+            )
+
+    out: list[ConceptContext] = []
+    for name, kind in concept_rows:
+        out.append(
+            ConceptContext(
+                name=name,
+                kind=kind,
+                part_of_children=sorted(children.get(name, [])),
+                part_of_parents=sorted(parents.get(name, [])),
+                part_of_ancestry=ancestry.get(name, []),
+                disjoint_with=sorted(disjoint.get(name, set())),
+                reconciles_with=sorted(reconciles.get(name, []), key=lambda x: x.partner),
+                groundings=sorted(
+                    groundings_by_concept.get(name, []),
+                    key=lambda g: (g.failed, g.relation or "", g.snippet_id),
+                ),
+            )
+        )
+    return out
+
+
+def _load_graph_reads(
+    session: Session, workspace_id: str | None, vertical: str | None
+) -> _GraphReads | None:
+    """One traversal pass over the operating-model property graph (DAT-734).
+
+    Returns ``None`` (empty graph sections) when the graph is unreachable —
+    non-Postgres dialect, no workspace identity, or a failed read. A failure is
+    WARNED, never raised: context assembly must not die on the graph, and the
+    eval's MATCH-returns-rows oracles catch a structurally dead graph.
+    """
+    read_schema = _graph_read_schema(session, workspace_id)
+    if read_schema is None:
+        return None
+    try:
+        tables = _read_og_tables(session, read_schema)
+        columns = _read_og_columns(session, read_schema)
+        concept_rows = _read_concept_rows(session, read_schema, vertical)
+        edge_rows = _read_concept_edges(session, read_schema)
+        ancestry = _read_part_of_ancestry(session, read_schema)
+        grounding_rows = _read_grounding_rows(session, read_schema)
+        use_rows = _read_use_rows(session, read_schema)
+        provenance = _read_grounding_provenance(session, read_schema)
+        conformed = _read_conformed(session, read_schema, tables)
+        derived = _read_derived_from(session, read_schema, tables)
+    except Exception as e:
+        logger.warning("graph_context_read_failed", error=str(e))
+        return None
+
+    concepts = _assemble_concept_contexts(
+        concept_rows, edge_rows, ancestry, grounding_rows, use_rows, provenance, tables
+    )
+    return _GraphReads(
+        concepts=concepts,
+        conformed_dimensions=conformed,
+        materialization_by_column={
+            cid: str(r.materialization) for cid, r in columns.items() if r.materialization
+        },
+        anchor_by_column={
+            cid: str(r.anchor_time_axis) for cid, r in columns.items() if r.anchor_time_axis
+        },
+        dimension_tables_by_view=derived,
     )
 
 
@@ -1971,6 +2552,11 @@ __all__ = [
     "BusinessCycleContext",
     "ValidationContext",
     "EnrichedViewContext",
+    "ConceptContext",
+    "ConceptReconciliation",
+    "ConformedDimensionContext",
+    "GroundingContext",
+    "GroundingUseContext",
     "GraphExecutionContext",
     "build_execution_context",
     "format_metadata_document",

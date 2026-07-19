@@ -194,6 +194,11 @@ class ExecutionContext:
             vertical=vertical,
             om_run_id=om_run_id,
             catalogue_run_id=catalogue_run_id,
+            # The graph traversal core (DAT-734) resolves the read schema from
+            # the workspace identity — which in every engine path IS the
+            # schema_mapping_id (DAT-506; ``execute`` is called with
+            # ``workspace_id=schema_mapping_id`` at all call sites).
+            workspace_id=kwargs.get("schema_mapping_id"),
         )
 
         return cls(

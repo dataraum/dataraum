@@ -2,8 +2,9 @@
 
 The statement generator is pure (no DB): these tests pin the registry's
 coverage tripwire and the artifact's shape. The live properties — promoted-run
-filtering, reader-role denial — are exercised against real Postgres by the
-pull-metadata flow and were verified in the DAT-453 bring-up.
+filtering by the pull-metadata flow; role isolation by
+``tests/integration/storage/test_workspace_roles.py`` (DAT-816) — run against
+real Postgres.
 """
 
 from __future__ import annotations

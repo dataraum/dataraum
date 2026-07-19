@@ -188,7 +188,35 @@ class Relationship(Base):
         cardinality is the signal (DAT-758): ``one-to-many`` means ``from`` is the
         ONE (parent/dim) side, so swap the endpoints — and the directional
         ``left_*``/``right_*`` evidence — to store ``many-to-one``. ``many-to-one``
-        is already correct; ``one-to-one`` is orientation-agnostic;
+        is already correct. That normalisation is safe because it only rewrites
+        the writer's OWN measured cardinality label into canonical form — it
+        decides nothing.
+
+        **``one-to-one`` is NOT re-oriented here.** A previous revision swapped a
+        1:1 when forward containment measured less than reverse. Reduce the
+        algebra and that condition is ``|from distinct| > |to distinct|`` — a
+        distinct-COUNT comparison, not the containment test its comment claimed.
+        It is right only when one value set is a clean subset of the other, and
+        it INVERTS a correct child→parent emission whenever the child carries
+        orphan values: child {1..5} against parent {1,2,3} measures forward 60 /
+        reverse 100 and is swapped, with ``cardinality_verified`` True.
+        ``joins.py`` deliberately admits such dirty subset FKs and the judge
+        prompt deliberately confirms them, so this module manufactures the very
+        inputs that rule breaks on. Containment CANNOT tell "child that is a
+        clean subset" from "child with orphans" — the two measure identically —
+        so declining to swap is the honest behaviour. Removed on that reasoning
+        (DAT-725 review), not kept because this corpus happens to hold only the
+        shape it gets right.
+
+        A 1:1's direction therefore rests with the JUDGE, which is told the rule
+        in ``semantic_per_table``'s orientation section: decide from DEPENDENCE
+        (which row cannot exist without the other), with the measured numbers as
+        corroboration. Caveat the removal exposes: the detector writes candidate
+        rows through this helper, and those already-oriented rows are what the
+        judge is later shown — so its ``from`` side is a presentation the judge
+        inherits, not a fact it derived.
+
+        Direction only — the judge's EXISTENCE verdict is never touched here.
         ``many-to-many``/``None`` cannot be oriented. The DB backstop is
         ``ck_relationships_cardinality_oriented``: a mis-oriented ``one-to-many``
         row fails loud at flush even if a future writer bypasses this helper.
@@ -202,9 +230,11 @@ class Relationship(Base):
                 from_column_id,
             )
             cardinality = "many-to-one"
-            evidence = _swap_directional_evidence(evidence)
+            evidence = swap_directional_evidence(evidence)
             # A many-to-one child→parent join matches each child to exactly one
             # parent — it never fans out (the one-to-many parent→child join did).
+            # ``swap_directional_evidence`` dropped the measured-for-the-old-
+            # direction flag; this is the answer for the new one.
             evidence["introduces_duplicates"] = False
         return {
             "run_id": run_id,
@@ -221,15 +251,38 @@ class Relationship(Base):
         }
 
 
-def _swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Exchange every ``left_*``/``right_*`` metric when the FK endpoints flip.
+def swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Re-express a measurement dict for the OPPOSITE join direction.
 
-    Referential integrity, uniqueness and any other directional metric are named
-    for the FROM/TO endpoints; after the swap the old TO becomes FROM, so the
-    pairs exchange. An unpaired ``left_``/``right_`` key still moves — the metric
-    follows its endpoint. Only ``left_``/``right_``-PREFIXED keys are covered: an
-    unprefixed-but-directional metric (e.g. a bare ``orphan_count``) does NOT swap,
-    so a new evidence producer that needs orientation-following must use the prefix.
+    THE single implementation of the flip (DAT-725). Every measurement in the
+    dict was taken for one ordered pair; reversing the pair changes what each
+    one means, so all three classes of directional key are handled here:
+
+    - **Per-side metrics** — ``left_*``/``right_*`` exchange, because the old TO
+      becomes the new FROM. An unpaired prefixed key still moves; the metric
+      follows its endpoint.
+    - **``cardinality``** — ``one-to-many`` ⇄ ``many-to-one``. It reads as
+      from-side→to-side, so it inverts with the pair. (``one-to-one`` and
+      ``many-to-many`` are symmetric.) A caller that also stores cardinality in
+      a COLUMN must keep the two in step; ``Relationship.oriented_row`` does.
+    - **``introduces_duplicates``** — the fan-out answer for the measured
+      direction only, and NOT recoverable by flipping it: whether a join
+      multiplies rows depends on which side is scanned. Dropped, so a caller
+      that knows the new direction's answer sets it explicitly and one that
+      doesn't carries no claim rather than a reversed one.
+
+    Anything else must be SYMMETRIC — true of the pair regardless of which side
+    is named first — and is passed through. That is checked, not assumed: an
+    unrecognised bare key raises. This is why. ``evidence`` is a free JSON
+    column with no schema, so "directional metrics are prefixed" is a spelling
+    convention; twice a writer added a directional metric without the prefix
+    (``orphan_count``, ``join_success_rate``, both literally from-side
+    measurements) and this function passed them through unchanged, leaving them
+    describing a side they were no longer on. Both shipped — ``RI: L=100%`` next
+    to ``orphans=8`` on one stored row — and both were invisible until someone
+    ran the flip on real data. A silent pass-through cannot tell "symmetric" from
+    "misspelled", so the ambiguity is resolved at the one place that knows: add a
+    genuinely symmetric key to :data:`_SYMMETRIC_EVIDENCE_KEYS`, or prefix it.
     """
     swapped: dict[str, Any] = {}
     for key, value in evidence.items():
@@ -237,9 +290,54 @@ def _swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             swapped["right_" + key[len("left_") :]] = value
         elif key.startswith("right_"):
             swapped["left_" + key[len("right_") :]] = value
-        else:
+        elif key == "introduces_duplicates":
+            continue
+        elif key == "cardinality":
+            swapped[key] = _CARDINALITY_FLIP.get(value, value)
+        elif key in _SYMMETRIC_EVIDENCE_KEYS:
             swapped[key] = value
+        else:
+            raise ValueError(
+                f"evidence key {key!r} is neither left_/right_-prefixed nor declared "
+                "symmetric, so flipping the pair cannot know what it now means. "
+                "Prefix it if it measures one side, or add it to "
+                "_SYMMETRIC_EVIDENCE_KEYS if it is true of the pair either way round."
+            )
     return swapped
+
+
+# Keys that mean the same thing whichever side is named first, so a flip leaves
+# them alone. Value-overlap statistics are set-symmetric; the rest are provenance
+# about the pair or the judge's own prose about it. Adding one here is a claim
+# that reversing the endpoints does not change what it says — check that before
+# adding, because the whole point of the raise above is that nobody checked
+# twice already.
+_SYMMETRIC_EVIDENCE_KEYS = frozenset(
+    {
+        # Value-overlap statistics — computed over the two value SETS.
+        "join_confidence",
+        "statistical_confidence",
+        "algorithm",
+        # Whether the measured cardinality was confirmed against the actual
+        # join — a property of the check, not of a side.
+        "cardinality_verified",
+        # Provenance: which writer produced the row, which run measured it,
+        # whether the measurement was copied rather than retaken, which teach
+        # action created it (add/keep), and which method donated RI evidence.
+        "source",
+        "measured_run_id",
+        "not_remeasured",
+        "action",
+        "ri_evidence_source",
+        # The judge's prose and its composite-key verdict about the pair.
+        "reasoning",
+        "composite_key_columns",
+    }
+)
+
+
+# ``one-to-one``/``many-to-many`` are symmetric — absent by design, not oversight.
+_CARDINALITY_FLIP = {"one-to-many": "many-to-one", "many-to-one": "one-to-many"}
 
 
 Index("idx_relationships_from", Relationship.from_table_id)

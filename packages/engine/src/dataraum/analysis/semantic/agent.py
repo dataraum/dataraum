@@ -151,8 +151,14 @@ class SemanticAgent(LLMFeature):
                 if cand.get("table2"):
                     table_names_from_candidates.add(cand["table2"])
             if table_names_from_candidates:
+                # SORTED. `list(set)` is PYTHONHASHSEED-dependent, so the graph
+                # roles rendered into the prompt reordered between processes —
+                # measured varying across four runs of identical data. The 1:1
+                # orientation design now rests on the judge, and the prompt asks
+                # it to emit the same direction every time; that is not a fair
+                # ask while its own input reshuffles per process (DAT-725).
                 graph_structure = analyze_graph_topology(
-                    table_ids=list(table_names_from_candidates),
+                    table_ids=sorted(table_names_from_candidates),
                     relationships=relationship_candidates,
                 )
 
@@ -376,6 +382,10 @@ class SemanticAgent(LLMFeature):
                     & (ColumnProfileModel.profiled_at == subq.c.max_profiled_at),
                 )
                 .where(Table.table_id.in_(table_ids))
+                # ORDERED: unordered, ``tables_json``'s table and column order
+                # was Postgres physical order, so the schema the judge reads
+                # could reshuffle between runs of identical data (DAT-725).
+                .order_by(Table.table_name, Column.column_position)
             )
 
             result = session.execute(stmt)
@@ -521,11 +531,14 @@ class SemanticAgent(LLMFeature):
 
             lines.append(f"\n### {table1} <-> {table2}")
 
-            # Add relationship-level evaluation metrics if available
-            join_success = rel.get("join_success_rate")
+            # Add relationship-level evaluation metrics if available. A
+            # "join success rate" used to print here; it was the best join's
+            # left RI restated at table-pair grain, stored unprefixed so it
+            # never followed a flip — printing "100%" directly above the same
+            # pair's "L=60%". The per-column line below carries that number for
+            # the direction actually stored, so it was deleted, not fixed
+            # (DAT-725).
             introduces_dups = rel.get("introduces_duplicates")
-            if join_success is not None:
-                lines.append(f"Join success rate: {join_success:.1f}%")
             if introduces_dups is not None:
                 lines.append(f"Introduces duplicates (fan trap): {introduces_dups}")
 
@@ -587,17 +600,28 @@ class SemanticAgent(LLMFeature):
                     if left_uniq is not None and right_uniq is not None:
                         line += f" [uniq: L={left_uniq:.2f} R={right_uniq:.2f}]"
 
-                    # Add evaluation metrics if available
+                    # Add evaluation metrics if available. Each is measured the
+                    # same way on BOTH sides (DAT-725), so the two numbers in a
+                    # bracket are directly comparable — which is the whole point
+                    # for a judge weighing which side depends on the other.
                     left_ri = jc.get("left_referential_integrity")
                     right_ri = jc.get("right_referential_integrity")
-                    orphans = jc.get("orphan_count")
+                    left_cov = jc.get("left_key_coverage")
+                    right_cov = jc.get("right_key_coverage")
+                    left_orphans = jc.get("left_orphan_count")
+                    right_orphans = jc.get("right_orphan_count")
                     verified = jc.get("cardinality_verified")
 
                     metrics = []
                     if left_ri is not None and right_ri is not None:
-                        metrics.append(f"RI: L={left_ri:.0f}% R={right_ri:.0f}%")
-                    if orphans is not None and orphans > 0:
-                        metrics.append(f"orphans={orphans}")
+                        metrics.append(f"rows resolving: L={left_ri:.0f}% R={right_ri:.0f}%")
+                    if left_cov is not None and right_cov is not None:
+                        metrics.append(f"values covered: L={left_cov:.0f}% R={right_cov:.0f}%")
+                    # Render a measured ZERO too. Suppressing it made "clean" and
+                    # "never measured" the same line, so the judge could not tell
+                    # an FK with no orphans from one whose orphans nobody counted.
+                    if left_orphans is not None and right_orphans is not None:
+                        metrics.append(f"unresolved rows: L={left_orphans} R={right_orphans}")
                     if verified is not None:
                         metrics.append(f"verified={verified}")
 

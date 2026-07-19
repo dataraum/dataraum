@@ -17,7 +17,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.db_models import (
+    _SYMMETRIC_EVIDENCE_KEYS,
+    Relationship,
+    swap_directional_evidence,
+)
 from dataraum.storage import Column, Source, Table
 from dataraum.storage.base import init_database
 
@@ -63,15 +67,31 @@ def test_flip_swaps_every_directional_metric_generically() -> None:
         confidence=0.7,
         detection_method="candidate",
         confirmation_source="unconfirmed",
-        evidence={"left_uniqueness": 0.1, "right_uniqueness": 0.99, "orphan_count": 3},
+        evidence={
+            "left_uniqueness": 0.1,
+            "right_uniqueness": 0.99,
+            "left_orphan_count": 3,
+            "cardinality": "one-to-many",
+            "join_confidence": 0.7,
+        },
     )
     assert row["evidence"]["left_uniqueness"] == 0.99
     assert row["evidence"]["right_uniqueness"] == 0.1
-    assert row["evidence"]["orphan_count"] == 3  # non-directional key stays put
+    # The orphan count is a FROM-SIDE measurement, so it moves with its endpoint
+    # like every other prefixed metric. It was unprefixed before DAT-725 and
+    # therefore stayed put, leaving a stored row that read "L=100% RI" beside
+    # "orphans=3" — a reading that cannot be true, shipped to the judge and to
+    # the orphan-rate detector as fact.
+    assert "left_orphan_count" not in row["evidence"]
+    assert row["evidence"]["right_orphan_count"] == 3
+    # The evidence copy of the cardinality tracks the column it mirrors.
+    assert row["evidence"]["cardinality"] == "many-to-one"
+    # Symmetric measurements are untouched.
+    assert row["evidence"]["join_confidence"] == 0.7
 
 
-@pytest.mark.parametrize("cardinality", ["many-to-one", "one-to-one", "many-to-many", None])
-def test_non_one_to_many_is_left_oriented(cardinality: str | None) -> None:
+@pytest.mark.parametrize("cardinality", ["many-to-one", "many-to-many", None])
+def test_unorientable_cardinalities_are_left_as_emitted(cardinality: str | None) -> None:
     row = Relationship.oriented_row(
         run_id="r1",
         from_table_id="a",
@@ -89,6 +109,100 @@ def test_non_one_to_many_is_left_oriented(cardinality: str | None) -> None:
     assert row["cardinality"] == cardinality
     # Untouched — no fabricated fan-out flag, no evidence swap.
     assert row["evidence"] == {"left_referential_integrity": 1.0}
+
+
+# --- 1:1 orientation from measured containment asymmetry (DAT-725). ----------
+
+
+def _one_to_one_row(evidence: dict[str, object] | None) -> dict[str, object]:
+    return Relationship.oriented_row(
+        run_id="r1",
+        from_table_id="parent_tbl",
+        from_column_id="parent_col",
+        to_table_id="child_tbl",
+        to_column_id="child_col",
+        relationship_type="foreign_key",
+        cardinality="one-to-one",
+        confidence=0.95,
+        detection_method="llm",
+        confirmation_source="judge",
+        evidence=evidence,
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "evidence"),
+    [
+        # A clean subset, emitted parent-first. The old rule swapped this and
+        # was right — but it cannot tell this shape from the next one.
+        (
+            "clean subset, emitted parent-first",
+            {"left_referential_integrity": 24.33, "right_referential_integrity": 100.0},
+        ),
+        # A child carrying ORPHAN values, emitted CORRECTLY child-first. It
+        # measures the same way round as the case above, so the old rule swapped
+        # it too — inverting a correct emission. joins.py deliberately admits
+        # these ("a dirty subset FK is still an FK") and the judge prompt
+        # deliberately confirms them.
+        (
+            "orphan-bearing child, emitted correctly",
+            {
+                "left_referential_integrity": 60.0,
+                "right_referential_integrity": 100.0,
+                "left_key_coverage": 60.0,
+                "right_key_coverage": 100.0,
+                "left_orphan_count": 2,
+                "right_orphan_count": 0,
+                "cardinality_verified": True,
+            },
+        ),
+        # Identical value sets: containment is silent either way.
+        (
+            "dense bijection",
+            {"left_referential_integrity": 100.0, "right_referential_integrity": 100.0},
+        ),
+        # Completeness disagrees loudly. Still not this helper's call.
+        (
+            "symmetric containment, lopsided completeness",
+            {
+                "left_referential_integrity": 100.0,
+                "right_referential_integrity": 100.0,
+                "left_uniqueness": 1.0,
+                "right_uniqueness": 0.4698,
+            },
+        ),
+    ],
+)
+def test_one_to_one_is_never_re_oriented(shape: str, evidence: dict[str, object]) -> None:
+    """A 1:1 keeps the orientation it was written with, whatever the numbers say.
+
+    The removed rule swapped when forward containment measured below reverse.
+    That reduces to "the from side has more distinct values" — right for a clean
+    subset, WRONG for a child with orphans, and the two are indistinguishable to
+    containment. Since it cannot separate them, it does not decide: direction
+    for a 1:1 belongs to the judge, which is told to reason from dependence
+    (``semantic_per_table``'s orientation section).
+    """
+    row = _one_to_one_row(evidence)
+
+    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col"), shape
+    assert "orientation_swapped" not in row["evidence"], shape
+
+
+def test_one_to_one_evidence_is_carried_verbatim() -> None:
+    """No swap means no relabelling: per-side metrics stay on the side measured."""
+    row = _one_to_one_row(
+        {
+            "left_referential_integrity": 24.33,
+            "right_referential_integrity": 100.0,
+            "left_uniqueness": 1.0,
+            "right_uniqueness": 0.4698,
+        }
+    )
+
+    assert row["evidence"]["left_uniqueness"] == 1.0
+    assert row["evidence"]["right_uniqueness"] == 0.4698
+    assert row["evidence"]["left_referential_integrity"] == 24.33
 
 
 def test_confirmation_source_is_passed_through_verbatim() -> None:
@@ -167,3 +281,58 @@ def test_check_admits_the_canonical_orientations(session: Session) -> None:
     for cardinality in ("many-to-one", "one-to-one", "many-to-many", None):
         _add(session, cardinality=cardinality, from_column_id="ca", to_column_id="cb")
         session.rollback()  # each is its own attempt on the unique pair
+
+
+# --- the prefix contract, enforced rather than documented (DAT-725). ---------
+
+
+def test_an_undeclared_bare_key_raises_instead_of_passing_through() -> None:
+    """The guard that makes "prefix a directional metric" a rule, not a habit.
+
+    ``evidence`` is a schema-less JSON column, so nothing typed the difference
+    between a per-side measurement and a fact about the pair. Twice a writer
+    added a from-side metric without a prefix — ``orphan_count``,
+    ``join_success_rate`` — and the flip carried it through unchanged, leaving
+    it describing a side it was no longer on. Both shipped, both were invisible
+    until the flip was run on real data. A pass-through cannot tell "symmetric"
+    from "misspelled", so it refuses to guess.
+    """
+    with pytest.raises(ValueError, match="neither left_/right_-prefixed nor declared symmetric"):
+        swap_directional_evidence({"orphan_count": 3})
+
+
+def test_declared_symmetric_keys_survive_the_flip_unchanged() -> None:
+    evidence = dict.fromkeys(_SYMMETRIC_EVIDENCE_KEYS, "unchanged")
+    assert swap_directional_evidence(evidence) == evidence
+
+
+def test_every_key_the_detector_writes_is_classifiable() -> None:
+    """The evidence a real writer produces must pass the guard.
+
+    Mirrors ``detector._store_candidates``'s evidence dict plus the per-side
+    metrics ``evaluate_join_candidate`` adds — if a new measurement is added
+    there without a prefix or a declaration, this fails before a run does.
+    """
+    detector_evidence = {
+        "join_confidence": 0.97,
+        "cardinality": "one-to-many",
+        "left_uniqueness": 0.02,
+        "right_uniqueness": 1.0,
+        "statistical_confidence": 1.0,
+        "algorithm": "exact",
+        "source": "value_overlap",
+        "left_referential_integrity": 100.0,
+        "right_referential_integrity": 62.5,
+        "left_key_coverage": 100.0,
+        "right_key_coverage": 62.5,
+        "left_orphan_count": 0,
+        "right_orphan_count": 3,
+        "cardinality_verified": True,
+        "introduces_duplicates": True,
+    }
+    flipped = swap_directional_evidence(detector_evidence)
+
+    assert flipped["cardinality"] == "many-to-one"
+    assert flipped["left_referential_integrity"] == 62.5
+    assert flipped["left_orphan_count"] == 3
+    assert "introduces_duplicates" not in flipped

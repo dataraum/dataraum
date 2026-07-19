@@ -30,26 +30,33 @@ if TYPE_CHECKING:
 
 
 class SliceDefinition(Base):
-    """The dimension catalog: one recommended aggregation/filter dimension per row.
+    """The dimension inventory: one aggregation/filter dimension per row.
 
-    Each record is a dimension a fact can be sliced/grouped by — grain-safe by
-    construction: the slicing phase excludes constants, near-unique keys, and
-    majority-NULL columns before the LLM (DAT-805, a scale-invariant near-key
-    fraction — not an absolute count), and enriched dimensions are grain-verified
-    FK joins, so a cataloged dimension is always grain-safe to aggregate — thin
-    per-group support is folded by the driver-tree's ``min_support`` (the answer
-    agent + metrics page surface a mid-cardinality dim as-is; DAT-538 removed the
-    redundant always-true ``grain_safe`` flag). The durable output of the
-    slicing phase, consumed downstream by the answer agent, the metrics page, and
-    the driver-tree engine (DAT-545). Slice *materialization* was removed (DAT-536):
-    the structural_reconciliation substrate is aggregated inline over the enriched
-    views, so there is no ``sql_template`` to store.
+    Existence is DETERMINISTIC (DAT-725 rescope): the slicing phase persists
+    every eligible column — grain-safe pre-filter survivor (DAT-805: not a
+    constant, not majority-NULL, not a near-unique key, on a scale-invariant
+    near-key fraction) whose ``semantic_role`` is not measure/timestamp. The
+    LLM's role is ENRICHMENT only: the slicing agent ranks the most interesting
+    dimensions, and its ``slice_priority`` / ``business_context`` / ``reasoning``
+    / ``confidence`` merge onto rows that exist regardless (un-ranked rows carry
+    the ``UNRANKED_SLICE_PRIORITY`` floor). Same data + same code ⇒ the same
+    persisted dimension set, run to run — an elected-subset catalog silently
+    dropped real axes (a folded ``account_id`` was elected 0-2 times across
+    runs) from every existence consumer (drivers, lineage, bus_matrix).
 
-    One definition per ``(table_id, column_name, run_id)`` (DAT-502): the
-    slicing agent can emit a dimension twice and the propagation pass adds
-    more, so the writer dedups in-batch and UPSERTs on this key — a Temporal
-    success-redelivery (same ``run_id``) converges instead of duplicating,
-    and a new run's definitions coexist with prior runs'.
+    Grain-safety is by construction — enriched dimensions are grain-verified FK
+    joins; thin per-group support is folded by the driver-tree's ``min_support``
+    (DAT-538 removed the redundant always-true ``grain_safe`` flag). Curation
+    surfaces (cycles/graphs/validation context + the cockpit ``<dimensions>``
+    block) read ``ORDER BY slice_priority LIMIT CURATED_SLICE_BUDGET``; existence
+    consumers read the full inventory. Slice *materialization* was removed
+    (DAT-536): the structural_reconciliation substrate is aggregated inline over
+    the enriched views, so there is no ``sql_template`` to store.
+
+    One definition per ``(table_id, column_name, run_id)`` (DAT-502): the writer
+    dedups in-batch and UPSERTs on this key — a Temporal success-redelivery
+    (same ``run_id``) converges instead of duplicating, and a new run's
+    definitions coexist with prior runs'.
     """
 
     __tablename__ = "slice_definitions"
@@ -64,10 +71,12 @@ class SliceDefinition(Base):
         # is the cost of shipping a second slice type, same as any other closed
         # vocabulary here.
         CheckConstraint("slice_type IN ('categorical')", name="slice_type"),
-        # Detection-source vocabulary (DAT-802): the ONLY value any writer
-        # produces today — ``slicing_phase.py`` always sets 'llm' (matches the
-        # column default).
-        CheckConstraint("detection_source IN ('llm')", name="detection_source"),
+        # Detection-source vocabulary (DAT-802 / DAT-725): 'llm' = the slicing
+        # agent ranked this row (its enrichment fields are LLM-derived);
+        # 'structural' = a deterministic inventory row the ranker did not touch
+        # (enrichment NULL, priority = the UNRANKED_SLICE_PRIORITY floor).
+        # ``slicing_phase.py`` is still the sole writer.
+        CheckConstraint("detection_source IN ('llm', 'structural')", name="detection_source"),
     )
 
     slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))

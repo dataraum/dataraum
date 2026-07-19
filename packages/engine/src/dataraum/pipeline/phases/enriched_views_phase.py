@@ -63,37 +63,43 @@ from dataraum.storage import Column, Table
 logger = get_logger(__name__)
 
 
-def _dossier(rel: Relationship) -> str:
-    """The enrichment judge's dossier fingerprint for one relationship row."""
-    from dataraum.analysis.views.enrichment_agent import dossier_fingerprint
-
-    return dossier_fingerprint(
-        rel.cardinality, rel.confidence, (rel.evidence or {}).get("coverage")
-    )
+# Sentinel for a stored considered entry that carries no cardinality slot (a
+# pre-DAT-791 entry — 2-element, or a retired DAT-699 dossier hash). Distinct
+# from ``None``, which IS a valid stored cardinality (an unmeasured pair).
+_UNKNOWN_BASIS = object()
 
 
 def _unchanged_considered_pairs(
     entries: list[Any] | None,
     current: dict[tuple[str, str], Relationship],
 ) -> set[tuple[str, str]]:
-    """The prior considered pairs whose dossier is UNCHANGED (DAT-699).
+    """The prior considered pairs whose structural basis is unchanged (DAT-791).
 
-    Entries are ``[from_col, to_col, dossier_fingerprint]``. The DAT-516 sticky
-    shape froze the VERDICT but the dossier isn't frozen — pairs judged before
-    DAT-695 existed never saw the coverage note, and inheritance meant they
-    never would. A pair re-opens (counts as undecided, re-offered to the
-    judge) when its current dossier no longer matches the one its verdict was
-    made on, and when the stored entry carries no fingerprint at all (the
-    dossier the judge saw is unknown — conservatively re-ask). A pair absent
-    from the current catalog stays considered: there is nothing to re-judge,
-    and the existing Layer-A prune handles real drop+re-adds.
+    Entries are ``[from_col, to_col, cardinality]``. A verdict sticks while the
+    topology it was made on holds: the pair is still in the confirmed catalog
+    with the same measured ``cardinality`` — a structural fact, deterministic
+    for identical inputs. LLM-produced ``confidence`` and measured ``coverage``
+    deliberately do NOT participate: both jitter run-to-run, and hashing them
+    into the re-open predicate (the retired DAT-699 dossier) re-invoked the
+    enrichment judge on identical topology — exactly the shape drift DAT-516
+    froze the verdict to prevent. Identity of inputs → identity of shape.
+
+    A pair re-opens (counts as undecided, re-offered to the judge) when its
+    measured cardinality no longer matches the one its verdict was made on
+    (e.g. a many-to-one → one-to-many flip invalidates the grain-safety
+    premise the judge saw), and when the stored entry carries no cardinality
+    slot at all (pre-DAT-791 entry — the basis is unknown, conservatively
+    re-ask once; a retired dossier hash mismatches every cardinality and
+    re-opens the same way). A pair absent from the current catalog stays
+    considered: there is nothing to re-judge, and the existing Layer-A prune
+    handles real drop+re-adds.
     """
     out: set[tuple[str, str]] = set()
     for entry in entries or []:
         pair = (entry[0], entry[1])
-        fingerprint = entry[2] if len(entry) > 2 else None
+        basis = entry[2] if len(entry) > 2 else _UNKNOWN_BASIS
         rel = current.get(pair)
-        if rel is None or (fingerprint is not None and fingerprint == _dossier(rel)):
+        if rel is None or basis == rel.cardinality:
             out.add(pair)
     return out
 
@@ -548,14 +554,15 @@ class EnrichedViewsPhase(BasePhase):
             # later returns is thus re-judged, not stuck invisible — and since Layer A's
             # silent-accept keeps the confirmed SET stable across runs, this prune only fires
             # on a real drop+re-add, never on LLM re-judgment (the determinism the ticket wants).
-            # Each entry carries the DOSSIER FINGERPRINT its verdict was made on
-            # (DAT-699): the verdict sticks only while the measured evidence the
-            # judge saw is unchanged — a changed dossier re-opens the pair.
+            # Each entry carries the measured CARDINALITY its verdict was made on
+            # (DAT-791): the verdict sticks while the topology holds — only a
+            # cardinality flip (a structural fact) re-opens the pair, never the
+            # run-to-run jitter of confidence/coverage (the retired DAT-699 dossier).
             considered_now = considered_pairs(fact_id) & set(cand_by_pair)
             if judged:
                 considered_now |= set(cand_by_pair)
             view_record.considered_relationship_pairs = [
-                [a, b, _dossier(cand_by_pair[(a, b)])] for (a, b) in sorted(considered_now)
+                [a, b, cand_by_pair[(a, b)].cardinality] for (a, b) in sorted(considered_now)
             ]
             view_record.exposed_dimension_joins = [
                 {

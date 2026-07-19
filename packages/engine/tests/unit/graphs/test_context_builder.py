@@ -82,36 +82,26 @@ def _insert_source_table_column(session: Session) -> tuple[str, str, str]:
 
 
 class TestBuilderExtractsSemanticFields:
-    """Verify builder reads business_name, business_description, unit_source_column."""
+    """Verify builder reads the object-grain semantic role (DAT-734: business
+    meaning is single-homed in the field_mappings feed, not on the column)."""
 
-    def test_business_name_from_semantic_annotation(self, session: Session) -> None:
-        from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
+    def test_semantic_role_from_annotation(self, session: Session) -> None:
+        from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
-        source_id, table_id, column_id = _insert_source_table_column(session)
+        _source_id, table_id, column_id = _insert_source_table_column(session)
 
-        # Object-grain (business_name/description) on SemanticAnnotation; the
-        # catalogue-grain unit source on ColumnConcept at the catalogue run (DAT-637).
         session.add(
             SemanticAnnotation(
                 annotation_id=_id(),
                 column_id=column_id,
                 semantic_role="measure",
-                business_name="Invoice Amount",
-                business_description="Total value before tax in local currency",
                 confidence=0.9,
             )
-        )
-        session.add(
-            ColumnConcept(column_id=column_id, run_id="cat-run", unit_source_column="currency_code")
         )
         session.flush()
 
         ctx = build_execution_context(session, [table_id], catalogue_run_id="cat-run")
-
-        col = ctx.tables[0].columns[0]
-        assert col.business_name == "Invoice Amount"
-        assert col.business_description == "Total value before tax in local currency"
-        assert col.unit_source_column == "currency_code"
+        assert ctx.tables[0].columns[0].semantic_role == "measure"
 
     def test_stale_addsource_run_dropped(self, session: Session) -> None:
         """Coexisting add_source runs ⇒ read only the table's promoted run (DAT-429 #2).
@@ -126,14 +116,13 @@ class TestBuilderExtractsSemanticFields:
         from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
 
         _source_id, table_id, column_id = _insert_source_table_column(session)
-        for rid, name in (("new", "NEW name"), ("old", "OLD name")):
+        for rid, role in (("new", "measure"), ("old", "dimension")):
             session.add(
                 SemanticAnnotation(
                     annotation_id=_id(),
                     column_id=column_id,
                     run_id=rid,
-                    semantic_role="measure",
-                    business_name=name,
+                    semantic_role=role,
                     confidence=0.9,
                 )
             )
@@ -144,12 +133,12 @@ class TestBuilderExtractsSemanticFields:
         session.flush()
 
         ctx_new = build_execution_context(session, [table_id])
-        assert ctx_new.tables[0].columns[0].business_name == "NEW name"
+        assert ctx_new.tables[0].columns[0].semantic_role == "measure"
 
         head.run_id = "old"
         session.flush()
         ctx_old = build_execution_context(session, [table_id])
-        assert ctx_old.tables[0].columns[0].business_name == "OLD name"
+        assert ctx_old.tables[0].columns[0].semantic_role == "dimension"
 
 
 class TestBuilderExtractsTableEntity:
@@ -404,119 +393,62 @@ class TestBuilderOmRunIdOverride:
         assert ctx_override.business_cycles[0].cycle_name == "Order to Cash"
 
 
-class TestBuilderExtractsDimensionHierarchies:
-    """Verify the builder exposes DimensionHierarchy rows (DAT-537), run-scoped.
+class TestBuilderCuratedSliceRead:
+    """DAT-725: ``available_slices`` is the top-priority BUDGET, ascending."""
 
-    Run-versioned, sealed at the begin_session catalog head: the builder reads only
-    the promoted run, exactly like the slice read — an unpromoted run's rows must
-    not bleed in (fail-closed).
-    """
-
-    def test_hierarchies_exposed_at_promoted_head(self, session: Session) -> None:
-        from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
-        from dataraum.storage.snapshot_head import (
-            MetadataSnapshotHead,
-            catalog_head_target,
+    def test_slice_budget_and_ascending_priority(self, session: Session) -> None:
+        """The catalog is the full deterministic inventory; this LLM-facing read
+        takes LIMIT CURATED_SLICE_BUDGET in ascending priority (1 = most
+        interesting FIRST, column_name tiebreak). Regression pin for the
+        pre-rescope in-Python ``reverse=True`` sort, which put the least
+        interesting first — load-bearing wrong once floor-priority structural
+        rows exist (they would have led every list)."""
+        from dataraum.analysis.slicing.db_models import SliceDefinition
+        from dataraum.analysis.slicing.models import (
+            CURATED_SLICE_BUDGET,
+            UNRANKED_SLICE_PRIORITY,
         )
+        from dataraum.storage import Column
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
 
-        _source_id, table_id, column_id = _insert_source_table_column(session)
-        session.add(
-            DimensionHierarchy(
-                run_id="run-1",
-                table_id=table_id,
-                kind="drilldown",
-                # SCRAMBLED array order with explicit ``level`` (0 = coarsest): the
-                # builder must read by level, not position (DAT-779).
-                members=[
-                    {"column_name": "zip", "column_id": column_id, "distinct_count": 6, "level": 2},
-                    {"column_name": "state", "column_id": "", "distinct_count": 2, "level": 0},
-                    {"column_name": "city", "column_id": "", "distinct_count": 4, "level": 1},
-                ],
-                canonical_label="state → city → zip",
-                signature="drilldown:t:city|state|zip",
-                g3=0.0,
+        _source_id, table_id, _column_id = _insert_source_table_column(session)
+        for i in range(CURATED_SLICE_BUDGET + 3):
+            cid = _id()
+            session.add(
+                Column(
+                    column_id=cid,
+                    table_id=table_id,
+                    column_name=f"dim_{i:02d}",
+                    column_position=10 + i,
+                )
             )
-        )
-        head = MetadataSnapshotHead(
-            head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="run-1"
-        )
-        session.add(head)
-        session.flush()
-
-        ctx = build_execution_context(session, [table_id])
-        assert len(ctx.dimension_hierarchies) == 1
-        hier = ctx.dimension_hierarchies[0]
-        assert hier.kind == "drilldown"
-        # Read by level → coarse → fine, regardless of array position.
-        assert hier.members == ["state", "city", "zip"]
-        assert hier.canonical_label == "state → city → zip"
-        assert hier.table_name == "invoices"
-
-        # Flip the head to a run with no hierarchy rows → fail-closed empty.
-        head.run_id = "run-2"
-        session.flush()
-        assert build_execution_context(session, [table_id]).dimension_hierarchies == []
-
-    def test_role_rows_without_g3_sort_last(self, session: Session) -> None:
-        """The builder orders by ``g3`` ascending with NULLs last (DAT-784): a g3-less
-        role row sorts AFTER a g3-scored drilldown, deterministically (the ordering the
-        prompt reads 'strongest first'). Locks the cross-dialect ``nulls_last``."""
-        from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
-        from dataraum.storage.snapshot_head import (
-            MetadataSnapshotHead,
-            catalog_head_target,
-        )
-
-        _source_id, table_id, column_id = _insert_source_table_column(session)
-        session.add(
-            DimensionHierarchy(
-                run_id="run-1",
-                table_id=table_id,
-                kind="drilldown",
-                members=[
-                    {
-                        "column_name": "state",
-                        "column_id": column_id,
-                        "distinct_count": 2,
-                        "level": 0,
-                    },
-                    {"column_name": "city", "column_id": "", "distinct_count": 4, "level": 1},
-                ],
-                canonical_label="state → city",
-                signature="drilldown:t:city|state",
-                g3=0.005,
+            # Two ranked rows (priorities 1 and 2), the rest structural floor.
+            session.add(
+                SliceDefinition(
+                    slice_id=_id(),
+                    run_id="cat",
+                    table_id=table_id,
+                    column_id=cid,
+                    column_name=f"dim_{i:02d}",
+                    slice_priority=i + 1 if i < 2 else UNRANKED_SLICE_PRIORITY,
+                    distinct_values=["a", "b"],
+                    detection_source="llm" if i < 2 else "structural",
+                )
             )
-        )
-        session.add(
-            DimensionHierarchy(
-                run_id="run-1",
-                table_id=table_id,
-                kind="role",
-                members=[
-                    {"column_name": "billto", "column_id": "", "distinct_count": 9, "level": 0},
-                    {"column_name": "soldto", "column_id": "", "distinct_count": 9, "level": 1},
-                ],
-                canonical_label="billto ⇄ soldto",
-                signature="role:t:billto|soldto",
-                g3=None,  # a role pair has no functional dependency
-                role_verdict="role",
-                role_evidence={
-                    "t1_p": 0.001,
-                    "t1_context": "channel",
-                    "t2_p": 0.5,
-                    "k_disagree": 30,
-                    "alpha": 0.01,
-                    "disagree_rate": 0.008,
-                },
-            )
-        )
         session.add(
             MetadataSnapshotHead(
-                head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="run-1"
+                head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="cat"
             )
         )
         session.flush()
 
         ctx = build_execution_context(session, [table_id])
-        # Drilldown (g3=0.005) first; the g3-less role row sorts last (NULLS LAST).
-        assert [h.kind for h in ctx.dimension_hierarchies] == ["drilldown", "role"]
+
+        assert len(ctx.available_slices) == CURATED_SLICE_BUDGET
+        priorities = [s.priority for s in ctx.available_slices]
+        assert priorities == sorted(priorities), "ascending — most interesting first"
+        assert ctx.available_slices[0].column_name == "dim_00"
+        floor_names = [
+            s.column_name for s in ctx.available_slices if s.priority == UNRANKED_SLICE_PRIORITY
+        ]
+        assert floor_names == sorted(floor_names), "deterministic tiebreak on the floor"

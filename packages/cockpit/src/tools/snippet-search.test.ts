@@ -37,8 +37,13 @@ const graph = (): SnippetGraph => ({
 			sql: 'SELECT SUM("Betrag") AS value FROM journal_lines',
 			description: "Revenue from the income statement",
 			provenance: {
+				// Contract-v2 basis shape (DAT-727).
 				column_mappings_basis: {
-					revenue: { column: "account_type", filter: "IN ('Sales')" },
+					revenue: {
+						measure_columns: ["Betrag"],
+						filter_columns: ["account_type"],
+						filter: "IN ('Sales')",
+					},
 				},
 			},
 			source: "graph:dso",
@@ -69,7 +74,11 @@ describe("projectGraph", () => {
 			parameter_value: null,
 			// DAT-616: prior value→concept filter, surfaced so grounding isn't re-invented.
 			column_mappings_basis: {
-				revenue: { column: "account_type", filter: "IN ('Sales')" },
+				revenue: {
+					measure_columns: ["Betrag"],
+					filter_columns: ["account_type"],
+					filter: "IN ('Sales')",
+				},
 			},
 		});
 		expect("normalized_expression" in s).toBe(false);

@@ -2,8 +2,8 @@
 
 Assembles rich context from all available pipeline metadata:
 slice definitions, statistical profiles, temporal profiles,
-quality reports, enriched views, semantic annotations,
-entity classifications, and confirmed relationships.
+enriched views, semantic annotations, entity classifications,
+and confirmed relationships.
 
 The LLM receives pre-computed signals and synthesizes them
 into business cycle analysis — no exploration tools needed.
@@ -33,11 +33,13 @@ from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.graphs.field_mapping import format_meanings_for_prompt, load_column_meanings
+from dataraum.llm.privacy import DataSampler
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
@@ -49,10 +51,20 @@ logger = get_logger(__name__)
 # of WHICH balance means completion stays in the LLM + cycles.yaml, never here.
 _ARITHMETIC_DERIVATIONS = frozenset({"sum", "difference", "product", "ratio"})
 
+# Entity-flow sample budget: the stored typed profile carries up to the
+# profiler's top_k inventory (hundreds of rows for a high-cardinality identity
+# column — exactly the column class served here). Entity determination needs
+# the VALUE PATTERN, not the inventory, and the cycles prompt is ONE cross-
+# table call, so only the head of the frequency-ordered list is served, each
+# value truncated like the semantic agents' samples.
+_ENTITY_FLOW_SAMPLE_BUDGET = 10
+_SAMPLE_VALUE_MAX_CHARS = 100
+
 if TYPE_CHECKING:
     import duckdb
 
     from dataraum.lifecycle import BaseRunMap
+    from dataraum.llm.config import LLMPrivacy
 
 
 def build_cycle_detection_context(
@@ -62,6 +74,7 @@ def build_cycle_detection_context(
     *,
     vertical: str,
     base_runs: BaseRunMap,
+    privacy: LLMPrivacy | None = None,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
 
@@ -77,8 +90,12 @@ def build_cycle_detection_context(
         base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).
             ``relationship_run_id`` scopes the defined relationships, entity
             classifications, and slice definitions; ``semantic_runs`` scopes
-            each table's per-column annotations. An absent pin reads EMPTY —
-            fail-closed (DAT-429), never a cross-run read.
+            each table's per-column annotations AND its typed-profile reads
+            (slice value counts, entity-flow value samples). An absent pin
+            reads EMPTY — fail-closed (DAT-429), never a cross-run read.
+        privacy: LLM privacy config; when provided, entity-flow value samples
+            respect its sensitive-name patterns (a sensitive column serves no
+            samples). ``None`` serves samples ungated (tests).
 
     Returns:
         Context dictionary with all pipeline metadata for cycle detection.
@@ -110,48 +127,6 @@ def build_cycle_detection_context(
         else {}
     )
 
-    # Row counts from DuckDB
-    row_counts: dict[str, int | None] = {}
-    for t in tables:
-        try:
-            result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{t.duckdb_path}"').fetchone()
-            row_counts[t.table_name] = result[0] if result else None
-        except Exception:
-            logger.warning("row_count_failed", table=t.table_name, duckdb_path=t.duckdb_path)
-            row_counts[t.table_name] = None
-
-    # Build table info with columns and semantic annotations
-    table_info = []
-    for t in tables:
-        columns = []
-        for c in t.columns:
-            col_info: dict[str, Any] = {
-                "name": c.column_name,
-                "type": c.resolved_type or c.raw_type,
-            }
-            ann = annotations.get(c.column_id)
-            if ann is not None:
-                col_info["semantic_role"] = ann.semantic_role
-                col_info["entity_type"] = ann.entity_type
-                col_info["business_name"] = ann.business_name
-                col_info["business_description"] = ann.business_description
-            concept = concepts.get(c.column_id)
-            if concept is not None:
-                col_info["meaning"] = concept.meaning
-                col_info["temporal_behavior"] = concept.temporal_behavior
-            columns.append(col_info)
-
-        table_info.append(
-            {
-                "table_id": t.table_id,
-                "table_name": t.table_name,
-                "row_count": row_counts.get(t.table_name),
-                "columns": columns,
-            }
-        )
-
-    context["tables"] = table_info
-
     # The pinned begin_session run (ADR-0008 in-run mode): the run-versioned
     # reads below — entity classifications, the defined relationships, AND slice
     # definitions (run-versioned since DAT-448: table-scoped + immortal was the
@@ -166,6 +141,8 @@ def build_cycle_detection_context(
         )
 
     # 2. Entity classifications (fact vs dimension) — run-scoped (fail-closed above).
+    # Loaded before the per-column pass below because their identity_columns feed
+    # the entity-flow sample gate.
     entities: list[Any] = []
     if run_id is not None:
         entities = list(
@@ -176,26 +153,13 @@ def build_cycle_detection_context(
             ).all()
         )
 
-    context["entity_classifications"] = [
-        {
-            "table_name": table_name,
-            "entity_type": ent.detected_entity_type,
-            "description": ent.description,
-            "table_role": ent.table_role,
-            # A bare list of column names (DAT-775) — ``format_context_for_prompt``
-            # below joins this directly into the prompt's "grain: ..." text.
-            "grain_columns": ent.grain_columns,
-        }
-        for ent, table_name in entities
-    ]
-
     # 3. The defined relationships (not candidate) within the selection — run-scoped,
     # fail-closed above (empty when the session's run is unresolved).
     relationships = (
         load_defined_relationships(session, table_ids, run_id=run_id) if run_id is not None else []
     )
 
-    rel_list = []
+    rel_list: list[dict[str, Any]] = []
     for rel in relationships:
         from_col = column_by_id.get(rel.from_column_id)
         to_col = column_by_id.get(rel.to_column_id)
@@ -217,6 +181,114 @@ def build_cycle_detection_context(
                 }
             )
 
+    # Entity-flow candidate columns: the columns cycles' entity flows ride on —
+    # confirmed-relationship endpoints plus each table's recurring identity
+    # columns (semantic_per_table's "would-be foreign keys", DAT-565). These get
+    # VALUE SAMPLES served below: when a column's NAME communicates nothing (an
+    # obscured/renamed schema) the values are the remaining evidence for WHICH
+    # entity a flow involves, so the judging LLM must see them instead of
+    # inheriting a name-starved annotation's hedge. Structural gate only —
+    # derived from served metadata, never from name patterns or value shapes.
+    columns_by_table: dict[str, set[str]] = {
+        t.table_name: {c.column_name for c in t.columns} for t in tables
+    }
+    entity_flow_columns: set[tuple[str, str]] = set()
+    for r in rel_list:
+        entity_flow_columns.add((r["from_table"], r["from_column"]))
+        entity_flow_columns.add((r["to_table"], r["to_column"]))
+    for ent, ent_table_name in entities:
+        for ic in _served_identity_columns(
+            ent.identity_columns, columns_by_table.get(ent_table_name, set())
+        ):
+            entity_flow_columns.add((ent_table_name, ic["column"]))
+
+    # Row counts from DuckDB
+    row_counts: dict[str, int | None] = {}
+    for t in tables:
+        try:
+            result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{t.duckdb_path}"').fetchone()
+            row_counts[t.table_name] = result[0] if result else None
+        except Exception:
+            logger.warning("row_count_failed", table=t.table_name, duckdb_path=t.duckdb_path)
+            row_counts[t.table_name] = None
+
+    sampler = DataSampler(privacy) if privacy is not None else None
+
+    # Build table info with columns and semantic annotations
+    table_info = []
+    for t in tables:
+        columns = []
+        for c in t.columns:
+            col_info: dict[str, Any] = {
+                "name": c.column_name,
+                "type": c.resolved_type or c.raw_type,
+            }
+            ann = annotations.get(c.column_id)
+            if ann is not None:
+                col_info["semantic_role"] = ann.semantic_role
+                col_info["entity_type"] = ann.entity_type
+                col_info["business_name"] = ann.business_name
+                col_info["business_description"] = ann.business_description
+                # The annotator's confidence contract: this number encodes how
+                # much the column NAME communicates, not how certain the
+                # annotation is. Served so a low value reads as "unreadable
+                # name — weigh the samples", never silently dropped.
+                if ann.confidence is not None:
+                    col_info["annotation_confidence"] = ann.confidence
+            concept = concepts.get(c.column_id)
+            if concept is not None:
+                col_info["meaning"] = concept.meaning
+                col_info["temporal_behavior"] = concept.temporal_behavior
+            # Value samples for entity-flow candidates (gate above) — read at the
+            # table's pinned generation head, the same run-scoped profile read
+            # the slice value counts use (fail-closed on a missing pin). A
+            # privacy-sensitive name serves NOTHING: a redaction placeholder
+            # carries no entity evidence, so absence is the honest serving.
+            if (t.table_name, c.column_name) in entity_flow_columns and not (
+                sampler is not None and sampler.is_sensitive(c.column_name)
+            ):
+                value_counts = _get_value_counts_for_column(
+                    session, c.column_id, run_id=base_runs.semantic_runs.get(t.table_id)
+                )
+                samples = [
+                    _truncate_sample_value(vc["value"])
+                    for vc in value_counts
+                    if vc.get("value") is not None
+                ][:_ENTITY_FLOW_SAMPLE_BUDGET]
+                if samples:
+                    col_info["sample_values"] = samples
+            columns.append(col_info)
+
+        table_info.append(
+            {
+                "table_id": t.table_id,
+                "table_name": t.table_name,
+                "row_count": row_counts.get(t.table_name),
+                "columns": columns,
+            }
+        )
+
+    context["tables"] = table_info
+
+    context["entity_classifications"] = [
+        {
+            "table_name": table_name,
+            "entity_type": ent.detected_entity_type,
+            "description": ent.description,
+            "table_role": ent.table_role,
+            # A bare list of column names (DAT-775) — ``format_context_for_prompt``
+            # below joins this directly into the prompt's "grain: ..." text.
+            "grain_columns": ent.grain_columns,
+            # Recurring identity columns (DAT-565) with their authored notes —
+            # the columns entity flows ride on; rendered so the agent sees WHY
+            # a column carries samples. Existence-filtered (see the helper).
+            "identity_columns": _served_identity_columns(
+                ent.identity_columns, columns_by_table.get(table_name, set())
+            ),
+        }
+        for ent, table_name in entities
+    ]
+
     context["relationships"] = rel_list
 
     # 4. Graph topology
@@ -231,7 +303,10 @@ def build_cycle_detection_context(
     # 5. Slice definitions (pre-identified categorical dimensions = status columns)
     # Run-versioned (DAT-448): scope to the pinned begin_session run; fail-closed
     # like entities/relationships when the session has no pinned run (empty,
-    # never a cross-run read).
+    # never a cross-run read). CURATED read (DAT-725): the catalog is the full
+    # deterministic inventory now, so LLM-facing context takes the top-priority
+    # budget (1 = most interesting; column_name tiebreak keeps the cut
+    # deterministic across floor-priority structural rows).
     slices: list[SliceDefinition] = []
     if run_id is not None:
         slice_stmt = (
@@ -241,7 +316,8 @@ def build_cycle_detection_context(
                 SliceDefinition.run_id == run_id,
             )
             .options(selectinload(SliceDefinition.table), selectinload(SliceDefinition.column))
-            .order_by(SliceDefinition.slice_priority)
+            .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
+            .limit(CURATED_SLICE_BUDGET)
         )
         slices = list(session.execute(slice_stmt).scalars().all())
 
@@ -395,6 +471,34 @@ def build_cycle_detection_context(
     return context
 
 
+def _served_identity_columns(
+    identity_columns: list[dict[str, Any]] | None,
+    real_columns: set[str],
+) -> list[dict[str, Any]]:
+    """Filter LLM-authored identity columns to ones that physically exist.
+
+    ``TableEntity.identity_columns`` is synthesis output persisted unvalidated —
+    a hallucinated column name served verbatim would satisfy the prompt's
+    cite-only-served contract while still being dropped by the membership floor
+    (``verify.py``: "column not in workspace"), silently rejecting the whole
+    cycle. Malformed entries (non-dict, missing ``column``) are dropped for the
+    same reason: only names the workspace can ground are served.
+    """
+    return [
+        ic
+        for ic in identity_columns or []
+        if isinstance(ic, dict) and ic.get("column") in real_columns
+    ]
+
+
+def _truncate_sample_value(value: Any) -> str:
+    """Stringify + truncate one served sample value (mirrors the semantic agents)."""
+    text = str(value)
+    if len(text) > _SAMPLE_VALUE_MAX_CHARS:
+        return text[:_SAMPLE_VALUE_MAX_CHARS] + "..."
+    return text
+
+
 def _load_pinned_annotations(
     session: Session,
     tables: list[Table] | Any,
@@ -541,6 +645,17 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         lines.append(f"- {ent['table_name']} ({table_type}{row_str}{grain}): {ent['entity_type']}")
         if ent.get("description"):
             lines.append(f"  {ent['description'][:500]}")
+        # Recurring identity columns (DAT-565): the entity-identifying columns
+        # of this table, each with the synthesis agent's one-line note. The
+        # builder pre-filters the list to real columns (_served_identity_columns);
+        # the shape guard here only protects hand-built contexts (tests).
+        identity_strs = [
+            f"{ic['column']} ({ic['note']})" if ic.get("note") else str(ic["column"])
+            for ic in ent.get("identity_columns") or []
+            if isinstance(ic, dict) and ic.get("column")
+        ]
+        if identity_strs:
+            lines.append(f"  identity columns: {'; '.join(identity_strs)}")
     lines.append("")
 
     # Pre-identified categorical dimensions (= cycle indicators)
@@ -552,9 +667,11 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         lines.append("dimensions. Status columns are strong cycle completion indicators.")
         lines.append("")
         for sd in slice_defs:
-            lines.append(
-                f"### {sd['table_name']}.{sd['column_name']} (confidence: {sd['confidence']:.0%})"
-            )
+            # Structural inventory rows (DAT-725) carry no LLM confidence — the
+            # header renders without one rather than formatting None.
+            conf = sd.get("confidence")
+            conf_part = f" (confidence: {conf:.0%})" if conf is not None else ""
+            lines.append(f"### {sd['table_name']}.{sd['column_name']}{conf_part}")
             if sd.get("business_context"):
                 lines.append(f"  Context: {sd['business_context'][:500]}")
 
@@ -648,6 +765,12 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
 
     # Column semantics by table
     lines.append("## COLUMN SEMANTICS BY TABLE")
+    lines.append("")
+    lines.append("annotation_confidence encodes how much the column NAME communicates —")
+    lines.append("a low value marks an unreadable name, not weak data evidence. Identity")
+    lines.append("and relationship-endpoint columns carry value samples where available;")
+    lines.append("for a low-confidence annotation, ground the entity determination in the")
+    lines.append("samples and confirmed relationships rather than the annotation's wording.")
     for table in context.get("tables", []):
         lines.append(f"\n### {table['table_name']}")
         for col in table["columns"]:
@@ -658,8 +781,12 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 parts.append(f"meaning={col['meaning']}")
             if col.get("entity_type"):
                 parts.append(f"entity={col['entity_type']}")
+            if col.get("annotation_confidence") is not None:
+                parts.append(f"annotation_confidence={col['annotation_confidence']:.2f}")
             lines.append(f"  - {', '.join(parts)}")
             if col.get("business_description"):
                 lines.append(f"    {col['business_description'][:500]}")
+            if col.get("sample_values"):
+                lines.append(f"    samples: {', '.join(col['sample_values'])}")
 
     return "\n".join(lines)

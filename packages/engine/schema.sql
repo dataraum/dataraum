@@ -14,7 +14,7 @@ CREATE TABLE concept_edges (
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_concept_edges PRIMARY KEY (edge_id), 
 	CONSTRAINT ck_concept_edges_predicate CHECK (predicate IN ('disjoint_with', 'part_of', 'reconciles_with')), 
-	CONSTRAINT ck_concept_edges_source CHECK (source IS NULL OR source = 'seed')
+	CONSTRAINT ck_concept_edges_source CHECK (source IS NULL OR source IN ('derived', 'seed'))
 );
 
 CREATE UNIQUE INDEX uq_concept_edge_active ON concept_edges (vertical, predicate, from_concept, to_concept) WHERE superseded_at IS NULL;
@@ -660,7 +660,7 @@ CREATE TABLE slice_definitions (
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 
 	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
 	CONSTRAINT ck_slice_definitions_slice_type CHECK (slice_type IN ('categorical')), 
-	CONSTRAINT ck_slice_definitions_detection_source CHECK (detection_source IN ('llm')), 
+	CONSTRAINT ck_slice_definitions_detection_source CHECK (detection_source IN ('llm', 'structural')), 
 	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_slice_definitions_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)

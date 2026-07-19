@@ -194,7 +194,7 @@ class TestEvaluateCandidatesParallel:
         assert jc.left_referential_integrity == 100.0  # All orders match a customer
         assert jc.right_referential_integrity is not None
         assert jc.right_referential_integrity == 100.0  # All customers are referenced
-        assert jc.orphan_count == 0
+        assert jc.left_orphan_count == 0
         assert jc.cardinality_verified is True
 
     def test_detects_duplicate_introduction(self, test_duckdb):

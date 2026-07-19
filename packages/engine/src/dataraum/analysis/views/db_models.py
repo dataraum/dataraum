@@ -66,14 +66,18 @@ class EnrichedView(Base):
     relationship_ids: Mapped[list[str] | None] = mapped_column(JSON)
 
     # The candidate FK column-pairs already JUDGED for this fact — exposed OR
-    # rejected-by-the-enrichment-LLM — as ``[[from_column_id, to_column_id], ...]``
-    # (DAT-516). The enriched-view shape is sticky: a re-run feeds the LLM only the
-    # *undecided* pairs (candidates not in this set) and inherits the rest, so the shape
-    # is monotonic (grows on a newly-confirmed relationship, shrinks only on an explicit
-    # reject). Keyed on ``column_id`` — stable across begin_session re-runs (typed-table
-    # columns are minted at add_source, not re-run) — NOT ``relationship_id`` (per-run).
+    # rejected-by-the-enrichment-LLM — as
+    # ``[[from_column_id, to_column_id, cardinality], ...]`` (DAT-516/791). The
+    # enriched-view shape is sticky: a re-run feeds the LLM only the *undecided* pairs
+    # (candidates not in this set) and inherits the rest, so the shape is monotonic
+    # (grows on a newly-confirmed relationship, shrinks only on an explicit reject).
+    # The third element is the measured cardinality the verdict was made on — the
+    # re-open basis is topology-only (DAT-791): a cardinality flip re-opens the pair;
+    # confidence/coverage jitter never does. Keyed on ``column_id`` — stable across
+    # begin_session re-runs (typed-table columns are minted at add_source, not re-run)
+    # — NOT ``relationship_id`` (per-run).
     # ``None`` = first run / legacy row: nothing decided yet → judge every candidate.
-    considered_relationship_pairs: Mapped[list[list[str]] | None] = mapped_column(JSON)
+    considered_relationship_pairs: Mapped[list[list[str | None]] | None] = mapped_column(JSON)
 
     # The EXPOSED joins, serialized so a re-run rebuilds the shape WITHOUT re-judging
     # (DAT-516). One entry per exposed dimension join:

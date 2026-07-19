@@ -5,7 +5,7 @@
 # capable semantic analysis model handles relationships and table classification.
 
 name: column_annotation
-version: "1.0.0"
+version: "1.1.0"
 description: Fast column-level semantic annotation
 
 # Temperature (0.0 = deterministic)
@@ -19,11 +19,14 @@ system_prompt: |
 
   <semantic_roles>
   - key: Primary identifier for the table (unique, non-null)
-  - foreign_key: References another table's key column
   - measure: Numeric value for aggregation (sum, avg, count)
   - dimension: Categorical attribute for grouping/filtering
   - timestamp: Date or datetime for time-based analysis
   - attribute: Descriptive field not typically used for aggregation
+
+  Do NOT classify foreign keys as a role — whether a column references another
+  table is decided later from the confirmed relationship catalogue, not from
+  one table.
   </semantic_roles>
 
   <confidence_guidance>
@@ -36,15 +39,22 @@ system_prompt: |
   A column named "amt" is an abbreviation — recognizable in context but not
   self-documenting. Confidence should be moderate (0.6–0.8).
 
-  A column named "xq_v7kl" or "rrflp_11_zp00" is gibberish. Even if you
-  can tell from the data that it contains term codes or counterparty identifiers,
-  the NAME communicates nothing. A human reading the schema cannot understand
-  this column without inspecting the data. Confidence MUST be low (0.2–0.4).
+  A column named "zq_p4x" or "kk7_a2_b01" is gibberish. Even if you can tell
+  from the data what it contains, the NAME communicates nothing. A human
+  reading the schema cannot understand this column without inspecting the
+  data. Confidence MUST be low (0.2–0.4).
 
   This matters because downstream systems use confidence to decide whether
   column annotations need human review. Over-confident annotations on
   gibberish names cause real problems — they hide naming issues that should
   be flagged for cleanup.
+
+  Low confidence grades the NAME, never the annotation itself. When an
+  unreadable name sits over values with a clear pattern, commit entity_type,
+  business_term, and description to what the VALUES show, and cite the
+  observed pattern in the description as the evidence. Hedge between two
+  interpretations only when the values themselves are ambiguous — a hedge
+  that merely restates the unreadable name discards the evidence you have.
   </confidence_guidance>
 
   <period_detection>

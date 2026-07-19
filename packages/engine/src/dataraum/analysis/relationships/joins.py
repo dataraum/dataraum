@@ -40,6 +40,15 @@ LARGE_CARDINALITY_THRESHOLD = 1_000_000  # Exact below, MinHash above
 DEFAULT_NUM_HASHES = 128  # MinHash signature size
 MIN_CONFIDENCE_THRESHOLD = 0.5  # Minimum statistical confidence to accept
 
+# The containment rescue only counts toward a REFERENCED side that is a key in
+# its own table (DAT-725). An FK target must identify its row, so a true key's
+# uniqueness ratio (distinct / non-NULL rows) is 1.0 by definition; the floor
+# grants the referenced side the same near-inclusion tolerance the containment
+# threshold itself grants the contained side — a few duplicate-loaded key rows
+# are dirt, not structure — while any column whose values repeat structurally
+# (status/category codes) sits far below it.
+REF_UNIQUENESS_MIN = 0.95
+
 # Type compatibility groups for join detection
 # Types within a group can be compared for Jaccard similarity
 TYPE_GROUPS: dict[str, set[str]] = {
@@ -177,6 +186,11 @@ class ColumnStats:
     resolved_type: str | None = None  # Column's resolved type (e.g., "VARCHAR", "BIGINT")
 
 
+def _uniqueness(stats: ColumnStats) -> float:
+    """Distinct / non-NULL rows — the key-likeness of a column in its own table."""
+    return stats.distinct_count / stats.total_count if stats.total_count else 0.0
+
+
 @dataclass
 class JoinScoreResult:
     """Result of a join score computation."""
@@ -260,12 +274,22 @@ def _should_compare_columns(
     if stats1.distinct_count <= 1 or stats2.distinct_count <= 1:
         return False
 
-    # Skip if cardinality ratio is extreme
+    # Skip if the cardinality ratio is extreme — UNLESS the larger side is a
+    # key. The cap prunes value-pool comparisons where a huge distinct-count
+    # mismatch makes a join implausible; but an FK target is a key, and a
+    # referencing column may legitimately use only a handful of a large key
+    # column's values — a real FK's ratio is unbounded — so a (near-)unique
+    # larger side keeps the pair alive for the containment rescue
+    # (REF_UNIQUENESS_MIN, DAT-725). The rescued comparison stays cheap: the
+    # contained side's distinct set is tiny. A non-key larger side at extreme
+    # ratio is a value pool — pruned as before.
     ratio = max(stats1.distinct_count, stats2.distinct_count) / max(
         min(stats1.distinct_count, stats2.distinct_count), 1
     )
     if ratio > cardinality_ratio_threshold:
-        return False
+        larger = stats1 if stats1.distinct_count >= stats2.distinct_count else stats2
+        if _uniqueness(larger) < REF_UNIQUENESS_MIN:
+            return False
 
     return True
 
@@ -338,13 +362,23 @@ def _compute_exact_jaccard(
             # Containment (near-inclusion of one distinct set in another): a dirty
             # subset FK (a few orphan values) is still an FK — the candidate must
             # exist for the referential-integrity evaluator to quantify the orphans —
-            # so rescue at >=0.95 fractional containment, the threshold the deleted
-            # sampled band used, now computed exactly (DAT-794). Only meaningful when
-            # the smaller set has enough distinct values — low-cardinality columns
-            # (e.g., 2-3 values) trivially contain each other. The fractional value
-            # (not a snapped 1.0) is the score: honest evidence for the LLM.
-            min_distinct = min(count1, count2)
-            containment = intersection / min_distinct if min_distinct > 10 else 0.0
+            # so rescue at >=0.95 fractional containment, computed exactly (DAT-794).
+            # Containment is FK-shaped evidence only toward a REFERENCED side that
+            # is a key — (near-)unique in its own table (REF_UNIQUENESS_MIN) — so
+            # each direction is gated on the uniqueness of the side being contained
+            # INTO, at ANY cardinality of the contained side (DAT-725: the old
+            # `min_distinct > 10` floor made every low-cardinality FK column
+            # structurally unproposable — a 2-distinct code column 100%-contained
+            # in a unique reference key is a real FK). Trivial mutual containment
+            # stays dead under the same gate: two categorical columns drawing from
+            # a shared value pool both repeat across rows, so neither side is a
+            # key. The fractional value (not a snapped 1.0) is the score: honest
+            # evidence for the LLM.
+            containment = 0.0
+            if _uniqueness(stats2) >= REF_UNIQUENESS_MIN:
+                containment = intersection / count1  # col1's values ⊆ col2 (a key)
+            if _uniqueness(stats1) >= REF_UNIQUENESS_MIN:
+                containment = max(containment, intersection / count2)
             if containment < 0.95:
                 containment = 0.0
             score = max(jaccard, containment)

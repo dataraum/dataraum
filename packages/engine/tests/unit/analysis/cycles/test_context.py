@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import duckdb
 import pytest
+from sqlalchemy import select
 
 from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.cycles.context import (
@@ -23,10 +24,11 @@ from dataraum.analysis.cycles.context import (
     format_context_for_prompt,
 )
 from dataraum.analysis.relationships.db_models import Relationship
-from dataraum.analysis.semantic.db_models import TableEntity
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.lifecycle import BaseRunMap
+from dataraum.llm.config import LLMPrivacy
 from dataraum.storage import Column, Source, Table
 
 
@@ -399,3 +401,428 @@ def test_value_counts_fail_closed_without_generation_pin(session, sliced_status_
     slices = ctx["slice_definitions"]
     assert len(slices) == 1
     assert slices[0]["value_counts"] == []
+
+
+def test_curated_slice_budget_and_priority_order(session) -> None:
+    """DAT-725: the catalog is the full deterministic inventory, so this LLM-facing
+    context reads only the top-priority budget, ascending (1 = most interesting),
+    with a deterministic column_name tiebreak across floor-priority rows."""
+    from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET, UNRANKED_SLICE_PRIORITY
+
+    source = Source(name="s", source_type="csv")
+    session.add(source)
+    session.flush()
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="facts",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_facts",
+    )
+    session.add(tbl)
+    session.flush()
+
+    n_total = CURATED_SLICE_BUDGET + 3
+    for i in range(n_total):
+        col = Column(
+            table_id=tbl.table_id,
+            column_name=f"dim_{i:02d}",
+            column_position=i,
+            raw_type="VARCHAR",
+        )
+        session.add(col)
+        session.flush()
+        # Two ranked rows (priorities 1 and 2), the rest structural at the floor.
+        priority = i + 1 if i < 2 else UNRANKED_SLICE_PRIORITY
+        session.add(
+            SliceDefinition(
+                run_id="cat",
+                table_id=tbl.table_id,
+                column_id=col.column_id,
+                column_name=f"dim_{i:02d}",
+                slice_priority=priority,
+                distinct_values=["a", "b"],
+                detection_source="llm" if i < 2 else "structural",
+            )
+        )
+    session.commit()
+
+    ctx = _build(
+        session,
+        [tbl.table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={}),
+    )
+    slices = ctx["slice_definitions"]
+    assert len(slices) == CURATED_SLICE_BUDGET, "inventory is complete; context is curated"
+    priorities = [s["priority"] for s in slices]
+    assert priorities == sorted(priorities), "ascending — 1 = most interesting first"
+    assert slices[0]["column_name"] == "dim_00"
+    # The floor rows fill the remaining budget in deterministic name order.
+    floor_names = [s["column_name"] for s in slices if s["priority"] == UNRANKED_SLICE_PRIORITY]
+    assert floor_names == sorted(floor_names)
+
+
+# ---------------------------------------------------------------------------
+# Entity-flow evidence (DAT-725): value samples + annotation confidence for the
+# columns cycles' entity flows ride on — identity columns and confirmed-
+# relationship endpoints. The gate is structural (served metadata only); the
+# reads are run-pinned and fail-closed like every other run-versioned read here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def identity_column_with_samples(session):
+    """A fact table with an identity column, a hedged annotation, and profiles.
+
+    ``zq_p4x`` (an unreadably named identity column) carries a low-confidence
+    annotation + typed top_values under the generation run; ``amount`` is a
+    plain measure whose profile must NOT be served as samples; ``contact_email``
+    is an identity column with a privacy-sensitive name. Returns
+    ``(table_id, catalogue_run, gen_run)``.
+    """
+    source = Source(name="flow_source", source_type="csv")
+    session.add(source)
+    session.flush()
+
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="invoices",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_invoices",
+    )
+    session.add(tbl)
+    session.flush()
+
+    id_col = Column(
+        table_id=tbl.table_id, column_name="zq_p4x", column_position=0, raw_type="VARCHAR"
+    )
+    measure_col = Column(
+        table_id=tbl.table_id, column_name="amount", column_position=1, raw_type="DECIMAL"
+    )
+    email_col = Column(
+        table_id=tbl.table_id, column_name="contact_email", column_position=2, raw_type="VARCHAR"
+    )
+    session.add_all([id_col, measure_col, email_col])
+    session.flush()
+
+    session.add(
+        TableEntity(
+            entity_id=_id(),
+            table_id=tbl.table_id,
+            run_id="cat",
+            detected_entity_type="invoice",
+            description="Invoice rows.",
+            table_role="fact",
+            grain_columns=["invoice_id"],
+            identity_columns=[
+                {"column": "zq_p4x", "note": "recurring counterparty identifier"},
+                {"column": "contact_email", "note": "contact address"},
+                # A hallucinated name + a malformed entry: the builder must
+                # existence-filter BOTH before serving — a served-but-nonexistent
+                # name would pass the prompt's cite-only-served contract and then
+                # be silently dropped by the membership floor.
+                {"column": "ghost_col", "note": "does not exist"},
+                "not-a-dict",
+            ],
+        )
+    )
+
+    session.add(
+        SemanticAnnotation(
+            column_id=id_col.column_id,
+            run_id="gen",
+            semantic_role="dimension",
+            entity_type="entity_identifier",
+            business_name="Entity Code",
+            business_description="the entity associated with the row",
+            confidence=0.25,
+        )
+    )
+
+    for col, values in (
+        (id_col, ["E-0002", "E-0003"]),
+        (measure_col, ["10.5"]),
+        (email_col, ["a@example.com"]),
+    ):
+        session.add(
+            StatisticalProfile(
+                column_id=col.column_id,
+                run_id="gen",
+                layer="typed",
+                total_count=100,
+                null_count=0,
+                profile_data={
+                    "top_values": [{"value": v, "count": 5, "percentage": 5.0} for v in values]
+                },
+            )
+        )
+    session.commit()
+    return tbl.table_id, "cat", "gen"
+
+
+def test_identity_columns_serve_samples_and_annotation_confidence(
+    session, identity_column_with_samples
+) -> None:
+    """An identity column carries its value samples + the annotation's confidence;
+    a plain measure column (profiled, but not identity/endpoint) carries neither."""
+    table_id, cat, gen = identity_column_with_samples
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={table_id: gen}),
+    )
+
+    cols = {c["name"]: c for c in ctx["tables"][0]["columns"]}
+    assert cols["zq_p4x"]["sample_values"] == ["E-0002", "E-0003"]
+    assert cols["zq_p4x"]["annotation_confidence"] == 0.25
+    assert "sample_values" not in cols["amount"]
+
+    # The identity columns ride along on the classification (rendered with
+    # notes) — existence-filtered: the fixture's hallucinated "ghost_col" and
+    # its malformed non-dict entry must NOT be served.
+    ents = ctx["entity_classifications"]
+    assert ents[0]["identity_columns"] == [
+        {"column": "zq_p4x", "note": "recurring counterparty identifier"},
+        {"column": "contact_email", "note": "contact address"},
+    ]
+
+
+def test_identity_samples_fail_closed_without_generation_pin(
+    session, identity_column_with_samples
+) -> None:
+    """No pinned generation run for the table ⇒ no samples, no annotation — never
+    an arbitrary run's profile."""
+    table_id, cat, _ = identity_column_with_samples
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={}),
+    )
+    cols = {c["name"]: c for c in ctx["tables"][0]["columns"]}
+    assert "sample_values" not in cols["zq_p4x"]
+    assert "annotation_confidence" not in cols["zq_p4x"]
+
+
+def test_sensitive_identity_column_serves_no_samples(session, identity_column_with_samples) -> None:
+    """A privacy-sensitive name serves NO samples (absence, not a placeholder) —
+    the same pattern gate the semantic agents' DataSampler enforces."""
+    table_id, cat, gen = identity_column_with_samples
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={table_id: gen}),
+        privacy=LLMPrivacy(sensitive_patterns=[".*email.*"]),
+    )
+    cols = {c["name"]: c for c in ctx["tables"][0]["columns"]}
+    assert "sample_values" not in cols["contact_email"]
+    # The non-sensitive identity column still serves its samples.
+    assert cols["zq_p4x"]["sample_values"] == ["E-0002", "E-0003"]
+
+
+def test_relationship_endpoint_columns_serve_samples(session, two_tables_two_runs) -> None:
+    """Confirmed-relationship endpoints are entity-flow candidates too — both
+    sides of the pinned run's relationship carry samples when profiled."""
+    table_ids = two_tables_two_runs
+    cols = list(
+        session.execute(select(Column).where(Column.table_id.in_(table_ids))).scalars().all()
+    )
+    for c in cols:
+        session.add(
+            StatisticalProfile(
+                column_id=c.column_id,
+                run_id="gen",
+                layer="typed",
+                total_count=10,
+                null_count=0,
+                profile_data={"top_values": [{"value": "A-1", "count": 5, "percentage": 50.0}]},
+            )
+        )
+    session.commit()
+
+    ctx = _build(
+        session,
+        table_ids,
+        base_runs=BaseRunMap(
+            relationship_run_id="run-current",
+            semantic_runs=dict.fromkeys(table_ids, "gen"),
+        ),
+    )
+    for t in ctx["tables"]:
+        endpoint = next(c for c in t["columns"] if c["name"] == "account_id")
+        assert endpoint["sample_values"] == ["A-1"]
+
+
+def test_entity_flow_samples_capped_and_truncated(session) -> None:
+    """Served samples are the HEAD of the frequency-ordered top values (budget
+    10), each value truncated at 100 chars — the profile's full top_k inventory
+    (hundreds of rows for a high-cardinality identity column) must never reach
+    the one cross-table prompt."""
+    source = Source(name="cap_source", source_type="csv")
+    session.add(source)
+    session.flush()
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="events",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_events",
+    )
+    session.add(tbl)
+    session.flush()
+    col = Column(table_id=tbl.table_id, column_name="idc", column_position=0, raw_type="VARCHAR")
+    session.add(col)
+    session.flush()
+
+    session.add(
+        TableEntity(
+            entity_id=_id(),
+            table_id=tbl.table_id,
+            run_id="cat",
+            detected_entity_type="event",
+            table_role="fact",
+            identity_columns=[{"column": "idc", "note": "recurring identifier"}],
+        )
+    )
+    long_value = "x" * 150
+    top_values = [{"value": long_value, "count": 100, "percentage": 10.0}] + [
+        {"value": f"v{i:02d}", "count": 50 - i, "percentage": 1.0} for i in range(14)
+    ]
+    session.add(
+        StatisticalProfile(
+            column_id=col.column_id,
+            run_id="gen",
+            layer="typed",
+            total_count=100,
+            null_count=0,
+            profile_data={"top_values": top_values},
+        )
+    )
+    session.commit()
+
+    ctx = _build(
+        session,
+        [tbl.table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={tbl.table_id: "gen"}),
+    )
+    samples = ctx["tables"][0]["columns"][0]["sample_values"]
+    assert len(samples) == 10
+    assert samples[0] == "x" * 100 + "..."
+    assert samples[1] == "v00"
+
+
+def test_format_context_renders_zero_annotation_confidence() -> None:
+    """0.0 is a real confidence, not absence — the falsy boundary must render."""
+    context = {
+        "tables": [
+            {
+                "table_name": "t",
+                "row_count": 1,
+                "columns": [{"name": "c", "type": "VARCHAR", "annotation_confidence": 0.0}],
+            }
+        ],
+        "entity_classifications": [],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "annotation_confidence=0.00" in rendered
+
+
+def test_format_context_renders_entity_flow_evidence() -> None:
+    """The prompt renders identity columns (with notes), annotation confidence,
+    and the samples line for entity-flow columns."""
+    context = {
+        "tables": [
+            {
+                "table_name": "invoices",
+                "row_count": 100,
+                "columns": [
+                    {
+                        "name": "zq_p4x",
+                        "type": "VARCHAR",
+                        "semantic_role": "dimension",
+                        "entity_type": "entity_identifier",
+                        "business_description": "the entity associated with the row",
+                        "annotation_confidence": 0.25,
+                        "sample_values": ["E-0002", "E-0003"],
+                    }
+                ],
+            }
+        ],
+        "entity_classifications": [
+            {
+                "table_name": "invoices",
+                "entity_type": "invoice",
+                "description": "Invoice rows.",
+                "table_role": "fact",
+                "grain_columns": ["invoice_id"],
+                "identity_columns": [
+                    {"column": "zq_p4x", "note": "recurring counterparty identifier"}
+                ],
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "identity columns: zq_p4x (recurring counterparty identifier)" in rendered
+    assert "annotation_confidence=0.25" in rendered
+    assert "samples: E-0002, E-0003" in rendered
+
+
+def test_format_context_omits_absent_entity_flow_evidence() -> None:
+    """A column without samples/confidence renders neither line — absence stays
+    absence, no placeholder formatting."""
+    context = {
+        "tables": [
+            {
+                "table_name": "invoices",
+                "row_count": 100,
+                "columns": [{"name": "amount", "type": "DECIMAL", "semantic_role": "measure"}],
+            }
+        ],
+        "entity_classifications": [],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "samples:" not in rendered
+    assert "annotation_confidence=" not in rendered
+    assert "identity columns:" not in rendered
+
+
+def test_format_context_renders_structural_slice_without_confidence() -> None:
+    """DAT-725: structural inventory rows carry no LLM confidence — the prompt
+    header must render without one, never crash formatting None."""
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 10, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "region",
+                "slice_type": "categorical",
+                "values": ["EMEA", "APAC"],
+                "value_counts": [],
+                "confidence": None,
+                "business_context": None,
+                "priority": 1000,
+            },
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": ["open", "paid"],
+                "value_counts": [],
+                "confidence": 0.9,
+                "business_context": "lifecycle",
+                "priority": 1,
+            },
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "### facts.region" in rendered
+    assert "### facts.region (confidence:" not in rendered
+    assert "### facts.status (confidence: 90%)" in rendered

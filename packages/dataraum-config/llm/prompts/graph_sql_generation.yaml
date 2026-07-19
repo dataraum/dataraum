@@ -1,6 +1,6 @@
 name: "graph_sql_generation"
-version: "7.0"
-description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does)."
+version: "9.0"
+description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does). v7.1 (DAT-792): the graph spec serves the step's declared validations — catalogue-declared expectations on the executed value the grounding should be consistent with; enforced post-hoc by the verifier, never a filter to inject. v8.0 (DAT-727, provenance contract v2): column_mappings_basis enumerates EVERY relation column the parts touch, by role (measure_columns / filter_columns) — validated against the served schema and cross-checked against the SQL parts at save; the v1 free-form keys (column, resolution) are gone. v9.0 (DAT-734, graph-shaped context): <dataset_context> is assembled by traversal over the operating-model property graph — Business Concepts serves each concept's graph neighbourhood (part_of/disjoint/reconciles) AND its prior committed groundings (relation + filter + value expression + used columns, failures with reasons); relationships carry a Confirmed column; conformed dimension axes served as structure; the column table serves the graph-resolved Materialization (flow/stock, replacing the temporal_behavior wording) with business meaning single-homed in COLUMN MEANINGS."
 temperature: 0.0
 
 # System prompt — defines the single job: ground ONE concept to one extract.
@@ -56,6 +56,16 @@ system_prompt: |
     column's actual values (with counts); **Business Concepts** defines each concept (with its
     `indicators` and `exclude` patterns). Map the concept to the SPECIFIC discriminator values
     that mean it, then filter with an explicit `IN (...)` list of those values.
+  - **The concept graph** — each Business Concepts entry also serves the concept's
+    OPERATING-MODEL structure: `part of` / `subconcepts` (compositional vocabulary),
+    `disjoint with` (their value-sets must not overlap — never double-count a value into two
+    disjoint concepts), `reconciles` (the concept is measured on several relations and those
+    computations must tie out), and `grounded by` — PRIOR COMMITTED groundings (relation +
+    filter + value expression + the columns they use). Ground the SAME concept consistently
+    with its prior groundings unless the served evidence says one is wrong; a sibling
+    concept's grounding shows which discriminator column and value style this dataset grounds
+    through. A `failed attempt` entry tells you what was already tried and why it was
+    rejected — do not repeat it unchanged.
 
   Weigh the surfaces rather than following a script: a column whose meaning and measured
   facts carry the concept is usually the direct answer for wide data; long-format
@@ -63,7 +73,12 @@ system_prompt: |
   table is reached by a join (see the join-to-dimension blueprint). When more than one surface
   can express the concept, prefer the one whose served evidence is stronger — a COMPLETE
   low-cardinality classification beats a partial high-cardinality name enumeration. Record what
-  you chose and why in column_mappings_basis (which column, which values, why).
+  you chose in column_mappings_basis — and ENUMERATE there, per concept, EVERY relation
+  column your SQL parts touch, by role: measure_columns (the columns select_expr reads) and
+  filter_columns (the columns your where predicates filter on). Bare served column names,
+  verbatim, no table qualifier. This enumeration is validated against the served schema and
+  cross-checked against your SQL parts — a column your SQL uses but you did not enumerate (or
+  one you enumerate but never use) is rejected.
 
   FLOORS — few, and non-negotiable, because each one is a silent-wrong-number we have actually
   shipped (reason freely above them; never through them):
@@ -99,7 +114,9 @@ system_prompt: |
     from slices alone, or you will undercount.
   - **Concept bindings** (under Business Processes) and a human/teach mapping, when present, are
     confirmed — they OUTRANK driver hints and raw frequency. Precedence on conflict:
-    human/teach > confirmed binding > drivers > Value-set frequency.
+    human/teach > confirmed binding > prior grounding (`grounded by`) > drivers >
+    Value-set frequency. A prior grounding is a COMMITTED decision that executed and verified —
+    depart from it only when the served evidence contradicts it, and say so in assumptions.
   </channel_precedence>
 
   <data_trust>
@@ -155,21 +172,22 @@ system_prompt: |
   <temporal_signals>
   Each measure's stock/flow behaviour is RECONCILED FROM THE DATA — a structural witness reconciles
   the column against event lineage — and surfaced two ways for the SAME verdict: the column's
-  `temporal_behavior` (`additive` / `point_in_time`) in the column table, and the measure's
-  `target_type` (`flow` / `stock` / `ratio`) in the ## Drivers section. This reconciled verdict is
+  `Materialization` (`flow` / `stock`) in the column table, and the measure's `target_type`
+  (`flow` / `stock` / `ratio`) in the ## Drivers section. This reconciled verdict is
   AUTHORITATIVE for the period aggregation: it OVERRIDES the step's declared `aggregation`, the
   concept/column name, and any domain intuition. Do NOT re-derive stock/flow from the name — a name
   that reads like a level, balance, or position does NOT make the column a stock; the data decided.
-  - `additive` / `flow` → the value ACCUMULATES across periods: SUM across ALL periods. You MUST NOT
+  - `flow` → the value ACCUMULATES across periods: SUM across ALL periods. You MUST NOT
     add a single-period filter (never `WHERE "<period>" = (SELECT MAX("<period>") ...)`). When the
-    data reconciled as additive, the periodic rows are per-period MOVEMENTS, and summing them across
+    data reconciled as flow, the periodic rows are per-period MOVEMENTS, and summing them across
     periods is exactly what yields the running total or level.
-  - `point_in_time` / `stock` → a level that must NOT be summed across time (semi-additive): use the
+  - `stock` → a level that must NOT be summed across time (semi-additive): use the
     `end_of_period` pattern (filter to the latest period, then aggregate within it).
   - `ratio` → Σnumerator / Σdenominator (per the driver guidance).
-  Only when neither `temporal_behavior` nor `target_type` is present for a measure, fall back to the
-  step's declared `aggregation`. Whenever you follow the reconciled verdict over a conflicting
-  declared aggregation or name, note it in assumptions.
+  A measure's `Anchor axis` note names the event-time axis it trends/accumulates by — the period
+  column for end_of_period filters. Only when neither `Materialization` nor `target_type` is
+  present for a measure, fall back to the step's declared `aggregation`. Whenever you follow the
+  reconciled verdict over a conflicting declared aggregation or name, note it in assumptions.
   </temporal_signals>
 
   <domain_conventions>
@@ -216,7 +234,7 @@ system_prompt: |
 
   - Simple aggregate (concept = values of a discriminator on the fact):
     relation: `<view>` · where: [`"<dim>" IN ('<v1>','<v2>')`] · select_expr: `SUM("<measure>")`
-  - End-of-period (stock / point_in_time — latest period only):
+  - End-of-period (stock materialization — latest period only):
     relation: `<view>` · where: [`"<period>" = (SELECT MAX("<period>") FROM <view>)`]
     · select_expr: `SUM("<measure>")`
   - Multi-column conjunction (one predicate per grounded column — the system ANDs the list):
@@ -245,7 +263,7 @@ user_prompt: |
   {table_schema}
   </data_schema>
 
-  <dataset_context description="Semantic annotations, value sets, business concepts, relationships, drivers, and quality for understanding column meaning and grounding concepts to values.">
+  <dataset_context description="The operating-model graph served as structure — business concepts with their edges (part_of/disjoint/reconciles) and prior committed groundings, relations with roles/materialization, value sets, relationships (with confirmation), conformed dimension axes, drivers, business processes, and validation results.">
   {rich_context}
   </dataset_context>
 
@@ -257,7 +275,7 @@ user_prompt: |
   {vertical_conventions}
   </domain_conventions>
 
-  <graph_specification description="The single concept to ground — its standard_field, statement, and aggregation.">
+  <graph_specification description="The single concept to ground — its standard_field, statement, and aggregation. A step may declare `validations`: the catalogue's declared expectations on the executed value (e.g. `value > 0`, with severity). Ground consistently with them — they can disambiguate sign conventions or which column carries the concept — but they are checked AFTER execution by the system, never predicates to add to the extract.">
   {graph_yaml}
   </graph_specification>
 
@@ -281,8 +299,11 @@ user_prompt: |
      the floors of <field_resolution_strategy>; if the concept cannot be grounded, FALL LOUD:
      `select_expr: "NULL"` with no relation and no predicates + a LOW-confidence assumption.
   3. `description` — the one-line human summary.
-  4. `provenance` — column_mappings_basis = {concept: {column, filter (the exact values),
-     resolution}}.
+  4. `provenance` — column_mappings_basis = {concept: {measure_columns (EVERY relation
+     column select_expr reads), filter_columns (EVERY relation column the where predicates
+     filter on), filter (the exact values selected)}}. Served column names verbatim — the
+     enumeration is validated against the served schema and against your own SQL parts, so
+     it must cover exactly the columns they touch.
   5. `assumptions` — genuine interpretation choices only; ALWAYS record one (LOW confidence)
      in the FALL-LOUD case, naming the concept and why it is ungrounded.
 
@@ -294,7 +315,7 @@ inputs:
   graph_yaml:
     type: "string"
     required: true
-    description: "The single concept's graph spec (standard_field, statement, aggregation)"
+    description: "The single concept's graph spec (standard_field, statement, aggregation, declared validations)"
   table_schema:
     type: "string"
     required: true
@@ -306,7 +327,7 @@ inputs:
   rich_context:
     type: "string"
     required: true
-    description: "Metadata document: semantic annotations, value sets, business concepts, relationships, drivers, quality"
+    description: "Graph-shaped metadata document: concepts with edges + prior groundings, relations, value sets, relationships, conformed axes, drivers, business processes, validation results"
   field_mappings:
     type: "string"
     required: true

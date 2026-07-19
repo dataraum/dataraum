@@ -88,13 +88,16 @@ class RelationshipEntropyDetector(EntropyDetector):
 
         evidence = self._get_value(rel, "evidence", {}) or {}
         left_ri = evidence.get("left_referential_integrity")
-        orphan_count = evidence.get("orphan_count")
-        total_count = evidence.get("total_count") or evidence.get("left_total_count")
+        left_orphan_count = evidence.get("left_orphan_count")
+        # The from side's row count, matching the from-side orphan count above.
+        # A bare ``total_count`` was read here first; nothing ever produced one
+        # (DAT-725 audit), so the branch was dead.
+        total_count = evidence.get("left_total_count")
 
         if left_ri is not None:
             score = max(0.0, min(1.0, 1.0 - left_ri / 100.0))
-        elif orphan_count is not None and total_count:
-            score = stats.rate(orphan_count, total_count)
+        elif left_orphan_count is not None and total_count:
+            score = stats.rate(left_orphan_count, total_count)
         else:
             # No referential-integrity metric → nothing measurable. Absence is ignorance,
             # not a fabricated mid-score (the old score_unknown_ri=0.5 and the
@@ -112,8 +115,8 @@ class RelationshipEntropyDetector(EntropyDetector):
             "ri_entropy": round(score, 3),  # canonical evidence key (back-compat)
             "evaluation_metrics": {
                 "left_referential_integrity": left_ri,
-                "orphan_count": orphan_count,
-                "total_count": total_count,
+                "left_orphan_count": left_orphan_count,
+                "left_total_count": total_count,
                 "cardinality_verified": evidence.get("cardinality_verified"),
             },
         }

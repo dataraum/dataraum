@@ -9,11 +9,14 @@ DROP PROPERTY GRAPH IF EXISTS __READ__.operating_model;
 DROP VIEW IF EXISTS __READ__.og_tables;
 DROP VIEW IF EXISTS __READ__.og_columns;
 DROP VIEW IF EXISTS __READ__.og_concepts;
+DROP VIEW IF EXISTS __READ__.og_grounding;
 DROP VIEW IF EXISTS __READ__.og_references;
 DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
 DROP VIEW IF EXISTS __READ__.og_concept_edges;
 DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
+DROP VIEW IF EXISTS __READ__.og_grounded_by;
+DROP VIEW IF EXISTS __READ__.og_uses;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -74,6 +77,12 @@ CREATE VIEW __READ__.og_concepts AS
 SELECT concept_id::text AS concept_id, vertical, name, kind
 FROM __READ__.concepts
 WHERE superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_grounding AS
+SELECT g.snippet_id::text AS snippet_id,
+       g.concept, g.statement, g.aggregation, g.description,
+       g.relation, g.select_expr, g.where_predicates, g.failed
+FROM __READ__.current_groundings g;
 
 CREATE VIEW __READ__.og_references AS
 SELECT relationship_id::text AS relationship_id,
@@ -137,6 +146,54 @@ JOIN __READ__.current_slice_definitions s2
  AND s1.table_id <> s2.table_id
 WHERE s1.dimension_table_id IS NOT NULL;
 
+CREATE VIEW __READ__.og_grounded_by AS
+SELECT (c.concept_id || '_' || g.snippet_id)::text AS edge_key,
+       c.concept_id::text AS concept_id,
+       g.snippet_id::text AS snippet_id,
+       g.concept
+FROM __READ__.current_groundings g
+JOIN __READ__.concepts c
+  ON c.name = g.concept AND c.superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_uses AS
+SELECT DISTINCT ON (g.snippet_id, col.column_id)
+       (g.snippet_id || '_' || col.column_id)::text AS edge_key,
+       g.snippet_id::text AS snippet_id,
+       col.column_id::text AS column_id,
+       u.role
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL (
+  SELECT m.value AS column_name, 'measure' AS role
+  FROM json_array_elements_text(
+       COALESCE(b.entry->'measure_columns', '[]'::json)) m(value)
+  UNION ALL
+  SELECT f.value, 'filter'
+  FROM json_array_elements_text(
+       COALESCE(b.entry->'filter_columns', '[]'::json)) f(value)
+) u
+CROSS JOIN LATERAL (
+  SELECT ec.column_id
+  FROM __READ__.current_enriched_views ev
+  JOIN __READ__.current_enriched_columns ec
+    ON ec.table_id = ev.view_table_id AND ec.column_name = u.column_name
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT tc.column_id
+  FROM __READ__.current_tables t
+  JOIN __READ__.current_columns tc
+    ON tc.table_id = t.table_id AND tc.column_name = u.column_name
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) col
+WHERE NOT g.failed
+ORDER BY g.snippet_id, col.column_id,
+         CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;
+
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
@@ -145,7 +202,10 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
                   anchor_time_axis),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
-      PROPERTIES (concept_id, vertical, name, kind)
+      PROPERTIES (concept_id, vertical, name, kind),
+    __READ__.og_grounding KEY (snippet_id) LABEL grounding_node
+      PROPERTIES (snippet_id, concept, statement, aggregation,
+                  relation, select_expr, where_predicates, description, failed)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -174,5 +234,15 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
       LABEL conformed_dimension
-      PROPERTIES (dimension_table_id, dimension_attribute)
+      PROPERTIES (dimension_table_id, dimension_attribute),
+    __READ__.og_grounded_by KEY (edge_key)
+      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)
+      DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)
+      LABEL grounded_by
+      PROPERTIES (concept),
+    __READ__.og_uses KEY (edge_key)
+      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)
+      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
+      LABEL uses
+      PROPERTIES (role)
   );

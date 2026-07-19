@@ -190,19 +190,25 @@ def _store_candidates(
                 "source": "value_overlap",
             }
 
-            # Add evaluation metrics if available
+            # Add evaluation metrics if available. Every one is per-SIDE and
+            # left/right-prefixed, so ``oriented_row``'s flip relabels them
+            # correctly — see ``db_models.swap_directional_evidence``.
             if jc.left_referential_integrity is not None:
                 evidence["left_referential_integrity"] = jc.left_referential_integrity
             if jc.right_referential_integrity is not None:
                 evidence["right_referential_integrity"] = jc.right_referential_integrity
-            if jc.orphan_count is not None:
-                evidence["orphan_count"] = jc.orphan_count
+            if jc.left_key_coverage is not None:
+                evidence["left_key_coverage"] = jc.left_key_coverage
+            if jc.right_key_coverage is not None:
+                evidence["right_key_coverage"] = jc.right_key_coverage
+            if jc.left_orphan_count is not None:
+                evidence["left_orphan_count"] = jc.left_orphan_count
+            if jc.right_orphan_count is not None:
+                evidence["right_orphan_count"] = jc.right_orphan_count
             if jc.cardinality_verified is not None:
                 evidence["cardinality_verified"] = jc.cardinality_verified
 
             # Add relationship-level evaluation metrics
-            if candidate.join_success_rate is not None:
-                evidence["join_success_rate"] = candidate.join_success_rate
             if candidate.introduces_duplicates is not None:
                 evidence["introduces_duplicates"] = candidate.introduces_duplicates
 
@@ -259,9 +265,19 @@ def _load_tables(
     """
     from dataraum.storage import Column
 
-    # Load tables with their columns
-    stmt = select(Table.table_id, Table.table_name, Table.duckdb_path).where(
-        Table.table_id.in_(table_ids)
+    # Load tables with their columns. ORDERED BY NAME so a run is reproducible:
+    # the mapping's insertion order becomes ``finder.find_relationships``'s
+    # ``table_names``, whose upper-triangle enumeration fixes which side of each
+    # pair is presented as "left", and an unordered scan made that Postgres
+    # physical row order. Same intent as the column ordering below.
+    # This is reproducibility ONLY — it is deliberately NOT how orientation is
+    # decided, and must never be mistaken for a correctness guarantee. Note the
+    # order DOES reach the judge: candidates are served from already-oriented
+    # stored rows, so this fixes which side it sees as "left".
+    stmt = (
+        select(Table.table_id, Table.table_name, Table.duckdb_path)
+        .where(Table.table_id.in_(table_ids))
+        .order_by(Table.table_name)
     )
     table_rows = session.execute(stmt).all()
     table_info: dict[str, tuple[str, str]] = {

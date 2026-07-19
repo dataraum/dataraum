@@ -1,5 +1,10 @@
 """Tests for join detection utility functions."""
 
+from collections.abc import Iterator
+
+import duckdb
+import pytest
+
 from dataraum.analysis.relationships.joins import (
     ColumnStats,
     JoinAlgorithm,
@@ -10,6 +15,7 @@ from dataraum.analysis.relationships.joins import (
     _is_temporal_type,
     _select_algorithm,
     _should_compare_columns,
+    find_join_columns,
 )
 
 
@@ -194,9 +200,19 @@ class TestShouldCompareColumns:
         )
 
     def test_extreme_cardinality_ratio_skipped(self):
+        # The larger side is a value pool (non-unique), so the cap prunes.
         assert not _should_compare_columns(
-            self._stats(distinct=1000),
-            self._stats(distinct=2),
+            self._stats(distinct=1000, total=5000),
+            self._stats(distinct=2, total=100),
+        )
+
+    def test_extreme_ratio_kept_when_larger_side_is_a_key(self):
+        """An FK target is a key: a (near-)unique larger side survives the cap
+        so the containment rescue can see the pair — a real FK's cardinality
+        ratio is unbounded (DAT-725)."""
+        assert _should_compare_columns(
+            self._stats(distinct=2, total=100),
+            self._stats(distinct=1000, total=1000),
         )
 
     def test_unknown_types_skipped(self):
@@ -211,3 +227,128 @@ class TestShouldCompareColumns:
             self._stats(distinct=2, resolved_type="BOOLEAN"),
             self._stats(distinct=2, resolved_type="BOOLEAN"),
         )
+
+
+class TestContainmentRescueGate:
+    """DAT-725: the containment rescue is gated on the REFERENCED side being a key.
+
+    An FK target must be a key, so 100% (or near-100%) containment into a
+    (near-)unique referenced column is FK-shaped evidence at ANY cardinality of
+    the contained side — the old ``min_distinct > 10`` floor made a
+    low-distinct FK column structurally unproposable, leaving its confirmation
+    to the synthesis LLM volunteering the edge (jitter). Trivial mutual
+    containment of value-pool columns stays dead: neither side is a key.
+    """
+
+    @pytest.fixture
+    def conn(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        c = duckdb.connect(":memory:")
+        try:
+            yield c
+        finally:
+            c.close()
+
+    def test_low_distinct_fk_into_unique_key_is_a_candidate(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A 2-distinct FK column fully contained in a unique key is rescued.
+
+        Mirrors the observed shape: a fact table referencing only 2 of a
+        reference table's 60 unique keys. Jaccard 2/60 ≈ 0.03 is far below
+        min_score; containment (2/2 = 1.0) into a unique referenced column
+        must carry the pair into the candidate set.
+        """
+        conn.execute("CREATE TABLE fact AS SELECT (range % 2) + 1 AS ref_code FROM range(100)")
+        conn.execute("CREATE TABLE ref AS SELECT range + 1 AS code FROM range(60)")
+
+        candidates = find_join_columns(
+            conn,
+            "fact",
+            "ref",
+            ["ref_code"],
+            ["code"],
+            column_types1={"ref_code": "BIGINT"},
+            column_types2={"code": "BIGINT"},
+        )
+
+        assert len(candidates) == 1
+        (candidate,) = candidates
+        assert candidate["join_confidence"] == 1.0
+        assert candidate["cardinality"] == "many-to-one"
+
+    def test_containment_into_non_unique_column_stays_dead(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The preserved property: value-pool containment does not resurrect.
+
+        A 5-value code column fully contained in another repeating code column
+        (40 distinct over 200 rows — uniqueness 0.2, not a key) shares a value
+        namespace, not an entity. Jaccard 5/40 = 0.125 sits below min_score and
+        the rescue must NOT fire: the referenced side is not a key.
+        """
+        conn.execute("CREATE TABLE tickets AS SELECT (range % 5) + 1 AS code FROM range(50)")
+        conn.execute("CREATE TABLE history AS SELECT (range % 40) + 1 AS code FROM range(200)")
+
+        candidates = find_join_columns(
+            conn,
+            "tickets",
+            "history",
+            ["code"],
+            ["code"],
+            column_types1={"code": "BIGINT"},
+            column_types2={"code": "BIGINT"},
+        )
+
+        assert candidates == []
+
+    def test_rescue_survives_extreme_cardinality_ratio_into_a_key(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The >100:1 ratio pre-filter no longer strands an FK into a large key.
+
+        2 distinct values referencing a 500-value unique key (ratio 250) used
+        to be pruned by ``_should_compare_columns`` before the rescue could
+        ever see the pair — 'at ANY cardinality' must include this shape.
+        """
+        conn.execute("CREATE TABLE fact AS SELECT (range % 2) + 1 AS ref_code FROM range(100)")
+        conn.execute("CREATE TABLE ref AS SELECT range + 1 AS code FROM range(500)")
+
+        candidates = find_join_columns(
+            conn,
+            "fact",
+            "ref",
+            ["ref_code"],
+            ["code"],
+            column_types1={"ref_code": "BIGINT"},
+            column_types2={"code": "BIGINT"},
+        )
+
+        assert len(candidates) == 1
+        assert candidates[0]["join_confidence"] == 1.0
+
+    def test_near_unique_referenced_key_tolerates_dirt(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A referenced key with a few duplicate-loaded rows still rescues.
+
+        60 distinct over 62 rows (uniqueness ≈ 0.968) clears REF_UNIQUENESS_MIN:
+        dirt, not structure. The score stays the honest containment fraction.
+        """
+        conn.execute("CREATE TABLE fact AS SELECT (range % 2) + 1 AS ref_code FROM range(100)")
+        conn.execute(
+            "CREATE TABLE ref AS SELECT range + 1 AS code FROM range(60) "
+            "UNION ALL SELECT 1 UNION ALL SELECT 2"
+        )
+
+        candidates = find_join_columns(
+            conn,
+            "fact",
+            "ref",
+            ["ref_code"],
+            ["code"],
+            column_types1={"ref_code": "BIGINT"},
+            column_types2={"code": "BIGINT"},
+        )
+
+        assert len(candidates) == 1
+        assert candidates[0]["join_confidence"] == 1.0

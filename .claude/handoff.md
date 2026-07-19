@@ -5,6 +5,133 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-725 Lane P9 (DAT-734) — graph context replaces flat at the GraphAgent; flat assembly DELETED (grounding-prompt content change)
+
+**Branch:** `feat/dat-725-lane-p9`. `graphs/context.py` now assembles the
+GraphAgent's served context by TRAVERSAL over the operating-model property
+graph (PGQ MATCH for grounded_by/uses/concept_edge, bounded recursive CTE for
+part_of ancestry, element views for the rest); `format_metadata_document` and
+every flat-only `GraphExecutionContext` field are GONE (`format_served_context`
+replaces it). Prompt `graph_sql_generation.yaml` → **v9.0**. v0.3.3 is the
+rollback tag — no A/B path, no switch.
+
+**What eval should expect:**
+- **The served-context AP oracle activates** (`test_served_context_ap_oracle`):
+  the Business Concepts section now serves each concept's PRIOR GROUNDINGS
+  (statement @ relation: select_expr WHERE …, plus the `uses` columns by role)
+  and its `reconciles_with` verdict — the AP-class concept surfaces BOTH
+  groundings + the tie-out line. Failed groundings serve as
+  `failed attempt [mode]: reason`.
+- **Prompt-content churn is expected** on any snapshotting eval: no Overview
+  topology/readiness lines; the column table is
+  `| Column | Type | Role | Materialization | Notes |` (business meaning is
+  single-homed in COLUMN MEANINGS; `temporal_behavior` wording replaced by the
+  graph's flow/stock `materialization`; measures carry an `Anchor axis:` note);
+  Relationships gained a `Confirmed` column (confirmation_source, NULL renders
+  `unconfirmed`) and are now sourced from `og_references` (conformed-dim
+  fact↔fact pairs no longer appear as FKs — they serve under a new
+  `## Conformed Dimensions` section); enriched views name their
+  dimension-table bases (`Joins dimensions: …`).
+- **Sections kept rule-stable:** Value sets (complete / NOT-enumerated /
+  near-constant markers), Drivers, Business Processes incl. Concept bindings,
+  Validation Results, `{vertical_conventions}` slot.
+- **NOT changed:** the snippet WRITE path (`graph:%` rows, parts/provenance
+  contract) — cockpit readers unaffected; `_build_schema_info`
+  (prefer-enriched) semantics; `{prior_context}`/`{field_mappings}`/
+  `{parameters}`/`{graph_yaml}` slots.
+- No schema change (read-only consumer of the landed P2 surfaces); no
+  backfill. Real-LLM grading = the owner's run #4.
+
+---
+
+## DAT-725 Lane R — containment rescue re-based on key-ness; judge confidence = existence; meanings coverage retry (candidate-set + confirmation-behavior change)
+
+**Branch:** `feat/dat-725-lane-r`. Three robustness fixes on the
+relationship-confirmation path (run #1/#2 forensics: R1 Layer-A gap, R2 judge
+jitter, B1 meanings truncation).
+
+**What eval should expect:**
+- **Layer-A candidate set can GROW.** The containment rescue is gated on the
+  REFERENCED side's uniqueness (`REF_UNIQUENESS_MIN = 0.95` — an FK target must
+  be a key), no longer on the contained side's distinct count (old
+  `min_distinct > 10` floor), and the >100:1 cardinality-ratio pre-filter no
+  longer prunes a pair whose larger side is (near-)unique. A low-distinct FK
+  column 100%-contained in a unique key is now a deterministic Layer-A
+  candidate (run #1's `bank_transactions.account_id → chart_of_accounts`
+  shape) — relationship recall stops depending on the synthesis LLM
+  volunteering that edge. Trivial mutual containment (both sides non-unique)
+  still never rescues.
+- **Judge verdicts should be crisper.** The synthesis prompt
+  (semantic_per_table v2.1.0) defines `confidence` as EXISTENCE-only (sparse
+  usage and orphan dirt are data-quality findings on a real relationship, not
+  existence doubt; decisive bands ≥0.8 real / ≤0.4 not-real), and the DB
+  candidate loader now serves the per-side uniqueness asymmetry (it was
+  dropped, so the judge never saw its orientation evidence) with orientation
+  instructed to be read off the measurements. Expect the run-#1/#2 dead-zone
+  declines (0.55 / 0.6 with "genuine sparse FK" reasoning) to shrink.
+  `REL_CONFIRM_MIN` stays 0.7 and there is NO deterministic override of the
+  judge's EXISTENCE verdict.
+- **1:1 orientation is now deterministic where data decides** (fork approved
+  by the lead). The DAT-777 chokepoint (`oriented_row`) orients a measured
+  `one-to-one` row by DISTINCT-value containment asymmetry: a smaller forward
+  than reverse containment on the emission means parent→child, so the
+  endpoints and directional evidence swap and the row is stamped
+  `evidence.orientation_swapped` — where both containment metrics are
+  measured and asymmetric, the persisted `from` is the fully-contained
+  (referencing) side. `compute_ri_metrics` now also emits
+  `left_value_containment` (distinct-weighted) as the forward basis — the
+  row-weighted left RI under-states containment under duplicated orphan rows
+  and would have inverted correct emissions on the no-candidate path. Run-#2
+  A2's flip class (verified 1:1 confirmed 0.95 in the flipped direction
+  against direction-exact truth) cannot recur when containment is measured
+  and asymmetric. Missing metrics, a measurably-contradicted cardinality, or
+  symmetric containment (identical value sets) keep the judge's emission —
+  genuinely undecidable from data; direction-exact truth on such a pair would
+  be a teach scenario, not a detector bug.
+- **column_meanings coverage self-heals.** `semantic_per_table` now retries
+  (≤2 re-prompts, scoped to the tables with uncovered columns) when the
+  batched call under-covers `column_concepts`; clean-flat's 9/62-style
+  truncation should recover in-run. `column_meanings_partial_coverage`
+  (warn-only) remains the terminal state after retries; a whitespace-only
+  meaning counts as missing.
+
+---
+
+## DAT-725 Lane S — slice existence is deterministic; the slicing agent is a ranker (catalog-shape change)
+
+**Branch:** `feat/dat-725-lane-s`. Which columns become dimensions is no longer an
+LLM election: `slicing_phase` persists the WHOLE eligible set — grain-safe
+pre-filter survivors (DAT-805 gates) whose `semantic_role` is not
+measure/timestamp — and the SlicingAgent only ranks (prompt v4.0.0, pick→rank).
+
+**What eval should expect:**
+- **`slice_definitions` row counts jump** (full inventory per fact, not ≤12
+  elected) and the row SET is identical across runs on the same data + code —
+  run-to-run slice-set diffs are now a hard failure, not noise. A folded
+  dimension key (e.g. `account_id` inlined on a fact, a key with no FK) is
+  ALWAYS cataloged.
+- **New vocab/fields:** `detection_source` gains `'structural'` (un-ranked
+  inventory rows; ranked rows stay `'llm'`); un-ranked rows carry
+  `slice_priority = 1000` (`UNRANKED_SLICE_PRIORITY`) and NULL
+  reasoning/business_context/confidence.
+- **Existence consumers see a superset:** drivers `_candidate_dims`, lineage
+  `_shared_dimension_groups`, bus_matrix folded/referenced cells now iterate the
+  full inventory. Curation surfaces (cycles/graphs/validation context, cockpit
+  `<dimensions>`) are budgeted: `ORDER BY slice_priority LIMIT 12`.
+- **Operating-mode change:** LLM-config-missing / feature-disabled no longer skip
+  the phase — the inventory + the DAT-720 time-axis backstop still land; only the
+  ranking is skipped.
+- **Tier-3:** clean-flat (folded, witness 0/20 → expected to fire once DAT-800
+  lands) + clean (referenced, must not regress) is the OWNER's run per the lane
+  brief. Do not rebaseline a red harness green — the reds are the findings.
+
+**Not changed (parked):** the hierarchies `MIN_SUPPORT_ROWS` d2-floor
+(pre-registered bundled fix) — implementing it would flip ~27-distinct folded
+structures to `needs_confirmation` and suppress the clean-flat folded cells;
+escalated to the lead with the consumer-chain analysis.
+
+---
+
 ## DAT-812 — grounding resolvers consume DAT-811's self-describing view: header-dated `days_in_period` + dim-column additivity (metric-value change)
 
 **Branch:** `feat/dat-812-consume-served-columns`. The two shared grounding-resolution
@@ -27,6 +154,15 @@ metric outputs** (unlike DAT-811, which was catalog-only).
   by-name-on-the-fact lookup dropped it → a `SUM` could read UNKNOWN_TEMPORAL and strip
   time). The `view_name → fact_table_id` name-on-fact bounce and its dead typed-table
   fallback are retired (verified: all finance facts have an enriched view).
+
+### Determinism — three more sites fixed
+The prompt asks the judge for a stable orientation, so its input had to stop moving:
+`table_names_from_candidates` was a `set` (PYTHONHASHSEED-ordered, measured varying across
+four processes), and neither the candidate loader nor `_load_profiles` had an `ORDER BY`,
+so candidate-block order and `tables_json` order were Postgres physical order. All three
+ordered. A same-batch duplicate emission now logs `duplicate_row_dropped_in_batch` with
+both verdicts — if the judge contradicts itself on a pair's direction, that is now
+visible instead of folded away silently.
 
 ### Calibration to run
 - **Working-capital metric values on the finance corpus** — `dpo`/`dso`/`dio`/`ccc`
@@ -2093,3 +2229,169 @@ No score thresholds changed. New table `column_concepts` (catalogue-grain, `(col
 
 ### Cross-package
 - **Cockpit drizzle mirror is STALE** until `bun run db:pull:metadata` runs against a migrated DB — `schema.sql` gained `column_concepts` and dropped 5 columns from `semantic_annotations`. The `schema-drift` CI gate will fail until the cockpit mirror is re-pulled.
+
+---
+
+## DAT-725 — business-cycles persistence merges duplicate same-type emissions; output-contract tightened
+
+**What changed.** `pipeline/phases/business_cycles_phase.py`: when the cycle
+synthesis emits the SAME canonical type twice, the phase now merges the later
+emission's `tables_involved` into the kept cycle (ordered union; scalar fields
+stay first-wins) instead of silently dropping it via `setdefault` — the
+`(session, canonical_type, run)` UNIQUE still holds one row per type. Logged as
+`cycle_duplicate_canonical_type_merged`. `business_cycles.yaml` 2.1.1 adds two
+output-contract bullets: `tables_involved` must contain every table the cycle's
+stages/flows/evidence cite, and at most ONE cycle per type may be emitted.
+
+### Calibration to run
+- `test_cycles_e2e::test_cycle_recall` key-table coverage — run #4 saw clean-flat
+  `bank_reconciliation` omit a table its own evidence cited, and a doubled
+  `period_close` whose second emission's tables were dropped at persistence.
+  Both mechanisms are closed by this change; recall coverage should tighten.
+
+### Thresholds / new fields
+None. No schema change.
+
+---
+
+## DAT-725 — orientation determinism + empty-judge-batch falls loud
+
+**What changed.** Two defects the run-#5 forensics isolated, both of which let a single
+LLM decision silently reshape structural output:
+
+1. **Ordered table scan.** `analysis/relationships/detector.py::_load_tables` and
+   `pipeline/phases/relationships_phase.py::_typed_tables` selected tables with no
+   `ORDER BY`, so Postgres physical row order decided which side of a candidate pair was
+   presented as "left". On a bijective 1:1 (containment 100% both directions) the judge
+   has no data signal for direction and follows the presented order — so a confirmed FK's
+   orientation flipped between runs. Both now `ORDER BY table_name`. The DAT-777
+   orientation chokepoint is unaffected: it correctly stands aside on symmetric
+   containment; this removes the upstream nondeterminism that fed it.
+2. **Empty verdict batch is malformed.** `analysis/hierarchies/judge.py`:
+   `ConformBatchOutput.verdicts` and `AliasIdentityBatchOutput.verdicts` now carry
+   `min_length=1`. Both judges early-return on an empty candidate list, so an empty
+   batch is a malformed response, never a judgment (`abstain` is the verdict for "cannot
+   decide"). Enforced at the model so the DAT-710 repair loop re-asks; an unanswerable
+   batch then reaches the existing `stats.status = "failed"` path instead of silently
+   producing zero conformed groups.
+
+### Calibration to run
+- **clean-flat `test_folded_recall_and_conformity` + `test_structural_stockflow_witness_is_live`**
+  — in run #5 one `dimension_conform` call returned `{"pair_ref_verdicts": []}`; the
+  repair preserved the emptiness, zeroing `conformed_group` on all three folded account
+  cells and with it every `measure_aggregation_lineage` row (witness 0/20). That path now
+  fails loud instead.
+- **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`
+  flipped orientation between runs #3/#4 (correct) and #5 (flipped) on identical
+  measurements. Orientation should now be stable across runs.
+
+### Thresholds / new fields
+None. No schema change.
+
+---
+
+## DAT-725 — orientation: prompt clause, not a deterministic override
+
+**What changed, net.** An earlier revision of this entry described a completeness-based
+override in `Relationship.oriented_row` with an `_ORIENT_COMPLETENESS_MARGIN` constant.
+**That was removed — do not calibrate against it; it does not exist.**
+
+`semantic_per_table.yaml` 2.2.0: the orientation section's one-to-one guidance previously
+pointed the judge at containment, which is 100% in both directions on a bijection and so
+decides nothing — the judge then fell back to the order candidates were listed in. It now
+also covers the symmetric case, and where both sides are complete keys it directs the
+judge to the fact/dimension classification it makes in the same pass. NOTE: this clause is
+under review — see the open orientation question below.
+
+`semantic/processor.py::_build_candidate_metrics_lookup` carries per-side
+`left_uniqueness`/`right_uniqueness` through (swapped on the reverse entry). Evidence
+completeness only — nothing orients on it.
+
+`business_cycles_phase.py`: a duplicate same-canonical-type emission is DROPPED loudly
+(`cycle_duplicate_canonical_type_dropped`), not merged. A merge was tried and reverted:
+unioning `tables_involved` while keeping the first emission's stages/evidence/confidence
+produced a row citing tables nothing in it supported, and silently widened `health.py`'s
+validation match set behind the cycle's score.
+
+`hierarchies/judge.py`: a `min_length=1` constraint on the judge batch models was tried
+and reverted. It routed an empty batch into the DAT-710 repair turn, which re-prompts
+without the candidate list — so the only schema-satisfying output is invented verdicts,
+and a fabricated alias verdict above the merge floor collapses two drill axes. Empty-batch
+handling is unchanged from before; the underlying instability is DAT-795/807.
+
+**RESOLVED by measurement — the `one-to-one` swap in `oriented_row` is DELETED.** A spike
+built every 1:1 shape as real DuckDB tables and ran the real detection path over both
+emitted orientations. The rule reduces to `swap iff |from distinct| > |to distinct|`
+(14/14 rows; `right_value_containment` exists nowhere, so `reverse` always falls back to
+right RI). It is right only on a clean subset and inverts a correct child→parent emission
+when the child carries orphans — the shape `joins.py` deliberately rescues and the prompt
+deliberately confirms. Over a balanced emission set: 6/12, identical to a no-op. No
+deterministic replacement exists: two configurations with opposite truth measure
+byte-identically across all 24 signals (orphans are counted on the from side only, so
+to-side orphans are invisible — 0 in both).
+
+**1:1 direction is therefore the judge's, decided from DEPENDENCE** (`semantic_per_table`
+2.3.0's orientation section, rewritten to lead with it and to state honestly what the
+numbers cannot settle). Calibration consequence: 1:1 orientation is now an LLM judgment,
+so expect run-to-run variation to track judge stability (DAT-795/807), not a code path.
+`bank_transactions.payment_id → payments` is the live instance.
+
+### Thresholds / new fields — RELATIONSHIP EVIDENCE KEYS CHANGED. Read this before a run.
+
+The two per-side metrics were never a mirror pair: `left_referential_integrity` was
+ROW-weighted, `right_referential_integrity` was DISTINCT-weighted, and every flip site
+exchanged them by NAME. So a flipped row carried a coverage figure in a
+referential-integrity slot — measured 60.0 stored where that direction's own row-weighted
+RI is 75.0, which `relationship_entropy` scored 0.40 instead of 0.25. That is every
+flipped row, i.e. every ordinary parent-listed-first many-to-one FK.
+
+Both directions are now measured by ONE `evaluator._measure_direction`, called once per
+endpoint, so `left_*`/`right_*` are the same metric on opposite sides:
+
+| key | meaning | replaces |
+|---|---|---|
+| `left_/right_referential_integrity` | % of that side's ROWS that resolve | left: same; **right: NEW meaning** (was coverage) |
+| `left_/right_key_coverage` | % of that side's DISTINCT values on the other | `left_value_containment`; the old `right_referential_integrity` |
+| `left_/right_orphan_count` | that side's rows that do not resolve | `orphan_count` (unprefixed, never flipped) |
+| `left_/right_total_count` | rows behind the RI ratio | `left_total_count` only |
+
+**`join_success_rate` is DELETED, not renamed.** It was the best join's left RI
+restated at table-pair grain; the per-column line carries that number for the direction
+actually stored. The judge's rendered block no longer has a `Join success rate:` line.
+
+Also gone: `total_count` in `_RI_EVIDENCE_KEYS` — nothing ever produced one, so
+`relationship_entropy`'s first denominator branch was dead. Unrelated and unchanged: the
+`orphan_count` column in `verticals/finance/validations/orphan_transactions.yaml` is a
+validation SQL output column, a different namespace.
+
+**Numbers will move even where nothing flipped.** The measurement changed from
+`LEFT JOIN` + `COUNT(*)` to a semi-join: the old form computed "share of rows that
+resolve" over JOIN OUTPUT rows, so duplicates on the target side inflated it. A child with
+one good row and one orphan against a parent holding that key three times read 75%; it is
+50%. Expect `left_referential_integrity` — and therefore every `relationship_entropy`
+score — to shift on any pair whose target side repeats a key.
+
+`swap_directional_evidence` (was private) is the single flip implementation, shared by
+`oriented_row` and `processor._build_candidate_metrics_lookup`. It also mirrors the
+evidence copy of `cardinality` and drops `introduces_duplicates`. Prefixing a directional
+metric is now the contract; a unit test pins that no per-side key may exist without its
+mirror.
+
+### Judge-visible prompt change — `semantic_per_table` 2.4.0
+The candidate line no longer prints an `RI:` bracket pairing two different measurements.
+It now reads `rows resolving: L=.. R=..`, `values covered: L=.. R=..`,
+`unresolved rows: L=.. R=..` — same-question pairs, so `L` and `R` are comparable. A
+measured ZERO prints, where it used to be suppressed ("clean" and "never measured"
+rendered identically). The prompt explains when the two weightings diverge and states
+plainly that a clean-subset child and an orphan-bearing child measure identically.
+
+### Calibration to run
+- **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`.
+  Orientation is now entirely the judge's; watch consistency across runs.
+- **Any readiness/entropy band involving relationships** — `relationship_entropy` scores
+  move for two independent reasons (the flip fix and the fan-out debias). Bands calibrated
+  against runs #1–#5 are not comparable on this axis.
+- **`test_cycle_recall`** — unchanged expectations; the prompt bullet forbidding duplicate
+  same-type cycles is the operative change, not the phase.
+- Any check reading `orphan_count`, `join_success_rate`, `left_value_containment` or
+  `total_count` from relationship evidence — see the table above.

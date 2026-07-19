@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipDB
@@ -574,6 +575,197 @@ class TestSynthesizeAndStoreTables:
             == []
         )
 
+    def test_flipped_one_to_one_confirmation_persists_in_the_judges_direction(
+        self, session
+    ) -> None:
+        """DAT-725 A2 class: the judge confirms a verified 1:1 pair FLIPPED.
+
+        The candidate is stored invoices→journal_entries carrying measured RI
+        (forward 100% / reverse coverage 24%); the judge emits the opposite
+        direction at 0.95. Its direction is what persists.
+
+        A previous revision re-oriented a 1:1 back onto the containment
+        measurement. That rule reduces to ``|from distinct| > |to distinct|``,
+        which cannot tell a child that is a CLEAN SUBSET of its parent from a
+        child carrying ORPHANS — the two measure identically, and it inverts
+        the second. So the direction is the judge's to decide from dependence
+        (``semantic_per_table``'s orientation section), and this path's job is
+        only to hand it evidence expressed for the direction it chose: the
+        reverse lookup entry, RI exchanged. The existence verdict (confidence,
+        confirmed) is untouched either way.
+        """
+        invoices = _table_with_columns(session, "invoices", ["entry_id"])
+        entries = _table_with_columns(session, "journal_entries", ["entry_id"])
+        candidates = [
+            {
+                "table1": "invoices",
+                "table2": "journal_entries",
+                "join_columns": [
+                    {
+                        "column1": "entry_id",
+                        "column2": "entry_id",
+                        "confidence": 1.0,
+                        "cardinality": "one-to-one",
+                        "left_referential_integrity": 100.0,
+                        "right_referential_integrity": 24.0,
+                        "cardinality_verified": True,
+                    }
+                ],
+            }
+        ]
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    column_concepts=[
+                        ColumnConceptOutput(
+                            table_name="invoices", column_name="entry_id", meaning="link"
+                        ),
+                        ColumnConceptOutput(
+                            table_name="journal_entries", column_name="entry_id", meaning="key"
+                        ),
+                    ],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-flipped",
+                            from_table="journal_entries",  # the judge's flip
+                            from_column="entry_id",
+                            to_table="invoices",
+                            to_column="entry_id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.95,
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session,
+            agent,
+            [invoices.table_id, entries.table_id],
+            relationship_candidates=candidates,
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+        assert result.success
+
+        rel = (
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .one()
+        )
+        # The judge's direction stands: from = journal_entries.
+        assert rel.from_table_id == entries.table_id
+        assert rel.to_table_id == invoices.table_id
+        assert rel.cardinality == "one-to-one"
+        assert rel.confidence == 0.95  # existence verdict untouched
+        # ...and the evidence is expressed for THAT direction, not the
+        # candidate's: the reverse lookup entry exchanged the two RI numbers.
+        assert rel.evidence["left_referential_integrity"] == 24.0
+        assert rel.evidence["right_referential_integrity"] == 100.0
+
+    def test_dirty_one_to_one_without_candidate_keeps_correct_orientation(self, session) -> None:
+        """Duplicated orphan rows must not invert a correct 1:1 emission on the
+        NO-candidate fallback path (DAT-725).
+
+        A volunteered 1:1 FK gets its evidence from ``compute_ri_metrics`` and
+        its cardinality from ``compute_actual_cardinality`` — which only checks
+        the matched population, so the referencing side may carry duplicate rows
+        of orphan values. Nothing re-orients a 1:1 any more, so the judge's
+        emission stands; what this pins is that the evidence stored beside it is
+        measured the SAME WAY on both sides, which is what makes an endpoint
+        flip a correct relabeling. Row- and distinct-weighting diverge sharply
+        here (30% vs 75% on the child side) — that divergence is real and both
+        numbers are kept, rather than one being silently compared against the
+        other's counterpart.
+        """
+        import duckdb
+
+        detail = _table_with_columns(session, "detail", ["link_id"])
+        master = _table_with_columns(session, "master", ["link_id"])
+
+        conn = duckdb.connect()
+        conn.execute("ATTACH ':memory:' AS lake")
+        conn.execute("CREATE SCHEMA lake.typed")
+        conn.execute("CREATE TABLE lake.typed.detail (link_id INTEGER)")
+        # Matched values 1..3 once each (1:1 on the matched population) plus a
+        # duplicated orphan placeholder: 10 rows, 4 distinct, containment 3/4.
+        conn.execute(
+            "INSERT INTO lake.typed.detail "
+            "SELECT * FROM (VALUES (1), (2), (3)) UNION ALL SELECT 99 FROM range(7)"
+        )
+        conn.execute("CREATE TABLE lake.typed.master (link_id INTEGER)")
+        conn.execute("INSERT INTO lake.typed.master SELECT range + 1 FROM range(7)")
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    column_concepts=[
+                        ColumnConceptOutput(
+                            table_name="detail", column_name="link_id", meaning="link"
+                        ),
+                        ColumnConceptOutput(
+                            table_name="master", column_name="link_id", meaning="key"
+                        ),
+                    ],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-volunteered",
+                            from_table="detail",  # the CORRECT direction
+                            from_column="link_id",
+                            to_table="master",
+                            to_column="link_id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.9,
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session,
+            agent,
+            [detail.table_id, master.table_id],
+            duckdb_conn=conn,
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+        assert result.success
+
+        rel = (
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .one()
+        )
+        assert rel.from_table_id == detail.table_id  # NOT inverted
+        assert rel.to_table_id == master.table_id
+        assert rel.cardinality == "one-to-one"
+        # Row-weighted: 3 of detail's 10 rows resolve; 3 of master's 7 do.
+        assert rel.evidence["left_referential_integrity"] == 30.0
+        assert rel.evidence["right_referential_integrity"] == pytest.approx(42.86)
+        # Distinct-weighted, the same question on the value SETS: 3 of detail's
+        # 4 keys exist in master. The gap to 30% is the duplicated orphan.
+        assert rel.evidence["left_key_coverage"] == 75.0
+        assert rel.evidence["right_key_coverage"] == pytest.approx(42.86)
+        # Both sides' unresolved rows, so a flip never loses the count.
+        assert rel.evidence["left_orphan_count"] == 7
+        assert rel.evidence["right_orphan_count"] == 4
+        assert "orientation_swapped" not in rel.evidence
+
     def test_synthesized_relationship_gets_fan_trap_flag_from_data(self, session) -> None:
         """Regression: a synthesized (table_synthesis) relationship with NO structural
         candidate must still get introduces_duplicates computed EMPIRICALLY from the lake.
@@ -813,6 +1005,169 @@ class TestSynthesizeAndStoreTables:
 
         assert not result.success
         assert "zero meaningful rows" in (result.error or "")
+
+
+class TestColumnConceptCoverageRetry:
+    """DAT-725 B1: bounded scoped re-prompts fill column_concepts truncation gaps.
+
+    One batched call can emit meanings for a fraction of the catalogue (output
+    truncation jitter under the warn-only contract). The processor re-prompts —
+    same prompt, scoped to the tables with uncovered columns — up to
+    CONCEPT_COVERAGE_RETRIES times, merges only the still-missing columns'
+    entries (first emission wins), and persists ONCE. Warn-only stays the
+    terminal state when retries exhaust.
+    """
+
+    @staticmethod
+    def _cc(table: str, column: str, meaning: str) -> ColumnConceptOutput:
+        return ColumnConceptOutput(table_name=table, column_name=column, meaning=meaning)
+
+    @staticmethod
+    def _enrichment(concepts: list[ColumnConceptOutput]) -> Result:
+        return Result.ok(
+            SemanticEnrichmentResult(
+                annotations=[], entity_detections=[], relationships=[], column_concepts=concepts
+            )
+        )
+
+    def _agent(self, results: list[Result]) -> MagicMock:
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(side_effect=results)
+        return agent
+
+    def test_retry_is_scoped_to_missing_tables_and_merges(self, session) -> None:
+        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
+        beta = _table_with_columns(session, "beta", ["b1", "b2"])
+        agent = self._agent(
+            [
+                # First (full-catalogue) call truncated: alpha covered, beta absent.
+                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "m2")]),
+                # Scoped retry supplies beta.
+                self._enrichment([self._cc("beta", "b1", "m3"), self._cc("beta", "b2", "m4")]),
+            ]
+        )
+        candidates = [
+            {"table1": "alpha", "table2": "beta", "join_columns": []},
+            {"table1": "alpha", "table2": "alpha", "join_columns": []},
+        ]
+
+        result = synthesize_and_store_tables(
+            session,
+            agent,
+            [alpha.table_id, beta.table_id],
+            relationship_candidates=candidates,
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2
+        retry_kwargs = agent.synthesize_tables.call_args_list[1].kwargs
+        # Scoped to the uncovered table only — same prompt, smaller catalogue.
+        assert retry_kwargs["table_ids"] == [beta.table_id]
+        # Candidates filtered to those involving a retried table.
+        assert retry_kwargs["relationship_candidates"] == [candidates[0]]
+        rows = session.execute(select(ColumnConceptDB)).scalars().all()
+        assert len(rows) == 4
+
+    def test_retry_exhaustion_stays_warn_only(self, session) -> None:
+        """Retries that never fill the gap end in the warn-only terminal state."""
+        alpha = _table_with_columns(session, "alpha", ["a1"])
+        beta = _table_with_columns(session, "beta", ["b1"])
+        partial = [self._cc("alpha", "a1", "m1")]
+        agent = self._agent([self._enrichment(partial) for _ in range(3)])
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success  # partial coverage never fails the phase
+        # Initial call + CONCEPT_COVERAGE_RETRIES scoped retries, then stop.
+        assert agent.synthesize_tables.call_count == 3
+        rows = session.execute(select(ColumnConceptDB)).scalars().all()
+        assert len(rows) == 1
+
+    def test_retry_never_overwrites_the_first_emission(self, session) -> None:
+        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
+        agent = self._agent(
+            [
+                self._enrichment([self._cc("alpha", "a1", "first")]),
+                # Retry re-emits a1 (already covered) alongside the missing a2.
+                self._enrichment(
+                    [self._cc("alpha", "a1", "second"), self._cc("alpha", "a2", "filled")]
+                ),
+            ]
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2
+        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
+        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
+        assert rows[cols["a1"]].meaning == "first"
+        assert rows[cols["a2"]].meaning == "filled"
+
+    def test_blank_meaning_counts_as_missing_and_is_refilled(self, session) -> None:
+        """A whitespace-only meaning is absence by the persist contract (it
+        normalizes to NULL), so coverage must re-ask for that column — and the
+        meaningful re-emission wins over the blank one at persist."""
+        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
+        agent = self._agent(
+            [
+                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "   ")]),
+                self._enrichment([self._cc("alpha", "a2", "filled")]),
+            ]
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2
+        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
+        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
+        assert rows[cols["a2"]].meaning == "filled"
+
+    def test_full_coverage_triggers_no_retry(self, session) -> None:
+        alpha = _table_with_columns(session, "alpha", ["a1"])
+        agent = self._agent([self._enrichment([self._cc("alpha", "a1", "m1")])])
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 1
+
+    def test_failed_retry_is_best_effort(self, session) -> None:
+        """A failing retry never fails the phase — the first pass stands."""
+        alpha = _table_with_columns(session, "alpha", ["a1"])
+        beta = _table_with_columns(session, "beta", ["b1"])
+        agent = self._agent(
+            [
+                self._enrichment([self._cc("alpha", "a1", "m1")]),
+                Result.fail("LLM down"),
+            ]
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2  # stopped after the failure
+        rows = session.execute(select(ColumnConceptDB)).scalars().all()
+        assert len(rows) == 1
 
 
 # ---------------------------------------------------------------------------

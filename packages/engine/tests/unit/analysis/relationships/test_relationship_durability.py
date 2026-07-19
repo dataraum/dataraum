@@ -295,6 +295,173 @@ def test_materialize_add_overlay_creates_manual(session: Session) -> None:
     assert (row.from_table_id, row.to_table_id) == ("t1", "t2")
     # An `add` teach is an explicit human assertion (DAT-776).
     assert row.confirmation_source == "user"
+    # No DuckDB connection → the join stays honestly unmeasured (DAT-790):
+    # NULL cardinality, no introduces_duplicates — never a fabricated value.
+    assert row.cardinality is None
+    assert "introduces_duplicates" not in (row.evidence or {})
+
+
+def _lake_conn():
+    """An in-memory DuckDB whose ``lake.typed`` schema mimics the worker's attach."""
+    import duckdb
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("ATTACH ':memory:' AS lake")
+    conn.execute("CREATE SCHEMA lake.typed")
+    return conn
+
+
+def _set_duckdb_paths(session: Session) -> None:
+    session.query(Table).filter_by(table_id="t1").update({"duckdb_path": "csv__orders"})
+    session.query(Table).filter_by(table_id="t2").update({"duckdb_path": "csv__customers"})
+
+
+def test_materialize_add_measures_never_detected_pair(session: Session) -> None:
+    """A manual `add` of a never-detected relationship measures its join
+    empirically at the materialize seam (DAT-790): cardinality and
+    introduces_duplicates come from the data — the same evidence every other
+    defined-relationship writer carries — so the cockpit's fan-out caution is
+    live exactly where the join is least verified."""
+    _seed_tables_columns(session)
+    _set_duckdb_paths(session)
+    _overlay(session, "add", "ca", "cb")
+    session.flush()
+
+    conn = _lake_conn()
+    # orders.customer_id → customers.id: many rows per customer, unique customer
+    # ids → many-to-one, and the LEFT JOIN cannot inflate (no fan-out).
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__orders" AS '
+        "SELECT * FROM (VALUES (1), (1), (2)) AS t(customer_id)"
+    )
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__customers" AS SELECT * FROM (VALUES (1), (2)) AS t(id)'
+    )
+    try:
+        count = materialize_relationship_overlays(
+            session, run_id="r1", table_ids=["t1", "t2"], duckdb_conn=conn
+        )
+    finally:
+        conn.close()
+    session.flush()
+
+    assert count == 1
+    (row,) = _materialized(session)
+    assert row.cardinality == "many-to-one", "cardinality measured from the data"
+    assert row.evidence is not None
+    assert row.evidence["introduces_duplicates"] is False
+    assert row.evidence["cardinality_verified"] is True
+    assert row.evidence["source"] == "config_overlay"
+    # Taught FK-side orientation kept: many-to-one needs no re-orientation.
+    assert (row.from_column_id, row.to_column_id) == ("ca", "cb")
+
+
+def test_materialize_add_measured_fanout_flags_duplicates(session: Session) -> None:
+    """A never-detected teach whose join actually fans out gets the loud
+    evidence: many-to-many cardinality + introduces_duplicates=True (DAT-790).
+    Before, exactly this join — the least verified one — carried NULLs and the
+    cockpit's fan-out caution stayed silently absent."""
+    _seed_tables_columns(session)
+    _set_duckdb_paths(session)
+    _overlay(session, "add", "ca", "cb")
+    session.flush()
+
+    conn = _lake_conn()
+    # Duplicate keys on BOTH sides → many-to-many; the LEFT JOIN inflates rows.
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__orders" AS '
+        "SELECT * FROM (VALUES (1), (1), (2)) AS t(customer_id)"
+    )
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__customers" AS SELECT * FROM (VALUES (1), (1), (2)) AS t(id)'
+    )
+    try:
+        materialize_relationship_overlays(
+            session, run_id="r1", table_ids=["t1", "t2"], duckdb_conn=conn
+        )
+    finally:
+        conn.close()
+    session.flush()
+
+    (row,) = _materialized(session)
+    assert row.cardinality == "many-to-many"
+    assert row.evidence is not None
+    assert row.evidence["introduces_duplicates"] is True
+
+
+def test_materialize_add_measured_one_to_many_is_reoriented(session: Session) -> None:
+    """A teach named parent→child measures one-to-many and is canonicalized by
+    ``oriented_row`` (DAT-777): stored many-to-one with the endpoints swapped —
+    the manual-add seam goes through the same orientation chokepoint as every
+    other writer, so a reversed teach cannot persist a mis-oriented row."""
+    _seed_tables_columns(session)
+    _set_duckdb_paths(session)
+    # Taught BACKWARDS: from the unique side (t1.ca) to the many side (t2.cb).
+    _overlay(session, "add", "ca", "cb")
+    session.flush()
+
+    conn = _lake_conn()
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__orders" AS SELECT * FROM (VALUES (1), (2)) AS t(customer_id)'
+    )
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__customers" AS SELECT * FROM (VALUES (1), (1), (2)) AS t(id)'
+    )
+    try:
+        materialize_relationship_overlays(
+            session, run_id="r1", table_ids=["t1", "t2"], duckdb_conn=conn
+        )
+    finally:
+        conn.close()
+    session.flush()
+
+    (row,) = _materialized(session)
+    assert row.cardinality == "many-to-one", "one-to-many is stored canonically"
+    assert (row.from_column_id, row.to_column_id) == ("cb", "ca"), "endpoints swapped"
+    assert row.evidence is not None
+    # The canonical many→one child→parent join never fans out (oriented_row).
+    assert row.evidence["introduces_duplicates"] is False
+
+
+def test_materialize_add_keeps_cardinality_when_fanout_probe_fails(
+    session: Session, monkeypatch
+) -> None:
+    """A failed fan-out probe degrades to (cardinality, no flag) — it must not
+    discard a cardinality that already measured (per-probe guards, DAT-790).
+    The absent flag stays an honest NULL, never a fabricated value."""
+    from dataraum.analysis.relationships import materialize as mat
+
+    _seed_tables_columns(session)
+    _set_duckdb_paths(session)
+    _overlay(session, "add", "ca", "cb")
+    session.flush()
+
+    def _boom(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(mat, "compute_introduces_duplicates", _boom)
+
+    conn = _lake_conn()
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__orders" AS '
+        "SELECT * FROM (VALUES (1), (1), (2)) AS t(customer_id)"
+    )
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__customers" AS SELECT * FROM (VALUES (1), (2)) AS t(id)'
+    )
+    try:
+        materialize_relationship_overlays(
+            session, run_id="r1", table_ids=["t1", "t2"], duckdb_conn=conn
+        )
+    finally:
+        conn.close()
+    session.flush()
+
+    (row,) = _materialized(session)
+    assert row.cardinality == "many-to-one", "measured cardinality survives the failed probe"
+    assert row.evidence is not None
+    assert row.evidence["cardinality_verified"] is True
+    assert "introduces_duplicates" not in row.evidence, "failed probe → field honestly absent"
 
 
 def test_materialize_keep_overlay_creates_keeper_with_last_measured_evidence(
@@ -857,7 +1024,7 @@ def test_materialize_confirm_on_candidate_only_pair_adopts_candidate_orientation
             confidence=0.7,
             detection_method="candidate",
             confirmation_source="unconfirmed",
-            evidence={"orphan_count": 3},
+            evidence={"left_orphan_count": 3},
         )
     )
     _overlay(session, "confirm", "cb", "ca")  # taught REVERSED (parent → child)
@@ -871,4 +1038,4 @@ def test_materialize_confirm_on_candidate_only_pair_adopts_candidate_orientation
     assert manual.cardinality == "many-to-one"
     assert manual.confirmation_source == "user"
     assert manual.confidence == 1.0  # a user assertion, not the candidate's 0.7
-    assert manual.evidence["orphan_count"] == 3  # candidate measurement carried (DAT-699)
+    assert manual.evidence["left_orphan_count"] == 3  # candidate measurement carried (DAT-699)

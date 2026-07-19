@@ -35,7 +35,7 @@ from dataraum.storage.base import init_database
 _RI_EVIDENCE = {
     "left_referential_integrity": 80.0,
     "right_referential_integrity": 95.0,
-    "orphan_count": 200,
+    "left_orphan_count": 200,
     "left_total_count": 1000,
     "cardinality_verified": True,
 }
@@ -178,7 +178,7 @@ class TestLoaderRepresentativeMerge:
         # Overlay provenance preserved, measured RI backfilled from the candidate.
         assert evidence["source"] == "config_overlay"
         assert evidence["left_referential_integrity"] == 80.0
-        assert evidence["orphan_count"] == 200
+        assert evidence["left_orphan_count"] == 200
         assert evidence["ri_evidence_source"] == "candidate"
 
     def test_representative_own_evidence_wins_over_backfill(self, session: Session) -> None:

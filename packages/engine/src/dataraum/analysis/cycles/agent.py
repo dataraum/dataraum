@@ -105,6 +105,9 @@ class BusinessCycleAgent(LLMFeature):
             table_ids,
             vertical=vertical,
             base_runs=base_runs,
+            # Entity-flow value samples respect the same sensitive-name patterns
+            # the semantic agents' DataSampler enforces.
+            privacy=self.config.privacy,
         )
         context_str = format_context_for_prompt(context)
 

@@ -362,6 +362,27 @@ class MetricsPhase(BasePhase):
             catalogue_run_id=catalogue_run_id,
         )
 
+        # reconciles_with derivation (DAT-727 part c): with this run's grounding
+        # set settled, reconcile the concept-grain self-loop assertions — the
+        # aggregation-lineage witness (at the pinned catalogue run) and
+        # multi-grounding concepts — as source='derived' concept_edges rows
+        # (insert missing, supersede vanished; seed rows untouched).
+        # Fault-isolated like _persist_additivity_verdicts above, for the same
+        # reason: an unhandled failure here would fail the phase and roll the
+        # session back, discarding every metric's executed lifecycle state over
+        # a derived-vocabulary annotation. The SAVEPOINT keeps the
+        # insert+supersede pair atomic while a failure costs only this run's
+        # assertions (the next run re-derives them).
+        from dataraum.analysis.semantic.reconciles_with import derive_reconciles_with
+
+        try:
+            with ctx.session.begin_nested():
+                derive_reconciles_with(
+                    ctx.session, vertical=vertical, catalogue_run_id=catalogue_run_id
+                )
+        except Exception as e:
+            _log.warning("reconciles_with_derivation_failed", error=str(e))
+
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
         declared_stuck = sum(1 for a in artifacts.values() if a.state == "declared")
@@ -735,17 +756,22 @@ def _warm_generations_serial(
     from dataraum.graphs.agent import ExecutionContext
     from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
 
-    exec_ctx = ExecutionContext.with_rich_context(
-        session=session,
-        duckdb_conn=duckdb_conn,
-        table_ids=table_ids,
-        schema_mapping_id=schema_mapping_id,
-        om_run_id=om_run_id,
-        catalogue_run_id=catalogue_run_id,
-        vertical=vertical,
-    )
     bindings: dict[NodeKey, NodeDecision] = {}
     for generation in generations:
+        # Rebuild the context PER GENERATION (DAT-734): the served concept graph
+        # carries prior committed groundings, and a later generation must see the
+        # snippets earlier generations just minted — a once-built context would
+        # serve only prior-RUN groundings here while the parallel path
+        # (_warm_isolated, fresh context per node) serves same-run siblings.
+        exec_ctx = ExecutionContext.with_rich_context(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=table_ids,
+            schema_mapping_id=schema_mapping_id,
+            om_run_id=om_run_id,
+            catalogue_run_id=catalogue_run_id,
+            vertical=vertical,
+        )
         for key in generation:
             # Only leaf EXTRACTs warm (DAT-646) — no deps, so no dep-gate.
             try:

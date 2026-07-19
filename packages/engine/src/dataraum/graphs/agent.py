@@ -36,11 +36,15 @@ from dataraum.llm.providers.base import LLMProvider
 from .models import (
     AssumptionBasis,
     ExtractGroundingOutput,
+    FailedSnippetProvenance,
     GraphAssumptionOutput,
     GraphExecution,
     GraphProvenanceOutput,
     GraphStep,
+    HealthySnippetProvenance,
     QueryAssumption,
+    SnippetAssumption,
+    SnippetFailureMode,
     StepResult,
     StepType,
     TransformationGraph,
@@ -150,8 +154,6 @@ class ExecutionContext:
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         *,
-        slice_column: str | None = None,
-        slice_value: str | None = None,
         vertical: str | None = None,
         om_run_id: str | None = None,
         catalogue_run_id: str | None = None,
@@ -166,8 +168,6 @@ class ExecutionContext:
             session: SQLAlchemy session
             duckdb_conn: DuckDB connection for queries
             table_ids: List of table IDs to include in context
-            slice_column: Optional column to slice the context by.
-            slice_value: Optional value for the slice column.
             vertical: Runtime vertical for the cycle-health computation.
             om_run_id: Explicit operating_model run to read cycles/validation/cycle
                 health at — passed by the in-run metrics phase so the graph context
@@ -185,11 +185,14 @@ class ExecutionContext:
             session=session,
             table_ids=table_ids,
             duckdb_conn=duckdb_conn,
-            slice_column=slice_column,
-            slice_value=slice_value,
             vertical=vertical,
             om_run_id=om_run_id,
             catalogue_run_id=catalogue_run_id,
+            # The graph traversal core (DAT-734) resolves the read schema from
+            # the workspace identity — which in every engine path IS the
+            # schema_mapping_id (DAT-506; ``execute`` is called with
+            # ``workspace_id=schema_mapping_id`` at all call sites).
+            workspace_id=kwargs.get("schema_mapping_id"),
         )
 
         return cls(
@@ -306,6 +309,7 @@ class GraphAgent(LLMFeature):
                 context,
                 resolved_params,
                 cached_snippets=cached_snippets if cached_snippets else None,
+                workspace_id=workspace_id,
             )
             if not gen_result.success or not gen_result.value:
                 return Result.fail(gen_result.error or "SQL generation failed")
@@ -342,7 +346,7 @@ class GraphAgent(LLMFeature):
                 generated_code,
                 schema_mapping_id,
                 workspace_id=workspace_id,
-                mode="execution_failed",
+                mode=SnippetFailureMode.EXECUTION_FAILED,
                 reason=reason,
             )
             return Result.fail(reason)
@@ -365,7 +369,7 @@ class GraphAgent(LLMFeature):
                 generated_code,
                 schema_mapping_id,
                 workspace_id=workspace_id,
-                mode="verifier_rejected",
+                mode=SnippetFailureMode.VERIFIER_REJECTED,
                 reason=reason,
             )
             return Result.fail(reason)
@@ -532,12 +536,27 @@ class GraphAgent(LLMFeature):
                 snippet = cached_snippets.get(step_id) or {}
                 description = snippet.get("description") or step_id
                 for a in snippet.get("assumptions") or []:
+                    # Defensive coercion at the CACHE-READ boundary: rows written
+                    # before basis was enum-typed (contract v2, DAT-727) persisted
+                    # the model's raw string, and this reconstruction runs on every
+                    # cache-assemble — a ValidationError here would wedge a HEALTHY
+                    # snippet forever (first-writer-wins never replaces it), so an
+                    # off-vocabulary value degrades to INFERRED with a warning
+                    # instead of crashing. New writes are enum-enforced at save.
+                    raw_basis = a.get("basis", "inferred")
+                    try:
+                        basis = AssumptionBasis(raw_basis)
+                    except ValueError:
+                        logger.warning(
+                            "unknown_cached_assumption_basis", basis=raw_basis, step_id=step_id
+                        )
+                        basis = AssumptionBasis.INFERRED
                     assumptions.append(
                         GraphAssumptionOutput(
                             dimension=a.get("dimension", "grounding.cached"),
                             target=a.get("target", f"step:{step_id}"),
                             assumption=a.get("assumption", ""),
-                            basis=a.get("basis", "inferred"),
+                            basis=basis,
                             confidence=a.get("confidence", 0.5),
                         )
                     )
@@ -694,6 +713,8 @@ class GraphAgent(LLMFeature):
         context: ExecutionContext,
         parameters: dict[str, Any],
         cached_snippets: dict[str, dict[str, Any]] | None = None,
+        *,
+        workspace_id: str,
     ) -> Result[GeneratedCode]:
         """Ground a single leaf EXTRACT to SQL via the LLM (tool-based output).
 
@@ -752,14 +773,17 @@ class GraphAgent(LLMFeature):
                 "Cannot generate SQL without the column meaning feed. "
                 "Run the semantic phase to author column meanings."
             )
-        from dataraum.graphs.context import format_metadata_document
+        from dataraum.graphs.context import format_served_context
         from dataraum.graphs.field_mapping import format_meanings_for_prompt
 
+        # Built ONCE and shared by the prompt's <data_schema> block AND the
+        # contract-v2 enforcement below — "served" means the same thing in both.
+        schema_info = self._build_schema_info(context)
         prompt_context = {
             "graph_yaml": graph_yaml,
-            "table_schema": json.dumps(self._build_schema_info(context), indent=2),
+            "table_schema": json.dumps(schema_info, indent=2),
             "parameters": json.dumps(parameters, indent=2),
-            "rich_context": format_metadata_document(context.rich_context),
+            "rich_context": format_served_context(context.rich_context),
             "field_mappings": format_meanings_for_prompt(context.rich_context.field_mappings),
             # DAT-616: feed back what prior runs learned for this concept — the
             # honest-fail reason + prior value→concept filter decisions.
@@ -936,6 +960,39 @@ class GraphAgent(LLMFeature):
                 return Result.fail(repaired.error or "schema repair failed")
             output = repaired.unwrap()
 
+        # Provenance contract v2 (DAT-727): the enumerated columns in
+        # column_mappings_basis are the operating-model graph's `uses` substrate
+        # (og_uses un-nests them), so they are ENFORCED here — against the SAME
+        # served schema the prompt rendered — never trusted, never recovered by
+        # parsing the SQL later. Membership + completeness violations get one
+        # contract-repair turn (the DAT-710 mechanics); a still-invalid output
+        # falls loud into the failed-snippet path (DAT-543) so the authored SQL
+        # + the exact violations feed the next run's prior_context instead of
+        # vanishing.
+        from dataraum.graphs.grounding_validation import (
+            schema_tables_from_info,
+            validate_grounding_basis,
+        )
+        from dataraum.llm.tool_repair import repair_tool_contract
+
+        schema_tables = schema_tables_from_info(schema_info)
+        violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+        if violations:
+            repaired = repair_tool_contract(
+                self.provider,
+                tool,
+                output.model_dump(mode="json"),
+                violations,
+                ExtractGroundingOutput,
+                model=model,
+                label=prompt_name,
+                max_tokens=self.config.limits.max_output_tokens_per_request,
+            )
+            if not repaired.success:
+                return Result.fail(repaired.error or "grounding contract repair failed")
+            output = repaired.unwrap()
+            violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+
         # Bind the one generated grounding to the graph's own leaf id (the model
         # never names a step — DAT-664's id-paraphrase class is gone by
         # construction). The model emits CLAUSE PARTS (DAT-671); the fused
@@ -964,13 +1021,38 @@ class GraphAgent(LLMFeature):
             generated_at=datetime.now(UTC),
         )
 
+        if violations:
+            # Contract still violated after the repair turn: retain the authored
+            # SQL flagged (DAT-543) with the violations as the reason — the graph
+            # cannot ground `uses` edges on an unenforced enumeration, and the
+            # next authoring revises against the exact violations instead of
+            # re-deriving blind.
+            reason = "grounding contract violated after repair: " + "; ".join(violations)
+            self._save_failed_snippet(
+                session,
+                graph,
+                generated_code,
+                context.schema_mapping_id or "default",
+                workspace_id=workspace_id,
+                mode=SnippetFailureMode.PROVENANCE_INVALID,
+                reason=reason,
+            )
+            return Result.fail(reason)
+
         # Verification half (DAT-631): append what the agent PRODUCED to the
         # prompt dump — the SQL, per-concept grounding, and confidence — so a
         # metric that fails verification (and never persists a snippet) is still
         # inspectable offline. No-op unless prompt_dump_dir is set.
         from dataraum.llm.prompt_log import dump_response
 
-        basis = output.provenance.column_mappings_basis if output.provenance else {}
+        basis = (
+            {
+                c: b.model_dump(mode="json")
+                for c, b in output.provenance.column_mappings_basis.items()
+            }
+            if output.provenance
+            else {}
+        )
         response_body = json.dumps(
             {
                 "step_id": leaf.step_id,
@@ -1065,29 +1147,22 @@ class GraphAgent(LLMFeature):
 
         execution = GraphExecution.create(graph)
 
-        # Convert LLM assumptions to QueryAssumption objects
-        basis_map = {
-            "system_default": AssumptionBasis.SYSTEM_DEFAULT,
-            "inferred": AssumptionBasis.INFERRED,
-            "user_specified": AssumptionBasis.USER_SPECIFIED,
-        }
-        assumptions: list[QueryAssumption] = []
-        for a in generated_code.assumptions or []:
-            mapped_basis = basis_map.get(a.basis)
-            if mapped_basis is None:
-                logger.debug("unknown_assumption_basis", basis=a.basis)
-                mapped_basis = AssumptionBasis.INFERRED
-            assumptions.append(
-                QueryAssumption.create(
-                    execution_id=execution.execution_id,
-                    dimension=a.dimension,
-                    target=a.target,
-                    assumption=a.assumption,
-                    basis=mapped_basis,
-                    confidence=a.confidence,
-                )
+        # Convert LLM assumptions to QueryAssumption objects. `basis` is already
+        # the AssumptionBasis enum — typed at the tool-output boundary (contract
+        # v2, DAT-727), so the old string map with a silent INFERRED fallback is
+        # gone: an off-vocabulary basis fails schema validation and gets the
+        # repair turn instead.
+        execution.assumptions = [
+            QueryAssumption.create(
+                execution_id=execution.execution_id,
+                dimension=a.dimension,
+                target=a.target,
+                assumption=a.assumption,
+                basis=a.basis,
+                confidence=a.confidence,
             )
-        execution.assumptions = assumptions
+            for a in generated_code.assumptions or []
+        ]
 
         # Convert generated code steps to shared format
         steps = [
@@ -1195,7 +1270,7 @@ class GraphAgent(LLMFeature):
         that arbitrary, count-less sample was the agent's only value view and is what it
         improvised filters from. The authoritative, complete value enumeration is now the
         per-column **Value sets** block in the rich-context metadata document
-        (`format_metadata_document`); this returns physical name + type only.
+        (`format_served_context`); this returns physical name + type only.
         """
         try:
             columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()
@@ -1251,6 +1326,27 @@ class GraphAgent(LLMFeature):
                     "expression": step.expression,
                     "aggregation": step.aggregation,
                     "depends_on": step.depends_on,
+                    # Declared post-execution expectations (DAT-792): served to the
+                    # authoring LLM so its grounding is consistent with what the
+                    # catalogue declares about the value (e.g. `value > 0`). The
+                    # post-hoc verifier stays the enforcement backstop (DAT-616).
+                    # Unrelated to ``ContextDocument.validations`` (graphs/context.py)
+                    # — those are executed data-quality rule RESULTS, not declared
+                    # per-step expectations.
+                    **(
+                        {
+                            "validations": [
+                                {
+                                    "condition": v.condition,
+                                    "severity": v.severity,
+                                    **({"message": v.message} if v.message else {}),
+                                }
+                                for v in step.validations
+                            ]
+                        }
+                        if step.validations
+                        else {}
+                    ),
                 }
                 for step_id, step in graph.steps.items()
             },
@@ -1334,7 +1430,7 @@ class GraphAgent(LLMFeature):
     def _build_snippet_provenance(
         generated_code: GeneratedCode,
     ) -> dict[str, Any] | None:
-        """The provenance blob saved alongside a snippet.
+        """The provenance blob saved alongside a snippet — typed (DAT-727).
 
         Carries the LLM grounding decision (column_mappings_basis) and —
         crucially for the phase confidence gate — the per-input
@@ -1343,22 +1439,23 @@ class GraphAgent(LLMFeature):
         provenance but DO carry forward their extract leaves' assumptions.
         (The ``was_repaired`` flag died with graph-path text repair, DAT-671 —
         a snippet's SQL can no longer diverge from its committed grounding.)
-        """
-        provenance: dict[str, Any] | None = None
-        if generated_code.provenance:
-            prov = generated_code.provenance
-            provenance = {
-                "column_mappings_basis": prov.column_mappings_basis,
-            }
 
-        if generated_code.assumptions:
-            if provenance is None:
-                provenance = {}
-            provenance["assumptions"] = [
-                {"assumption": a.assumption, "basis": a.basis, "confidence": a.confidence}
+        The persisted shape is ``HealthySnippetProvenance.model_dump`` — the
+        contract-v2 payload ``og_uses`` un-nests. Built through the model, never
+        as a free dict, so the writer cannot drift from the graph's reader.
+        """
+        if not generated_code.provenance and not generated_code.assumptions:
+            return None
+        payload = HealthySnippetProvenance(
+            column_mappings_basis=(
+                generated_code.provenance.column_mappings_basis if generated_code.provenance else {}
+            ),
+            assumptions=[
+                SnippetAssumption(assumption=a.assumption, basis=a.basis, confidence=a.confidence)
                 for a in generated_code.assumptions
-            ]
-        return provenance
+            ],
+        )
+        return payload.model_dump(mode="json")
 
     def _save_snippets(
         self,
@@ -1444,16 +1541,19 @@ class GraphAgent(LLMFeature):
         schema_mapping_id: str,
         *,
         workspace_id: str,
-        mode: str,
+        mode: SnippetFailureMode,
         reason: str,
     ) -> None:
         """Retain an authored-but-unusable EXTRACT SQL, flagged (DAT-543).
 
         A first-authoring failure is NOT dropped. Either the SQL failed to run
-        (``mode="execution_failed"``) or it ran clean and the verifier rejected the
-        VALUE (``mode="verifier_rejected"`` — e.g. negative against ``value >= 0``, or
-        NULL "no support"); the latter is VALID SQL whose result the data made
-        untrustworthy. We persist THIS node's own generated extract SQL with
+        (``EXECUTION_FAILED``), it ran clean and the verifier rejected the
+        VALUE (``VERIFIER_REJECTED`` — e.g. negative against ``value >= 0``, or
+        NULL "no support"; VALID SQL whose result the data made untrustworthy), or
+        the provenance contract stayed violated after its repair turn
+        (``PROVENANCE_INVALID``, DAT-727 — the SQL may be fine, but the graph
+        cannot ground ``uses`` edges on an unenforced column enumeration).
+        We persist THIS node's own generated extract SQL with
         ``failed=True`` (``failure_count=1`` → ``find_by_key`` keeps it OUT of reuse)
         plus ``{failure_mode, failure_reason}`` in provenance, so
         ``_build_prior_context`` can feed the exact prior SQL + reason to the next
@@ -1476,7 +1576,9 @@ class GraphAgent(LLMFeature):
         generated_steps = {
             s.get("step_id", ""): s for s in generated_code.steps if s.get("step_id")
         }
-        provenance = {"failure_mode": mode, "failure_reason": reason}
+        provenance = FailedSnippetProvenance(failure_mode=mode, failure_reason=reason).model_dump(
+            mode="json"
+        )
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
                 continue

@@ -167,7 +167,6 @@ def load_relationship_candidates_for_semantic(
             {
                 "table1": "...",
                 "table2": "...",
-                "join_success_rate": 95.0,
                 "introduces_duplicates": False,
                 "join_columns": [
                     {
@@ -175,9 +174,11 @@ def load_relationship_candidates_for_semantic(
                         "column2": "...",
                         "confidence": 0.9,
                         "cardinality": "one-to-many",
+                        "left_uniqueness": 0.02,
+                        "right_uniqueness": 1.0,
                         "left_referential_integrity": 100.0,
                         "right_referential_integrity": 85.0,
-                        "orphan_count": 5,
+                        "left_orphan_count": 5,
                         "cardinality_verified": True,
                     }
                 ]
@@ -196,6 +197,17 @@ def load_relationship_candidates_for_semantic(
             (Relationship.from_table_id.in_(table_ids)) | (Relationship.to_table_id.in_(table_ids))
         )
 
+    # ORDERED. Unordered, the ``###`` candidate blocks reached the prompt in
+    # Postgres physical row order, so the same data could present the judge a
+    # different candidate list between runs while the prompt asks it to emit a
+    # stable orientation (DAT-725). Column pairs are re-sorted by overlap in the
+    # formatter; this fixes the order of the pairs themselves.
+    stmt = stmt.order_by(
+        Relationship.from_table_id,
+        Relationship.to_table_id,
+        Relationship.from_column_id,
+        Relationship.to_column_id,
+    )
     relationships = session.execute(stmt).scalars().all()
 
     if not relationships:
@@ -241,7 +253,6 @@ def load_relationship_candidates_for_semantic(
         # Get relationship-level metrics from first relationship's evidence
         # (these are the same for all relationships in the group)
         first_evidence = rels[0].evidence or {}
-        join_success_rate = first_evidence.get("join_success_rate")
         introduces_duplicates = first_evidence.get("introduces_duplicates")
 
         # Build join columns list
@@ -258,13 +269,33 @@ def load_relationship_candidates_for_semantic(
                 "cardinality": rel.cardinality or "unknown",
             }
 
-            # Add evaluation metrics if present in evidence
+            # Orientation evidence (DAT-725): the per-side uniqueness the detector
+            # measured (finder.py) rides from the evidence JSON into the served
+            # dict — the FK side of a real relationship is the non-unique side,
+            # and the judge needs the asymmetry to orient. Dropped here before,
+            # so the formatter's ``[uniq: L= R=]`` bracket never rendered on the
+            # DB path (the only path the pipeline uses).
+            if "left_uniqueness" in evidence:
+                jc["left_uniqueness"] = evidence["left_uniqueness"]
+            if "right_uniqueness" in evidence:
+                jc["right_uniqueness"] = evidence["right_uniqueness"]
+
+            # Add evaluation metrics if present in evidence. Both sides of each
+            # pair are served: they are the same measurement on either endpoint
+            # (DAT-725), and serving only the left one meant a row whose
+            # endpoints had flipped rendered no orphan evidence at all.
             if "left_referential_integrity" in evidence:
                 jc["left_referential_integrity"] = evidence["left_referential_integrity"]
             if "right_referential_integrity" in evidence:
                 jc["right_referential_integrity"] = evidence["right_referential_integrity"]
-            if "orphan_count" in evidence:
-                jc["orphan_count"] = evidence["orphan_count"]
+            if "left_key_coverage" in evidence:
+                jc["left_key_coverage"] = evidence["left_key_coverage"]
+            if "right_key_coverage" in evidence:
+                jc["right_key_coverage"] = evidence["right_key_coverage"]
+            if "left_orphan_count" in evidence:
+                jc["left_orphan_count"] = evidence["left_orphan_count"]
+            if "right_orphan_count" in evidence:
+                jc["right_orphan_count"] = evidence["right_orphan_count"]
             if "cardinality_verified" in evidence:
                 jc["cardinality_verified"] = evidence["cardinality_verified"]
 
@@ -277,8 +308,6 @@ def load_relationship_candidates_for_semantic(
         }
 
         # Add optional relationship-level metrics
-        if join_success_rate is not None:
-            candidate["join_success_rate"] = join_success_rate
         if introduces_duplicates is not None:
             candidate["introduces_duplicates"] = introduces_duplicates
 

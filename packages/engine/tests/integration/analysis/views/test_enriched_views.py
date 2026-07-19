@@ -309,13 +309,25 @@ class TestEnrichedViewsPhaseDuckLake:
 
     @staticmethod
     def _seed_relationship(
-        session, *, from_table_id: str, from_col: str, to_table_id: str, to_col: str, run_id: str
+        session,
+        *,
+        from_table_id: str,
+        from_col: str,
+        to_table_id: str,
+        to_col: str,
+        run_id: str,
+        confidence: float = 0.9,
+        cardinality: str | None = "many-to-one",
+        coverage: float | None = None,
     ) -> None:
         """Run-stamped confirmed relationship, as relationship_discovery mints each run.
 
         Each begin_session run re-creates relationships with a fresh ``relationship_id``
         (per-run uuid4) but the SAME column pair — so seeding per run exercises DAT-516's
         cross-run-stable ``(from_column_id, to_column_id)`` key. Idempotent per run_id.
+        ``confidence``/``coverage`` are overridable so a test can JITTER the
+        non-structural evidence across runs (the DAT-791 re-open predicate must
+        ignore them); ``cardinality`` so a test can flip the structural basis.
         """
         from uuid import uuid4
 
@@ -350,10 +362,11 @@ class TestEnrichedViewsPhaseDuckLake:
                 from_column_id=fk_id,
                 to_column_id=pk_id,
                 relationship_type="foreign_key",
-                cardinality="many-to-one",
-                confidence=0.9,
+                cardinality=cardinality,
+                confidence=confidence,
                 detection_method="llm",
                 confirmation_source="judge",
+                evidence={"coverage": coverage} if coverage is not None else None,
             )
         )
         session.flush()
@@ -941,6 +954,210 @@ class TestEnrichedViewsPhaseDuckLake:
         run("run-3", with_rel=True)  # re-confirmed → RE-judged (not stuck), exposed again
         assert dim_cols() == ["customer_id__country", "customer_id__name"]
         assert calls["n"] == 2, "a genuinely re-confirmed relationship is re-judged, not inherited"
+
+    def test_evidence_jitter_does_not_rejudge(self, session, duckdb_conn, monkeypatch):
+        """Identical topology across runs → ZERO LLM re-judgment, identical joins (DAT-791).
+
+        Run 2 re-mints the SAME relationship (same column pair, same measured
+        cardinality) but with jittered non-structural evidence — the judge's own
+        confidence and the measured coverage differ run-to-run. Under the retired
+        DAT-699 dossier predicate that jitter re-opened the pair and re-invoked the
+        enrichment LLM (shape drift); the topology-only predicate inherits the
+        verdict: no second call, byte-identical exposed joins.
+        """
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        calls = {"n": 0}
+
+        def _stub(self, **kw):
+            calls["n"] += 1
+            return canned
+
+        monkeypatch.setattr(EnrichedViewsPhase, "_get_llm_recommendations", _stub)
+
+        def run(run_id: str, *, confidence: float, coverage: float) -> None:
+            self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            self._seed_relationship(
+                session,
+                from_table_id=fact_id,
+                from_col="customer_id",
+                to_table_id=dim_id,
+                to_col="id",
+                run_id=run_id,
+                confidence=confidence,
+                coverage=coverage,
+            )
+            ctx = PhaseContext(
+                session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id, dim_id], run_id=run_id
+            )
+            assert EnrichedViewsPhase().run(ctx).status == PhaseStatus.COMPLETED
+            session.flush()
+
+        def view() -> EnrichedView:
+            return session.execute(
+                select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+            ).scalar_one()
+
+        run("run-1", confidence=0.9, coverage=0.85)
+        assert calls["n"] == 1
+        exposed_run1 = view().exposed_dimension_joins
+
+        run("run-2", confidence=0.42, coverage=0.003)
+        assert calls["n"] == 1, (
+            "jittered confidence/coverage on identical topology → no re-judgment"
+        )
+        assert view().exposed_dimension_joins == exposed_run1, "identical exposed joins"
+        assert sorted(view().dimension_columns or []) == [
+            "customer_id__country",
+            "customer_id__name",
+        ]
+
+    def test_topology_delta_rejudges_only_the_delta(self, session, duckdb_conn, monkeypatch):
+        """A newly-confirmed relationship re-opens ONLY itself (DAT-791).
+
+        Run 2's catalog adds a second confirmed relationship (orders→regions) next
+        to the already-judged orders→customers. The enrichment LLM must be consulted
+        for exactly the new pair — the judged pair is inherited, not re-offered —
+        and the resulting shape is the union of the inherited and the new join.
+        """
+        from uuid import uuid4
+
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.builder import DimensionJoin
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.analysis.views.enrichment_models import (
+            EnrichmentAnalysisResult,
+            EnrichmentRecommendation,
+        )
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+        from dataraum.storage import Column, Table
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+
+        # A second dimension joinable off the fact's existing customer_id column
+        # (physical + metadata) — confirmed only from run 2 onward.
+        duckdb_conn.execute(
+            'CREATE OR REPLACE TABLE lake.typed."csv__regions" AS '
+            "SELECT * FROM (VALUES (10, 'west'), (20, 'east')) AS t(cust_ref, region_name)"
+        )
+        fact_source_id = session.execute(
+            select(Table.source_id).where(Table.table_id == fact_id)
+        ).scalar_one()
+        regions = Table(
+            table_id=str(uuid4()),
+            source_id=fact_source_id,
+            table_name="regions",
+            layer="typed",
+            duckdb_path="csv__regions",
+            row_count=2,
+        )
+        session.add(regions)
+        session.flush()
+        for pos, name in enumerate(("cust_ref", "region_name")):
+            session.add(
+                Column(
+                    column_id=str(uuid4()),
+                    table_id=regions.table_id,
+                    column_name=name,
+                    column_position=pos,
+                    raw_type="VARCHAR",
+                    resolved_type="VARCHAR",
+                )
+            )
+        session.flush()
+
+        rec = {"current": canned}
+        seen_pairs: list[set[tuple[str, str]]] = []
+
+        def _stub(self, **kw):
+            seen_pairs.append({(r.from_column_id, r.to_column_id) for r in kw["all_relationships"]})
+            return rec["current"]
+
+        monkeypatch.setattr(EnrichedViewsPhase, "_get_llm_recommendations", _stub)
+
+        def col_id(table_id: str, name: str) -> str:
+            return session.execute(
+                select(Column.column_id).where(
+                    Column.table_id == table_id, Column.column_name == name
+                )
+            ).scalar_one()
+
+        def run(run_id: str, *, with_regions: bool) -> None:
+            self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            self._seed_relationship(
+                session,
+                from_table_id=fact_id,
+                from_col="customer_id",
+                to_table_id=dim_id,
+                to_col="id",
+                run_id=run_id,
+            )
+            if with_regions:
+                self._seed_relationship(
+                    session,
+                    from_table_id=fact_id,
+                    from_col="customer_id",
+                    to_table_id=regions.table_id,
+                    to_col="cust_ref",
+                    run_id=run_id,
+                )
+            ctx = PhaseContext(
+                session=session,
+                duckdb_conn=duckdb_conn,
+                table_ids=[fact_id, dim_id, regions.table_id],
+                run_id=run_id,
+            )
+            assert EnrichedViewsPhase().run(ctx).status == PhaseStatus.COMPLETED
+            session.flush()
+
+        # Run 1: only the customers relationship exists — judged in.
+        run("run-1", with_regions=False)
+        assert seen_pairs == [{(col_id(fact_id, "customer_id"), col_id(dim_id, "id"))}]
+
+        # Run 2: the regions relationship joins the catalog. The LLM sees ONLY it.
+        rec["current"] = EnrichmentAnalysisResult(
+            recommendations=[
+                EnrichmentRecommendation(
+                    fact_table_id=fact_id,
+                    fact_table_name="orders",
+                    dimension_joins=[
+                        DimensionJoin(
+                            dim_table_name="regions",
+                            dim_duckdb_path="(rewritten by the phase)",
+                            fact_fk_column="customer_id",
+                            dim_pk_column="cust_ref",
+                            include_columns=["region_name"],
+                            relationship_id="rel-regions",
+                        )
+                    ],
+                    relationship_role="reference/lookup",
+                    confidence=0.9,
+                    reasoning="regions enrich orders",
+                    enrichment_columns=["region_name"],
+                )
+            ],
+            summary="stub",
+            model_name="stub-model",
+        )
+        run("run-2", with_regions=True)
+        assert len(seen_pairs) == 2, "the new pair IS re-judged (one more LLM call)"
+        assert seen_pairs[1] == {
+            (col_id(fact_id, "customer_id"), col_id(regions.table_id, "cust_ref"))
+        }, "only the topology DELTA is offered — the judged pair is inherited"
+
+        view = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one()
+        assert sorted(view.dimension_columns or []) == [
+            "customer_id__country",
+            "customer_id__name",
+            "customer_id__region_name",
+        ], "shape = inherited customers join + newly-judged regions join"
 
     @staticmethod
     def _seed_fanout(session, duckdb_conn):

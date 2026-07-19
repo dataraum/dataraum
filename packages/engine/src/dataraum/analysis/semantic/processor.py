@@ -19,7 +19,10 @@ if TYPE_CHECKING:
 
 from dataraum.analysis.relationships.composite import rescue_fanout_to_composite
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
-from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
+from dataraum.analysis.relationships.db_models import (
+    SurrogateKeyIntent,
+    swap_directional_evidence,
+)
 from dataraum.analysis.relationships.evaluator import (
     compute_actual_cardinality,
     compute_composite_cardinality,
@@ -113,45 +116,48 @@ def _build_candidate_metrics_lookup(
             col1 = jc.get("column1", "")
             col2 = jc.get("column2", "")
 
-            # Extract evaluation metrics
-            metrics: dict[str, Any] = {}
-            if "left_referential_integrity" in jc:
-                metrics["left_referential_integrity"] = jc["left_referential_integrity"]
-            if "right_referential_integrity" in jc:
-                metrics["right_referential_integrity"] = jc["right_referential_integrity"]
-            if "orphan_count" in jc:
-                metrics["orphan_count"] = jc["orphan_count"]
-            if "cardinality_verified" in jc:
-                metrics["cardinality_verified"] = jc["cardinality_verified"]
-            if "cardinality" in jc:
-                metrics["cardinality"] = jc["cardinality"]
+            # Every per-side measurement the served candidate carries, both
+            # sides of each pair. Carried for EVIDENCE COMPLETENESS, not for a
+            # decision: no consumer orients on any of it — the judge is told the
+            # rule in ``semantic_per_table`` and decides. Dropping them meant a
+            # stored relationship did not carry the numbers its own direction
+            # was argued from, which is why diagnosing a wrong direction took a
+            # forensic dig through candidate rows (DAT-725 runs #2/#5).
+            metrics: dict[str, Any] = {
+                key: jc[key]
+                for key in (
+                    "left_referential_integrity",
+                    "right_referential_integrity",
+                    "left_key_coverage",
+                    "right_key_coverage",
+                    "left_orphan_count",
+                    "right_orphan_count",
+                    "left_uniqueness",
+                    "right_uniqueness",
+                    "cardinality_verified",
+                    "cardinality",
+                )
+                if key in jc
+            }
 
             # Add relationship-level metrics
-            if "join_success_rate" in candidate:
-                metrics["join_success_rate"] = candidate["join_success_rate"]
             if "introduces_duplicates" in candidate:
                 metrics["introduces_duplicates"] = candidate["introduces_duplicates"]
 
             if metrics:
                 lookup[(table1, col1, table2, col2)] = metrics
-
-                # Build reverse entry with flipped direction-dependent fields
-                reverse = dict(metrics)
-                card = reverse.get("cardinality")
-                if card == "one-to-many":
-                    reverse["cardinality"] = "many-to-one"
-                elif card == "many-to-one":
-                    reverse["cardinality"] = "one-to-many"
-                # Swap left/right RI
-                left_ri = reverse.pop("left_referential_integrity", None)
-                right_ri = reverse.pop("right_referential_integrity", None)
-                if left_ri is not None:
-                    reverse["right_referential_integrity"] = left_ri
-                if right_ri is not None:
-                    reverse["left_referential_integrity"] = right_ri
-                # introduces_duplicates is directional — drop from reverse
-                reverse.pop("introduces_duplicates", None)
-                lookup[(table2, col2, table1, col1)] = reverse
+                # The judge may emit the pair either way round, so the reverse
+                # key is served too — re-expressed for that direction through
+                # the ONE flip helper the persist path uses (DAT-725). This site
+                # used to hand-roll the swap over a per-metric list, which meant
+                # every metric not on the list kept describing the side it was
+                # no longer on: ``orphan_count`` was measured on the from side
+                # and carried through verbatim, so a judge that emitted the
+                # opposite direction stored ``L=100% RI`` beside ``orphans=2``
+                # — a reading that cannot be true, shipped to the orphan-rate
+                # detector as fact. Two flip implementations is one too many:
+                # prefix a directional metric and both sites get it right.
+                lookup[(table2, col2, table1, col1)] = swap_directional_evidence(metrics)
 
     return lookup
 
@@ -455,10 +461,28 @@ def _augment_candidates_with_composite_rescue(
 
 
 def _first_wins(rows: list[dict[str, Any]], key_fields: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Fold same-batch duplicate rows on the upsert key, keeping the first."""
+    """Fold same-batch duplicate rows on the upsert key, keeping the first.
+
+    Logs what it dropped. The judge is the sole authority on a 1:1's direction
+    (DAT-725), so if it emits the same pair twice with different verdicts, that
+    disagreement is the only signal that its orientation reasoning is unstable —
+    and this fold used to swallow it silently. "The judge was consistent" and
+    "the collision resolver hid a disagreement" looked identical from the
+    outside.
+    """
     folded: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in rows:
-        folded.setdefault(tuple(row[f] for f in key_fields), row)
+        key = tuple(row[f] for f in key_fields)
+        kept = folded.setdefault(key, row)
+        if kept is not row:
+            logger.warning(
+                "duplicate_row_dropped_in_batch",
+                key=key,
+                kept_confidence=kept.get("confidence"),
+                dropped_confidence=row.get("confidence"),
+                kept_cardinality=kept.get("cardinality"),
+                dropped_cardinality=row.get("cardinality"),
+            )
     return list(folded.values())
 
 
@@ -630,17 +654,110 @@ def _build_surrogate_intent(
     }
 
 
+# Bounded re-prompts when the batched synthesis under-covers column_concepts
+# (DAT-725 B1). The contract is a meaning for EVERY column, but one wide batched
+# call can truncate (observed: 9/62 on a run whose siblings hit 62/62 — output
+# jitter under the warn-only contract). Each retry serves the SAME prompt scoped
+# to the tables that still have uncovered columns, so it is cheap; warn-only
+# stays the terminal state when the attempts are exhausted.
+CONCEPT_COVERAGE_RETRIES = 2
+
+
+def _missing_concept_keys(
+    column_map: dict[tuple[str, str], str],
+    column_concepts: list[ColumnConceptOutput],
+) -> list[tuple[str, str]]:
+    """Catalogue columns not covered by a MEANINGFUL ``column_concepts`` entry.
+
+    Covered = an entry whose ``meaning`` is non-empty after stripping — the same
+    definition ``persist_column_concepts`` normalizes to (whitespace-only becomes
+    NULL at persist), so the retry loop and the terminal partial-coverage warning
+    agree with the persisted surface: a blank (re-)emission is still missing.
+    """
+    covered = {
+        (cc.table_name, cc.column_name) for cc in column_concepts if (cc.meaning or "").strip()
+    }
+    return sorted(k for k in column_map if k not in covered)
+
+
+def _retry_missing_column_concepts(
+    session: Session,
+    agent: SemanticAgent,
+    enrichment: SemanticEnrichmentResult,
+    *,
+    column_map: dict[tuple[str, str], str],
+    table_map: dict[str, str],
+    ontology: str,
+    relationship_candidates: list[dict[str, Any]] | None,
+) -> None:
+    """Fill column_concepts coverage gaps with bounded scoped re-prompts, in place.
+
+    Re-runs :meth:`SemanticAgent.synthesize_tables` for ONLY the tables that
+    still have uncovered columns and merges the retry's ``column_concepts``
+    entries for those still-missing columns into ``enrichment`` — the first
+    MEANINGFUL emission wins: a retry is only asked for columns still lacking a
+    non-empty meaning, so it never displaces one (a blank emission is absence
+    by the persist contract and a later meaningful re-emission replaces it via
+    ``persist_column_concepts``' last-mention-wins dedup, which also settles
+    duplicate mentions inside one response). The retry's tables/relationships
+    output is discarded: the full-catalogue first pass is authoritative for
+    those. Best-effort by contract — a failed retry logs and stops (the first
+    pass succeeded; coverage stays warn-only), and the caller persists ONCE
+    after the loop (idempotent writer, ADR-0010).
+    """
+    missing = _missing_concept_keys(column_map, enrichment.column_concepts)
+    for _attempt in range(CONCEPT_COVERAGE_RETRIES):
+        if not missing:
+            return
+        missing_tables = {t for t, _c in missing}
+        retry_table_ids = [tid for name, tid in table_map.items() if name in missing_tables]
+        if not retry_table_ids:
+            return
+        logger.info(
+            "column_meanings_coverage_retry",
+            missing=len(missing),
+            tables=sorted(missing_tables),
+        )
+        retry_result = agent.synthesize_tables(
+            session=session,
+            table_ids=retry_table_ids,
+            ontology=ontology,
+            relationship_candidates=[
+                c
+                for c in (relationship_candidates or [])
+                if c.get("table1") in missing_tables or c.get("table2") in missing_tables
+            ],
+        )
+        if not retry_result.success:
+            logger.warning("column_meanings_coverage_retry_failed", error=retry_result.error)
+            return
+        still_missing = set(missing)
+        enrichment.column_concepts.extend(
+            cc
+            for cc in retry_result.unwrap().column_concepts
+            if (cc.table_name, cc.column_name) in still_missing
+        )
+        missing = _missing_concept_keys(column_map, enrichment.column_concepts)
+
+
 # Confirm/decline threshold for the semantic judge's relationship verdict. The
 # judge encodes its verdict in ``confidence`` (there is no explicit accept/decline
-# field): on the finance corpus it lands bimodally — declines ≤ 0.40 ("coincidental
-# overlap; not a real FK") and accepts ≥ 0.85, with a wide empty dead zone between.
-# 0.7 sits squarely in that dead zone, so it is the judge's own decision boundary,
-# not an imposed floor. A relationship the judge did NOT confirm is persisted as a
-# ``candidate`` (its evidence/reasoning kept), NOT as ``llm`` — so it never enters
-# the "defined" catalog (``detection_method != 'candidate'``) that every downstream
-# consumer reads. This cuts judge-declined relationships at the source instead of
-# making each consumer re-weigh confidence (DAT-699 dropped the read-path gate;
-# "defined" must mean judge-confirmed again). Mirrors the relationships phase's
+# field): the design intent is bimodal — declines ≤ 0.40 ("coincidental overlap;
+# not a real FK") and accepts ≥ 0.85, with an empty dead zone between, making 0.7
+# the judge's own decision boundary rather than an imposed floor. Observed drift
+# (DAT-725 runs #1/#2): sparse/dirty FKs landed IN the dead zone — 0.55 while the
+# same verdict's reasoning affirmed "genuine sparse FK", 0.85→0.6 under an
+# RI-corruption injection — i.e. the judge dampened the number for data QUALITY,
+# not existence. The synthesis prompt (semantic_per_table v2.1.0) answers this by
+# defining confidence as existence-only and instructing decisive scoring; the
+# threshold itself stands, and there is deliberately NO deterministic override of
+# the judge's verdict (agentic-not-deterministic). A relationship the judge did
+# NOT confirm is persisted as a ``candidate`` (its evidence/reasoning kept), NOT
+# as ``llm`` — so it never enters the "defined" catalog
+# (``detection_method != 'candidate'``) that every downstream consumer reads.
+# This cuts judge-declined relationships at the source instead of making each
+# consumer re-weigh confidence (DAT-699 dropped the read-path gate; "defined"
+# must mean judge-confirmed again). Mirrors the relationships phase's
 # high-confidence band (``>= 0.7``).
 REL_CONFIRM_MIN = 0.7
 
@@ -886,6 +1003,21 @@ def synthesize_and_store_tables(
         annotated_by = agent.provider.get_model_for_tier(
             agent.config.features.semantic_analysis.model_tier
         )
+        # Coverage retry (DAT-725 B1): fill truncation gaps BEFORE the single
+        # persist — bounded scoped re-prompts for the tables whose columns are
+        # still uncovered; a retry that fails or under-produces leaves the
+        # warn-only terminal state below untouched. ``column_map``/``table_map``
+        # from the top of the function are still current — nothing between there
+        # and here adds columns or tables.
+        _retry_missing_column_concepts(
+            session,
+            agent,
+            enrichment,
+            column_map=column_map,
+            table_map=table_map,
+            ontology=ontology,
+            relationship_candidates=relationship_candidates,
+        )
         counts = persist_column_concepts(
             session,
             enrichment.column_concepts,
@@ -903,14 +1035,13 @@ def synthesize_and_store_tables(
         # Coverage visibility (DAT-769): the contract is a meaning for EVERY
         # column, but a wide catalogue can exceed the output-token budget and the
         # model may self-ration to the first N columns — partial coverage must be
-        # VISIBLE, never silent. No hard threshold (that would be a tuned knob and
-        # the eval's consumer oracles grade the outcome); the warning names the
-        # uncovered columns so a wide-data run is diagnosable from the log.
-        column_map = load_column_mappings(session, table_ids)
+        # VISIBLE, never silent, and after the bounded retries it is the terminal
+        # state. No hard threshold (that would be a tuned knob and the eval's
+        # consumer oracles grade the outcome); the warning names the uncovered
+        # columns so a wide-data run is diagnosable from the log.
         total_columns = len(column_map)
         if counts.with_meaning < total_columns:
-            covered = {(cc.table_name, cc.column_name) for cc in enrichment.column_concepts}
-            missing = sorted(k for k in column_map if k not in covered)
+            missing = _missing_concept_keys(column_map, enrichment.column_concepts)
             logger.warning(
                 "column_meanings_partial_coverage",
                 with_meaning=counts.with_meaning,

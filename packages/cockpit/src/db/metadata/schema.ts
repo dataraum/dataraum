@@ -309,6 +309,27 @@ export const currentEntropyReadiness = pgView("current_entropy_readiness", {
 	sql`SELECT readiness_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_catalog_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_operating_model_head FROM engine.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'generation'::text AND h.target::text = ('table:'::text || r.table_id::text) OR h.stage::text = 'catalog'::text AND h.target::text = 'catalog'::text OR h.stage::text = 'operating_model'::text AND h.target::text = 'catalog'::text))) AND (NOT (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = 'catalog'::text AND (h3.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])))) OR NOT (EXISTS ( SELECT 1 FROM engine.entropy_readiness r2 JOIN engine.metadata_snapshot_head h2 ON h2.run_id::text = r2.run_id::text AND h2.target::text = 'catalog'::text AND (h2.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])) WHERE r2.target::text = r.target::text AND r2.run_id::text <> r.run_id::text AND h2.promoted_at > (( SELECT max(h3.promoted_at) AS max FROM engine.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = 'catalog'::text AND (h3.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])))))))`,
 );
 
+export const currentGroundings = pgView("current_groundings", {
+	snippetId: varchar("snippet_id"),
+	concept: varchar(),
+	statement: varchar(),
+	aggregation: varchar(),
+	relation: text(),
+	selectExpr: text("select_expr"),
+	wherePredicates: text("where_predicates"),
+	description: text(),
+	sql: text(),
+	parts: json(),
+	provenance: json(),
+	failed: boolean(),
+	schemaMappingId: varchar("schema_mapping_id"),
+	workspaceId: varchar("workspace_id"),
+	createdAt: timestamp("created_at"),
+	updatedAt: timestamp("updated_at"),
+}).as(
+	sql`SELECT snippet_id, standard_field AS concept, statement, aggregation, (parts -> 'from'::text) ->> 0 AS relation, ((parts -> 'select'::text) -> 0) ->> 'expr'::text AS select_expr, (parts -> 'where'::text)::text AS where_predicates, description, sql, parts, provenance, failure_count > 0 AS failed, schema_mapping_id, workspace_id, created_at, updated_at FROM engine.sql_snippets s WHERE snippet_type::text = 'extract'::text AND source::text ~~ 'graph:%'::text`,
+);
+
 export const currentLifecycleArtifacts = pgView("current_lifecycle_artifacts", {
 	artifactId: varchar("artifact_id"),
 	artifactType: varchar("artifact_type"),

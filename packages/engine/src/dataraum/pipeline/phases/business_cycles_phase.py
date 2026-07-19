@@ -201,10 +201,28 @@ class BusinessCyclesPhase(BasePhase):
                     cycle_name=detected.cycle_name,
                 )
                 continue
-            # First detection per type wins (the LLM emits one cycle per type;
-            # a duplicate is unexpected but must not double-persist under the
-            # (session, canonical_type, run) UNIQUE).
-            detected_by_type.setdefault(key, detected)
+            # ONE row per (session, canonical_type, run). A duplicate emission
+            # is a PROMPT-CONTRACT violation (business_cycles.yaml: "Emit at
+            # most ONE cycle per cycle type") — so drop it loudly and keep the
+            # first, rather than blending the two. Merging was tried and
+            # reverted (DAT-725 review): unioning ``tables_involved`` while
+            # keeping the first emission's stages, evidence, confidence and
+            # completion_rate produces a row citing tables nothing in it
+            # supports — the mirror of the inconsistency the prompt forbids —
+            # and it silently widens ``health.py``'s validation match set, so
+            # the cycle's pass rate and VERIFIED/PARTIAL label shift to cover a
+            # process the kept emission never described.
+            existing = detected_by_type.get(key)
+            if existing is None:
+                detected_by_type[key] = detected
+            else:
+                _log.warning(
+                    "cycle_duplicate_canonical_type_dropped",
+                    canonical_type=key,
+                    kept_cycle=existing.cycle_name,
+                    dropped_cycle=detected.cycle_name,
+                    dropped_tables=detected.tables_involved,
+                )
 
         # bind → execute per declared artifact; persist the grounded cycles.
         grounded_against = base_runs.model_dump(mode="json")

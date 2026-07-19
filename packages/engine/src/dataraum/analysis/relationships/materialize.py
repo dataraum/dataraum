@@ -40,20 +40,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship, SurrogateKeyIntent
+from dataraum.analysis.relationships.evaluator import (
+    compute_actual_cardinality,
+    compute_introduces_duplicates,
+)
 from dataraum.analysis.relationships.surrogate import composite_intent_digest
 from dataraum.analysis.relationships.utils import (
     load_suppressed_relationship_pairs,
     relationship_overlay_pairs,
     relationship_overlay_rows,
 )
+from dataraum.core.duckdb_naming import schema_for_layer
 from dataraum.core.logging import get_logger
-from dataraum.storage import Column
+from dataraum.server.storage import LAKE_CATALOG_ALIAS
+from dataraum.storage import Column, Table
+
+if TYPE_CHECKING:
+    import duckdb
 
 logger = get_logger(__name__)
 
@@ -157,6 +166,7 @@ def materialize_relationship_overlays(
     *,
     run_id: str,
     table_ids: list[str],
+    duckdb_conn: duckdb.DuckDBPyConnection | None = None,
 ) -> int:
     """Write this run's durable (`manual`/`keeper`) relationships from overlays.
 
@@ -172,6 +182,12 @@ def materialize_relationship_overlays(
     measurement is unrecoverable has no basis and is skipped LOUD. ``manual``
     rows keep ``confidence=1.0`` — that one is the user's own assertion, not a
     fabrication — but copy the measured evidence too when it exists.
+
+    A manual teach on a pair with NO prior row at all is measured HERE
+    (DAT-790): ``duckdb_conn`` probes the typed tables for empirical
+    cardinality + ``introduces_duplicates``, so the cockpit's fan-out caution
+    is live exactly where the join is least verified. ``None`` (or a failed
+    probe) leaves both NULL — an honest "unmeasured", never a fabrication.
     """
     # Retry-safe clear: drop only THIS run's prior durable rows (run_id-scoped, like
     # the candidate clear), never another run's. candidate/llm are owned by their
@@ -272,10 +288,24 @@ def materialize_relationship_overlays(
             else:
                 # A manual ``add`` of a relationship the system never detected at all:
                 # no row to canonicalize against, so trust the teach's own from =
-                # FK-side orientation (teach.validation) with no cardinality.
+                # FK-side orientation (teach.validation). Measure the join HERE
+                # (DAT-790): a never-detected pair skipped every measuring writer
+                # (processor synthesis, surrogate mint), so it used to persist
+                # cardinality=None with no introduces_duplicates — the cockpit's
+                # fan-out caution silently absent exactly where the join is least
+                # verified. A measured one-to-many is re-oriented by
+                # ``oriented_row`` below (DAT-777), same as every other writer.
                 from_table_r, from_col_r = from_table, from_col
                 to_table_r, to_col_r = to_table, to_col
-                cardinality = None
+                cardinality, measured_evidence = _measure_taught_pair(
+                    session,
+                    duckdb_conn,
+                    from_table_id=from_table,
+                    from_column_id=from_col,
+                    to_table_id=to_table,
+                    to_column_id=to_col,
+                )
+                evidence = {**measured_evidence, **evidence}
             session.add(
                 Relationship(
                     **Relationship.oriented_row(
@@ -380,6 +410,88 @@ def _column_table_map(session: Session, table_ids: list[str]) -> dict[str, str]:
         select(Column.column_id, Column.table_id).where(Column.table_id.in_(table_ids))
     ).tuples()
     return dict(rows.all())
+
+
+def _measure_taught_pair(
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+    *,
+    from_table_id: str,
+    from_column_id: str,
+    to_table_id: str,
+    to_column_id: str,
+) -> tuple[str | None, dict[str, Any]]:
+    """Empirically measure a never-detected taught pair's join (DAT-790).
+
+    Probes the two typed tables in the lake for the join's actual cardinality
+    (:func:`compute_actual_cardinality`) and fan-trap signal
+    (:func:`compute_introduces_duplicates`) — the same measurements the LLM
+    synthesis path and the surrogate mint make, so a manual teach carries the
+    same empirical evidence as every other defined relationship.
+
+    Returns ``(cardinality, evidence_fields)``. Degrades honestly — a loud log
+    and an absent field, never a fabricated value: ``(None, {})`` when no
+    connection is supplied or a typed table/column cannot be resolved to a
+    physical name; each probe that fails simply leaves its own field unset
+    (a failed fan-out probe does not discard an already-measured cardinality
+    — mirrors the surrogate mint's per-probe guards).
+    """
+    if duckdb_conn is None:
+        logger.warning(
+            "manual_add_unmeasured_no_duckdb",
+            from_column=from_column_id,
+            to_column=to_column_id,
+        )
+        return None, {}
+
+    paths = {
+        t.table_id: t.duckdb_path
+        for t in session.execute(
+            select(Table).where(Table.table_id.in_([from_table_id, to_table_id]))
+        ).scalars()
+    }
+    names = dict(
+        session.execute(
+            select(Column.column_id, Column.column_name).where(
+                Column.column_id.in_([from_column_id, to_column_id])
+            )
+        )
+        .tuples()
+        .all()
+    )
+    from_path, to_path = paths.get(from_table_id), paths.get(to_table_id)
+    from_name, to_name = names.get(from_column_id), names.get(to_column_id)
+    if not from_path or not to_path or not from_name or not to_name:
+        logger.warning(
+            "manual_add_unmeasured_unresolvable",
+            from_column=from_column_id,
+            to_column=to_column_id,
+        )
+        return None, {}
+
+    typed_schema = schema_for_layer("typed")
+    from_fqn = f'{LAKE_CATALOG_ALIAS}.{typed_schema}."{from_path}"'
+    to_fqn = f'{LAKE_CATALOG_ALIAS}.{typed_schema}."{to_path}"'
+    # ``compute_actual_cardinality`` self-guards (logs + returns None on a failed
+    # probe); ``compute_introduces_duplicates`` does not — guard it ALONE, so a
+    # failed fan-out probe degrades to (cardinality, {}) instead of discarding a
+    # cardinality that already measured (mirrors the surrogate mint's guards).
+    cardinality = compute_actual_cardinality(from_fqn, to_fqn, from_name, to_name, duckdb_conn)
+    measured: dict[str, Any] = {}
+    try:
+        measured["introduces_duplicates"] = compute_introduces_duplicates(
+            from_fqn, to_fqn, from_name, to_name, duckdb_conn
+        )
+    except Exception as e:  # measurement is evidence, never a materialize blocker
+        logger.warning(
+            "manual_add_measurement_failed",
+            from_column=from_column_id,
+            to_column=to_column_id,
+            error=str(e),
+        )
+    if cardinality is not None:
+        measured["cardinality_verified"] = True
+    return cardinality, measured
 
 
 def write_relationship_keepers(

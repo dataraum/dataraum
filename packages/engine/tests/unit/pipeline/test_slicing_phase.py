@@ -1,4 +1,4 @@
-"""Unit tests for the DAT-491 time-axis legs of the slicing phase.
+"""Unit tests for the slicing phase.
 
 Part A pins ``SlicingPhase._build_context_data``: each table dict carries the
 ``time_columns`` read from THIS run's ``TableEntity`` (DAT-565 plural), and
@@ -9,6 +9,11 @@ membership in that table's ``TableEntity.time_columns``), never by name inferenc
 Part B pins the post-analysis ``TableEntity.time_columns`` fill in ``_run``,
 with the LLM boundary mocked at the phase module import site (the
 ``should_skip`` gates live in ``tests/integration/pipeline/test_slicing_phase.py``).
+
+Part C pins the DAT-725 rescope: slice EXISTENCE is deterministic (the eligible
+set — grain-safe pre-filter survivors that are not measures/timestamps — is the
+persisted inventory), and the agent output is enrichment only (priority /
+context / reasoning / confidence on rows that exist regardless).
 """
 
 from __future__ import annotations
@@ -22,9 +27,9 @@ from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
 from dataraum.analysis.relationships.db_models import Relationship
-from dataraum.analysis.semantic.db_models import TableEntity
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.models import SlicingAnalysisResult
+from dataraum.analysis.slicing.models import UNRANKED_SLICE_PRIORITY, SlicingAnalysisResult
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.models.base import Result
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
@@ -110,7 +115,33 @@ def _seed(
     dim_pk = Column(
         table_id=dim.table_id, column_name="id", column_position=0, resolved_type="VARCHAR"
     )
-    session.add(dim_pk)
+    dim_date = Column(
+        table_id=dim.table_id, column_name="date", column_position=1, resolved_type="DATE"
+    )
+    dim_status = Column(
+        table_id=dim.table_id, column_name="status", column_position=2, resolved_type="VARCHAR"
+    )
+    session.add_all([dim_pk, dim_date, dim_status])
+    session.flush()
+
+    # Semantic roles (DAT-725 existence gate): the fact's measure and the dim's
+    # event DATE are excluded from the deterministic inventory (measure/timestamp);
+    # the dim's status is a dimension (enriched ``invoice_id__status`` eligible via
+    # provenance); ``invoice_id`` stays UNannotated — fail-open eligible, and the
+    # referenced-key path. Default eligible set: {invoice_id, invoice_id__status}.
+    session.add_all(
+        [
+            SemanticAnnotation(
+                column_id=amount_col.column_id, run_id=None, semantic_role="measure"
+            ),
+            SemanticAnnotation(
+                column_id=dim_date.column_id, run_id=None, semantic_role="timestamp"
+            ),
+            SemanticAnnotation(
+                column_id=dim_status.column_id, run_id=None, semantic_role="dimension"
+            ),
+        ]
+    )
     session.flush()
 
     fact_entity = TableEntity(
@@ -634,9 +665,9 @@ def _mock_llm_config() -> MagicMock:
 def _analysis_result(time_columns: dict[str, str]) -> Result[SlicingAnalysisResult]:
     """A successful agent result carrying only time-axis judgments.
 
-    Empty recommendations keep ``_run`` from writing SliceDefinition rows, and
-    the single-fact-table contexts below keep ``_propagate_enriched_dimensions``
-    a no-op (it needs >= 2 tables) — no mocked-agent internals can leak into rows.
+    Empty recommendations = an un-ranked inventory (DAT-725): ``_run`` still
+    persists the deterministic eligible set, but every row is 'structural' at the
+    priority floor — no mocked-agent internals can leak into enrichment fields.
     """
     return Result.ok(SlicingAnalysisResult(recommendations=[], time_columns=time_columns))
 
@@ -677,8 +708,12 @@ class TestRunTimeAxisFill:
         mock_agent_cls.return_value.analyze.assert_called_once()
         assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
         assert any(e["event"] == "time_axis_filled" and e["table"] == "invoices" for e in logs)
-        # Empty recommendations — nothing mocked landed in SliceDefinition rows.
-        assert session.execute(select(SliceDefinition)).scalars().all() == []
+        # Empty recommendations — the deterministic inventory still lands (DAT-725),
+        # but every row is structural at the floor: no mocked enrichment leaked.
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        assert rows, "the eligible set is persisted regardless of the ranking"
+        assert all(r.detection_source == "structural" for r in rows)
+        assert all(r.slice_priority == UNRANKED_SLICE_PRIORITY for r in rows)
 
     def test_high_cardinality_time_axis_survives_prefilter(
         self,
@@ -1016,8 +1051,11 @@ class TestSliceDefinitionWriterIdempotent:
         session.commit()
 
         rows = session.execute(select(SliceDefinition)).scalars().all()
-        assert len(rows) == 1, "in-batch duplicate deduped"
-        assert rows[0].confidence == 0.8
+        # The eligible set (invoice_id + invoice_id__status), the ranked column
+        # ONCE — the in-batch duplicate deduped into the single inventory row.
+        assert sorted(r.column_name or "" for r in rows) == ["invoice_id", "invoice_id__status"]
+        (ranked_row,) = [r for r in rows if r.column_name == "invoice_id__status"]
+        assert ranked_row.confidence == 0.8
 
         # The at-least-once redelivery: same run_id. The KEEP-class in-run
         # guard (this run already sliced the table) short-circuits before the
@@ -1029,9 +1067,13 @@ class TestSliceDefinitionWriterIdempotent:
         session.expire_all()
 
         rows = session.execute(select(SliceDefinition)).scalars().all()
-        assert len(rows) == 1, "converged — no duplicate under the same run_id"
-        assert rows[0].run_id == "run-A"
-        assert rows[0].confidence == 0.8, "redelivery skipped re-derivation (in-run guard)"
+        assert sorted(r.column_name or "" for r in rows) == [
+            "invoice_id",
+            "invoice_id__status",
+        ], "converged — no duplicate under the same run_id"
+        (ranked_row,) = [r for r in rows if r.column_name == "invoice_id__status"]
+        assert ranked_row.run_id == "run-A"
+        assert ranked_row.confidence == 0.8, "redelivery skipped re-derivation (in-run guard)"
 
     def test_upsert_converges_on_redelivery(
         self,
@@ -1117,8 +1159,14 @@ class TestSliceDefinitionWriterIdempotent:
             session.commit()
 
         session.expire_all()
-        rows = session.execute(select(SliceDefinition)).scalars().all()
-        by_run = {r.run_id: r for r in rows}
+        ranked_rows = (
+            session.execute(
+                select(SliceDefinition).where(SliceDefinition.column_name == "invoice_id__status")
+            )
+            .scalars()
+            .all()
+        )
+        by_run = {r.run_id: r for r in ranked_rows}
         assert set(by_run) == {"run-A", "run-B"}
         assert by_run["run-A"].confidence == 0.8, "prior run untouched"
         assert by_run["run-B"].confidence == 0.7
@@ -1247,3 +1295,410 @@ class TestReferencedDimensionIdentity:
         assert row.dimension_table_id == seeded["dim"].table_id
         assert row.dimension_attribute is None
         assert row.fk_role == "invoice_id"
+
+
+@patch("dataraum.pipeline.phases.slicing_phase.SlicingAgent")
+@patch("dataraum.pipeline.phases.slicing_phase.PromptRenderer")
+@patch("dataraum.pipeline.phases.slicing_phase.create_provider")
+@patch("dataraum.pipeline.phases.slicing_phase.load_llm_config")
+class TestDeterministicInventory:
+    """Part C (DAT-725): existence is deterministic; the agent only enriches.
+
+    The persisted slice set is a pure function of the data + code — the LLM
+    influences priority/context/reasoning/confidence, never which rows exist.
+    The default ``_seed`` eligible set is {invoice_id, invoice_id__status}:
+    ``amount`` is a measure, the enriched ``invoice_id__date`` resolves the dim's
+    timestamp role through provenance, both excluded deterministically.
+    """
+
+    @staticmethod
+    def _ranked_status(seeded: dict[str, Any], priority: int = 1) -> Result[SlicingAnalysisResult]:
+        from dataraum.analysis.slicing.models import SliceRecommendation
+
+        rec = SliceRecommendation(
+            table_id=seeded["fact"].table_id,
+            table_name="invoices",
+            column_id=seeded["fk_col"].column_id,
+            column_name="invoice_id__status",
+            slice_priority=priority,
+            distinct_values=["open", "paid"],
+            value_count=2,
+            reasoning="status partitions",
+            business_context="document lifecycle state",
+            confidence=0.9,
+        )
+        return Result.ok(SlicingAnalysisResult(recommendations=[rec], time_columns={}))
+
+    def test_existence_is_deterministic_across_rankings(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """Two runs with DIFFERENT agent outputs persist the SAME column set.
+
+        run-A ranks a dimension; run-B's agent returns nothing. The pre-rescope
+        election would have produced different catalogs; now only the enrichment
+        fields differ — zero LLM influence on existence.
+        """
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+
+        mock_agent_cls.return_value.analyze.return_value = self._ranked_status(seeded)
+        assert (
+            SlicingPhase()
+            ._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+            .status
+            == PhaseStatus.COMPLETED
+        )
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        assert (
+            SlicingPhase()
+            ._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-B"))
+            .status
+            == PhaseStatus.COMPLETED
+        )
+        session.commit()
+
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        cols_by_run: dict[str, set[str]] = {}
+        for r in rows:
+            cols_by_run.setdefault(r.run_id, set()).add(r.column_name or "")
+        assert (
+            cols_by_run["run-A"]
+            == cols_by_run["run-B"]
+            == {
+                "invoice_id",
+                "invoice_id__status",
+            }
+        )
+        # Enrichment differs — priority/source follow the ranking, existence does not.
+        a_status = next(
+            r for r in rows if r.run_id == "run-A" and r.column_name == "invoice_id__status"
+        )
+        b_status = next(
+            r for r in rows if r.run_id == "run-B" and r.column_name == "invoice_id__status"
+        )
+        assert (a_status.slice_priority, a_status.detection_source) == (1, "llm")
+        assert (b_status.slice_priority, b_status.detection_source) == (
+            UNRANKED_SLICE_PRIORITY,
+            "structural",
+        )
+
+    def test_folded_key_without_fk_survives(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """THE TRAP: a low-cardinality KEY with no resolved FK is persisted.
+
+        A folded dimension key (account_id inlined on a fact grain) is precisely
+        a ``key`` with no FK — the pre-rescope election dropped it 0-2 times per
+        run, and an "exclude keys without FK" gate would re-open that hole. It
+        must land as a folded slice (null identity), unranked or not.
+        """
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        account = Column(
+            table_id=seeded["fact"].table_id,
+            column_name="account_id",
+            column_position=5,
+            resolved_type="VARCHAR",
+        )
+        session.add(account)
+        session.flush()
+        session.add_all(
+            [
+                SemanticAnnotation(column_id=account.column_id, run_id=None, semantic_role="key"),
+                # Low-cardinality: 27 distinct over 25k rows — sails through the
+                # near-key gate; only degenerate PKs die there.
+                StatisticalProfile(
+                    column_id=account.column_id,
+                    layer="typed",
+                    total_count=25_000,
+                    null_count=0,
+                    distinct_count=27,
+                    null_ratio=0.0,
+                    cardinality_ratio=0.00108,
+                    profile_data={"top_values": [{"value": "1000"}, {"value": "1200"}]},
+                ),
+            ]
+        )
+        session.flush()
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        row = session.execute(
+            select(SliceDefinition).where(SliceDefinition.column_name == "account_id")
+        ).scalar_one()
+        assert row.dimension_table_id is None, "folded — no referenced identity"
+        assert row.fk_role is None
+        assert row.detection_source == "structural"
+        assert row.slice_priority == UNRANKED_SLICE_PRIORITY
+        assert row.distinct_values == ["1000", "1200"], "profile top values as evidence"
+        assert row.value_count == 27, "honest full distinct count"
+
+    def test_measure_and_timestamp_roles_excluded(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """Measures and timestamps never enter the inventory — born loud.
+
+        ``amount`` (own measure), an own timestamp, and the enriched
+        ``invoice_id__date`` (the dim's timestamp, resolved through relationship
+        provenance) are all excluded; the unannotated ``invoice_id`` stays
+        (fail-open — no exclusion evidence).
+        """
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        booked = Column(
+            table_id=seeded["fact"].table_id,
+            column_name="booked_at",
+            column_position=6,
+            resolved_type="TIMESTAMP",
+        )
+        session.add(booked)
+        session.flush()
+        session.add(
+            SemanticAnnotation(column_id=booked.column_id, run_id=None, semantic_role="timestamp")
+        )
+        session.flush()
+
+        with capture_logs() as logs:
+            result = SlicingPhase()._run(
+                _ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A")
+            )
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        names = {r.column_name for r in session.execute(select(SliceDefinition)).scalars().all()}
+        assert names == {"invoice_id", "invoice_id__status"}
+        excluded = {
+            (e["column"], e["semantic_role"])
+            for e in logs
+            if e["event"] == "slice_column_excluded" and e.get("reason") == "semantic_role"
+        }
+        assert excluded == {
+            ("amount", "measure"),
+            ("booked_at", "timestamp"),
+            ("invoice_id__date", "timestamp"),
+        }
+
+    def test_attribute_role_is_deliberately_kept(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """The exclusion set is EXACTLY {measure, timestamp} — 'attribute' stays.
+
+        An 'attribute' label is what a FOLDED descriptive dimension member draws
+        (account_name inlined next to its key); the role is an LLM's soft
+        per-table read, not a structural fact, so excluding it would re-open the
+        trap in its descriptive form. Pre-registered in the DAT-725 design.
+        """
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        account_name = Column(
+            table_id=seeded["fact"].table_id,
+            column_name="account_name",
+            column_position=7,
+            resolved_type="VARCHAR",
+        )
+        session.add(account_name)
+        session.flush()
+        session.add(
+            SemanticAnnotation(
+                column_id=account_name.column_id, run_id=None, semantic_role="attribute"
+            )
+        )
+        session.flush()
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        row = session.execute(
+            select(SliceDefinition).where(SliceDefinition.column_name == "account_name")
+        ).scalar_one()
+        assert row.detection_source == "structural"
+
+    def test_role_gate_scopes_to_promoted_generation_head(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """DAT-413 × DAT-725: coexisting annotation runs — the promoted generation
+        head decides which row feeds the existence gate. Head-flip guard: with
+        identical data, flipping the head flips eligibility; without run-scoping
+        an arbitrary scan-order row would win and existence would flap on exactly
+        the axis this rescope pins down.
+        """
+        from uuid import uuid4
+
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
+
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        amount_id = session.execute(
+            select(Column.column_id).where(
+                Column.table_id == seeded["fact"].table_id, Column.column_name == "amount"
+            )
+        ).scalar_one()
+        # A second, coexisting run's annotation disagrees: 'dimension', not 'measure'.
+        session.add(
+            SemanticAnnotation(column_id=amount_id, run_id="alt", semantic_role="dimension")
+        )
+        head = MetadataSnapshotHead(
+            head_id=str(uuid4()),
+            target=f"table:{seeded['fact'].table_id}",
+            stage=GENERATION_STAGE,
+            run_id=baseline_run_id(),  # the seeded 'measure' row's autofilled run
+        )
+        session.add(head)
+        session.flush()
+
+        # Head at the baseline run → the 'measure' row is current → excluded.
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        names_a = {
+            r.column_name
+            for r in session.execute(
+                select(SliceDefinition).where(SliceDefinition.run_id == "run-A")
+            ).scalars()
+        }
+        assert "amount" not in names_a
+
+        # Flip the head to the 'alt' run → the 'dimension' row is current → eligible.
+        head.run_id = "alt"
+        session.flush()
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-B"))
+        assert result.status == PhaseStatus.COMPLETED
+        names_b = {
+            r.column_name
+            for r in session.execute(
+                select(SliceDefinition).where(SliceDefinition.run_id == "run-B")
+            ).scalars()
+        }
+        assert "amount" in names_b
+
+    def test_llm_config_missing_persists_inventory_and_backstop(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """No LLM config: the ranking is skipped, existence still lands (DAT-725).
+
+        Pre-rescope this mode skipped the whole phase (zero rows), re-coupling
+        existence to LLM availability. Now the deterministic inventory persists
+        (all structural) and the DAT-720 time-axis backstop still fires; only
+        the agent call is skipped.
+        """
+        mock_load_config.side_effect = FileNotFoundError("no llm.yaml")
+        seeded = _seed(session)
+
+        # Default (baseline) run ctx — the seeded entities autofill the baseline
+        # run, and the DAT-720 backstop resolves THIS run's TableEntity rows.
+        with capture_logs() as logs:
+            result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id]))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        mock_agent_cls.return_value.analyze.assert_not_called()
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        assert sorted(r.column_name or "" for r in rows) == ["invoice_id", "invoice_id__status"]
+        assert all(r.detection_source == "structural" for r in rows)
+        # The deterministic backstop is not gated on the ranker.
+        assert any(e["event"] == "time_axis_filled_deterministic" for e in logs)
+        assert any(
+            e["event"] == "slice_ranking_skipped" and "config not found" in e["reason"]
+            for e in logs
+        )
+
+    def test_feature_disabled_persists_inventory(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """Feature disabled: same as config-missing — inventory lands, no agent."""
+        config = _mock_llm_config()
+        config.features.slicing_analysis.enabled = False
+        mock_load_config.return_value = config
+        seeded = _seed(session)
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        mock_agent_cls.return_value.analyze.assert_not_called()
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        assert sorted(r.column_name or "" for r in rows) == ["invoice_id", "invoice_id__status"]
+        assert all(r.slice_priority == UNRANKED_SLICE_PRIORITY for r in rows)
+
+    def test_ranked_row_carries_enrichment_unranked_gets_floor(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """The ranked row is 'llm' with the agent's fields; the rest floor as 'structural'."""
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+        mock_agent_cls.return_value.analyze.return_value = self._ranked_status(seeded, priority=2)
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        by_name = {
+            r.column_name: r for r in session.execute(select(SliceDefinition)).scalars().all()
+        }
+        ranked = by_name["invoice_id__status"]
+        assert ranked.detection_source == "llm"
+        assert ranked.slice_priority == 2
+        assert ranked.confidence == 0.9
+        assert ranked.business_context == "document lifecycle state"
+        assert ranked.distinct_values == ["open", "paid"]
+        floor = by_name["invoice_id"]
+        assert floor.detection_source == "structural"
+        assert floor.slice_priority == UNRANKED_SLICE_PRIORITY
+        assert floor.confidence is None
+        assert floor.reasoning is None

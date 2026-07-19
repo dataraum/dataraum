@@ -72,7 +72,15 @@ class ConformVerdict(BaseModel):
 
 
 class ConformBatchOutput(BaseModel):
-    """Tool output: one verdict per submitted candidate pair."""
+    """Tool output: one verdict per submitted candidate pair.
+
+    Emptiness is NOT constrained here — it is checked by the caller. A schema
+    ``min_length`` would route an empty batch into the DAT-710 repair turn,
+    which re-prompts with the validation error and the previous output but
+    WITHOUT the candidate list, so the only way to satisfy the constraint is to
+    INVENT verdicts. A fabricated verdict on a guessable ref is far worse than
+    the silence it would replace (DAT-725 review).
+    """
 
     verdicts: list[ConformVerdict]
 
@@ -100,7 +108,15 @@ class AliasIdentityVerdict(BaseModel):
 
 
 class AliasIdentityBatchOutput(BaseModel):
-    """Tool output: one identity verdict per submitted bijection pair."""
+    """Tool output: one identity verdict per submitted bijection pair.
+
+    Emptiness is checked by the caller, never here — see
+    ``ConformBatchOutput``. The stakes are higher on this batch: alias refs are
+    ``str(i)`` ("0", "1", …), so a verdict invented by a context-free repair
+    turn would land on a REAL pair, and one above the merge floor collapses two
+    drill axes into one dimension — the exact corruption this module exists to
+    prevent (DAT-725 review).
+    """
 
     verdicts: list[AliasIdentityVerdict]
 

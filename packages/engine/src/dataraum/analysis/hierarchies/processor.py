@@ -117,9 +117,15 @@ NEAR_KEY_FRAC = 0.9
 # pin, comment 16786). Below it, a near-key column is surfaced, not excluded.
 MIN_ROWS_NEARKEY = 10
 
-# Structures resting on fewer rows than this are surfaced for confirmation
-# (``needs_confirmation``) rather than auto-asserted.
-MIN_SUPPORT_ROWS = 100
+# Per-EDGE pairwise-complete support floor: an edge whose complete (non-null)
+# pair rows fall below this WITHIN a larger sample rests on null-carved evidence
+# — chains using it are surfaced (``needs_confirmation``), never silently
+# dropped. This is a null-sparsity flag, NOT a table-size gate: the former
+# tiny-view blanket (``scan.n < 100``) was deleted (DAT-725, lead-confirmed) —
+# support for a structure claim is priced by the seeded permutation p-values
+# under BH two stages above, which needs_confirmation any structure whose
+# evidence is too thin to reach significance, at any table size.
+MIN_EDGE_COMPLETE_ROWS = 100
 
 # The within-view identity judge's operating point (DAT-762): a relabeling
 # bijection is MERGED (axes collapsed) only when the judge's identity confidence
@@ -921,8 +927,7 @@ def _view_structures(
     cand_alias: list[tuple[str, str]] = []
     cand_edge: list[tuple[str, str]] = []
     # Edges whose pairwise-complete support fell below the floor are surfaced
-    # (needs_confirmation on any chain that uses them), never silently dropped —
-    # the same posture the tiny-view MIN_SUPPORT_ROWS flag takes.
+    # (needs_confirmation on any chain that uses them), never silently dropped.
     low_support: set[tuple[str, str]] = set()
     for i, a in enumerate(eligible):
         for b in eligible[i + 1 :]:
@@ -935,7 +940,7 @@ def _view_structures(
                 cs, ct, d_s, d_t = edge_arrays(s, t)
                 if d_s <= d_t:  # finest → coarsest, on the rows the stats see
                     continue
-                if len(cs) < MIN_SUPPORT_ROWS and len(cs) < n_sample:
+                if len(cs) < MIN_EDGE_COMPLETE_ROWS and len(cs) < n_sample:
                     logger.info(
                         "hierarchy_edge_low_support",
                         determinant=s,
@@ -996,7 +1001,6 @@ def _view_structures(
     acc_alias = {(a, b) for k, a, b in accepted if k == "a"}
 
     # -- 5. disagreement-set role check on near-copies (alias arm) ------------
-    needs_conf = scan.n < MIN_SUPPORT_ROWS
     out: list[dict[str, object]] = []
     merged: list[tuple[str, str]] = []
     # A near-copy pair that is NOT merged (role / undecidable) is the same domain
@@ -1088,7 +1092,7 @@ def _view_structures(
                     role=result,
                     disagree_rate=rate,
                     detection_source="g3",
-                    needs_confirmation=needs_conf,
+                    needs_confirmation=False,
                 )
             )
             continue
@@ -1219,7 +1223,7 @@ def _view_structures(
                 detection_source="g3",
                 # Surface, don't decide: a chain resting on a sub-floor
                 # pairwise-complete edge is flagged, same as a tiny view.
-                needs_confirmation=needs_conf or any(h in thin_edges for h in hops),
+                needs_confirmation=any(h in thin_edges for h in hops),
             )
         )
         logger.info("hierarchy_drilldown", view=view_name, chain=chain_ctf, score=round(score, 4))
@@ -1248,7 +1252,7 @@ def _view_structures(
                 signature=f"alias:{fact_table_id}:" + "|".join(sorted(group)),
                 g3=max(pair_scores) if pair_scores else 0.0,
                 detection_source="g3",
-                needs_confirmation=needs_conf,
+                needs_confirmation=False,
                 identity_confidence=min(judged_conf) if judged_conf else None,
             )
         )

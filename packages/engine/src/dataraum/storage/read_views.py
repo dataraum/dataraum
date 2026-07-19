@@ -324,7 +324,12 @@ def _current_view_sql(table: str) -> str:
 
 
 def _current_entity_view_statements() -> list[tuple[str, str]]:
-    """Analyzed-representative views for the un-versioned entity anchors (DAT-655).
+    """Derived current-state views over the un-versioned substrate.
+
+    Analyzed-representative views for the entity anchors (DAT-655), the served
+    enriched-column surface (DAT-811), and the grounding surface over
+    sql_snippets (DAT-727) — each a "current" pick some family of consumers
+    kept re-deriving, written exactly once here.
 
     ``tables``/``columns`` carry no ``run_id`` — their identity is
     ``(table_name, layer)`` — so the run-stamped machinery above cannot scope
@@ -392,6 +397,51 @@ def _current_entity_view_statements() -> list[tuple[str, str]]:
                 f"   AND h.run_id = ev.run_id\n"
                 f"  WHERE ev.view_table_id = c.table_id\n"
                 f");"
+            ),
+        ),
+        # DAT-727 — the workspace's GROUNDINGS: one row per graph-authored extract
+        # snippet, healthy or retained-failed (``failed`` discriminates). This is the
+        # canonical read surface the operating-model graph's og_grounding vertex and
+        # the eval oracle consume (the view NAME and its (concept, relation) columns
+        # are a cross-lane contract). Two filters define membership:
+        #   snippet_type = 'extract'    — the sole concept-keyed authoring surface;
+        #     formula/constant snippets are per-metric compositions, query snippets
+        #     are answer-agent patterns — neither is a grounding commitment.
+        #   source LIKE 'graph:%'       — the cockpit writes ``query:%`` rows into
+        #     the SAME table (DAT-486 save-on-clean); they must NEVER surface as
+        #     groundings.
+        # ``concept`` is the snippet's standard_field (the concept name the active
+        # Concept row resolves by); ``relation`` / ``select_expr`` /
+        # ``where_predicates`` un-nest the DAT-671 clause parts (the parts ARE the
+        # artifact; ``sql`` is their one-time render, and parity is tested). Rows
+        # authored before parts-at-source have NULL parts → NULL relation; no
+        # backfill (test DBs recreate). ``sql_snippets`` is workspace-persistent
+        # (un-versioned), so this reads the BASE table — same reason as
+        # current_enriched_columns: a read view may not depend on another read view
+        # (DROP-then-CREATE in list order).
+        (
+            "current_groundings",
+            (
+                f"CREATE VIEW {READ_TOKEN}.current_groundings AS\n"
+                f"SELECT s.snippet_id,\n"
+                f"       s.standard_field AS concept,\n"
+                f"       s.statement,\n"
+                f"       s.aggregation,\n"
+                f"       s.parts->'from'->>0 AS relation,\n"
+                f"       s.parts->'select'->0->>'expr' AS select_expr,\n"
+                f"       (s.parts->'where')::text AS where_predicates,\n"
+                f"       s.description,\n"
+                f"       s.sql,\n"
+                f"       s.parts,\n"
+                f"       s.provenance,\n"
+                f"       (s.failure_count > 0) AS failed,\n"
+                f"       s.schema_mapping_id,\n"
+                f"       s.workspace_id,\n"
+                f"       s.created_at,\n"
+                f"       s.updated_at\n"
+                f"FROM {WS_TOKEN}.sql_snippets s\n"
+                f"WHERE s.snippet_type = 'extract'\n"
+                f"  AND s.source LIKE 'graph:%';"
             ),
         ),
     ]

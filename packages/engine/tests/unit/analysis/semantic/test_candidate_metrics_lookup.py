@@ -15,27 +15,30 @@ def _make_candidate(
     left_ri: float | None = None,
     right_ri: float | None = None,
     introduces_duplicates: bool | None = None,
-    join_success_rate: float | None = None,
-    orphan_count: int | None = None,
+    left_orphan_count: int | None = None,
     cardinality_verified: bool | None = None,
+    left_uniqueness: float | None = None,
+    right_uniqueness: float | None = None,
 ) -> dict:
     jc: dict = {"column1": col1, "column2": col2}
+    if left_uniqueness is not None:
+        jc["left_uniqueness"] = left_uniqueness
+    if right_uniqueness is not None:
+        jc["right_uniqueness"] = right_uniqueness
     if cardinality is not None:
         jc["cardinality"] = cardinality
     if left_ri is not None:
         jc["left_referential_integrity"] = left_ri
     if right_ri is not None:
         jc["right_referential_integrity"] = right_ri
-    if orphan_count is not None:
-        jc["orphan_count"] = orphan_count
+    if left_orphan_count is not None:
+        jc["left_orphan_count"] = left_orphan_count
     if cardinality_verified is not None:
         jc["cardinality_verified"] = cardinality_verified
 
     candidate: dict = {"table1": table1, "table2": table2, "join_columns": [jc]}
     if introduces_duplicates is not None:
         candidate["introduces_duplicates"] = introduces_duplicates
-    if join_success_rate is not None:
-        candidate["join_success_rate"] = join_success_rate
     return candidate
 
 
@@ -51,7 +54,6 @@ class TestForwardDirection:
                 left_ri=1.0,
                 right_ri=0.85,
                 introduces_duplicates=True,
-                join_success_rate=0.95,
             )
         ]
         lookup = _build_candidate_metrics_lookup(candidates)
@@ -61,7 +63,6 @@ class TestForwardDirection:
         assert forward["left_referential_integrity"] == 1.0
         assert forward["right_referential_integrity"] == 0.85
         assert forward["introduces_duplicates"] is True
-        assert forward["join_success_rate"] == 0.95
 
 
 class TestReverseDirection:
@@ -175,3 +176,51 @@ class TestEdgeCases:
         # Mutate forward
         forward["cardinality"] = "MUTATED"
         assert reverse["cardinality"] == "many-to-one"
+
+
+class TestUniquenessPassthrough:
+    """Per-side completeness must survive into the metrics the judge path stores.
+
+    ``Relationship.oriented_row`` uses it as the ONLY signal that orients a
+    sparse 1:1 (identical value sets, so containment is silent). Dropped here,
+    the chokepoint was blind on exactly the pairs the judge gets wrong.
+    """
+
+    def test_carries_uniqueness_forward(self):
+        lookup = _build_candidate_metrics_lookup(
+            [
+                _make_candidate(
+                    "bank_transactions",
+                    "payments",
+                    "payment_id",
+                    "payment_id",
+                    cardinality="one-to-one",
+                    left_uniqueness=0.4698,
+                    right_uniqueness=1.0,
+                )
+            ]
+        )
+
+        metrics = lookup[("bank_transactions", "payment_id", "payments", "payment_id")]
+        assert metrics["left_uniqueness"] == 0.4698
+        assert metrics["right_uniqueness"] == 1.0
+
+    def test_swaps_uniqueness_on_the_reverse_entry(self):
+        """It is per-side, so it follows its endpoint like referential integrity."""
+        lookup = _build_candidate_metrics_lookup(
+            [
+                _make_candidate(
+                    "bank_transactions",
+                    "payments",
+                    "payment_id",
+                    "payment_id",
+                    cardinality="one-to-one",
+                    left_uniqueness=0.4698,
+                    right_uniqueness=1.0,
+                )
+            ]
+        )
+
+        reverse = lookup[("payments", "payment_id", "bank_transactions", "payment_id")]
+        assert reverse["left_uniqueness"] == 1.0
+        assert reverse["right_uniqueness"] == 0.4698

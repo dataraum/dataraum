@@ -1,11 +1,14 @@
-"""One-turn tool-output schema repair (DAT-699, DAT-710).
+"""One-turn tool-output repair — schema (DAT-699/710) and content contract (DAT-727).
 
 When a model's forced tool call returns arguments that fail Pydantic validation,
 re-prompt the model with its own serialized output plus the exact validation
 error under a forced tool choice, and validate again. A finished, correct call
 is never discarded on a serialization slip, and a single malformed element never
 fails the whole phase. Enforcement, not coercion: the model fixes its own output;
-the schema is not ``json.loads``-ed behind its back.
+the schema is not ``json.loads``-ed behind its back. The contract twin
+(:func:`repair_tool_contract`) applies the same mechanics to outputs that are
+schema-valid but violate a caller-enforced semantic contract (the caller
+re-checks the repaired output itself).
 
 This is the recall-safe alternative to ``ToolDefinition.strict`` for **large
 batched extractions** — a strict grammar makes the model legally under-produce on
@@ -75,6 +78,76 @@ def repair_tool_output[T: BaseModel](
         "string must be a structured object. Fix only the schema "
         "violations; do not change the substance of any field."
     )
+    logger.warning("tool_output_schema_repair", tool=tool.name, error=str(error)[:200])
+    return _repair_turn(
+        provider,
+        tool,
+        repair_prompt,
+        output_cls,
+        original_error=str(error),
+        model=model,
+        label=label,
+        max_tokens=max_tokens,
+    )
+
+
+def repair_tool_contract[T: BaseModel](
+    provider: LLMProvider,
+    tool: ToolDefinition,
+    invalid_input: dict[str, Any],
+    violations: list[str],
+    output_cls: type[T],
+    *,
+    model: str,
+    label: str,
+    max_tokens: int,
+) -> Result[T]:
+    """One CONTRACT-repair turn: the model fixes a semantically-invalid output.
+
+    The schema twin above catches shape errors; this catches outputs that are
+    schema-valid but violate an enforced semantic contract the caller checked
+    (e.g. the grounding provenance contract v2, DAT-727 — enumerated columns
+    must be members of the served relation schema and complete against the
+    emitted SQL parts). Same DAT-710 mechanics: a fresh single-turn
+    conversation under a forced tool choice, one attempt, loud double-failure.
+    The returned output is only schema-validated here — the caller re-runs its
+    OWN semantic check on the repaired output (this module does not know it).
+    """
+    numbered = "\n".join(f"- {v}" for v in violations)
+    repair_prompt = (
+        "Your previous call to the tool below was schema-valid but violated "
+        "the tool's enforced content contract.\n\n"
+        f"Contract violations:\n{numbered}\n\n"
+        f"Your tool input was:\n{json.dumps(invalid_input, indent=2)}\n\n"
+        f"Call {tool.name} again with the SAME grounding substance, corrected "
+        "to resolve every named violation. Fix only what the violations name; "
+        "do not change anything else."
+    )
+    logger.warning("tool_output_contract_repair", tool=tool.name, violations=len(violations))
+    return _repair_turn(
+        provider,
+        tool,
+        repair_prompt,
+        output_cls,
+        original_error="; ".join(violations),
+        model=model,
+        label=label,
+        max_tokens=max_tokens,
+    )
+
+
+def _repair_turn[T: BaseModel](
+    provider: LLMProvider,
+    tool: ToolDefinition,
+    repair_prompt: str,
+    output_cls: type[T],
+    *,
+    original_error: str,
+    model: str,
+    label: str,
+    max_tokens: int,
+) -> Result[T]:
+    """The shared repair mechanics: forced tool choice, one attempt, loud failure."""
     request = ConversationRequest(
         messages=[Message(role="user", content=repair_prompt)],
         system="You repair tool-call arguments to satisfy their JSON schema exactly.",
@@ -84,11 +157,10 @@ def repair_tool_output[T: BaseModel](
         max_tokens=max_tokens,
         model=model,
     )
-    logger.warning("tool_output_schema_repair", tool=tool.name, error=str(error)[:200])
     response = provider.converse(request).unwrap()
     if not response.tool_calls:
         return Result.fail(
-            f"Failed to validate tool response ({error}); the schema-repair "
+            f"Failed to validate tool response ({original_error}); the repair "
             "turn produced no tool call"
         )
     try:
@@ -96,5 +168,5 @@ def repair_tool_output[T: BaseModel](
     except ValidationError as second:
         return Result.fail(
             f"Failed to validate tool response after a repair turn: {second} "
-            f"(original error: {error})"
+            f"(original error: {original_error})"
         )

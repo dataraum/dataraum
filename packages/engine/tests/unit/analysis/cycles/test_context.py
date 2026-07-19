@@ -399,3 +399,98 @@ def test_value_counts_fail_closed_without_generation_pin(session, sliced_status_
     slices = ctx["slice_definitions"]
     assert len(slices) == 1
     assert slices[0]["value_counts"] == []
+
+
+def test_curated_slice_budget_and_priority_order(session) -> None:
+    """DAT-725: the catalog is the full deterministic inventory, so this LLM-facing
+    context reads only the top-priority budget, ascending (1 = most interesting),
+    with a deterministic column_name tiebreak across floor-priority rows."""
+    from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET, UNRANKED_SLICE_PRIORITY
+
+    source = Source(name="s", source_type="csv")
+    session.add(source)
+    session.flush()
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="facts",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_facts",
+    )
+    session.add(tbl)
+    session.flush()
+
+    n_total = CURATED_SLICE_BUDGET + 3
+    for i in range(n_total):
+        col = Column(
+            table_id=tbl.table_id,
+            column_name=f"dim_{i:02d}",
+            column_position=i,
+            raw_type="VARCHAR",
+        )
+        session.add(col)
+        session.flush()
+        # Two ranked rows (priorities 1 and 2), the rest structural at the floor.
+        priority = i + 1 if i < 2 else UNRANKED_SLICE_PRIORITY
+        session.add(
+            SliceDefinition(
+                run_id="cat",
+                table_id=tbl.table_id,
+                column_id=col.column_id,
+                column_name=f"dim_{i:02d}",
+                slice_priority=priority,
+                distinct_values=["a", "b"],
+                detection_source="llm" if i < 2 else "structural",
+            )
+        )
+    session.commit()
+
+    ctx = _build(
+        session,
+        [tbl.table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={}),
+    )
+    slices = ctx["slice_definitions"]
+    assert len(slices) == CURATED_SLICE_BUDGET, "inventory is complete; context is curated"
+    priorities = [s["priority"] for s in slices]
+    assert priorities == sorted(priorities), "ascending — 1 = most interesting first"
+    assert slices[0]["column_name"] == "dim_00"
+    # The floor rows fill the remaining budget in deterministic name order.
+    floor_names = [s["column_name"] for s in slices if s["priority"] == UNRANKED_SLICE_PRIORITY]
+    assert floor_names == sorted(floor_names)
+
+
+def test_format_context_renders_structural_slice_without_confidence() -> None:
+    """DAT-725: structural inventory rows carry no LLM confidence — the prompt
+    header must render without one, never crash formatting None."""
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 10, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "region",
+                "slice_type": "categorical",
+                "values": ["EMEA", "APAC"],
+                "value_counts": [],
+                "confidence": None,
+                "business_context": None,
+                "priority": 1000,
+            },
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": ["open", "paid"],
+                "value_counts": [],
+                "confidence": 0.9,
+                "business_context": "lifecycle",
+                "priority": 1,
+            },
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "### facts.region" in rendered
+    assert "### facts.region (confidence:" not in rendered
+    assert "### facts.status (confidence: 90%)" in rendered

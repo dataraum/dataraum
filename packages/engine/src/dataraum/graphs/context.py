@@ -432,6 +432,7 @@ def build_execution_context(
     )
     from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
     from dataraum.analysis.slicing.db_models import SliceDefinition
+    from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
     from dataraum.analysis.statistics.db_models import (
         StatisticalProfile,
     )
@@ -610,9 +611,19 @@ def build_execution_context(
     # 10. Load slice definitions — run-versioned since DAT-448: scope to the
     # promoted catalog run (the begin_session run that derived them). With no
     # resolved catalog run this fails CLOSED (a cross-run read would mix in
-    # superseded definitions — the DAT-429 isolation discipline).
+    # superseded definitions — the DAT-429 isolation discipline). CURATED read
+    # (DAT-725): the catalog is the full deterministic inventory, so this
+    # LLM-facing context takes the top-priority budget in DB order — ascending,
+    # 1 = most interesting (the old in-Python ``reverse=True`` sort put the
+    # LEAST interesting first; harmless while the catalog was elected-only,
+    # load-bearing wrong once floor-priority structural rows exist).
     slice_contexts: list[SliceContext] = []
-    slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
+    slice_stmt = (
+        select(SliceDefinition)
+        .where(SliceDefinition.table_id.in_(table_ids))
+        .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
+        .limit(CURATED_SLICE_BUDGET)
+    )
     if run_id is not None:
         slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
     slice_defs = [] if run_id is None else session.execute(slice_stmt).scalars().all()
@@ -630,8 +641,6 @@ def build_execution_context(
                     distinct_values=slice_def.distinct_values or [],
                 )
             )
-    # Sort by priority descending
-    slice_contexts.sort(key=lambda s: s.priority, reverse=True)
 
     # 10b. Load dimension hierarchies + aliases (DAT-537) — run-versioned, same
     # fail-closed discipline as the slices (scoped to the resolved catalog run;

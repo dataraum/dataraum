@@ -33,6 +33,7 @@ from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
@@ -231,7 +232,10 @@ def build_cycle_detection_context(
     # 5. Slice definitions (pre-identified categorical dimensions = status columns)
     # Run-versioned (DAT-448): scope to the pinned begin_session run; fail-closed
     # like entities/relationships when the session has no pinned run (empty,
-    # never a cross-run read).
+    # never a cross-run read). CURATED read (DAT-725): the catalog is the full
+    # deterministic inventory now, so LLM-facing context takes the top-priority
+    # budget (1 = most interesting; column_name tiebreak keeps the cut
+    # deterministic across floor-priority structural rows).
     slices: list[SliceDefinition] = []
     if run_id is not None:
         slice_stmt = (
@@ -241,7 +245,8 @@ def build_cycle_detection_context(
                 SliceDefinition.run_id == run_id,
             )
             .options(selectinload(SliceDefinition.table), selectinload(SliceDefinition.column))
-            .order_by(SliceDefinition.slice_priority)
+            .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
+            .limit(CURATED_SLICE_BUDGET)
         )
         slices = list(session.execute(slice_stmt).scalars().all())
 
@@ -552,9 +557,11 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         lines.append("dimensions. Status columns are strong cycle completion indicators.")
         lines.append("")
         for sd in slice_defs:
-            lines.append(
-                f"### {sd['table_name']}.{sd['column_name']} (confidence: {sd['confidence']:.0%})"
-            )
+            # Structural inventory rows (DAT-725) carry no LLM confidence — the
+            # header renders without one rather than formatting None.
+            conf = sd.get("confidence")
+            conf_part = f" (confidence: {conf:.0%})" if conf is not None else ""
+            lines.append(f"### {sd['table_name']}.{sd['column_name']}{conf_part}")
             if sd.get("business_context"):
                 lines.append(f"  Context: {sd['business_context'][:500]}")
 

@@ -21,6 +21,7 @@ from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.lifecycle import BaseRunMap
@@ -179,14 +180,20 @@ def get_multi_table_schema_for_llm(
     # Fetch slice definitions (categorical value distributions) for these tables.
     # Run-versioned (DAT-448), sealed at begin_session's session grain — scoped by
     # the SAME pin as the relationships above; unpinned reads EMPTY, never
-    # cross-run.
+    # cross-run. CURATED read (DAT-725): the catalog is the full deterministic
+    # inventory, so only the top-priority budget decorates the schemas with
+    # value distributions (1 = most interesting; column_name tiebreak keeps the
+    # cut deterministic across floor-priority structural rows).
     slices = (
         list(
             session.execute(
-                select(SliceDefinition).where(
+                select(SliceDefinition)
+                .where(
                     SliceDefinition.table_id.in_(table_ids),
                     SliceDefinition.run_id == run_id,
                 )
+                .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
+                .limit(CURATED_SLICE_BUDGET)
             )
             .scalars()
             .all()

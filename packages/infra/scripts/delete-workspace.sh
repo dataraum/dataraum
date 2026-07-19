@@ -8,23 +8,24 @@
 #   1. STOP the workspace's engine container  (no more writes to its ws_<id> /
 #      catalog / s3 prefix while we drop them).
 #   2. DROP the engine Postgres schemas        ws_<id> + ws_<id>_read.
-#   3. DROP the per-workspace DuckLake catalog database.
+#   3. DROP the workspace's DuckLake catalog SCHEMA (ws_<id>) from the
+#      installation-wide catalog database (DAT-815 — the database is shared by
+#      every workspace and is never dropped here).
 #   4. DELETE the workspace's S3 prefix         s3://<bucket>/<ws>/  (lake + uploads).
 #   5. DELETE the cockpit_db control-plane rows  (session_runs → sessions →
 #      conversations/ui_state → the workspace row) OR, for a soft delete, stamp
 #      workspaces.archived_at and stop (steps 2–4 + the registry row stay).
 #
 # Clean cut, dev posture: no migration tooling, no graceful drain — a dev
-# workspace is re-provisioned, not migrated. Destructive: it DROPs schemas and a
-# database and DELETEs an S3 prefix. Run it deliberately.
+# workspace is re-provisioned, not migrated. Destructive: it DROPs schemas and
+# DELETEs an S3 prefix. Run it deliberately.
 #
 # Usage:
-#   packages/infra/scripts/delete-workspace.sh <workspace_id> [--soft] [--catalog-db <name>]
+#   packages/infra/scripts/delete-workspace.sh <workspace_id> [--soft]
 #
 # Env (defaults match docker-compose.yml / .env.example):
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
-#   DUCKLAKE_CATALOG_DB   base catalog DB name (workspace 1 = this; workspace N
-#                         = <base>_<n> — pass --catalog-db to override)
+#   DUCKLAKE_CATALOG_DB   the ONE installation-wide catalog database (DAT-815)
 #   COCKPIT_DB            cockpit control-plane database
 #   S3_BUCKET             the lake bucket
 #   PGHOST / PGPORT       Postgres host/port (default localhost:5432)
@@ -35,7 +36,7 @@
 set -euo pipefail
 
 if [ $# -lt 1 ]; then
-  echo "usage: $0 <workspace_id> [--soft] [--catalog-db <name>]" >&2
+  echo "usage: $0 <workspace_id> [--soft]" >&2
   exit 2
 fi
 
@@ -46,7 +47,6 @@ CATALOG_DB="${DUCKLAKE_CATALOG_DB:-dataraum_lake_catalog}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --soft) SOFT=1; shift ;;
-    --catalog-db) CATALOG_DB="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -61,10 +61,12 @@ S3_BUCKET="${S3_BUCKET:-dataraum-lake}"
 SEAWEEDFS_MASTER="${SEAWEEDFS_MASTER:-seaweedfs:9333}"
 SEAWEEDFS_FILER="${SEAWEEDFS_FILER:-seaweedfs:8888}"
 
-# Engine schema name mirrors server/workspace.py::schema_name_for (dashes → _).
+# Schema name mirrors server/workspace.py::schema_name_for (dashes → _). The
+# SAME ws_<id> name identifies the workspace in the primary DB (engine
+# metadata) and in the catalog DB (DuckLake METADATA_SCHEMA, DAT-815).
 SCHEMA="ws_${WS_ID//-/_}"
 
-echo "==> Deleting workspace ${WS_ID} (schema ${SCHEMA}, catalog ${CATALOG_DB})"
+echo "==> Deleting workspace ${WS_ID} (schema ${SCHEMA}, catalog db ${CATALOG_DB})"
 
 # 1. Stop the workspace's engine container (best-effort; it may not be named
 #    deterministically in every deployment — in dev it is engine-worker[-N]).
@@ -78,11 +80,15 @@ echo "==> [2/5] drop schemas ${SCHEMA}, ${SCHEMA}_read"
 psql_primary -c "DROP SCHEMA IF EXISTS \"${SCHEMA}\" CASCADE;"
 psql_primary -c "DROP SCHEMA IF EXISTS \"${SCHEMA}_read\" CASCADE;"
 
-# 3. Drop the per-workspace DuckLake catalog database. Terminate any lingering
-#    connections first (a stopped worker should hold none, but be safe).
-echo "==> [3/5] drop DuckLake catalog database ${CATALOG_DB}"
-psql_primary -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${CATALOG_DB}' AND pid <> pg_backend_pid();" >/dev/null || true
-psql_primary -c "DROP DATABASE IF EXISTS \"${CATALOG_DB}\";"
+# 3. Drop the workspace's DuckLake catalog schema from the shared catalog DB
+#    (DAT-815). No pg_terminate_backend sweep here: the catalog database is
+#    shared by EVERY workspace, so terminating its backends would kill sibling
+#    workspaces' live catalog pools. The stopped worker (step 1) holds no locks
+#    on this schema; idle reader connections don't either (locks release at
+#    transaction end), so the DROP proceeds without a terminate.
+echo "==> [3/5] drop DuckLake catalog schema ${SCHEMA} in ${CATALOG_DB}"
+psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$CATALOG_DB" \
+  -c "DROP SCHEMA IF EXISTS \"${SCHEMA}\" CASCADE;"
 
 # 4. Delete the workspace's S3 prefix (lake + uploads) via weed shell. The
 #    fs.rm -r removes everything under the workspace's <ws>/ prefix in the bucket.

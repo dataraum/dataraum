@@ -2327,26 +2327,59 @@ numbers cannot settle). Calibration consequence: 1:1 orientation is now an LLM j
 so expect run-to-run variation to track judge stability (DAT-795/807), not a code path.
 `bank_transactions.payment_id → payments` is the live instance.
 
-### Thresholds / new fields
-**Evidence key renamed: `orphan_count` → `left_orphan_count`.** It is a FROM-SIDE
-measurement and was the one unprefixed directional key, so neither flip site moved it: a
-row whose pair flipped stored `L=100% RI` beside `orphans=N`. Anything reading relationship
-evidence for an orphan count must use the new key; `right_orphan_count` appears on a
-flipped row and means unreferenced TO-side rows (sparse reference — normal), never a
-defect. Unrelated: the `orphan_count` column in
-`verticals/finance/validations/orphan_transactions.yaml` is a validation SQL output
-column, a different namespace, unchanged.
+### Thresholds / new fields — RELATIONSHIP EVIDENCE KEYS CHANGED. Read this before a run.
 
-`swap_directional_evidence` (was private) is now the single flip implementation, used by
-both `oriented_row` and `processor._build_candidate_metrics_lookup`. It also mirrors the
-evidence copy of `cardinality` and drops `introduces_duplicates`.
+The two per-side metrics were never a mirror pair: `left_referential_integrity` was
+ROW-weighted, `right_referential_integrity` was DISTINCT-weighted, and every flip site
+exchanged them by NAME. So a flipped row carried a coverage figure in a
+referential-integrity slot — measured 60.0 stored where that direction's own row-weighted
+RI is 75.0, which `relationship_entropy` scored 0.40 instead of 0.25. That is every
+flipped row, i.e. every ordinary parent-listed-first many-to-one FK.
 
-Judge-visible rendering: a measured zero now prints (`L orphans=0`) instead of being
-suppressed — "clean" and "never measured" used to render identically.
+Both directions are now measured by ONE `evaluator._measure_direction`, called once per
+endpoint, so `left_*`/`right_*` are the same metric on opposite sides:
+
+| key | meaning | replaces |
+|---|---|---|
+| `left_/right_referential_integrity` | % of that side's ROWS that resolve | left: same; **right: NEW meaning** (was coverage) |
+| `left_/right_key_coverage` | % of that side's DISTINCT values on the other | `left_value_containment`; the old `right_referential_integrity` |
+| `left_/right_orphan_count` | that side's rows that do not resolve | `orphan_count` (unprefixed, never flipped) |
+| `left_/right_total_count` | rows behind the RI ratio | `left_total_count` only |
+| `left_join_success_rate` | best join's from-side RI | `join_success_rate` (unprefixed, never flipped) |
+
+Also gone: `total_count` in `_RI_EVIDENCE_KEYS` — nothing ever produced one, so
+`relationship_entropy`'s first denominator branch was dead. Unrelated and unchanged: the
+`orphan_count` column in `verticals/finance/validations/orphan_transactions.yaml` is a
+validation SQL output column, a different namespace.
+
+**Numbers will move even where nothing flipped.** The measurement changed from
+`LEFT JOIN` + `COUNT(*)` to a semi-join: the old form computed "share of rows that
+resolve" over JOIN OUTPUT rows, so duplicates on the target side inflated it. A child with
+one good row and one orphan against a parent holding that key three times read 75%; it is
+50%. Expect `left_referential_integrity` — and therefore every `relationship_entropy`
+score — to shift on any pair whose target side repeats a key.
+
+`swap_directional_evidence` (was private) is the single flip implementation, shared by
+`oriented_row` and `processor._build_candidate_metrics_lookup`. It also mirrors the
+evidence copy of `cardinality` and drops `introduces_duplicates`. Prefixing a directional
+metric is now the contract; a unit test pins that no per-side key may exist without its
+mirror.
+
+### Judge-visible prompt change — `semantic_per_table` 2.4.0
+The candidate line no longer prints an `RI:` bracket pairing two different measurements.
+It now reads `rows resolving: L=.. R=..`, `values covered: L=.. R=..`,
+`unresolved rows: L=.. R=..` — same-question pairs, so `L` and `R` are comparable. A
+measured ZERO prints, where it used to be suppressed ("clean" and "never measured"
+rendered identically). The prompt explains when the two weightings diverge and states
+plainly that a clean-subset child and an orphan-bearing child measure identically.
 
 ### Calibration to run
 - **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`.
   Orientation is now entirely the judge's; watch consistency across runs.
+- **Any readiness/entropy band involving relationships** — `relationship_entropy` scores
+  move for two independent reasons (the flip fix and the fan-out debias). Bands calibrated
+  against runs #1–#5 are not comparable on this axis.
 - **`test_cycle_recall`** — unchanged expectations; the prompt bullet forbidding duplicate
   same-type cycles is the operative change, not the phase.
-- Any check reading `orphan_count` from relationship evidence — rename it.
+- Any check reading `orphan_count`, `join_success_rate`, `left_value_containment` or
+  `total_count` from relationship evidence — see the table above.

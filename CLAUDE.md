@@ -31,7 +31,7 @@ The architecture is fixed; the work now is fixing bugs and inconsistencies. Don'
 - **In-flight work, plans, design exploration, refinement notes, status** → **the Jira epic/task** (description or an attached `.md`). Closed issue = delete the artifact; the code is the truth, do *not* migrate a closed issue's docs anywhere.
 - **Non-derivable, currently-true, cross-cutting facts with no other home** → agent memory (gotchas, seams, preferences). Not a status board.
 
-**The rule that enforces it: a ticket ID in a filename (`dat-NNN-*.md`) means the file is ephemeral → it belongs in Jira, never committed to the repo and never in memory.** `docs/adr/` is the one ticket-free zone. One sanctioned exception: the owner ledger `.claude/epics/dat-NNN.md` (ADR-0022) lives on its epic integration branch only — the final integration PR deletes it; it never reaches `main`. When a task lands, delete its plan/handoff/status file — don't archive it. When a Jira issue closes, delete its `project_` memory and prune its MEMORY.md line.
+**The rule that enforces it: a ticket ID in a filename (`dat-NNN-*.md`) means the file is ephemeral → it belongs in Jira, never committed to the repo and never in memory.** `docs/adr/` is the one ticket-free zone. One sanctioned exception: the owner ledger `.claude/epics/dat-NNN.md` (ADR-0023) lives on its epic integration branch only — the final integration PR deletes it; it never reaches `main`. When a task lands, delete its plan/handoff/status file — don't archive it. When a Jira issue closes, delete its `project_` memory and prune its MEMORY.md line.
 
 ## How the packages connect
 
@@ -44,7 +44,7 @@ The architecture is fixed; the work now is fixing bugs and inconsistencies. Don'
 
 Workflow skills live at the workspace root (`.claude/skills/`): `/own` `/refine` `/implement` `/smoke` `/release-prep`.
 
-Epic-scale work runs the **Owner/Eval model** (ADR-0022): a spec conversation with the lead sets the objective + a measurable scorecard, then one long-lived `/own` agent drives the slice on an epic branch to eval-green — spawning lanes, integrating them itself, running the eval after every integration, absorbing discovered work instead of spawning satellite tickets. `/refine` + `/implement` are its per-lane discipline.
+Epic-scale work runs the **Owner/Eval model** (ADR-0023): a spec conversation with the lead sets the objective + a measurable scorecard, then one long-lived `/own` agent drives the slice on an epic branch to eval-green — spawning lanes, integrating them itself, running the eval after every integration, absorbing discovered work instead of spawning satellite tickets. `/refine` + `/implement` are its per-lane discipline.
 
 External, stack-specific skills:
 - **Temporal** — `npx skills add temporalio/skill-temporal-developer` (install once, auto-activates).

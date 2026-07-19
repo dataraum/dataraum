@@ -1,4 +1,4 @@
-# ADR-0022 — Owner/Eval operating model: one owner agent per epic slice, eval as the gate
+# ADR-0023 — Owner/Eval operating model: one owner agent per epic slice, eval as the gate
 
 - **Status:** Accepted
 - **Date:** 2026-07-19
@@ -110,3 +110,31 @@ unchanged.
   working plan. Expect fewer, larger tickets; satellite-bug swarms become ledger entries.
 - First application: DAT-725 objective (a) — graph context live, flat deleted, eval ≥
   baseline — with the epic's open satellite tickets triaged into the first owner's ledger.
+
+## Trial result (DAT-725 slice, 2026-07-19/20 — recorded before merge)
+
+The model held. One owner ran the slice in ~11.5 hours across 86 commits: substrate map,
+eight lanes briefed/integrated with reviewers, six budgeted eval runs, three Jira
+checkpoints, two stop-the-line regressions cleared, the P9 cutover (flat assembly deleted)
+landed, ledger deleted at close, four residual defects extracted as tickets (DAT-823–826)
+*at closeout* rather than mid-flight. The discovery rule is what changed the outcome —
+substrate repairs that would have become satellite tickets under ADR-0006 were absorbed
+into the slice.
+
+Two weaknesses surfaced, both now addressed in `/own`:
+
+1. **Ungradeable forks are the model's soft spot.** A fork the scorecard cannot decide
+   (1:1 orientation on symmetric pairs) consumed roughly a quarter of the slice's wall
+   clock in decide/reverse/re-decide churn and pulled the lead back in. The skill now
+   requires pre-registering the decision criterion *before* the run that settles it, caps a
+   fork at **one reversal** before it escalates as a spec question, and states that a fork
+   no eval fixture distinguishes is by definition not the owner's to settle by measurement.
+2. **The ledger outgrew its job** (1,082 lines). It is the resume artifact; at that size an
+   owner resuming after compaction cannot cheaply reload it. It is now split: a
+   rewritten-in-place HEAD (next action, state, open forks, parked) over append-only
+   history.
+
+Continuity, not model tier, is the load-bearing variable: the role degrades when context is
+*inherited* rather than built. `/own` now forbids switching the owner model mid-slice and
+requires a fresh session with re-grounding when it changes. Owner runs on Fable; lanes are
+model-agnostic.

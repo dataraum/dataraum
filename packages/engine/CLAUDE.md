@@ -21,7 +21,7 @@ Correctness over speed. The product is **analytical correctness** — the system
 
 | Intent | Skill |
 |--------|-------|
-| epic-scale work ("I have an idea", "break this down") | spec conversation with the lead → `/own` — one owner agent drives the slice to eval-green (ADR-0022) |
+| epic-scale work ("I have an idea", "break this down") | spec conversation with the lead → `/own` — one owner agent drives the slice to eval-green (ADR-0023) |
 | "implement X", "is X feasible?" | `/refine` first (understand, surface conflicts) |
 | approved approach | `/implement` (phased; invokes the two reviewers at the end) |
 | UI or tool just built | `/smoke` (drive it, feel the UX) |

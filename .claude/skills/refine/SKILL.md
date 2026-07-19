@@ -11,9 +11,9 @@ Your job is NOT to plan. It is to **understand the problem space deeply enough t
 
 ## Input
 
-$ARGUMENTS is a Jira issue identifier (e.g., "DAT-175"), a topic description, a lane brief from an owner ledger (ADR-0022), or a file path to a design document.
+$ARGUMENTS is a Jira issue identifier (e.g., "DAT-175"), a topic description, a lane brief from an owner ledger (ADR-0023), or a file path to a design document.
 
-If the user has a rough idea with no scoped work item yet, that's the epic spec conversation with the lead — objective and scorecard get set there, then `/own` drives it (ADR-0022). `/refine` works on an existing, scoped work item.
+If the user has a rough idea with no scoped work item yet, that's the epic spec conversation with the lead — objective and scorecard get set there, then `/own` drives it (ADR-0023). `/refine` works on an existing, scoped work item.
 
 ## Step 0: Triage — does this need refining at all?
 

@@ -1,6 +1,6 @@
 ---
 name: own
-description: Own one epic slice end-to-end as the single long-lived owner agent — spec in, eval-green out. Grounding pass, epic integration branch, lane fan-out, discovery absorption, eval gate after every integration, checkpoint reports to the lead. (ADR-0022)
+description: Own one epic slice end-to-end as the single long-lived owner agent — spec in, eval-green out. Grounding pass, epic integration branch, lane fan-out, discovery absorption, eval gate after every integration, checkpoint reports to the lead. (ADR-0023)
 ---
 
 # Own: $ARGUMENTS
@@ -43,7 +43,7 @@ Then `EnterWorktree` with the absolute path so every subsequent call resolves in
 epic worktree.
 
 Init the ledger at `.claude/epics/dat-NNN.md` (template below) and commit it. The ledger
-exists ONLY on this branch — the final integration PR deletes it (ADR-0022; the one
+exists ONLY on this branch — the final integration PR deletes it (ADR-0023; the one
 exception to the ticket-ID-filename rule). It is your memory: re-read it first on every
 wake-up and after every context compaction.
 
@@ -84,6 +84,25 @@ Repeat until the scorecard is green:
    turn with the question instead of guessing. Answer from spec/ledger context
    (SendMessage to resume it), or escalate a genuine fork to the lead. Never let a lane
    barrel through an ambiguity.
+
+**Fork discipline** — the discipline that keeps ambiguity from becoming babysitting. A
+fork you resolve by trying implementations and reading the eval afterwards costs a run per
+attempt and tends to oscillate. Instead:
+
+- **Pre-register the criterion before the run that settles it.** Write into the ledger, in
+  advance: "if metric M on fixture F moves in direction D, orientation is X; otherwise Y."
+  Then fire the run. A criterion invented after seeing the numbers is a rationalization,
+  and you will reverse it next run.
+- **One reversal, then escalate.** Reversing a decision once is learning. The *second*
+  reversal of the same fork means the evidence does not decide it — stop, and put it to
+  the lead as a spec question with the evidence table and your recommendation. Do not try
+  a third mechanism.
+- **A fork the scorecard cannot grade is a spec question by definition.** If no eval
+  fixture distinguishes the branches (symmetric cases, absent ground truth), it is not
+  yours to settle by measurement — escalate once with what you know, park it, and move on
+  to work the scorecard *can* grade. Grinding an ungradeable fork is the single most
+  expensive way to spend budget.
+- Every resolution gets a **Decisions** entry: fork · criterion · call · evidence.
 4. **You integrate.** Review the lane diff yourself, merge the lane branch into the epic
    branch, resolve conflicts, remove the lane worktree.
 5. **Eval gate.** Run the eval after EVERY integration (`dataraum-eval`, sibling repo —
@@ -134,6 +153,12 @@ wakeups; the ledger is the resume point.
 
 ## Ledger template
 
+**The head is rewritten in place; the history is appended.** Everything above the rule is
+the resume state — keep it under ~80 lines by editing it, never by appending. A resuming
+owner (after compaction, a new session, or a model change) reads the HEAD and can act; it
+reads history only when it needs the why. A ledger that has to be read end-to-end to be
+usable has stopped being a resume artifact — that is the signal to compress the head.
+
 ```markdown
 # DAT-NNN <slice> — owner ledger
 Objective: …
@@ -141,14 +166,45 @@ Scorecard: … (bands + invariants; source: dataraum-eval …)
 Non-goals: …
 e2e budget: N runs granted YYYY-MM-DD | none (ask per run) · spent: …
 
+## NEXT ACTION       ← rewrite every turn: the one thing to do next, and its precondition
+## State             (lanes: open/integrated · scorecard: current row · substrate: repaired/known-broken)
+## Open forks        (fork · pre-registered criterion · reversals so far · escalated?)
+## Parked            (one line each: what · where · why deferred)
+
+---   (history below: append-only)
+
 ## Substrate map      (Step 2 output: what exists, consumers, seams, in-scope satellites)
 ## Plan               (living: lanes, sequence, state)
 ## Lane briefs        (per lane: goal · surface · approach · do-not-touch)
-## Parked             (one line each: what · where · why deferred)
 ## Eval history       (date · trigger · scorecard row · verdict)
-## Decisions          (fork → call → why)
+## Decisions          (fork · criterion · call · evidence)
 ## Checkpoint log     (date · what was reported)
 ```
+
+## Model and continuity
+
+The owner role is the most autonomy-dense job in this repo: it holds an objective across
+hours, decides without asking, and absorbs discovery. Observed on the first slice
+(DAT-725, 2026-07-19/20):
+
+- **Run the owner on Fable.** The Fable segment carried the slice's whole spine — substrate
+  map, eight lanes, five eval runs, three checkpoints, and the cutover that was the
+  objective. The Opus segment (which inherited the session mid-flight, at the hardest and
+  least gradeable part of the slice) spent three hours oscillating on one ungradeable fork
+  and needed lead rulings to move. The comparison is confounded — late-slice work is
+  intrinsically the ambiguous part, and the model changed *and* the context was compacted at
+  the same moment — so read it as: **this role degrades when context is inherited rather
+  than built, and it degrades fastest on forks the scorecard cannot grade.** The fork
+  discipline above is the structural fix; the model choice is the cheap one.
+- **Never switch the owner model mid-slice.** If the model changes, end the session and
+  start a fresh one: read the ledger HEAD, re-ground the slice's current surface (a short
+  version of Step 2), and only then resume. An owner that inherits a compacted context
+  without re-grounding will ask the lead things the ledger already answers.
+- **Lanes are model-agnostic** — they are scoped, briefed, and reviewed, so any capable
+  model runs them.
+- **When you catch yourself asking the lead for something the spec, ledger, or code can
+  answer, that is the failure mode.** Re-read the ledger HEAD and decide. Reserve the lead
+  for spec-level forks, budget, and merges to `main`.
 
 ## Rules
 

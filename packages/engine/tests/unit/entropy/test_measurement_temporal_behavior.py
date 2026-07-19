@@ -212,7 +212,7 @@ class TestMeasure:
         # not the doc-trap.
         adj = measure_temporal_behavior(
             "tb",
-            "xq_v7kl",
+            "zq_p4x",
             llm_claim="unsure",
             structural_pattern="per_period",
             structural_match_rate=0.9,

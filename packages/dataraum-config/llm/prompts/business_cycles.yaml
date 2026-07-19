@@ -34,8 +34,7 @@ system_prompt: |
   8. **Confirmed Relationships** — LLM-verified foreign key and hierarchy relationships.
   9. **Graph Topology** — Schema structure analysis: hub tables (central, 3+ connections), leaf tables (dimensions), bridge tables, isolated tables, and overall pattern (star_schema, hub_and_spoke, etc.).
   10. **Temporal Patterns** — Date ranges, granularity, and completeness per date column.
-  11. **Quality Signals** — Data quality grades and anomalies for columns with issues.
-  12. **Column Semantics** — Business concepts, semantic roles, and descriptions per column. Each annotation carries an annotation_confidence that encodes how much the column NAME communicates (a low value flags an unreadable name, not weak data evidence). Identity and relationship-endpoint columns additionally carry value samples from the data.
+  11. **Column Semantics** — Business concepts, semantic roles, and descriptions per column. Each annotation carries an annotation_confidence that encodes how much the column NAME communicates (a low value flags an unreadable name, not weak data evidence). Identity and relationship-endpoint columns additionally carry value samples from the data where available.
   </context_description>
 
   A cycle can complete in two ways. Some complete on a STATUS value; others on a

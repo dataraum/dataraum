@@ -2,8 +2,8 @@
 
 Assembles rich context from all available pipeline metadata:
 slice definitions, statistical profiles, temporal profiles,
-quality reports, enriched views, semantic annotations,
-entity classifications, and confirmed relationships.
+enriched views, semantic annotations, entity classifications,
+and confirmed relationships.
 
 The LLM receives pre-computed signals and synthesizes them
 into business cycle analysis — no exploration tools needed.
@@ -51,6 +51,15 @@ logger = get_logger(__name__)
 # of WHICH balance means completion stays in the LLM + cycles.yaml, never here.
 _ARITHMETIC_DERIVATIONS = frozenset({"sum", "difference", "product", "ratio"})
 
+# Entity-flow sample budget: the stored typed profile carries up to the
+# profiler's top_k inventory (hundreds of rows for a high-cardinality identity
+# column — exactly the column class served here). Entity determination needs
+# the VALUE PATTERN, not the inventory, and the cycles prompt is ONE cross-
+# table call, so only the head of the frequency-ordered list is served, each
+# value truncated like the semantic agents' samples.
+_ENTITY_FLOW_SAMPLE_BUDGET = 10
+_SAMPLE_VALUE_MAX_CHARS = 100
+
 if TYPE_CHECKING:
     import duckdb
 
@@ -81,8 +90,9 @@ def build_cycle_detection_context(
         base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).
             ``relationship_run_id`` scopes the defined relationships, entity
             classifications, and slice definitions; ``semantic_runs`` scopes
-            each table's per-column annotations. An absent pin reads EMPTY —
-            fail-closed (DAT-429), never a cross-run read.
+            each table's per-column annotations AND its typed-profile reads
+            (slice value counts, entity-flow value samples). An absent pin
+            reads EMPTY — fail-closed (DAT-429), never a cross-run read.
         privacy: LLM privacy config; when provided, entity-flow value samples
             respect its sensitive-name patterns (a sensitive column serves no
             samples). ``None`` serves samples ungated (tests).
@@ -179,15 +189,18 @@ def build_cycle_detection_context(
     # entity a flow involves, so the judging LLM must see them instead of
     # inheriting a name-starved annotation's hedge. Structural gate only —
     # derived from served metadata, never from name patterns or value shapes.
+    columns_by_table: dict[str, set[str]] = {
+        t.table_name: {c.column_name for c in t.columns} for t in tables
+    }
     entity_flow_columns: set[tuple[str, str]] = set()
     for r in rel_list:
         entity_flow_columns.add((r["from_table"], r["from_column"]))
         entity_flow_columns.add((r["to_table"], r["to_column"]))
     for ent, ent_table_name in entities:
-        for ic in ent.identity_columns or []:
-            ic_column = ic.get("column") if isinstance(ic, dict) else None
-            if ic_column:
-                entity_flow_columns.add((ent_table_name, ic_column))
+        for ic in _served_identity_columns(
+            ent.identity_columns, columns_by_table.get(ent_table_name, set())
+        ):
+            entity_flow_columns.add((ent_table_name, ic["column"]))
 
     # Row counts from DuckDB
     row_counts: dict[str, int | None] = {}
@@ -237,8 +250,13 @@ def build_cycle_detection_context(
                 value_counts = _get_value_counts_for_column(
                     session, c.column_id, run_id=base_runs.semantic_runs.get(t.table_id)
                 )
-                if value_counts:
-                    col_info["sample_values"] = [str(vc["value"]) for vc in value_counts]
+                samples = [
+                    _truncate_sample_value(vc["value"])
+                    for vc in value_counts
+                    if vc.get("value") is not None
+                ][:_ENTITY_FLOW_SAMPLE_BUDGET]
+                if samples:
+                    col_info["sample_values"] = samples
             columns.append(col_info)
 
         table_info.append(
@@ -263,8 +281,10 @@ def build_cycle_detection_context(
             "grain_columns": ent.grain_columns,
             # Recurring identity columns (DAT-565) with their authored notes —
             # the columns entity flows ride on; rendered so the agent sees WHY
-            # a column carries samples.
-            "identity_columns": ent.identity_columns,
+            # a column carries samples. Existence-filtered (see the helper).
+            "identity_columns": _served_identity_columns(
+                ent.identity_columns, columns_by_table.get(table_name, set())
+            ),
         }
         for ent, table_name in entities
     ]
@@ -451,6 +471,34 @@ def build_cycle_detection_context(
     return context
 
 
+def _served_identity_columns(
+    identity_columns: list[dict[str, Any]] | None,
+    real_columns: set[str],
+) -> list[dict[str, Any]]:
+    """Filter LLM-authored identity columns to ones that physically exist.
+
+    ``TableEntity.identity_columns`` is synthesis output persisted unvalidated —
+    a hallucinated column name served verbatim would satisfy the prompt's
+    cite-only-served contract while still being dropped by the membership floor
+    (``verify.py``: "column not in workspace"), silently rejecting the whole
+    cycle. Malformed entries (non-dict, missing ``column``) are dropped for the
+    same reason: only names the workspace can ground are served.
+    """
+    return [
+        ic
+        for ic in identity_columns or []
+        if isinstance(ic, dict) and ic.get("column") in real_columns
+    ]
+
+
+def _truncate_sample_value(value: Any) -> str:
+    """Stringify + truncate one served sample value (mirrors the semantic agents)."""
+    text = str(value)
+    if len(text) > _SAMPLE_VALUE_MAX_CHARS:
+        return text[:_SAMPLE_VALUE_MAX_CHARS] + "..."
+    return text
+
+
 def _load_pinned_annotations(
     session: Session,
     tables: list[Table] | Any,
@@ -598,7 +646,9 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         if ent.get("description"):
             lines.append(f"  {ent['description'][:500]}")
         # Recurring identity columns (DAT-565): the entity-identifying columns
-        # of this table, each with the synthesis agent's one-line note.
+        # of this table, each with the synthesis agent's one-line note. The
+        # builder pre-filters the list to real columns (_served_identity_columns);
+        # the shape guard here only protects hand-built contexts (tests).
         identity_strs = [
             f"{ic['column']} ({ic['note']})" if ic.get("note") else str(ic["column"])
             for ic in ent.get("identity_columns") or []
@@ -718,8 +768,8 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     lines.append("")
     lines.append("annotation_confidence encodes how much the column NAME communicates —")
     lines.append("a low value marks an unreadable name, not weak data evidence. Identity")
-    lines.append("and relationship-endpoint columns carry value samples; for a")
-    lines.append("low-confidence annotation, ground the entity determination in the")
+    lines.append("and relationship-endpoint columns carry value samples where available;")
+    lines.append("for a low-confidence annotation, ground the entity determination in the")
     lines.append("samples and confirmed relationships rather than the annotation's wording.")
     for table in context.get("tables", []):
         lines.append(f"\n### {table['table_name']}")

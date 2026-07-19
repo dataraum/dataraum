@@ -518,6 +518,12 @@ def identity_column_with_samples(session):
             identity_columns=[
                 {"column": "zq_p4x", "note": "recurring counterparty identifier"},
                 {"column": "contact_email", "note": "contact address"},
+                # A hallucinated name + a malformed entry: the builder must
+                # existence-filter BOTH before serving — a served-but-nonexistent
+                # name would pass the prompt's cite-only-served contract and then
+                # be silently dropped by the membership floor.
+                {"column": "ghost_col", "note": "does not exist"},
+                "not-a-dict",
             ],
         )
     )
@@ -572,7 +578,9 @@ def test_identity_columns_serve_samples_and_annotation_confidence(
     assert cols["zq_p4x"]["annotation_confidence"] == 0.25
     assert "sample_values" not in cols["amount"]
 
-    # The identity columns ride along on the classification (rendered with notes).
+    # The identity columns ride along on the classification (rendered with
+    # notes) — existence-filtered: the fixture's hallucinated "ghost_col" and
+    # its malformed non-dict entry must NOT be served.
     ents = ctx["entity_classifications"]
     assert ents[0]["identity_columns"] == [
         {"column": "zq_p4x", "note": "recurring counterparty identifier"},
@@ -643,6 +651,82 @@ def test_relationship_endpoint_columns_serve_samples(session, two_tables_two_run
     for t in ctx["tables"]:
         endpoint = next(c for c in t["columns"] if c["name"] == "account_id")
         assert endpoint["sample_values"] == ["A-1"]
+
+
+def test_entity_flow_samples_capped_and_truncated(session) -> None:
+    """Served samples are the HEAD of the frequency-ordered top values (budget
+    10), each value truncated at 100 chars — the profile's full top_k inventory
+    (hundreds of rows for a high-cardinality identity column) must never reach
+    the one cross-table prompt."""
+    source = Source(name="cap_source", source_type="csv")
+    session.add(source)
+    session.flush()
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="events",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_events",
+    )
+    session.add(tbl)
+    session.flush()
+    col = Column(table_id=tbl.table_id, column_name="idc", column_position=0, raw_type="VARCHAR")
+    session.add(col)
+    session.flush()
+
+    session.add(
+        TableEntity(
+            entity_id=_id(),
+            table_id=tbl.table_id,
+            run_id="cat",
+            detected_entity_type="event",
+            table_role="fact",
+            identity_columns=[{"column": "idc", "note": "recurring identifier"}],
+        )
+    )
+    long_value = "x" * 150
+    top_values = [{"value": long_value, "count": 100, "percentage": 10.0}] + [
+        {"value": f"v{i:02d}", "count": 50 - i, "percentage": 1.0} for i in range(14)
+    ]
+    session.add(
+        StatisticalProfile(
+            column_id=col.column_id,
+            run_id="gen",
+            layer="typed",
+            total_count=100,
+            null_count=0,
+            profile_data={"top_values": top_values},
+        )
+    )
+    session.commit()
+
+    ctx = _build(
+        session,
+        [tbl.table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={tbl.table_id: "gen"}),
+    )
+    samples = ctx["tables"][0]["columns"][0]["sample_values"]
+    assert len(samples) == 10
+    assert samples[0] == "x" * 100 + "..."
+    assert samples[1] == "v00"
+
+
+def test_format_context_renders_zero_annotation_confidence() -> None:
+    """0.0 is a real confidence, not absence — the falsy boundary must render."""
+    context = {
+        "tables": [
+            {
+                "table_name": "t",
+                "row_count": 1,
+                "columns": [{"name": "c", "type": "VARCHAR", "annotation_confidence": 0.0}],
+            }
+        ],
+        "entity_classifications": [],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "annotation_confidence=0.00" in rendered
 
 
 def test_format_context_renders_entity_flow_evidence() -> None:

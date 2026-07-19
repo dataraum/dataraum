@@ -72,9 +72,19 @@ class ConformVerdict(BaseModel):
 
 
 class ConformBatchOutput(BaseModel):
-    """Tool output: one verdict per submitted candidate pair."""
+    """Tool output: one verdict per submitted candidate pair.
 
-    verdicts: list[ConformVerdict]
+    ``min_length=1``: the judge is only ever invoked with a NON-EMPTY candidate
+    batch (``conform`` early-returns for an empty one), so a zero-verdict batch
+    is a MALFORMED response, never a judgment — ``abstain`` is the verdict for
+    "I cannot decide". Enforced at the model so the DAT-710 repair loop re-asks,
+    the same contract ``ConformVerdict._conform_requires_label`` relies on.
+    Without it a single degenerate tool call silently yields zero conformed
+    groups, which zeroes cross-fact identity and every aggregation lineage that
+    rides it while the phase still reports ``ran`` (DAT-725 run #5).
+    """
+
+    verdicts: list[ConformVerdict] = Field(min_length=1)
 
 
 class AliasIdentityVerdict(BaseModel):
@@ -100,9 +110,14 @@ class AliasIdentityVerdict(BaseModel):
 
 
 class AliasIdentityBatchOutput(BaseModel):
-    """Tool output: one identity verdict per submitted bijection pair."""
+    """Tool output: one identity verdict per submitted bijection pair.
 
-    verdicts: list[AliasIdentityVerdict]
+    ``min_length=1`` for the same reason as ``ConformBatchOutput``: the caller
+    early-returns on an empty candidate list, so an empty batch here is a
+    malformed response that would otherwise read as "no pair is an alias".
+    """
+
+    verdicts: list[AliasIdentityVerdict] = Field(min_length=1)
 
 
 class DimensionIdentityJudge(LLMFeature):

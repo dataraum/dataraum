@@ -58,7 +58,10 @@ class RelationshipsPhase(BasePhase):
         """
         if not ctx.table_ids:
             return []
-        stmt = select(Table).where(Table.table_id.in_(ctx.table_ids))
+        # Ordered by name: downstream pair enumeration is order-sensitive on
+        # symmetric evidence (see ``detector._load_tables``), so the selection
+        # must not inherit Postgres physical row order.
+        stmt = select(Table).where(Table.table_id.in_(ctx.table_ids)).order_by(Table.table_name)
         return list(ctx.session.execute(stmt).scalars())
 
     def should_skip(self, ctx: PhaseContext) -> str | None:

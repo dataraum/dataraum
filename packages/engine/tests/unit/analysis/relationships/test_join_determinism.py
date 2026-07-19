@@ -93,3 +93,37 @@ def test_dirty_subset_fk_rescued_at_fractional_containment(
     assert candidate["join_confidence"] == pytest.approx(0.98)
     assert candidate["algorithm"] == "exact"
     assert candidate["statistical_confidence"] == 1.0
+
+
+def test_load_tables_is_name_ordered(session) -> None:
+    """DAT-725 run #5: the table scan is ORDERED, so pair enumeration is stable.
+
+    ``_load_tables``' insertion order becomes ``find_relationships``' ``table_names``,
+    whose upper-triangle enumeration decides which side of a pair is presented as
+    "left". On a bijective 1:1 (containment 100% both ways) the judge has no data
+    signal for direction and follows the presented order — so an unordered scan let
+    Postgres physical row order flip a confirmed FK's orientation between runs.
+    Inserted deliberately out of alphabetical order.
+    """
+    from dataraum.analysis.relationships.detector import _load_tables
+    from dataraum.storage import Column, Source, Table
+
+    ids = []
+    for name in ("payments", "bank_transactions", "invoices"):
+        src = Source(name=f"src_{name}", source_type="csv")
+        session.add(src)
+        session.flush()
+        t = Table(source_id=src.source_id, table_name=name, layer="typed", row_count=10)
+        session.add(t)
+        session.flush()
+        session.add(
+            Column(
+                table_id=t.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+            )
+        )
+        session.flush()
+        ids.append(t.table_id)
+
+    loaded = _load_tables(session, ids)
+
+    assert list(loaded.keys()) == ["bank_transactions", "invoices", "payments"]

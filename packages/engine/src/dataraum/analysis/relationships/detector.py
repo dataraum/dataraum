@@ -259,9 +259,18 @@ def _load_tables(
     """
     from dataraum.storage import Column
 
-    # Load tables with their columns
-    stmt = select(Table.table_id, Table.table_name, Table.duckdb_path).where(
-        Table.table_id.in_(table_ids)
+    # Load tables with their columns. ORDERED BY NAME: the returned mapping's
+    # insertion order becomes ``finder.find_relationships``'s ``table_names``,
+    # whose upper-triangle enumeration decides which side of each pair is
+    # presented as "left". On symmetric evidence (a bijective 1:1, where
+    # containment is 100% both ways) the judge has no data signal for direction
+    # and follows the presented order — so an unordered scan let Postgres
+    # physical row order flip a confirmed FK's orientation between runs
+    # (DAT-725 run #5). Same intent as the column ordering below.
+    stmt = (
+        select(Table.table_id, Table.table_name, Table.duckdb_path)
+        .where(Table.table_id.in_(table_ids))
+        .order_by(Table.table_name)
     )
     table_rows = session.execute(stmt).all()
     table_info: dict[str, tuple[str, str]] = {

@@ -2242,3 +2242,39 @@ stages/flows/evidence cite, and at most ONE cycle per type may be emitted.
 
 ### Thresholds / new fields
 None. No schema change.
+
+---
+
+## DAT-725 — orientation determinism + empty-judge-batch falls loud
+
+**What changed.** Two defects the run-#5 forensics isolated, both of which let a single
+LLM decision silently reshape structural output:
+
+1. **Ordered table scan.** `analysis/relationships/detector.py::_load_tables` and
+   `pipeline/phases/relationships_phase.py::_typed_tables` selected tables with no
+   `ORDER BY`, so Postgres physical row order decided which side of a candidate pair was
+   presented as "left". On a bijective 1:1 (containment 100% both directions) the judge
+   has no data signal for direction and follows the presented order — so a confirmed FK's
+   orientation flipped between runs. Both now `ORDER BY table_name`. The DAT-777
+   orientation chokepoint is unaffected: it correctly stands aside on symmetric
+   containment; this removes the upstream nondeterminism that fed it.
+2. **Empty verdict batch is malformed.** `analysis/hierarchies/judge.py`:
+   `ConformBatchOutput.verdicts` and `AliasIdentityBatchOutput.verdicts` now carry
+   `min_length=1`. Both judges early-return on an empty candidate list, so an empty
+   batch is a malformed response, never a judgment (`abstain` is the verdict for "cannot
+   decide"). Enforced at the model so the DAT-710 repair loop re-asks; an unanswerable
+   batch then reaches the existing `stats.status = "failed"` path instead of silently
+   producing zero conformed groups.
+
+### Calibration to run
+- **clean-flat `test_folded_recall_and_conformity` + `test_structural_stockflow_witness_is_live`**
+  — in run #5 one `dimension_conform` call returned `{"pair_ref_verdicts": []}`; the
+  repair preserved the emptiness, zeroing `conformed_group` on all three folded account
+  cells and with it every `measure_aggregation_lineage` row (witness 0/20). That path now
+  fails loud instead.
+- **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`
+  flipped orientation between runs #3/#4 (correct) and #5 (flipped) on identical
+  measurements. Orientation should now be stable across runs.
+
+### Thresholds / new fields
+None. No schema change.

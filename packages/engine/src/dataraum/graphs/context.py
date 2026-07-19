@@ -1249,7 +1249,7 @@ def _read_references(
             f"       (cr.evidence ->> 'introduces_duplicates')::boolean AS introduces_duplicates\n"
             f'FROM "{read_schema}".og_references r\n'
             f'JOIN "{read_schema}".current_relationships cr\n'
-            f"  ON cr.relationship_id::text = r.relationship_id"
+            f"  ON cr.relationship_id = r.relationship_id"
         )
     ).all()
     wanted = set(table_ids)
@@ -1401,6 +1401,11 @@ def _assemble_concept_contexts(
         try:
             where = json.loads(r.where_predicates) if r.where_predicates else []
         except TypeError, ValueError:
+            where = None
+        # json.loads can SUCCEED on non-list JSON (the literal ``null``, a bare
+        # string/number) — parse-time exceptions alone don't cover that, and
+        # iterating None crashed the whole context build (reviewer critical).
+        if not isinstance(where, list):
             logger.warning("grounding_where_unparsable", snippet_id=snippet_id)
             where = []
         groundings_by_concept.setdefault(str(r.concept_name), []).append(
@@ -1438,7 +1443,9 @@ def _assemble_concept_contexts(
             children.setdefault(to, []).append(frm)
             parents.setdefault(frm, []).append(to)
         elif e.predicate == "disjoint_with":
-            # Stored in both directions — enumerate from the from-side only.
+            # Symmetric predicates are stored in BOTH directions (concept_edges
+            # contract), so accumulating each row under its from-side populates
+            # both endpoints — no reverse insertion needed here.
             disjoint.setdefault(frm, set()).add(to)
         elif e.predicate == "reconciles_with":
             # Self-loop (from == to) = the derived multi-grounding tie-out; a
@@ -1487,6 +1494,10 @@ def _load_graph_reads(
     read_schema = _graph_read_schema(session, workspace_id)
     if read_schema is None:
         return None
+    # The WHOLE pass — reads AND the assembly fold — degrades to None on any
+    # failure. The fold must not sit outside this guard: an edge-shaped row it
+    # chokes on would otherwise kill the entire context build for every table,
+    # not just the graph sections (reviewer critical).
     try:
         tables = _read_og_tables(session, read_schema)
         columns = _read_og_columns(session, read_schema)
@@ -1499,25 +1510,24 @@ def _load_graph_reads(
         references = _read_references(session, read_schema, tables, columns, table_ids)
         conformed = _read_conformed(session, read_schema, tables)
         derived = _read_derived_from(session, read_schema, tables)
+        concepts = _assemble_concept_contexts(
+            concept_rows, edge_rows, ancestry, grounding_rows, use_rows, provenance, tables
+        )
+        return _GraphReads(
+            concepts=concepts,
+            references=references,
+            conformed_dimensions=conformed,
+            materialization_by_column={
+                cid: str(r.materialization) for cid, r in columns.items() if r.materialization
+            },
+            anchor_by_column={
+                cid: str(r.anchor_time_axis) for cid, r in columns.items() if r.anchor_time_axis
+            },
+            dimension_tables_by_view=derived,
+        )
     except Exception as e:
         logger.warning("graph_context_read_failed", error=str(e))
         return None
-
-    concepts = _assemble_concept_contexts(
-        concept_rows, edge_rows, ancestry, grounding_rows, use_rows, provenance, tables
-    )
-    return _GraphReads(
-        concepts=concepts,
-        references=references,
-        conformed_dimensions=conformed,
-        materialization_by_column={
-            cid: str(r.materialization) for cid, r in columns.items() if r.materialization
-        },
-        anchor_by_column={
-            cid: str(r.anchor_time_axis) for cid, r in columns.items() if r.anchor_time_axis
-        },
-        dimension_tables_by_view=derived,
-    )
 
 
 # =============================================================================

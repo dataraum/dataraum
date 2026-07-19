@@ -188,3 +188,82 @@ class TestGraphUnreachable:
         assert ctx.concepts == []
         assert ctx.conformed_dimensions == []
         assert ctx.tables  # the non-graph assembly still built
+
+
+class TestEndpointMissesDropLoudNotCrash:
+    """A graph edge whose endpoint the vertex maps cannot resolve drops VISIBLY
+    (warning + drop), never crashes the build and never serves a broken row.
+
+    Seeds a table ``t9`` that exists physically but has NO generation head — so
+    it is absent from ``current_tables`` and therefore from the ``og_tables``
+    vertex map — then hangs a reference, a conformed-dimension pair, and a
+    derived_from base off it (reviewer finding: these paths were untested).
+    """
+
+    def test_reference_conformed_and_derived_misses(self, graph_ctx_engine: Engine) -> None:
+        from sqlalchemy import text
+
+        ts = "2026-01-01 00:00:00"
+        src = "00000000-0000-0000-0000-000000000002"
+        run = "00000000-0000-0000-0000-000000000001"
+        stmts = [
+            # t9: physically present, NO generation head → not an og_tables vertex.
+            f"INSERT INTO tables (table_id, source_id, table_name, layer, created_at) "
+            f"VALUES ('t9', '{src}', 'ghost', 'typed', '{ts}')",
+            "INSERT INTO columns (column_id, table_id, column_name, column_position) "
+            "VALUES ('c9', 't9', 'ghost_id', 1)",
+            # Reference whose to-endpoint is the unresolvable t9.
+            "INSERT INTO relationships (relationship_id, run_id, from_table_id, "
+            " from_column_id, to_table_id, to_column_id, relationship_type, cardinality, "
+            " confidence, confirmation_source, detected_at) "
+            f"VALUES ('r9', '{run}', 't1', 'c_k1', 't9', 'c9', 'foreign_key', "
+            f"'many-to-one', 0.9, 'judge', '{ts}')",
+            # A conformed pair whose shared dimension table is t9.
+            "INSERT INTO slice_definitions (slice_id, run_id, table_id, column_id, "
+            " column_name, dimension_table_id, dimension_attribute, fk_role, "
+            " slice_priority, slice_type, detection_source, created_at) "
+            f"VALUES ('sl_9', '{run}', 't1', 'c_k1', 'ghost__region', 't9', 'region9', "
+            f"'account_id', 2, 'categorical', 'llm', '{ts}')",
+            "INSERT INTO slice_definitions (slice_id, run_id, table_id, column_id, "
+            " column_name, dimension_table_id, dimension_attribute, fk_role, "
+            " slice_priority, slice_type, detection_source, created_at) "
+            f"VALUES ('sl_9b', '{run}', 't4', 'c_k4', 'ghost__region', 't9', 'region9', "
+            f"'account_id', 2, 'categorical', 'llm', '{ts}')",
+            # An enriched view deriving from the unresolvable t9 dimension base.
+            # Fact t4 — one enriched view per fact (uq_enriched_view_fact_table),
+            # and t1 already carries the seed's enriched_journal.
+            f"INSERT INTO tables (table_id, source_id, table_name, layer, created_at) "
+            f"VALUES ('t_enr9', '{src}', 'enriched_l9', 'enriched', '{ts}')",
+            "INSERT INTO enriched_views (view_id, fact_table_id, view_table_id, "
+            " view_name, run_id, dimension_table_ids, is_grain_verified, created_at) "
+            f"VALUES ('v_9', 't4', 't_enr9', 'enriched_l9', '{run}', "
+            f"'[\"t9\"]'::json, true, '{ts}')",
+        ]
+        with graph_ctx_engine.begin() as conn:
+            for s in stmts:
+                conn.execute(text(s))
+
+        factory = sessionmaker(bind=graph_ctx_engine)
+        with factory() as session:
+            ctx = build_execution_context(
+                session,
+                ["t1", "t2", "t4", "t9"],
+                workspace_id=os.environ["DATARAUM_WORKSPACE_ID"],
+            )
+
+        # Reference: the resolvable edge serves; the t9 edge dropped, no crash.
+        pairs = {(r.from_table, r.to_table) for r in ctx.relationships}
+        assert ("journal", "accounts") in pairs
+        assert not any("ghost" in p for pair in pairs for p in pair)
+
+        # Conformed: only the resolvable accounts axis; the t9 axis dropped.
+        assert [(c.dimension_table, c.attribute) for c in ctx.conformed_dimensions] == [
+            ("accounts", "account_type")
+        ]
+
+        # Derived: the view serves, its unresolvable base dropped (empty bases).
+        l9 = next(v for v in ctx.enriched_views if v.view_name == "enriched_l9")
+        assert l9.dimension_tables == []
+        # The healthy view's bases are untouched.
+        ej = next(v for v in ctx.enriched_views if v.view_name == "enriched_journal")
+        assert ej.dimension_tables == ["accounts"]

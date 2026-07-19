@@ -756,17 +756,22 @@ def _warm_generations_serial(
     from dataraum.graphs.agent import ExecutionContext
     from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
 
-    exec_ctx = ExecutionContext.with_rich_context(
-        session=session,
-        duckdb_conn=duckdb_conn,
-        table_ids=table_ids,
-        schema_mapping_id=schema_mapping_id,
-        om_run_id=om_run_id,
-        catalogue_run_id=catalogue_run_id,
-        vertical=vertical,
-    )
     bindings: dict[NodeKey, NodeDecision] = {}
     for generation in generations:
+        # Rebuild the context PER GENERATION (DAT-734): the served concept graph
+        # carries prior committed groundings, and a later generation must see the
+        # snippets earlier generations just minted — a once-built context would
+        # serve only prior-RUN groundings here while the parallel path
+        # (_warm_isolated, fresh context per node) serves same-run siblings.
+        exec_ctx = ExecutionContext.with_rich_context(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=table_ids,
+            schema_mapping_id=schema_mapping_id,
+            om_run_id=om_run_id,
+            catalogue_run_id=catalogue_run_id,
+            vertical=vertical,
+        )
         for key in generation:
             # Only leaf EXTRACTs warm (DAT-646) — no deps, so no dep-gate.
             try:

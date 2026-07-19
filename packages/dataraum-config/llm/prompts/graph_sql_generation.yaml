@@ -234,7 +234,7 @@ system_prompt: |
 
   - Simple aggregate (concept = values of a discriminator on the fact):
     relation: `<view>` · where: [`"<dim>" IN ('<v1>','<v2>')`] · select_expr: `SUM("<measure>")`
-  - End-of-period (stock / point_in_time — latest period only):
+  - End-of-period (stock materialization — latest period only):
     relation: `<view>` · where: [`"<period>" = (SELECT MAX("<period>") FROM <view>)`]
     · select_expr: `SUM("<measure>")`
   - Multi-column conjunction (one predicate per grounded column — the system ANDs the list):

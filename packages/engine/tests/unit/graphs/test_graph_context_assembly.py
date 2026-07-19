@@ -112,6 +112,35 @@ def test_concept_edge_buckets_and_ordering() -> None:
     assert ap.reconciles_with[0].tolerance == 0.01
 
 
+def test_where_predicates_non_list_json_degrades_loud_not_crash() -> None:
+    """``json.loads`` SUCCEEDS on the JSON literal ``null`` (→ Python None) and on
+    bare scalars — parse-time exceptions alone don't cover them. The fold must
+    serve the grounding with an empty where + a warning, never iterate None
+    (reviewer critical: that crash escaped the loader guard and killed the whole
+    context build)."""
+    for bad in ("null", '"a string"', "42"):
+        rows = [_grounding_row(where_predicates=bad)]
+        out = _assemble_concept_contexts([("revenue", "measure")], [], {}, rows, [], {}, _TABLES)
+        g = out[0].groundings[0]
+        assert g.where == []
+        assert g.select_expr == 'SUM("amount")'  # grounding itself still served
+
+
+def test_unresolved_concept_provenance_row_dropped_not_crashed() -> None:
+    """A current_groundings row whose concept names no active Concept has no
+    grounded_by MATCH row — it must drop loud (log) and never surface, and the
+    fold must not crash on it."""
+    prov = {
+        "sn_orphan": _row(concept="expenses", failed=False, failure_mode=None, failure_reason=None)
+    }
+    out = _assemble_concept_contexts(
+        [("revenue", "measure")], [], {}, [_grounding_row()], [], prov, _TABLES
+    )
+    served = {g.snippet_id for c in out for g in c.groundings}
+    assert "sn_orphan" not in served
+    assert served == {"sn_1"}
+
+
 def test_concept_order_is_input_order_and_multi_grounding_sorted() -> None:
     rows = [
         _grounding_row(snippet_id="sn_b", statement="balance_sheet"),

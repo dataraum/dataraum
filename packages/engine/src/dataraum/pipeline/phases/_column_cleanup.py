@@ -31,9 +31,10 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     prior run's ranking FK-blocked the column delete on the eligibility /
     surrogate-mint / enriched-views paths, which only reach this function,
     never the table-level teardown),
-    ``measure_aggregation_lineage`` (reachable through ``measure_column_id`` —
-    the sole column FK on the row now that the witness axis/slice ids are gone),
-    and ``relationships`` (reachable
+    ``measure_aggregation_lineage`` (reachable through ``measure_column_id`` or
+    its DAT-778 witness slice FKs — ``measure_slice_column_id`` /
+    ``event_slice_column_id``; a column can be a lineage row's *slice* witness
+    without being its measure column), and ``relationships`` (reachable
     through either ``from_column_id`` / ``to_column_id`` endpoint).
 
     Run BEFORE deleting the ``columns`` rows so the FK constraints are satisfied
@@ -83,7 +84,11 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     )
     ctx.session.execute(
         delete(MeasureAggregationLineage).where(
-            MeasureAggregationLineage.measure_column_id.in_(column_ids)
+            or_(
+                MeasureAggregationLineage.measure_column_id.in_(column_ids),
+                MeasureAggregationLineage.measure_slice_column_id.in_(column_ids),
+                MeasureAggregationLineage.event_slice_column_id.in_(column_ids),
+            )
         )
     )
     # Relationships reach a column through either endpoint.

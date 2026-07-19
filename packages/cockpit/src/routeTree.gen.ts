@@ -26,6 +26,7 @@ import { Route as ApiDrillNodeRouteImport } from './routes/api/drill/node'
 import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
 import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
 import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
 import { Route as appWorkspaceWsIdOperatingModelRouteImport } from './routes/(app)/workspace/$wsId/operating-model'
@@ -122,6 +123,11 @@ const ApiChartsAuthorRoute = ApiChartsAuthorRouteImport.update({
   path: '/api/charts/author',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const appWorkspaceWsIdRouteRoute = appWorkspaceWsIdRouteRouteImport.update({
   id: '/workspace/$wsId',
   path: '/workspace/$wsId',
@@ -200,6 +206,7 @@ export interface FileRoutesByFullPath {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
@@ -229,6 +236,7 @@ export interface FileRoutesByTo {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
@@ -259,6 +267,7 @@ export interface FileRoutesById {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
@@ -290,6 +299,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/workspace/$wsId'
+    | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
@@ -319,6 +329,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/workspace/$wsId'
+    | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
@@ -348,6 +359,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/(app)/workspace/$wsId'
+    | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
     | '/api/drill/compose'
@@ -377,6 +389,7 @@ export interface RootRouteChildren {
   ApiShippedMetricDagRoute: typeof ApiShippedMetricDagRoute
   ApiUploadRoute: typeof ApiUploadRoute
   ApiWorkflowProgressRoute: typeof ApiWorkflowProgressRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiChartsAuthorRoute: typeof ApiChartsAuthorRoute
   ApiDrillAxesRoute: typeof ApiDrillAxesRoute
   ApiDrillComposeRoute: typeof ApiDrillComposeRoute
@@ -503,6 +516,13 @@ declare module '@tanstack/react-router' {
       path: '/api/charts/author'
       fullPath: '/api/charts/author'
       preLoaderRoute: typeof ApiChartsAuthorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(app)/workspace/$wsId': {
@@ -656,6 +676,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiShippedMetricDagRoute: ApiShippedMetricDagRoute,
   ApiUploadRoute: ApiUploadRoute,
   ApiWorkflowProgressRoute: ApiWorkflowProgressRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiChartsAuthorRoute: ApiChartsAuthorRoute,
   ApiDrillAxesRoute: ApiDrillAxesRoute,
   ApiDrillComposeRoute: ApiDrillComposeRoute,
@@ -667,10 +688,11 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
+import type { startInstance } from './start.ts'
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

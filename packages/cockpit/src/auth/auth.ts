@@ -11,6 +11,11 @@
 // Version note: better-auth is pinned to the 1.7 rc line — the only line
 // whose Drizzle adapter supports our deliberate drizzle-orm 1.0.0-rc pin
 // (better-auth#6766); it advances on its own channel, never blanket-`latest`.
+// The package.json `overrides: { kysely: "0.28.17" }` belongs to this pin:
+// better-auth's bundled kysely adapter (unused here — we pass the drizzle
+// adapter — but statically imported by its dist) imports migration constants
+// kysely 0.29 stopped root-exporting, which kills the Nitro build. Drop the
+// override when better-auth ships against kysely 0.29.
 //
 // Deliberately thin (auth decision on DAT-819): email+password only.
 // Enterprise SSO (e.g. Azure AD) arrives by ADDING better-auth's OIDC/SSO

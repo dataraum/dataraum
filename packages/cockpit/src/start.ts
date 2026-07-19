@@ -14,7 +14,11 @@
 // the instance shell), and the dynamic import keeps the server-only auth/db
 // modules out of the client graph (cockpit isomorphic-file convention).
 
-import { createCsrfMiddleware, createMiddleware, createStart } from "@tanstack/react-start";
+import {
+	createCsrfMiddleware,
+	createMiddleware,
+	createStart,
+} from "@tanstack/react-start";
 
 const csrfMiddleware = createCsrfMiddleware({
 	filter: (ctx) => ctx.handlerType === "serverFn",

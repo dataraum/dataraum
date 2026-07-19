@@ -98,14 +98,13 @@ vi.mock("#/db/cockpit/client", () => ({
 				return {
 					// Drizzle insert builders are thenables — a bare
 					// `await insert().values()` (the accounts row) executes too.
+					// biome-ignore lint/suspicious/noThenProperty: mocking drizzle's thenable query builder is the point
 					then: (
 						onFulfilled?: (v: unknown) => unknown,
 						onRejected?: (e: unknown) => unknown,
 					) => record().then(onFulfilled, onRejected),
 					onConflictDoNothing: () => record(),
-					onConflictDoUpdate: async (cfg: {
-						set: Record<string, unknown>;
-					}) => {
+					onConflictDoUpdate: async (cfg: { set: Record<string, unknown> }) => {
 						await record();
 						h.upserts.push({ table: table._t, row, set: cfg.set });
 					},

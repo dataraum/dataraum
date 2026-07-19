@@ -157,8 +157,8 @@ function WorkspaceList({
 		<Stack gap="sm">
 			{home.workspaces.length === 0 ? (
 				<Text size="sm" c="dimmed">
-					You are not a member of any workspace yet. Ask an administrator to
-					add you.
+					You are not a member of any workspace yet. Ask an administrator to add
+					you.
 				</Text>
 			) : (
 				home.workspaces.map((ws) => (

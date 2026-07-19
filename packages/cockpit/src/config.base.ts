@@ -64,7 +64,8 @@ function loadBaseConfig(): BaseConfig {
 		devUserPassword: process.env.DATARAUM_DEV_USER_PASSWORD || undefined,
 		// `|| undefined`: an empty string (compose interpolation of an unset
 		// var) means OFF, never a half-configured exporter.
-		otelExporterOtlpEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
+		otelExporterOtlpEndpoint:
+			process.env.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
 	});
 
 	if (!parsed.success) {

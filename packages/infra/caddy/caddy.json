@@ -1,0 +1,52 @@
+{
+	"admin": {
+		"listen": "0.0.0.0:2019"
+	},
+	"apps": {
+		"http": {
+			"servers": {
+				"srv0": {
+					"listen": [":80"],
+					"automatic_https": {
+						"disable": true
+					},
+					"routes": [
+						{
+							"@id": "ws-00000000-0000-0000-0000-000000000001",
+							"match": [{ "host": ["ws1.dataraum.localhost"] }],
+							"handle": [
+								{
+									"handler": "reverse_proxy",
+									"upstreams": [{ "dial": "cockpit:3000" }]
+								}
+							],
+							"terminal": true
+						},
+						{
+							"@id": "ws-00000000-0000-0000-0000-000000000002",
+							"match": [{ "host": ["ws2.dataraum.localhost"] }],
+							"handle": [
+								{
+									"handler": "reverse_proxy",
+									"upstreams": [{ "dial": "cockpit-2:3000" }]
+								}
+							],
+							"terminal": true
+						},
+						{
+							"@id": "portal",
+							"match": [{ "host": ["dataraum.localhost"] }],
+							"handle": [
+								{
+									"handler": "reverse_proxy",
+									"upstreams": [{ "dial": "portal:3000" }]
+								}
+							],
+							"terminal": true
+						}
+					]
+				}
+			}
+		}
+	}
+}

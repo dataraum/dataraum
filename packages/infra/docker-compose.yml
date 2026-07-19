@@ -278,7 +278,9 @@ services:
         condition: service_completed_successfully
     environment:
       TEMPORAL_ADDRESS: temporal:7233
-      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+      # Subdomain origins added (DAT-819): the /workflows section embeds this
+      # UI from the per-workspace cockpit origins behind Caddy.
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000,http://ws1.dataraum.localhost,http://ws2.dataraum.localhost
     ports:
       - "8080:8080"
 
@@ -406,6 +408,19 @@ services:
       # client's search_path resolution. Must match what the engine
       # was bootstrapped with or drizzle pulls from the wrong schema.
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
+      # Subdomain + auth (DAT-819, DD/51740673). The subdomain label is seeded
+      # onto this workspace's registry row so the portal can route here —
+      # `ws1.dataraum.localhost` is the matching seeded Caddy route
+      # (caddy/caddy.json). The auth secret + portal origin must be IDENTICAL
+      # across the portal and every workspace cockpit: the portal issues the
+      # parent-domain session cookie, this cockpit verifies it against the
+      # shared cockpit_db. The dev credential user is seeded lazily by the
+      # registry (membership in THIS workspace); unset both to disable.
+      DATARAUM_WORKSPACE_SUBDOMAIN: ${DATARAUM_WORKSPACE_SUBDOMAIN:-ws1}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dataraum-dev-secret}
+      DATARAUM_PORTAL_ORIGIN: ${DATARAUM_PORTAL_ORIGIN:-http://dataraum.localhost}
+      DATARAUM_DEV_USER_EMAIL: ${DATARAUM_DEV_USER_EMAIL:-dev@dataraum.dev}
+      DATARAUM_DEV_USER_PASSWORD: ${DATARAUM_DEV_USER_PASSWORD:-dataraum-dev}
       # Lake DATA_PATH on the object store (DAT-388/505). s3:// URI — must match
       # engine-worker 1's DUCKLAKE_DATA_PATH byte-for-byte (the cockpit ATTACHes
       # the same lake READ_ONLY). Per-workspace prefix now: s3://<bucket>/<ws>/lake.
@@ -453,9 +468,127 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:3000/"]
+      # /api/health, not `/`: the membership gate (DAT-819) 401s signed-out
+      # requests, and a healthcheck has no session.
+      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:3000/api/health"]
       interval: 10s
       timeout: 5s
+      retries: 6
+
+  # ── Workspace 2's cockpit (DAT-819) — the two-workspace smoke pair ────────
+  # Mirrors `cockpit` with workspace 2's identity, reached through Caddy at
+  # ws2.dataraum.localhost. Same shared cockpit_db; isolation is the DAT-817
+  # boot-scope. The metadata role NAMES embed the default ws-2 id — like
+  # cockpit's, these URLs are the smoke pair's; the provisioner (DAT-820) owns
+  # real per-workspace wiring.
+  cockpit-2:
+    profiles: ["multi-workspace"]
+    build:
+      context: ../cockpit
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cockpit-migrate:
+        condition: service_completed_successfully
+      engine-worker-2:
+        condition: service_started
+      seaweedfs-init:
+        condition: service_completed_successfully
+      temporal-ui:
+        condition: service_started
+    environment:
+      COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
+      METADATA_DATABASE_URL: postgresql://ws_00000000_0000_0000_0000_000000000002_reader:${METADATA_READER_PASSWORD:-cockpit-reader-dev}@postgres:5432/${POSTGRES_DB}
+      METADATA_WRITER_DATABASE_URL: postgresql://ws_00000000_0000_0000_0000_000000000002_writer:${METADATA_WRITER_PASSWORD:-cockpit-writer-dev}@postgres:5432/${POSTGRES_DB}
+      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
+      DATARAUM_WORKSPACE_SUBDOMAIN: ${DATARAUM_WORKSPACE_SUBDOMAIN_2:-ws2}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dataraum-dev-secret}
+      DATARAUM_PORTAL_ORIGIN: ${DATARAUM_PORTAL_ORIGIN:-http://dataraum.localhost}
+      DATARAUM_DEV_USER_EMAIL: ${DATARAUM_DEV_USER_EMAIL:-dev@dataraum.dev}
+      DATARAUM_DEV_USER_PASSWORD: ${DATARAUM_DEV_USER_PASSWORD:-dataraum-dev}
+      DATARAUM_LAKE_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}/lake
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
+      DATARAUM_CONFIG_PATH: /opt/dataraum/config
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TEMPORAL_HOST: ${TEMPORAL_HOST:-}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
+    volumes:
+      - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
+    ports:
+      # Caddy-bypass debug port only (3001 is Grafana). The real path is
+      # http://ws2.dataraum.localhost via Caddy.
+      - "3002:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # ── Portal (DAT-819, DD/51740673) — login + membership routing ────────────
+  # The SAME cockpit image in its second role (DATARAUM_PORTAL_MODE=1): serves
+  # the parent domain (http://dataraum.localhost through Caddy), owns better-auth
+  # sign-in, lists the user's workspaces from cockpit_db memberships, and links
+  # each to its subdomain. Deliberately carries ONLY the base env (config.base.ts):
+  # no workspace identity, no metadata roles, no S3 — a workspace surface reached
+  # here fails born-loud by design. The provisioner (DAT-820) lands in this role.
+  portal:
+    build:
+      context: ../cockpit
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cockpit-migrate:
+        condition: service_completed_successfully
+    environment:
+      DATARAUM_PORTAL_MODE: "1"
+      COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dataraum-dev-secret}
+      DATARAUM_PORTAL_ORIGIN: ${DATARAUM_PORTAL_ORIGIN:-http://dataraum.localhost}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # ── Caddy (DAT-819) — per-workspace subdomain termination ─────────────────
+  # The installation's ONE ingress: `<subdomain>.dataraum.localhost` routes to
+  # that workspace's cockpit, the bare parent domain to the portal. Dev config
+  # is FILE-seeded (caddy/caddy.json: ws1 + ws2 + portal, @id-tagged routes,
+  # default workspace ids — a custom id means the admin API, i.e. the
+  # provisioner path) and reloads fresh each `up`; admin-API changes are
+  # deliberately ephemeral in dev (the provisioner re-asserts routes; `--resume`
+  # persistence is a deploy concern). The admin API on :2019 IS the DAT-820
+  # provisioner seam (src/portal/caddy.ts) — published for dev/smoke like every
+  # other port here (see the sbx note); it accepts arbitrary config, so any
+  # non-local deployment must scope it to the compose network.
+  #
+  # Dev domain story: Chromium/Firefox resolve *.localhost (any depth) to
+  # 127.0.0.1 natively — open http://dataraum.localhost, no /etc/hosts edit.
+  # Safari and curl use the system resolver: add the three hosts to /etc/hosts
+  # or use `curl --resolve ws1.dataraum.localhost:80:127.0.0.1 …`.
+  caddy:
+    image: caddy:2-alpine
+    command: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]
+    volumes:
+      - ./caddy/caddy.json:/etc/caddy/caddy.json:ro
+    ports:
+      - "80:80"
+      - "2019:2019"
+    healthcheck:
+      # `caddy version` proves the binary; the admin API proves the config
+      # loaded (it serves only after a successful load).
+      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:2019/config/"]
+      interval: 5s
+      timeout: 3s
       retries: 6
 
 volumes:

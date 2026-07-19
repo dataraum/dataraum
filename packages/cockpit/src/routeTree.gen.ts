@@ -17,6 +17,7 @@ import { Route as ApiShippedMetricDagRouteImport } from './routes/api/shipped-me
 import { Route as ApiRunningRunsRouteImport } from './routes/api/running-runs'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
 import { Route as ApiProbeSqlRouteImport } from './routes/api/probe-sql'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiChatStreamRouteImport } from './routes/api/chat-stream'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
@@ -76,6 +77,11 @@ const ApiRunSqlRoute = ApiRunSqlRouteImport.update({
 const ApiProbeSqlRoute = ApiProbeSqlRouteImport.update({
   id: '/api/probe-sql',
   path: '/api/probe-sql',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiChatStreamRoute = ApiChatStreamRouteImport.update({
@@ -199,6 +205,7 @@ export interface FileRoutesByFullPath {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
@@ -229,6 +236,7 @@ export interface FileRoutesByTo {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
@@ -260,6 +268,7 @@ export interface FileRoutesById {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/health': typeof ApiHealthRoute
   '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
@@ -292,6 +301,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/health'
     | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
@@ -322,6 +332,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/health'
     | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
@@ -352,6 +363,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/health'
     | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
@@ -383,6 +395,7 @@ export interface RootRouteChildren {
   ApiAwaitingInputRoute: typeof ApiAwaitingInputRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiChatStreamRoute: typeof ApiChatStreamRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiProbeSqlRoute: typeof ApiProbeSqlRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
   ApiRunningRunsRoute: typeof ApiRunningRunsRoute
@@ -453,6 +466,13 @@ declare module '@tanstack/react-router' {
       path: '/api/probe-sql'
       fullPath: '/api/probe-sql'
       preLoaderRoute: typeof ApiProbeSqlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/chat-stream': {
@@ -670,6 +690,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAwaitingInputRoute: ApiAwaitingInputRoute,
   ApiChatRoute: ApiChatRoute,
   ApiChatStreamRoute: ApiChatStreamRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiProbeSqlRoute: ApiProbeSqlRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
   ApiRunningRunsRoute: ApiRunningRunsRoute,

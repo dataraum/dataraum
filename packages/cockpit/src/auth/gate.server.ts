@@ -24,9 +24,10 @@ import { cockpitDb } from "#/db/cockpit/client";
 import { memberships } from "#/db/cockpit/schema";
 import { auth } from "./auth";
 
-// The auth handler itself is public by definition (sign-in posts from the
-// portal UI, sign-out posts from a workspace cockpit, session reads).
-const PUBLIC_PREFIXES = ["/api/auth/"];
+// The auth handler is public by definition (sign-in posts from the portal UI,
+// sign-out posts from a workspace cockpit, session reads); the health probe
+// is public because the compose healthcheck has no session.
+const PUBLIC_PREFIXES = ["/api/auth/", "/api/health"];
 
 /** An HTML navigation (redirect to the portal) vs an API/RPC caller (bare
  * status — a fetch following a 302 into portal HTML would only garble the

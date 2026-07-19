@@ -27,23 +27,33 @@ const runs = new Map<string, CreateRun>();
 
 /** Record a fired create op. Attaches the terminal handlers, so the
  * fire-and-forget promise in the server fn never surfaces as an unhandled
- * rejection. */
+ * rejection. The entry's OBJECT IDENTITY is the generation token: two
+ * near-simultaneous starts for one id (double-submit racing past the
+ * "already running" guard's awaits) both call this, and only the LATEST
+ * entry's handlers may touch the map — the loser's near-instant
+ * advisory-lock rejection must not overwrite the live run's record with a
+ * misleading failure. */
 export function trackCreateRun(
 	workspaceId: string,
 	userId: string,
 	op: Promise<unknown>,
 ): void {
-	runs.set(workspaceId, { userId, status: "running" });
+	const entry: CreateRun = { userId, status: "running" };
+	runs.set(workspaceId, entry);
 	op.then(
 		() => {
-			runs.delete(workspaceId);
+			if (runs.get(workspaceId) === entry) {
+				runs.delete(workspaceId);
+			}
 		},
 		(err: unknown) => {
-			runs.set(workspaceId, {
-				userId,
-				status: "failed",
-				error: err instanceof Error ? err.message : String(err),
-			});
+			if (runs.get(workspaceId) === entry) {
+				runs.set(workspaceId, {
+					userId,
+					status: "failed",
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 		},
 	);
 }

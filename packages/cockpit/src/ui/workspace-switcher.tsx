@@ -11,9 +11,12 @@
 //     arrives from the server;
 //   - "New workspace" leads to the portal's create flow.
 //
-// Until the memberships query resolves (SSR included — the RPC needs a
-// browser origin, the RunRailBadge `typeof window` idiom), the target renders
-// the brand wordmark, menu-less: the shell never shows a raw workspace UUID.
+// Until the memberships query resolves, the target renders the brand
+// wordmark, menu-less: the shell never shows a raw workspace UUID. The query
+// is client-gated (`typeof window`, the RunRailBadge idiom) because the shell
+// is always-rendered chrome: during SSR the queryFn would fire outside the
+// document request's server context, so the server renders the fallback and
+// the client polls once hydrated.
 
 import { Badge, Group, Menu, Text, UnstyledButton } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";

@@ -53,4 +53,27 @@ describe("trackCreateRun", () => {
 	it("returns null for an untracked workspace", () => {
 		expect(createRunFor("ws-unknown")).toBeNull();
 	});
+
+	it("a stale run's settlement never clobbers the newer run's record", async () => {
+		// Double-submit race (TOCTOU past the "already running" guard's awaits):
+		// the LOSER hits the advisory lock and rejects near-instantly while the
+		// real run is live — its failure must not overwrite the live record,
+		// and its success must not delete it either.
+		let failLoser: (err: Error) => void = () => {};
+		trackCreateRun(
+			"ws-race",
+			"u1",
+			new Promise((_, reject) => {
+				failLoser = reject;
+			}),
+		);
+		// The newer (winning) run replaces the entry.
+		trackCreateRun("ws-race", "u1", new Promise(() => {}));
+		failLoser(new Error("a lifecycle operation is already in flight"));
+		await settle();
+		expect(createRunFor("ws-race")).toEqual({
+			userId: "u1",
+			status: "running",
+		});
+	});
 });

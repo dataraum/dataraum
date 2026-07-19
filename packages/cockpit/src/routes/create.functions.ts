@@ -33,6 +33,7 @@ import { createRunFor, trackCreateRun } from "#/portal/create-tracker";
 import { createWorkspace } from "#/portal/lifecycle";
 import { runLifecycle } from "#/portal/lifecycle-deps";
 import { type BuiltinVertical, listBuiltinVerticals } from "#/portal/verticals";
+import { serverFnError } from "#/server/server-fn-error";
 
 // ── Form context ────────────────────────────────────────────────────────────
 
@@ -97,7 +98,7 @@ export const startWorkspaceCreate = createServerFn({ method: "POST" })
 		if (!verticals.some((vertical) => vertical.name === data.vertical)) {
 			// The engine resolves phase config by this key — an unknown vertical
 			// would mint a workspace that fails at first add_source.
-			throw Response.json({ error: "unknown_vertical" }, { status: 400 });
+			throw serverFnError(400, "unknown_vertical");
 		}
 
 		const [claimed] = await cockpitDb
@@ -111,12 +112,10 @@ export const startWorkspaceCreate = createServerFn({ method: "POST" })
 			)
 			.limit(1);
 		if (claimed) {
-			throw Response.json(
-				{
-					error: "subdomain_taken",
-					message: `subdomain '${data.subdomain}' is already claimed by a live workspace — pick another label`,
-				},
-				{ status: 409 },
+			throw serverFnError(
+				409,
+				"subdomain_taken",
+				`subdomain '${data.subdomain}' is already claimed by a live workspace — pick another label`,
 			);
 		}
 
@@ -177,7 +176,7 @@ export const retryWorkspaceCreate = createServerFn({ method: "POST" })
 		if (row?.state !== "creating" || !subdomain) {
 			// Nothing to converge: the first attempt never wrote the row (e.g. a
 			// subdomain conflict) or the workspace has moved on.
-			throw Response.json({ error: "not_retryable" }, { status: 409 });
+			throw serverFnError(409, "not_retryable");
 		}
 		trackCreateRun(
 			workspaceId,

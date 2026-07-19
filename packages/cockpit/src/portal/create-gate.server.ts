@@ -19,19 +19,21 @@ import { baseConfig } from "#/config.base";
 import { cockpitDb } from "#/db/cockpit/client";
 import { memberships } from "#/db/cockpit/schema";
 import { createRunFor } from "#/portal/create-tracker";
+import { serverFnError } from "#/server/server-fn-error";
 
-/** Portal-role + session gate. Thrown Responses pass through the server-fn
- * handler verbatim (status-correct rejections for direct RPC callers; the
- * route's beforeLoad handles the human redirect). */
+/** Portal-role + session gate. Rejections go through `serverFnError` — a
+ * status-carrying thrown Error that actually REJECTS the client call (a
+ * thrown Response would resolve, see server-fn-error.ts); the route's
+ * beforeLoad handles the human redirect. */
 export async function requirePortalSession() {
 	if (!baseConfig.portalMode) {
 		// A workspace cockpit must never expose provisioning — its container
 		// deliberately lacks the admin env, and the surface belongs to the portal.
-		throw Response.json({ error: "portal_only" }, { status: 403 });
+		throw serverFnError(403, "portal_only");
 	}
 	const session = await auth.api.getSession({ headers: getRequest().headers });
 	if (!session) {
-		throw Response.json({ error: "unauthenticated" }, { status: 401 });
+		throw serverFnError(401, "unauthenticated");
 	}
 	return session;
 }
@@ -53,6 +55,6 @@ export async function requireCreateVisibility(
 		)
 		.limit(1);
 	if (!membership && createRunFor(workspaceId)?.userId !== userId) {
-		throw Response.json({ error: "not_a_member" }, { status: 403 });
+		throw serverFnError(403, "not_a_member");
 	}
 }

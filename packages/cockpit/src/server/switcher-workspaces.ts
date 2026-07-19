@@ -22,6 +22,7 @@ import { baseConfig } from "#/config.base";
 import { cockpitDb } from "#/db/cockpit/client";
 import { bootWorkspaceId, type WorkspaceState } from "#/db/cockpit/registry";
 import { memberships, workspaces } from "#/db/cockpit/schema";
+import { serverFnError } from "#/server/server-fn-error";
 
 export interface SwitcherWorkspace {
 	id: string;
@@ -45,7 +46,7 @@ export interface SwitcherData {
 export const getSwitcherWorkspaces = createServerFn({ method: "GET" }).handler(
 	async (): Promise<SwitcherData> => {
 		if (baseConfig.portalMode) {
-			throw Response.json({ error: "workspace_only" }, { status: 403 });
+			throw serverFnError(403, "workspace_only");
 		}
 		const session = await auth.api.getSession({
 			headers: getRequest().headers,
@@ -53,7 +54,7 @@ export const getSwitcherWorkspaces = createServerFn({ method: "GET" }).handler(
 		if (!session) {
 			// The membership gate fronts every request; reaching this without a
 			// session means the caller bypassed HTML navigation — same status.
-			throw Response.json({ error: "unauthenticated" }, { status: 401 });
+			throw serverFnError(401, "unauthenticated");
 		}
 
 		const currentId = bootWorkspaceId();

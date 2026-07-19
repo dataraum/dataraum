@@ -83,7 +83,8 @@ function CreatePage() {
 
 // ── Form ────────────────────────────────────────────────────────────────────
 
-function CreateForm({
+/** Exported for the unit test only — the route component is the caller. */
+export function CreateForm({
 	context,
 }: {
 	context: Extract<CreateContext, { mode: "form" }>;
@@ -212,10 +213,10 @@ function CreateForm({
 	);
 }
 
-/** The server fns reject with status-carrying JSON Responses; the RPC client
- * surfaces a non-ok response as `new Error(<body text>)` (start-client-core
- * serverFnFetcher), so the human `message` — or the `error` code — is parsed
- * back out of the error's message string. */
+/** The server fns reject via `serverFnError` — a thrown Error whose message
+ * is a JSON `{error, message?}` envelope (a thrown Response would RESOLVE
+ * client-side, see server/server-fn-error.ts) — so the human `message`, or
+ * the `error` code, is parsed back out of the rethrown error's message. */
 function rpcErrorMessage(error: unknown): string {
 	if (error instanceof Error && error.message) {
 		try {
@@ -238,19 +239,23 @@ function rpcErrorMessage(error: unknown): string {
 
 // ── Progress ────────────────────────────────────────────────────────────────
 
-function CreateProgressPanel({ workspaceId }: { workspaceId: string }) {
+/** Exported for the unit test only — the route component is the caller. */
+export function CreateProgressPanel({ workspaceId }: { workspaceId: string }) {
 	const queryClient = useQueryClient();
 	const progress = useQuery({
 		queryKey: ["create-progress", workspaceId],
 		queryFn: () => getCreateProgress({ data: { workspaceId } }),
-		// House polling idiom: interval callback, false once terminal (ready, or
-		// failed-and-idle — a retry restarts it via invalidate below).
+		// House polling idiom: interval callback, false once terminal. Terminal =
+		// ready (the effect below redirects) OR nothing in flight in this
+		// process (failed, or a restart-interrupted bare `creating` row) —
+		// idle states never make progress on their own, so polling them is
+		// noise. A retry restarts the cycle via the invalidate below.
 		refetchInterval: (query) => {
 			const data = query.state.data;
 			if (!data) {
 				return 2000;
 			}
-			return data.url || (!data.inFlight && data.error) ? false : 2000;
+			return data.url || !data.inFlight ? false : 2000;
 		},
 	});
 

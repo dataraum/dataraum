@@ -26,10 +26,21 @@ src/
 ├── db/
 │   ├── cockpit/    # hand-written cockpit_db schema + client (TS-side persistence)
 │   └── metadata/   # GENERATED (bun run db:pull:metadata) — read-only Drizzle into the engine's ws_<id> schema
+├── auth/           # better-auth instance + membership gate (DAT-819, ADR-0022) — the ONE auth seam
+├── portal/         # portal-role code: Caddy admin-API route management (the DAT-820 provisioner seam)
 ├── routes/         # file-based TanStack Router routes
 ├── router.tsx      # Router + QueryClient wiring (setupRouterSsrQueryIntegration)
-└── config.ts       # typed Zod env, parsed + validated once at boot — server-only
+├── start.ts        # createStart instance — global request middleware (CSRF + the membership gate)
+├── config.ts       # typed Zod env (workspace role), parsed once at boot — server-only; THROWS in portal mode
+└── config.base.ts  # mode-shared env (both roles): cockpit_db URL, auth secret, portal origin, OTLP
 ```
+
+**Two roles, one image (DAT-819, DD/51740673):** the default role is a per-WORKSPACE
+cockpit (boot identity `DATARAUM_WORKSPACE_ID`, every request gated on session +
+membership of that workspace); `DATARAUM_PORTAL_MODE=1` serves the PORTAL instead —
+login + membership routing on the parent domain, base config only, no workspace surfaces
+and no `cockpit-<ws>` queue polling (the Nitro plugins mode-gate). Caddy terminates the
+subdomains (`packages/infra/caddy/caddy.json`).
 
 `src/db/metadata/{schema,relations}.ts` is generated — never edit by hand; re-run `bun run db:pull:metadata` after the engine changes SQLAlchemy models. The command is **self-contained** (needs docker + uv + bun, ~15s): it dumps the engine models offline to `packages/engine/schema.sql`, materializes a scratch Postgres, and pulls — **no running stack, no engine boot**. CI (`schema-drift` in ci.yml) fails on any drift between the models and the two checked-in artifacts.
 

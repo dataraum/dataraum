@@ -583,6 +583,37 @@ class TestEnrichedViewsPhaseDuckLake:
             == 1
         )
 
+    def test_zero_views_with_facts_fails_loud(self, session, duckdb_conn, monkeypatch):
+        """DAT-812 invariant: facts present but EVERY view failed to build → the phase
+        FAILS, not a silent success.
+
+        The grounding resolvers (period_resolver / additivity_resolver) dropped the
+        typed-table fallback and depend on every fact having an enriched view; a run that
+        registered zero views for real facts is broken — every metric would ground on a
+        bare typed name the resolvers can't resolve — so it must surface (Temporal
+        retry), never ship a half-resolvable catalog. Here no LLM joins are offered (a
+        passthrough is attempted) and the fact's physical table is removed, so the
+        passthrough ``SELECT *`` creation fails for the only fact → zero views."""
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+
+        fact_id, dim_id, _canned = self._seed(session, duckdb_conn)
+        # No enrichment recommendations → each fact attempts a passthrough SELECT * view;
+        # the only DuckDB access is that view creation (no grain-preservation join query).
+        monkeypatch.setattr(EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: None)
+        self._seed_fact_entity(session, table_id=fact_id, run_id="run-fail")
+        session.flush()
+        # Remove the fact's physical table so the passthrough view cannot materialize.
+        duckdb_conn.execute('DROP TABLE lake.typed."csv__orders"')
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=[fact_id, dim_id],
+            run_id="run-fail",
+        )
+        result = EnrichedViewsPhase().run(ctx)
+        assert result.status == PhaseStatus.FAILED
+        assert "0 views" in (result.error or "")
+
     def test_run_scoped_fact_query_ignores_prior_runs(self, session, duckdb_conn, monkeypatch):
         """Coexisting prior-run fact entities must not multiply EnrichedViews.
 

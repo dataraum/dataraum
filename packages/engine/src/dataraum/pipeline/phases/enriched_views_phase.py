@@ -589,6 +589,23 @@ class EnrichedViewsPhase(BasePhase):
         # once (not a torn mid-materialize view set).
         ctx.duckdb_conn.execute("CHECKPOINT")
 
+        # DAT-812 invariant. The grounding resolvers (period_resolver / additivity_
+        # resolver) read a metric's measures off the enriched view via source_column_id
+        # and dropped the typed-table fallback, on the premise that every fact has a view
+        # (a dim-less fact gets a passthrough SELECT *). Here fact_entities is non-empty
+        # (the no-facts case returned success above), so registering ZERO views means
+        # every fact's view creation failed — every downstream metric would ground on a
+        # bare typed name the resolvers can't resolve and degrade to the flagged default.
+        # That is a broken run, not a clean empty result: fail loud so Temporal
+        # surfaces/retries it rather than shipping a half-resolvable catalog.
+        if views_created == 0:
+            return PhaseResult.failed(
+                f"enriched_views registered 0 views for {len(fact_entities)} fact "
+                f"table(s) ({views_dropped} dropped on grain verification) — the "
+                f"self-describing-view invariant the grounding resolvers depend on is "
+                f"broken (DAT-812)"
+            )
+
         return PhaseResult.success(
             outputs={
                 "enriched_views": views_created,

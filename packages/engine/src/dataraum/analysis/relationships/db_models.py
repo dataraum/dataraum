@@ -28,13 +28,6 @@ if TYPE_CHECKING:
     from dataraum.storage import Column
 
 
-# How much more key-like the ``to`` side must measure before completeness is
-# allowed to re-orient a 1:1 (``Relationship.oriented_row``). Below this the two
-# sides are equally complete — the dense-bijection case, where direction is not
-# a property of the data and must not be guessed.
-_ORIENT_COMPLETENESS_MARGIN = 0.01
-
-
 class Relationship(Base):
     """Detected relationships between columns.
 
@@ -195,34 +188,29 @@ class Relationship(Base):
         cardinality is the signal (DAT-758): ``one-to-many`` means ``from`` is the
         ONE (parent/dim) side, so swap the endpoints — and the directional
         ``left_*``/``right_*`` evidence — to store ``many-to-one``. ``many-to-one``
-        is already correct. ``one-to-one`` is oriented by TWO measured signals,
-        tried in order (DAT-725):
+        is already correct. ``one-to-one`` is oriented by measured CONTAINMENT
+        asymmetry (DAT-725) — a 1:1 FK's REFERENCING side's value set is wholly
+        contained in the referenced side's, so its forward distinct-value
+        containment (~100%) exceeds the reverse; a smaller forward than reverse
+        means the emission points parent→child and is swapped.
 
-        1. **Containment asymmetry.** A 1:1 FK's REFERENCING side's value set is
-           wholly contained in the referenced side's, so its forward
-           distinct-value containment (~100%) exceeds the reverse; a smaller
-           forward than reverse means the emission points parent→child and is
-           swapped.
-        2. **Completeness asymmetry**, consulted only when containment is
-           symmetric or absent. The referenced side of an FK must be a COMPLETE
-           key — every row present, no duplicates — while the referencing side
-           is free to be sparse. So of two otherwise-identical value sets, the
-           side with the LOWER uniqueness ratio (distinct/total, depressed by
-           the unmatched rows of a nullable FK) is the child and belongs on
-           ``from``; a from side measurably MORE key-like than its to side is a
-           backwards emission. This corrects the claim that stood here before —
-           "uniqueness cannot orient a 1:1, both sides are unique" — which holds
-           only for a DENSE bijection. The sparse 1:1 (the ordinary nullable-FK
-           shape) shows the asymmetry plainly: the pair that motivated this sat
-           at 1.00 vs 0.47 and was still emitted backwards by the judge in 2 of
-           5 runs, with the deciding number rendered in its own prompt
-           (DAT-725 runs #2/#5).
+        **When containment is symmetric this helper deliberately does NOT decide.**
+        Identical value sets make containment silent, but the direction is still
+        knowable: the REFERENCED side of an FK must be a complete key, so of two
+        identical value sets the side with the lower ``uniq`` (a sparse nullable
+        FK, its ratio depressed by unmatched rows) is the child. That call
+        belongs to the JUDGE, which is served both sides' ``uniq`` and told this
+        rule in ``semantic_per_table``'s orientation section — not to a
+        deterministic second opinion here. A previous revision of this helper
+        did re-decide it from the same numbers; it was removed as a
+        deterministic shadow over a judgment the agent is equipped to make
+        (lead ruling, DAT-725). What remains here is containment, which is
+        direct structural evidence, plus the ``one-to-many`` normalisation
+        above. Only a DENSE bijection — both sides complete over identical value
+        sets — is undecidable from data at all; there direction is a modelling
+        question and the judge should say so rather than guess.
 
-        Only a DENSE bijection — both sides complete and unique over identical
-        value sets — is genuinely undecidable from data; there the direction is a
-        modelling question, not a measurement, and the writer's (judge's)
-        emission stands. Direction only — the judge's EXISTENCE verdict is never
-        touched here.
+        Direction only — the judge's EXISTENCE verdict is never touched here.
         ``many-to-many``/``None`` cannot be oriented. The DB backstop is
         ``ck_relationships_cardinality_oriented``: a mis-oriented ``one-to-many``
         row fails loud at flush even if a future writer bypasses this helper.
@@ -241,8 +229,8 @@ class Relationship(Base):
             # parent — it never fans out (the one-to-many parent→child join did).
             evidence["introduces_duplicates"] = False
         elif cardinality == "one-to-one":
-            # Signal 1 — DISTINCT-weighted containment on both sides. The forward
-            # side prefers ``left_value_containment`` (compute_ri_metrics):
+            # DISTINCT-weighted containment on both sides. The forward side
+            # prefers ``left_value_containment`` (compute_ri_metrics):
             # row-weighted left RI under-states containment when the from side
             # carries duplicate rows of ORPHAN values — duplication the 1:1
             # measurement tolerates (it only checks the matched population) —
@@ -250,38 +238,24 @@ class Relationship(Base):
             # exact on the candidate-metrics path: a detector "one-to-one" means
             # both columns are GLOBALLY unique, so row-weighted equals
             # distinct-weighted there. The reverse side, right RI, is already
-            # distinct-weighted (% of to's distinct values referenced).
-            # Signal 2 (below) — completeness, when signal 1 is silent. Whichever
-            # decides, the declared cardinality must not be measurably
-            # contradicted (``cardinality_verified is False``), and where NEITHER
-            # speaks the emission stands: no fabricated signal.
+            # distinct-weighted (% of to's distinct values referenced). Both
+            # metrics must be present and the declared cardinality must not be
+            # measurably contradicted (``cardinality_verified is False``);
+            # otherwise — or on a symmetric measurement — the emission stands:
+            # no fabricated signal, and no second opinion on a call that is the
+            # judge's (see the docstring).
             forward = evidence.get("left_value_containment")
             if forward is None:
                 forward = evidence.get("left_referential_integrity")
             reverse = evidence.get("right_value_containment")
             if reverse is None:
                 reverse = evidence.get("right_referential_integrity")
-
-            if forward is not None and reverse is not None and forward != reverse:
-                # Containment decides: a smaller forward means from is the
-                # referenced side. When it decides, it decides — completeness
-                # is not consulted.
-                backwards = forward < reverse
-            else:
-                # Containment is silent (symmetric value sets, or unmeasured).
-                # Fall back to completeness: the from side must be the LESS
-                # key-like one. A margin, because a difference below it is
-                # measurement noise, not evidence — and two complete sides are
-                # the dense bijection this must NOT guess at.
-                left_u = evidence.get("left_uniqueness")
-                right_u = evidence.get("right_uniqueness")
-                backwards = (
-                    left_u is not None
-                    and right_u is not None
-                    and left_u - right_u > _ORIENT_COMPLETENESS_MARGIN
-                )
-
-            if evidence.get("cardinality_verified") is not False and backwards:
+            if (
+                evidence.get("cardinality_verified") is not False
+                and forward is not None
+                and reverse is not None
+                and forward < reverse
+            ):
                 from_table_id, from_column_id, to_table_id, to_column_id = (
                     to_table_id,
                     to_column_id,

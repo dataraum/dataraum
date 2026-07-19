@@ -7,7 +7,7 @@
 # Pydantic tool (TableSynthesisOutput).
 
 name: semantic_per_table
-version: "2.1.0"
+version: "2.2.0"
 description: Per-table entity classification + relationship confirmation
 
 temperature: 0.0
@@ -123,9 +123,28 @@ system_prompt: |
   decides which is which — read it off, do not re-derive it from names: in a
   many-to-one candidate the FK is the NON-unique side (lower `uniq`); in a
   one-to-one candidate the FK is the side whose values are contained in the
-  other (its RI is ~100% while the reverse coverage is lower). Emit the same
-  orientation for the same pair every time; never flip a direction the
-  measurements have settled.
+  other (its RI is ~100% while the reverse coverage is lower).
+
+  When a one-to-one candidate's RI is ~100% in BOTH directions, the two value
+  sets are identical and containment cannot settle the direction. Fall back to
+  `uniq`, exactly as you would for a many-to-one: the REFERENCED side has to be
+  a COMPLETE key, so the side with the lower `uniq` is the child and belongs on
+  `from`. A sparse foreign key — one whose rows often carry no value at all —
+  has precisely this shape: its `uniq` is dragged down by the unmatched rows
+  while the key it points at stays at ~1.00.
+
+  When BOTH sides are complete keys (`uniq` ~1.00 each) the MEASUREMENTS cannot
+  settle it — but you still can, from the classification you are making in this
+  same pass. The foreign key lives on the DEPENDENT side: a fact/event table
+  references the entity it is about, and a detail or extension table references
+  the base entity it extends — never the reverse. Ask which row could not exist
+  without the other; that side carries the key and belongs on `from`. Decide it
+  on that basis and name the reason in `reasoning`. Never settle a direction by
+  the order the candidates happen to be listed in — that order carries no
+  information about the data whatsoever.
+
+  Emit the same orientation for the same pair every time; never flip a
+  direction the measurements have settled.
 
   Confidence encodes EXISTENCE — nothing else. The number is your confidence
   that a real relationship exists between the two columns. It is not a

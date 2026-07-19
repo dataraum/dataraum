@@ -441,11 +441,11 @@ def _read_measure_axes(
       ``source_column_id`` (the identity), and thence its cadence. This is a name KEY into
       a unique set, NOT the DAT-801 first cut's ``(fk)||'__'||col`` reconstruction (which
       collided): the served column already exists; we look it up, we do not rebuild its
-      name. The persisted ``mal.event_time_axis_column_id`` is deliberately NOT consulted
-      — it duplicates the served column's own ``source_column_id`` and is NULL in practice
-      (the witness stores the served name, which never resolves to a typed column), and it
-      could only ever add an anchor that is not served on THIS relation — which has no
-      observable live window regardless.
+      name. ``measure_aggregation_lineage`` is not consulted at all: the DAT-778
+      witness-axis id was vestigial (it duplicated the served column's own
+      ``source_column_id`` and was NULL whenever the axis is a served/header name) and
+      DAT-812 removed it — an anchor not served on THIS relation has no observable live
+      window regardless.
 
     The joins are LEFT so a flow whose anchor is not a served column of THIS relation (a
     lineage-inherited axis the queried view never joins — no observable live window) or

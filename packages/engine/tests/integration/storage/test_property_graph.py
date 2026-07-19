@@ -171,12 +171,11 @@ def _seed(engine: Engine) -> None:
         "INSERT INTO column_concepts (concept_id, column_id, run_id, temporal_behavior, annotated_at) "
         f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', '{TS}')"
     )
-    # measure_time_axis_column_id / event_time_axis_column_id are left NULL — this
-    # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
-    # resolve (DAT-778's honest-NULL case). measure_slice_column_id /
-    # event_slice_column_id are NOT NULL (sourced from SliceDefinition.column_id in
-    # the real writer): 'c_k1' stands in for both, same as the real writer would use
-    # when measure_table_id == event_table_id.
+    # No axis id is stored (DAT-812 removed the vestigial *_time_axis_column_id): the
+    # anchor's typed identity is the served column's own source_column_id. Only the
+    # winning axis NAME is kept. measure_slice_column_id / event_slice_column_id are
+    # NOT NULL (sourced from SliceDefinition.column_id in the real writer): 'c_k1'
+    # stands in for both, same as the real writer would when measure==event table.
     stmts.append(
         "INSERT INTO measure_aggregation_lineage "
         "(lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, "

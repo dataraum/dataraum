@@ -672,11 +672,9 @@ class TestDiscoverAggregationLineage:
         # degenerate "ship_date" — resolved to the real Column axis_columns
         # registered, not the loser's.
         assert row.measure_time_axis_column == "period_date"
-        assert row.measure_time_axis_column_id == ids["trial_balance.period_date"]
         # journal_lines only ever had one axis, but it must still be CAPTURED,
         # not silently dropped — the bug this ticket fixes discarded both sides.
         assert row.event_time_axis_column == "period_date"
-        assert row.event_time_axis_column_id == ids["journal_lines.period_date"]
         # The winning physical slice column resolves straight off the
         # catalog's own SliceDefinition.column_id (schema-guaranteed NOT NULL).
         assert row.measure_slice_column_id == ids["trial_balance.balance"]
@@ -696,30 +694,6 @@ class TestDiscoverAggregationLineage:
         ids_attr = _seed(real_session, duck, measure_axis_role="attribute")
         assert _discover(real_session, duck, ids_attr) == 0
         assert _row_for(real_session, ids_attr["trial_balance.balance"]) is None
-
-    def test_time_axis_column_id_is_null_when_axis_name_unresolvable(
-        self, real_session: Session, duck: duckdb.DuckDBPyConnection
-    ) -> None:
-        """DAT-778 NULL case: ``TimeColumn.column`` is unvalidated LLM output
-        (DAT-780 tightens this at save) — the winning axis NAME always persists
-        (it is literally what won the competition), but when that name doesn't
-        resolve to a real ``Column`` on the table, the id is an honest NULL,
-        never a sentinel string. The default (minimal) fixture doesn't register
-        ``period_date`` as a ``Column`` — the natural shape of "a witness with
-        no [resolvable] axis" this table can produce.
-        """
-        ids = _seed(real_session, duck)
-        assert _discover(real_session, duck, ids) > 0
-        row = _row_for(real_session, ids["trial_balance.balance"])
-        assert row is not None
-        assert row.measure_time_axis_column == "period_date"
-        assert row.measure_time_axis_column_id is None
-        assert row.event_time_axis_column == "period_date"
-        assert row.event_time_axis_column_id is None
-        # The physical slice column is unaffected by the axis-name gap — it is
-        # always resolvable, straight from SliceDefinition.column_id.
-        assert row.measure_slice_column_id == ids["trial_balance.balance"]
-        assert row.event_slice_column_id == ids["journal_lines.debit"]
 
     def test_junk_numeric_column_does_not_win(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

@@ -175,6 +175,8 @@ def load_relationship_candidates_for_semantic(
                         "column2": "...",
                         "confidence": 0.9,
                         "cardinality": "one-to-many",
+                        "left_uniqueness": 0.02,
+                        "right_uniqueness": 1.0,
                         "left_referential_integrity": 100.0,
                         "right_referential_integrity": 85.0,
                         "orphan_count": 5,
@@ -257,6 +259,17 @@ def load_relationship_candidates_for_semantic(
                 "confidence": rel.confidence,
                 "cardinality": rel.cardinality or "unknown",
             }
+
+            # Orientation evidence (DAT-725): the per-side uniqueness the detector
+            # measured (finder.py) rides from the evidence JSON into the served
+            # dict — the FK side of a real relationship is the non-unique side,
+            # and the judge needs the asymmetry to orient. Dropped here before,
+            # so the formatter's ``[uniq: L= R=]`` bracket never rendered on the
+            # DB path (the only path the pipeline uses).
+            if "left_uniqueness" in evidence:
+                jc["left_uniqueness"] = evidence["left_uniqueness"]
+            if "right_uniqueness" in evidence:
+                jc["right_uniqueness"] = evidence["right_uniqueness"]
 
             # Add evaluation metrics if present in evidence
             if "left_referential_integrity" in evidence:

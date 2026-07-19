@@ -73,3 +73,18 @@ def test_no_hint_renders_no_rescue_block() -> None:
     agent = SemanticAgent.__new__(SemanticAgent)
     out = agent._format_relationship_candidates(_candidates())
     assert "COMPOSITE-KEY RESCUE" not in out
+
+
+def test_uniqueness_asymmetry_is_rendered() -> None:
+    """The per-side uniqueness bracket renders from the DB wire format (DAT-725).
+
+    The loader now serves ``left_uniqueness``/``right_uniqueness`` from the
+    candidate evidence; the formatter must render the asymmetry — it is the
+    judge's orientation evidence (FK side = non-unique side).
+    """
+    agent = SemanticAgent.__new__(SemanticAgent)
+    cands = _candidates()
+    cands[0]["join_columns"][0]["left_uniqueness"] = 0.02
+    cands[0]["join_columns"][0]["right_uniqueness"] = 1.0
+    out = agent._format_relationship_candidates(cands)
+    assert "[uniq: L=0.02 R=1.00]" in out

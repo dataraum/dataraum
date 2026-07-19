@@ -7,7 +7,7 @@
 # Pydantic tool (TableSynthesisOutput).
 
 name: semantic_per_table
-version: "2.0.0"
+version: "2.1.0"
 description: Per-table entity classification + relationship confirmation
 
 temperature: 0.0
@@ -95,11 +95,18 @@ system_prompt: |
     namespace: grade_code vs phase_code)
 
   Weigh the evidence in this order:
-  1. DATA evidence is primary. Each candidate carries measured statistics:
-     value overlap/containment, uniqueness (key-likeness), referential
-     integrity, orphan counts. Near-complete containment of one column's
-     values in a key-like column of another table is strong evidence of a
-     real relationship — even when the names differ.
+  1. DATA evidence is primary — and it is MEASURED, not guessed. Each
+     candidate carries statistics computed from the actual data: value
+     overlap/containment, per-side uniqueness (`uniq` — key-likeness),
+     referential integrity (`RI`), orphan counts, and a cardinality
+     (`verified=True` means it was confirmed against the actual join). Treat
+     these as authoritative facts; do not second-guess a measurement. Your
+     job is the verdict the measurements cannot give: whether the two columns
+     refer to the same real-world entity. Near-complete containment of one
+     column's values in a key-like column of another table is strong evidence
+     of a real relationship — even when the names differ, and at ANY
+     cardinality of the referencing column (referencing only a few of the
+     target's keys is still a reference).
   2. Names CORROBORATE; they do not veto. Real schemas name foreign keys with
      suffix and prefix variation as a matter of course: customer_ref,
      cust_key, customer_fk, parent_customer all legitimately point at
@@ -110,6 +117,30 @@ system_prompt: |
      plausible business connection, value overlap explained by a shared
      format rather than a shared entity (status codes, short numeric codes,
      dates), or key-likeness absent on both sides.
+
+  Orientation: emit from = the REFERENCING side (the foreign key, the child)
+  and to = the REFERENCED side (the key, the parent). The measured evidence
+  decides which is which — read it off, do not re-derive it from names: in a
+  many-to-one candidate the FK is the NON-unique side (lower `uniq`); in a
+  one-to-one candidate the FK is the side whose values are contained in the
+  other (its RI is ~100% while the reverse coverage is lower). Emit the same
+  orientation for the same pair every time; never flip a direction the
+  measurements have settled.
+
+  Confidence encodes EXISTENCE — nothing else. The number is your confidence
+  that a real relationship exists between the two columns. It is not a
+  data-quality grade, not a usage rate, and not orientation certainty:
+  - A SPARSE reference — few referencing rows, or a small fraction of the
+    referenced keys ever used (low reverse coverage) — is a normal FK shape,
+    not doubt about existence.
+  - A real FK with orphan values is a relationship WITH a data-quality
+    problem: confirm it, name the problem in reasoning, and let the quality
+    machinery quantify the orphans. Declining it erases the very
+    relationship the quality finding hangs on.
+  - Score decisively: a relationship you conclude is real belongs at 0.8 or
+    above; one you conclude is not real belongs at 0.4 or below. The middle
+    is not a hedge zone — if your reasoning says "genuine but sparse/dirty",
+    the confidence must say genuine.
 
   Not all candidates are real relationships. You may also add relationships
   not present in the candidate list.
@@ -126,7 +157,9 @@ system_prompt: |
   not color: it is the fraction of the referencing table's rows that actually
   resolve against the key. When only a few percent resolve, the two tables
   merely share a value format or name pool — there is NO relationship in the
-  data to confirm, however plausible the column names look. A key that "joins
+  data to confirm, however plausible the column names look. (Failing to
+  RESOLVE is the opposite of a sparse reference, where the referencing rows
+  do resolve but touch few of the referenced keys — sparse is normal.) A key that "joins
   cleanly" at near-zero usage enriches nothing and misleads every downstream
   consumer; declining it — anchor pair included — is the correct answer, not a
   missed detection. Confirm a low-usage reference only when the table context

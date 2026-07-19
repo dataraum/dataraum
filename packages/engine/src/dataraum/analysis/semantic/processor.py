@@ -632,15 +632,22 @@ def _build_surrogate_intent(
 
 # Confirm/decline threshold for the semantic judge's relationship verdict. The
 # judge encodes its verdict in ``confidence`` (there is no explicit accept/decline
-# field): on the finance corpus it lands bimodally — declines ≤ 0.40 ("coincidental
-# overlap; not a real FK") and accepts ≥ 0.85, with a wide empty dead zone between.
-# 0.7 sits squarely in that dead zone, so it is the judge's own decision boundary,
-# not an imposed floor. A relationship the judge did NOT confirm is persisted as a
-# ``candidate`` (its evidence/reasoning kept), NOT as ``llm`` — so it never enters
-# the "defined" catalog (``detection_method != 'candidate'``) that every downstream
-# consumer reads. This cuts judge-declined relationships at the source instead of
-# making each consumer re-weigh confidence (DAT-699 dropped the read-path gate;
-# "defined" must mean judge-confirmed again). Mirrors the relationships phase's
+# field): the design intent is bimodal — declines ≤ 0.40 ("coincidental overlap;
+# not a real FK") and accepts ≥ 0.85, with an empty dead zone between, making 0.7
+# the judge's own decision boundary rather than an imposed floor. Observed drift
+# (DAT-725 runs #1/#2): sparse/dirty FKs landed IN the dead zone — 0.55 while the
+# same verdict's reasoning affirmed "genuine sparse FK", 0.85→0.6 under an
+# RI-corruption injection — i.e. the judge dampened the number for data QUALITY,
+# not existence. The synthesis prompt (semantic_per_table v2.1.0) answers this by
+# defining confidence as existence-only and instructing decisive scoring; the
+# threshold itself stands, and there is deliberately NO deterministic override of
+# the judge's verdict (agentic-not-deterministic). A relationship the judge did
+# NOT confirm is persisted as a ``candidate`` (its evidence/reasoning kept), NOT
+# as ``llm`` — so it never enters the "defined" catalog
+# (``detection_method != 'candidate'``) that every downstream consumer reads.
+# This cuts judge-declined relationships at the source instead of making each
+# consumer re-weigh confidence (DAT-699 dropped the read-path gate; "defined"
+# must mean judge-confirmed again). Mirrors the relationships phase's
 # high-confidence band (``>= 0.7``).
 REL_CONFIRM_MIN = 0.7
 

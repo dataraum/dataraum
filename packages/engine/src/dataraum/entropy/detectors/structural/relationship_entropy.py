@@ -116,7 +116,7 @@ class RelationshipEntropyDetector(EntropyDetector):
             "evaluation_metrics": {
                 "left_referential_integrity": left_ri,
                 "left_orphan_count": left_orphan_count,
-                "total_count": total_count,
+                "left_total_count": total_count,
                 "cardinality_verified": evidence.get("cardinality_verified"),
             },
         }

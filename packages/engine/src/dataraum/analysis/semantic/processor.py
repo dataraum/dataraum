@@ -141,8 +141,6 @@ def _build_candidate_metrics_lookup(
             }
 
             # Add relationship-level metrics
-            if "left_join_success_rate" in candidate:
-                metrics["left_join_success_rate"] = candidate["left_join_success_rate"]
             if "introduces_duplicates" in candidate:
                 metrics["introduces_duplicates"] = candidate["introduces_duplicates"]
 

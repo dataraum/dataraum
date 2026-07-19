@@ -102,14 +102,81 @@ def test_referential_integrity_is_not_inflated_by_the_other_sides_duplicates(
     assert fanned_out == (4, 3)  # the biased denominator the old form used
 
 
-def test_empty_and_all_null_sides_measure_zero(conn: duckdb.DuckDBPyConnection) -> None:
+def test_nothing_measurable_is_none_not_zero(conn: duckdb.DuckDBPyConnection) -> None:
+    """Absence is ignorance. A 0.0 here reads as "every row is broken" and
+    scores 1.0 in ``relationship_entropy`` — on a side with no broken rows at
+    all, because it has no rows at all."""
     conn.execute("CREATE TABLE parent AS SELECT * FROM (VALUES (1)) AS v(pk)")
     conn.execute("CREATE TABLE empty_child (fk INTEGER)")
     conn.execute("CREATE TABLE null_child AS SELECT CAST(NULL AS INTEGER) AS fk")
 
     for table in ("empty_child", "null_child"):
-        m = _measure_direction(table, "fk", "parent", "pk", conn)
-        assert m == (0.0, 0.0, 0, 0), table
+        assert _measure_direction(table, "fk", "parent", "pk", conn) is None, table
+    # ...and an empty side leaves its metrics unset rather than at 0.
+    assert _measure_direction("parent", "pk", "empty_child", "fk", conn) == (0.0, 0.0, 1, 1)
+
+
+def test_castable_string_and_numeric_keys_still_measure(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """``EXISTS ... =`` coerces where ``IN`` refuses.
+
+    DuckDB rejects cross-family comparison in an ``IN``/``ANY`` clause but
+    coerces it under ``=``. An ``IN`` form raised here — fatal on the structural
+    path, and silently all-``None`` evidence on the judge path, where the LLM
+    may volunteer a VARCHAR-to-INTEGER pair the type gate never screened.
+    """
+    conn.execute("CREATE TABLE child AS SELECT * FROM (VALUES ('1'), ('2'), ('2')) AS v(fk)")
+    conn.execute("CREATE TABLE parent AS SELECT * FROM (VALUES (1), (2), (3)) AS v(pk)")
+
+    m = _measure_direction("child", "fk", "parent", "pk", conn)
+    assert m is not None
+    assert m.referential_integrity == 100.0
+    assert m.key_coverage == 100.0
+
+
+def test_missing_column_on_the_probed_table_fails_loudly(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The subquery aliases its table and qualifies its column, so a column that
+    is absent there cannot silently bind to the outer row.
+
+    Unqualified, a ``to_column`` missing from ``to_table`` but present on
+    ``from_table`` turned the semi-join into a self-comparison: a schema-drift
+    error became fabricated "0% resolves" evidence, scored 1.0.
+    """
+    conn.execute("CREATE TABLE child AS SELECT * FROM (VALUES (1), (99)) AS v(shared)")
+    conn.execute("CREATE TABLE parent AS SELECT * FROM (VALUES (1)) AS v(pk)")
+
+    with pytest.raises(duckdb.BinderException):
+        _measure_direction("child", "shared", "parent", "shared", conn)
+
+
+def test_self_join_scopes_the_probe_to_the_inner_table(
+    conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """A self-referential FK (DAT-763) probes the same table under an alias."""
+    conn.execute(
+        "CREATE TABLE employee AS SELECT * FROM "
+        "(VALUES (1, NULL), (2, 1), (3, 99)) AS v(employee_id, manager_id)"
+    )
+
+    m = _measure_direction("employee", "manager_id", "employee", "employee_id", conn)
+    assert m is not None
+    # Of the two non-NULL manager_ids, one (1) is an employee and one (99) is not.
+    assert m.referential_integrity == 50.0
+    assert (m.orphan_count, m.total_count) == (1, 2)
+
+
+def test_qualified_lake_paths_and_awkward_names(conn: duckdb.DuckDBPyConnection) -> None:
+    """Callers pass fully-qualified ``lake.typed."name"`` paths, not bare names."""
+    conn.execute("ATTACH ':memory:' AS lake")
+    conn.execute("CREATE SCHEMA lake.typed")
+    conn.execute('CREATE TABLE lake.typed."order items" AS SELECT * FROM (VALUES (1)) AS v(fk)')
+    conn.execute('CREATE TABLE lake.typed."ref.data" AS SELECT * FROM (VALUES (1)) AS v(pk)')
+
+    m = _measure_direction('lake.typed."order items"', "fk", 'lake.typed."ref.data"', "pk", conn)
+    assert m is not None and m.referential_integrity == 100.0
 
 
 def test_compute_ri_metrics_emits_every_metric_on_both_sides(

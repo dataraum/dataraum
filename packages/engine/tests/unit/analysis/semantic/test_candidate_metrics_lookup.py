@@ -15,7 +15,6 @@ def _make_candidate(
     left_ri: float | None = None,
     right_ri: float | None = None,
     introduces_duplicates: bool | None = None,
-    left_join_success_rate: float | None = None,
     left_orphan_count: int | None = None,
     cardinality_verified: bool | None = None,
     left_uniqueness: float | None = None,
@@ -40,8 +39,6 @@ def _make_candidate(
     candidate: dict = {"table1": table1, "table2": table2, "join_columns": [jc]}
     if introduces_duplicates is not None:
         candidate["introduces_duplicates"] = introduces_duplicates
-    if left_join_success_rate is not None:
-        candidate["left_join_success_rate"] = left_join_success_rate
     return candidate
 
 
@@ -57,7 +54,6 @@ class TestForwardDirection:
                 left_ri=1.0,
                 right_ri=0.85,
                 introduces_duplicates=True,
-                left_join_success_rate=0.95,
             )
         ]
         lookup = _build_candidate_metrics_lookup(candidates)
@@ -67,7 +63,6 @@ class TestForwardDirection:
         assert forward["left_referential_integrity"] == 1.0
         assert forward["right_referential_integrity"] == 0.85
         assert forward["introduces_duplicates"] is True
-        assert forward["left_join_success_rate"] == 0.95
 
 
 class TestReverseDirection:

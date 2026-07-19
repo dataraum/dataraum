@@ -271,12 +271,18 @@ def swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
       that knows the new direction's answer sets it explicitly and one that
       doesn't carries no claim rather than a reversed one.
 
-    This function is the reason directional metrics must be PREFIXED. A bare
-    directional key (``orphan_count`` before DAT-725) passes through unchanged
-    and silently keeps describing the side it is no longer on — which shipped
-    ``RI: L=100%`` next to ``orphans=8`` on the same stored row, to the judge
-    and to the orphan-rate detector alike. Prefix a new directional metric or
-    it will be wrong the first time a pair flips.
+    Anything else must be SYMMETRIC — true of the pair regardless of which side
+    is named first — and is passed through. That is checked, not assumed: an
+    unrecognised bare key raises. This is why. ``evidence`` is a free JSON
+    column with no schema, so "directional metrics are prefixed" is a spelling
+    convention; twice a writer added a directional metric without the prefix
+    (``orphan_count``, ``join_success_rate``, both literally from-side
+    measurements) and this function passed them through unchanged, leaving them
+    describing a side they were no longer on. Both shipped — ``RI: L=100%`` next
+    to ``orphans=8`` on one stored row — and both were invisible until someone
+    ran the flip on real data. A silent pass-through cannot tell "symmetric" from
+    "misspelled", so the ambiguity is resolved at the one place that knows: add a
+    genuinely symmetric key to :data:`_SYMMETRIC_EVIDENCE_KEYS`, or prefix it.
     """
     swapped: dict[str, Any] = {}
     for key, value in evidence.items():
@@ -286,11 +292,48 @@ def swap_directional_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
             swapped["left_" + key[len("right_") :]] = value
         elif key == "introduces_duplicates":
             continue
-        elif key == "cardinality" and value in _CARDINALITY_FLIP:
-            swapped[key] = _CARDINALITY_FLIP[value]
-        else:
+        elif key == "cardinality":
+            swapped[key] = _CARDINALITY_FLIP.get(value, value)
+        elif key in _SYMMETRIC_EVIDENCE_KEYS:
             swapped[key] = value
+        else:
+            raise ValueError(
+                f"evidence key {key!r} is neither left_/right_-prefixed nor declared "
+                "symmetric, so flipping the pair cannot know what it now means. "
+                "Prefix it if it measures one side, or add it to "
+                "_SYMMETRIC_EVIDENCE_KEYS if it is true of the pair either way round."
+            )
     return swapped
+
+
+# Keys that mean the same thing whichever side is named first, so a flip leaves
+# them alone. Value-overlap statistics are set-symmetric; the rest are provenance
+# about the pair or the judge's own prose about it. Adding one here is a claim
+# that reversing the endpoints does not change what it says — check that before
+# adding, because the whole point of the raise above is that nobody checked
+# twice already.
+_SYMMETRIC_EVIDENCE_KEYS = frozenset(
+    {
+        # Value-overlap statistics — computed over the two value SETS.
+        "join_confidence",
+        "statistical_confidence",
+        "algorithm",
+        # Whether the measured cardinality was confirmed against the actual
+        # join — a property of the check, not of a side.
+        "cardinality_verified",
+        # Provenance: which writer produced the row, which run measured it,
+        # whether the measurement was copied rather than retaken, which teach
+        # action created it (add/keep), and which method donated RI evidence.
+        "source",
+        "measured_run_id",
+        "not_remeasured",
+        "action",
+        "ri_evidence_source",
+        # The judge's prose and its composite-key verdict about the pair.
+        "reasoning",
+        "composite_key_columns",
+    }
+)
 
 
 # ``one-to-one``/``many-to-many`` are symmetric — absent by design, not oversight.

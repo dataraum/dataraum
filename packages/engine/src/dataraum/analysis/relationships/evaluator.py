@@ -54,7 +54,7 @@ def _measure_direction(
     to_table: str,
     to_column: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-) -> DirectionMetrics:
+) -> DirectionMetrics | None:
     """Measure ``from`` → ``to`` resolution. THE one measurement, run per side.
 
     Called twice with the arguments swapped, so ``left_*`` and ``right_*`` are
@@ -65,30 +65,53 @@ def _measure_direction(
     believed it — measured, 60.0 stored where that direction's own RI is 75.0,
     scored by ``relationship_entropy`` as 0.40 instead of 0.25.
 
-    Uses a semi-join (``IN``), never ``LEFT JOIN`` + ``COUNT(*)``. The old form
+    A correlated ``EXISTS``, never ``LEFT JOIN`` + ``COUNT(*)``. The old form
     multiplied this side's rows whenever the other side held duplicates of a
     key, so the "row-weighted" ratio was taken over join output rows rather than
-    over this table's rows.
+    over this table's rows. Three properties of this exact form are load-bearing,
+    each verified by a test in ``test_direction_metrics.py``:
+
+    - ``EXISTS`` with ``=``, not ``IN``. DuckDB's ``IN``/``ANY`` refuses
+      cross-family comparison where a join's ``=`` coerces, so an ``IN`` form
+      raised on a castable VARCHAR key against a numeric one — killing the
+      structural phase outright, and on the judge path silently returning every
+      metric ``None`` (DAT-725 review).
+    - The subquery table is ALIASED and its column qualified. Unqualified, a
+      ``to_column`` missing from ``to_table`` binds to the outer row instead of
+      failing: a schema-drift error turned into fabricated "100% broken"
+      evidence, which the orphan-rate detector then scores at 1.0.
+    - ``matched`` is computed ONCE per row in the inner select. DuckDB does not
+      common-subexpression-eliminate two identical semi-join predicates — it
+      plans two MARK joins — so folding them costs ~25% of this function.
+
+    Returns ``None`` when there is nothing to measure (no non-NULL rows on this
+    side). Absence is ignorance: a fabricated 0.0 reads as total breakage and
+    scores 1.0 on a relationship with zero broken rows.
     """
-    matches = f'(SELECT "{to_column}" FROM {to_table} WHERE "{to_column}" IS NOT NULL)'
     query = f"""
         SELECT
             COUNT(*) AS total_rows,
-            COUNT(*) FILTER (WHERE t."{from_column}" IN {matches}) AS matched_rows,
-            COUNT(DISTINCT t."{from_column}") AS total_keys,
-            COUNT(DISTINCT t."{from_column}") FILTER (
-                WHERE t."{from_column}" IN {matches}
-            ) AS matched_keys
-        FROM {from_table} t
-        WHERE t."{from_column}" IS NOT NULL
+            COUNT(*) FILTER (WHERE matched) AS matched_rows,
+            COUNT(DISTINCT k) AS total_keys,
+            COUNT(DISTINCT k) FILTER (WHERE matched) AS matched_keys
+        FROM (
+            SELECT
+                t."{from_column}" AS k,
+                EXISTS (
+                    SELECT 1 FROM {to_table} probe
+                    WHERE probe."{to_column}" = t."{from_column}"
+                ) AS matched
+            FROM {from_table} t
+            WHERE t."{from_column}" IS NOT NULL
+        )
     """
     row = duckdb_conn.execute(query).fetchone()
     if not row or not row[0]:
-        return DirectionMetrics(0.0, 0.0, 0, 0)
+        return None
     total_rows, matched_rows, total_keys, matched_keys = row
     return DirectionMetrics(
         referential_integrity=round((matched_rows / total_rows) * 100, 2),
-        key_coverage=round((matched_keys / total_keys) * 100, 2) if total_keys else 0.0,
+        key_coverage=round((matched_keys / total_keys) * 100, 2),
         orphan_count=total_rows - matched_rows,
         total_count=total_rows,
     )
@@ -109,6 +132,9 @@ def evaluate_join_candidate(
     - left/right_key_coverage: % of that side's DISTINCT values on the other
     - left/right_orphan_count: that side's rows that do not resolve
     - cardinality_verified: whether detected cardinality matches actual
+
+    A side with no non-NULL rows leaves its metrics ``None`` — nothing was
+    measurable there, and a 0.0 would read as total breakage.
 
     Args:
         join_candidate: The join candidate to evaluate
@@ -143,12 +169,12 @@ def evaluate_join_candidate(
         cardinality=join_candidate.cardinality,
         left_uniqueness=join_candidate.left_uniqueness,
         right_uniqueness=join_candidate.right_uniqueness,
-        left_referential_integrity=left.referential_integrity,
-        right_referential_integrity=right.referential_integrity,
-        left_key_coverage=left.key_coverage,
-        right_key_coverage=right.key_coverage,
-        left_orphan_count=left.orphan_count,
-        right_orphan_count=right.orphan_count,
+        left_referential_integrity=left.referential_integrity if left else None,
+        right_referential_integrity=right.referential_integrity if right else None,
+        left_key_coverage=left.key_coverage if left else None,
+        right_key_coverage=right.key_coverage if right else None,
+        left_orphan_count=left.orphan_count if left else None,
+        right_orphan_count=right.orphan_count if right else None,
         cardinality_verified=cardinality_verified,
     )
 
@@ -333,7 +359,6 @@ def evaluate_relationship_candidate(
     """Evaluate a relationship candidate with quality metrics.
 
     Computes:
-    - left_join_success_rate: % of table1 rows that match in table2
     - introduces_duplicates: whether join multiplies rows (fan trap)
     - Also evaluates all join candidates
 
@@ -358,15 +383,11 @@ def evaluate_relationship_candidate(
             table1=candidate.table1,
             table2=candidate.table2,
             join_candidates=evaluated_joins,
-            left_join_success_rate=None,
             introduces_duplicates=None,
         )
 
     # Use best join (highest join_confidence) for relationship metrics
     best_join = max(evaluated_joins, key=lambda j: j.join_confidence)
-
-    # Join success rate = left referential integrity of best join
-    left_join_success_rate = best_join.left_referential_integrity
 
     # Check for duplicate introduction (fan trap)
     introduces_duplicates = compute_introduces_duplicates(
@@ -381,7 +402,6 @@ def evaluate_relationship_candidate(
         table1=candidate.table1,
         table2=candidate.table2,
         join_candidates=evaluated_joins,
-        left_join_success_rate=left_join_success_rate,
         introduces_duplicates=introduces_duplicates,
     )
 

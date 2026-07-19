@@ -17,7 +17,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.db_models import (
+    _SYMMETRIC_EVIDENCE_KEYS,
+    Relationship,
+    swap_directional_evidence,
+)
 from dataraum.storage import Column, Source, Table
 from dataraum.storage.base import init_database
 
@@ -144,9 +148,11 @@ def _one_to_one_row(evidence: dict[str, object] | None) -> dict[str, object]:
             "orphan-bearing child, emitted correctly",
             {
                 "left_referential_integrity": 60.0,
-                "left_value_containment": 60.0,
                 "right_referential_integrity": 100.0,
+                "left_key_coverage": 60.0,
+                "right_key_coverage": 100.0,
                 "left_orphan_count": 2,
+                "right_orphan_count": 0,
                 "cardinality_verified": True,
             },
         ),
@@ -275,3 +281,58 @@ def test_check_admits_the_canonical_orientations(session: Session) -> None:
     for cardinality in ("many-to-one", "one-to-one", "many-to-many", None):
         _add(session, cardinality=cardinality, from_column_id="ca", to_column_id="cb")
         session.rollback()  # each is its own attempt on the unique pair
+
+
+# --- the prefix contract, enforced rather than documented (DAT-725). ---------
+
+
+def test_an_undeclared_bare_key_raises_instead_of_passing_through() -> None:
+    """The guard that makes "prefix a directional metric" a rule, not a habit.
+
+    ``evidence`` is a schema-less JSON column, so nothing typed the difference
+    between a per-side measurement and a fact about the pair. Twice a writer
+    added a from-side metric without a prefix — ``orphan_count``,
+    ``join_success_rate`` — and the flip carried it through unchanged, leaving
+    it describing a side it was no longer on. Both shipped, both were invisible
+    until the flip was run on real data. A pass-through cannot tell "symmetric"
+    from "misspelled", so it refuses to guess.
+    """
+    with pytest.raises(ValueError, match="neither left_/right_-prefixed nor declared symmetric"):
+        swap_directional_evidence({"orphan_count": 3})
+
+
+def test_declared_symmetric_keys_survive_the_flip_unchanged() -> None:
+    evidence = dict.fromkeys(_SYMMETRIC_EVIDENCE_KEYS, "unchanged")
+    assert swap_directional_evidence(evidence) == evidence
+
+
+def test_every_key_the_detector_writes_is_classifiable() -> None:
+    """The evidence a real writer produces must pass the guard.
+
+    Mirrors ``detector._store_candidates``'s evidence dict plus the per-side
+    metrics ``evaluate_join_candidate`` adds — if a new measurement is added
+    there without a prefix or a declaration, this fails before a run does.
+    """
+    detector_evidence = {
+        "join_confidence": 0.97,
+        "cardinality": "one-to-many",
+        "left_uniqueness": 0.02,
+        "right_uniqueness": 1.0,
+        "statistical_confidence": 1.0,
+        "algorithm": "exact",
+        "source": "value_overlap",
+        "left_referential_integrity": 100.0,
+        "right_referential_integrity": 62.5,
+        "left_key_coverage": 100.0,
+        "right_key_coverage": 62.5,
+        "left_orphan_count": 0,
+        "right_orphan_count": 3,
+        "cardinality_verified": True,
+        "introduces_duplicates": True,
+    }
+    flipped = swap_directional_evidence(detector_evidence)
+
+    assert flipped["cardinality"] == "many-to-one"
+    assert flipped["left_referential_integrity"] == 62.5
+    assert flipped["left_orphan_count"] == 3
+    assert "introduces_duplicates" not in flipped

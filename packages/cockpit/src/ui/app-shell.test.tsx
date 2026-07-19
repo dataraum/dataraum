@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 //
 // Shell smoke: the AppShell renders every section rail item, a section route
-// resolves under the shell, and the rail links carry the flat section paths
-// (DAT-822 — one cockpit per workspace, no /workspace/$wsId segment).
+// resolves under the shell, and the rail links carry the section paths.
 
 import { MantineProvider } from "@mantine/core";
 import {

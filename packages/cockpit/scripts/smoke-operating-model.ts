@@ -30,7 +30,7 @@ import { z } from "zod";
 
 import { cockpitDb } from "#/db/cockpit/client";
 import { recordRun } from "#/db/cockpit/runs";
-import { actors, workspaces } from "#/db/cockpit/schema";
+import { users, workspaces } from "#/db/cockpit/schema";
 import { metadataDb } from "#/db/metadata/client";
 import {
 	currentLifecycleArtifacts,
@@ -78,7 +78,7 @@ async function ingest(client: Client): Promise<string[]> {
 	// The workspace registry carries the vertical (DAT-506): seed it = finance so
 	// the begin_session / operating_model drivers source the right ontology.
 	await cockpitDb
-		.insert(actors)
+		.insert(users)
 		.values({ id: "default", displayName: "Default user" })
 		.onConflictDoNothing();
 	await cockpitDb

@@ -1,20 +1,32 @@
-// Unit tests for control-plane run recording (DAT-461, DAT-506, DAT-562, DAT-595).
+// Unit tests for control-plane run recording (DAT-461, DAT-506, DAT-562, DAT-595;
+// boot-workspace scope DAT-817).
 // Mocks the cockpit_db client at the `#/` boundary (no DB). Asserts recordRun inserts
 // the run row directly (workspace-grouped, conflict target = workflow+run) keyed by the
 // REAL Temporal execution id (DAT-595 — recorded post-start, so each run of the reused
 // `addsource-<ws>` id is a distinct row, no placeholder/attachRunId swap); that a db
-// error THROWS; and that markRunStatus issues the terminal update (best-effort). The
-// real SQL + idempotency/append are covered by the Bun lane smoke.
+// error THROWS; that markRunStatus issues the terminal update (best-effort); and
+// the DAT-817 boot-workspace fences (the activity-contract writers scope
+// INTERNALLY — their signatures are an engine-mirrored wire shape). The real SQL
+// is covered by the workspace-isolation integration test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	inserts: [] as Array<{ table: string; row: Record<string, unknown> }>,
 	conflicts: [] as unknown[],
-	updates: [] as Array<{ table: string; set: Record<string, unknown> }>,
+	updates: [] as Array<{
+		table: string;
+		set: Record<string, unknown>;
+		where: unknown[];
+	}>,
+	whereArgs: [] as unknown[][],
 	// Rows the latest-run lookup (markRunAwaitingInput) returns.
 	latestRows: [{ id: "run-row-latest" }] as Array<{ id: string }>,
 	throwOnInsert: false,
+}));
+
+vi.mock("#/config", () => ({
+	config: { dataraumWorkspaceId: "ws-1" },
 }));
 
 vi.mock("#/db/cockpit/schema", () => ({
@@ -29,10 +41,13 @@ vi.mock("#/db/cockpit/schema", () => ({
 		awaitingNote: "awaiting_note",
 		startedAt: "started_at",
 	},
+	users: { _t: "users", id: "id" },
+	workspaces: { _t: "workspaces", id: "id", vertical: "vertical" },
+	memberships: { _t: "memberships" },
 }));
 vi.mock("drizzle-orm", () => ({
-	eq: (...a: unknown[]) => a,
-	and: (...a: unknown[]) => a,
+	eq: (...a: unknown[]) => ["eq", ...a],
+	and: (...a: unknown[]) => ["and", ...a],
 	desc: (x: unknown) => x,
 }));
 
@@ -52,16 +67,19 @@ vi.mock("#/db/cockpit/client", () => ({
 		}),
 		select: () => ({
 			from: () => ({
-				where: () => ({
-					limit: limitMock,
-					orderBy: () => ({ limit: limitMock }),
-				}),
+				where: (...a: unknown[]) => {
+					h.whereArgs.push(a);
+					return {
+						limit: limitMock,
+						orderBy: () => ({ limit: limitMock }),
+					};
+				},
 			}),
 		}),
 		update: (table: { _t: string }) => ({
 			set: (s: Record<string, unknown>) => ({
-				where: async () => {
-					h.updates.push({ table: table._t, set: s });
+				where: async (...a: unknown[]) => {
+					h.updates.push({ table: table._t, set: s, where: a });
 				},
 			}),
 		}),
@@ -84,6 +102,7 @@ beforeEach(() => {
 	h.inserts = [];
 	h.conflicts = [];
 	h.updates = [];
+	h.whereArgs = [];
 	h.latestRows = [{ id: "run-row-latest" }];
 	h.throwOnInsert = false;
 	limitMock.mockClear();
@@ -137,14 +156,24 @@ describe("recordRun (DAT-461, DAT-506, DAT-562)", () => {
 		h.throwOnInsert = true;
 		await expect(recordRun(BASE)).rejects.toThrow(/db down/);
 	});
+
+	it("refuses a non-boot workspace born-loud — a mis-routed activity (DAT-817)", async () => {
+		await expect(
+			recordRun({ ...BASE, workspaceId: "ws-other" }),
+		).rejects.toThrow(/cross-workspace query refused/);
+		expect(h.inserts).toEqual([]);
+	});
 });
 
 describe("markRunStatus (DAT-461)", () => {
-	it("issues a terminal status update for the run", async () => {
+	it("issues a terminal status update for the run, boot-workspace fenced", async () => {
 		await markRunStatus("wf-1", "run-1", "completed");
 		expect(h.updates).toHaveLength(1);
 		expect(h.updates[0].table).toBe("runs");
 		expect(h.updates[0].set).toEqual({ status: "completed" });
+		// DAT-817: the activity has no workspace parameter (wire contract) — the
+		// fence rides in the WHERE, so a foreign (workflowId, runId) is a no-op.
+		expect(JSON.stringify(h.updates[0].where)).toContain("workspace_id");
 	});
 
 	it("is best-effort: swallows a db error", async () => {
@@ -171,6 +200,9 @@ describe("markRunAwaitingInput (DAT-551)", () => {
 			status: "awaiting_input",
 			awaitingNote: "payments.method needs a concept",
 		});
+		// DAT-817: the latest-run lookup is boot-workspace fenced (wire contract
+		// carries no workspace), so a foreign workflow id parks nothing.
+		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
 	});
 
 	it("no-ops when the workflow has no recorded run (nothing to park)", async () => {

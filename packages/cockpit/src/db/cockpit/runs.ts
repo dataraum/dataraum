@@ -26,7 +26,14 @@ import { and, count, desc, eq, gt, notExists } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { currentConversationId } from "#/lib/run-context";
 import { cockpitDb } from "./client";
+import { assertBootWorkspace, bootWorkspaceId } from "./registry";
 import { runs } from "./schema";
+
+// Workspace scope (DAT-817): cockpit_db is shared across per-workspace cockpit
+// containers, so every read/write here is fenced to the boot workspace. The
+// activity-contract writers (recordRun / markRunStatus / markRunAwaitingInput —
+// engine-mirrored IO, worker/contracts.py) scope INTERNALLY: their signatures
+// are a cross-package wire shape and must not grow a scope parameter.
 
 /** How a run originated (was the retired `sessions.kind`). */
 export type RunKind = "onboarding" | "begin_session" | "replay";
@@ -68,6 +75,10 @@ export interface RecordRunInput {
  * old workflowId-placeholder scheme allowed; DAT-595).
  */
 export async function recordRun(input: RecordRunInput): Promise<void> {
+	// Born-loud (DAT-817): a recordRun for another workspace means a mis-routed
+	// activity (the engine schedules these on the workspace's own cockpit queue)
+	// — fail the activity, never write a foreign workspace's run row.
+	assertBootWorkspace(input.workspaceId);
 	await cockpitDb
 		.insert(runs)
 		.values({
@@ -119,7 +130,13 @@ export async function markRunStatus(
 		await cockpitDb
 			.update(runs)
 			.set({ status })
-			.where(and(eq(runs.workflowId, workflowId), eq(runs.runId, runId)));
+			.where(
+				and(
+					eq(runs.workspaceId, bootWorkspaceId()),
+					eq(runs.workflowId, workflowId),
+					eq(runs.runId, runId),
+				),
+			);
 	} catch (err) {
 		console.warn(
 			`[cockpit] markRunStatus failed for run ${runId} (${workflowId}): ${err}`,
@@ -144,7 +161,12 @@ export async function markRunAwaitingInput(
 		const [latest] = await cockpitDb
 			.select({ id: runs.id })
 			.from(runs)
-			.where(eq(runs.workflowId, workflowId))
+			.where(
+				and(
+					eq(runs.workspaceId, bootWorkspaceId()),
+					eq(runs.workflowId, workflowId),
+				),
+			)
 			.orderBy(desc(runs.startedAt))
 			.limit(1);
 		if (!latest) return;
@@ -188,7 +210,11 @@ export async function listNonTerminalRuns(
 		})
 		.from(runs)
 		.where(
-			and(eq(runs.conversationId, conversationId), eq(runs.status, "running")),
+			and(
+				eq(runs.workspaceId, bootWorkspaceId()),
+				eq(runs.conversationId, conversationId),
+				eq(runs.status, "running"),
+			),
 		)
 		.orderBy(desc(runs.startedAt))
 		.limit(limit);
@@ -211,6 +237,7 @@ export async function listNonTerminalRunsByWorkspace(
 	workspaceId: string,
 	limit: number,
 ): Promise<Array<ActiveRun>> {
+	assertBootWorkspace(workspaceId);
 	return cockpitDb
 		.select({
 			workflowId: runs.workflowId,
@@ -237,7 +264,11 @@ export async function listRunningStages(
 		.selectDistinct({ stage: runs.stage })
 		.from(runs)
 		.where(
-			and(eq(runs.conversationId, conversationId), eq(runs.status, "running")),
+			and(
+				eq(runs.workspaceId, bootWorkspaceId()),
+				eq(runs.conversationId, conversationId),
+				eq(runs.status, "running"),
+			),
 		);
 	return rows.map((r) => r.stage as RunStage);
 }
@@ -276,7 +307,11 @@ export async function listWatchableRuns(
 		})
 		.from(runs)
 		.where(
-			and(eq(runs.conversationId, conversationId), eq(runs.status, "running")),
+			and(
+				eq(runs.workspaceId, bootWorkspaceId()),
+				eq(runs.conversationId, conversationId),
+				eq(runs.status, "running"),
+			),
 		)
 		.orderBy(desc(runs.startedAt))
 		.limit(limit);
@@ -301,6 +336,7 @@ export async function hasRunningRun(
 	workspaceId: string,
 	stage: RunStage,
 ): Promise<boolean> {
+	assertBootWorkspace(workspaceId);
 	const [row] = await cockpitDb
 		.select({ id: runs.id })
 		.from(runs)
@@ -341,6 +377,7 @@ export async function listRunsByWorkspace(
 	workspaceId: string,
 	limit: number,
 ): Promise<Array<WorkspaceRun>> {
+	assertBootWorkspace(workspaceId);
 	const rows = await cockpitDb
 		.select({
 			workflowId: runs.workflowId,
@@ -368,6 +405,7 @@ export async function listRunsByWorkspace(
  * stream). Cheap aggregate, workspace-scoped.
  */
 export async function countRunningRuns(workspaceId: string): Promise<number> {
+	assertBootWorkspace(workspaceId);
 	const [row] = await cockpitDb
 		.select({ n: count() })
 		.from(runs)
@@ -408,6 +446,10 @@ function openAwaitingItem(workspaceId: string) {
 				.from(newer)
 				.where(
 					and(
+						// Workspace-fenced like the outer predicate (DAT-817). Workflow ids
+						// embed the workspace so cross-workspace collisions can't happen
+						// today — this keeps the invariant local + provable, not inferred.
+						eq(newer.workspaceId, workspaceId),
 						eq(newer.workflowId, runs.workflowId),
 						gt(newer.startedAt, runs.startedAt),
 					),
@@ -427,6 +469,7 @@ export async function listAwaitingInput(
 	workspaceId: string,
 	limit: number,
 ): Promise<Array<AwaitingInputItem>> {
+	assertBootWorkspace(workspaceId);
 	const rows = await cockpitDb
 		.select({
 			workflowId: runs.workflowId,
@@ -447,6 +490,7 @@ export async function listAwaitingInput(
  * `openAwaitingItem` predicate as the list, so badge and panel never disagree.
  */
 export async function countAwaitingInput(workspaceId: string): Promise<number> {
+	assertBootWorkspace(workspaceId);
 	const [row] = await cockpitDb
 		.select({ n: count() })
 		.from(runs)

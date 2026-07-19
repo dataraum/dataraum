@@ -15,7 +15,13 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import type { ChartConfig } from "#/charts/chart-config";
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 import { cockpitDb } from "./client";
+import { assertBootWorkspace, bootWorkspaceId } from "./registry";
 import { reports } from "./schema";
+
+// Workspace scope (DAT-817): cockpit_db is shared across per-workspace cockpit
+// containers, so every by-id read/mutation here is additionally fenced on
+// `reports.workspaceId = bootWorkspaceId()` — a foreign report id behaves
+// exactly like an unknown one (null / no-op), never a cross-workspace touch.
 
 /** How many reports the gallery lists. Bounded (cockpit "bound every data surface")
  * — newest-first; pagination is a follow-up when a workspace outgrows this. */
@@ -63,6 +69,7 @@ export interface ReportRow {
  * open. Provenance is best-effort — `workspaceId` is the only owner.
  */
 export async function createReport(input: CreateReportInput): Promise<string> {
+	assertBootWorkspace(input.workspaceId);
 	const id = randomUUID();
 	await cockpitDb.insert(reports).values({
 		id,
@@ -88,6 +95,7 @@ export async function listReports(
 	workspaceId: string,
 	limit: number = REPORTS_LIMIT,
 ): Promise<Array<ReportRow>> {
+	assertBootWorkspace(workspaceId);
 	return cockpitDb
 		.select({
 			id: reports.id,
@@ -126,7 +134,13 @@ export async function getReport(reportId: string): Promise<ReportRow | null> {
 			createdAt: reports.createdAt,
 		})
 		.from(reports)
-		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)))
+		.where(
+			and(
+				eq(reports.id, reportId),
+				eq(reports.workspaceId, bootWorkspaceId()),
+				isNull(reports.deletedAt),
+			),
+		)
 		.limit(1);
 	return row ?? null;
 }
@@ -142,7 +156,13 @@ export async function renameReport(
 	await cockpitDb
 		.update(reports)
 		.set({ title })
-		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)));
+		.where(
+			and(
+				eq(reports.id, reportId),
+				eq(reports.workspaceId, bootWorkspaceId()),
+				isNull(reports.deletedAt),
+			),
+		);
 }
 
 /**
@@ -159,7 +179,13 @@ export async function updateReportSummary(
 	await cockpitDb
 		.update(reports)
 		.set({ summary, summaryFingerprint })
-		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)));
+		.where(
+			and(
+				eq(reports.id, reportId),
+				eq(reports.workspaceId, bootWorkspaceId()),
+				isNull(reports.deletedAt),
+			),
+		);
 }
 
 /**
@@ -175,7 +201,13 @@ export async function setReportFingerprint(
 	await cockpitDb
 		.update(reports)
 		.set({ summaryFingerprint })
-		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)));
+		.where(
+			and(
+				eq(reports.id, reportId),
+				eq(reports.workspaceId, bootWorkspaceId()),
+				isNull(reports.deletedAt),
+			),
+		);
 }
 
 /**
@@ -187,5 +219,11 @@ export async function softDeleteReport(reportId: string): Promise<void> {
 	await cockpitDb
 		.update(reports)
 		.set({ deletedAt: new Date() })
-		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)));
+		.where(
+			and(
+				eq(reports.id, reportId),
+				eq(reports.workspaceId, bootWorkspaceId()),
+				isNull(reports.deletedAt),
+			),
+		);
 }

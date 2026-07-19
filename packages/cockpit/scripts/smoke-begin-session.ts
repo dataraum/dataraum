@@ -28,7 +28,7 @@ import { z } from "zod";
 import { cockpitDb } from "#/db/cockpit/client";
 import { engineTaskQueueFor } from "#/db/cockpit/registry";
 import { recordRun } from "#/db/cockpit/runs";
-import { actors, workspaces } from "#/db/cockpit/schema";
+import { users, workspaces } from "#/db/cockpit/schema";
 import { metadataDb } from "#/db/metadata/client";
 import { sourcesWrite } from "#/db/metadata/write-surface";
 import { lookRelationships } from "#/tools/look-relationships";
@@ -67,7 +67,7 @@ async function ingest(client: Client): Promise<string[]> {
 	// The workspace registry carries the vertical (DAT-506): seed it = finance so
 	// the begin_session driver (and any other driver) sources the right ontology.
 	await cockpitDb
-		.insert(actors)
+		.insert(users)
 		.values({ id: "default", displayName: "Default user" })
 		.onConflictDoNothing();
 	await cockpitDb

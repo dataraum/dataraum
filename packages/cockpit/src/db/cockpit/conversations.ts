@@ -19,7 +19,35 @@ import type { UIMessage } from "@tanstack/ai-react";
 import { and, desc, eq, isNull, max } from "drizzle-orm";
 import { foldModelOnlyRefs } from "#/lib/model-messages";
 import { cockpitDb } from "./client";
+import { assertBootWorkspace, bootWorkspaceId } from "./registry";
 import { conversationMessages, conversations } from "./schema";
+
+/**
+ * Prove `conversationId` belongs to the boot workspace (DAT-817) — the scope
+ * gate for the conversation-child writes (`conversation_messages` rows carry no
+ * workspace_id of their own; they scope through their conversation). Throws on
+ * a foreign or unknown id — same born-loud degradation path a stale threadId
+ * always took (the chat route catches and serves the turn unpersisted).
+ */
+async function assertConversationInBootWorkspace(
+	conversationId: string,
+): Promise<void> {
+	const [row] = await cockpitDb
+		.select({ id: conversations.id })
+		.from(conversations)
+		.where(
+			and(
+				eq(conversations.id, conversationId),
+				eq(conversations.workspaceId, bootWorkspaceId()),
+			),
+		)
+		.limit(1);
+	if (!row) {
+		throw new Error(
+			`[cockpit] conversation ${conversationId} is not in the boot workspace`,
+		);
+	}
+}
 
 /** A message to persist, with whether it is model-only (the refs channel). */
 export interface MessageEntry {
@@ -63,6 +91,7 @@ export async function listConversations(
 	workspaceId: string,
 	limit: number = HISTORY_LIMIT,
 ): Promise<Array<ConversationSummary>> {
+	assertBootWorkspace(workspaceId);
 	const rows = await cockpitDb
 		.select({
 			id: conversations.id,
@@ -88,14 +117,17 @@ export async function createConversation(
 	workspaceId: string,
 	kind: ConversationKind,
 ): Promise<string> {
+	assertBootWorkspace(workspaceId);
 	const id = randomUUID();
 	await cockpitDb.insert(conversations).values({ id, workspaceId, kind });
 	return id;
 }
 
 /** Hydrate a conversation by id (the chat route loader) — kind + title +
- * owning workspace. Null if the id is unknown (a stale deep link → the route
- * 404s rather than mounting an orphan chat). */
+ * owning workspace. Null if the id is unknown OR belongs to another workspace
+ * (DAT-817 — cockpit_db is shared across per-workspace cockpits, so a foreign
+ * deep link must 404 exactly like a stale one, never mount another
+ * workspace's chat). */
 export async function getConversation(
 	conversationId: string,
 ): Promise<ConversationRow | null> {
@@ -107,7 +139,12 @@ export async function getConversation(
 			title: conversations.title,
 		})
 		.from(conversations)
-		.where(eq(conversations.id, conversationId))
+		.where(
+			and(
+				eq(conversations.id, conversationId),
+				eq(conversations.workspaceId, bootWorkspaceId()),
+			),
+		)
 		.limit(1);
 	if (!row) return null;
 	return { ...row, kind: row.kind as ConversationKind };
@@ -129,7 +166,11 @@ export async function setConversationTitle(
 			.update(conversations)
 			.set({ title })
 			.where(
-				and(eq(conversations.id, conversationId), isNull(conversations.title)),
+				and(
+					eq(conversations.id, conversationId),
+					eq(conversations.workspaceId, bootWorkspaceId()),
+					isNull(conversations.title),
+				),
 			);
 	} catch (err) {
 		console.warn(
@@ -139,16 +180,23 @@ export async function setConversationTitle(
 }
 
 /** The display transcript (modelOnly rows excluded), in order — reload hydration
- * + the canvas source. */
+ * + the canvas source. Scoped through the owning conversation's workspace
+ * (DAT-817): a foreign conversation id yields an empty transcript, exactly like
+ * an unknown one. */
 export async function loadDisplayMessages(
 	conversationId: string,
 ): Promise<Array<UIMessage>> {
 	const rows = await cockpitDb
 		.select({ message: conversationMessages.message })
 		.from(conversationMessages)
+		.innerJoin(
+			conversations,
+			eq(conversationMessages.conversationId, conversations.id),
+		)
 		.where(
 			and(
 				eq(conversationMessages.conversationId, conversationId),
+				eq(conversations.workspaceId, bootWorkspaceId()),
 				eq(conversationMessages.modelOnly, false),
 			),
 		)
@@ -158,7 +206,8 @@ export async function loadDisplayMessages(
 
 /** The full transcript with model-only refs rows FOLDED into their user turns,
  * in order — the `buildModelMessages` input. No model_only filter (refs feed the
- * model); the fold keeps them from becoming consecutive same-role messages. */
+ * model); the fold keeps them from becoming consecutive same-role messages.
+ * Workspace-scoped through the owning conversation (DAT-817). */
 export async function loadModelTranscript(
 	conversationId: string,
 ): Promise<Array<UIMessage>> {
@@ -168,7 +217,16 @@ export async function loadModelTranscript(
 			modelOnly: conversationMessages.modelOnly,
 		})
 		.from(conversationMessages)
-		.where(eq(conversationMessages.conversationId, conversationId))
+		.innerJoin(
+			conversations,
+			eq(conversationMessages.conversationId, conversations.id),
+		)
+		.where(
+			and(
+				eq(conversationMessages.conversationId, conversationId),
+				eq(conversations.workspaceId, bootWorkspaceId()),
+			),
+		)
 		.orderBy(conversationMessages.seq);
 	return foldModelOnlyRefs(rows);
 }
@@ -190,6 +248,9 @@ export async function appendMessages(
 	entries: ReadonlyArray<MessageEntry>,
 ): Promise<void> {
 	if (entries.length === 0) return;
+	// Scope gate (DAT-817): appending to a foreign workspace's conversation must
+	// throw, not write — the FK alone can't tell foreign from boot-owned.
+	await assertConversationInBootWorkspace(conversationId);
 	const [{ maxSeq } = { maxSeq: null }] = await cockpitDb
 		.select({ maxSeq: max(conversationMessages.seq) })
 		.from(conversationMessages)
@@ -211,5 +272,10 @@ export async function appendMessages(
 	await cockpitDb
 		.update(conversations)
 		.set({ updatedAt: now, lastActiveAt: now })
-		.where(eq(conversations.id, conversationId));
+		.where(
+			and(
+				eq(conversations.id, conversationId),
+				eq(conversations.workspaceId, bootWorkspaceId()),
+			),
+		);
 }

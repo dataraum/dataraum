@@ -69,9 +69,9 @@ from sqlalchemy import text
 
 from dataraum.storage.read_views import (
     READ_TOKEN,
-    READER_ROLE,
     WS_TOKEN,
     read_schema_name_for,
+    reader_role_for,
 )
 
 if TYPE_CHECKING:
@@ -505,19 +505,18 @@ def materialize_property_graph(connection: Connection, workspace_schema: str) ->
 
 
 def grant_reader_on_graph(connection: Connection, workspace_schema: str) -> None:
-    """Grant the ``cockpit_reader`` role SELECT on the property graph (ADR-0008).
+    """Grant the workspace's reader role SELECT on the property graph (ADR-0008).
 
     A property graph is a distinct privilege-checked object: ``GRANT SELECT ON ALL
-    TABLES`` (what ``ensure_reader_role`` does for the ``og_*`` views) does NOT cover
-    ``GRAPH_TABLE`` access — without this the reader can plain-SELECT the element
-    views but the one query form the graph exists for is ``permission denied``. The
-    graph is dropped+recreated every boot, so the grant is re-applied here every
-    boot too. Runs AFTER ``ensure_reader_role`` (which creates the role) and after
-    the graph is (re)created. Postgres-only.
+    TABLES`` (what ``ensure_workspace_roles`` does for the ``og_*`` views) does NOT
+    cover ``GRAPH_TABLE`` access — without this the reader can plain-SELECT the
+    element views but the one query form the graph exists for is ``permission
+    denied``. The graph is dropped+recreated every boot, so the grant is re-applied
+    here every boot too. Runs AFTER ``ensure_workspace_roles`` (which creates the
+    role) and after the graph is (re)created. Postgres-only.
     """
     read_schema = read_schema_name_for(workspace_schema)
+    reader = reader_role_for(workspace_schema)
     connection.execute(
-        text(
-            f'GRANT SELECT ON PROPERTY GRAPH "{read_schema}".{PROPERTY_GRAPH_NAME} TO {READER_ROLE}'
-        )
+        text(f'GRANT SELECT ON PROPERTY GRAPH "{read_schema}".{PROPERTY_GRAPH_NAME} TO {reader}')
     )

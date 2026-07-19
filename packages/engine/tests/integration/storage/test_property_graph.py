@@ -13,8 +13,8 @@ engine:
   (layer='enriched', head-scoped via enriched_views — the DAT-774 fix that made
   ``og_tables`` admit enriched vertices) → its fact + dim bases; the edge_key is deduped
   against a duplicate dimension id, and an un-materialized (NULL) view yields nothing;
-* the ``cockpit_reader`` role can query the graph (a property graph needs its own
-  GRANT — table grants don't reach GRAPH_TABLE);
+* the per-workspace reader role can query the graph (a property graph needs its
+  own GRANT — table grants don't reach GRAPH_TABLE);
 * the two-mechanism query model is de-risked on a chain that OUTRUNS the depth cap
   and contains a cycle: the bounded recursive-CTE closure truncates at the cap
   (a node one hop past it stays unreached), the cycle guard fires (a back edge
@@ -41,16 +41,17 @@ from dataraum.storage.property_graph import (
     materialize_property_graph,
 )
 from dataraum.storage.read_views import (
-    READER_ROLE,
-    ensure_reader_role,
+    ensure_workspace_roles,
     materialize_read_schema,
     read_schema_name_for,
+    reader_role_for,
 )
 
 RUN = "00000000-0000-0000-0000-000000000001"  # the autofill baseline run_id
 SRC = "00000000-0000-0000-0000-000000000002"  # the baseline Source seeded by the fixture
 TS = "2026-01-01 00:00:00"
 READER_PW = "graph-reader-test-pw"
+WRITER_PW = "graph-writer-test-pw"
 
 # A 6-table chain t1→t2→t3→t4→t5→t6 (LONGER than the depth-4 closure cap) plus a
 # back edge t6→t4 (the cycle t4→t5→t6→t4). This lets the de-risk tests distinguish
@@ -335,7 +336,7 @@ def _boot(engine: Engine, schema: str) -> None:
         drop_property_graph(conn, schema)
         materialize_read_schema(conn, schema)
         materialize_property_graph(conn, schema)
-        ensure_reader_role(conn, schema, READER_PW)
+        ensure_workspace_roles(conn, schema, READER_PW, WRITER_PW)
         grant_reader_on_graph(conn, schema)
 
 
@@ -647,13 +648,14 @@ def test_part_of_closure_walks_ancestors_and_guards_cycle(graph_engine: Engine) 
 
 
 def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:
-    """cockpit_reader (ADR-0008) can run GRAPH_TABLE — the graph grant reached it."""
+    """The workspace reader role (ADR-0008) can run GRAPH_TABLE — the grant reached it."""
+    reader = reader_role_for(schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"]))
     sql = (
         f"SELECT count(*) AS n FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (a IS table_node)-[e IS refs]->(b IS table_node) COLUMNS (1 AS one))"
     )
     with graph_engine.connect() as conn:
-        conn.execute(text(f"SET ROLE {READER_ROLE}"))
+        conn.execute(text(f"SET ROLE {reader}"))
         n = conn.execute(text(sql)).scalar_one()
         conn.execute(text("RESET ROLE"))
     assert n == 6

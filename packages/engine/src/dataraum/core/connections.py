@@ -347,7 +347,7 @@ class ConnectionManager:
                 materialize_property_graph,
             )
             from dataraum.storage.read_views import (
-                ensure_reader_role,
+                ensure_workspace_roles,
                 materialize_read_schema,
             )
 
@@ -359,12 +359,13 @@ class ConnectionManager:
                 drop_property_graph(conn, schema_name)
                 materialize_read_schema(conn, schema_name)
                 materialize_property_graph(conn, schema_name)
-                ensure_reader_role(
+                ensure_workspace_roles(
                     conn,
                     schema_name,
                     get_settings().metadata_reader_password.get_secret_value(),
+                    get_settings().metadata_writer_password.get_secret_value(),
                 )
-                # The graph is a distinct privilege object — ensure_reader_role's
+                # The graph is a distinct privilege object — ensure_workspace_roles'
                 # table grants don't reach GRAPH_TABLE. Grant it after the role exists
                 # (and re-grant every boot, since the graph is recreated above).
                 grant_reader_on_graph(conn, schema_name)

@@ -109,11 +109,13 @@ Reading "the current state" therefore means joining through that head — a join
 materializes once, as a set of generated `current_<table>` **views** in the `ws_<id>_read`
 schema. ([ADR-0008](../adr/0008-promoted-read-views.md), [ADR-0010](../adr/0010-failure-contract-idempotent-writers.md).)
 
-The cockpit connects with a dedicated `cockpit_reader` role that has `SELECT` on the read
-schema **only**. The raw run-stamped tables are not even visible to it — a stale or
-wrong-run read is *unwritable*, not merely discouraged. The cockpit mirrors the view
-schema with `bun run db:pull:metadata`, which introspects the views into typed Drizzle
-models.
+The cockpit connects with the workspace's dedicated reader role (`ws_<id>_reader`), whose
+`search_path` is pinned to the read schema and which has `SELECT` there **only**. The role
+resolves the schema — the cockpit carries no workspace literal — and the raw run-stamped
+tables (and every other workspace) are not even visible to it: a stale or wrong-run read
+is *unwritable*, not merely discouraged. Control-plane writes use a separate `ws_<id>_writer`
+role scoped to exactly the sanctioned control tables. The cockpit mirrors the view schema
+with `bun run db:pull:metadata`, which introspects the views into typed Drizzle models.
 
 For interactive data reads (the SQL grid, probes), the cockpit attaches the workspace's
 DuckLake catalog **read-only** and reads parquet from S3 directly via DuckDB.

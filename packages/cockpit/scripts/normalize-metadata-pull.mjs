@@ -29,6 +29,7 @@ const FORBIDDEN = [/pgSchema\(/, /\bws_/]
 let violations = false
 for (const file of targets) {
   const content = await readFile(file, 'utf-8')
+  let fileViolated = false
   for (const pattern of FORBIDDEN) {
     if (pattern.test(content)) {
       console.error(
@@ -36,10 +37,11 @@ for (const file of targets) {
           'must be workspace-neutral (DAT-816). Did the scratch read views ' +
           'land outside `public`?',
       )
+      fileViolated = true
       violations = true
     }
   }
-  if (!violations) console.log(`  ${file} clean (workspace-neutral)`)
+  if (!fileViolated) console.log(`  ${file} clean (workspace-neutral)`)
 }
 if (violations) process.exit(1)
 

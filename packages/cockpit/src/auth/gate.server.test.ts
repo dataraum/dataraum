@@ -82,7 +82,7 @@ describe("gateRequest (DAT-819)", () => {
 
 	it("redirects a signed-out HTML navigation to the portal", async () => {
 		const rejection = await gateRequest(
-			req("/workspace/x/cockpit", "text/html"),
+			req("/cockpit", "text/html"),
 		);
 		expect(rejection?.status).toBe(302);
 		expect(rejection?.headers.get("location")).toBe(
@@ -100,14 +100,14 @@ describe("gateRequest (DAT-819)", () => {
 		h.session = { user: { id: "u-1" } };
 		h.membershipRows = [{ userId: "u-1" }];
 		expect(
-			await gateRequest(req("/workspace/x/cockpit", "text/html")),
+			await gateRequest(req("/cockpit", "text/html")),
 		).toBeNull();
 	});
 
 	it("bounces an authenticated NON-member's navigation to the portal with ?denied=<ws>", async () => {
 		h.session = { user: { id: "u-2" } };
 		const rejection = await gateRequest(
-			req("/workspace/x/cockpit", "text/html"),
+			req("/cockpit", "text/html"),
 		);
 		expect(rejection?.status).toBe(302);
 		expect(rejection?.headers.get("location")).toBe(

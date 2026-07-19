@@ -12,7 +12,7 @@ import { GovernanceOverview } from "#/ui/governance/governance-overview";
 import { REPLAY_SEED } from "#/ui/governance/governance-target";
 import { loadBriefing, openStageChat } from "./governance.functions";
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/governance")({
+export const Route = createFileRoute("/(app)/governance")({
 	loader: () => loadBriefing(),
 	pendingComponent: () => (
 		<Center h="100%">
@@ -32,7 +32,6 @@ export const Route = createFileRoute("/(app)/workspace/$wsId/governance")({
 
 function GovernanceSection() {
 	const briefing = Route.useLoaderData();
-	const { wsId } = Route.useParams();
 	const navigate = useNavigate();
 
 	// Open a fresh Stage chat seeded to act on this item. A user event, so the
@@ -44,8 +43,8 @@ function GovernanceSection() {
 			// Awaited to serialise navigation after the chat is created (the target
 			// route's loader errors surface in its own errorComponent, not here).
 			await navigate({
-				to: "/workspace/$wsId/cockpit/$conversationId",
-				params: { wsId, conversationId },
+				to: "/cockpit/$conversationId",
+				params: { conversationId },
 				state: { seed },
 			});
 		} catch (err) {
@@ -56,10 +55,7 @@ function GovernanceSection() {
 	// The operating-model detail lives in the Model route — Governance only
 	// summarizes + points here (a plain route nav, no chat).
 	const openModel = () => {
-		void navigate({
-			to: "/workspace/$wsId/operating-model",
-			params: { wsId },
-		});
+		void navigate({ to: "/operating-model" });
 	};
 
 	return (

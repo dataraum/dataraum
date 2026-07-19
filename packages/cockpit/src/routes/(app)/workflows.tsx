@@ -11,7 +11,7 @@ import { RunMonitor } from "#/ui/runs/run-monitor";
 import { StaleStagesPanel } from "#/ui/runs/stale-stages-panel";
 import { loadRuns, openStageChat, rerunStage } from "./workflows.functions";
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/workflows")({
+export const Route = createFileRoute("/(app)/workflows")({
 	loader: () => loadRuns(),
 	component: RunsSection,
 });
@@ -19,7 +19,6 @@ export const Route = createFileRoute("/(app)/workspace/$wsId/workflows")({
 function RunsSection() {
 	const { runs, awaiting, staleness, temporalUiUrl, limit } =
 		Route.useLoaderData();
-	const { wsId } = Route.useParams();
 	const navigate = useNavigate();
 	const router = useRouter();
 
@@ -43,8 +42,8 @@ function RunsSection() {
 		try {
 			const conversationId = await openStageChat();
 			navigate({
-				to: "/workspace/$wsId/cockpit/$conversationId",
-				params: { wsId, conversationId },
+				to: "/cockpit/$conversationId",
+				params: { conversationId },
 				state: { seed: resolveSeed(item.awaitingNote) },
 			});
 		} catch (err) {

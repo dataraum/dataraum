@@ -16,7 +16,7 @@ import { ModelIcon } from "#/ui/cockpit/operating-model/nodes";
 import { OperatingModelCanvas } from "#/ui/cockpit/operating-model/operating-model-canvas";
 import { loadModel } from "./operating-model.functions";
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/operating-model")({
+export const Route = createFileRoute("/(app)/operating-model")({
 	loader: () => loadModel(),
 	component: ModelSection,
 	// A loader failure (e.g. a metadata read against a drifted view) must degrade

@@ -8,8 +8,9 @@ import { createConversation } from "#/db/cockpit/conversations";
 import { resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { buildWorkspaceBriefing } from "#/db/metadata/briefing";
 
-// No wsId param: single-active-workspace; DAT-357 will add per-request scoping
-// here (mirrors briefing/build.ts). The $wsId route param stays decorative.
+// No workspace param: the cockpit boots with a single workspace identity
+// (DD/51740673) and the briefing read resolves it internally (mirrors
+// briefing/build.ts).
 export const loadBriefing = createServerFn({ method: "GET" }).handler(
 	async () => {
 		return buildWorkspaceBriefing();

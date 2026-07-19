@@ -5,7 +5,7 @@ import { createFileRoute } from "@tanstack/react-router";
 // metadata client (`src/db/metadata/`) — a typed read straight against the
 // engine's ws_<workspace_id> schema, no REST round-trip.
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/library")({
+export const Route = createFileRoute("/(app)/library")({
 	component: LibrarySection,
 });
 

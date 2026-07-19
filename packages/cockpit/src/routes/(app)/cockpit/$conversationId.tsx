@@ -19,11 +19,9 @@ import {
 // The cockpit layout route, whose loader carries the switcher data (availability
 // + latest-by-kind). Read here via useMatch so the composer's type drop-up can
 // resume-or-create without re-querying.
-const COCKPIT_LAYOUT_ROUTE = "/(app)/workspace/$wsId/cockpit";
+const COCKPIT_LAYOUT_ROUTE = "/(app)/cockpit";
 
-export const Route = createFileRoute(
-	"/(app)/workspace/$wsId/cockpit/$conversationId",
-)({
+export const Route = createFileRoute("/(app)/cockpit/$conversationId")({
 	loader: async ({ params }) => {
 		const result = await loadChat({ data: params.conversationId });
 		if (result.notFound) throw notFound();
@@ -50,7 +48,6 @@ function CockpitChat() {
 		briefing,
 		readiness,
 	} = Route.useLoaderData();
-	const { wsId } = Route.useParams();
 	const navigate = useNavigate();
 	// The layout loader carries availability + latest-by-kind for the drop-up; read
 	// it via useMatch (this chat route is a child of the layout route). shouldThrow
@@ -69,8 +66,8 @@ function CockpitChat() {
 	const switcher = layout?.loaderData;
 	const goTo = (id: string) =>
 		navigate({
-			to: "/workspace/$wsId/cockpit/$conversationId",
-			params: { wsId, conversationId: id },
+			to: "/cockpit/$conversationId",
+			params: { conversationId: id },
 		});
 	const typeNav: ChatTypeNav | undefined = switcher
 		? {

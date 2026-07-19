@@ -1,6 +1,7 @@
 // The top-level sections of the cockpit, rendered as the left app rail.
-// Order here is the order in the rail. Each section is workspace-scoped
-// (/workspace/$wsId/<id>) except `settings`, which is global (/settings).
+// Order here is the order in the rail. Routes are flat (DAT-822): one cockpit
+// per workspace behind a subdomain (DD/51740673), so no URL segment carries a
+// workspace id.
 //
 // Icons are lucide-react component references — the rail reads `icon` and the
 // section route reads `label`. Single source so the rail and any breadcrumbs
@@ -23,21 +24,18 @@ export interface Section {
 	label: string;
 	icon: LucideIcon;
 	/**
-	 * Typed router `to` for the section. Workspace sections use the `$wsId`
-	 * param template (the rail supplies the value); the global section is a
-	 * fixed path. Keep these literal so TanStack Router type-checks the links.
+	 * Typed router `to` for the section. Keep these literal so TanStack Router
+	 * type-checks the rail links.
 	 */
 	to:
-		| "/workspace/$wsId/cockpit"
-		| "/workspace/$wsId/reports"
-		| "/workspace/$wsId/library"
-		| "/workspace/$wsId/workflows"
-		| "/workspace/$wsId/metadata"
-		| "/workspace/$wsId/operating-model"
-		| "/workspace/$wsId/governance"
+		| "/cockpit"
+		| "/reports"
+		| "/library"
+		| "/workflows"
+		| "/metadata"
+		| "/operating-model"
+		| "/governance"
 		| "/settings";
-	/** Global sections live at a fixed path; workspace sections nest under wsId. */
-	global?: boolean;
 }
 
 export const sections: readonly Section[] = [
@@ -45,7 +43,7 @@ export const sections: readonly Section[] = [
 		id: "cockpit",
 		label: "Cockpit",
 		icon: LayoutDashboard,
-		to: "/workspace/$wsId/cockpit",
+		to: "/cockpit",
 	},
 	{
 		// The minted-report library (DAT-624) — a workspace's saved widgets, each a
@@ -54,7 +52,7 @@ export const sections: readonly Section[] = [
 		id: "reports",
 		label: "Reports",
 		icon: Library,
-		to: "/workspace/$wsId/reports",
+		to: "/reports",
 	},
 	{
 		// The data-sources browser (route path stays `/library` — was `/sources`,
@@ -63,7 +61,7 @@ export const sections: readonly Section[] = [
 		id: "library",
 		label: "Sources",
 		icon: Boxes,
-		to: "/workspace/$wsId/library",
+		to: "/library",
 	},
 	{
 		// Native run monitor (DAT-550). Route path stays `/workflows`; the label is
@@ -71,13 +69,13 @@ export const sections: readonly Section[] = [
 		id: "workflows",
 		label: "Runs",
 		icon: Workflow,
-		to: "/workspace/$wsId/workflows",
+		to: "/workflows",
 	},
 	{
 		id: "metadata",
 		label: "Metadata",
 		icon: Database,
-		to: "/workspace/$wsId/metadata",
+		to: "/metadata",
 	},
 	{
 		// The operating-model canvas (DAT-591): the workspace's concept-spine DAG —
@@ -86,19 +84,18 @@ export const sections: readonly Section[] = [
 		id: "operating-model",
 		label: "Model",
 		icon: Network,
-		to: "/workspace/$wsId/operating-model",
+		to: "/operating-model",
 	},
 	{
 		id: "governance",
 		label: "Governance",
 		icon: ShieldCheck,
-		to: "/workspace/$wsId/governance",
+		to: "/governance",
 	},
 	{
 		id: "settings",
 		label: "Settings",
 		icon: Settings,
 		to: "/settings",
-		global: true,
 	},
 ] as const;

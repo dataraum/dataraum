@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 //
-// Shell smoke: the AppShell renders every section rail item, a workspace
-// section route resolves under the shell, and — even on a global route with no
-// wsId — the rail's workspace links still target the active workspace (the
-// /settings → cockpit nav bug).
+// Shell smoke: the AppShell renders every section rail item, a section route
+// resolves under the shell, and the rail links carry the flat section paths
+// (DAT-822 — one cockpit per workspace, no /workspace/$wsId segment).
 
 import { MantineProvider } from "@mantine/core";
 import {
@@ -22,23 +21,19 @@ import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 import { sections } from "#/ui/sections";
 import { theme } from "#/ui/theme";
 
-// Minimal router that exercises the shell over a workspace section AND a global
-// section, independent of the generated tree (whose `/` + redirects need a
-// server runtime). Mirrors the real /workspace/$wsId/<section> + /settings shape.
-function renderShellAt(path: string, activeWorkspaceId = "test-ws") {
+// Minimal router that exercises the shell over two flat section routes,
+// independent of the generated tree (whose `/` + redirects need a server
+// runtime). Mirrors the real flat /<section> shape.
+function renderShellAt(path: string) {
 	const rootRoute = createRootRoute({
 		component: () => (
-			<CockpitShell activeWorkspaceId={activeWorkspaceId}>
+			<CockpitShell>
 				<Outlet />
 			</CockpitShell>
 		),
 	});
-	const wsRoute = createRoute({
-		getParentRoute: () => rootRoute,
-		path: "/workspace/$wsId",
-	});
 	const cockpitRoute = createRoute({
-		getParentRoute: () => wsRoute,
+		getParentRoute: () => rootRoute,
 		path: "cockpit",
 		component: () => <div data-testid="section-content">cockpit section</div>,
 	});
@@ -47,10 +42,7 @@ function renderShellAt(path: string, activeWorkspaceId = "test-ws") {
 		path: "settings",
 		component: () => <div data-testid="settings-content">settings section</div>,
 	});
-	const routeTree = rootRoute.addChildren([
-		wsRoute.addChildren([cockpitRoute]),
-		settingsRoute,
-	]);
+	const routeTree = rootRoute.addChildren([cockpitRoute, settingsRoute]);
 	const router = createRouter({
 		routeTree,
 		history: createMemoryHistory({ initialEntries: [path] }),
@@ -72,7 +64,7 @@ describe("CockpitShell (DAT-380)", () => {
 	afterEach(() => cleanup());
 
 	it("renders every section rail item", async () => {
-		renderShellAt("/workspace/test-ws/cockpit");
+		renderShellAt("/cockpit");
 
 		// Rail mounts.
 		expect(await screen.findByTestId("section-rail")).toBeTruthy();
@@ -85,33 +77,27 @@ describe("CockpitShell (DAT-380)", () => {
 		expect(sections).toHaveLength(8);
 	});
 
-	it("resolves a workspace section route under the shell", async () => {
-		renderShellAt("/workspace/test-ws/cockpit");
+	it("resolves a section route under the shell", async () => {
+		renderShellAt("/cockpit");
 
 		// The active section's content renders inside the shell <Outlet/>.
 		expect(await screen.findByTestId("section-content")).toBeTruthy();
-		// The top bar shows the brand wordmark, never the raw workspace id.
+		// The top bar shows the brand wordmark, never a raw workspace id.
 		expect(screen.getByTestId("workspace-switcher").textContent).toContain(
 			"DataRaum",
 		);
-		expect(screen.getByTestId("workspace-switcher").textContent).not.toContain(
-			"test-ws",
-		);
 	});
 
-	it("keeps workspace rail links on the active workspace from a global route", async () => {
-		// On /settings there is no wsId param; the rail must still link into the
-		// ACTIVE workspace, not fall back to "/" (which redirects to cockpit).
-		renderShellAt("/settings", "ws-9");
+	it("links every rail item at its flat section path", async () => {
+		renderShellAt("/settings");
 
 		expect(await screen.findByTestId("settings-content")).toBeTruthy();
-		const cockpitLink = screen.getByTestId("rail-cockpit");
-		expect(cockpitLink.getAttribute("href")).toContain(
-			"/workspace/ws-9/cockpit",
-		);
-		const libraryLink = screen.getByTestId("rail-library");
-		expect(libraryLink.getAttribute("href")).toContain(
-			"/workspace/ws-9/library",
-		);
+		// Flat URLs (DAT-822): the rail links carry no workspace segment, from
+		// any route — including a non-section one like /settings.
+		for (const section of sections) {
+			expect(
+				screen.getByTestId(`rail-${section.id}`).getAttribute("href"),
+			).toBe(section.to);
+		}
 	});
 });

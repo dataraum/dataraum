@@ -13,20 +13,19 @@ import {
 // server fns resolve the active workspace server-side (the registry read never
 // reaches the client bundle); the plugin strips these handlers from the client.
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/cockpit/")({
+export const Route = createFileRoute("/(app)/cockpit/")({
 	loader: () => loadHistory(),
 	component: CockpitIndex,
 });
 
 function CockpitIndex() {
 	const { conversations } = Route.useLoaderData();
-	const { wsId } = Route.useParams();
 	const navigate = useNavigate();
 
 	const open = (conversationId: string) =>
 		navigate({
-			to: "/workspace/$wsId/cockpit/$conversationId",
-			params: { wsId, conversationId },
+			to: "/cockpit/$conversationId",
+			params: { conversationId },
 		});
 
 	// Mint a typed chat, then open it. A user event (chip click), so the mutation
@@ -48,8 +47,8 @@ function CockpitIndex() {
 		try {
 			const { conversationId } = await routeOpeningMessage({ data: message });
 			navigate({
-				to: "/workspace/$wsId/cockpit/$conversationId",
-				params: { wsId, conversationId },
+				to: "/cockpit/$conversationId",
+				params: { conversationId },
 				state: { seed: message },
 			});
 		} catch (err) {

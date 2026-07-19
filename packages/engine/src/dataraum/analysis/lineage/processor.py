@@ -686,8 +686,6 @@ def discover_aggregation_lineage(
                 "event_table_id": best.event_table.table_id,
                 "measure_time_axis_column": best.m_axis,
                 "event_time_axis_column": best.e_axis,
-                "measure_slice_column_id": best.m_slice_column_id,
-                "event_slice_column_id": best.e_slice_column_id,
                 "slice_dimension": slice_label,
                 "convention_sql": best.convention_sql,
                 "period_grain": period_grain,

@@ -58,26 +58,9 @@ class MeasureAggregationLineage(Base):
     measure_time_axis_column: Mapped[str] = mapped_column(String, nullable=False)
     event_time_axis_column: Mapped[str] = mapped_column(String, nullable=False)
 
-    # The winning PHYSICAL slice column per side (DAT-756: a table can carry
-    # several role-playing ``SliceDefinition``s at the same conformed identity —
-    # e.g. ``debit_account`` vs ``credit_account`` both -> chart_of_accounts —
-    # and the competition can pick either independently per side; collapsing to
-    # one field would silently drop reproducibility on whichever side isn't
-    # captured, the same bug class this row exists to fix). Always resolvable:
-    # sourced from ``SliceDefinition.column_id``, which is NOT NULL by schema.
-    measure_slice_column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id"), nullable=False
-    )
-    event_slice_column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id"), nullable=False
-    )
-
-    # The pairing the verdict was computed under (audit + re-run reproducibility,
-    # now honored by the six columns above plus these three): the shared slice
-    # dimension's human-readable label (the conformed identity, not either side's
-    # physical column — see ``measure_slice_column_id``/``event_slice_column_id``
-    # for that), the signed convention over the event fact's per-period sums, and
-    # the period grain.
+    # The pairing the verdict was computed under (audit): the shared slice
+    # dimension's human-readable label (the conformed identity), the signed
+    # convention over the event fact's per-period sums, and the period grain.
     slice_dimension: Mapped[str] = mapped_column(String, nullable=False)
     convention_sql: Mapped[str] = mapped_column(Text, nullable=False)
     period_grain: Mapped[str] = mapped_column(String, nullable=False)

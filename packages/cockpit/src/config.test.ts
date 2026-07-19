@@ -167,15 +167,16 @@ describe("mode-shared base config (DAT-819)", () => {
 		expect(baseConfig.portalOrigin).toBe("http://localhost:3000");
 	});
 
-	it("throws born-loud when a workspace surface evaluates ./config in portal mode", async () => {
-		// The fence: portal-mode boot must never reach workspace config — a
-		// mis-routed workspace surface fails with the real reason, not a
-		// missing-env scavenger hunt.
+	it("portal mode: module EVAL is harmless, field ACCESS throws born-loud", async () => {
+		// The server bundle's route graph is eager, so this module unavoidably
+		// evaluates on the portal — the fence fires on READ (the mis-routed
+		// workspace surface), with the real reason, not a missing-env hunt.
 		stubBaseline();
 		vi.stubEnv("DATARAUM_PORTAL_MODE", "1");
 
-		await expect(import("./config")).rejects.toThrow(
-			/workspace config accessed in portal mode/,
+		const { config } = await import("./config");
+		expect(() => config.dataraumWorkspaceId).toThrow(
+			/field 'dataraumWorkspaceId' accessed in portal mode/,
 		);
 	});
 

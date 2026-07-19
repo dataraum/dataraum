@@ -102,18 +102,6 @@ const ConfigSchema = z.object({
 export type Config = z.infer<typeof ConfigSchema>;
 
 function loadConfig(): Config {
-	// Born-loud mode fence (DAT-819): a portal container has no workspace
-	// identity and deliberately no workspace env (metadata role URLs, S3, lake
-	// path), so ANY evaluation of this module in portal mode is a mis-routed
-	// workspace surface — fail with the real reason, not a env-var-missing
-	// scavenger hunt. Portal-safe fields live in config.base.ts.
-	if (baseConfig.portalMode) {
-		throw new Error(
-			"[cockpit] workspace config accessed in portal mode — a workspace-only " +
-				"surface (route, server fn, or worker) was reached on the portal. " +
-				"Portal code must import config.base instead.",
-		);
-	}
 	const parsed = ConfigSchema.safeParse({
 		cockpitDatabaseUrl: process.env.COCKPIT_DATABASE_URL,
 		metadataDatabaseUrl: process.env.METADATA_DATABASE_URL,
@@ -155,4 +143,23 @@ function loadConfig(): Config {
 	return parsed.data;
 }
 
-export const config = loadConfig();
+// Born-loud mode fence (DAT-819), enforced at ACCESS time, not module eval: a
+// portal container has no workspace identity and deliberately no workspace env
+// (metadata role URLs, S3, lake path) — but the server bundle's route graph is
+// EAGER (the SSR entry statically imports every route's functions, and the
+// bundler flattens even dynamic imports), so this module unavoidably evaluates
+// on the portal. Evaluating is harmless; READING a workspace field there is a
+// mis-routed workspace surface and throws with the real reason instead of an
+// env-var scavenger hunt. Portal-safe fields live in config.base.ts.
+export const config: Config = baseConfig.portalMode
+	? new Proxy({} as Config, {
+			get(_target, prop) {
+				throw new Error(
+					`[cockpit] workspace config field '${String(prop)}' accessed in ` +
+						"portal mode — a workspace-only surface (route, server fn, or " +
+						"worker) ran on the portal. Portal code must read config.base " +
+						"instead.",
+				);
+			},
+		})
+	: loadConfig();

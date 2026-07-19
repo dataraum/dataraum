@@ -572,6 +572,7 @@ services:
       PROVISIONER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
       CADDY_ADMIN_URL: http://caddy:2019
+      DATARAUM_CONFIG_PATH: /opt/dataraum/config
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_USE_SSL: ${S3_USE_SSL:-false}
@@ -584,6 +585,9 @@ services:
     volumes:
       # The Docker Engine API — the compose provisioning driver (DAT-820).
       - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only config tree — the create flow (DAT-821) lists the builtin
+      # verticals off it (src/portal/verticals.ts); same mount as engine/cockpit.
+      - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:3000/api/health"]
       interval: 10s

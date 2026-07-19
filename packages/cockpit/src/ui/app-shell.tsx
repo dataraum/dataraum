@@ -1,7 +1,7 @@
 // OUTER SHELL (DAT-380, C0).
 //
 // Thin chrome around the active section: a slim left rail of the six section
-// icons + a thin top bar (workspace-switcher placeholder + a ⌘K hint). Uses
+// icons + a thin top bar (the workspace switcher, DAT-821 + a ⌘K hint). Uses
 // Mantine AppShell. Every dimension / color reads from src/ui/theme.ts — no
 // hardcoded px/hex here.
 
@@ -12,7 +12,6 @@ import {
 	Stack,
 	Text,
 	Tooltip,
-	UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { Link } from "@tanstack/react-router";
@@ -21,6 +20,7 @@ import { CommandPalette } from "#/ui/command-palette";
 import { RunRailBadge } from "#/ui/runs/run-rail-badge";
 import { type Section, sections } from "#/ui/sections";
 import { tokens } from "#/ui/theme";
+import { WorkspaceSwitcher } from "#/ui/workspace-switcher";
 
 /** One rail icon. Every section is a fixed flat path (DAT-822) — one cockpit
  * per workspace, so no link carries params. */
@@ -66,17 +66,11 @@ export function CockpitShell({ children }: { children: ReactNode }) {
 				padding="md"
 			>
 				<AppShell.Header>
-					{/* Wordmark left; the ⌘K command-palette trigger top-right. The
-					    chat-type nav now lives in the composer drop-up (cockpit-only), so
-					    the header is plain global chrome again. */}
+					{/* The workspace switcher left (DAT-821); the ⌘K command-palette
+					    trigger top-right. The chat-type nav lives in the composer
+					    drop-up (cockpit-only), so the header is global chrome only. */}
 					<Group h="100%" px="md" justify="space-between" wrap="nowrap">
-						<UnstyledButton data-testid="workspace-switcher">
-							{/* Brand wordmark — never the raw workspace UUID. A real workspace
-							    name lands with the workspaces registry (DAT-339 slice 1). */}
-							<Text size="sm" fw={600} c="text">
-								DataRaum
-							</Text>
-						</UnstyledButton>
+						<WorkspaceSwitcher />
 						<Tooltip label="Command palette" position="bottom" withArrow>
 							<ActionIcon
 								variant="default"

@@ -6,19 +6,25 @@
 
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { auth } from "#/auth/auth";
 import { workspaceUrlFor } from "#/auth/workspace-url";
 import { baseConfig } from "#/config.base";
 import { cockpitDb } from "#/db/cockpit/client";
+import type { WorkspaceState } from "#/db/cockpit/registry";
 import { memberships, workspaces } from "#/db/cockpit/schema";
 
 /** One row of the portal's workspace list: a membership joined onto the
- * registry. `url` is null when the workspace has no subdomain yet (bare
- * host-dev seed — reachable only on its direct port, not through Caddy). */
+ * registry. `url` is null when the workspace is not enterable — mid-lifecycle
+ * (`creating`/`archiving`), or `ready` without a subdomain yet (bare host-dev
+ * seed — reachable only on its direct port, not through Caddy). */
 export interface PortalWorkspace {
 	id: string;
 	name: string;
+	/** Lifecycle state (DAT-821): `ready` is enterable; `creating`/`archiving`
+	 * render with their state instead of a link; `archived` never leaves the
+	 * server. */
+	state: Exclude<WorkspaceState, "archived">;
 	url: string | null;
 }
 
@@ -33,8 +39,9 @@ export type PortalHome =
 /**
  * The portal home state (DAT-819): role, session, and — signed in — the
  * user's workspaces. Lists memberships joined onto the registry, respecting
- * the provisioner lifecycle: only `state = 'ready'` workspaces are offered
- * (a creating/archiving/archived workspace is not a login target).
+ * the provisioner lifecycle end-to-end (DAT-821): `ready` workspaces link to
+ * their subdomain; `creating`/`archiving` are shown with their state but are
+ * not login targets; `archived` is hidden entirely.
  */
 export const getPortalHome = createServerFn({ method: "GET" }).handler(
 	async (): Promise<PortalHome> => {
@@ -51,6 +58,7 @@ export const getPortalHome = createServerFn({ method: "GET" }).handler(
 			.select({
 				id: workspaces.id,
 				name: workspaces.name,
+				state: workspaces.state,
 				subdomain: workspaces.subdomain,
 			})
 			.from(memberships)
@@ -58,7 +66,7 @@ export const getPortalHome = createServerFn({ method: "GET" }).handler(
 			.where(
 				and(
 					eq(memberships.userId, session.user.id),
-					eq(workspaces.state, "ready"),
+					ne(workspaces.state, "archived"),
 				),
 			);
 		return {
@@ -67,9 +75,11 @@ export const getPortalHome = createServerFn({ method: "GET" }).handler(
 			workspaces: rows.map((row) => ({
 				id: row.id,
 				name: row.name,
-				url: row.subdomain
-					? workspaceUrlFor(row.subdomain, baseConfig.portalOrigin)
-					: null,
+				state: row.state as Exclude<WorkspaceState, "archived">,
+				url:
+					row.state === "ready" && row.subdomain
+						? workspaceUrlFor(row.subdomain, baseConfig.portalOrigin)
+						: null,
 			})),
 		};
 	},

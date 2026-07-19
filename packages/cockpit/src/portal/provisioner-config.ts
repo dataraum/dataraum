@@ -26,6 +26,13 @@ const ProvisionerConfigSchema = z.object({
 	// `http://caddy:2019`.
 	caddyAdminUrl: z.string().min(1),
 
+	// The read-only config tree (DATARAUM_CONFIG_PATH — same env contract as
+	// the workspace config's `dataraumConfigPath`, re-declared here per the
+	// role-scoped-schema convention this file already uses for S3). The create
+	// flow (DAT-821) lists `verticals/*` off it, so the portal container mounts
+	// the same tree every other consumer does.
+	configPath: z.string().min(1),
+
 	// Object store — the archive sweep deletes the workspace's whole
 	// s3://<bucket>/<ws>/ prefix (lake + uploads). Same env contract as the
 	// workspace config's S3 block; endpoint is host:port without scheme.
@@ -59,6 +66,7 @@ export function provisionerConfig(): ProvisionerConfig {
 		adminDatabaseUrl: process.env.PROVISIONER_DATABASE_URL,
 		catalogDatabaseUrl: process.env.DUCKLAKE_CATALOG_URL,
 		caddyAdminUrl: process.env.CADDY_ADMIN_URL,
+		configPath: process.env.DATARAUM_CONFIG_PATH,
 		s3Endpoint: process.env.S3_ENDPOINT,
 		s3Bucket: process.env.S3_BUCKET,
 		s3Region: process.env.S3_REGION ?? "us-east-1",

@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as CreateRouteImport } from './routes/create'
 import { Route as appRouteRouteImport } from './routes/(app)/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiWorkflowProgressRouteImport } from './routes/api/workflow-progress'
@@ -39,6 +40,11 @@ import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as appReportsReportIdRouteImport } from './routes/(app)/reports/$reportId'
 import { Route as appCockpitConversationIdRouteImport } from './routes/(app)/cockpit/$conversationId'
 
+const CreateRoute = CreateRouteImport.update({
+  id: '/create',
+  path: '/create',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const appRouteRoute = appRouteRouteImport.update({
   id: '/(app)',
   getParentRoute: () => rootRouteImport,
@@ -187,6 +193,7 @@ const appCockpitConversationIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/create': typeof CreateRoute
   '/cockpit': typeof appCockpitRouteRouteWithChildren
   '/governance': typeof appGovernanceRoute
   '/library': typeof appLibraryRoute
@@ -217,6 +224,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/create': typeof CreateRoute
   '/governance': typeof appGovernanceRoute
   '/library': typeof appLibraryRoute
   '/metadata': typeof appMetadataRoute
@@ -248,6 +256,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/(app)': typeof appRouteRouteWithChildren
+  '/create': typeof CreateRoute
   '/(app)/cockpit': typeof appCockpitRouteRouteWithChildren
   '/(app)/governance': typeof appGovernanceRoute
   '/(app)/library': typeof appLibraryRoute
@@ -280,6 +289,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/create'
     | '/cockpit'
     | '/governance'
     | '/library'
@@ -310,6 +320,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/create'
     | '/governance'
     | '/library'
     | '/metadata'
@@ -340,6 +351,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/(app)'
+    | '/create'
     | '/(app)/cockpit'
     | '/(app)/governance'
     | '/(app)/library'
@@ -372,6 +384,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   appRouteRoute: typeof appRouteRouteWithChildren
+  CreateRoute: typeof CreateRoute
   ApiAwaitingInputRoute: typeof ApiAwaitingInputRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiChatStreamRoute: typeof ApiChatStreamRoute
@@ -392,6 +405,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/create': {
+      id: '/create'
+      path: '/create'
+      fullPath: '/create'
+      preLoaderRoute: typeof CreateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/(app)': {
       id: '/(app)'
       path: ''
@@ -643,6 +663,7 @@ const appRouteRouteWithChildren = appRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   appRouteRoute: appRouteRouteWithChildren,
+  CreateRoute: CreateRoute,
   ApiAwaitingInputRoute: ApiAwaitingInputRoute,
   ApiChatRoute: ApiChatRoute,
   ApiChatStreamRoute: ApiChatStreamRoute,

@@ -53,8 +53,12 @@ function PortalPage() {
 	const home = Route.useLoaderData();
 	const { denied } = Route.useSearch();
 	return (
-		<div className="flex min-h-screen items-center justify-center bg-neutral-50 dark:bg-neutral-900">
-			<Paper withBorder shadow="sm" p="xl" className="w-full max-w-md">
+		// House tokens only (styles.css @theme mirrors src/ui/theme.ts): the
+		// stock Tailwind scale is REMAPPED here — `max-w-md` resolves to
+		// --spacing-md (1rem) and collapses the card — so widths go through
+		// Mantine props (`maw`), the cockpit's idiom (chart-modal precedent).
+		<div className="flex min-h-screen items-center justify-center bg-surface-muted p-lg">
+			<Paper w="100%" maw={420} withBorder shadow="sm" radius="md" p="xl">
 				<Stack gap="lg">
 					<Stack gap={4}>
 						<Title order={2}>DataRaum</Title>
@@ -65,7 +69,11 @@ function PortalPage() {
 						</Text>
 					</Stack>
 					{denied ? (
-						<Alert color="orange" title="No access to that workspace">
+						<Alert
+							color="yellow"
+							variant="light"
+							title="No access to that workspace"
+						>
 							You are signed in, but not a member of workspace {denied}.
 							{home.mode === "signin"
 								? " Sign in with an account that has access."
@@ -130,11 +138,11 @@ function SignInForm() {
 					autoComplete="current-password"
 				/>
 				{error ? (
-					<Alert color="red" title="Sign-in failed">
+					<Alert color="red" variant="light" title="Sign-in failed">
 						{error}
 					</Alert>
 				) : null}
-				<Button type="submit" loading={submitting}>
+				<Button type="submit" fullWidth mt="xs" loading={submitting}>
 					Sign in
 				</Button>
 			</Stack>
@@ -162,10 +170,10 @@ function WorkspaceList({
 				</Text>
 			) : (
 				home.workspaces.map((ws) => (
-					<Paper key={ws.id} withBorder p="sm">
-						<Group justify="space-between" wrap="nowrap">
+					<Paper key={ws.id} withBorder radius="md" p="sm">
+						<Group justify="space-between" wrap="nowrap" gap="sm">
 							<Stack gap={0} className="min-w-0">
-								<Text fw={500} truncate>
+								<Text size="sm" fw={500} truncate>
 									{ws.name}
 								</Text>
 								<Text size="xs" c="dimmed" truncate>
@@ -173,11 +181,18 @@ function WorkspaceList({
 								</Text>
 							</Stack>
 							{ws.url ? (
-								<Button component="a" href={ws.url} size="xs">
+								// shrink-0: the nowrap Group must squeeze the truncating
+								// text column, never the action.
+								<Button
+									component="a"
+									href={ws.url}
+									size="xs"
+									className="shrink-0"
+								>
 									Open
 								</Button>
 							) : (
-								<Text size="xs" c="dimmed">
+								<Text size="xs" c="dimmed" className="shrink-0">
 									no subdomain
 								</Text>
 							)}

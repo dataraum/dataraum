@@ -2278,3 +2278,42 @@ LLM decision silently reshape structural output:
 
 ### Thresholds / new fields
 None. No schema change.
+
+---
+
+## DAT-725 — 1:1 orientation decided by completeness when containment is silent
+
+**What changed.** `Relationship.oriented_row` now orients a one-to-one on TWO
+measured signals instead of one:
+
+1. **Containment asymmetry** (unchanged, still first): a smaller forward than reverse
+   distinct-value containment means the emission points parent→child.
+2. **Completeness asymmetry** (new), consulted only when containment is symmetric or
+   absent: the referenced side of an FK must be a complete key, so of two identical
+   value sets the side with the LOWER uniqueness ratio is the child and belongs on
+   `from`. A from side measurably more key-like than its to side is backwards.
+   Margin `_ORIENT_COMPLETENESS_MARGIN = 0.01` — below it the two sides are equally
+   complete (the dense bijection), where direction is a modelling question, not a
+   measurement, and the emission stands.
+
+The previous docstring claimed uniqueness cannot orient a 1:1 because "both sides are
+unique". That holds only for a dense bijection; a sparse 1:1 (an ordinary nullable FK)
+has its ratio depressed by unmatched rows, and that is the discriminator.
+
+`semantic/processor.py::_build_candidate_metrics_lookup` now carries
+`left_uniqueness`/`right_uniqueness` through (and swaps them on the reverse entry) —
+they were measured, served to the judge's prompt, and then dropped before reaching the
+chokepoint, which is why it was blind on exactly the pairs the judge got wrong.
+
+Also: the `ORDER BY table_name` added earlier is reproducibility only and its comment now
+says so — it is explicitly NOT the orientation mechanism.
+
+### Calibration to run
+- **detection-v1 `test_relationship_recall`** — `bank_transactions.payment_id → payments`
+  (1.00 vs 0.47, identical value sets) flipped between runs #2/#5 and #3/#4. It should
+  now be stored child→parent regardless of which side the judge emits.
+- Watch for orientation changes on any other confirmed 1:1: this decides direction on
+  measured evidence where presentation order used to.
+
+### Thresholds / new fields
+`_ORIENT_COMPLETENESS_MARGIN = 0.01` (new, orientation only). No schema change.

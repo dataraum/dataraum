@@ -125,6 +125,16 @@ def _build_candidate_metrics_lookup(
                 metrics["cardinality_verified"] = jc["cardinality_verified"]
             if "cardinality" in jc:
                 metrics["cardinality"] = jc["cardinality"]
+            # Per-side completeness (utils.py puts it on the served jc). This is
+            # the ONLY signal that orients a SPARSE 1:1, whose value sets are
+            # identical so containment says nothing: the referenced side must be
+            # a complete key, so the less key-like side is the child. Dropping it
+            # here left ``Relationship.oriented_row`` blind on exactly the pairs
+            # the judge gets wrong (DAT-725 runs #2/#5).
+            if "left_uniqueness" in jc:
+                metrics["left_uniqueness"] = jc["left_uniqueness"]
+            if "right_uniqueness" in jc:
+                metrics["right_uniqueness"] = jc["right_uniqueness"]
 
             # Add relationship-level metrics
             if "join_success_rate" in candidate:
@@ -149,6 +159,13 @@ def _build_candidate_metrics_lookup(
                     reverse["right_referential_integrity"] = left_ri
                 if right_ri is not None:
                     reverse["left_referential_integrity"] = right_ri
+                # Uniqueness is per-side too — it follows its endpoint.
+                left_u = reverse.pop("left_uniqueness", None)
+                right_u = reverse.pop("right_uniqueness", None)
+                if left_u is not None:
+                    reverse["right_uniqueness"] = left_u
+                if right_u is not None:
+                    reverse["left_uniqueness"] = right_u
                 # introduces_duplicates is directional — drop from reverse
                 reverse.pop("introduces_duplicates", None)
                 lookup[(table2, col2, table1, col1)] = reverse

@@ -202,10 +202,95 @@ def test_one_to_one_correct_emission_stays() -> None:
 
 
 def test_one_to_one_symmetric_keeps_the_judges_emission() -> None:
-    """Identical value sets are genuinely undecidable from data — the judge's
-    semantic emission is the only signal left, so it stands."""
+    """Identical value sets AND no completeness measurement — nothing left to
+    orient on, so the judge's semantic emission stands."""
     row = _one_to_one_row(
         {"left_referential_integrity": 100.0, "right_referential_integrity": 100.0}
+    )
+    assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
+
+
+def test_one_to_one_completeness_orients_a_sparse_bijection() -> None:
+    """The run-#5 pair: containment is silent, completeness is not.
+
+    ``bank_transactions.payment_id`` (~half the rows carry no payment, ratio
+    0.47) against ``payments.payment_id`` (a complete key, 1.00). Both value
+    sets are identical, so containment says nothing — but the referenced side
+    of an FK must be a COMPLETE key, so the sparse side is the child. Emitted
+    from the complete side, this is backwards and must swap. The judge was
+    shown 1.00 vs 0.47 in its own prompt and still got it wrong in 2 of 5 runs.
+    """
+    row = _one_to_one_row(
+        {
+            "left_referential_integrity": 100.0,
+            "right_referential_integrity": 100.0,
+            "left_uniqueness": 1.0,
+            "right_uniqueness": 0.4698,
+        }
+    )
+
+    assert (row["from_column_id"], row["to_column_id"]) == ("child_col", "parent_col")
+    assert row["evidence"]["orientation_swapped"] is True
+    # The per-side metrics follow their endpoints.
+    assert row["evidence"]["left_uniqueness"] == 0.4698
+    assert row["evidence"]["right_uniqueness"] == 1.0
+
+
+def test_one_to_one_completeness_leaves_a_correct_emission_alone() -> None:
+    """Same shape, emitted the right way round: the sparse side is already from."""
+    row = Relationship.oriented_row(
+        run_id="r1",
+        from_table_id="child_tbl",
+        from_column_id="child_col",
+        to_table_id="parent_tbl",
+        to_column_id="parent_col",
+        relationship_type="foreign_key",
+        cardinality="one-to-one",
+        confidence=0.95,
+        detection_method="llm",
+        confirmation_source="judge",
+        evidence={
+            "left_referential_integrity": 100.0,
+            "right_referential_integrity": 100.0,
+            "left_uniqueness": 0.4698,
+            "right_uniqueness": 1.0,
+        },
+    )
+
+    assert (row["from_column_id"], row["to_column_id"]) == ("child_col", "parent_col")
+    assert "orientation_swapped" not in row["evidence"]
+
+
+def test_one_to_one_dense_bijection_is_never_guessed() -> None:
+    """Both sides complete over identical value sets — direction is a modelling
+    question, not a measurement. The emission stands rather than being decided
+    by a hair's-width difference or by table order."""
+    for right_uniqueness in (1.0, 0.999):
+        row = _one_to_one_row(
+            {
+                "left_referential_integrity": 100.0,
+                "right_referential_integrity": 100.0,
+                "left_uniqueness": 1.0,
+                "right_uniqueness": right_uniqueness,
+            }
+        )
+        assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
+
+
+def test_one_to_one_containment_outranks_completeness() -> None:
+    """When containment speaks, completeness is not consulted.
+
+    Containment is direct evidence of which side references which; a sparse
+    from side is only a proxy. Here containment says the emission is correct
+    while completeness would swap it — containment must win.
+    """
+    row = _one_to_one_row(
+        {
+            "left_referential_integrity": 100.0,
+            "right_referential_integrity": 24.0,
+            "left_uniqueness": 1.0,
+            "right_uniqueness": 0.47,
+        }
     )
     assert (row["from_column_id"], row["to_column_id"]) == ("parent_col", "child_col")
 

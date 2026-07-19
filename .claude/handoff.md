@@ -5,6 +5,41 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-725 Lane S — slice existence is deterministic; the slicing agent is a ranker (catalog-shape change)
+
+**Branch:** `feat/dat-725-lane-s`. Which columns become dimensions is no longer an
+LLM election: `slicing_phase` persists the WHOLE eligible set — grain-safe
+pre-filter survivors (DAT-805 gates) whose `semantic_role` is not
+measure/timestamp — and the SlicingAgent only ranks (prompt v4.0.0, pick→rank).
+
+**What eval should expect:**
+- **`slice_definitions` row counts jump** (full inventory per fact, not ≤12
+  elected) and the row SET is identical across runs on the same data + code —
+  run-to-run slice-set diffs are now a hard failure, not noise. A folded
+  dimension key (e.g. `account_id` inlined on a fact, a key with no FK) is
+  ALWAYS cataloged.
+- **New vocab/fields:** `detection_source` gains `'structural'` (un-ranked
+  inventory rows; ranked rows stay `'llm'`); un-ranked rows carry
+  `slice_priority = 1000` (`UNRANKED_SLICE_PRIORITY`) and NULL
+  reasoning/business_context/confidence.
+- **Existence consumers see a superset:** drivers `_candidate_dims`, lineage
+  `_shared_dimension_groups`, bus_matrix folded/referenced cells now iterate the
+  full inventory. Curation surfaces (cycles/graphs/validation context, cockpit
+  `<dimensions>`) are budgeted: `ORDER BY slice_priority LIMIT 12`.
+- **Operating-mode change:** LLM-config-missing / feature-disabled no longer skip
+  the phase — the inventory + the DAT-720 time-axis backstop still land; only the
+  ranking is skipped.
+- **Tier-3:** clean-flat (folded, witness 0/20 → expected to fire once DAT-800
+  lands) + clean (referenced, must not regress) is the OWNER's run per the lane
+  brief. Do not rebaseline a red harness green — the reds are the findings.
+
+**Not changed (parked):** the hierarchies `MIN_SUPPORT_ROWS` d2-floor
+(pre-registered bundled fix) — implementing it would flip ~27-distinct folded
+structures to `needs_confirmation` and suppress the clean-flat folded cells;
+escalated to the lead with the consumer-chain analysis.
+
+---
+
 ## DAT-812 — grounding resolvers consume DAT-811's self-describing view: header-dated `days_in_period` + dim-column additivity (metric-value change)
 
 **Branch:** `feat/dat-812-consume-served-columns`. The two shared grounding-resolution

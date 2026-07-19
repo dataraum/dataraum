@@ -107,6 +107,7 @@ def _detected(
     *,
     completion_rate: float | None = 0.85,
     confidence: float = 0.9,
+    tables: list[str] | None = None,
 ) -> DetectedCycle:
     return DetectedCycle(
         cycle_id=str(uuid4()),
@@ -115,7 +116,7 @@ def _detected(
         canonical_type=canonical_type,
         is_known_type=True,
         description="test cycle",
-        tables_involved=["invoices"],
+        tables_involved=tables if tables is not None else ["invoices"],
         status_column="status",
         completion_rate=completion_rate,
         confidence=confidence,
@@ -337,6 +338,55 @@ class TestCycleLifecycleFlow:
         assert result.status == PhaseStatus.COMPLETED
         cycles = session.execute(select(DetectedBusinessCycle)).scalars().all()
         assert {c.canonical_type for c in cycles} == {"order_to_cash"}
+
+    @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
+    @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
+    def test_duplicate_canonical_type_merges_tables(
+        self,
+        mock_types: MagicMock,
+        mock_ground: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """Two same-type emissions persist ONE row whose tables_involved unions both.
+
+        The (session, canonical_type, run) UNIQUE admits one row per type; a
+        duplicate emission's participation must merge, not silently drop.
+        Scalar fields keep the first emission's values.
+        """
+        mock_types.return_value = {"period_close": {"business_value": "high"}}
+        mock_ground.return_value = Result.ok(
+            _analysis(
+                [
+                    _detected(
+                        "period_close",
+                        completion_rate=0.9,
+                        tables=["trial_balance", "general_ledger"],
+                    ),
+                    _detected(
+                        "period_close",
+                        completion_rate=0.2,
+                        tables=["balance_sheet", "general_ledger"],
+                    ),
+                ]
+            )
+        )
+
+        result = BusinessCyclesPhase()._run(
+            _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        )
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        cycles = session.execute(select(DetectedBusinessCycle)).scalars().all()
+        assert len(cycles) == 1
+        assert cycles[0].canonical_type == "period_close"
+        # Ordered union: first emission's tables, then the second's new ones.
+        assert cycles[0].tables_involved == ["trial_balance", "general_ledger", "balance_sheet"]
+        # Scalar fields are first-wins.
+        assert cycles[0].completion_rate == 0.9
 
     @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
     @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")

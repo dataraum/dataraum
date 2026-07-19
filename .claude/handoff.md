@@ -2220,3 +2220,25 @@ No score thresholds changed. New table `column_concepts` (catalogue-grain, `(col
 
 ### Cross-package
 - **Cockpit drizzle mirror is STALE** until `bun run db:pull:metadata` runs against a migrated DB — `schema.sql` gained `column_concepts` and dropped 5 columns from `semantic_annotations`. The `schema-drift` CI gate will fail until the cockpit mirror is re-pulled.
+
+---
+
+## DAT-725 — business-cycles persistence merges duplicate same-type emissions; output-contract tightened
+
+**What changed.** `pipeline/phases/business_cycles_phase.py`: when the cycle
+synthesis emits the SAME canonical type twice, the phase now merges the later
+emission's `tables_involved` into the kept cycle (ordered union; scalar fields
+stay first-wins) instead of silently dropping it via `setdefault` — the
+`(session, canonical_type, run)` UNIQUE still holds one row per type. Logged as
+`cycle_duplicate_canonical_type_merged`. `business_cycles.yaml` 2.1.1 adds two
+output-contract bullets: `tables_involved` must contain every table the cycle's
+stages/flows/evidence cite, and at most ONE cycle per type may be emitted.
+
+### Calibration to run
+- `test_cycles_e2e::test_cycle_recall` key-table coverage — run #4 saw clean-flat
+  `bank_reconciliation` omit a table its own evidence cited, and a doubled
+  `period_close` whose second emission's tables were dropped at persistence.
+  Both mechanisms are closed by this change; recall coverage should tighten.
+
+### Thresholds / new fields
+None. No schema change.

@@ -201,10 +201,24 @@ class BusinessCyclesPhase(BasePhase):
                     cycle_name=detected.cycle_name,
                 )
                 continue
-            # First detection per type wins (the LLM emits one cycle per type;
-            # a duplicate is unexpected but must not double-persist under the
-            # (session, canonical_type, run) UNIQUE).
-            detected_by_type.setdefault(key, detected)
+            # The persistence model holds ONE row per (session, canonical_type,
+            # run). When the LLM emits the same canonical type twice (the prompt
+            # asks for one), merge instead of silently dropping the later
+            # emission's participation: tables_involved unions (order-
+            # preserving); scalar fields keep the first emission's values.
+            existing = detected_by_type.get(key)
+            if existing is None:
+                detected_by_type[key] = detected
+            else:
+                existing.tables_involved.extend(
+                    t for t in detected.tables_involved if t not in existing.tables_involved
+                )
+                _log.warning(
+                    "cycle_duplicate_canonical_type_merged",
+                    canonical_type=key,
+                    kept_cycle=existing.cycle_name,
+                    merged_cycle=detected.cycle_name,
+                )
 
         # bind → execute per declared artifact; persist the grounded cycles.
         grounded_against = base_runs.model_dump(mode="json")

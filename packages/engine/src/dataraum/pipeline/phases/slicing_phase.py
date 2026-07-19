@@ -5,7 +5,9 @@ Persists the dimension inventory deterministically and ranks it with an LLM
 
 - **Existence is deterministic**: every grain-safe pre-filter survivor
   (DAT-805 gates) whose ``semantic_role`` is not measure/timestamp becomes a
-  ``SliceDefinition``. Same data + same code ⇒ the same persisted set.
+  ``SliceDefinition``. Same data + same code ⇒ every COMPLETED run persists
+  the same set (a ranker runtime failure fails the whole activity loudly;
+  Temporal retries it — never a partially-ranked or elected subset).
 - **The agent is a ranker, not an elector**: its priority/context/reasoning/
   confidence merge onto rows that exist regardless; un-ranked rows carry the
   ``UNRANKED_SLICE_PRIORITY`` floor. LLM-unavailable modes (no config, feature
@@ -244,6 +246,14 @@ class SlicingPhase(BasePhase):
                 context_data=context_data,
             )
 
+            # A ranker RUNTIME failure (render error, tool misuse, validation)
+            # stays a loud, whole-activity failure — deliberately NOT a
+            # "ranking skipped" fallback: Temporal retries the activity and the
+            # retry converges to inventory + enrichment atomically. Persisting
+            # the inventory before the ranking instead would strand the run
+            # permanently unranked — the run-scoped guard above would skip the
+            # retry as "already sliced". The determinism claim is about
+            # COMPLETED runs: a failed run persists nothing and says so.
             if not analysis_result.success:
                 return PhaseResult.failed(analysis_result.error or "Slicing analysis failed")
 

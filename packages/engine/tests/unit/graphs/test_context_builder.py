@@ -520,3 +520,64 @@ class TestBuilderExtractsDimensionHierarchies:
         ctx = build_execution_context(session, [table_id])
         # Drilldown (g3=0.005) first; the g3-less role row sorts last (NULLS LAST).
         assert [h.kind for h in ctx.dimension_hierarchies] == ["drilldown", "role"]
+
+
+class TestBuilderCuratedSliceRead:
+    """DAT-725: ``available_slices`` is the top-priority BUDGET, ascending."""
+
+    def test_slice_budget_and_ascending_priority(self, session: Session) -> None:
+        """The catalog is the full deterministic inventory; this LLM-facing read
+        takes LIMIT CURATED_SLICE_BUDGET in ascending priority (1 = most
+        interesting FIRST, column_name tiebreak). Regression pin for the
+        pre-rescope in-Python ``reverse=True`` sort, which put the least
+        interesting first — load-bearing wrong once floor-priority structural
+        rows exist (they would have led every list)."""
+        from dataraum.analysis.slicing.db_models import SliceDefinition
+        from dataraum.analysis.slicing.models import (
+            CURATED_SLICE_BUDGET,
+            UNRANKED_SLICE_PRIORITY,
+        )
+        from dataraum.storage import Column
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
+
+        _source_id, table_id, _column_id = _insert_source_table_column(session)
+        for i in range(CURATED_SLICE_BUDGET + 3):
+            cid = _id()
+            session.add(
+                Column(
+                    column_id=cid,
+                    table_id=table_id,
+                    column_name=f"dim_{i:02d}",
+                    column_position=10 + i,
+                )
+            )
+            # Two ranked rows (priorities 1 and 2), the rest structural floor.
+            session.add(
+                SliceDefinition(
+                    slice_id=_id(),
+                    run_id="cat",
+                    table_id=table_id,
+                    column_id=cid,
+                    column_name=f"dim_{i:02d}",
+                    slice_priority=i + 1 if i < 2 else UNRANKED_SLICE_PRIORITY,
+                    distinct_values=["a", "b"],
+                    detection_source="llm" if i < 2 else "structural",
+                )
+            )
+        session.add(
+            MetadataSnapshotHead(
+                head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="cat"
+            )
+        )
+        session.flush()
+
+        ctx = build_execution_context(session, [table_id])
+
+        assert len(ctx.available_slices) == CURATED_SLICE_BUDGET
+        priorities = [s.priority for s in ctx.available_slices]
+        assert priorities == sorted(priorities), "ascending — most interesting first"
+        assert ctx.available_slices[0].column_name == "dim_00"
+        floor_names = [
+            s.column_name for s in ctx.available_slices if s.priority == UNRANKED_SLICE_PRIORITY
+        ]
+        assert floor_names == sorted(floor_names), "deterministic tiebreak on the floor"

@@ -274,12 +274,22 @@ def _should_compare_columns(
     if stats1.distinct_count <= 1 or stats2.distinct_count <= 1:
         return False
 
-    # Skip if cardinality ratio is extreme
+    # Skip if the cardinality ratio is extreme — UNLESS the larger side is a
+    # key. The cap prunes value-pool comparisons where a huge distinct-count
+    # mismatch makes a join implausible; but an FK target is a key, and a
+    # referencing column may legitimately use only a handful of a large key
+    # column's values — a real FK's ratio is unbounded — so a (near-)unique
+    # larger side keeps the pair alive for the containment rescue
+    # (REF_UNIQUENESS_MIN, DAT-725). The rescued comparison stays cheap: the
+    # contained side's distinct set is tiny. A non-key larger side at extreme
+    # ratio is a value pool — pruned as before.
     ratio = max(stats1.distinct_count, stats2.distinct_count) / max(
         min(stats1.distinct_count, stats2.distinct_count), 1
     )
     if ratio > cardinality_ratio_threshold:
-        return False
+        larger = stats1 if stats1.distinct_count >= stats2.distinct_count else stats2
+        if _uniqueness(larger) < REF_UNIQUENESS_MIN:
+            return False
 
     return True
 

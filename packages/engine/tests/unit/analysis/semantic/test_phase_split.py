@@ -921,6 +921,29 @@ class TestColumnConceptCoverageRetry:
         assert rows[cols["a1"]].meaning == "first"
         assert rows[cols["a2"]].meaning == "filled"
 
+    def test_blank_meaning_counts_as_missing_and_is_refilled(self, session) -> None:
+        """A whitespace-only meaning is absence by the persist contract (it
+        normalizes to NULL), so coverage must re-ask for that column — and the
+        meaningful re-emission wins over the blank one at persist."""
+        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
+        agent = self._agent(
+            [
+                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "   ")]),
+                self._enrichment([self._cc("alpha", "a2", "filled")]),
+            ]
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [alpha.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert result.success
+        assert agent.synthesize_tables.call_count == 2
+        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
+        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
+        assert rows[cols["a2"]].meaning == "filled"
+
     def test_full_coverage_triggers_no_retry(self, session) -> None:
         alpha = _table_with_columns(session, "alpha", ["a1"])
         agent = self._agent([self._enrichment([self._cc("alpha", "a1", "m1")])])

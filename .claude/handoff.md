@@ -5,6 +5,44 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-725 Lane R — containment rescue re-based on key-ness; judge confidence = existence; meanings coverage retry (candidate-set + confirmation-behavior change)
+
+**Branch:** `feat/dat-725-lane-r`. Three robustness fixes on the
+relationship-confirmation path (run #1/#2 forensics: R1 Layer-A gap, R2 judge
+jitter, B1 meanings truncation).
+
+**What eval should expect:**
+- **Layer-A candidate set can GROW.** The containment rescue is gated on the
+  REFERENCED side's uniqueness (`REF_UNIQUENESS_MIN = 0.95` — an FK target must
+  be a key), no longer on the contained side's distinct count (old
+  `min_distinct > 10` floor), and the >100:1 cardinality-ratio pre-filter no
+  longer prunes a pair whose larger side is (near-)unique. A low-distinct FK
+  column 100%-contained in a unique key is now a deterministic Layer-A
+  candidate (run #1's `bank_transactions.account_id → chart_of_accounts`
+  shape) — relationship recall stops depending on the synthesis LLM
+  volunteering that edge. Trivial mutual containment (both sides non-unique)
+  still never rescues.
+- **Judge verdicts should be crisper.** The synthesis prompt
+  (semantic_per_table v2.1.0) defines `confidence` as EXISTENCE-only (sparse
+  usage and orphan dirt are data-quality findings on a real relationship, not
+  existence doubt; decisive bands ≥0.8 real / ≤0.4 not-real), and the DB
+  candidate loader now serves the per-side uniqueness asymmetry (it was
+  dropped, so the judge never saw its orientation evidence) with orientation
+  instructed to be read off the measurements. Expect the run-#1/#2 dead-zone
+  declines (0.55 / 0.6 with "genuine sparse FK" reasoning) and 1:1
+  orientation flips to shrink. `REL_CONFIRM_MIN` stays 0.7 and there is NO
+  deterministic override of the judge — this is prompt+evidence, so residual
+  jitter remains possible (the deterministic-1:1-orientation fork is with the
+  owner/lead).
+- **column_meanings coverage self-heals.** `semantic_per_table` now retries
+  (≤2 re-prompts, scoped to the tables with uncovered columns) when the
+  batched call under-covers `column_concepts`; clean-flat's 9/62-style
+  truncation should recover in-run. `column_meanings_partial_coverage`
+  (warn-only) remains the terminal state after retries; a whitespace-only
+  meaning counts as missing.
+
+---
+
 ## DAT-725 Lane S — slice existence is deterministic; the slicing agent is a ranker (catalog-shape change)
 
 **Branch:** `feat/dat-725-lane-s`. Which columns become dimensions is no longer an

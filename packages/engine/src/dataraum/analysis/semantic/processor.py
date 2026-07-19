@@ -643,8 +643,16 @@ def _missing_concept_keys(
     column_map: dict[tuple[str, str], str],
     column_concepts: list[ColumnConceptOutput],
 ) -> list[tuple[str, str]]:
-    """Catalogue columns with no ``column_concepts`` entry, by (table, column) name."""
-    covered = {(cc.table_name, cc.column_name) for cc in column_concepts}
+    """Catalogue columns not covered by a MEANINGFUL ``column_concepts`` entry.
+
+    Covered = an entry whose ``meaning`` is non-empty after stripping — the same
+    definition ``persist_column_concepts`` normalizes to (whitespace-only becomes
+    NULL at persist), so the retry loop and the terminal partial-coverage warning
+    agree with the persisted surface: a blank (re-)emission is still missing.
+    """
+    covered = {
+        (cc.table_name, cc.column_name) for cc in column_concepts if (cc.meaning or "").strip()
+    }
     return sorted(k for k in column_map if k not in covered)
 
 
@@ -663,11 +671,15 @@ def _retry_missing_column_concepts(
     Re-runs :meth:`SemanticAgent.synthesize_tables` for ONLY the tables that
     still have uncovered columns and merges the retry's ``column_concepts``
     entries for those still-missing columns into ``enrichment`` — the first
-    emission wins (a retry never overwrites), and the retry's tables/
-    relationships output is discarded: the full-catalogue first pass is
-    authoritative for those. Best-effort by contract — a failed retry logs and
-    stops (the first pass succeeded; coverage stays warn-only), and the caller
-    persists ONCE after the loop (idempotent writer, ADR-0010).
+    MEANINGFUL emission wins: a retry is only asked for columns still lacking a
+    non-empty meaning, so it never displaces one (a blank emission is absence
+    by the persist contract and a later meaningful re-emission replaces it via
+    ``persist_column_concepts``' last-mention-wins dedup, which also settles
+    duplicate mentions inside one response). The retry's tables/relationships
+    output is discarded: the full-catalogue first pass is authoritative for
+    those. Best-effort by contract — a failed retry logs and stops (the first
+    pass succeeded; coverage stays warn-only), and the caller persists ONCE
+    after the loop (idempotent writer, ADR-0010).
     """
     missing = _missing_concept_keys(column_map, enrichment.column_concepts)
     for _attempt in range(CONCEPT_COVERAGE_RETRIES):
@@ -970,8 +982,9 @@ def synthesize_and_store_tables(
         # Coverage retry (DAT-725 B1): fill truncation gaps BEFORE the single
         # persist — bounded scoped re-prompts for the tables whose columns are
         # still uncovered; a retry that fails or under-produces leaves the
-        # warn-only terminal state below untouched.
-        column_map = load_column_mappings(session, table_ids)
+        # warn-only terminal state below untouched. ``column_map``/``table_map``
+        # from the top of the function are still current — nothing between there
+        # and here adds columns or tables.
         _retry_missing_column_concepts(
             session,
             agent,

@@ -200,9 +200,19 @@ class TestShouldCompareColumns:
         )
 
     def test_extreme_cardinality_ratio_skipped(self):
+        # The larger side is a value pool (non-unique), so the cap prunes.
         assert not _should_compare_columns(
-            self._stats(distinct=1000),
-            self._stats(distinct=2),
+            self._stats(distinct=1000, total=5000),
+            self._stats(distinct=2, total=100),
+        )
+
+    def test_extreme_ratio_kept_when_larger_side_is_a_key(self):
+        """An FK target is a key: a (near-)unique larger side survives the cap
+        so the containment rescue can see the pair — a real FK's cardinality
+        ratio is unbounded (DAT-725)."""
+        assert _should_compare_columns(
+            self._stats(distinct=2, total=100),
+            self._stats(distinct=1000, total=1000),
         )
 
     def test_unknown_types_skipped(self):
@@ -290,6 +300,31 @@ class TestContainmentRescueGate:
         )
 
         assert candidates == []
+
+    def test_rescue_survives_extreme_cardinality_ratio_into_a_key(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The >100:1 ratio pre-filter no longer strands an FK into a large key.
+
+        2 distinct values referencing a 500-value unique key (ratio 250) used
+        to be pruned by ``_should_compare_columns`` before the rescue could
+        ever see the pair — 'at ANY cardinality' must include this shape.
+        """
+        conn.execute("CREATE TABLE fact AS SELECT (range % 2) + 1 AS ref_code FROM range(100)")
+        conn.execute("CREATE TABLE ref AS SELECT range + 1 AS code FROM range(500)")
+
+        candidates = find_join_columns(
+            conn,
+            "fact",
+            "ref",
+            ["ref_code"],
+            ["code"],
+            column_types1={"ref_code": "BIGINT"},
+            column_types2={"code": "BIGINT"},
+        )
+
+        assert len(candidates) == 1
+        assert candidates[0]["join_confidence"] == 1.0
 
     def test_near_unique_referenced_key_tolerates_dirt(
         self, conn: duckdb.DuckDBPyConnection

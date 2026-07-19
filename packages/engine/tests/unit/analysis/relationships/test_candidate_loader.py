@@ -72,6 +72,48 @@ def test_loader_serves_uniqueness_alongside_ri_metrics(session) -> None:
     assert jc["cardinality_verified"] is True
 
 
+def test_oriented_candidate_serves_uniqueness_in_stored_orientation(session) -> None:
+    """detector → oriented_row(swap) → loader composition stays direction-true.
+
+    A ``one-to-many`` candidate flips at the DAT-777 chokepoint (stored
+    many→one) and the generic ``left_``/``right_`` evidence swap moves each
+    uniqueness value with its endpoint — so the loader must serve the
+    asymmetry aligned with the swapped column1/column2, not the detector's
+    original emission order.
+    """
+    from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
+
+    parent, parent_key = _table_with_column(session, "plants", "plant_id")
+    child, child_fk = _table_with_column(session, "readings", "plant_id")
+
+    row = RelationshipDB.oriented_row(
+        run_id=baseline_run_id(),
+        from_table_id=parent.table_id,
+        from_column_id=parent_key.column_id,
+        to_table_id=child.table_id,
+        to_column_id=child_fk.column_id,
+        relationship_type="candidate",
+        cardinality="one-to-many",  # parent→child emission: the chokepoint swaps
+        confidence=0.9,
+        detection_method="candidate",
+        confirmation_source="unconfirmed",
+        evidence={"left_uniqueness": 1.0, "right_uniqueness": 0.02},
+    )
+    session.add(RelationshipDB(**row))
+    session.flush()
+
+    candidates = load_relationship_candidates_for_semantic(
+        session, [parent.table_id, child.table_id], run_id=baseline_run_id()
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["table1"] == "readings"  # the many/FK side after the swap
+    (jc,) = candidates[0]["join_columns"]
+    assert jc["cardinality"] == "many-to-one"
+    assert jc["left_uniqueness"] == 0.02  # followed its endpoint through the swap
+    assert jc["right_uniqueness"] == 1.0
+
+
 def test_loader_omits_uniqueness_when_evidence_lacks_it(session) -> None:
     """Evidence without uniqueness (e.g. an old row) serves no fabricated keys."""
     from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic

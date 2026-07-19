@@ -17,7 +17,10 @@ describe("trackCreateRun", () => {
 				finish = resolve;
 			}),
 		);
-		expect(createRunFor("ws-ok")).toEqual({ userId: "user-1", status: "running" });
+		expect(createRunFor("ws-ok")).toEqual({
+			userId: "user-1",
+			status: "running",
+		});
 		finish(undefined);
 		await settle();
 		expect(createRunFor("ws-ok")).toBeNull();

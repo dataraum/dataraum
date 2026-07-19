@@ -100,7 +100,8 @@ function CreateForm({
 
 	const subdomain = manualSubdomain ?? subdomainLabelFrom(name);
 	const subdomainValid = isValidSubdomainLabel(subdomain);
-	const submittable = name.trim().length > 0 && vertical !== "" && subdomainValid;
+	const submittable =
+		name.trim().length > 0 && vertical !== "" && subdomainValid;
 
 	const start = useMutation({
 		mutationFn: () =>
@@ -336,9 +337,9 @@ function CreateProgressPanel({ workspaceId }: { workspaceId: string }) {
 			) : state === "creating" && !inFlight ? (
 				<Stack gap="sm">
 					<Alert color="yellow" variant="light" title="Creation interrupted">
-						This workspace is still marked as creating, but no run is in
-						flight — the portal likely restarted mid-provision. Retrying
-						resumes where it stopped.
+						This workspace is still marked as creating, but no run is in flight
+						— the portal likely restarted mid-provision. Retrying resumes where
+						it stopped.
 					</Alert>
 					<Group justify="flex-end">
 						<Button

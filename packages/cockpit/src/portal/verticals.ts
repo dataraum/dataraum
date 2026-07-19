@@ -52,7 +52,10 @@ async function readDescription(path: string): Promise<string | null> {
  */
 export async function listBuiltinVerticals(): Promise<BuiltinVertical[]> {
 	const root = join(provisionerConfig().configPath, "verticals");
-	const entries = await readdir(root, { withFileTypes: true, encoding: "utf8" });
+	const entries = await readdir(root, {
+		withFileTypes: true,
+		encoding: "utf8",
+	});
 	const out: BuiltinVertical[] = [];
 	for (const entry of entries) {
 		if (!entry.isDirectory() || entry.name.startsWith("_")) {
@@ -60,7 +63,9 @@ export async function listBuiltinVerticals(): Promise<BuiltinVertical[]> {
 		}
 		out.push({
 			name: entry.name,
-			description: await readDescription(join(root, entry.name, "ontology.yaml")),
+			description: await readDescription(
+				join(root, entry.name, "ontology.yaml"),
+			),
 		});
 	}
 	return out.sort((a, b) => a.name.localeCompare(b.name));

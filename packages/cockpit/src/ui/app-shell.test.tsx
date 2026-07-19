@@ -13,7 +13,25 @@ import {
 	RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The switcher (DAT-821) fetches the session user's memberships via a server
+// fn — an RPC with no server under jsdom, so the shell test injects the data.
+vi.mock("#/server/switcher-workspaces", () => ({
+	getSwitcherWorkspaces: async () => ({
+		currentName: "Dept One",
+		workspaces: [
+			{
+				id: "ws-1",
+				name: "Dept One",
+				state: "ready",
+				url: null,
+				current: true,
+			},
+		],
+		createUrl: "http://dataraum.localhost/create",
+	}),
+}));
 
 import { CockpitShell } from "#/ui/app-shell";
 import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
@@ -81,10 +99,13 @@ describe("CockpitShell (DAT-380)", () => {
 
 		// The active section's content renders inside the shell <Outlet/>.
 		expect(await screen.findByTestId("section-content")).toBeTruthy();
-		// The top bar shows the brand wordmark, never a raw workspace id.
-		expect(screen.getByTestId("workspace-switcher").textContent).toContain(
-			"DataRaum",
-		);
+		// The top bar's switcher target shows the workspace NAME (DAT-821) —
+		// never a raw workspace id.
+		expect(
+			(await screen.findByText("Dept One")).closest(
+				"[data-testid='workspace-switcher']",
+			),
+		).toBeTruthy();
 	});
 
 	it("links every rail item at its flat section path", async () => {

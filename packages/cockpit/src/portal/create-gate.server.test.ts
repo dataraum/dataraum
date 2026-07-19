@@ -91,7 +91,9 @@ describe("requirePortalSession", () => {
 describe("requireCreateVisibility", () => {
 	it("passes a member", async () => {
 		h.membershipRows = [{ userId: "u1" }];
-		await expect(requireCreateVisibility("ws-a", "u1")).resolves.toBeUndefined();
+		await expect(
+			requireCreateVisibility("ws-a", "u1"),
+		).resolves.toBeUndefined();
 	});
 
 	it("passes the tracked starter before the membership row exists", async () => {
@@ -103,8 +105,8 @@ describe("requireCreateVisibility", () => {
 
 	it("rejects everyone else with 403", async () => {
 		trackCreateRun("ws-other", "u1", new Promise(() => {}));
-		expect(await rejectionStatus(requireCreateVisibility("ws-other", "u2"))).toBe(
-			403,
-		);
+		expect(
+			await rejectionStatus(requireCreateVisibility("ws-other", "u2")),
+		).toBe(403);
 	});
 });

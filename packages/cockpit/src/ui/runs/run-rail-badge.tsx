@@ -33,9 +33,9 @@ export function RunRailBadge({ children }: { children: ReactNode }) {
 	// run during SSR — where a relative fetch has no host. Gate to the client; the
 	// badge renders inactive on the server, then polls once hydrated (the project's
 	// `typeof window` SSR-guard idiom).
-	// TODO(DAT-357): when multi-workspace switching lands, scope these keys (and the
-	// endpoints) by workspace id — today the endpoints resolve the single active
-	// workspace server-side, so the bare keys are correct.
+	// Bare keys are correct under multi-workspace (DAT-821): the cockpit is
+	// per-workspace (DD/51740673) — switching navigates to another subdomain's
+	// own app instance, so one process never sees two workspaces' counts.
 	const enabled = typeof window !== "undefined";
 	const { data: runningData } = useQuery({
 		queryKey: ["workspace-running-runs"],

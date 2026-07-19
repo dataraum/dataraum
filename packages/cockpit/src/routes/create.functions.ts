@@ -174,7 +174,7 @@ export const retryWorkspaceCreate = createServerFn({ method: "POST" })
 			.where(eq(workspaces.id, workspaceId))
 			.limit(1);
 		const subdomain = row?.subdomain;
-		if (!row || row.state !== "creating" || !subdomain) {
+		if (row?.state !== "creating" || !subdomain) {
 			// Nothing to converge: the first attempt never wrote the row (e.g. a
 			// subdomain conflict) or the workspace has moved on.
 			throw Response.json({ error: "not_retryable" }, { status: 409 });

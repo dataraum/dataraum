@@ -47,16 +47,23 @@ class MeasureAggregationLineage(Base):
     )
     event_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
 
-    # The winning event-time axis NAME per side (DAT-565 competes every axis a
-    # table names; DAT-778 persists the winner) — the raw name that won, always
-    # populated. The K2 anchor designation (``og_columns.anchor_time_axis``) reads
-    # ``event_time_axis_column`` BY NAME and matches it against the enriched view's
-    # served columns; the axis's typed identity is then that served column's own
-    # ``source_column_id``. No separate ``*_time_axis_column_id`` is kept — the
-    # DAT-778 id was vestigial (its intended K2 consumer resolves by name instead,
-    # and the id is NULL exactly when the axis is a served/header name anyway).
+    # The winning event-time axis per side (DAT-565 competes every axis a table
+    # names; DAT-778 persists the winner). ``*_time_axis_column`` is the raw axis
+    # name — always populated, since it is literally the name that won the
+    # competition. ``*_time_axis_column_id`` is that name resolved against the
+    # table's typed ``columns`` and is NULLABLE: ``TimeColumn.column`` is
+    # unvalidated LLM output (DAT-780 adds the event/attribute rule + a
+    # real-column check at save) and can name a column that isn't in ``columns``
+    # — an honest NULL then, never a sentinel string. Consumed by DAT-780's K2
+    # anchor designation: "witness axis overrides where a witness exists."
     measure_time_axis_column: Mapped[str] = mapped_column(String, nullable=False)
+    measure_time_axis_column_id: Mapped[str | None] = mapped_column(
+        ForeignKey("columns.column_id"), nullable=True
+    )
     event_time_axis_column: Mapped[str] = mapped_column(String, nullable=False)
+    event_time_axis_column_id: Mapped[str | None] = mapped_column(
+        ForeignKey("columns.column_id"), nullable=True
+    )
 
     # The winning PHYSICAL slice column per side (DAT-756: a table can carry
     # several role-playing ``SliceDefinition``s at the same conformed identity —

@@ -32,9 +32,10 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
     surrogate-mint / enriched-views paths, which only reach this function,
     never the table-level teardown),
     ``measure_aggregation_lineage`` (reachable through ``measure_column_id`` or
-    its DAT-778 witness slice FKs — ``measure_slice_column_id`` /
-    ``event_slice_column_id``; a column can be a lineage row's *slice* witness
-    without being its measure column), and ``relationships`` (reachable
+    any of its DAT-778 witness FKs — ``measure_time_axis_column_id``,
+    ``event_time_axis_column_id``, ``measure_slice_column_id``,
+    ``event_slice_column_id``; a column can be a lineage row's *axis/slice*
+    witness without being its measure column), and ``relationships`` (reachable
     through either ``from_column_id`` / ``to_column_id`` endpoint).
 
     Run BEFORE deleting the ``columns`` rows so the FK constraints are satisfied
@@ -86,6 +87,8 @@ def delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
         delete(MeasureAggregationLineage).where(
             or_(
                 MeasureAggregationLineage.measure_column_id.in_(column_ids),
+                MeasureAggregationLineage.measure_time_axis_column_id.in_(column_ids),
+                MeasureAggregationLineage.event_time_axis_column_id.in_(column_ids),
                 MeasureAggregationLineage.measure_slice_column_id.in_(column_ids),
                 MeasureAggregationLineage.event_slice_column_id.in_(column_ids),
             )

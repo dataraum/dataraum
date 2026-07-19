@@ -384,7 +384,9 @@ export const currentMeasureAggregationLineage = metadataSchema
 		measureColumnId: varchar("measure_column_id"),
 		eventTableId: varchar("event_table_id"),
 		measureTimeAxisColumn: varchar("measure_time_axis_column"),
+		measureTimeAxisColumnId: varchar("measure_time_axis_column_id"),
 		eventTimeAxisColumn: varchar("event_time_axis_column"),
+		eventTimeAxisColumnId: varchar("event_time_axis_column_id"),
 		measureSliceColumnId: varchar("measure_slice_column_id"),
 		eventSliceColumnId: varchar("event_slice_column_id"),
 		sliceDimension: varchar("slice_dimension"),
@@ -399,7 +401,7 @@ export const currentMeasureAggregationLineage = metadataSchema
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	})
 	.as(
-		sql`SELECT lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, measure_time_axis_column, event_time_axis_column, measure_slice_column_id, event_slice_column_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at FROM ws_00000000_0000_0000_0000_000000000001.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, measure_time_axis_column, measure_time_axis_column_id, event_time_axis_column, event_time_axis_column_id, measure_slice_column_id, event_slice_column_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at FROM ws_00000000_0000_0000_0000_000000000001.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentMetricAdditivity = metadataSchema

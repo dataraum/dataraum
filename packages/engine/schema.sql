@@ -548,7 +548,9 @@ CREATE TABLE measure_aggregation_lineage (
 	measure_column_id VARCHAR NOT NULL, 
 	event_table_id VARCHAR NOT NULL, 
 	measure_time_axis_column VARCHAR NOT NULL, 
+	measure_time_axis_column_id VARCHAR, 
 	event_time_axis_column VARCHAR NOT NULL, 
+	event_time_axis_column_id VARCHAR, 
 	measure_slice_column_id VARCHAR NOT NULL, 
 	event_slice_column_id VARCHAR NOT NULL, 
 	slice_dimension VARCHAR NOT NULL, 
@@ -566,6 +568,8 @@ CREATE TABLE measure_aggregation_lineage (
 	CONSTRAINT fk_measure_aggregation_lineage_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_measure_aggregation_lineage_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_measure_aggregation_lineage_event_table_id_tables FOREIGN KEY(event_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_measure_time_axis_column_ab96 FOREIGN KEY(measure_time_axis_column_id) REFERENCES columns (column_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_event_time_axis_column_i_afd6 FOREIGN KEY(event_time_axis_column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_measure_aggregation_lineage_measure_slice_column_id_columns FOREIGN KEY(measure_slice_column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_measure_aggregation_lineage_event_slice_column_id_columns FOREIGN KEY(event_slice_column_id) REFERENCES columns (column_id)
 );

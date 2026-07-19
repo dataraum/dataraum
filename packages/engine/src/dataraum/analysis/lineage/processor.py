@@ -678,6 +678,12 @@ def discover_aggregation_lineage(
     # dedup'd by construction; PK omitted so the model's default applies.
     rows: list[dict[str, object]] = []
     for measure_column_id, (best, m_table, m_col, slice_label) in best_by_measure.items():
+        # The winning axis NAME always resolves (DAT-565); its ``column_id`` is a
+        # best-effort lookup against this table's OWN typed columns and is
+        # honestly NULL when the agent-named axis isn't one of them (DAT-778 —
+        # see the field docstrings on ``MeasureAggregationLineage``).
+        m_axis_col = columns_by_table.get(m_table.table_id, {}).get(best.m_axis)
+        e_axis_col = columns_by_table.get(best.event_table.table_id, {}).get(best.e_axis)
         rows.append(
             {
                 "run_id": run_id,
@@ -685,7 +691,9 @@ def discover_aggregation_lineage(
                 "measure_column_id": measure_column_id,
                 "event_table_id": best.event_table.table_id,
                 "measure_time_axis_column": best.m_axis,
+                "measure_time_axis_column_id": m_axis_col.column_id if m_axis_col else None,
                 "event_time_axis_column": best.e_axis,
+                "event_time_axis_column_id": e_axis_col.column_id if e_axis_col else None,
                 "measure_slice_column_id": best.m_slice_column_id,
                 "event_slice_column_id": best.e_slice_column_id,
                 "slice_dimension": slice_label,

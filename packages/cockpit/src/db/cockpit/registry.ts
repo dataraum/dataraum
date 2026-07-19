@@ -8,15 +8,16 @@
 // installation — so isolation is by scoped queries: every accessor in this
 // directory scopes reads/writes by `bootWorkspaceId()` (the sweep is DAT-817).
 //
-// Seeding is LAZY here rather than a boot step: the compose `cockpit-migrate`
-// init service applies the SCHEMA only, and host dev (cockpit run outside docker)
-// has no init step at all — so the registry self-populates on first resolve,
-// idempotently, working identically everywhere. The seed runs ONCE per process
-// (memoized) so the dev user + membership + subdomain also appear on an
-// installation whose workspace row predates them — a cold-path-only seed would
-// skip a warm registry forever. Identity itself is better-auth's (DAT-819):
-// the seed only provisions the DEV credential user when env asks for one;
-// production users arrive through the portal's sign-up.
+// Seeding is idempotent and memoized ONCE per process; it runs at BOOT (the
+// registry-seed Nitro plugin — the membership gate fronts every request, so
+// the seed that creates the dev login user cannot wait for a request to
+// arrive) and again lazily on first resolve as the retry fallback (the memo
+// resets on failure, so a boot-time Postgres hiccup self-heals). The seed
+// also runs on an installation whose workspace row predates it — a
+// cold-path-only seed would skip a warm registry forever. Identity itself is
+// better-auth's (DAT-819): the seed only provisions the DEV credential user
+// when env asks for one; production users arrive through the portal's
+// sign-up.
 
 import { hashPassword } from "better-auth/crypto";
 import { and, eq } from "drizzle-orm";

@@ -52,26 +52,43 @@ export function escapeSqlLiteral(value: string): string {
 }
 
 /**
+ * The workspace's Postgres schema inside the installation-wide DuckLake
+ * catalog database (DAT-815) — `ws_<id>` with dashes as underscores, the same
+ * derivation as the engine's `schema_name_for` (server/workspace.py), which
+ * derives the METADATA_SCHEMA the engine's writer ATTACH names. The cockpit's
+ * READ_ONLY ATTACH must name the SAME schema or it reads a different (empty)
+ * catalog than the one the engine writes.
+ */
+export function ducklakeMetadataSchemaFor(workspaceId: string): string {
+	return `ws_${workspaceId.replaceAll("-", "_")}`;
+}
+
+/**
  * Build the DuckLake `ATTACH` statement for a Postgres catalog.
  *
- * BOTH single-quoted literals — the `ducklake:postgres:<libpq>` connection
- * string and the data path — are escaped. This matters for the connection
- * string: `pgUrlToLibpq` emits inner single quotes for any value containing
- * whitespace/quotes (e.g. `password='pa ss'`), and those must be doubled (`''`)
- * so they don't terminate the outer SQL literal. DuckDB collapses each `''`
- * back to one `'` before handing the string to its postgres connector, so the
- * libpq quoting survives intact. (Escaping only the data path and interpolating
- * the libpq string raw was a real bug: a space or quote in the catalog
- * credentials produced malformed/injectable ATTACH SQL.)
+ * The catalog database is ONE per installation; `metadataSchema` selects the
+ * workspace's catalog schema within it (DAT-815, `ducklakeMetadataSchemaFor`).
+ *
+ * ALL single-quoted literals — the `ducklake:postgres:<libpq>` connection
+ * string, the data path, and the metadata schema — are escaped. This matters
+ * for the connection string: `pgUrlToLibpq` emits inner single quotes for any
+ * value containing whitespace/quotes (e.g. `password='pa ss'`), and those must
+ * be doubled (`''`) so they don't terminate the outer SQL literal. DuckDB
+ * collapses each `''` back to one `'` before handing the string to its
+ * postgres connector, so the libpq quoting survives intact. (Escaping only the
+ * data path and interpolating the libpq string raw was a real bug: a space or
+ * quote in the catalog credentials produced malformed/injectable ATTACH SQL.)
  */
 export function buildDucklakeAttachSql(
 	alias: string,
 	catalogUrl: string,
 	lakePath: string,
+	metadataSchema: string,
 ): string {
 	const connStr = escapeSqlLiteral(
 		`ducklake:postgres:${pgUrlToLibpq(catalogUrl)}`,
 	);
 	const dataPath = escapeSqlLiteral(lakePath);
-	return `ATTACH '${connStr}' AS ${alias} (DATA_PATH '${dataPath}', READ_ONLY)`;
+	const schema = escapeSqlLiteral(metadataSchema);
+	return `ATTACH '${connStr}' AS ${alias} (DATA_PATH '${dataPath}', METADATA_SCHEMA '${schema}', READ_ONLY)`;
 }

@@ -207,10 +207,12 @@ class TestBootstrap:
         ).fetchall()
         assert rows == [(LAKE_CATALOG_ALIAS,)]
 
-    def test_bootstrap_is_idempotent(self, lake_anchor, lake_catalog_url, tmp_path):
+    def test_bootstrap_is_idempotent(
+        self, lake_anchor, lake_catalog_url, lake_metadata_schema, tmp_path
+    ):
         # Second call must not reopen, raise, or replace the anchor.
         first = get_anchor()
-        bootstrap_lake(lake_catalog_url, str(tmp_path))
+        bootstrap_lake(lake_catalog_url, str(tmp_path), metadata_schema=lake_metadata_schema)
         second = get_anchor()
         assert first is second
 
@@ -219,7 +221,29 @@ class TestBootstrap:
             bootstrap_lake(
                 "postgresql://nobody:nothing@127.0.0.1:1/no_such_db",
                 str(tmp_path),
+                metadata_schema="ws_test",
             )
+
+    def test_metadata_lands_in_named_schema(
+        self, lake_anchor, lake_catalog_url, lake_metadata_schema
+    ):
+        """DAT-815: the catalog's ``ducklake_*`` tables live in the per-workspace
+        METADATA_SCHEMA named on the ATTACH — created by the ATTACH itself, no
+        separate CREATE SCHEMA step — and ``public`` stays empty, which is what
+        lets ONE catalog database host every workspace's catalog side by side.
+        """
+        import psycopg
+
+        with psycopg.connect(lake_catalog_url, autocommit=True) as conn:
+            metadata_schemas = conn.execute(
+                "SELECT DISTINCT table_schema FROM information_schema.tables "
+                "WHERE table_name LIKE 'ducklake_%'"
+            ).fetchall()
+            public_tables = conn.execute(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+            ).fetchone()
+        assert metadata_schemas == [(lake_metadata_schema,)]
+        assert public_tables == (0,)
 
     def test_get_anchor_raises_before_bootstrap(self, no_anchor):
         with pytest.raises(RuntimeError, match="not bootstrapped"):

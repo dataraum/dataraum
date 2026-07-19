@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	buildDucklakeAttachSql,
+	ducklakeMetadataSchemaFor,
 	escapeSqlLiteral,
 	pgUrlToLibpq,
 } from "./sql-escape";
@@ -62,6 +63,21 @@ describe("escapeSqlLiteral (DAT-386 — DuckDB doubles quotes, backslash is lite
 	});
 });
 
+describe("ducklakeMetadataSchemaFor (DAT-815)", () => {
+	it("derives ws_<id> with dashes as underscores, mirroring the engine", () => {
+		// Must agree with the engine's `schema_name_for` (server/workspace.py):
+		// the engine's writer ATTACH names this exact schema, and a divergent
+		// derivation would point the cockpit reader at a different catalog.
+		expect(
+			ducklakeMetadataSchemaFor("00000000-0000-0000-0000-000000000001"),
+		).toBe("ws_00000000_0000_0000_0000_000000000001");
+	});
+
+	it("keeps a dash-free id verbatim under the ws_ prefix", () => {
+		expect(ducklakeMetadataSchemaFor("test")).toBe("ws_test");
+	});
+});
+
 describe("buildDucklakeAttachSql (DAT-367 escaping fix)", () => {
 	it("builds a well-formed ATTACH for clean credentials", () => {
 		expect(
@@ -69,11 +85,13 @@ describe("buildDucklakeAttachSql (DAT-367 escaping fix)", () => {
 				"lake",
 				"postgresql://dataraum:dataraum@postgres:5432/lake_catalog",
 				"s3://dataraum-lake/lake",
+				"ws_00000000_0000_0000_0000_000000000001",
 			),
 		).toBe(
 			"ATTACH 'ducklake:postgres:dbname=lake_catalog host=postgres port=5432 " +
 				"user=dataraum password=dataraum' AS lake " +
-				"(DATA_PATH 's3://dataraum-lake/lake', READ_ONLY)",
+				"(DATA_PATH 's3://dataraum-lake/lake', " +
+				"METADATA_SCHEMA 'ws_00000000_0000_0000_0000_000000000001', READ_ONLY)",
 		);
 	});
 
@@ -86,12 +104,15 @@ describe("buildDucklakeAttachSql (DAT-367 escaping fix)", () => {
 			"lake",
 			"postgresql://u:pa%20ss@h:5432/db",
 			"/data",
+			"ws_test",
 		);
 		expect(sql).toContain("password=''pa ss''");
 		// The outer literal stays balanced: exactly one unescaped opening quote
-		// after ATTACH and the only unescaped quotes wrap the two literals.
+		// after ATTACH and the only unescaped quotes wrap the literals.
 		expect(sql.startsWith("ATTACH 'ducklake:postgres:")).toBe(true);
-		expect(sql).toContain("' AS lake (DATA_PATH '/data', READ_ONLY)");
+		expect(sql).toContain(
+			"' AS lake (DATA_PATH '/data', METADATA_SCHEMA 'ws_test', READ_ONLY)",
+		);
 	});
 
 	it("escapes a quote in the data path by doubling it; backslash stays literal", () => {
@@ -99,7 +120,22 @@ describe("buildDucklakeAttachSql (DAT-367 escaping fix)", () => {
 			"lake",
 			"postgresql://u:p@h:5432/db",
 			"/da'ta\\x",
+			"ws_test",
 		);
-		expect(sql).toContain("(DATA_PATH '/da''ta\\x', READ_ONLY)");
+		expect(sql).toContain(
+			"(DATA_PATH '/da''ta\\x', METADATA_SCHEMA 'ws_test', READ_ONLY)",
+		);
+	});
+
+	it("escapes a quote in the metadata schema by doubling it", () => {
+		// The schema comes from a derivation over the workspace id, but the
+		// builder must not rely on that: it is the escaping seam.
+		const sql = buildDucklakeAttachSql(
+			"lake",
+			"postgresql://u:p@h:5432/db",
+			"/data",
+			"ws'x",
+		);
+		expect(sql).toContain("METADATA_SCHEMA 'ws''x'");
 	});
 });

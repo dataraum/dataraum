@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Postgres first-boot init: create the per-workspace DuckLake catalog databases
-# + the cockpit_db database alongside the primary platform database. The primary
-# db (`$POSTGRES_DB`) is created by the official postgres image; this script adds
-# the catalog DBs and `$COCKPIT_DB`.
+# Postgres first-boot init: create the installation-wide DuckLake catalog
+# database + the cockpit_db database alongside the primary platform database.
+# The primary db (`$POSTGRES_DB`) is created by the official postgres image;
+# this script adds `$DUCKLAKE_CATALOG_DB` and `$COCKPIT_DB`.
 #
-# Per-workspace catalogs (DAT-505): each workspace's engine worker ATTACHes its
-# OWN DuckLake catalog DB — never a shared one. Workspace 1 uses
-# `$DUCKLAKE_CATALOG_DB`; the dev `multi-workspace` compose profile's workspace 2
-# uses `${DUCKLAKE_CATALOG_DB}_2`. Both are created here so the worker's ATTACH
-# finds its catalog whether or not the second workspace is brought up (creating
-# an unused DB is harmless; an ATTACH to a missing one fails loud at boot). A new
-# dev workspace = add its `_<n>` catalog to the list below + a compose service.
+# ONE catalog database per installation (DAT-815): every workspace's DuckLake
+# catalog lives in `$DUCKLAKE_CATALOG_DB` as its own Postgres schema, selected
+# via METADATA_SCHEMA on the ATTACH (`ws_<id>`, derived from the workspace id
+# at boot). The ATTACH creates the schema itself (spike DAT-814), so nothing is
+# allocated per workspace here — a new workspace needs no Postgres first-boot
+# step at all. Teardown drops the workspace's schema
+# (packages/infra/scripts/delete-workspace.sh), never this database.
 set -euo pipefail
 
 : "${DUCKLAKE_CATALOG_DB:?DUCKLAKE_CATALOG_DB must be set on the postgres service}"
@@ -18,6 +18,5 @@ set -euo pipefail
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-EOSQL
     CREATE DATABASE "$DUCKLAKE_CATALOG_DB";
-    CREATE DATABASE "${DUCKLAKE_CATALOG_DB}_2";
     CREATE DATABASE "$COCKPIT_DB";
 EOSQL

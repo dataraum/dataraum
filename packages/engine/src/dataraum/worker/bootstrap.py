@@ -23,7 +23,7 @@ from dataraum.server.overlay_resolver import (
     uninstall_overlay_resolver,
 )
 from dataraum.server.storage import bootstrap_lake, teardown_lake
-from dataraum.server.workspace import bootstrap_workspace
+from dataraum.server.workspace import bootstrap_workspace, schema_name_for
 
 logger = get_logger(__name__)
 
@@ -41,7 +41,17 @@ def bootstrap_worker_substrate() -> ConnectionManager:
     initializes its ``ws_<id>`` schema.
     """
     settings = get_settings()
-    bootstrap_lake(settings.ducklake_catalog_url, settings.ducklake_data_path)
+    # The catalog DB is installation-wide (DAT-815); this workspace's catalog
+    # lives in it as METADATA_SCHEMA ws_<id> — the SAME ws_<id> derivation as
+    # the primary-DB metadata schema, in a DIFFERENT database. schema_name_for
+    # is pure and validates the id, so deriving it here (before
+    # bootstrap_workspace sets the module pointer) is safe and fails loud on a
+    # malformed workspace id before the ATTACH.
+    bootstrap_lake(
+        settings.ducklake_catalog_url,
+        settings.ducklake_data_path,
+        metadata_schema=schema_name_for(settings.dataraum_workspace_id),
+    )
 
     # bootstrap_lake set the process-wide DuckLake anchor. If anything after it
     # fails, release the anchor (and any partially-opened manager) so a

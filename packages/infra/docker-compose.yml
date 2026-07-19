@@ -32,12 +32,12 @@
 # bring their own network policy.
 
 # ── Per-workspace engine-worker template (DAT-505) ─────────────────────────
-# A workspace = one engine container + one task queue + one catalog DB + one
-# s3://<ws>/ prefix. These anchors hold everything COMMON to every workspace's
-# worker; each per-workspace service (engine-worker, engine-worker-2, …) merges
-# them and overrides only the four routing knobs (workspace id, queue, catalog
-# DB, lake prefix). Adding a workspace in dev = a registry insert + one more
-# service that merges these anchors.
+# A workspace = one engine container + one task queue + one catalog schema in
+# the shared catalog DB (DAT-815) + one s3://<ws>/ prefix. These anchors hold
+# everything COMMON to every workspace's worker; each per-workspace service
+# (engine-worker, engine-worker-2, …) merges them and overrides only the three
+# routing knobs (workspace id, queue, lake prefix). Adding a workspace in dev =
+# a registry insert + one more service that merges these anchors.
 x-engine-worker-base: &engine-worker-base
   build:
     context: ../engine
@@ -59,10 +59,15 @@ x-engine-worker-base: &engine-worker-base
     - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
 
 # Env COMMON to every workspace's worker — the per-workspace service appends the
-# four routing overrides (workspace id, TEMPORAL_TASK_QUEUE, DUCKLAKE_CATALOG_URL,
-# DUCKLAKE_DATA_PATH). S3 creds are plain env (single source is .env).
+# three routing overrides (workspace id, TEMPORAL_TASK_QUEUE, DUCKLAKE_DATA_PATH).
+# S3 creds are plain env (single source is .env).
 x-engine-worker-env: &engine-worker-env
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  # ONE installation-wide DuckLake catalog DB (DAT-815), shared by every
+  # workspace's worker: the per-workspace split is the ws_<id> METADATA_SCHEMA
+  # the worker derives from its DATARAUM_WORKSPACE_ID at bootstrap — the URL
+  # carries no per-workspace DB name, so it is common env, not a routing knob.
+  DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
   S3_ENDPOINT: ${S3_ENDPOINT}
   S3_REGION: ${S3_REGION:-us-east-1}
   S3_USE_SSL: ${S3_USE_SSL:-false}
@@ -106,11 +111,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      # Per-workspace DuckLake catalog databases (DAT-505): each workspace's
-      # worker ATTACHes its OWN catalog DB — never a shared one. init-databases.sh
-      # creates the base name + a `_<n>` per additional dev workspace. Workspace 1
-      # uses ${DUCKLAKE_CATALOG_DB}; the multi-workspace profile's workspace 2 uses
-      # ${DUCKLAKE_CATALOG_DB}_2.
+      # The ONE installation-wide DuckLake catalog database (DAT-815), created
+      # at postgres first-boot by init-databases.sh. Every workspace's catalog
+      # lives in it as its own ws_<id> METADATA_SCHEMA, created by the
+      # worker's ATTACH itself — no per-workspace DB (or schema) allocation
+      # anywhere in first-boot.
       DUCKLAKE_CATALOG_DB: ${DUCKLAKE_CATALOG_DB}
       # COCKPIT_DB is created at postgres first-boot by init-databases.sh
       # alongside the catalog DBs. Holds the cockpit's own state
@@ -305,12 +310,13 @@ services:
   # Engine Temporal activity worker (DAT-344, parameterized per workspace by
   # DAT-505). The engine is a pure activity worker — no HTTP port. ONE container
   # per workspace: it bootstraps that workspace's ConnectionManager + DuckLake
-  # anchor (materializing ws_<id> + its OWN catalog DB on its OWN s3://<ws>/lake
-  # prefix) and polls EXACTLY its own queue `engine-<workspace_id>`. The shared
-  # base (anchor below) carries everything common; each per-workspace service
-  # overrides the four routing knobs: workspace id, queue, catalog DB, lake
-  # prefix. "Create a workspace" in dev = a registry insert + adding such a
-  # service. Health = the worker heartbeat (`temporal worker list`), not a probe.
+  # anchor (materializing ws_<id> + its ws_<id> catalog schema in the shared
+  # catalog DB — DAT-815 — on its OWN s3://<ws>/lake prefix) and polls EXACTLY
+  # its own queue `engine-<workspace_id>`. The shared base (anchor below)
+  # carries everything common; each per-workspace service overrides the three
+  # routing knobs: workspace id, queue, lake prefix. "Create a workspace" in
+  # dev = a registry insert + adding such a service. Health = the worker
+  # heartbeat (`temporal worker list`), not a probe.
   engine-worker:
     <<: *engine-worker-base
     environment:
@@ -320,19 +326,17 @@ services:
       # this matches DATARAUM_WORKSPACE_ID at boot (server/workspace.py), and the
       # cockpit drivers route here from the registry row.
       TEMPORAL_TASK_QUEUE: engine-${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
-      # Per-workspace DuckLake catalog DB + S3 lake prefix (DAT-505) — never a
-      # shared catalog. Catalog DB is created at postgres first-boot by
-      # init-databases.sh; the lake parquet lives under this workspace's own
-      # s3://<bucket>/<ws>/lake prefix.
-      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
+      # Per-workspace S3 lake prefix (DAT-505): the lake parquet lives under
+      # this workspace's own s3://<bucket>/<ws>/lake prefix. (The catalog is
+      # the shared DUCKLAKE_CATALOG_URL in the common env — DAT-815.)
       DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}/lake
 
   # Second workspace worker (DAT-505) — behind the `multi-workspace` profile so a
-  # default `up` stays single-workspace. Bring it up for the AC1 two-workspace
+  # default `up` stays single-workspace. Bring it up for the two-workspace
   # side-by-side smoke (`--profile multi-workspace`): a SECOND container, a second
-  # queue (engine-<ws2>), a second ws_<id> schema, a second catalog DB
-  # (${DUCKLAKE_CATALOG_DB}_2, created by init-databases.sh), and a second
-  # s3://<bucket>/<ws2>/lake prefix — fully isolated from workspace 1.
+  # queue (engine-<ws2>), a second ws_<id> schema, a second ws_<id> catalog
+  # schema in the SAME catalog DB (DAT-815), and a second s3://<bucket>/<ws2>/lake
+  # prefix — fully isolated from workspace 1.
   engine-worker-2:
     <<: *engine-worker-base
     profiles: ["multi-workspace"]
@@ -340,7 +344,6 @@ services:
       <<: *engine-worker-env
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
       TEMPORAL_TASK_QUEUE: engine-${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
-      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}_2
       DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}/lake
 
   # One-shot: apply the cockpit_db migrations (DAT-461) before the cockpit
@@ -413,11 +416,13 @@ services:
       # The cockpit needs it explicitly to address PutObject (it can't infer the
       # bucket from the lake path, which carries the lake/ suffix).
       S3_BUCKET: ${S3_BUCKET}
-      # DuckLake catalog (DAT-367/505) — the cockpit ATTACHes the same per-workspace
-      # DuckLake catalog engine-worker 1 owns, READ_ONLY, for the interactive read
-      # verbs (run_sql). Same value as that worker's DUCKLAKE_CATALOG_URL (bare
-      # postgresql:// libpq form — DuckDB's postgres extension wants it, not the
-      # +psycopg SQLAlchemy scheme) and the same DATARAUM_LAKE_PATH above.
+      # DuckLake catalog (DAT-367/815) — the ONE installation-wide catalog DB.
+      # The cockpit ATTACHes it READ_ONLY for the interactive read verbs
+      # (run_sql), selecting the active workspace's catalog via the ws_<id>
+      # METADATA_SCHEMA it derives from DATARAUM_WORKSPACE_ID — the same schema
+      # that workspace's engine-worker writes. Bare postgresql:// libpq form
+      # (DuckDB's postgres extension wants it, not the +psycopg SQLAlchemy
+      # scheme); pairs with the DATARAUM_LAKE_PATH above.
       DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
       # Config (DAT-361) — read-only access to vertical YAMLs for future UX
       # hints ("which concept did the agent bind to?"). No consumers yet; the

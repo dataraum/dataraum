@@ -70,7 +70,7 @@ flowchart LR
 | `ws_<id>` schema | engine (SQLAlchemy) | per-workspace metadata: tables, columns, semantics, relationships, readiness, lifecycle artifacts |
 | `ws_<id>_read` schema | engine | the promoted read views the cockpit is allowed to see |
 | `cockpit_db` | cockpit (Drizzle) | the cockpit's own state: workspace registry, chat history, UI state |
-| `<catalog>` database(s) | engine | one DuckLake catalog database per workspace |
+| `<catalog>` database | engine | the ONE installation-wide DuckLake catalog database; each workspace's catalog is its own `ws_<id>` schema inside it (`METADATA_SCHEMA` on ATTACH) |
 | `temporal` / `temporal_visibility` | Temporal | durable workflow state |
 
 **Object store (S3)** — the data lake lives here, not on a local disk. The engine writes
@@ -137,7 +137,7 @@ flowchart TB
         C["1 engine container"]
         Q["1 Temporal task queue<br/>engine-&lt;id&gt;"]
         SCH["1 Postgres schema<br/>ws_&lt;id&gt;"]
-        CAT["1 DuckLake catalog DB"]
+        CAT["1 DuckLake catalog schema<br/>in the shared catalog DB"]
         LAKE["1 S3 prefix<br/>s3://bucket/&lt;id&gt;/"]
     end
 ```

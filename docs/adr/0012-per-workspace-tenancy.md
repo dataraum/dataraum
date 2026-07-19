@@ -1,8 +1,12 @@
 # ADR-0012 — Per-workspace tenancy: registry source-of-truth, one container/queue/catalog/prefix per workspace
 
-- **Status:** Accepted
+- **Status:** Accepted — lake clause amended 2026-07-19 by DAT-815 (epic DAT-813,
+  design doc Confluence DD/51740673): the per-workspace catalog DATABASE became a
+  per-workspace catalog SCHEMA (`METADATA_SCHEMA`) in ONE installation-wide
+  catalog database. Isolation properties unchanged (independent snapshot chains
+  per schema — spike DAT-814); provisioning/teardown became transactional SQL.
 - **Date:** 2026-06-15
-- **Ticket:** DAT-505 (epic DAT-501)
+- **Ticket:** DAT-505 (epic DAT-501); lake clause revised by DAT-815 (epic DAT-813)
 - **Design doc:** Confluence DD/34045953 §1
 
 ## Context
@@ -29,9 +33,13 @@ prefix:
   guards collapse to ONE boot-time assertion (env workspace ↔ queue name) in
   `bootstrap_workspace` — a payload for another workspace never reaches this
   worker, so the per-activity defence is redundant.
-- **Lake:** per-workspace DuckLake catalog DATABASE + `s3://<bucket>/<ws>/lake`
-  (never a shared catalog schema). The cockpit READ_ONLY-ATTACHes the active
-  workspace's catalog.
+- **Lake** (as amended by DAT-815): per-workspace DuckLake catalog SCHEMA —
+  `ws_<id>` inside the ONE installation-wide catalog database, selected via
+  `METADATA_SCHEMA` on the ATTACH and created by the ATTACH itself — plus
+  `s3://<bucket>/<ws>/lake`. The cockpit READ_ONLY-ATTACHes the active
+  workspace's catalog schema. (DAT-505 originally allocated a catalog DATABASE
+  per workspace; the DAT-814 spike verified schemas give the same isolation —
+  independent snapshot chains — with transactional provisioning.)
 - **Uploads:** staged under `s3://<bucket>/<ws>/uploads/<digest>/<file>`; the
   upload digest salt reads the registry workspace id.
 - **Vertical:** `workspaces.vertical` (a WORKSPACE property) + a boot-read of it.
@@ -40,14 +48,17 @@ prefix:
 - **Compose:** the engine-worker is parameterized per workspace via YAML anchors;
   a second workspace lives behind the `multi-workspace` profile.
 - **Deletion sweep:** `packages/infra/scripts/delete-workspace.sh` — stop
-  container → drop `ws_<id>` + `ws_<id>_read` schemas → drop catalog DB → delete
-  the `s3://<bucket>/<ws>/` prefix → cockpit_db rows (or `--soft` → `archived_at`).
+  container → drop `ws_<id>` + `ws_<id>_read` schemas → drop the `ws_<id>`
+  catalog schema in the shared catalog DB (DAT-815) → delete the
+  `s3://<bucket>/<ws>/` prefix → cockpit_db rows (or `--soft` → `archived_at`).
 
 ## Consequences
 
 - Two workspaces run side by side with zero cross-talk: distinct queues, schemas,
-  catalog DBs, and S3 prefixes. "Create a workspace" in dev = a registry insert +
-  a compose service that derives the four routing knobs from its workspace id.
+  catalog schemas, and S3 prefixes. "Create a workspace" in dev = a registry
+  insert + a compose service that derives the three routing knobs (workspace id,
+  queue, lake prefix) from its workspace id — the catalog URL is installation-wide
+  common env since DAT-815.
 - The engine's workspace-isolation surface is one boot assertion, not 8 scattered
   guards. A misconfigured container (queue ↔ workspace mismatch) fails loud at
   boot, before it advertises itself as polling.

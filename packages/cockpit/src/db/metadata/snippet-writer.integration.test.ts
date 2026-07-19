@@ -15,7 +15,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
+const STACK_AVAILABLE =
+	!!process.env.METADATA_DATABASE_URL &&
+	!!process.env.METADATA_WRITER_DATABASE_URL;
 
 if (STACK_AVAILABLE) {
 	const REQUIRED_DEFAULTS: Record<string, string> = {
@@ -68,7 +70,12 @@ describe.skipIf(!STACK_AVAILABLE)(
 			writer = await import("./snippet-writer");
 			lib = await import("./snippet-library");
 			const { SQL } = await import("bun");
-			sql = new SQL(process.env.METADATA_DATABASE_URL as string);
+			// Engine-emulation scaffolding (seed/cleanup raw ws_<id> rows): the app
+			// roles deliberately cannot express these — superuser connection.
+			sql = new SQL(
+				process.env.METADATA_ADMIN_DATABASE_URL ??
+					"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
+			);
 
 			await cleanup();
 		});

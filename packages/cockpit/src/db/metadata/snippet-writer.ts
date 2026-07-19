@@ -9,8 +9,8 @@
 // conflicts and every save would duplicate. We replicate the engine's app-level
 // `_find_by_key_any`: SELECT by key with explicit IS-NULL matching, then INSERT
 // only if absent. The cockpit writes the raw `sql_snippets` table through the
-// control-plane write surface (write-surface.ts), granted SELECT,INSERT to
-// cockpit_reader (storage/read_views.py).
+// control-plane write surface (write-surface.ts), granted SELECT,INSERT to the
+// per-workspace writer role (storage/read_views.py, DAT-816).
 //
 // Scope: this writes ONLY `query`-type snippets (the cockpit answer tool's
 // learned SQL). Cross-`snippet_type` reconciliation/promotion against the
@@ -19,7 +19,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull, type SQL } from "drizzle-orm";
 
-import { metadataDb } from "./client";
+import { metadataWriteDb } from "./client";
 import { sqlSnippetsWrite } from "./write-surface";
 
 /**
@@ -98,7 +98,7 @@ export function queryKeyConditions(key: QuerySnippetKey): SQL {
 export async function saveQuerySnippet(
 	input: SaveQuerySnippetInput,
 ): Promise<SaveQuerySnippetResult> {
-	const existing = await metadataDb
+	const existing = await metadataWriteDb
 		.select({ snippetId: sqlSnippetsWrite.snippetId })
 		.from(sqlSnippetsWrite)
 		.where(queryKeyConditions(input))
@@ -109,7 +109,7 @@ export async function saveQuerySnippet(
 
 	const snippetId = randomUUID();
 	const now = new Date();
-	await metadataDb.insert(sqlSnippetsWrite).values({
+	await metadataWriteDb.insert(sqlSnippetsWrite).values({
 		snippetId,
 		workspaceId: input.workspaceId,
 		snippetType: "query",

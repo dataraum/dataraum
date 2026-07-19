@@ -121,9 +121,9 @@ describe("resolveActiveWorkspace seed (DAT-461 / DAT-817)", () => {
 
 		const ws = h.inserts.find((i) => i.table === "workspaces");
 		expect(ws?.row.id).toBe(WS);
-		// engine schema derives from the id (underscores, not dashes) — matches the
-		// metadata write-surface.
-		expect(ws?.row.engineSchema).toBe(`ws_${WS.replaceAll("-", "_")}`);
+		// No schema name is derived or stored (DAT-816): the metadata roles'
+		// search_paths resolve the engine schema; derivation lives in the engine.
+		expect(ws?.row).not.toHaveProperty("engineSchema");
 		// Seeds the no-vertical placeholder (DAT-505) + the live lifecycle state
 		// (DAT-817 — a self-seeded boot workspace is by definition live).
 		expect(ws?.row.vertical).toBe("_adhoc");
@@ -187,7 +187,7 @@ describe("setActiveWorkspaceVertical (DAT-523)", () => {
 		// Upsert seeds the row if missing, with the real vertical not _adhoc...
 		expect(up?.row.id).toBe(WS);
 		expect(up?.row.vertical).toBe("finance");
-		expect(up?.row.engineSchema).toBe(`ws_${WS.replaceAll("-", "_")}`);
+		expect(up?.row).not.toHaveProperty("engineSchema");
 		// ...and overwrites the vertical on conflict (the framed-twice / re-frame path).
 		expect(up?.set).toEqual({ vertical: "finance" });
 		// Authoritative write only — no DoNothing seed path involved.

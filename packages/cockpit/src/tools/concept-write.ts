@@ -16,7 +16,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 
-import { metadataDb } from "../db/metadata/client";
+import { metadataWriteDb } from "../db/metadata/client";
 import { conceptsWrite } from "../db/metadata/write-surface";
 
 // The ontological kind of a concept — mirrors the engine's ConceptKind
@@ -61,7 +61,7 @@ export async function writeConcept(
 	input: ConceptWriteInput,
 ): Promise<{ concept_id: string }> {
 	const conceptId = randomUUID();
-	await metadataDb.transaction(async (tx) => {
+	await metadataWriteDb.transaction(async (tx) => {
 		await tx
 			.update(conceptsWrite)
 			.set({ supersededAt: new Date() })

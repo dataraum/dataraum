@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const REQUIRED: Record<string, string> = {
 	COCKPIT_DATABASE_URL: "postgresql://u:p@localhost:5432/cockpit",
 	METADATA_DATABASE_URL: "postgresql://u:p@localhost:5432/meta",
+	METADATA_WRITER_DATABASE_URL: "postgresql://w:p@localhost:5432/meta",
 	DATARAUM_WORKSPACE_ID: "00000000-0000-0000-0000-000000000001",
 	DATARAUM_CONFIG_PATH: "/opt/dataraum/config",
 	DATARAUM_LAKE_PATH: "s3://test-lake/lake",
@@ -50,6 +51,10 @@ describe("cockpit config (DAT-363)", () => {
 
 		expect(config.cockpitDatabaseUrl).toBe(REQUIRED.COCKPIT_DATABASE_URL);
 		expect(config.metadataDatabaseUrl).toBe(REQUIRED.METADATA_DATABASE_URL);
+		// The two metadata ROLE URLs stay separate connections (DAT-816).
+		expect(config.metadataWriterDatabaseUrl).toBe(
+			REQUIRED.METADATA_WRITER_DATABASE_URL,
+		);
 		expect(config.dataraumWorkspaceId).toBe(REQUIRED.DATARAUM_WORKSPACE_ID);
 		expect(config.ducklakeCatalogUrl).toBe(REQUIRED.DUCKLAKE_CATALOG_URL);
 		expect(config.anthropicApiKey).toBe(REQUIRED.ANTHROPIC_API_KEY);

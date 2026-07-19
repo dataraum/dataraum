@@ -24,6 +24,11 @@ const REQUIRED_DEFAULTS: Record<string, string> = {
 	METADATA_DATABASE_URL:
 		process.env.METADATA_DATABASE_URL ??
 		"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
+	// Config-parse placeholder only — these suites never touch the metadata
+	// write surface (DAT-816 role split).
+	METADATA_WRITER_DATABASE_URL:
+		process.env.METADATA_WRITER_DATABASE_URL ??
+		"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
 	DATARAUM_WORKSPACE_ID:
 		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
 	DATARAUM_CONFIG_PATH:

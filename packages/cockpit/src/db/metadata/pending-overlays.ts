@@ -22,8 +22,8 @@
 // nothing has applied them.
 //
 // Returns the active rows in the workspace's `ws_<id>` schema (the metadata
-// client's connection already scopes to it via pgSchema — no per-row workspace
-// filter needed post-DAT-343). The caller decides what counts as "affects this
+// role's search_path already scopes the connection to it, DAT-816 — no per-row
+// workspace filter needed post-DAT-343). The caller decides what counts as "affects this
 // view" — some types are source-wide (null_value affects every table), others are
 // table-scoped (type_pattern targets the typed table you're looking at). Pushing
 // that scoping into the helper would bake one consumer's notion of "relevance" in

@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
-import { metadataDb } from "../db/metadata/client";
+import { metadataWriteDb } from "../db/metadata/client";
 import { configOverlayWrite } from "../db/metadata/write-surface";
 import {
 	AGENT_TEACH_TYPES,
@@ -53,10 +53,10 @@ export async function teach(input: TeachInput): Promise<TeachResult> {
 	const overlayId = randomUUID();
 
 	// Workspace identity is implicit in the ws_<id> schema this insert
-	// targets — the metadata client's connection already scopes to it via
-	// pgSchema. config_overlay carries no session_id post-DAT-506 (the overlay
+	// targets — the writer role's search_path resolves it (DAT-816).
+	// config_overlay carries no session_id post-DAT-506 (the overlay
 	// vocabulary is workspace-scoped).
-	await metadataDb.insert(configOverlayWrite).values({
+	await metadataWriteDb.insert(configOverlayWrite).values({
 		overlayId,
 		type: input.type,
 		payload,
@@ -75,7 +75,7 @@ export async function teach(input: TeachInput): Promise<TeachResult> {
  */
 export async function undoTeach(overlayId: string): Promise<void> {
 	const { eq, isNull, and } = await import("drizzle-orm");
-	await metadataDb
+	await metadataWriteDb
 		.update(configOverlayWrite)
 		.set({ supersededAt: new Date() })
 		.where(

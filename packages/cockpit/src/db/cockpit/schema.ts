@@ -54,8 +54,10 @@ export const users = pgTable("users", {
  * The workspace registry — the source of truth for "which workspace", replacing
  * the bare `DATARAUM_WORKSPACE_ID` env read. Seeded from that env var on first
  * resolve (registry.ts). `id` is the workspace key (the same value the engine is
- * bootstrapped with, e.g. `00000000-…-001`); `engineSchema` is the derived
- * `ws_<id>` Postgres schema the metadata client reads.
+ * bootstrapped with, e.g. `00000000-…-001`). The engine's Postgres schema is
+ * NOT recorded here as a derived name: schema resolution is the metadata
+ * roles' search_paths (DAT-816), and name derivation lives only in the engine
+ * (the provisioner RECORDS the minted role names in the resource record below).
  *
  * Multi-workspace control plane (DAT-817, DD/51740673): cockpit_db stays ONE
  * shared database across all per-workspace cockpit containers, so this registry
@@ -75,7 +77,6 @@ export const users = pgTable("users", {
 export const workspaces = pgTable("workspaces", {
 	id: varchar("id").primaryKey(),
 	name: varchar("name").notNull(),
-	engineSchema: varchar("engine_schema").notNull(),
 	vertical: varchar("vertical").notNull().default("_adhoc"),
 	// Provisioner lifecycle (DAT-817): creating | ready | archiving | archived.
 	// Typed as WorkspaceState (registry.ts) — varchar + TS union per the

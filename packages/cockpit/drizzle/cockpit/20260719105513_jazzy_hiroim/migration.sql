@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" DROP COLUMN "engine_schema";

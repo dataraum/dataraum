@@ -12,7 +12,7 @@ join, and three independent misses corrupted measurements in one week
 - The un-versioned entity anchors additionally get analyzed-representative
   views (``current_tables``/``current_columns``, DAT-655) — the typed-layer
   pick behind a promoted generation head, written once instead of per-consumer.
-- Enforcement by grant: the ``cockpit_reader`` role gets SELECT on the read
+- Enforcement by grant: the per-workspace reader role gets SELECT on the read
   schema and nothing else. A non-head read is unwritable, not discouraged.
 
 The DDL is GENERATED (``schema_read.sql`` via ``dump_ddl``, policed by the
@@ -47,7 +47,6 @@ if TYPE_CHECKING:
 
 WS_TOKEN = "__WS__"
 READ_TOKEN = "__READ__"
-READER_ROLE = "cockpit_reader"
 
 # Run-stamped tables sealed under the per-table generation head where the row
 # reaches its table THROUGH the columns table (the row carries column_id only).
@@ -499,7 +498,7 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
 
 
 # The cockpit's CONTROL-PLANE write surface (DAT-453): the only raw tables the
-# reader role can touch, with the minimum verbs. Registering a source, opening
+# writer role can touch, with the minimum verbs. Registering a source, opening
 # a session, teaching (config_overlay), and saving a learned query snippet
 # (sql_snippets, DAT-486) are deliberate cockpit writes — the teach vocabulary
 # IS overlay rows, and save-on-clean grows the snippet library from real
@@ -535,46 +534,120 @@ _CONTROL_WRITE_GRANTS: dict[str, str] = {
 }
 
 
-def ensure_reader_role(connection: Connection, workspace_schema: str, password: str) -> None:
-    """Create the ``cockpit_reader`` role and grant it the read surface.
+def reader_role_for(workspace_schema: str) -> str:
+    """The per-workspace reader role paired with one ``ws_<id>`` schema.
 
-    The grant is the ADR-0008 enforcement: the cockpit's metadata connection
-    uses this role, so raw run-stamped tables are not even visible to its
-    introspection — the wrong query is unwritable, not discouraged. The one
-    carve-out is the control-plane write surface (``_CONTROL_WRITE_GRANTS``):
-    three un-versioned control tables the cockpit legitimately writes. The
-    role is cluster-global and idempotent; grants are per schema. Requires the
-    bootstrap connection to hold CREATEROLE (true for the compose superuser;
-    managed-Postgres deployments pre-provision the role instead).
+    The role IS the workspace resolution (DAT-816): ``ALTER ROLE … SET
+    search_path`` pins it to the read schema, so the cockpit's Drizzle mirror
+    emits unqualified names and carries zero workspace literals. Cluster-global
+    namespace, so the schema name is embedded.
     """
-    read_schema = read_schema_name_for(workspace_schema)
+    return _role_name(workspace_schema, "reader")
+
+
+def writer_role_for(workspace_schema: str) -> str:
+    """The per-workspace control-plane writer role for one ``ws_<id>`` schema."""
+    return _role_name(workspace_schema, "writer")
+
+
+def _role_name(workspace_schema: str, suffix: str) -> str:
+    candidate = f"{workspace_schema}_{suffix}"
+    if len(candidate) > 63:  # Postgres identifier length limit.
+        raise ValueError(
+            f"role name '{candidate}' exceeds Postgres's 63-char identifier "
+            f"limit — shorten the workspace id."
+        )
+    return candidate
+
+
+def _ensure_role(connection: Connection, role: str, password: str, search_path: str) -> None:
+    """Create-if-absent a LOGIN role, re-assert its password + search_path.
+
+    Idempotent per boot. The password is re-asserted every boot so rotating the
+    env secret actually takes effect; the search_path is a ROLE property (applied
+    at login), which is the whole schema-resolution mechanism — the client never
+    names a schema.
+    """
     # Literal-quoting: doubling embedded single quotes is the only escape a
     # standard single-quoted literal needs; the DO body uses a tagged dollar
     # quote so a password containing ``$$`` cannot terminate it.
+    #
+    # Race-safe create: Postgres has no CREATE ROLE IF NOT EXISTS, and a
+    # check-then-create is a TOCTOU — two concurrent boots (multi-worker
+    # bring-up, supervisor restart) both pass the check and the loser errors.
+    # CREATE unconditionally and swallow duplicate_object: the loser's CREATE
+    # blocks on the winner's uncommitted row, then raises 42710, which the
+    # handler turns into "already there — fall through to the ALTERs".
     pw = password.replace("'", "''")
     connection.execute(
         text(
             "DO $dataraum_role$ BEGIN "
-            f"IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{READER_ROLE}') THEN "
-            f"CREATE ROLE {READER_ROLE} LOGIN PASSWORD '{pw}'; "
-            "END IF; END $dataraum_role$;"
+            f"CREATE ROLE {role} LOGIN PASSWORD '{pw}'; "
+            "EXCEPTION WHEN duplicate_object THEN NULL; "
+            "END $dataraum_role$;"
         )
     )
-    # Rotation: the CREATE above fires once per cluster; re-assert the password
-    # every boot so changing METADATA_READER_PASSWORD actually takes effect.
-    connection.execute(text(f"ALTER ROLE {READER_ROLE} PASSWORD '{pw}'"))
-    connection.execute(text(f'GRANT USAGE ON SCHEMA "{read_schema}" TO {READER_ROLE}'))
+    connection.execute(text(f"ALTER ROLE {role} PASSWORD '{pw}'"))
+    connection.execute(text(f'ALTER ROLE {role} SET search_path = "{search_path}"'))
+
+
+def ensure_workspace_roles(
+    connection: Connection,
+    workspace_schema: str,
+    reader_password: str,
+    writer_password: str,
+) -> None:
+    """Mint the two per-workspace roles that RESOLVE the metadata schema (DAT-816).
+
+    The role, not the client, decides which workspace a connection sees:
+
+    - ``<ws>_reader`` — ``search_path = <ws>_read``, SELECT on that schema and
+      nothing else. The cockpit's metadata mirror emits unqualified names, so
+      this role is both the schema resolution and the ADR-0008 enforcement:
+      raw run-stamped tables (and every other workspace) are unreachable.
+    - ``<ws>_writer`` — ``search_path = <ws>``, exactly the control-table verbs
+      of ``_CONTROL_WRITE_GRANTS`` (the ADR-0008 deviation). USAGE on the raw
+      schema exposes nothing by itself; only the granted tables are reachable.
+
+    The two stay separate clients by design: the read schema's pass-through
+    views share names with the raw tables, so one merged search_path would make
+    every unqualified name ambiguous about which surface it hits.
+
+    Idempotent AND race-safe: concurrent bootstraps of the same workspace
+    (container restart under a supervisor, multi-worker bring-up) converge
+    without error. A transaction-scoped advisory lock serializes the whole
+    mint-and-grant section per workspace — CREATE ROLE has no IF NOT EXISTS
+    (``_ensure_role`` additionally swallows duplicate_object as the belt for
+    anything racing outside the lock), and concurrent GRANT/ALTER DEFAULT
+    PRIVILEGES on the same objects can die with "tuple concurrently updated",
+    which the lock prevents. Runs every boot (the read views are DROP+CREATEd
+    each boot, so the SELECT grants must be re-applied after). Requires
+    CREATEROLE on the bootstrap connection (true for the compose superuser;
+    managed-Postgres deployments pre-provision the roles instead). Replaces
+    the cluster-global ``cockpit_reader`` role — a pre-DAT-816 volume may
+    retain that role; it is simply no longer granted to or used.
+    """
+    read_schema = read_schema_name_for(workspace_schema)
+    reader = reader_role_for(workspace_schema)
+    writer = writer_role_for(workspace_schema)
+
+    # Held until the surrounding transaction commits; keyed per workspace so
+    # distinct workspaces mint in parallel (their roles/schemas never collide).
     connection.execute(
-        text(f'GRANT SELECT ON ALL TABLES IN SCHEMA "{read_schema}" TO {READER_ROLE}')
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"dataraum_workspace_roles:{workspace_schema}"},
     )
+
+    _ensure_role(connection, reader, reader_password, search_path=read_schema)
+    connection.execute(text(f'GRANT USAGE ON SCHEMA "{read_schema}" TO {reader}'))
+    connection.execute(text(f'GRANT SELECT ON ALL TABLES IN SCHEMA "{read_schema}" TO {reader}'))
     connection.execute(
         text(
-            f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{read_schema}" '
-            f"GRANT SELECT ON TABLES TO {READER_ROLE}"
+            f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{read_schema}" GRANT SELECT ON TABLES TO {reader}'
         )
     )
-    # Control-plane write surface: USAGE on the raw schema exposes nothing by
-    # itself; only the explicitly granted tables become reachable.
-    connection.execute(text(f'GRANT USAGE ON SCHEMA "{workspace_schema}" TO {READER_ROLE}'))
+
+    _ensure_role(connection, writer, writer_password, search_path=workspace_schema)
+    connection.execute(text(f'GRANT USAGE ON SCHEMA "{workspace_schema}" TO {writer}'))
     for table, verbs in _CONTROL_WRITE_GRANTS.items():
-        connection.execute(text(f'GRANT {verbs} ON "{workspace_schema}".{table} TO {READER_ROLE}'))
+        connection.execute(text(f'GRANT {verbs} ON "{workspace_schema}".{table} TO {writer}'))

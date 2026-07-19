@@ -11,12 +11,13 @@
 //      declared spec) → promote (session:{id}, "operating_model").
 //   4. Verification THROUGH THE PROMOTED-READ SURFACE (ADR-0008): reads
 //      current_lifecycle_artifacts / current_validation_results via the
-//      cockpit_reader role — so a pass proves workflow → promote → views →
-//      grants in one chain, exactly what DAT-440 will consume.
+//      per-workspace reader role (DAT-816) — so a pass proves workflow →
+//      promote → views → grants in one chain, exactly what DAT-440 will consume.
 //
 // Run against the published compose ports, e.g.:
 //   COCKPIT_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/cockpit \
-//   METADATA_DATABASE_URL=postgresql://cockpit_reader:cockpit-reader-dev@localhost:5432/dataraum \
+//   METADATA_DATABASE_URL=postgresql://ws_00000000_0000_0000_0000_000000000001_reader:cockpit-reader-dev@localhost:5432/dataraum \
+//   METADATA_WRITER_DATABASE_URL=postgresql://ws_00000000_0000_0000_0000_000000000001_writer:cockpit-writer-dev@localhost:5432/dataraum \
 //   DATARAUM_WORKSPACE_ID=00000000-0000-0000-0000-000000000001 \
 //   ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
 //   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default \
@@ -31,7 +32,7 @@ import { z } from "zod";
 import { cockpitDb } from "#/db/cockpit/client";
 import { recordRun } from "#/db/cockpit/runs";
 import { users, workspaces } from "#/db/cockpit/schema";
-import { metadataDb } from "#/db/metadata/client";
+import { metadataDb, metadataWriteDb } from "#/db/metadata/client";
 import {
 	currentLifecycleArtifacts,
 	currentValidationResults,
@@ -86,7 +87,6 @@ async function ingest(client: Client): Promise<string[]> {
 		.values({
 			id: env.DATARAUM_WORKSPACE_ID,
 			name: `Workspace ${env.DATARAUM_WORKSPACE_ID}`,
-			engineSchema: `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`,
 			vertical: VERTICAL,
 		})
 		// A workspace row may already exist from a prior smoke with a DIFFERENT
@@ -97,7 +97,7 @@ async function ingest(client: Client): Promise<string[]> {
 			set: { vertical: VERTICAL },
 		});
 
-	await metadataDb
+	await metadataWriteDb
 		.insert(sourcesWrite)
 		.values({
 			sourceId,
@@ -198,7 +198,7 @@ async function main(): Promise<void> {
 		);
 
 		// ---- verify THROUGH the promoted-read surface (ADR-0008) ------------------
-		// cockpit_reader can only see current_* views; rows appearing here proves
+		// the reader role can only see current_* views; rows appearing here proves
 		// the run promoted (catalog, "operating_model") AND the head join works.
 		// The views resolve at the workspace catalog head (DAT-506) — no session filter.
 		const artifacts = await metadataDb.select().from(currentLifecycleArtifacts);

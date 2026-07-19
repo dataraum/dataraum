@@ -14,7 +14,8 @@
 //
 // Run against the published compose ports, e.g.:
 //   COCKPIT_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/cockpit \
-//   METADATA_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/dataraum \
+//   METADATA_DATABASE_URL=postgresql://ws_00000000_0000_0000_0000_000000000001_reader:cockpit-reader-dev@localhost:5432/dataraum \
+//   METADATA_WRITER_DATABASE_URL=postgresql://ws_00000000_0000_0000_0000_000000000001_writer:cockpit-writer-dev@localhost:5432/dataraum \
 //   DATARAUM_WORKSPACE_ID=00000000-0000-0000-0000-000000000001 \
 //   ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
 //   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default S3_BUCKET=dataraum-lake \
@@ -29,7 +30,7 @@ import { cockpitDb } from "#/db/cockpit/client";
 import { engineTaskQueueFor } from "#/db/cockpit/registry";
 import { recordRun } from "#/db/cockpit/runs";
 import { users, workspaces } from "#/db/cockpit/schema";
-import { metadataDb } from "#/db/metadata/client";
+import { metadataWriteDb } from "#/db/metadata/client";
 import { sourcesWrite } from "#/db/metadata/write-surface";
 import { lookRelationships } from "#/tools/look-relationships";
 import { lookTable } from "#/tools/look-table";
@@ -75,7 +76,6 @@ async function ingest(client: Client): Promise<string[]> {
 		.values({
 			id: env.DATARAUM_WORKSPACE_ID,
 			name: `Workspace ${env.DATARAUM_WORKSPACE_ID}`,
-			engineSchema: `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`,
 			vertical: VERTICAL,
 		})
 		// onConflictDoUPDATE, not DoNothing: the cockpit boot-seeds this workspace
@@ -84,7 +84,7 @@ async function ingest(client: Client): Promise<string[]> {
 		// then fails loud ("Vertical '_adhoc' has no concepts"). Bit the 2026-07-15 smoke.
 		.onConflictDoUpdate({ target: workspaces.id, set: { vertical: VERTICAL } });
 
-	await metadataDb
+	await metadataWriteDb
 		.insert(sourcesWrite)
 		.values({
 			sourceId,

@@ -108,12 +108,15 @@ class Settings(BaseSettings):
     ducklake_max_retry_count: int = 100
 
     # --- Promoted-read surface (ADR-0008 / DAT-453; defaulted for dev) ---
-    # Password for the cluster-global ``cockpit_reader`` role the bootstrap
-    # provisions with SELECT on ``ws_<id>_read`` ONLY — the cockpit's metadata
-    # connection uses it, so raw run-stamped tables are unreachable from there.
-    # Compose overrides this; managed-Postgres deployments pre-provision the
-    # role and the bootstrap's CREATE ROLE branch is skipped (role exists).
+    # Passwords for the two per-workspace roles the bootstrap mints (DAT-816):
+    # ``<ws>_reader`` (search_path = ws_<id>_read, SELECT only there — the
+    # cockpit's metadata connection, so raw run-stamped tables are unreachable)
+    # and ``<ws>_writer`` (search_path = ws_<id>, exactly the control-table
+    # verbs). The ROLE resolves the schema; the cockpit carries no workspace
+    # literal. Compose overrides these; managed-Postgres deployments
+    # pre-provision the roles and the bootstrap's CREATE ROLE branch is skipped.
     metadata_reader_password: SecretStr = SecretStr("cockpit-reader-dev")
+    metadata_writer_password: SecretStr = SecretStr("cockpit-writer-dev")
 
     # --- Temporal (required: the engine process IS the Temporal activity
     # worker; it cannot start without a broker to poll. DAT-369 flipped these

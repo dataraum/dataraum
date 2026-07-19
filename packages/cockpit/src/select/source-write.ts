@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 
-import { metadataDb } from "../db/metadata/client";
+import { metadataDb, metadataWriteDb } from "../db/metadata/client";
 import { sources } from "../db/metadata/schema";
 import { sourcesWrite } from "../db/metadata/write-surface";
 
@@ -37,7 +37,7 @@ export async function upsertSource(values: {
 	connectionConfig: Record<string, unknown>;
 	now: Date;
 }): Promise<string> {
-	const [row] = await metadataDb
+	const [row] = await metadataWriteDb
 		.insert(sourcesWrite)
 		.values({
 			sourceId: randomUUID(),

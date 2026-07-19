@@ -17,7 +17,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { recipeContentHash } from "./source-content-hash";
 
-const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
+const STACK_AVAILABLE =
+	!!process.env.METADATA_DATABASE_URL &&
+	!!process.env.METADATA_WRITER_DATABASE_URL;
 
 // Stub the cockpit env so config.ts loads (source-write pulls the metadata client
 // → config). GATED on the stack so a skipped run never mutates the shared worker's
@@ -67,7 +69,12 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const mod = await import("./recipe-source");
 			persistRecipeSources = mod.persistRecipeSources;
 			const { SQL } = await import("bun");
-			sql = new SQL(process.env.METADATA_DATABASE_URL as string);
+			// Engine-emulation scaffolding (seed/cleanup raw ws_<id> rows): the app
+			// roles deliberately cannot express these — superuser connection.
+			sql = new SQL(
+				process.env.METADATA_ADMIN_DATABASE_URL ??
+					"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
+			);
 		});
 
 		afterAll(async () => {

@@ -5,12 +5,12 @@
 // propagate. Importing teach.ts transitively pulls config.ts + the Postgres
 // metadata client, so we mock both (same approach as registry.test.ts) — the
 // validation path never touches the DB, and the rethrow path relies on the
-// empty metadataDb stub throwing when teach() reaches the insert.
+// empty metadataWriteDb stub throwing when teach() reaches the insert.
 
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("#/config", () => ({ config: {} }));
-vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
+vi.mock("#/db/metadata/client", () => ({ metadataWriteDb: {} }));
 
 import { runTeachTool } from "./teach";
 
@@ -28,7 +28,7 @@ describe("runTeachTool error surface (review-batch)", () => {
 
 	it("rethrows a non-validation error (e.g. DB failure) instead of masking it", async () => {
 		// Valid payload passes validateTeach, then teach() hits the empty
-		// metadataDb stub (`{}.insert` is not a function) → a non-TeachValidationError
+		// metadataWriteDb stub (`{}.insert` is not a function) → a non-TeachValidationError
 		// that must propagate, not be swallowed into {error}.
 		await expect(
 			runTeachTool({

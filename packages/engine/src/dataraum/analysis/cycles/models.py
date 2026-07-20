@@ -110,17 +110,29 @@ class BusinessCycleAnalysis(BaseModel):
 # Flat schema (max depth 2): stages and entity flows are top-level lists that
 # reference cycles by name; _parse_output groups them back into DetectedCycle.
 #
-# EVERY field is REQUIRED (DAT-807). An optional field is a modelling mistake —
-# either the model must state the attribute or the attribute should not exist —
-# and under constrained decoding each optional also spends one of the request's
-# 24 optional-parameter slots (an ``X | None`` renders as an anyOf, so it spends
-# a union slot too). Not-applicable is expressed by a DOCUMENTED EMPTY VALUE
-# ("" / []), never by omission. The three tri-state MEASUREMENTS below
-# (total_records, completed_cycles, completion_rate) are the deliberate
-# exception: 0 is a real measurement, so they have no valid empty value and the
-# distinction "not measured" is load-bearing downstream (the artifact lifecycle
-# reads ``completion_rate is None`` as grounded-but-not-measured, and the
-# cockpit branches on null).
+# EVERY field is REQUIRED (DAT-807) except the three noted below. An optional
+# field is a modelling mistake — either the model must state the attribute or
+# the attribute should not exist — and under constrained decoding each optional
+# also spends one of the request's 24 optional-parameter slots (an ``X | None``
+# renders as an anyOf, so it spends a union slot too). Not-applicable is
+# expressed by a DOCUMENTED EMPTY VALUE ("" / []), never by omission.
+#
+# OPEN, ESCALATED TO THE LEAD — the three tri-state MEASUREMENTS below
+# (total_records, completed_cycles, completion_rate) are left as ``X | None``,
+# which the DAT-807 ruling says not to do. They fit none of its three
+# dispositions: 0 is a REAL measurement, so no in-domain empty value exists,
+# and "not measured" is load-bearing downstream — the artifact lifecycle reads
+# ``completion_rate is None`` as grounded-but-not-measured (never executed),
+# and the cockpit branches on null with a dedicated unmeasured fixture.
+#
+# The alternative is an OUT-OF-DOMAIN numeric sentinel (-1) normalized back to
+# None at the persistence boundary, exactly as the "" sentinels are. That would
+# take all nine schemas to zero optionals. It is not taken unilaterally because
+# the trade is real and runs the other way from the "" case: "" is falsy, so a
+# missed boundary degrades harmlessly, whereas -1 is a valid float that reads
+# as a genuine measurement — one missed normalization silently reports a cycle
+# as -100% complete. No cap pressure forces the choice (3 of 24 optional slots,
+# 3 of 16 union slots). Lead decides; this comment goes when they do.
 # =============================================================================
 
 

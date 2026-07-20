@@ -113,34 +113,19 @@ If either returns NEEDS WORK or BLOCKED:
 - If a finding requires rethinking the approach: stop, tell the user, go back to refinement
 - Do NOT dismiss findings as "style issues" or "nice-to-have" — the reviewers are calibrated to flag real problems
 
-Only proceed to handoff after both reviewers approve (or after discussing unresolved findings with the user).
+Only proceed to wrap-up after both reviewers approve (or after discussing unresolved findings with the user).
 
-## Handoff
+## Wrap-up
 
 After implementation is complete (honestly complete, reviewers satisfied):
 
-1. **If this work touched engine detectors, pipeline phases, or response shapes that eval calibrates against**, update `.claude/handoff.md` with entries for EACH affected area:
-
-   **For dataraum-eval:**
-   - What changed (files, modules, behaviors)
-   - Which engine routes or pipeline phases are affected
-   - Which calibration tests or strategies to run
-   - Any new response fields, changed formats, or threshold changes
-
-   **For dataraum-testdata** (if applicable):
-   - Hints for new injection types that would test this feature
-   - New ground truth values that should be generated
-   - Keep it directional — testdata has its own design concerns
-
-   **Skip the handoff entirely** for anything outside `packages/engine/src/dataraum/{analysis,entropy,pipeline,graphs}/` — that includes `packages/cockpit/` (UI/widgets), `packages/infra/` (docker-compose), and engine-side platform shell (Starlette kernel in `src/dataraum/server/`, server bootstrap, transport plumbing). Eval doesn't consume those surfaces. For parallel platform work, follow the "Parallel platform work" runbook in CLAUDE.md instead.
-
-2. Summarize to the user:
+1. Summarize to the user:
    - What was done
    - What was deferred (with reasons)
    - What needs acceptance testing
    - Reviewer verdicts
 
-3. If the engine REST surface or the cockpit changed: run `/smoke` to drive the cockpit in a browser before handoff. If you only touched engine Python, also rebuild the container (`docker compose -f packages/infra/docker-compose.yml up -d --build control-plane`).
+2. If the engine REST surface or the cockpit changed: run `/smoke` to drive the cockpit in a browser before wrapping up. If you only touched engine Python, also rebuild the container (`docker compose -f packages/infra/docker-compose.yml up -d --build control-plane`).
 
 ## Rules
 

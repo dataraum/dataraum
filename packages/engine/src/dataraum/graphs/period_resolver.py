@@ -44,7 +44,7 @@ re-derived from ``time_columns`` here. Only the axis IDENTITY and its detected
 cadence come from the Postgres read surface; the span itself is measured live in
 DuckDB over the filtered rows.
 
-**Fall loud (K6 — absence must never resolve to a plausible default).** When no flow
+**Fall loud — absence must never resolve to a plausible default.** When no flow
 window can be *observed* — no operand resolves to a ``flow`` materialization, the flow
 never grounded, its anchor axis is NULL (the DAT-801 header-date facts serve NULL), it
 has no temporal profile, its cadence is irregular/unknown, its filtered window is empty

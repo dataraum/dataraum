@@ -27,9 +27,8 @@ class MeasureAggregationLineage(Base):
     role-playing physical slice column at a shared dimension (DAT-756); DAT-778
     persists the WINNING axis/column of each competition on the fields below —
     previously discarded, which made the "audit + re-run reproducibility" claim
-    unfulfillable. This is also the substrate for the K2 measure-anchor
-    designation (DAT-780): anchor = witness axis where a witness (this row)
-    exists.
+    unfulfillable. This is also the substrate for the measure-anchor
+    designation: anchor = witness axis where a witness (this row) exists.
     """
 
     __tablename__ = "measure_aggregation_lineage"
@@ -54,8 +53,8 @@ class MeasureAggregationLineage(Base):
     # table's typed ``columns`` and is NULLABLE: ``TimeColumn.column`` is
     # unvalidated LLM output (DAT-780 adds the event/attribute rule + a
     # real-column check at save) and can name a column that isn't in ``columns``
-    # — an honest NULL then, never a sentinel string. Consumed by DAT-780's K2
-    # anchor designation: "witness axis overrides where a witness exists."
+    # — an honest NULL then, never a sentinel string. Consumed by the anchor
+    # designation: a witness axis overrides where a witness exists.
     measure_time_axis_column: Mapped[str] = mapped_column(String, nullable=False)
     measure_time_axis_column_id: Mapped[str | None] = mapped_column(
         ForeignKey("columns.column_id"), nullable=True

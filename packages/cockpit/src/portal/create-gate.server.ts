@@ -5,10 +5,14 @@
 //
 // v1 policy (decided on DAT-821): the portal role only, an authenticated
 // session required, and ANY signed-in user of the installation may create —
-// one installation = one tenant, every account arrived through this portal's
-// sign-up, and finer roles are explicitly post-v1 (`MembershipRole` is
-// `member`-only). The creator is the membership the new workspace gets; the
-// client can never attach other users.
+// one installation = one tenant, and finer roles are explicitly post-v1
+// (`MembershipRole` is `member`-only). The creator is the membership the new
+// workspace gets; the client can never attach other users.
+//
+// "Signed-in" is a narrower gate than it sounds: there is NO sign-up surface
+// yet, so the only accounts that exist are the ones the bootstrap workspace's
+// registry seeds from DATARAUM_DEV_USER_EMAIL/PASSWORD. Self-service sign-up
+// is what would make this policy mean what it says.
 
 import "@tanstack/react-start/server-only";
 

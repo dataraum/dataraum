@@ -226,8 +226,9 @@ describe("resolveActiveWorkspace seed (DAT-461 / DAT-817 / DAT-819)", () => {
 			userId: DEV_USER_ID,
 			password: "scrypt:pw",
 		});
-		// The insert is upsert-guarded: a concurrent boot-seed (cockpit-2, same
-		// dev user) losing the race converges on the hash instead of throwing
+		// The insert is upsert-guarded: a concurrent boot-seed (another
+		// workspace's cockpit, same dev user) losing the race converges on the
+		// hash instead of throwing
 		// mid-seed and skipping its own membership below.
 		const accountUpsert = h.upserts.find((u) => u.table === "accounts");
 		expect(accountUpsert?.set).toEqual({ password: "scrypt:pw" });

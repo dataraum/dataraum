@@ -24,8 +24,8 @@ export interface WorkspaceRouteSpec {
 	/** The installation's parent domain, e.g. `dataraum.localhost` (the
 	 * portal origin's hostname — auth.ts `parentDomain`). */
 	parentDomain: string;
-	/** The workspace cockpit's dial address on the compose network,
-	 * e.g. `cockpit-2:3000`. */
+	/** The workspace cockpit's dial address on the compose network — for a
+	 * provisioned pair, `ws-<workspace-id>-cockpit:3000`. */
 	upstream: string;
 }
 

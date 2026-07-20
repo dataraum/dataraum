@@ -164,9 +164,11 @@ function WorkspaceList({
 	return (
 		<Stack gap="sm">
 			{home.workspaces.length === 0 ? (
+				// Any signed-in user of the installation may create (create-gate.server.ts:
+				// one installation = one tenant), so the zero-state points at the button
+				// below rather than telling people to ask someone else.
 				<Text size="sm" c="dimmed">
-					You are not a member of any workspace yet. Ask an administrator to add
-					you.
+					No workspaces yet — create one to get started.
 				</Text>
 			) : (
 				home.workspaces.map((ws) => (

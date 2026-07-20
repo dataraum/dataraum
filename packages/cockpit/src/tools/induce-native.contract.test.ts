@@ -54,7 +54,7 @@ describe("induceNative — native structured output", () => {
 		h.chat.mockResolvedValue({ items: ["a"] });
 	});
 
-	it("passes the schema as outputSchema and returns the validated value", async () => {
+	it("passes the schema as outputSchema and returns what chat() resolved", async () => {
 		const result = await induceNative({
 			instructions: "sys",
 			userMessage: "user",
@@ -80,6 +80,11 @@ describe("induceNative — native structured output", () => {
 		expect(
 			(opts.modelOptions as Record<string, unknown>).tool_choice,
 		).toBeUndefined();
+
+		// And with no tool boundary there is nothing for the args guard to do —
+		// attaching it here would be cargo-cult (lib/tool-args-guard.ts header).
+		const middleware = opts.middleware as Array<{ name?: string }>;
+		expect(middleware.some((m) => m?.name === "tool-args-guard")).toBe(false);
 	});
 
 	it("keeps the pre-migration budget and thinking config unchanged", async () => {

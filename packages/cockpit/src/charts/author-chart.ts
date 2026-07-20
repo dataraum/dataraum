@@ -47,11 +47,12 @@ export type AuthorChartResult =
 /** A chart-author conversation turn. */
 export type AuthorMessage = { role: "user" | "assistant"; content: string };
 
-/** One emit turn: given the prompts + conversation, return the emitted config
- * (still untrusted — constrained decoding guarantees the shape, never that the
- * fields name real result columns) or `undefined` when the model produced none.
- * Injectable so the retry loop is unit-testable without a live LLM (production
- * uses {@link emitOnce}). */
+/** One emit turn: given the prompts + conversation, resolve to the emitted config
+ * — still untrusted, because constrained decoding guarantees the SHAPE and never
+ * that the fields name real result columns — or THROW when the model produced
+ * none. There is no "resolved but empty" outcome: `chat({ outputSchema })` either
+ * returns the validated value or throws. Injectable so the retry loop is
+ * unit-testable without a live LLM (production uses {@link emitOnce}). */
 export type EmitFn = (
 	systemPrompts: string[],
 	messages: AuthorMessage[],
@@ -118,7 +119,7 @@ export async function authorChart(opts: {
 	columns: ChartColumn[];
 	instruction: string;
 	signal?: AbortSignal;
-	/** Injected for tests; defaults to the live forced-emit call. */
+	/** Injected for tests; defaults to the live structured-output call. */
 	emit?: EmitFn;
 }): Promise<AuthorChartResult> {
 	const emit = opts.emit ?? emitOnce;
@@ -137,10 +138,11 @@ export async function authorChart(opts: {
 			// A cancelled request (client closed the modal) — stop, don't burn the
 			// remaining attempts re-failing fast against an already-aborted signal.
 			if (opts.signal?.aborted) return { ok: false, error: "Cancelled." };
+			// Everything else — including "the model emitted nothing", which native
+			// structured output surfaces as a throw — costs one attempt and retries.
 			lastError = err instanceof Error ? err.message : String(err);
 			continue;
 		}
-		if (emitted === undefined) continue;
 
 		const validation = validateChartConfig(emitted, columnNames);
 		if (validation.ok) return { ok: true, config: validation.config };

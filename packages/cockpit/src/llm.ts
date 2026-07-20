@@ -1,9 +1,9 @@
 // Shared LLM config for the cockpit agent tier (DAT-353).
 //
 // ONE source for the model ids + the two output-token ceilings: streaming
-// chat (the agent loops, the forced-tool streams) takes MAX_OUTPUT_TOKENS;
-// pure `chat({ outputSchema })` calls (why_* synthesis, nav classifier,
-// report summary) take STRUCTURED_OUTPUT_MAX_TOKENS — sized under the SDK's
+// chat (the agent loops) takes MAX_OUTPUT_TOKENS; the SHORT-PAYLOAD
+// `chat({ outputSchema })` calls (why_* synthesis, nav classifier, report
+// summary) take STRUCTURED_OUTPUT_MAX_TOKENS — sized under the SDK's
 // non-streaming gate so adapter routing can't break them (DAT-700).
 //
 // max_tokens MUST be set explicitly — via `modelOptions: { max_tokens }` — on
@@ -44,12 +44,21 @@ export const MAX_OUTPUT_TOKENS = 24576;
 // Anthropic SDK refuses client-side above 21,333 max_tokens (`Streaming is
 // required …`, thrown before anything is sent). That set lags model releases
 // (claude-sonnet-5 was outside it on adapter 0.15.x — the DAT-700 outage,
-// MAX_OUTPUT_TOKENS 24576 over the gate), so the budget rule is: every
-// outputSchema site uses this constant, sized under the gate — a new model
-// id landing outside the set degrades to the slower transport instead of
-// breaking. 8192 is ample for these payloads (a few-paragraph narrative at
+// MAX_OUTPUT_TOKENS 24576 over the gate), so the budget rule is: an
+// outputSchema site uses this constant WHEN ITS PAYLOAD FITS — a new model
+// id landing outside the set then degrades to the slower transport instead
+// of breaking. 8192 is ample for these payloads (a few-paragraph narrative at
 // most, thinking disabled on the one-shot emits). Set membership for our
 // model ids is pinned in llm.contract.test.ts.
+//
+// THREE outputSchema sites deliberately opt out and keep MAX_OUTPUT_TOKENS
+// (DAT-807): the frame inductions (frame-family.ts `induceNative`), the chart
+// author, and the answer sub-agent's combined tools+schema loop. Their
+// payloads — a whole concept/cycle set, a full tool-loop turn — do not fit in
+// 8192, and truncating an induction is a worse failure than losing the
+// degradation path. Those three are guarded ONLY by llm.contract.test.ts: if
+// a model id ever leaves the combined set they throw `Streaming is required …`
+// instead of degrading, and that test is what fails first to say so.
 export const STRUCTURED_OUTPUT_MAX_TOKENS = 8192;
 
 // The agent-loop iteration ceiling for /api/chat. chat() defaults to

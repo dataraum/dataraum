@@ -40,7 +40,12 @@ function scriptedEmit(sequence: unknown[]): {
 	const emit: EmitFn = async (_prompts, messages) => {
 		// Snapshot the conversation as handed to this attempt.
 		calls.push(messages.map((m) => ({ ...m })));
-		return sequence[i++];
+		const next = sequence[i++];
+		// An Error in the script models the live failure mode: native structured
+		// output THROWS when the model produced no config (there is no
+		// resolved-but-empty outcome), and the breaker must spend one attempt.
+		if (next instanceof Error) throw next;
+		return next;
 	};
 	return { emit, calls };
 }
@@ -100,8 +105,11 @@ describe("authorChart circuit breaker", () => {
 		expect(calls).toHaveLength(CHART_AUTHOR_MAX_ATTEMPTS);
 	});
 
-	it("treats a no-tool-call emission as a failed attempt", async () => {
-		const { emit, calls } = scriptedEmit([undefined, validConfig]);
+	it("treats a produced-nothing emission (a throw) as a failed attempt", async () => {
+		const { emit, calls } = scriptedEmit([
+			new Error("structured output finalization produced no result"),
+			validConfig,
+		]);
 		const res = await authorChart({
 			columns: COLUMNS,
 			instruction: "revenue by month",

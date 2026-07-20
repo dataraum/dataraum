@@ -200,13 +200,13 @@ export interface RunStepsFailure {
 	steps: string[];
 }
 
-/** The per-invocation capture cell: the last successful run_steps validation (for the
- * grid), the last failure (for the no-result diagnostic), and the model's final answer
- * draft once it calls `emit_result`. */
+/** The per-invocation capture cell: the last successful run_steps validation (for
+ * the grid) and the last failure (for the no-result diagnostic). The model's draft
+ * is NOT captured here — it is the return value of the structured-output call
+ * (DAT-807), so nothing writes it through a tool any more. */
 interface RunStepsCapture {
 	value: ValidatedRun | null;
 	lastError: RunStepsFailure | null;
-	draft: QueryDraft | null;
 }
 
 // --- Reuse classification (CLASSIFY-don't-substitute; informed by the engine's
@@ -487,9 +487,10 @@ export async function persistLearnedSnippets(
 }
 
 // --- No-result handling (DAT-608): the agent loop can end without the model emitting
-// an answer (it gave up, or hit the iteration ceiling). `emit_result` not being called
-// is how that surfaces now — captured.draft stays null. We salvage a validated query if
-// one exists, else tell the no-result story from the last state (see noResultNarrative).
+// an answer (it gave up, or hit the iteration ceiling). That now surfaces as a thrown
+// `structured-output-*` error from chat() rather than an unwritten capture cell. We
+// salvage a validated query if one exists, else tell the no-result story from the last
+// state (see noResultNarrative).
 
 /** Synthesize a draft from a validated-but-unfinalized run: the model proved a
  * query via run_steps but ran out of steps before writing the summary. The grid
@@ -626,11 +627,7 @@ export async function querySubAgent(
 
 	// Per-invocation capture cell — run_steps writes the last validation (+ last
 	// failure). Isolated across concurrent calls.
-	const captured: RunStepsCapture = {
-		value: null,
-		lastError: null,
-		draft: null,
-	};
+	const captured: RunStepsCapture = { value: null, lastError: null };
 
 	// The COMBINED shape (DAT-807): the real tools and the schema-guaranteed final
 	// draft ride ONE streaming request (`output_config.format` + `tools`), exactly
@@ -639,12 +636,16 @@ export async function querySubAgent(
 	// guarantees it — so the tool-argument malformation that could silently zero
 	// the answer is structurally gone.
 	//
-	// This also removes the hazard the forced tool was working around: the model
-	// can no longer end the loop with a prose preamble ("Let me now compose…"),
-	// because every turn's text is schema-constrained — it either calls a tool or
-	// emits the draft. The remaining failure — finalizing a well-formed draft
-	// WITHOUT ever validating SQL — is unchanged and still handled below
-	// (`captured.value === null` → noResultNarrative).
+	// The hazard the forced tool was working around — the model ending the loop
+	// with a prose preamble ("Let me now compose…") that gets harvested as the
+	// answer — is CAUGHT rather than impossible: the adapter attaches the schema
+	// to every request, so a prose ending fails the harvest with
+	// `structured-output-parse-failed` and falls into the salvage branch below
+	// (verified against the installed adapter, not assumed). The other failure —
+	// finalizing a well-formed draft WITHOUT ever validating SQL — is unchanged
+	// and also handled below (`captured.value === null` → noResultNarrative).
+	// The prompt carries the load here: `prompts/query.ts` tells the model that
+	// emitting the answer is what ENDS the turn.
 	const abortController = linkedAbortController(signal);
 	let draft: QueryDraft | null = null;
 	try {
@@ -690,22 +691,30 @@ export async function querySubAgent(
 		// That is not a dead turn — if run_steps validated a query we still have the
 		// real result, and the salvage path below returns it.
 		//
-		// Everything else (auth, rate limit, network, abort) must propagate to the
-		// `asAgentError` envelope so the orchestrator sees the real cause and can
-		// retry. Swallowing those would report "I couldn't compose a query" for what
-		// is actually a 401 — a misleading non-fact the orchestrator hallucinates
-		// from (the same failure mode noResultNarrative was written to avoid).
-		if (!isMissingStructuredResult(err)) throw err;
+		// Everything else (auth, rate limit, network, abort) propagates to the
+		// `asAgentError` envelope. Swallowing those would report "I couldn't compose
+		// a query" for what is actually a 401 — a misleading non-fact the
+		// orchestrator hallucinates from (the failure noResultNarrative avoids).
+		//
+		// CAVEAT, verified against the installed adapter: a provider error does NOT
+		// arrive with its cause intact. `@tanstack/ai-anthropic` yields a RUN_ERROR
+		// chunk rather than throwing; the engine early-terminates and chat() throws
+		// its UNCODED fallback ("structured output finalization produced no
+		// result"), discarding the real message. So the classification below is
+		// correct — an uncoded error is not salvageable — but the envelope the
+		// orchestrator sees is opaque for this class. Log BEFORE re-raising so the
+		// failure at least leaves a trace; without this a 401 is silent everywhere.
+		const salvageable = isMissingStructuredResult(err);
 		console.info("answer_subagent_no_structured_result", {
 			error: err instanceof Error ? err.message : String(err),
+			code: err instanceof Error ? (err as { code?: unknown }).code : undefined,
+			salvageable,
 			validated: captured.value !== null,
 		});
+		if (!salvageable) throw err;
 	}
-	captured.draft = draft;
 
-	const dataQuality = await readDataQuality(
-		captured.draft?.tables_touched ?? [],
-	);
+	const dataQuality = await readDataQuality(draft?.tables_touched ?? []);
 	// Save-on-clean (P2a): grow the snippet library from this answer's fresh/adapted
 	// steps. Fire-and-forget — runs AFTER assembly, never on the critical path.
 	void persistLearnedSnippets(captured.value);
@@ -714,15 +723,18 @@ export async function querySubAgent(
 		// A query validated — that's the answer. Use the model's emitted draft, or salvage
 		// from the validated run if it validated but never emitted (the grid IS the answer,
 		// DAT-608: a near-miss returns the real result rather than failing the turn).
-		const draft = captured.draft ?? salvageDraft(captured.value);
-		return assembleAnswer(draft, captured.value, dataQuality);
+		return assembleAnswer(
+			draft ?? salvageDraft(captured.value),
+			captured.value,
+			dataQuality,
+		);
 	}
 
 	// No validated query → an honest no-result (the last state), never a blank. The
 	// narrative tells the story from facts (the last validation failure, or a plain
 	// "stopped before running any SQL"); the log line leaves a debuggable trace.
 	console.info("answer_no_result", {
-		emitted_answer: captured.draft !== null,
+		emitted_answer: draft !== null,
 		last_error: captured.lastError?.message ?? null,
 		last_sql: captured.lastError?.sql ?? null,
 		steps_attempted: captured.lastError?.steps ?? [],
@@ -730,8 +742,8 @@ export async function querySubAgent(
 	return assembleAnswer(
 		{
 			answer: noResultNarrative(captured.lastError),
-			assumptions: captured.draft?.assumptions ?? [],
-			concepts_used: captured.draft?.concepts_used ?? [],
+			assumptions: draft?.assumptions ?? [],
+			concepts_used: draft?.concepts_used ?? [],
 			tables_touched: [],
 		},
 		null,

@@ -18,9 +18,8 @@
 // This module factors that shape so adding a family (DAT-470/471) is supplying
 // `{ teach type, item schema, induce fn, payload mapper }` — the induce-call
 // scaffolding (`induceNative` / `induceStructured`), the declare/write loop
-// (`frameFamily`), and
-// the library-as-seed helpers (`nearestSeedVertical` + `formatSeedExamples`) are
-// shared. The concept path runs through `frameFamily` unchanged.
+// (`frameFamily`), and the library-as-seed helpers (`nearestSeedVertical` +
+// `formatSeedExamples`) are shared. The concept path runs through `frameFamily` unchanged.
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";

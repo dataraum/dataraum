@@ -257,9 +257,9 @@ export async function induceConcepts(
  * Induce a validation set for a source via one FORCED-TOOL structured-output
  * call — the one family shape native structured output cannot express, because
  * `parameters` is an open map the engine parses as a dict (DAT-807; see
- * `induceStructured`). OVER the framed concept vocabulary (the concepts are part
- * of the context, so
- * the proposed checks anchor to them, not guessed column names). The induce
+ * `induceStructured`). Induced OVER the framed concept vocabulary — the concepts
+ * are part of the context, so the proposed checks anchor to them rather than to
+ * guessed column names. The induce
  * prompt is seeded with the nearest shipped vertical's specs as STRUCTURAL
  * few-shot (DAT-468) — the framing that makes the proposed shape reliable.
  * Returns the proposed validations; does NOT write anything. The shipped-spec
@@ -296,9 +296,9 @@ export async function induceValidations(
 
 /**
  * Induce a business-cycle set for a source via one NATIVE structured-output call
- * (DAT-807), OVER the framed concept vocabulary (the concepts are part of the
- * context, so
- * the proposed cycles anchor to them, not guessed column names). The induce prompt
+ * (DAT-807), OVER the framed concept vocabulary — the concepts are part of the
+ * context, so the proposed cycles anchor to them rather than to guessed column
+ * names. The induce prompt
  * is seeded with the nearest shipped vertical's `cycle_types` as STRUCTURAL
  * few-shot (DAT-468/470) — the framing that makes the proposed shape reliable.
  * Returns the proposed cycles; does NOT write anything. The shipped-spec reader is
@@ -335,9 +335,9 @@ export async function induceCycles(
  * Induce a metric-DAG set for a source via one FORCED-TOOL structured-output
  * call — `dependencies` is keyed by the step ids the model invents, so the DAG
  * is an open map native structured output cannot express (DAT-807; see
- * `induceStructured`). OVER the framed concept vocabulary (the concepts are part
- * of the context, so
- * each metric's leaf `extract` steps anchor to framed CONCEPTS, not guessed
+ * `induceStructured`). Induced OVER the framed concept vocabulary — the concepts
+ * are part of the context, so each metric's leaf `extract` steps anchor to framed
+ * CONCEPTS rather than to guessed
  * columns — column binding is the semantic phase's job, SQL composition is
  * operating_model's). The induce prompt is seeded with the nearest shipped
  * vertical's metric DAGs as STRUCTURAL few-shot (DAT-468) — flagged explicitly

@@ -88,7 +88,7 @@ system_prompt: |
   yours — honor them literally.
   </domain_conventions>
 
-  Use the generate_validation_sql tool to provide your response.
+  Emit your response in the required output structure; emitting it ends the turn.
 
 # User prompt - provides context and task
 user_prompt: |
@@ -124,7 +124,7 @@ user_prompt: |
      output_contract) — never a boolean verdict, never the raw rows
   5. If the required columns don't exist, set can_validate=false
   6. If enriched views are available, prefer them over manual JOINs
-  7. Use the generate_validation_sql tool to provide your response
+  7. Emit your response in the required output structure
   </instructions>
 
 # Input variable definitions

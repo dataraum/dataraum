@@ -57,7 +57,7 @@ user_prompt: |
   Candidate exposure pairs to judge:
   {candidates}
 
-  Return a verdict for every pair via the tool.
+  Return a verdict for every pair in the required output structure.
 
 inputs:
   candidates:

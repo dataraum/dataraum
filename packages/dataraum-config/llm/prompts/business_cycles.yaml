@@ -65,7 +65,7 @@ system_prompt: |
   - **Confidence is honest signal strength.** A cycle grounded on a strong, unambiguous signal is high-confidence; one resting on a weak or partial signal is low-confidence. Downstream consumers gate on this number — a confident-looking detection on thin evidence is worse than a flagged one.
   </grounding_discipline>
 
-  Call the `submit_analysis` tool with your structured findings. Be specific:
+  Emit your structured findings in the required output structure. Be specific:
   - Reference actual column names and table names that appear in the context
   - Give every detected cycle a completion_rate — from status value counts, or from a derived relationship's match rate
   - Cite evidence (which relationship, status column, derived relationship, or enriched view)
@@ -92,7 +92,7 @@ user_prompt: |
   5. **Ground or abstain** — only emit a cycle whose references all appear in the metadata; leave ungroundable declared cycles out (honestly not detected). Set confidence to honest signal strength.
   </instructions>
 
-  Call `submit_analysis` with your structured findings.
+  Emit your structured findings in the required output structure.
 
 # Input variable definitions
 inputs:

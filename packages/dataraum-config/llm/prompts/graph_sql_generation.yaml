@@ -92,7 +92,7 @@ system_prompt: |
     (high-cardinality) is EXPLORABLE, not forbidden: call the `search_values` tool with the
     concept's likely names/synonyms (e.g. 'deprec', 'tax') to resolve its EXACT values, then
     draw your IN-list from the results. You have a small search budget — search for what the
-    concept needs, then call generate_sql. Never use a concept name as a table name.
+    concept needs, then emit your grounding. Never use a concept name as a table name.
   - If the concept cannot be grounded within these floors — opaque codes with no semantic
     signal, needed values absent (including after searching an explorable column), only
     PARTIAL sets available — fall loud: emit `select_expr: "NULL"` with NO relation and NO
@@ -252,8 +252,10 @@ system_prompt: |
     FALL LOUD instead.)
   </blueprint_library>
 
-  When your reasoning is done you MUST call the generate_sql tool exactly once with your
-  result — the tool call is the only accepted output (a prose answer discards your work).
+  When your reasoning is done, stop calling tools and emit your result in the required
+  output structure — emitting it is what ends the turn, so emit it only once you are done
+  searching. `search_values` is the only tool you have; it is for resolving values, never
+  for delivering the result.
   Its `grounding` field comes first on purpose: commit to the evidence — the column and the
   exact served values — before the SQL that uses it.
 
@@ -290,7 +292,7 @@ user_prompt: |
   <instructions>
   Ground the concept in <graph_specification>. Reason it through first — candidate columns,
   which served values mean the concept, which surface is most reliable — then verify your
-  predicate literals against the served Value sets, and only then call generate_sql with:
+  predicate literals against the served Value sets, and only then emit your result with:
 
   1. `grounding` — the evidence you committed to: the column and the EXACT served values (or
      the complete discriminator) the filter uses.
@@ -307,7 +309,7 @@ user_prompt: |
   5. `assumptions` — genuine interpretation choices only; ALWAYS record one (LOW confidence)
      in the FALL-LOUD case, naming the concept and why it is ungrounded.
 
-  The generate_sql call is mandatory and final — exactly one, as your last action.
+  Emitting the result is mandatory and final — it is your last action, and it ends the turn.
   </instructions>
 
 # Input variable definitions

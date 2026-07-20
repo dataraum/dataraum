@@ -3,8 +3,8 @@
 # Classifies tables (entity type, fact/dimension, grain) and confirms cross-table
 # relationships, reasoning OVER the already-decided per-column annotations. It
 # does NOT annotate columns — those are owned by the per-column phase and are
-# provided here as read-only context. Structured output via the analyze_tables
-# Pydantic tool (TableSynthesisOutput).
+# provided here as read-only context. Structured output via the
+# TableSynthesisOutput Pydantic schema.
 
 name: semantic_per_table
 version: "2.4.0"
@@ -220,7 +220,7 @@ system_prompt: |
   the relationship is semantically real.
   </relationship_evaluation>
 
-  Use the analyze_tables tool to provide your analysis.
+  Emit your analysis in the required output structure; emitting it ends the turn.
 
 user_prompt: |
   <task>
@@ -253,7 +253,7 @@ user_prompt: |
   {column_annotations}
   </column_annotations>
 
-  Analyze these tables using the analyze_tables tool.
+  Analyze these tables and emit the required output structure.
 
 inputs:
   tables_json:
@@ -276,4 +276,4 @@ inputs:
     description: Persisted per-column annotations (read-only context)
     required: true
 
-# Output is defined by the TableSynthesisOutput Pydantic tool schema (analyze_tables)
+# Output is defined by the TableSynthesisOutput Pydantic schema

@@ -49,11 +49,24 @@ malformation is DELETED.
   are untouched. One value-level difference: an unfiltered concept stores
   `filter: ""` where it stored `filter: null`.
 
-**NOT changed (deliberately — the eval compares one run against the on-disk baseline):**
-- **Every prompt template is byte-identical.** `(label, prompt_hash)` keys still
-  pair with the existing dumps. Note the residual wording: the templates still say
-  "use the analyze_tables tool" etc. — kept on purpose so the hash does not move;
-  revisit after the verdict.
+**The prompts WERE migrated — `prompt_hash` moves, so re-key the comparison:**
+- Every prompt instructed the model to call a tool this slice deleted (e.g.
+  graph_sql_generation: *"you MUST call the generate_sql tool … the tool call is
+  the only accepted output"*). Left alone, the model is told the new mechanism's
+  one way of finishing is wrong — for `graph_sql_generation`, whose only
+  remaining tool is `search_values`, the likely outcome is a search loop to the
+  budget ceiling and a hard bind failure on every metric. The eval would then
+  attribute that to structured outputs rather than to an unmigrated prompt. Same
+  finding, same resolution as the cockpit lane's `ff256c89f`.
+- **Only those sentences changed**, to "emit the required output structure;
+  emitting it ends the turn". Everything else in every template is byte-identical.
+- **Consequence for the scorecard:** the user-prompt half of the edit moves
+  `prompt_hash`, so `(label, prompt_hash)` no longer pairs with the on-disk
+  baseline. Key the completeness comparison by **label** for this run. The
+  alternative — a frozen prompt that contradicts the mechanism — would have
+  corrupted the measurement itself rather than just its key.
+
+**NOT changed (the eval compares one run against the on-disk baseline):**
 - `model`, `max_tokens`, `effort`, `thinking`, `temperature` per label are
   unchanged. `effort` was written down explicitly for the five features that
   inherited the API default (`high`) — a no-op pinned by

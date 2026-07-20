@@ -1,4 +1,4 @@
-# _adhoc — the no-vertical placeholder (DAT-371; description corrected DAT-834)
+# _adhoc — the no-vertical placeholder (DAT-371; description corrected DAT-836)
 #
 # Used when no domain vertical has been selected. It stays empty, and an empty
 # `_adhoc` does NOT run: `semantic_per_column` fails loud with "No concepts for

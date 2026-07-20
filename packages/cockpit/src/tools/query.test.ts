@@ -49,6 +49,7 @@ import {
 	classifyComponents,
 	componentsToSave,
 	exhaustionDiagnostic,
+	isMissingStructuredResult,
 	noResultNarrative,
 	persistLearnedSnippets,
 	type QueryDraft,
@@ -437,5 +438,41 @@ describe("noResultNarrative (finalized-but-unvalidated run)", () => {
 		expect(msg.length).toBeGreaterThan(0);
 		expect(msg).toContain("stopped before");
 		expect(msg).not.toContain("undefined");
+	});
+});
+
+describe("isMissingStructuredResult (which chat() failures are salvageable)", () => {
+	// DAT-807: the sub-agent now gets its draft from native structured output, so a
+	// "no draft" outcome arrives as a THROW rather than a null capture cell. Only
+	// the structured-output codes are recoverable — misclassifying a transport or
+	// auth failure as "no draft" would report "I couldn't compose a query" for what
+	// is really a 401, which is exactly the misleading non-fact noResultNarrative
+	// exists to prevent.
+	function coded(code: string): Error {
+		const err = new Error("boom");
+		Object.defineProperty(err, "code", { value: code, enumerable: true });
+		return err;
+	}
+
+	it("treats every structured-output failure as salvageable", () => {
+		for (const code of [
+			"structured-output-missing-result",
+			"structured-output-parse-failed",
+			"structured-output-validation-failed",
+		]) {
+			expect(isMissingStructuredResult(coded(code))).toBe(true);
+		}
+	});
+
+	it("does NOT swallow transport, auth, or abort failures", () => {
+		expect(isMissingStructuredResult(coded("rate_limit_error"))).toBe(false);
+		expect(isMissingStructuredResult(new Error("401 unauthorized"))).toBe(
+			false,
+		);
+		expect(
+			isMissingStructuredResult(new DOMException("abort", "AbortError")),
+		).toBe(false);
+		expect(isMissingStructuredResult("not an error")).toBe(false);
+		expect(isMissingStructuredResult(null)).toBe(false);
 	});
 });

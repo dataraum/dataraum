@@ -556,6 +556,20 @@ export function noResultNarrative(lastError: RunStepsFailure | null): string {
 	);
 }
 
+/** The structured-output failures `chat({ outputSchema })` raises when the loop
+ * ends without a usable draft — the model emitted no final text, emitted text the
+ * grammar didn't hold to, or emitted a value that failed the zod parse. These are
+ * the recoverable "no draft" cases (DAT-608 salvage); every OTHER error out of
+ * chat() is a real transport/auth/abort failure and must propagate. The adapter
+ * stamps the code on the thrown Error (@tanstack/ai
+ * activities/chat/index.js — harvestCombinedStructuredOutput). Exported for the
+ * unit test; pure. */
+export function isMissingStructuredResult(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	const code = (err as { code?: unknown }).code;
+	return typeof code === "string" && code.startsWith("structured-output-");
+}
+
 /**
  * The query sub-agent: ONE nested chat() over [snippet_search, run_steps] with the
  * concrete `QueryDraftSchema`, then deterministic post-processing (the grid +
@@ -671,12 +685,17 @@ export async function querySubAgent(
 			],
 		});
 	} catch (err) {
-		// The loop ended without a usable structured result — the model gave up or
-		// hit the iteration ceiling (DAT-608). NOT a dead turn: if run_steps
-		// validated a query we still have the real result, and the salvage path
-		// below returns it. Rethrow only what the caller must see as a failure:
-		// a caller-driven abort.
-		if (signal?.aborted) throw err;
+		// ONLY a missing/malformed structured result is recoverable here: the model
+		// gave up or hit the iteration ceiling without emitting its draft (DAT-608).
+		// That is not a dead turn — if run_steps validated a query we still have the
+		// real result, and the salvage path below returns it.
+		//
+		// Everything else (auth, rate limit, network, abort) must propagate to the
+		// `asAgentError` envelope so the orchestrator sees the real cause and can
+		// retry. Swallowing those would report "I couldn't compose a query" for what
+		// is actually a 401 — a misleading non-fact the orchestrator hallucinates
+		// from (the same failure mode noResultNarrative was written to avoid).
+		if (!isMissingStructuredResult(err)) throw err;
 		console.info("answer_subagent_no_structured_result", {
 			error: err instanceof Error ? err.message : String(err),
 			validated: captured.value !== null,

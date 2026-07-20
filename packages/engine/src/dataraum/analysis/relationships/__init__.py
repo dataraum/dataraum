@@ -16,8 +16,8 @@ from dataraum.analysis.relationships.evaluator import (
 )
 from dataraum.analysis.relationships.finder import find_relationships
 from dataraum.analysis.relationships.graph_topology import (
+    CyclicGroup,
     GraphStructure,
-    SchemaCycle,
     TableRole,
     analyze_graph_topology,
     format_graph_structure_for_context,
@@ -52,7 +52,7 @@ __all__ = [
     # Graph topology models
     "GraphStructure",
     "TableRole",
-    "SchemaCycle",
+    "CyclicGroup",
     # DB Models
     "Relationship",
 ]

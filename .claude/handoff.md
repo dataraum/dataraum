@@ -82,6 +82,38 @@ malformation is DELETED.
 **Two in-scope behavior fixes:** `slicing_analysis` now passes `model=` (it
 silently ran on the provider default, ignoring its configured tier), and
 `business_cycles` fails loud instead of degrading to the raw unvalidated dict.
+## DAT-834 — schema cycles are no longer enumerated (prompt-content change; GraphStructure shape change)
+
+**Branch:** `fix/dat-834-cycle-space`. `analyze_graph_topology` enumerated
+`nx.simple_cycles` unbounded and both the semantic and cycles prompts rendered
+every result. RelBench `rel-f1` (9 tables, 1.2 MB) produced **53,902 cycles** and
+a **1.92M-token prompt** — twice the context window, so `beginSessionWorkflow`
+could not complete at all.
+
+**What eval should expect:**
+- **`GraphStructure.schema_cycles` is GONE.** Replaced by `cyclic_groups:
+  list[CyclicGroup]` — the non-trivial strongly connected components (the tables
+  that reference each other circularly, named once instead of once per rotation).
+  `SchemaCycle` is deleted; `CyclicGroup` carries `tables` / `table_ids` / `size`.
+- **Two new fields:** `circuit_rank` (mu = E - V + C, the cycle space dimension =
+  join-path ambiguity; 0 means a forest) and `density` (undirected edges over
+  V*(V-1)/2; 1.0 = complete).
+- **New pattern value `complete`**, emitted at the exact condition that every
+  table pair is connected. Any eval assertion enumerating `pattern` values needs
+  it. Both formatters additionally emit a NOTE on a complete graph telling the
+  judge the topology is an artifact, not evidence.
+- **Prompt-content churn is expected** on any snapshotting eval of
+  `semantic_per_table` or the cycles context: the `Cycles: A → B → C` line is
+  replaced by `Circular reference groups: {A, B, C}` plus a `Join-path ambiguity:
+  N independent cycle(s)` line.
+- **NOT changed:** table role classification, pattern classification for every
+  non-complete graph, the relationship catalog, any persisted schema.
+
+**Context worth carrying:** rel-f1's *candidate* graph is complete — 36 of 36
+table pairs against 13 real declared FKs. Value-overlap matching on small-integer
+surrogate keys connects everything to everything. The cycle explosion was the
+amplifier; candidate precision on integer-ID-dense schemas is the upstream
+question (open, DAT-833).
 
 ---
 

@@ -237,6 +237,15 @@ class BusinessCycleAgent(LLMFeature):
             raw_cycle_type = cd.get("cycle_type", "unknown")
             canonical_type, is_known_type = map_to_canonical_type(raw_cycle_type, vertical)
 
+            # The completion measurement is tri-state, carried by an EXPLICIT
+            # ``measured`` flag on the wire (DAT-807) rather than by absence: a
+            # model that could not measure must say so instead of omitting the
+            # numbers. When it says so, the three numbers are 0 and meaningless
+            # by contract, so they become None here — the domain model and its
+            # nullable columns keep "not measured" as NULL, exactly as before,
+            # and every downstream `is None` reader is untouched.
+            measured = cd["measured"]
+
             cycle = DetectedCycle(
                 cycle_id=str(uuid4()),
                 cycle_name=cname,
@@ -251,9 +260,9 @@ class BusinessCycleAgent(LLMFeature):
                 status_column=cd.get("status_column") or None,
                 status_table=cd.get("status_table") or None,
                 completion_value=cd.get("completion_value") or None,
-                total_records=cd.get("total_records"),
-                completed_cycles=cd.get("completed_cycles"),
-                completion_rate=cd.get("completion_rate"),
+                total_records=cd["total_records"] if measured else None,
+                completed_cycles=cd["completed_cycles"] if measured else None,
+                completion_rate=cd["completion_rate"] if measured else None,
                 confidence=cd["confidence"],
                 evidence=cd.get("evidence", []),
             )

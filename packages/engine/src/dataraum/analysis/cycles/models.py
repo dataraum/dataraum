@@ -110,29 +110,29 @@ class BusinessCycleAnalysis(BaseModel):
 # Flat schema (max depth 2): stages and entity flows are top-level lists that
 # reference cycles by name; _parse_output groups them back into DetectedCycle.
 #
-# EVERY field is REQUIRED (DAT-807) except the three noted below. An optional
-# field is a modelling mistake — either the model must state the attribute or
-# the attribute should not exist — and under constrained decoding each optional
-# also spends one of the request's 24 optional-parameter slots (an ``X | None``
-# renders as an anyOf, so it spends a union slot too). Not-applicable is
-# expressed by a DOCUMENTED EMPTY VALUE ("" / []), never by omission.
+# EVERY field is REQUIRED (DAT-807). An optional field is a modelling mistake —
+# either the model must state the attribute or the attribute should not exist —
+# and under constrained decoding each optional also spends one of the request's
+# 24 optional-parameter slots (an ``X | None`` renders as an anyOf, so it spends
+# a union slot too). Not-applicable is expressed by a DOCUMENTED EMPTY VALUE
+# ("" / []), never by omission.
 #
-# OPEN, ESCALATED TO THE LEAD — the three tri-state MEASUREMENTS below
-# (total_records, completed_cycles, completion_rate) are left as ``X | None``,
-# which the DAT-807 ruling says not to do. They fit none of its three
-# dispositions: 0 is a REAL measurement, so no in-domain empty value exists,
-# and "not measured" is load-bearing downstream — the artifact lifecycle reads
-# ``completion_rate is None`` as grounded-but-not-measured (never executed),
-# and the cockpit branches on null with a dedicated unmeasured fixture.
-#
-# The alternative is an OUT-OF-DOMAIN numeric sentinel (-1) normalized back to
-# None at the persistence boundary, exactly as the "" sentinels are. That would
-# take all nine schemas to zero optionals. It is not taken unilaterally because
-# the trade is real and runs the other way from the "" case: "" is falsy, so a
-# missed boundary degrades harmlessly, whereas -1 is a valid float that reads
-# as a genuine measurement — one missed normalization silently reports a cycle
-# as -100% complete. No cap pressure forces the choice (3 of 24 optional slots,
-# 3 of 16 union slots). Lead decides; this comment goes when they do.
+# The completion MEASUREMENT is the one tri-state here, and it is carried by an
+# EXPLICIT discriminator (``measured``), not by absence and not by a sentinel
+# value. Both alternatives were wrong in their own way:
+#   * ``X | None`` puts the meaning in an omitted key — precisely the implicit
+#     semantics this slice removes everywhere else. It happens to be
+#     load-bearing rather than dead, which makes it worse, not better.
+#   * an out-of-domain numeric sentinel (-1) is unsafe in a way "" is not: ""
+#     is falsy, so a missed boundary degrades harmlessly, whereas -1 is a valid
+#     float that reads as a genuine measurement — one missed normalization
+#     silently reports a cycle as -100% complete.
+# With ``measured`` there is no sentinel to miss and no absence to interpret: a
+# model that cannot measure must SAY so. The three numbers are then 0 and
+# explicitly meaningless, and ``_parse_output`` normalizes them to None on the
+# domain model, so the PERSISTED shape (nullable columns, NULL when unmeasured)
+# is unchanged and every downstream reader — the artifact lifecycle, health
+# scoring, graph context, the cockpit — is untouched.
 # =============================================================================
 
 
@@ -161,16 +161,29 @@ class CycleSummaryOutput(BaseModel):
         description="Value indicating cycle complete, e.g., 'Paid'; \"\" when not applicable"
     )
     tables_involved: list[str] = Field(description="All tables involved in this cycle")
-    total_records: int | None = Field(default=None, description="Total records in cycle")
-    completed_cycles: int | None = Field(default=None, description="Number of completed cycles")
-    completion_rate: float | None = Field(
-        default=None,
+    measured: bool = Field(
         description=(
-            "Completion rate as decimal (0.0-1.0). REQUIRED for every cycle. "
-            "For transactional cycles, compute from status column value counts "
-            "(e.g., paid/total). For non-transactional cycles (reporting, "
-            "reconciliation), derive from the closest available signal: "
-            "posting ratio, balance ratio, period coverage, or similar metric."
+            "Whether you could actually MEASURE this cycle's completion from the "
+            "served data. true when the three numbers below are real measurements; "
+            "false when no completion signal could be derived — say so here rather "
+            "than inventing numbers. Detecting a cycle and measuring it are separate "
+            "claims: an honest 'detected but not measured' is a valid, useful answer."
+        )
+    )
+    total_records: int = Field(
+        description="Total records in cycle. 0 and MEANINGLESS when measured is false."
+    )
+    completed_cycles: int = Field(
+        description="Number of completed cycles. 0 and MEANINGLESS when measured is false."
+    )
+    completion_rate: float = Field(
+        description=(
+            "Completion rate as decimal (0.0-1.0). For transactional cycles, compute "
+            "from status column value counts (e.g., paid/total). For non-transactional "
+            "cycles (reporting, reconciliation), derive from the closest available "
+            "signal: posting ratio, balance ratio, period coverage, or similar metric. "
+            "0.0 and MEANINGLESS when measured is false — a cycle you could not "
+            "measure is NOT a cycle that is 0% complete."
         ),
     )
     confidence: float = Field(description="Confidence in this detection (0.0-1.0)")

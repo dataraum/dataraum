@@ -1,29 +1,27 @@
 // Text-to-chart authoring (DAT-626 / ADR-0015) — the PRIMARY path: a typed
 // instruction → a validated chart config.
 //
-// Same forced-tool drain-stream shape as `induceStructured` (frame-family.ts): the
-// model is given a single `emit_chart` tool whose input IS the thin ChartConfig
-// subset and `tool_choice` FORCES it, so the structured value arrives as validated
-// tool arguments — NOT `chat({ outputSchema })` (the Anthropic native path rejects
-// our schemas; see frame-family.ts for the full why).
+// The emission rides Anthropic NATIVE structured output (DAT-807): `outputSchema`
+// is the thin ChartConfig subset, so constrained decoding guarantees the SHAPE —
+// there is no forced `emit_chart` tool and no tool-argument boundary to malform.
 //
-// What this adds over a single emit: a CIRCUIT-BREAKER. The subset schema can't
-// express "this field must be a real result column" or "this must compile", so each
-// emission goes through `validateChartConfig`; on failure the error is fed back and
-// the model re-emits, up to CHART_AUTHOR_MAX_ATTEMPTS. Then we give up and tell the
-// user to map it manually — NOT a heavy repair loop.
+// What this adds over a single emit: a CIRCUIT-BREAKER — and it is still needed,
+// because constrained decoding guarantees shape, never SEMANTICS. The subset schema
+// can't express "this field must be a real result column" or "this must compile",
+// so each emission goes through `validateChartConfig`; on failure the error is fed
+// back and the model re-emits, up to CHART_AUTHOR_MAX_ATTEMPTS. Then we give up and
+// tell the user to map it manually — NOT a heavy repair loop.
 //
 // CONTEXT IS DELIBERATELY THIN (ADR-0015): result columns + their measurement types
 // + the user's instruction. NO catalogue, NO query-context, NO result-column→
 // lineage name-matching (fragile + false-positive-prone on composed-SQL aliases).
 // The instruction carries intent; the model reads measure/temporal from name+type.
 
-import { chat, toolDefinition } from "@tanstack/ai";
+import { chat } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { config } from "#/config";
 import { linkedAbortController } from "#/lib/abort";
 import { llmOtel } from "#/lib/llm-otel";
-import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import {
 	type ChartConfig,
@@ -49,9 +47,11 @@ export type AuthorChartResult =
 /** A chart-author conversation turn. */
 export type AuthorMessage = { role: "user" | "assistant"; content: string };
 
-/** One forced-emit turn: given the prompts + conversation, return the raw emitted
- * args (untrusted) or `undefined` for no tool call. Injectable so the retry loop is
- * unit-testable without a live LLM (production uses {@link emitOnce}). */
+/** One emit turn: given the prompts + conversation, return the emitted config
+ * (still untrusted — constrained decoding guarantees the shape, never that the
+ * fields name real result columns) or `undefined` when the model produced none.
+ * Injectable so the retry loop is unit-testable without a live LLM (production
+ * uses {@link emitOnce}). */
 export type EmitFn = (
 	systemPrompts: string[],
 	messages: AuthorMessage[],
@@ -66,7 +66,7 @@ function systemPrompt(columns: ChartColumn[]): string {
 	return [
 		"You author a chart specification for a tabular SQL result. You are given the",
 		"result's columns (with a measurement-type hint) and a user instruction; emit",
-		"ONE chart config via the `emit_chart` tool.",
+		"ONE chart config in the required structure.",
 		"",
 		"Result columns:",
 		columnLines,
@@ -85,52 +85,28 @@ function systemPrompt(columns: ChartColumn[]): string {
 }
 
 /**
- * One forced `emit_chart` turn — returns the raw emitted args (untrusted; the
- * caller validates) or `undefined` if the model emitted no tool call. Mirrors the
- * drain-stream + early-abort of `induceStructured`. Wrapped by the retry loop.
+ * One native structured-output turn — resolves to the emitted config (the caller
+ * still validates it against the real result columns) or throws if the model
+ * produced none. Wrapped by the retry loop.
  */
-const emitOnce: EmitFn = async (systemPrompts, messages, signal) => {
-	let captured: unknown;
-	const emit = toolDefinition({
-		name: "emit_chart",
-		description:
-			"Return the chart specification as this tool's arguments, in the required structure.",
-		inputSchema: ChartConfigSchema,
-	}).server((input) => {
-		captured = input;
-		return { ok: true };
-	});
-
-	// Abort the in-flight request once we have the args (tool_choice would otherwise
-	// keep forcing emit_chart and bill another turn that only re-emits).
-	const abortController = linkedAbortController(signal);
-	const stream = await chat({
+const emitOnce: EmitFn = async (systemPrompts, messages, signal) =>
+	await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		middleware: [
-			...llmOtel("chart_author"),
-			toolArgsGuardMiddleware("chart_author"),
-		],
-		abortController,
+		// No toolArgsGuardMiddleware: no tools, so no tool-argument boundary to
+		// guard (see lib/tool-args-guard.ts header).
+		middleware: llmOtel("chart_author"),
+		abortController: linkedAbortController(signal),
 		modelOptions: {
 			max_tokens: MAX_OUTPUT_TOKENS,
-			tool_choice: { type: "tool", name: "emit_chart" },
-			// Disable thinking: one-shot structured extraction (forced tool), not
-			// reasoning. Sonnet 5 defaults adaptive thinking ON, which bills a trace
-			// before the forced emit for no quality gain (see frame-family.ts).
+			// Disable thinking: one-shot structured extraction, not reasoning.
+			// Sonnet 5 defaults adaptive thinking ON, which bills a trace before
+			// every emit for no quality gain (see frame-family.ts).
 			thinking: { type: "disabled" },
 		},
 		systemPrompts,
 		messages,
-		tools: [emit],
+		outputSchema: ChartConfigSchema,
 	});
-	for await (const _chunk of stream) {
-		if (captured !== undefined) {
-			abortController?.abort();
-			break;
-		}
-	}
-	return captured;
-};
 
 /**
  * Author a chart from a typed instruction over the given result columns. Validates

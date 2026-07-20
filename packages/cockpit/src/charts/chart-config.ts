@@ -4,9 +4,10 @@
 // subset with FIXED keys and enumerated marks, because that is what an LLM can
 // author reliably and what we can validate cheaply. The author tool emits THIS;
 // `resolve.ts` lifts it to a real Vega-Lite spec, and `validate.ts` compile-checks
-// the result before anything is frozen. No `z.record`/open maps (the Anthropic
-// native-structured-output rejection the frame path hit, see frame-family.ts) —
-// every field is a named key, so a forced tool's args validate directly.
+// the result before anything is frozen. No `z.record`/open maps — every field is
+// a named key, which is exactly what lets this schema ride Anthropic NATIVE
+// structured output (DAT-807), the constraint the frame path's metric/validation
+// schemas still fail (see frame-family.ts `induceStructured`).
 //
 // Scope (v1): cartesian marks over an x/y pair with optional color split. No
 // arc/pie (needs theta, not x/y), no layering, no faceting — those are spec shapes
@@ -58,8 +59,8 @@ export const FieldEncodingSchema = z.object({
 export type FieldEncoding = z.infer<typeof FieldEncodingSchema>;
 
 /** The thin authorable config. Fixed keys (`x`, `y`, `color?`) — no open map — so
- * a forced-tool emission validates directly against this schema, and a malformed
- * emission is a parse error, not a silent half-spec. */
+ * constrained decoding can express it directly, and the emission is shape-valid
+ * by construction rather than a parse that might yield a silent half-spec. */
 export const ChartConfigSchema = z.object({
 	mark: z.enum(CHART_MARKS),
 	encoding: z.object({

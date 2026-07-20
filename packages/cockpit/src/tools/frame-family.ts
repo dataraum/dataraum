@@ -3,9 +3,12 @@
 // `frame` co-designs the user's whole model — concepts AND the executable
 // knowledge over them (validations, later cycles + metrics, DAT-470/471). Each
 // family follows the SAME two-path shape the concept path proved (DAT-382):
-//   - induce: no edited set → one forced structured-output Anthropic call
-//     proposes the family's set (seeded with structural few-shot from the
-//     nearest shipped vertical).
+//   - induce: no edited set → one structured-output Anthropic call proposes the
+//     family's set (seeded with structural few-shot from the nearest shipped
+//     vertical). Concepts + cycles use native structured output
+//     (`induceNative`); validations + metrics still ride the forced-tool
+//     `induceStructured` because their `z.record` fields are inexpressible under
+//     constrained decoding (DAT-807 — see that function's docstring).
 //   - declare: an edited set → those are written verbatim, no LLM (the
 //     accept/edit round-trip of the ModelFrame widget).
 // Either way each member is persisted as a `config_overlay` row through the
@@ -14,7 +17,8 @@
 //
 // This module factors that shape so adding a family (DAT-470/471) is supplying
 // `{ teach type, item schema, induce fn, payload mapper }` — the induce-call
-// scaffolding (`induceStructured`), the declare/write loop (`frameFamily`), and
+// scaffolding (`induceNative` / `induceStructured`), the declare/write loop
+// (`frameFamily`), and
 // the library-as-seed helpers (`nearestSeedVertical` + `formatSeedExamples`) are
 // shared. The concept path runs through `frameFamily` unchanged.
 
@@ -33,20 +37,71 @@ import { teach } from "./teach";
 import type { TeachType } from "./teach.validation";
 
 /**
- * One induction call that returns a typed object. The model is given a single
- * `emit_result` tool whose input IS `outputSchema`, and `tool_choice` FORCES it,
- * so the structured value arrives as the tool's validated arguments — the plain
- * tool-calling path, deliberately NOT `chat({ outputSchema })`.
+ * One induction call that returns a schema-GUARANTEED typed object, via
+ * Anthropic native structured output (`output_config.format`, DAT-807): the
+ * adapter attaches the JSON Schema to a single streaming request and the model's
+ * final-turn text is constrained to it, so there is no tool-argument boundary to
+ * malform and no client-side parse to fail. `chat({ outputSchema })` resolves to
+ * the validated value or throws.
  *
- * Why a forced tool and not `outputSchema`: for the 4.x models the Anthropic
- * adapter routes `outputSchema` through Anthropic's NATIVE structured-output API
- * (`output_config.format`), which can't represent our induction schemas — it
- * rejects `z.record` maps (the metric DAG's `dependencies` / `parameters`, keyed
- * by step id) with "additionalProperties: object is not supported", and forces
- * optionals present-as-`null`. A plain forced tool sidesteps both: records are
- * accepted and the model OMITS the optionals it has no value for (no null spray),
- * so the args validate against `outputSchema` directly. `signal` is the
- * tool-context abort (DAT-449) — a stopped run aborts the nested call.
+ * Budget: MAX_OUTPUT_TOKENS (not STRUCTURED_OUTPUT_MAX_TOKENS) is correct here —
+ * that lower ceiling exists only for models OUTSIDE the adapter's combined set,
+ * which fall back to a non-streaming forced-tool call the Anthropic SDK refuses
+ * above 21,333 tokens. `MODEL` is inside the set (pinned by llm.contract.test.ts),
+ * so this is one streaming request and the induction keeps the full budget a
+ * large concept/cycle set needs. Same reasoning as the grounding agent's
+ * combined call (worker/grounding-agent.ts).
+ *
+ * `signal` is the tool-context abort (DAT-449) — a stopped run aborts the
+ * nested call instead of billing it to completion.
+ */
+export async function induceNative<R>(opts: {
+	instructions: string;
+	userMessage: string;
+	outputSchema: z.ZodType<R>;
+	signal?: AbortSignal;
+}): Promise<R> {
+	// A generic `z.ZodType<R>` widens chat()'s inferred return to `unknown`; the
+	// value is parsed against `outputSchema` inside chat() before it resolves, so
+	// narrow to R (same widening the forced-tool path hits on its tool input).
+	return (await chat({
+		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		// No toolArgsGuardMiddleware: there are no tools, so there is no
+		// tool-argument boundary to guard (see lib/tool-args-guard.ts header).
+		middleware: llmOtel("frame_family"),
+		abortController: linkedAbortController(opts.signal),
+		modelOptions: {
+			max_tokens: MAX_OUTPUT_TOKENS,
+			// Disable thinking: one-shot structured extraction, not agentic
+			// reasoning. Sonnet 5 defaults adaptive thinking ON, which would bill a
+			// thinking trace before every emit (×4 per frame) with no quality gain.
+			// The agentic loops (agent-turn, query) keep thinking.
+			thinking: { type: "disabled" },
+		},
+		systemPrompts: [opts.instructions],
+		messages: [{ role: "user", content: opts.userMessage }],
+		outputSchema: opts.outputSchema,
+	})) as R;
+}
+
+/**
+ * The LEGACY forced-tool induction — retained ONLY for the two families whose
+ * schemas constrained decoding cannot express (DAT-807). The model is given a
+ * single `emit_result` tool whose input IS `outputSchema`, and `tool_choice`
+ * FORCES it, so the structured value arrives as the tool's validated arguments.
+ *
+ * Why these two still need it: native structured output requires
+ * `additionalProperties: false` everywhere, so an OPEN MAP is inexpressible —
+ * and both remaining schemas are keyed by a name the model invents:
+ * `ValidationSpecSchema.parameters` and `MetricSpecSchema.dependencies` /
+ * `.parameters` are `z.record`. Turning them into arrays is not a cockpit-local
+ * change: the overlay payload IS the engine's parse contract (`graphs/loader.py`
+ * `_parse_steps` iterates `dependencies.items()`; `analysis/validation/models.py`
+ * declares `parameters: dict[str, Any]`), so the reshape is cross-package.
+ * `induceConcepts` / `induceCycles` have no such field and went native — see
+ * {@link induceNative}.
+ *
+ * `signal` is the tool-context abort (DAT-449) — a stopped run aborts the call.
  */
 export async function induceStructured<R>(opts: {
 	instructions: string;

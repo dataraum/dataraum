@@ -610,75 +610,79 @@ export async function querySubAgent(
 
 	const userMessage = `<question>\n${question}\n</question>`;
 
-	// Per-invocation capture cell — run_steps writes the last validation (+ last failure)
-	// and emit_result writes the model's final draft. Isolated across concurrent calls.
+	// Per-invocation capture cell — run_steps writes the last validation (+ last
+	// failure). Isolated across concurrent calls.
 	const captured: RunStepsCapture = {
 		value: null,
 		lastError: null,
 		draft: null,
 	};
 
-	// The structured answer arrives as an EXPLICIT `emit_result` tool call, deliberately
-	// NOT native `chat({ outputSchema })`. Native combined mode (Anthropic 4.x) harvests
-	// the model's FINAL-TURN TEXT as the structured output — so a prose preamble ("Let me
-	// now compose…") emitted before the model means to call run_steps gets harvested as
-	// the `answer`, ending the loop before any SQL runs (the silent no-result bug). A
-	// plain tool can't be finalized by prose: the loop runs until the model EXPLICITLY
-	// emits its answer (or gives up), and run_steps stays a real step in between. Mirrors
-	// frame-family's induceStructured lesson, adapted from one-shot to this tool loop.
-	const emitResult = toolDefinition({
-		name: "emit_result",
-		description:
-			"Return your final answer as this tool's arguments, AFTER validating the query " +
-			"with run_steps. Call this exactly once, as your last action.",
-		inputSchema: QueryDraftSchema,
-	}).server((input) => {
-		captured.draft = input as QueryDraft;
-		return { ok: true };
-	});
-
+	// The COMBINED shape (DAT-807): the real tools and the schema-guaranteed final
+	// draft ride ONE streaming request (`output_config.format` + `tools`), exactly
+	// like the grounding agent (worker/grounding-agent.ts). The draft is no longer
+	// parsed out of an `emit_result` tool's arguments — constrained decoding
+	// guarantees it — so the tool-argument malformation that could silently zero
+	// the answer is structurally gone.
+	//
+	// This also removes the hazard the forced tool was working around: the model
+	// can no longer end the loop with a prose preamble ("Let me now compose…"),
+	// because every turn's text is schema-constrained — it either calls a tool or
+	// emits the draft. The remaining failure — finalizing a well-formed draft
+	// WITHOUT ever validating SQL — is unchanged and still handled below
+	// (`captured.value === null` → noResultNarrative).
 	const abortController = linkedAbortController(signal);
-	const stream = await chat({
-		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		abortController,
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
-		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
-		systemPrompts: [
-			{
-				content: getQueryInstructions(),
-				metadata: { cache_control: { type: "ephemeral" } },
-			},
-			{
-				content: stableContext,
-				metadata: { cache_control: { type: "ephemeral" } },
-			},
-		],
-		messages: [{ role: "user", content: userMessage }],
-		tools: [
-			snippetSearchTool,
-			lookValuesTool,
-			makeRunStepsTool(captured, nearUniqueColumns),
-			emitResult,
-		],
-		// Per-run gen_ai spans/metrics (DAT-706) + the tool-args guard (DAT-661
-		// coercion/rejection counters). Tags this nested sub-agent loop SEPARATELY
-		// from the orchestrator; the iteration spans expose its round-trip depth.
-		middleware: [
-			...llmOtel("answer_subagent"),
-			toolArgsGuardMiddleware("answer_subagent"),
-		],
-	});
-
-	// Drain the agent-loop stream so the tools actually execute. Stop as soon as the
-	// model emits its answer — draining further bills an extra turn that only re-confirms
-	// (abort the in-flight request, then break). If the loop ends with no emit (the model
-	// gave up, or hit the iteration ceiling), captured.draft stays null.
-	for await (const _chunk of stream) {
-		if (captured.draft !== null) {
-			abortController?.abort();
-			break;
-		}
+	let draft: QueryDraft | null = null;
+	try {
+		draft = await chat({
+			adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+			abortController,
+			// The draft rides the streaming tool loop itself, so the loop's full
+			// budget applies; there is no separate structured-output call to
+			// re-budget (see llm.ts + grounding-agent.ts).
+			modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+			agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
+			systemPrompts: [
+				{
+					content: getQueryInstructions(),
+					metadata: { cache_control: { type: "ephemeral" } },
+				},
+				{
+					content: stableContext,
+					metadata: { cache_control: { type: "ephemeral" } },
+				},
+			],
+			messages: [{ role: "user", content: userMessage }],
+			tools: [
+				snippetSearchTool,
+				lookValuesTool,
+				makeRunStepsTool(captured, nearUniqueColumns),
+			],
+			outputSchema: QueryDraftSchema,
+			// Per-run gen_ai spans/metrics (DAT-706) + the tool-args guard (DAT-661
+			// coercion/rejection counters) — still warranted here, unlike the pure
+			// outputSchema sites: snippet_search / look_values / run_steps are real
+			// tools with a real argument boundary. Tags this nested sub-agent loop
+			// SEPARATELY from the orchestrator; the iteration spans expose its
+			// round-trip depth.
+			middleware: [
+				...llmOtel("answer_subagent"),
+				toolArgsGuardMiddleware("answer_subagent"),
+			],
+		});
+	} catch (err) {
+		// The loop ended without a usable structured result — the model gave up or
+		// hit the iteration ceiling (DAT-608). NOT a dead turn: if run_steps
+		// validated a query we still have the real result, and the salvage path
+		// below returns it. Rethrow only what the caller must see as a failure:
+		// a caller-driven abort.
+		if (signal?.aborted) throw err;
+		console.info("answer_subagent_no_structured_result", {
+			error: err instanceof Error ? err.message : String(err),
+			validated: captured.value !== null,
+		});
 	}
+	captured.draft = draft;
 
 	const dataQuality = await readDataQuality(
 		captured.draft?.tables_touched ?? [],

@@ -1,6 +1,6 @@
 """Pydantic models for LLM-powered enrichment analysis.
 
-Contains tool output models for structured LLM output and internal
+Contains the output models the LLM's structured output is constrained to, and internal
 result models for processing enrichment recommendations.
 
 DAT-801: the selection question is neutral — "what related data usefully extends
@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from dataraum.analysis.views.builder import DimensionJoin
 
 # =============================================================================
-# Tool Output Models - Used as Pydantic tools for LLM structured output
+# Output Models - the schemas the LLM's structured outputs are constrained to
 # =============================================================================
 
 
@@ -129,7 +129,7 @@ class EnrichmentAnalysisResult(BaseModel):
 
 
 __all__ = [
-    # Tool output models
+    # Structured-output models
     "EnrichmentColumnOutput",
     "RelatedTableJoinOutput",
     "MainDatasetOutput",

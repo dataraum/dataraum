@@ -180,7 +180,7 @@ def persist_column_annotations(
 
     Args:
         session: Database session.
-        column_output: Per-column tool output (tables -> columns).
+        column_output: Per-column structured output (tables -> columns).
         table_ids: Tables the annotations belong to (for column-id resolution).
         annotated_by: Model identifier that produced the annotations.
 

@@ -91,12 +91,12 @@ class SlicingAnalysisResult(BaseModel):
 
 
 # =============================================================================
-# Pydantic model for LLM tool output
+# Pydantic model for the LLM structured output
 # =============================================================================
 
 
 class SliceRecommendationOutput(BaseModel):
-    """Pydantic model for a slice recommendation in LLM tool output."""
+    """Pydantic model for a slice recommendation in the LLM structured output."""
 
     table_name: str = Field(description="Name of the table containing the column")
     column_name: str = Field(description="Name of the column to slice on")

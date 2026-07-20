@@ -142,10 +142,10 @@ class SlicingAgent(LLMFeature):
         output: SlicingAnalysisOutput,
         context_data: dict[str, Any],
     ) -> Result[SlicingAnalysisResult]:
-        """Convert Pydantic tool output to SlicingAnalysisResult.
+        """Convert the validated LLM output to SlicingAnalysisResult.
 
         Args:
-            output: Validated Pydantic output from LLM
+            output: Validated Pydantic output from the LLM
             context_data: Original context data for lookups
 
         Returns:

@@ -302,7 +302,7 @@ class GraphExecution:
 
 
 # =============================================================================
-# Pydantic models for LLM tool output
+# Pydantic models for the LLM structured outputs
 # =============================================================================
 
 
@@ -497,7 +497,7 @@ class ValueSearchInput(BaseModel):
 
 
 class ExtractGroundingOutput(BaseModel):
-    """LLM tool output for grounding ONE extract leaf to SQL (DAT-603).
+    """The structured output for grounding ONE extract leaf to SQL (DAT-603).
 
     The authoring path grounds exactly one EXTRACT per call (DAT-646), so the
     output is one SQL statement — not the retired full-graph shape (steps[] with

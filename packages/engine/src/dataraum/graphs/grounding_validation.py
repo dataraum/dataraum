@@ -58,7 +58,7 @@ def validate_grounding_basis(
     """Contract-v2 violations of one grounding output, empty when clean.
 
     Args:
-        output: The validated (schema-wise) ``generate_sql`` tool output.
+        output: The schema-validated grounding output.
         schema_tables: The SERVED relations — ``{relation_name: {column, …}}``
             exactly as the prompt's schema block described them.
         duckdb_conn: Connection for the catalog-free parse (validator only);

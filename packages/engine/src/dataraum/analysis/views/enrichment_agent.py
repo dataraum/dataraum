@@ -203,7 +203,7 @@ class EnrichmentAgent(LLMFeature):
         context_data: dict[str, Any],
         model_name: str,
     ) -> Result[EnrichmentAnalysisResult]:
-        """Convert Pydantic tool output to EnrichmentAnalysisResult.
+        """Convert the validated LLM output to EnrichmentAnalysisResult.
 
         Args:
             output: Validated Pydantic output from LLM

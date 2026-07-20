@@ -20,7 +20,7 @@ from dataraum.core.models.base import (
 )
 
 # =============================================================================
-# Tool Output Models - Used as Pydantic tools for LLM structured output
+# Output Models - the schemas the LLM's structured outputs are constrained to
 # =============================================================================
 
 
@@ -368,7 +368,7 @@ class ColumnConceptOutput(BaseModel):
 
 
 class TableSynthesisOutput(BaseModel):
-    """Per-table synthesis tool output: entities, relationships, column concepts.
+    """Per-table synthesis output: entities, relationships, column concepts.
 
     The per-table (catalogue-grain) tier. It classifies tables, confirms
     relationships, AND authors the catalogue-grain per-column semantics
@@ -510,7 +510,7 @@ class SemanticEnrichmentResult(BaseModel):
 
 
 __all__ = [
-    # Tool output models for LLM structured output
+    # The schemas the LLM's structured outputs are constrained to
     "ColumnSemanticOutput",
     "RelationshipOutput",
     # Per-table synthesis output (DAT-362 Option B)

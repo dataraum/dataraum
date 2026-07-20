@@ -9,6 +9,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -85,9 +86,24 @@ def duckdb_with_data():
 # Provenance contract v2 (DAT-727): a schema-valid grounding must enumerate every
 # relation column its SQL parts touch, by role, and the agent enforces it against
 # the served schema. The mocked outputs here read SUM(amount) over test_data.
+# A LIST of {concept, basis} since DAT-807 — an open map cannot be expressed
+# under constrained decoding (the PERSISTED shape stays a map).
 _V2_PROVENANCE = {
-    "column_mappings_basis": {"test_field": {"measure_columns": ["amount"]}},
+    "column_mappings_basis": [
+        {
+            "concept": "test_field",
+            "basis": {"measure_columns": ["amount"], "filter_columns": [], "filter": ""},
+        }
+    ],
 }
+
+
+def _grounding_response(payload: dict) -> MagicMock:
+    """A finished grounding turn: structured-output content, no tool call (DAT-807)."""
+    response = MagicMock()
+    response.tool_calls = []
+    response.content = json.dumps(payload)
+    return response
 
 
 def _make_execution_context(
@@ -260,24 +276,22 @@ class TestGraphAgentIntegration:
             prompt_renderer=mock_renderer,
         )
 
-        # Mock the LLM converse call with tool response (single-extract clause-parts
-        # shape, DAT-603/671 — the step id is bound by the agent, not named by the
-        # model, and the model authors parts, never a fused SQL string).
-        mock_tool_call = MagicMock()
-        mock_tool_call.name = "generate_sql"  # Set as attribute, not constructor kwarg
-        mock_tool_call.input = {
-            "grounding": "test grounding: served values verified",
-            "relation": "test_data",
-            "where": [],
-            "select_expr": "SUM(amount)",
-            "description": "Sum amounts",
-            "provenance": _V2_PROVENANCE,
-        }
-
-        mock_tool_response = MagicMock()
-        mock_tool_response.tool_calls = [mock_tool_call]
-        mock_tool_response.content = None
-        agent.provider.converse = MagicMock(return_value=Result.ok(mock_tool_response))
+        # Mock the LLM converse call with the structured-output grounding
+        # (single-extract clause-parts shape, DAT-603/671 — the step id is bound
+        # by the agent, not named by the model, and the model authors parts,
+        # never a fused SQL string).
+        mock_response = _grounding_response(
+            {
+                "grounding": "test grounding: served values verified",
+                "relation": "test_data",
+                "where": [],
+                "select_expr": "SUM(amount)",
+                "description": "Sum amounts",
+                "assumptions": [],
+                "provenance": _V2_PROVENANCE,
+            }
+        )
+        agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
 
         context = _make_execution_context(duckdb_with_data)
 
@@ -308,26 +322,28 @@ def _agent_with_parts(
     agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
     agent.provider.get_model_for_tier.return_value = "test-model"
 
-    tool_call = MagicMock()
-    tool_call.name = "generate_sql"
-    tool_call.input = {
-        "grounding": "test grounding: served values verified",
-        "relation": "test_data",
-        "where": where or [],
-        "select_expr": select_expr,
-        "description": description,
-        "provenance": {
-            "column_mappings_basis": {
-                "test_field": {
-                    "measure_columns": ["amount"],
-                    "filter_columns": ["id"] if where else [],
-                }
+    response = _grounding_response(
+        {
+            "grounding": "test grounding: served values verified",
+            "relation": "test_data",
+            "where": where or [],
+            "select_expr": select_expr,
+            "description": description,
+            "assumptions": [],
+            "provenance": {
+                "column_mappings_basis": [
+                    {
+                        "concept": "test_field",
+                        "basis": {
+                            "measure_columns": ["amount"],
+                            "filter_columns": ["id"] if where else [],
+                            "filter": "",
+                        },
+                    }
+                ],
             },
-        },
-    }
-    response = MagicMock()
-    response.tool_calls = [tool_call]
-    response.content = None
+        }
+    )
     agent.provider.converse = MagicMock(return_value=Result.ok(response))
     return agent
 
@@ -848,20 +864,17 @@ class TestGraphAgentSnippets:
 
         # Mock LLM response (single-extract clause-parts shape — the agent binds
         # the parts to the graph's "value" leaf itself, DAT-603/671).
-        mock_tool_call = MagicMock()
-        mock_tool_call.name = "generate_sql"
-        mock_tool_call.input = {
-            "grounding": "test grounding: served values verified",
-            "relation": "test_data",
-            "where": [],
-            "select_expr": "SUM(amount)",
-            "description": "Sum amounts from test data",
-            "provenance": _V2_PROVENANCE,
-        }
-
-        mock_response = MagicMock()
-        mock_response.tool_calls = [mock_tool_call]
-        mock_response.content = None
+        mock_response = _grounding_response(
+            {
+                "grounding": "test grounding: served values verified",
+                "relation": "test_data",
+                "where": [],
+                "select_expr": "SUM(amount)",
+                "description": "Sum amounts from test data",
+                "assumptions": [],
+                "provenance": _V2_PROVENANCE,
+            }
+        )
         agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
 
         context = _make_execution_context(duckdb_with_data)

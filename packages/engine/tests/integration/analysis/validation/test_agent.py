@@ -1,5 +1,6 @@
 """Tests for the validation agent."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,15 +38,11 @@ def mock_provider():
     return provider
 
 
-def _make_tool_response(tool_input: dict, tool_name: str = "generate_validation_sql"):
-    """Create a mock LLM response with tool calls."""
-    tool_call = MagicMock()
-    tool_call.name = tool_name
-    tool_call.input = tool_input
-
+def _make_output_response(payload: dict):
+    """A finished turn: the structured-output JSON as message content (DAT-807)."""
     response = MagicMock()
-    response.tool_calls = [tool_call]
-    response.content = None
+    response.tool_calls = []
+    response.content = json.dumps(payload)
     return response
 
 
@@ -179,15 +176,14 @@ class TestValidationAgentGenerateSQL:
             ],
         }
 
-        # Mock LLM response with tool call
-        tool_input = {
+        # Mock LLM structured output
+        payload = {
             "sql": "SELECT SUM(debit) as total_debits, SUM(credit) as total_credits FROM typed_transactions",
             "columns_used": ["debit", "credit"],
-            "tables_used": ["typed_transactions"],
             "can_validate": True,
-            "skip_reason": None,
+            "skip_reason": "",
         }
-        mock_response = _make_tool_response(tool_input)
+        mock_response = _make_output_response(payload)
         mock_provider.converse.return_value = Result.ok(mock_response)
 
         result = validation_agent._generate_sql(spec, schema)
@@ -213,13 +209,12 @@ class TestValidationAgentGenerateSQL:
             "columns": [{"column_name": "debit", "data_type": "DECIMAL"}],
         }
         mock_provider.converse.return_value = Result.ok(
-            _make_tool_response(
+            _make_output_response(
                 {
                     "sql": "SELECT 1 AS x",
                     "columns_used": [],
-                    "tables_used": [],
                     "can_validate": True,
-                    "skip_reason": None,
+                    "skip_reason": "",
                 }
             )
         )
@@ -248,15 +243,16 @@ class TestValidationAgentGenerateSQL:
             ],
         }
 
-        # Mock LLM response indicating cannot validate
-        tool_input = {
-            "sql": None,
+        # Mock LLM structured output indicating it cannot validate. sql and
+        # skip_reason are BOTH required (DAT-807): exactly one is populated and
+        # the other is the documented "" sentinel — never a union.
+        payload = {
+            "sql": "",
             "columns_used": [],
-            "tables_used": [],
             "can_validate": False,
             "skip_reason": "Missing required columns: debit, credit",
         }
-        mock_response = _make_tool_response(tool_input)
+        mock_response = _make_output_response(payload)
         mock_provider.converse.return_value = Result.ok(mock_response)
 
         result = validation_agent._generate_sql(spec, schema)
@@ -311,25 +307,22 @@ class TestValidationAgentGenerateSQL:
         assert not result.success
         assert "disabled" in result.error
 
-    def test_generate_sql_no_tool_call_fails(self, validation_agent, mock_provider):
-        """No tool call = bind ERROR with reason — the JSON-parse-from-text
-        fallback is deleted (DAT-439): even parseable text content must NOT
-        be rescued into a GeneratedSQL."""
+    def test_generate_sql_unparseable_output_fails(self, validation_agent, mock_provider):
+        """An unparseable payload = bind ERROR with reason. Constrained decoding
+        makes this unreachable in production (DAT-807), so reaching it means the
+        API contract broke — never a silent rescue (DAT-439)."""
         spec = _eval_spec("balance")
         schema = {"table_name": "test", "duckdb_path": "test", "columns": []}
 
         response = MagicMock()
         response.tool_calls = []
-        # Valid JSON the old fallback would have silently rescued.
-        response.content = (
-            '{"sql": "SELECT 1", "can_validate": true, "columns_used": [], "skip_reason": null}'
-        )
+        response.content = "I could not do this."
         mock_provider.converse.return_value = Result.ok(response)
 
         result = validation_agent._generate_sql(spec, schema)
 
         assert not result.success
-        assert "did not use the generate_validation_sql tool" in result.error
+        assert "Failed to validate validation_sql response" in result.error
 
     def test_generate_sql_can_validate_without_sql_fails(self, validation_agent, mock_provider):
         """can_validate=true with no SQL is a degraded generation, not a
@@ -338,13 +331,13 @@ class TestValidationAgentGenerateSQL:
         spec = _eval_spec("balance")
         schema = {"table_name": "test", "duckdb_path": "test", "columns": []}
 
-        tool_input = {
-            "sql": None,
+        payload = {
+            "sql": "",
             "columns_used": [],
             "can_validate": True,
-            "skip_reason": None,
+            "skip_reason": "",
         }
-        mock_provider.converse.return_value = Result.ok(_make_tool_response(tool_input))
+        mock_provider.converse.return_value = Result.ok(_make_output_response(payload))
 
         result = validation_agent._generate_sql(spec, schema)
 
@@ -388,11 +381,10 @@ class TestValidationAgentBindExecute:
         tool_input = {
             "sql": "SELECT ABS(SUM(debit) - SUM(credit)) AS deviation, GREATEST(ABS(SUM(debit)), ABS(SUM(credit))) AS magnitude FROM typed_journal_entries",
             "columns_used": ["journal_entries.debit", "journal_entries.credit"],
-            "tables_used": ["journal_entries"],
             "can_validate": True,
-            "skip_reason": None,
+            "skip_reason": "",
         }
-        mock_response = _make_tool_response(tool_input)
+        mock_response = _make_output_response(tool_input)
         mock_provider.converse.return_value = Result.ok(mock_response)
 
         generated, bind_failure = validation_agent.bind_validation(
@@ -432,13 +424,12 @@ class TestValidationAgentBindExecute:
 
         # Mock LLM to indicate cannot validate
         tool_input = {
-            "sql": None,
+            "sql": "",
             "columns_used": [],
-            "tables_used": [],
             "can_validate": False,
             "skip_reason": "Missing account_type column",
         }
-        mock_response = _make_tool_response(tool_input)
+        mock_response = _make_output_response(tool_input)
         mock_provider.converse.return_value = Result.ok(mock_response)
 
         generated, bind_failure = validation_agent.bind_validation(
@@ -479,9 +470,9 @@ class TestValidationAgentBindExecute:
             "sql": "SELECT SUM(debit) AS total_debits FROM typed_table_not_in_lake",
             "columns_used": ["debit"],
             "can_validate": True,
-            "skip_reason": None,
+            "skip_reason": "",
         }
-        mock_provider.converse.return_value = Result.ok(_make_tool_response(tool_input))
+        mock_provider.converse.return_value = Result.ok(_make_output_response(tool_input))
 
         generated, bind_failure = validation_agent.bind_validation(
             duckdb_conn, [table.table_id], spec, schema
@@ -518,9 +509,9 @@ class TestValidationAgentBindExecute:
             "sql": "SELECT 5 AS po_count, 3 AS invoice_count FROM typed_journal_entries LIMIT 1",
             "columns_used": [],
             "can_validate": True,
-            "skip_reason": None,
+            "skip_reason": "",
         }
-        mock_provider.converse.return_value = Result.ok(_make_tool_response(tool_input))
+        mock_provider.converse.return_value = Result.ok(_make_output_response(tool_input))
 
         generated, bind_failure = validation_agent.bind_validation(
             duckdb_conn, [table.table_id], spec, schema

@@ -1,4 +1,4 @@
-// Unit tests for the client NDJSON reader + columnar store (DAT-385 P2).
+// Unit tests for the client NDJSON reader + columnar store (DAT-385).
 //
 // Pure: no DOM, no DB, no native driver — feed hand-built ReadableStreams of
 // byte chunks (deliberately split across frame and line boundaries) and assert

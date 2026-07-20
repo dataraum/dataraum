@@ -1,8 +1,9 @@
-# Cockpit — the three-region agentic view (DAT-347, C1)
+# Cockpit — the three-region agentic view (DAT-347)
 
-The inner surface that fills the C0 shell's `/cockpit` route. It
+The inner surface that fills the outer shell's `/cockpit` route. It
 renders **strictly inside** that route component — the outer shell, theme,
-routing, and ⌘K belong to C0 (`src/ui/{app-shell,sections,theme}.ts[x]`).
+routing, and ⌘K live one level up in `src/ui/{app-shell,sections,theme}.ts[x]`
+and are not this surface's concern.
 
 ## Layout
 
@@ -28,7 +29,7 @@ while a turn streams; components that render streaming state read `useCockpit()`
 ## The contract: register, don't replace
 
 **The focus canvas is a registry, not a switch.** Adding a new canvas
-visualization (the C2-C6 columns) is four additive edits — and it never touches
+visualization is four additive edits — and it never touches
 `FocusCanvas`, `CockpitView`, the chat stream, or the shell:
 
 1. **Add one `CanvasState` member** in `canvas-state.ts`
@@ -41,7 +42,7 @@ visualization (the C2-C6 columns) is four additive edits — and it never touche
    (map your tool's result to the new member).
 
 That's it. `FocusCanvas` resolves the widget by `canvasState.kind`; an
-unregistered kind degrades to the error widget, so a partially-landed column
+unregistered kind degrades to the error widget, so a partially-landed surface
 never crashes the view.
 
 ## Chat transport (DAT-353)

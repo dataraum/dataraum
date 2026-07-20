@@ -1,15 +1,14 @@
-// Conformance oracle for the read-only snippet library (DAT-484 P0), ported from
-// the engine's tests/unit/query/test_snippet_search.py + the vocabulary case in
-// test_snippet_library.py. It proves byte-parity of the TS lookup against the
-// Python producer's semantics — the parity risk lives in the SQL (LIKE / IN /
-// IS NULL / DISTINCT), so this must hit a real Postgres, not a mock.
+// Conformance oracle for the read-only snippet library (DAT-484). It pins the
+// lookup semantics against the rows the Python producer actually writes — the
+// risk lives in the SQL (LIKE / IN / IS NULL / DISTINCT), so this must hit a
+// real Postgres, not a mock.
 //
 // Harness: the established *.integration.test pattern — gated on
 // METADATA_DATABASE_URL, REUSING the running compose Postgres (no per-test
 // container). A single rich fixture is seeded under one synthetic
 // schema_mapping_id ("dat484-test") so it never interacts with real producer
 // rows (which carry the real workspace_id). Seeding writes the underlying
-// ws_<id>.sql_snippets TABLE directly via raw bun SQL (P0 has no write path);
+// ws_<id>.sql_snippets TABLE directly via raw bun SQL (the library is read-only);
 // the lib reads it through the `sqlSnippets` view. All seeded rows carry one
 // synthetic workspace_id (DAT-506: snippets are workspace-scoped, no
 // investigation_sessions FK), so cleanup is a single delete-by-workspace_id.

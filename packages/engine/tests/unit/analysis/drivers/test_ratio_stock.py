@@ -1,4 +1,4 @@
-"""DAT-545 P4 — ratio (support-weighted) + stock (additivity-respecting) targets.
+"""DAT-545 — ratio (support-weighted) + stock (additivity-respecting) targets.
 
 Ratio is the genuinely new criterion (the spike validated flow only): the group
 statistic is Σnum/Σden, support-weighted by the denominator, never the mean of

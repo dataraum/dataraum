@@ -1,7 +1,11 @@
-"""Entropy behavior configuration for graph agent responses.
+"""Entropy behavior configuration — what a consumer does at a given entropy level.
 
-Defines how the graph agent should behave when encountering different
-entropy levels, per the specification in ENTROPY_QUERY_BEHAVIOR.md.
+The rule, stated here rather than pointed at: a mode is one
+``(clarification_threshold, refusal_threshold, disclosure)`` triple. Below the
+clarification threshold answer directly; between the two, answer but carry the
+assumption; above the refusal threshold say what must be resolved first. A
+:class:`DimensionBehavior` replaces the mode's clarification threshold for one
+dimension and can force disclosure at any level.
 """
 
 from __future__ import annotations
@@ -94,7 +98,9 @@ class EntropyBehaviorConfig:
         )
 
 
-# Default dimension-specific thresholds per ENTROPY_QUERY_BEHAVIOR.md
+# The two dimensions where a silent wrong assumption is unrecoverable — a
+# mis-assumed currency or join path makes every number downstream wrong — so
+# they ask early and always disclose, whatever the mode.
 DEFAULT_DIMENSION_OVERRIDES = [
     DimensionBehavior(
         dimension="semantic.units",

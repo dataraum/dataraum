@@ -1,4 +1,4 @@
-// `run_steps` — the query sub-agent's SQL VALIDATOR (DAT-485 P1).
+// `run_steps` — the query sub-agent's SQL VALIDATOR (DAT-485).
 //
 // The `answer` tool's nested chat() sub-agent composes a question's answer as a
 // set of concept-named steps + a combining `final_sql` (the snippet-reuse unit,

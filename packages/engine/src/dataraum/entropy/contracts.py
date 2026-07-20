@@ -568,7 +568,8 @@ def evaluate_contract(
                 )
             )
 
-    # Check if any column has blocked readiness (from Bayesian network).
+    # Check if any column has blocked readiness (from the per-intent loss tables —
+    # the Bayesian network was deleted in DAT-442).
     # This ensures contract evaluation is consistent with overall readiness:
     # if readiness=BLOCKED, no contract should pass.
     blocked_columns = sorted(key for key, s in column_summaries.items() if s.readiness == "blocked")

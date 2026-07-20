@@ -1,4 +1,4 @@
-// OUTER SHELL (DAT-380, C0).
+// OUTER SHELL (DAT-380).
 //
 // Thin chrome around the active section: a slim left rail of the six section
 // icons + a thin top bar (the workspace switcher, DAT-821 + a ⌘K hint). Uses

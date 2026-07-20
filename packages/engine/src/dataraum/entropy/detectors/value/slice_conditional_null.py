@@ -7,8 +7,8 @@ ratio hides it. This detector reads that concentration.
 
 The statistic is **bias-corrected Cramér's V** (Bergsma) on the 2×K contingency of
 ``(value IS NULL) × slice`` under the **Cochran validity rule** (any expected cell < 5 →
-abstain), grounded in the kill gate (``entropy_eval_architecture.md``; pinned in
-dataraum-eval ``test_slice_null_gate.py``). For the target column it scans each sibling
+abstain), grounded in the kill gate (pinned in the sibling ``dataraum-eval`` repo's
+``test_slice_null_gate.py``). For the target column it scans each sibling
 low-cardinality categorical as a candidate slice dimension and emits the MAX association
 over the slices that yield a valid table — ``0.0`` when missingness is independent of every
 slice (MCAR), when the column has no nulls, or when no slice yields a valid 2×K table.

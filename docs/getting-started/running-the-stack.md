@@ -13,6 +13,11 @@ To run pinned release images on a deploy host instead, see [Deployment](../opera
   boots without it, but the pipeline can't complete.
 - **Port 80 free**, or a spare port to put the ingress on. Caddy terminates every URL you
   use and publishes `:80` by default — see [If port 80 is taken](#if-port-80-is-taken).
+- **Ports 3001, 4317, and 4318 free.** The bundled observability container publishes
+  Grafana on `3001` and the two OTLP receivers on `4317`/`4318`. It has no compose profile,
+  so a plain `up` starts it; if something on the host already holds one of those ports, `up`
+  fails at container start the same way a busy `:80` does. Free the port, or drop the
+  service from the `up` if you don't need traces.
 
 ## Bring it up
 
@@ -33,10 +38,13 @@ The first run builds both app images and pulls the substrate images, so it takes
 minutes; subsequent runs reuse the layers. `--wait` blocks until every service is healthy
 (and the one-shot `cockpit-migrate` has applied the `cockpit_db` migrations).
 
-A default `up` — no profiles — gives you the complete installation: Postgres, the object
-store, Temporal, **one engine worker and one cockpit** for the default workspace, plus the
-**portal** and **Caddy**. See [the container table](../platform/architecture.md#the-containers-concretely)
-for what each one is.
+A default `up` gives you the complete installation: Postgres, the object store, Temporal,
+**one engine worker and one cockpit** for the default workspace, the **portal**, **Caddy**,
+and the bundled **observability** container (Grafana plus an OTLP collector, both workers
+export to it). No service is behind a compose profile, so there is nothing to opt into and
+nothing held back. See
+[the container table](../platform/architecture.md#the-containers-concretely) for what each
+one is.
 
 ### If port 80 is taken
 
@@ -120,7 +128,9 @@ provisioner to clone. Treat it as scaffolding.
 engine + cockpit pair, and registers the Caddy route. Compose does *not* grow a service per
 workspace. Two equivalent front doors:
 
-- The portal → **New workspace**: name, [vertical](../concepts/approach.md), subdomain.
+- The portal → **New workspace**: name,
+  [vertical](../concepts/learnable-surface.md#verticals-reusable-starting-points),
+  subdomain.
   This is the path to prefer — the portal container already holds the admin connections
   and the docker socket the lifecycle needs.
 - The CLI, for scripted or headless setups. It runs on the **host**, so it needs the

@@ -1,8 +1,8 @@
-"""DAT-552 P1 — ICC + the entity-grain (cluster-aware) target.
+"""DAT-552 — ICC + the entity-grain (cluster-aware) target.
 
 Unit-level: ICC detects within-entity clustering; EntityMeanTarget ranks an
 entity-level driver above an entity-level null on entity-collapsed data and permutes
-ENTITIES (not rows). The end-to-end ICC-switch lives in test_grain_e2e (P2).
+ENTITIES (not rows). The end-to-end ICC-switch lives in test_grain_e2e.
 """
 
 from __future__ import annotations

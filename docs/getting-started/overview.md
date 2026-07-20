@@ -96,7 +96,7 @@ can act on:
 - **blocked** — too uncertain to safely build on.
 
 When something is elevated, the system can tell you *why* and propose a **teach** — a
-small, typed correction (a null marker, a type pattern, a concept binding…). You teach,
+small, typed correction (a null marker, a type pattern, a missed join…). You teach,
 the engine re-runs the affected work, and the score moves. See
 [measurement](../concepts/measurement.md) and the
 [learnable surface](../concepts/learnable-surface.md).

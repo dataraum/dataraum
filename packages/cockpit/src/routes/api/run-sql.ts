@@ -1,10 +1,10 @@
-// Streaming `run_sql` endpoint for the human/grid consumer (DAT-385 P1).
+// Streaming `run_sql` endpoint for the human/grid consumer (DAT-385).
 //
 // A SEPARATE channel from the chat SSE (`/api/chat`, `text/event-stream`): this
 // is `application/x-ndjson`, streaming a query result chunk-by-chunk as columnar
 // NDJSON so a large grid result never materializes as one JSON blob. The chat
 // SSE carries only a lightweight handle; the grid fetches the payload here on
-// its own channel (design §3). See `plans/run-sql-streaming-design.md` §5.
+// its own channel, so a big result never crosses the chat transport at all.
 //
 // This route is the thin I/O shell: parse the request, open the READ_ONLY lake
 // reader, kick off neo's lazy `conn.stream()`, and pump `streamNdjson` into a
@@ -51,7 +51,7 @@ interface RunSqlStreamBody {
 	/** 0-based row offset of this window. Clamped to a non-negative integer. */
 	offset?: number;
 	/**
-	 * Optional server-side single-column sort (DAT-385 P3). Applied to the wrapped
+	 * Optional server-side single-column sort (DAT-385). Applied to the wrapped
 	 * query so it orders the FULL result before the window is cut, not just the
 	 * streamed rows. `column` must be an output column name of `sql`; the server
 	 * quotes it as an identifier, so a bad name yields a binder error, never

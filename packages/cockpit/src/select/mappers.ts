@@ -1,9 +1,9 @@
 // select-stage pure mappers (DAT-398) — turn a `ConnectSchema` + the user's
 // subset choice into the exact `sources`-row payload the engine import phase
-// consumes. NO I/O here: the tool (`tools/select.ts`) carries the DB write and
-// the prefix-enumeration driver; everything that decides the *shape* of the
-// persisted Source row lives here so it is unit-testable without a live driver,
-// a bucket, or Postgres.
+// consumes. NO I/O here: `select/source-write.ts` carries the DB write and
+// `server/import-sources.ts` drives the batch; everything that decides the
+// *shape* of the persisted Source row lives here so it is unit-testable without
+// a live driver, a bucket, or Postgres.
 //
 // The two source kinds map to two DISTINCT `connection_config` keys — never
 // folded into one another (the engine reads `file_uris` for files and `tables`
@@ -29,13 +29,14 @@
 import type { ConnectSchema } from "../duckdb/connect";
 
 // THE source-name rule — this pattern is the authority (DAT-430 deleted the
-// engine's legacy `SourceManager` and its `_NAME_PATTERN`; `select` is the only
-// writer of source rows): lowercase, starts with a letter, 2–49 chars of
+// engine's legacy `SourceManager` and its `_NAME_PATTERN`; the cockpit's
+// `select/` path is the only writer of source rows): lowercase, starts with a
+// letter, 2–49 chars of
 // `[a-z0-9_]`. The engine consumes the persisted name verbatim — the credential
 // lookup `DATARAUM_<NAME>_URL` keys off it — and it is UNIQUE (`uq_sources_name`).
 // (Post-DAT-639 there is no `<name>__` raw-table prefix; physical table names are
 // narrow.) Lives here in the pure-shape module so both the db-source name
-// validation (`tools/select.ts`) and the content-keyed file-source name
+// validation (`select/recipe-source.ts`) and the content-keyed file-source name
 // derivation below agree on one pattern.
 export const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
 
@@ -51,8 +52,8 @@ export const RESERVED_SOURCE_NAME_PREFIXES = ["src_", "enriched_"] as const;
 
 /**
  * The reserved family prefix a candidate source name starts with, or null when
- * the name is safe. The db-source branch of `tools/select.ts` rejects on
- * non-null — `select` is the only writer of source rows, so this IS the
+ * the name is safe. `select/recipe-source.ts` rejects a spec on non-null —
+ * `select/source-write.ts` is the only writer of source rows, so this IS the
  * reservation. The content-keyed `src_<digest>` names minted by
  * `contentKeyedSourceName` below are exempt by construction: they ARE the
  * family the `src_` prefix is reserved for.

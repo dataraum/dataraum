@@ -1,13 +1,13 @@
 // Lane smoke for persistRecipeSources (DAT-592) — drives the import-set producer
 // against a REAL Postgres ws_<id>.sources table and asserts each staged query
 // lands as its OWN single-statement `db_recipe` source with the exact keys the
-// engine import phase reads (mirrors select.integration.test.ts).
+// engine import phase reads.
 //
-// The contrast with the agent `select` path (proven in select.integration): a
-// table-pick `select` writes ONE source carrying N `{name, sql}` recipe entries;
-// the import set writes N sources, each carrying a SINGLE entry. Same row shape,
-// different grain. Drives the persist core directly — starting the real batched
-// addSourceWorkflow is the compose smoke's job.
+// The grain under test: N staged queries → N sources, each carrying a SINGLE
+// `{name, sql}` recipe entry (the retired agent `select` tool wrote ONE source
+// carrying N entries — same row shape, different grain). Drives the persist core
+// directly — starting the real batched addSourceWorkflow is the compose smoke's
+// job.
 //
 // Requires a running compose stack (postgres on 127.0.0.1:5432 with the
 // engine-created ws_<id>.sources table). Skipped automatically when

@@ -118,7 +118,7 @@ SESSION_DETECTOR_PHASES = (
     "correlations",
 )
 
-# The operating_model terminal detect (DAT-432/L7): scores the validation
+# The operating_model terminal detect (DAT-432): scores the validation
 # phase's declared detectors (cross_table_consistency). Named here beside its
 # siblings so the no-orphan guard can assert every pipeline.yaml phase that
 # declares detectors is covered by SOME detect path — the gap that left
@@ -561,7 +561,7 @@ def materialize_session_overlays(manager: ConnectionManager, run: RunRef) -> int
 
 
 def write_session_keepers(manager: ConnectionManager, run: RunRef) -> int:
-    """Lift silently-accepted relationships into keep overlays (DAT-409 C3).
+    """Lift silently-accepted relationships into keep overlays (DAT-409).
 
     Pre-promote step: while the per-session head still points at the prior run,
     compare it to this run and write a ``keep`` overlay for each promoted ``llm``

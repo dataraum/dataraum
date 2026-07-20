@@ -110,7 +110,7 @@ def test_seed_does_not_clobber_a_superseded_edge(session: Session) -> None:
     The re-seed's ``ON CONFLICT DO NOTHING`` skips the edge whose active row is the
     replacement (same active partial-unique index as concepts), never overwriting it
     and never RAISING on the collision. This is the mechanism a future edit path
-    (``frame``, P13 — not wired yet, so ``source`` stays 'seed'; DAT-802 narrowed
+    (``frame`` — not wired yet, so ``source`` stays 'seed'; DAT-802 narrowed
     ``ck_concept_edges_source`` to the one live value) will rely on; the test proves
     the DB-level supersede+insert contract independent of who eventually calls it.
     """

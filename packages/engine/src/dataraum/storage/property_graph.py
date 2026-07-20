@@ -16,7 +16,8 @@ supported. So every read splits:
   roll-up) → a bounded recursive CTE over the SAME edge view, capped at a max
   traversal depth (≈4) with a cycle guard.
 
-**Scope (P1 / DAT-726, concepts P3/P4, grounding P2 / DAT-727).** Vertices/edges:
+**Scope (DAT-726 topology, the concept vocabulary, and the DAT-727 grounding
+reification).** Vertices/edges:
 
     column_node    (KEY column_id)   props: semantic_role (has_role),
                                             materialization (materializes_as),
@@ -34,7 +35,7 @@ supported. So every read splits:
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
-    concept_edge       concept → concept [concept_edges]      part_of/disjoint/reconciles (P4)
+    concept_edge       concept → concept [concept_edges]      part_of/disjoint/reconciles
     conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (DAT-756)
     grounded_by        concept → grounding [current_groundings] a concept's groundings; >1 healthy = multi-grounding
     uses               grounding → column  [provenance contract v2] the columns a grounding touches
@@ -45,8 +46,8 @@ tables are ``table_node``, discriminated by the ``layer`` property (the DD types
 every ``derived_from`` edge — whose source is always an enriched-view table — dangled at
 its source endpoint and none ever instantiated in a MATCH. See ``og_tables`` below.
 
-``rolls_up_to`` (dimension_hierarchies' JSON members) lands in P5 where its
-consumer does. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
+``rolls_up_to`` (dimension_hierarchies' JSON members) is not bound here — it
+lands with the consumer that reads it. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
 ``part_of`` / ``disjoint_with`` / ``reconciles_with`` as a ``predicate`` property;
 its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 The ``uses`` edge un-nests the TYPED ``column_mappings_basis`` (provenance contract
@@ -281,8 +282,8 @@ def _element_view_sql(name: str) -> str:
     if name == "og_concept_edges":
         # concept_edge (concept → concept): the vocabulary relations part_of /
         # disjoint_with / reconciles_with (DAT-729), predicate carried as a property.
-        # concept_edges stores endpoints by the stable (vertical, name) key — the P3
-        # identity contract — so each endpoint JOINs to its ACTIVE concept to resolve
+        # concept_edges stores endpoints by the stable (vertical, name) key — the
+        # concept identity contract — so each endpoint JOINs to its ACTIVE concept to resolve
         # the concept_id the PGQ vertex KEY needs. The INNER JOINs drop an edge whose
         # endpoint concept is superseded/absent (the graph never dangles). edge_id is
         # the per-edge local key (unique among active rows via the partial index).

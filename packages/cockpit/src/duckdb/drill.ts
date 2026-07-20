@@ -28,7 +28,7 @@ export type DrillStep =
 	| { kind: "slice"; column: string; grain?: string }
 	| { kind: "pin"; column: string; value: DrillPinValue; grain?: string };
 
-/** Axis-resolution request (`/api/drill/axes`, metric path in P1): exactly one
+/** Axis-resolution request (`/api/drill/axes`, metric path only today): exactly one
  *  of the two keys. Shared client↔server so the wire contract can't silently
  *  drift (this module is the neo-free home for drill types). */
 export type DrillAxesRequest =

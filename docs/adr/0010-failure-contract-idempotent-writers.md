@@ -1,6 +1,6 @@
 # ADR-0010 — Failure contract: (key, run_id) idempotent writers; skips and deletes are exceptions, not the mechanism
 
-- **Status:** Accepted
+- **Status:** Accepted (exempt roster + keep-list reconciled 2026-07-20 against the code — [ADR-0013](./0013-begin-session-dimension-relatedness-consolidation.md) cut the per-value slice-materialization substrate this record referenced; the decision is unchanged)
 - **Date:** 2026-06-11
 - **Ticket:** DAT-502 (Phase 1 of epic DAT-501)
 - **Design doc:** Confluence DD/34045953 §4
@@ -41,9 +41,12 @@ DB-enforced grain.
 **Structural enforcement:** `storage/read_views.py::enforce_run_grain` — every
 run-stamped table carries a run-including UNIQUE or appears on the explicit
 `_RUN_GRAIN_EXEMPT` list with its reason. Runs at boot and in the `schema-drift`
-CI gate (via `dump_ddl`). Exempt today: the three form-(b) tables above (those
-without UNIQUEs), `enriched_views` + `slicing_views` (mutate-in-place writers —
-re-grain owed to DAT-501 Phase 5 / DAT-506), and `derived_columns` (skip-guarded).
+CI gate (via `dump_ddl`). `_RUN_GRAIN_EXEMPT` carries four entries:
+`entropy_readiness` and `entropy_objects` (the form-(b) tables above that hold no
+UNIQUE — `claim_witnesses` has one, so it is not exempt), `enriched_views`
+(latest-only and name-keyed since DAT-506: `UNIQUE(fact_table_id)` is the grain and
+DuckLake native snapshots version the artifact, so the metadata row carries no
+`(key, run_id)` axis), and `derived_columns` (skip-guarded).
 
 **Sanctioned exceptions to one-commit-per-phase:**
 
@@ -62,9 +65,9 @@ re-grain owed to DAT-501 Phase 5 / DAT-506), and `derived_columns` (skip-guarded
 ## Keep-list (deliberate, NOT redelivery hedges — do not "clean up")
 
 - **TableEntity replace-delete** and the **relationship overlay materialization
-  clear** (`relationships/materialize.py`) — LLM-nondeterministic producers whose
-  row-set shrinks; form (b) by design.
-- **Readiness shrink-to-empty** (`entropy/readiness.py:56-73`) — form (b).
+  clear** (`analysis/relationships/materialize.py`) — LLM-nondeterministic
+  producers whose row-set shrinks; form (b) by design.
+- **Readiness shrink-to-empty** (`entropy/readiness.py`) — form (b).
 - **`AggregationLineagePhase.should_skip`** — run-scoped structural preconditions,
   not a stale-skip.
 - **`entropy/resolve.py` UPDATEs** (`resolve_null_tokens` / `resolve_temporal_behavior`)
@@ -78,23 +81,17 @@ re-grain owed to DAT-501 Phase 5 / DAT-506), and `derived_columns` (skip-guarded
 - **Business deletes** (user-driven drops/teach) and **lake `CREATE OR REPLACE` /
   `DROP`** — the physical lake is latest-only by design (DAT-413: only metadata is
   versioned).
-- **PR #280's `processed_slice_tables` consumer-side dedup**
-  (`temporal_slice_analysis_phase`) — sanitized slice prefixes are not prefix-free
-  (`account` vs `account_type`), so two DISTINCT definitions can route one physical
-  slice table twice even with the `SliceDefinition` grain.
 
 ## Consequences
 
 - Deleted: import `_rollback_partial_load`, correlations' in-`_run` re-check,
   slice_analysis' cross-run "All slices already analyzed" arm, the dead
   `MetadataSnapshotHead.version` counter, and the run-scoped clears in front of the
-  relationship-candidate / TypeCandidate / TemporalSliceAnalysis / drift /
-  measure_aggregation_lineage writers.
+  relationship-candidate / TypeCandidate / measure_aggregation_lineage writers.
 - New grains: `relationships` (existing UNIQUE now load-bearing for the writer),
   `type_candidates (column_id, data_type, detected_pattern, run_id)` with
-  `detected_pattern NOT NULL DEFAULT ''`,
-  `slice_definitions (table_id, column_name, run_id)`,
-  `temporal_slice_analyses (slice_table_name, period_label, run_id)`.
+  `detected_pattern NOT NULL DEFAULT ''`, and
+  `slice_definitions (table_id, column_name, run_id)`.
 - Every conversion is gated on an at-least-once test: re-execute the committed
   writer body twice under the same `run_id` with a commit between; assert
   convergence and prior runs untouched.

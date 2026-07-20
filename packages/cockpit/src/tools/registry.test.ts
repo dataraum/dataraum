@@ -86,7 +86,7 @@ describe("tool registry (DAT-353)", () => {
 	});
 
 	it("routes every registered tool to exactly one surface — canvas XOR chip-only (DAT-527)", () => {
-		// The guardrail for the DAT-526 P1 registry split: a tool must be consciously
+		// The guardrail for the DAT-526 registry split: a tool must be consciously
 		// routed — projected to the canvas (PROJECTORS/CANVAS_TOOLS) OR explicitly
 		// chip-only — never silently un-routed. XOR catches BOTH gaps: in neither
 		// (forgotten) and in both (contradiction).

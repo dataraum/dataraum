@@ -61,7 +61,7 @@ _OPINION_EPS = 1e-6
 # with the readiness low band (risk <= 0.3 is "ready"). Witnesses that agree on
 # the label but differ in confidence produce small positive JSD (~0.02); reusing
 # the abstention epsilon here made the flag fire on nearly every column and
-# degraded the query agent's caveat signal to noise (review finding C1).
+# degraded the query agent's caveat signal to noise.
 CONTESTED_MIN_CONFLICT = 0.3
 
 # Default confidence when a present signal carries none (a declared behaviour / claim

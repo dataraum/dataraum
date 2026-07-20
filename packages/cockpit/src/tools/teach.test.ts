@@ -2,7 +2,7 @@
 //
 // Mirror of the engine's per-type appliers — a teach that passes here must
 // produce the payload shape the applier in dataraum/core/overlay.py expects.
-// The DB-bound `teach(...)` write path is covered by the P8 integration smoke.
+// The DB-bound `teach(...)` write path is covered by `teach.integration.test.ts`.
 
 import { describe, expect, it } from "vitest";
 

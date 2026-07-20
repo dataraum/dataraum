@@ -1,8 +1,10 @@
-// Snippet WRITE surface (DAT-486 P2a) — save-on-clean persists a learned
+// Snippet WRITE surface (DAT-486) — save-on-clean persists a learned
 // `query:` snippet so the library grows from real questions and reuse compounds.
 //
-// Mirrors the engine's query-type save path (query/agent.py `_save_novel_snippets`
-// → snippet_library.py `save_snippet`): concept-keyed, first-writer-wins. The
+// Mirrors the semantics of the engine's `snippet_library.py` `save_snippet`:
+// concept-keyed, first-writer-wins. (The engine's own `query`-type producer is
+// gone — DAT-487 removed the query agent — so the cockpit answer tool is now the
+// only writer of `query` snippets.) The
 // snippet identity is the 6-col `uq_snippet_semantic_key`; for a `query` snippet
 // statement/aggregation/parameter_value are all NULL, so dedup CANNOT be a DB
 // `ON CONFLICT` — the unique key is NULLS DISTINCT, so a null-bearing key never

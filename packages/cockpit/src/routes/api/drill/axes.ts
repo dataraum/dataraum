@@ -1,7 +1,7 @@
 // POST /api/drill/axes — the drillable dimensions of a metric or measure
 // (DAT-672). Canvas widgets fetch this instead of importing the server-only
 // resolver (bundle hygiene: `drill-axes.ts` pulls config + the metadata
-// client). Metric path only in P1 — ad-hoc SQL resolution is DAT-678.
+// client). Metric path only — ad-hoc SQL resolution is DAT-678.
 
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";

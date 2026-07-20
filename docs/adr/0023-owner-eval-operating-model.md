@@ -78,7 +78,9 @@ was); agent teams (same robustness trade rejected in ADR-0006, and it paralleliz
 - **Lanes run the full CI gates locally** before handing back (`ruff format`,
   `biome --write`, the CI set) — lane agents don't fire the end-of-turn hook.
 - **Lane review gate:** `/implement`'s senior-code-reviewer + spec-compliance-reviewer;
-  the ledger's lane brief is the spec the compliance reviewer reads.
+  the ledger's lane brief is the spec the compliance reviewer reads. A third agent,
+  `strict-reviewer`, stays available for direct invocation on a diff the owner wants
+  hardened; it is not part of the automatic gate.
 - **Ask-don't-guess:** a lane at a design fork its brief doesn't settle asks the owner
   instead of guessing; the owner answers from spec/ledger context or escalates a genuine
   fork to the lead. ADR-0006's insight stands — confidently-wrong assumptions don't

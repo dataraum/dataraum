@@ -1,4 +1,4 @@
-// Cockpit view (DAT-347, C1; reshaped in the redesign, then DAT-528).
+// Cockpit view (DAT-347; reshaped in the redesign, then DAT-528).
 //
 // A specific chat's working surface: the chat rail (left) beside the focus canvas
 // (right), each scrolling independently. The cold-start landing is no longer here

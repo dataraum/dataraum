@@ -1,4 +1,4 @@
-// Thin placeholder for a stub section page (DAT-380, C0). Reads theme tokens
+// Thin placeholder for a stub section page (DAT-380). Reads theme tokens
 // only — no hardcoded px/hex. Real section content lands in later tickets.
 
 import { Stack, Text, Title } from "@mantine/core";

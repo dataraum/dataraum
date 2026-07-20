@@ -1063,7 +1063,7 @@ class TestSynthesizeAndStoreTables:
 
 
 class TestColumnConceptCoverageRetry:
-    """DAT-725 B1: bounded scoped re-prompts fill column_concepts truncation gaps.
+    """DAT-725: bounded scoped re-prompts fill column_concepts truncation gaps.
 
     One batched call can emit meanings for a fraction of the catalogue (output
     truncation jitter under the warn-only contract). The processor re-prompts —

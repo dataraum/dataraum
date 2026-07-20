@@ -1,8 +1,8 @@
-// Focus canvas (DAT-347, C1).
+// Focus canvas (DAT-347).
 //
 // Renders whatever the cockpit's canvasState points at, by resolving the widget
 // for its `kind` from the shared registry. If a kind has no registered widget —
-// e.g. a C2-C6 member whose widget hasn't landed yet — it degrades to the error
+// e.g. a member whose widget hasn't landed yet — it degrades to the error
 // widget rather than crashing the whole view. This is the registry's payoff:
 // partial landings stay safe.
 

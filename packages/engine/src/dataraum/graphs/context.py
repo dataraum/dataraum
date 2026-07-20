@@ -295,7 +295,7 @@ class GroundingContext:
 
 @dataclass
 class ConceptReconciliation:
-    """One ``reconciles_with`` verdict on a concept (concept_edges, P2/P4).
+    """One ``reconciles_with`` verdict on a concept (concept_edges).
 
     The landed shape (owner-ruled) derives concept-grain SELF-LOOPS for
     multi-grounding tie-out (``partner == concept``); seed/declared rows may
@@ -1038,7 +1038,7 @@ def build_execution_context(
 # Property-graph reads (DAT-734) — the operating-model graph as context source
 # =============================================================================
 #
-# The traversal core reads the LANDED P2 property graph (ADR-0021), never the
+# The traversal core reads the LANDED property graph (ADR-0021), never the
 # base tables: PGQ ``MATCH`` for the fixed-hop edge reads (grounded_by, uses,
 # concept_edge), the bounded recursive CTE ONLY for the part_of transitive
 # closure, and plain reads of the ``og_*`` element views for vertex maps and
@@ -1047,8 +1047,8 @@ def build_execution_context(
 # assembly never crashes, and the eval's MATCH-returns-rows oracles catch a
 # structurally dead graph.
 
-# Depth cap for the part_of closure — the ADR-0021 bounded-CTE mechanism (the
-# P1 spike's ≈4 with a cycle guard; PGQ MATCH is fixed-depth and cannot walk it).
+# Depth cap for the part_of closure — the ADR-0021 bounded-CTE mechanism (≈4
+# hops with a cycle guard; PGQ MATCH is fixed-depth and cannot walk it).
 _PART_OF_MAX_DEPTH = 4
 
 

@@ -19,7 +19,13 @@
 #   # engine health = Temporal worker heartbeat (no HTTP endpoint):
 #   docker compose run --rm --no-deps --entrypoint temporal temporal-admin-tools \
 #     worker list --namespace default --address temporal:7233   # → Status: Running
-#   open http://127.0.0.1:3000
+#   open http://dataraum.localhost          # portal → sign in → your workspace
+#
+# Caddy owns the entry point: the parent domain serves the portal, and each
+# <sub>.dataraum.localhost serves that workspace. Host :80 must be free — if it
+# isn't, set CADDY_HTTP_PORT and a matching DATARAUM_PORTAL_ORIGIN. The
+# cockpit's own 3000:3000 is a debug port only; signed-out HTML there bounces
+# to the portal, so it is not the first-run entry.
 #
 # Egress posture: both app images pre-bake their DuckDB extensions
 # (DUCKLAKE_SKIP_INSTALL=1 in engine + cockpit Dockerfiles), so nothing here

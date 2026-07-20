@@ -464,7 +464,7 @@ class PhaseActivities:
 
     @activity.defn(name="session_write_keepers")
     def run_session_write_keepers(self, run: RunRef) -> PhaseOutcome:
-        """Silent-accept writer (DAT-409 C3) — runs after detect, before promote.
+        """Silent-accept writer (DAT-409) — runs after detect, before promote.
 
         While the head still names the prior run, lift each promoted ``llm`` the
         current run didn't reproduce (and the user didn't reject) into a ``keep``
@@ -585,7 +585,7 @@ class PhaseActivities:
 
     @activity.defn(name="operating_model_detect")
     def run_operating_model_detect(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
-        """Terminal detector pass for operating_model (DAT-432/L7).
+        """Terminal detector pass for operating_model (DAT-432).
 
         Scores this run's executed validation results — cross_table_consistency,
         declared on the ``validation`` phase — into table + column entropy

@@ -1,4 +1,4 @@
-// Chat rail (DAT-347 C1; rebuilt on TanStack AI for DAT-353; chat lifted to the
+// Chat rail (DAT-347; rebuilt on TanStack AI for DAT-353; chat lifted to the
 // provider in the chat→canvas derive refactor).
 //
 // This component is now PURE RENDER: it reads the conversation from useCockpit()

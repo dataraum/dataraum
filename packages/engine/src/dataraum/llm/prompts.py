@@ -91,8 +91,11 @@ class PromptRenderer:
             context: Context variables for substitution
 
         Returns:
-            Tuple of (system_prompt, user_prompt, temperature)
-            system_prompt is None for legacy single-prompt templates
+            Tuple of (system_prompt, user_prompt, temperature).
+            system_prompt is None only for a template that declares neither
+            ``system_prompt`` nor ``user_prompt`` — every template shipped under
+            ``dataraum-config/llm/prompts/`` declares a ``system_prompt``, so no
+            shipped template takes that path.
 
         Raises:
             ValueError: If required inputs are missing
@@ -101,13 +104,14 @@ class PromptRenderer:
         template = self.load_template(template_name)
         full_context = self._prepare_context(template, context)
 
-        # For new templates with system/user split
+        # System/user split — the shape every shipped template uses
         if template.system_prompt is not None or template.user_prompt is not None:
             system = self._render_text(template.system_prompt or "", full_context)
             user = self._render_text(template.user_prompt or "", full_context)
             return system, user, template.temperature
 
-        # For legacy templates - return as user message only
+        # Single-``prompt`` template — user message only; no shipped template
+        # reaches here (see the Returns note above).
         rendered = self._render_text(template.prompt or "", full_context)
         return None, rendered, template.temperature
 

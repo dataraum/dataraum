@@ -10,16 +10,23 @@
 // `validation` overlay row carries a full spec, which `core/overlay.py`
 // `_apply_validation` upsert-replaces by `validation_id` into the vertical's
 // declared set. A teach declares a new INSTANCE or overrides a shipped one —
-// NEVER a new TYPE: `check_type` is a CLOSED enum (the four evaluator branches in
-// the engine's `_evaluate_result`), so the user's words shape WHAT gets grounded,
-// never HOW results get scored (the Goodhart line).
+// NEVER a new TYPE: `check_type` is closed here to the four values the engine's
+// `ValidationSpec.check_type` enumerates (models.py), so the user's words shape
+// WHAT gets grounded, never HOW results get scored (the Goodhart line) — scoring
+// is check_type-independent anyway (ADR-0017: one `deviation <= tolerance`
+// judgement for every type).
 
 import { z } from "zod";
 
-// The CLOSED check-type vocabulary — the four branches in the engine's
-// `_evaluate_result` (analysis/validation/agent.py). A teach composes a new
-// check from these via description + sql_hints the LLM grounds at bind; adding a
-// fifth is engine evolution, not a teach. Surfaced as a `z.enum` so the tool's
+// The CLOSED check-type vocabulary — the four values the engine's
+// `ValidationSpec.check_type` enumerates (analysis/validation/models.py) and the
+// only ones the shipped finance validation YAMLs use. The engine's
+// `evaluate_result` (analysis/validation/evaluate.py) does NOT branch on the
+// value — it judges every type by `deviation <= tolerance` (ADR-0017) and only
+// echoes check_type in the message — so this enum is a VOCABULARY contract with
+// the SQL-grounding prompt, not a dispatch table. A teach composes a new check
+// from these via description + sql_hints the LLM grounds at bind; adding a fifth
+// is engine evolution, not a teach. Surfaced as a `z.enum` so the tool's
 // `input_schema` constrains the model to exactly these — no free-text type.
 export const CHECK_TYPES = [
 	"balance",

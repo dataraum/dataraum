@@ -5,7 +5,7 @@ derives ephemeral ``candidate`` rows, ``semantic_per_table`` confirms a subset a
 ``llm``, and THIS step materializes the user's durable teaches —
 ``ConfigOverlay(type='relationship')`` with ``action`` ``add`` or ``confirm``
 (→ ``manual``, the explicit human assertion) or ``keep`` (→ ``keeper``, the
-silent-accept method, DAT-409 C3) — as run-stamped ``Relationship`` rows so they
+silent-accept method, DAT-409) — as run-stamped ``Relationship`` rows so they
 re-appear in every run without ever mutating derived metadata.
 
 Runs AFTER ``semantic_per_table`` (so the ``llm`` set exists) and before
@@ -499,7 +499,7 @@ def write_relationship_keepers(
     *,
     current_run_id: str,
 ) -> int:
-    """Lift silently-accepted relationships into ``keep`` overlays (DAT-409 C3).
+    """Lift silently-accepted relationships into ``keep`` overlays (DAT-409).
 
     The silent-accept rule: an ``llm`` relationship the **promoted prior run** found,
     that the **current run did not reproduce** and the user did **not reject**, was

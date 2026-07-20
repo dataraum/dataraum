@@ -1,4 +1,4 @@
-// ⌘K command palette scaffold (DAT-380, C0).
+// ⌘K command palette scaffold (DAT-380).
 //
 // A placeholder overlay opened by cmd/ctrl+K. The real command list lands
 // later; for now it documents the affordance and proves the hotkey wiring.

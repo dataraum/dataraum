@@ -235,7 +235,7 @@ def measure_null_semantics(
         # measure_temporal_behavior. type_claim abstains at uniform in its
         # COMMON state (VARCHAR column, token absent from failed_examples), and
         # pooling the abstainer diluted the weighted JSD enough to demote the
-        # novel-sentinel conflict across the readiness band edge (review C3):
+        # novel-sentinel conflict across the readiness band edge:
         # abstention is ignorance, not a conflicting party.
         witnesses = tuple(w for w in candidates if _ns_has_opinion(w))
         adjudications.append(

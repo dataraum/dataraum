@@ -1,4 +1,4 @@
-// Client-side reader for the streaming `run_sql` grid channel (DAT-385 P2).
+// Client-side reader for the streaming `run_sql` grid channel (DAT-385).
 //
 // The server (`routes/api/run-sql.ts` + the pure `stream-sql.ts` core) emits the
 // result as columnar NDJSON: one header frame, one batch per DuckDB chunk, one
@@ -7,7 +7,7 @@
 // the grid widget reads by `(column, rowIndex)` with zero row-object
 // rematerialization.
 //
-// Frame types are TYPE-ONLY imports from the P1 core: the erased import keeps the
+// Frame types are TYPE-ONLY imports from `stream-sql.ts`: the erased import keeps the
 // neo native driver (`@duckdb/node-api`, pulled in by `stream-sql.ts` at runtime)
 // out of the client bundle. We consume the contract, we don't re-declare it.
 
@@ -15,7 +15,7 @@ import type { Json } from "@duckdb/node-api";
 import type { ResultFrame } from "#/duckdb/stream-sql";
 
 /**
- * Terminal grid states, one per footer disposition the P1 stream actually emits
+ * Terminal grid states, one per footer disposition the server stream actually emits
  * (`stream-sql.ts` FooterFrame): a clean finish (`done`), the cap was hit with
  * more rows behind it (`truncated`), the fetch was aborted (`cancelled`), or the
  * query failed mid-flight (`error`). `streaming` is the pre-footer state.

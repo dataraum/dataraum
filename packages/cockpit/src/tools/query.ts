@@ -209,8 +209,7 @@ interface RunStepsCapture {
 	lastError: RunStepsFailure | null;
 }
 
-// --- Reuse classification (CLASSIFY-don't-substitute; informed by the engine's
-// agent.py `_resolve_snippet_references`).
+// --- Reuse classification (CLASSIFY-don't-substitute).
 
 /**
  * Classify each step against the snippet it referenced — the reuse teeth, as a
@@ -224,8 +223,8 @@ interface RunStepsCapture {
  * - known id, SQL differs → `adapted`, snippet_id tracks provenance.
  *
  * `canonicalizeForReuse` strips the `lake.<layer>.` qualifier before the match so
- * a qualified model reference matches a bare stored snippet. findById is a global
- * PK lookup (P0) — not workspace-scoped — so a snippet_id from snippet_search
+ * a qualified model reference matches a bare stored snippet. `findById` is a
+ * global PK lookup — not workspace-scoped — so a snippet_id from snippet_search
  * (which IS workspace-scoped) resolves to the one row it names.
  */
 export async function classifyComponents(

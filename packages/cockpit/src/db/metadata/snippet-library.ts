@@ -1,13 +1,16 @@
-// Read-only TS port of the engine SnippetLibrary CONSUMER surface (DAT-484 P0) —
+// Read-only TS port of the engine SnippetLibrary CONSUMER surface (DAT-484) —
 // vocabulary lookup + key-based graph search over the curated SQL-snippet store.
 //
 // This is the cockpit half of the query migration's keeps #2 (reuse) + #4
 // (vocabulary lookup). The snippet substrate STAYS engine-side: the live
 // GraphAgent producer fills `sql_snippets` under `schema_mapping_id =
 // workspace_id`; here we only READ it, through the existing read-only
-// `sqlSnippets` Drizzle view. Byte-compatible with `snippet_library.py`'s
-// get_search_vocabulary / find_graphs_by_keys / find_by_id (conformance-tested
-// against test_snippet_search.py + test_snippet_library.py).
+// `sqlSnippets` Drizzle view. `getSearchVocabulary` + `findGraphsByKeys` are the
+// CONSUMER half that moved here wholesale — the engine no longer carries them
+// (`snippet_library.py` keeps only the producer surface). `findById` is the one
+// still-mirrored method: engine `snippet_library.py` `find_by_id`, same
+// PK-lookup semantics. The SQL semantics (LIKE / IN / IS NULL / DISTINCT) are
+// pinned by `snippet-library.integration.test.ts` against a real Postgres.
 //
 // KEYING (the fault line, DAT-484): `workspaceId` is the dashed-UUID workspace_id
 // VALUE (`config.dataraumWorkspaceId`), NOT the `ws_`-prefixed Postgres schema
@@ -17,7 +20,7 @@
 // becomes load-bearing once workspaces multiply (DAT-357).
 //
 // Producer-side APIs (find_by_key, save_snippet, record_usage) are intentionally
-// absent: lookup-only here; the write seam is P2a.
+// absent: lookup-only here; the cockpit's write seam is `snippet-writer.ts`.
 
 import { and, eq, inArray, isNotNull, like, or, type SQL } from "drizzle-orm";
 

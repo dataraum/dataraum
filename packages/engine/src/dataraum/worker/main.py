@@ -1,4 +1,4 @@
-"""Temporal activity-worker entrypoint (DAT-344, P2).
+"""Temporal activity-worker entrypoint (DAT-344).
 
 Run as ``python -m dataraum.worker.main`` (the engine container's command).
 
@@ -143,7 +143,7 @@ async def run_worker() -> None:
 
     # Substrate bootstrap strictly precedes worker.run() — the worker must not
     # advertise itself as polling until its DuckLake anchor + ConnectionManager
-    # are open (the worker-health invariant P4 relies on).
+    # are open — "worker is polling" must imply "worker can serve an activity".
     manager = bootstrap_worker_substrate()
     try:
         client = await Client.connect(

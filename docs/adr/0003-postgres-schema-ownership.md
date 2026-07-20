@@ -1,6 +1,6 @@
 # ADR-0003 — Postgres schema ownership: engine `ws_<id>`, cockpit `cockpit_db`, never shared
 
-- **Status:** Accepted
+- **Status:** Accepted (refined by [ADR-0008](./0008-promoted-read-views.md) — the cockpit's mirror of the engine schema narrowed to the `ws_<id>_read` view schema, the `<ws>_reader` role's `search_path`)
 - **Date:** 2026-05-25
 - **Ticket:** DAT-321 (unified substrate)
 - **Design doc:** Confluence DD space

@@ -1,8 +1,8 @@
 """Tier-1 synthetic proofs for the pure measurement statistics (entropy/stats.py).
 
 Each measurement is a pure function: this asserts ordering, calibration, and edge
-cases on synthetic inputs in microseconds — where measurement design happens
-(entropy_eval_architecture.md). The eval Tier-2 tests confirm the SAME functions
+cases on synthetic inputs in microseconds — where measurement design happens.
+The eval Tier-2 tests confirm the SAME functions
 reproduce the pipeline's values on recorded data. Higher value = more entropy.
 """
 

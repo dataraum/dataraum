@@ -102,7 +102,7 @@ measurements:
   # band move is a false block on a benign-by-default pattern is anti-predictive — the
   # benford/DEMOTE signature. Keep the Cramér's V score + `expected_dependency` /
   # `documented_dependency` teach as a DirectSignal (context), remove the loss row so it
-  # stops driving bands. (eval catalog: entropy_eval_architecture.md)
+  # stops driving bands.
 
   # Rates / magnitudes (not divergences): the "score" weight scores the detector's
   # existing [0,1] score directly. These three left the network with the dissolved
@@ -188,7 +188,7 @@ measurements:
   # (a 5%-broken FD barely moves NMI: 0.862 -> 0.799; the violation rate is owned by
   # derived_value / relationship_entropy). The NMI score + expected_dependency teach still
   # compute as a DirectSignal (context), but no longer drive intent readiness. Same lane as
-  # benford / outliers / drift / variance. (eval catalog: entropy_eval_architecture.md)
+  # benford / outliers / drift / variance.
   dimension_coverage:
     # Fact-table dimension gaps affect query slicing + reporting completeness. (deferred)
     query_intent: { score: 0.5 }

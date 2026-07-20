@@ -2,16 +2,16 @@
 // `db_recipe` source PER query, the producer behind the probe surface's import
 // set (`server/import-sources.ts`).
 //
-// This is the 1-query = 1-source path the epic locked: where the agent `select`
-// tool bundles a table-pick into ONE source carrying N `{name, sql}` recipe
-// entries (the documented multi-add path), the import set turns each staged
-// query into its OWN named source carrying a SINGLE recipe entry. Both write the
-// same row shape (`source-write.ts`) and feed the SAME batched addSourceWorkflow
-// run; only the grain differs. The engine import path is unchanged — it
+// This is the 1-query = 1-source path the epic locked: where the retired agent
+// `select` tool bundled a table-pick into ONE source carrying N `{name, sql}`
+// recipe entries, the import set turns each staged query into its OWN named
+// source carrying a SINGLE recipe entry. Both write the same row shape
+// (`source-write.ts`) and feed the SAME batched addSourceWorkflow run; only the
+// grain differs. The engine import path is unchanged — it
 // materializes each `RecipeTable.sql` VERBATIM (sources/db_recipe), so an
 // arbitrary JOIN/filter/projection already works.
 //
-// NO trigger here: persistence + validation only, mirroring `persistSelection`.
+// NO trigger here: persistence + validation only, mirroring `persistFileSources`.
 // `server/import-sources.ts` composes this with ONE `triggerAddSource` over the
 // whole set so N queries import as one coherent run (one grounding pass over the
 // union), after a proper frame.
@@ -104,7 +104,7 @@ function validateSpec(spec: RecipeSourceSpec): void {
  * dropping one.
  *
  * The write loop is NOT a single transaction (matching the sibling file-source
- * loop in `tools/select.ts`): a transient mid-loop failure can leave the earlier
+ * loop in `file-source.ts`): a transient mid-loop failure can leave the earlier
  * sources upserted while the trigger never fires. That's recoverable, not
  * corrupting — every upsert is idempotent (name UNIQUE + the `recipe_hash`
  * witness), and the caller (`server/import-sources.ts` via the widget's mutation)

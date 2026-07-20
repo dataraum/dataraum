@@ -21,7 +21,7 @@ bitwise equality with pandas is the wrong bar):
     flip a single ``>=`` in the null; benign unless it crosses α, which the structural
     ``ranked_dimensions`` assertion catches.
 
-The committed golden was captured on the pandas baseline (P1, before the port) and has
+The committed golden was captured on the pandas baseline (before the port) and has
 NOT been regenerated since — the arrow→polars code passing against it is the equivalence
 proof. Only regenerate on a deliberate, reviewed behavior change, with
 ``DAT580_REGEN=1 uv run pytest .../test_golden_equivalence.py``.

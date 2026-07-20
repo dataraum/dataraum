@@ -82,8 +82,12 @@ const ConfigSchema = z.object({
 	duckdbExtensionDirectory: z.string().min(1).optional(),
 	ducklakeSkipInstall: z.boolean(),
 
-	// --- Temporal (optional for slice-1: the cockpit Temporal client lands in
-	// E4 (DAT-344), which flips these to required; no Temporal service yet).
+	// --- Temporal (DAT-344). OPTIONAL in the schema but required in practice:
+	// every consumer (the client factory, the triggers, the activity-only
+	// worker plugin) guards on both and throws naming the two env vars, so a
+	// cockpit whose surfaces never touch Temporal — and every unit test that
+	// parses this schema — boots without a reachable Temporal. Making them
+	// `.min(1)` would move that failure to boot for the whole process.
 	// No task-queue knob: START queues are per-workspace, derived from the
 	// engine registry row; the worker's own queue is cockpit-<ws> from boot
 	// identity (DAT-818). ---

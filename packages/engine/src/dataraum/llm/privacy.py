@@ -1,9 +1,10 @@
 """Data privacy and sampling for LLM analysis.
 
-Simple placeholder implementation that:
-1. Limits sample values to configured maximum
-2. Redacts sensitive columns based on pattern matching
-3. Placeholder for future SDV synthetic data generation
+What leaves the workspace in a prompt is decided here:
+1. Sample values are capped at the configured maximum.
+2. Columns whose name matches a sensitive pattern are replaced by
+   ``<REDACTED>`` placeholders — the LLM sees the column exists and its
+   cardinality shape, never a value.
 """
 
 import re
@@ -16,9 +17,8 @@ from dataraum.llm.config import LLMPrivacy
 class DataSampler:
     """Sample data for LLM analysis with privacy controls.
 
-    This is a simple placeholder implementation. For production use
-    with sensitive data, implement SDV synthetic data generation
-    as a separate service.
+    Name-pattern redaction plus a sample cap — the two controls the pipeline
+    actually applies before a value reaches a prompt.
     """
 
     def __init__(self, config: LLMPrivacy):

@@ -322,7 +322,7 @@ export const CANVAS_TOOLS: ReadonlySet<string> = new Set(
  * "absent from PROJECTORS", so the routing-completeness contract test
  * (`registry.test.ts`) can assert every registered tool is CONSCIOUSLY routed: a
  * new tool must land in `PROJECTORS` OR here, never silently un-routed — the
- * guardrail for the DAT-526 P1 registry split. Disjoint from `CANVAS_TOOLS`.
+ * guardrail for the DAT-526 registry split. Disjoint from `CANVAS_TOOLS`.
  */
 export const CHIP_ONLY: ReadonlySet<string> = new Set([
 	"teach", // writes an overlay row; outcome surfaces after a re-run, not a widget

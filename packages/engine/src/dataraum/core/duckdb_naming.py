@@ -29,8 +29,7 @@ Convention for ``Table.duckdb_path``:
 Reserved schema namespaces:
 
     * ``raw``, ``typed``, ``quarantine`` — workspace-stable, this module
-    * ``session_*`` — reserved for slice 2 session-overlay schemas
-    * ``archive_*`` — reserved for slice 2 archived-session schemas
+    * ``session_*``, ``archive_*`` — refused as generated schema names
 """
 
 from __future__ import annotations
@@ -141,14 +140,13 @@ def qualified_table(layer: str, table_name: str) -> str:
     return f"{schema_for_layer(layer)}.{workspace_table_name(table_name)}"
 
 
-# Schemas reserved for slice 2 substrate (session overlays + archive). Documented
-# here so future per-session schema work doesn't collide with the workspace-stable
-# names above.
+# Prefixes a generated schema name may never take, so a dynamically-built name
+# can never collide with the workspace-stable layer schemas above.
 RESERVED_SCHEMA_PREFIXES = frozenset({"session_", "archive_"})
 
 
 def is_reserved_schema(schema: str) -> bool:
-    """Return True if ``schema`` is reserved for slice 2 session-overlay use.
+    """Return True if ``schema`` uses a reserved prefix.
 
     Production code that constructs schema names dynamically should refuse
     to produce a name with any of the reserved prefixes.

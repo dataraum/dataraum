@@ -4,7 +4,7 @@
 as its traversal core: concept → part_of subconcepts → groundings (grounded_by)
 → columns (uses), plus disjoint_with / reconciles_with / conformed-dimension /
 materializes_as served AS STRUCTURE. This exercises that read against the SAME
-seeded, fully-promoted workspace the property-graph P1/P2 acceptance tests use
+seeded, fully-promoted workspace the property-graph acceptance tests use
 (``tests.integration.storage.test_property_graph``), so the context assembly is
 tested against the exact substrate the graph binds — including the AP-class
 scorecard shape: ``account_balance`` grounded twice (trial_balance /

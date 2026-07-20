@@ -150,7 +150,7 @@ def factorize_columns(
     return codes_by_dim, labels_by_dim
 
 
-# Ratio corpus (DAT-545 P4): the RATIO numerator/denominator depends on the driver
+# Ratio corpus (DAT-545): the RATIO numerator/denominator depends on the driver
 # dims, with the denominator (volume) varying independently — so a naive mean of
 # per-row ratios would misweight, but Σnum/Σden support-weighting recovers the driver.
 RATIO_EFFECTS = {"R_e60": 0.60, "R_e25": 0.25}
@@ -178,7 +178,7 @@ def make_ratio_corpus(rng: np.random.Generator) -> pl.DataFrame:
     return pl.DataFrame(cols)
 
 
-# Clustered corpus (DAT-552, ported from DAT-544 E1): repeated entities with a
+# Clustered corpus (DAT-552, ported from DAT-544): repeated entities with a
 # within-entity-correlated (high-ICC) measure. The driver + nulls are ENTITY-LEVEL
 # (constant within entity); the measure has a per-entity random effect, so the
 # exchangeable unit is the entity, not the row. ``CL_*`` names are abstract.

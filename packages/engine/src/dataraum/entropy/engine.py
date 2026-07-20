@@ -231,7 +231,7 @@ def run_detector_post_step(
                         column_id=from_col,
                     )
                 )
-                # Witness provenance at relationship grain (lane L2 request):
+                # Witness provenance at relationship grain:
                 # same from-endpoint anchoring as the object record — without
                 # this, a pooled relationship measurement's WitnessClaims were
                 # silently discarded and claim_witnesses stayed column-only.

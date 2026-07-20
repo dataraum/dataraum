@@ -1,4 +1,4 @@
-// The engine journey (DAT-347, C1) — the ordered spine the cockpit narrates.
+// The engine journey (DAT-347) — the ordered spine the cockpit narrates.
 //
 // Seven stages in the order a practitioner moves through them. Each stage id is
 // one of the engine pipeline stages defined in src/ui/theme.ts (the `Stage`
@@ -13,7 +13,7 @@ export type { Stage };
 
 /**
  * One stage in the journey. `id` keys into `tokens.colors.stage`; `interactive`
- * marks the stages the practitioner drives directly in the cockpit (C1: only
+ * marks the stages the practitioner drives directly in the cockpit (today only
  * `add_source` — the rest are entered/observed, not hand-operated). `label` is
  * the human-facing name for the stage navigator.
  */
@@ -22,8 +22,8 @@ export interface JourneyStage {
 	label: string;
 	/**
 	 * Whether the practitioner operates this stage from the cockpit. Only
-	 * `add_source` is interactive in C1; later columns flip more on as their
-	 * widgets land. The stage navigator disables non-interactive chips.
+	 * `add_source` is interactive today; more flip on as their widgets land.
+	 * The stage navigator disables non-interactive chips.
 	 */
 	interactive: boolean;
 }
@@ -45,8 +45,8 @@ export const JOURNEY_STAGES: readonly JourneyStage[] = [
 
 /**
  * How ready a stage is for the practitioner to act on — a discriminated union so
- * the UI can branch exhaustively. C1 defines the shape; the readiness *signal*
- * (which stage is which) is computed from engine state in a later column.
+ * the UI can branch exhaustively. This is the SHAPE only; the readiness *signal*
+ * (which stage is which) is computed from engine state elsewhere.
  *
  * - `ready`        — the stage can be entered/operated now.
  * - `investigate`  — entered, but something needs the practitioner's attention.
@@ -61,12 +61,12 @@ export type Readiness =
 
 /**
  * Cost of re-entering a stage after it has been left (re-running upstream work,
- * a full source replay, etc.). STUB for C1 — the slot is reserved so the stage
+ * a full source replay, etc.). STILL A STUB — the slot is reserved so the stage
  * navigator and readiness logic can wire to it without a churn later. The real
- * cost model (re-run depth) lands with the replay column.
+ * cost model (re-run depth) is not built yet.
  */
 export function reEntryCost(_stage: Stage): never {
-	throw new Error("reEntryCost is not implemented (DAT-347 C1 stub)");
+	throw new Error("reEntryCost is not implemented (DAT-347 stub)");
 }
 
 // --- onboarding readiness from Source.stage (DAT-378) -----------------------

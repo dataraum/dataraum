@@ -22,8 +22,10 @@ flowchart LR
 Framing records what the workspace is about: concepts, and the metrics, validations, and
 cycles defined over them. You describe this in plain language; the cockpit turns it into
 **declared** artifacts — typed entries with a name and a target shape, not yet bound to
-data. In storage terms this is an ontology-style configuration: concept names, indicator
-patterns, and artifact definitions, written as overlay rows the engine reads.
+data. In storage terms the two halves land differently: **concepts** — a name, a kind, the
+column-name patterns that indicate it — are written as rows in the workspace's own
+`concepts` table, which the engine reads directly; the **metric, validation, and cycle**
+definitions are written as overlay rows the engine folds into its configuration.
 
 Framing happens before import; the engine grounds incoming data against it. A framed
 vocabulary can be exported and reused as a
@@ -46,8 +48,9 @@ The state sequence — declared → grounded → executed — is described with
 ## Teach
 
 A teach is a typed correction: a token that means *missing*, a column's unit, a type
-pattern, a concept binding, a relationship the detection missed. The set of teach types
-is fixed — see [the learnable surface](learnable-surface.md#the-teach-types).
+pattern, a relationship the detection missed, a drill-down hierarchy it didn't find. The
+set of teach types is fixed — see
+[the learnable surface](learnable-surface.md#the-teach-types).
 
 Applying a teach writes one row to the workspace's overlay; the affected stage re-runs
 and the measurements are recomputed. Two properties matter in practice:

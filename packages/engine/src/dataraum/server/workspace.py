@@ -12,9 +12,10 @@ Pre-DAT-343 this also materialized a writable filesystem overlay under
 vertical there. The filesystem overlay is gone — teach edits now live in
 the per-workspace ``config_overlay`` Postgres table and are layered onto
 the baked-in YAML by :mod:`dataraum.core.overlay`. ``_adhoc``'s old role
-(cold-start write target for induction agents) goes away with the
-ontology-induction-in-add_source move planned for the frame stage
-(``project_frame_stage_ontology`` memory).
+(cold-start write target for induction agents) went away when ontology
+induction moved to the frame stage in the cockpit's agent tier
+(``packages/cockpit/src/prompts/frame.ts``) and concepts became typed rows in
+the workspace schema (DAT-728) rather than YAML on disk.
 
 Pivot note (DAT-339): bootstrap doesn't touch the workspace Postgres.
 Schema-per-workspace makes the row-in-DB approach redundant — the

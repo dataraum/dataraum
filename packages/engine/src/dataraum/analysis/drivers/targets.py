@@ -1,4 +1,4 @@
-"""Target types for the driver tree (DAT-545 P4) — flow/stock vs ratio.
+"""Target types for the driver tree (DAT-545) — flow/stock vs ratio.
 
 The tree is target-agnostic: it asks a ``Target`` for the gain of a grouping, a
 shuffled copy of itself (the permutation null), and per-group effects (for the
@@ -141,7 +141,7 @@ class EntityMeanTarget(Target):
     One row per ENTITY — the entity's statistic weighted by its size (mean measure
     weighted by observed-row count for flow/stock; Σnum/Σden weighted by Σden for
     ratio) — so the permutation null shuffles ENTITIES, not rows (the exchangeable
-    unit when the measure is clustered, DAT-544 E1). Power then scales with entity
+    unit when the measure is clustered, DAT-544). Power then scales with entity
     count, not row count. The processor collapses the frame to entity grain and
     supplies entity-level candidate values (constant within entity) before building
     this. (The DAT-544 probe validated the fix with an equal-block reshape on

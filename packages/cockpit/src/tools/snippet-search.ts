@@ -4,7 +4,7 @@
 // The reuse half of the migration: the sub-agent searches the curated snippet
 // store by the vertical's vocabulary (concepts / statements / graph ids) to find
 // validated calculation graphs to compose its answer from. It reads the engine-
-// owned `sql_snippets` substrate through P0's read-only library
+// owned `sql_snippets` substrate through the read-only library
 // (`findGraphsByKeys` / `getSearchVocabulary`, keyed on `config.dataraumWorkspaceId`
 // — the dashed-UUID workspace VALUE, NOT the `ws_` schema name).
 //
@@ -19,12 +19,12 @@
 // `classifyComponents` (query.ts): the model declares reuse (sets snippet_id) and
 // addresses the table as lake.<layer>.<name>, so its executable (qualified) SQL is
 // what runs; the stored BARE-name form would not resolve in the cockpit's execution
-// context (the reason P1 classifies rather than substitutes), and
+// context (the reason `classifyComponents` classifies rather than substitutes), and
 // `canonicalizeForReuse` strips the qualifier only for the equality DECISION.
 //
-// `buildVocabularyBlock` formats the searchable keys (`get_search_vocabulary`,
-// `graph:%`-curated only) as a prompt block — the engine's `<available_search_keys>`
-// — so the sub-agent knows what to search for before it calls the tool.
+// `buildVocabularyBlock` formats the searchable keys (`getSearchVocabulary`,
+// `graph:%`-curated only) as an `<available_search_keys>` prompt block — so the
+// sub-agent knows what to search for before it calls the tool.
 
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";

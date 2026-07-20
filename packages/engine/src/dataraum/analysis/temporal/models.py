@@ -9,7 +9,7 @@ DAT-783 after the finance-corpus validation found them WRONG (fiscal false-posit
 on any span that isn't a whole number of years — wrap-around months double-count;
 update-frequency regularity collapses to a meaningless value on multi-row-per-
 timestamp fact tables — median interval is 0). What survives is the completeness/gap
-substrate the P5 temporal-coverage re-cut and the cockpit look_profile surface consume.
+substrate the temporal-coverage re-cut and the cockpit look_profile surface consume.
 """
 
 from datetime import datetime

@@ -1,4 +1,4 @@
-"""DAT-552 P2 — the ICC-switched processor end to end.
+"""DAT-552 — the ICC-switched processor end to end.
 
 Seeds a clustered enriched view (high-ICC measure, repeated entities) + the catalog,
 then proves the contrast the spike found: the row-wise null FALSELY surfaces

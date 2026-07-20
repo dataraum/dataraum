@@ -1,6 +1,6 @@
 # ADR-0006 — Team-lead operating model: parallel lanes, gates at the intent layer
 
-- **Status:** Superseded by ADR-0023
+- **Status:** Superseded by [ADR-0023](./0023-owner-eval-operating-model.md) (2026-07-19 — the parallel-lane machinery retires; the inherited rules are restated there)
 - **Date:** 2026-05-31
 - **Ticket:** —
 - **Design doc:** supersedes the per-lane checkpoint model implied by `/take`
@@ -68,11 +68,11 @@ into the workflows; the per-lane *human stop* does not. Specifically inherited:
   `blocked by` is Done; worktree branch matches `feat/{id}-{slug}`; no PR already open; no
   status-board claim on this task or a contract it touches; **contract locked on `main`** if
   named. These become the workflow's parallel-safety phase — *called, not reimplemented*.
-- **Worktrees live INSIDE the repo** at `.worktrees/{id}/` (gitignored). Load-bearing:
+- **Worktrees live INSIDE the repo** at `.claude/worktrees/{id}/` (gitignored). Load-bearing:
   reviewer subagents inherit the orchestrator's `$CLAUDE_PROJECT_DIR` and cannot `Read` a
   sibling path — a sibling worktree makes the review gate **pass silently without reading
   the code**. Do NOT rely on the Workflow tool's `isolation:'worktree'` (placement is not
-  guaranteed inside the project); use the proven manual `git worktree add .worktrees/{id}`.
+  guaranteed inside the project); use the proven manual `git worktree add .claude/worktrees/{id}`.
 - **Lane subagents must run the full CI gates locally before pushing** (they don't fire the
   end-of-turn hook): `ruff format` + `biome --write` + the CI gate set. Else CI format-check
   goes red. (`feedback_workflow_lanes_run_full_ci_gates`.)
@@ -91,7 +91,7 @@ orchestration splits at the gate; the queue lives in the conversation between th
 2. *(human, in conversation)* — lead reviews the parked approaches, approves / redirects /
    defers each. Approved approaches (with any redirection notes) become the input to:
 3. **`team-build`** (`.claude/workflows/team-build.js`) — input: approved approaches. Each
-   lane is a **pipeline**: pre-flight STOP checks → `git worktree add .worktrees/{id}` →
+   lane is a **pipeline**: pre-flight STOP checks → `git worktree add .claude/worktrees/{id}` →
    implement → local CI gates + lane smoke → **commit (no push)** → **runtime-spawned
    review (3 reviewers)** → **deterministic JS gate** → **push branch** → update status board.
    Output: per-lane {branch, ci_gates, reviews, asks, push_gate, lanes-unblocked}. A blocked

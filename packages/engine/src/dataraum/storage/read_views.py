@@ -99,7 +99,7 @@ _CATALOG_GRAIN: dict[str, str] = {
 # Written by THREE detect paths: add_source seals per (table:{id}, GENERATION),
 # begin_session per the workspace (catalog, "catalog") head, and operating_model's
 # terminal detect per (catalog, "operating_model") — a row is current when its run
-# is promoted under ANY of those heads (DAT-432/L7: without the third,
+# is promoted under ANY of those heads (DAT-432: without the third,
 # cross_table_consistency's OM-run rows were written but invisible to every
 # head-resolved reader).
 _DUAL_GRAIN: dict[str, str] = {
@@ -559,7 +559,9 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
 # ``sources`` carries a COLUMN-level UPDATE: the cockpit's select upsert is
 # ``INSERT … ON CONFLICT DO UPDATE`` and Postgres checks the UPDATE privilege
 # statically at executor startup — even when the conflict arm never runs. The
-# column list is exactly the upsert's SET list (cockpit select.ts); identity
+# column list is exactly the upsert's SET list (cockpit
+# ``src/select/source-write.ts``, driven by ``recipe-source.ts`` /
+# ``file-source.ts`` and composed by ``src/server/import-sources.ts``); identity
 # columns (source_id, name, created_at) stay unwritable.
 #
 # NOTE: grants are append-only on a live cluster — shrinking this dict does not

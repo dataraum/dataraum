@@ -1,4 +1,4 @@
-"""Driver discovery over the real catalog + enriched view (DAT-545 P3).
+"""Driver discovery over the real catalog + enriched view (DAT-545).
 
 Binds the engine (:mod:`tree`) to the begin_session substrate:
 
@@ -62,7 +62,7 @@ logger = get_logger(__name__)
 # gates WHICH dims go to which grain — that is now decided per-candidate by within-
 # entity constancy (an entity-constant candidate takes the entity-grain null at ANY
 # ICC, since the row-wise null is structurally invalid for it). Conservative: even
-# modest clustering makes the entity story primary (DAT-552 / DAT-544 E1).
+# modest clustering makes the entity story primary (DAT-552 / DAT-544).
 DEFAULT_ICC_THRESHOLD = 0.10
 # At entity grain a candidate group is evaluated only with at least this many ENTITIES
 # (the min_support analogue — power scales with entity count, not rows).

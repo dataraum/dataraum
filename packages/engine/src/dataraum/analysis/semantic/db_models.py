@@ -207,10 +207,10 @@ class ConceptEdge(Base):
     The concept-level relations ``part_of`` / ``disjoint_with`` / ``reconciles_with``
     (:class:`ConceptEdgePredicate`), promoted to typed rows the same way concepts were
     (config→DB): the shipped vertical seeds them, the pipeline derives more, ``frame``
-    authors them for novel datasets (P13). Bound into the property graph as the
+    authors them for novel datasets. Bound into the property graph as the
     ``concept_edge`` edge over the ``og_concepts`` vertex.
 
-    **Same identity contract as :class:`Concept` (P3) — NOT run-versioned.** An edge
+    **Same identity contract as :class:`Concept` — NOT run-versioned.** An edge
     is a stable node keyed over ACTIVE rows by
     ``(vertical, predicate, from_concept, to_concept)`` (the ``uq_concept_edge_active``
     partial-unique index); an edit supersedes (stamp ``superseded_at`` + insert a new
@@ -223,7 +223,7 @@ class ConceptEdge(Base):
     Rename caveat (future): keying endpoints by ``name`` means a concept RENAME (a new
     ``(vertical, name)`` identity, not a supersede-in-place) would orphan its edges —
     they'd silently vanish from the graph. No rename path exists today; when ``frame``
-    adds one (P13) it must re-point or supersede the affected edges, not just the concept.
+    adds one it must re-point or supersede the affected edges, not just the concept.
 
     Symmetric predicates (``disjoint_with``, ``reconciles_with``) are stored in BOTH
     directions — the graph is directed and PG19 SQL/PGQ ``MATCH`` is directed, so two
@@ -262,7 +262,7 @@ class ConceptEdge(Base):
         # edges) and 'derived' (``reconciles_with.py``, DAT-727: the
         # aggregation-lineage-witness + multi-grounding reconciles_with
         # self-loops, reconciled at the end of the metrics phase). 'frame'
-        # (P13's cockpit authoring) stays OUT until that writer exists — a
+        # (the cockpit's authoring path) stays OUT until that writer exists — a
         # CHECK admitting a value no writer produces is the exact defect the
         # DAT-802 sweep fixed (the DAT-772 ``relationship_type`` finding);
         # widening is one line + a re-dump in the PR that adds the writer.

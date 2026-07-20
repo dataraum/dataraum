@@ -38,7 +38,7 @@ class TestTransitionMatrix:
 
         assert artifact.state == ArtifactState.DECLARED.value
         assert artifact.stage == _STAGE
-        assert artifact.strictness is None  # D3: no invented default
+        assert artifact.strictness is None  # no invented default
 
     def test_bind_then_execute(self, session: Session) -> None:
         artifact = _declare(session)

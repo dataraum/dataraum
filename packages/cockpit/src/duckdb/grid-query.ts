@@ -31,7 +31,7 @@ export function clampGridCap(cap?: number): number {
 	return Math.min(floored, HARD_ROW_CEILING);
 }
 
-// --- Sort (DAT-385 P3) -------------------------------------------------------
+// --- Sort (DAT-385) ----------------------------------------------------------
 
 /**
  * A single-column sort the grid asks the server to apply. `column` is an OUTPUT

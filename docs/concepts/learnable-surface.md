@@ -9,10 +9,10 @@ authorization of lifecycle operations
 
 ## Closed for use
 
-An agent in the loop cannot invent a new *kind* of claim. It can declare that a column
-grounds a concept, or that a token means *missing*; it cannot create a claim type outside
-the registered set — a teach of an unregistered type fails. Users reviewing an agent's
-proposals see the same fixed set of types.
+An agent in the loop cannot invent a new *kind* of claim. It can assert that two columns
+join, or that a token means *missing*; it cannot create a claim type outside the registered
+set — a teach of an unregistered type fails. Users reviewing an agent's proposals see the
+same fixed set of types.
 
 Free text does not move a score. When an agent attaches context to a high-uncertainty
 result ("this column is sparse because the field is only collected for a subset"), the
@@ -33,12 +33,9 @@ a witness. The live set:
 |---|---|---|
 | **Typing & values** | `type_pattern` | A pattern that maps raw values to a typed column |
 | | `null_value` | A token that means *missing* in this data (e.g. a placeholder string) |
-| | `unit` | The unit a column is measured in |
-| **Meaning** | `concept` | A business concept and the column-name patterns that suggest it |
-| | `concept_property` | A patch to one field of a concept's annotation |
-| | `rebind` | An added indicator that re-grounds a column's behaviour |
-| **Structure** | `relationship` | A confirmed join between two columns |
-| | `expected_dependency` | A documented dependency between dimensions |
+| | `unit` | The unit a named column is measured in |
+| **Structure** | `relationship` | A join between two columns — confirm one that was detected, reject it, or add one the detection missed |
+| | `hierarchy` | A drill-down chain over a fact's enriched view (finest to coarsest), or a set of columns that are 1:1 aliases of each other |
 | **Model** | `validation` | A rule the data must satisfy |
 | | `cycle` | A business process with ordered stages |
 | | `metric` | A measure, expressed as a calculation graph |
@@ -46,11 +43,21 @@ a witness. The live set:
 A teach is applied by writing one row to the workspace's overlay, after which the affected
 phase re-runs and the scores are recomputed. Teaches persist across every future run.
 
+Which types an agent is *offered* depends on where it is working, because a teach is only
+useful where a re-run can realize it. The typing-grain teaches — `type_pattern`,
+`null_value`, `unit` — are offered in **Connect**, where an import replay applies them; the
+catalogue-grain topology teaches — `relationship`, `hierarchy` — in **Stage**, where a
+session re-run does. `validation`, `cycle`, and `metric` are not on the general teach tool
+at all: each has its own tool that validates the full specification first and then writes
+through the same path.
+
 ## Verticals — reusable starting points
 
 A **vertical** is a bundle of concepts, rules, processes, and measures for a domain,
-expressed in the same teach types you'd produce by hand. It is a starting bundle; the
-platform does not depend on it:
+expressed in the same typed vocabulary you'd produce by hand, and read through the same
+path: its concepts are seeded as concept rows, and its rules, processes, and measures are
+merged with whatever the workspace teaches on top. It is a starting bundle; the platform
+does not depend on it:
 
 - You create one simply by [framing](the-journey.md#frame) your concepts — the concepts you
   declare *are* your workspace's vertical.
@@ -61,12 +68,27 @@ platform does not depend on it:
 Verticals are loosely coupled to industry verticals in the business sense — the long-horizon
 aim is for shared ones to align with standard domain ontologies, but nothing depends on it.
 
-## Concepts grounded in columns
+## Concepts and columns
 
-A declared **concept** becomes real when columns are bound to it. The catalogue-grain binding
-— which column grounds which concept, what unit it carries, what behaviour it has — is owned
-by a single phase (`semantic_per_table`, in begin_session) and recorded per run, so there is
-one authoritative place a concept's grounding lives, not copies drifting across stages.
+The concept vocabulary is **not** a teach type. Framing writes concepts as rows in the
+workspace's own `concepts` table, and every later stage reads them from there.
+
+Those concepts meet the data at two grains, in two places:
+
+- **Per column, in add_source.** `semantic_per_column` reads each column against the
+  declared vocabulary and records what it is — role, entity, business term, description,
+  and an independent stock-or-flow claim. The vocabulary is context for that reading; the
+  phase writes no single-slot concept binding, because one column commonly carries several
+  facets at once.
+- **Per concept, in operating_model.** Grounding a declared artifact produces, for each
+  concept it needs, the relation and the enumerated columns that compute it — an
+  enumeration checked against that relation's schema when it is saved. That is where
+  *which columns ground this concept* is written down.
+
+Between the two, `semantic_per_table` (in begin_session) adds the catalogue-grain reading of
+a column: what it means once every source is composed into one picture, which column defines
+its unit, and its resolved temporal behaviour. It is recorded per run under the catalogue
+head.
 
 ## From taught to executed
 

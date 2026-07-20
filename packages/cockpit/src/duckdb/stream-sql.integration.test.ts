@@ -1,4 +1,4 @@
-// Real in-process DuckDB integration for the streaming grid path (DAT-385 P1).
+// Real in-process DuckDB integration for the streaming grid path (DAT-385).
 //
 // Exercises `streamNdjson` against a REAL neo `conn.stream()` over a REAL
 // DuckLake lake — the lazy chunk path, JSON-safe type coercion, the columnar

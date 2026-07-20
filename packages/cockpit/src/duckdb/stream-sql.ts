@@ -1,10 +1,11 @@
-// Streaming `run_sql` for the human/grid consumer (DAT-385 P1).
+// Streaming `run_sql` for the human/grid consumer (DAT-385).
 //
 // A SEPARATE result path from the agent-facing `run-sql.ts`: that one
 // materializes a small, LIMIT-bounded JSON blob for the chat agent's context;
 // THIS one streams a potentially large result as columnar NDJSON so a big
-// result never lands in server RAM as one blob. See
-// `plans/run-sql-streaming-design.md` §4–5.
+// result never lands in server RAM as one blob. The frame protocol below
+// (header → batch* → footer) is the contract; `duckdb/ndjson-stream.ts` is the
+// client half of it.
 //
 // Why columnar NDJSON, not Arrow: the neo driver (`@duckdb/node-api`) has NO
 // Arrow surface (`grep -ri arrow` over its lib → nothing; the C-API Arrow
@@ -29,16 +30,15 @@ import {
 	JsonDuckDBValueConverter,
 } from "@duckdb/node-api";
 
-// --- Wire protocol (design §4) -----------------------------------------------
+// --- Wire protocol -----------------------------------------------------------
 
 /**
  * First line, always: column names + DuckDB type metadata + the query handle.
  *
  * `types` is neo's `columnTypesJson()` — STRUCTURED, JSON-safe type metadata
  * (one `{ typeId, … }` object per column, with `width`/`scale` for parameterized
- * types like DECIMAL), NOT bare type strings. The design §4 sketch illustrated
- * string types; the real driver returns this richer shape, which is strictly
- * better for driving client cell formatting (alignment, decimal places).
+ * types like DECIMAL), NOT bare type strings — which is strictly better for
+ * driving client cell formatting (alignment, decimal places).
  */
 export interface HeaderFrame {
 	t: "h";

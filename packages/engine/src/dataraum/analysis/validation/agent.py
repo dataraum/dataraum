@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
-from pydantic import ValidationError
 
 from dataraum.analysis.validation.evaluate import evaluate_result
 from dataraum.analysis.validation.models import (
@@ -33,6 +32,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 logger = get_logger(__name__)
 
@@ -360,15 +360,10 @@ class ValidationAgent(LLMFeature):
         # rescue: under the lifecycle this is a bind ERROR — the artifact stays
         # ``declared`` with the reason. (DAT-439 deleted the JSON-parse-from-text
         # fallback that silently rescued unstructured responses.)
-        try:
-            output = ValidationSQLOutput.model_validate_json(response.content)
-        except ValidationError as e:
-            logger.warning(
-                "validation_llm_unparseable_output",
-                validation_id=spec.validation_id,
-                has_content=bool(response.content),
-            )
-            return Result.fail(f"Failed to validate validation_sql response: {e}")
+        parsed = parse_structured_output(response, ValidationSQLOutput, label="validation_sql")
+        if not parsed.success:
+            return Result.fail(parsed.error or "validation_sql failed")
+        output = parsed.unwrap()
 
         # can_validate without SQL is a degraded generation, not a skip —
         # labeling it SKIPPED would mislabel the degradation as legitimate
@@ -386,7 +381,9 @@ class ValidationAgent(LLMFeature):
             generated_at=datetime.now(UTC),
             model_used=model,
             is_valid=output.can_validate,
-            validation_error=output.skip_reason,
+            # "" is the DAT-807 not-applicable sentinel; the field is optional
+            # downstream, so normalize it back rather than storing an empty string.
+            validation_error=output.skip_reason or None,
         )
 
         return Result.ok(generated)

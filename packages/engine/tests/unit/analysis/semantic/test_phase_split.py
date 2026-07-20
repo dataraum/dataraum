@@ -192,7 +192,12 @@ class TestPersistColumnConcepts:
         assert total.unit_source_column == "currency_code"
         assert total.derived_formula_hypothesis == "subtotal + tax"
         assert total.derived_formula_confidence == 0.85
+        # DAT-807: the output model states every attribute, so "not applicable"
+        # arrives as the "" sentinel — persist_column_concepts must normalize it
+        # back to NULL, or the nullable column starts holding empty strings and
+        # every `IS NOT NULL` reader silently changes meaning.
         assert rows[cols["discount"]].derived_formula_hypothesis is None
+        assert rows[cols["discount"]].unit_source_column is None
 
     def test_duplicate_column_concepts_collapse_to_one_row(self, session) -> None:
         """The table agent can list the same column twice; the upsert batch must dedup.

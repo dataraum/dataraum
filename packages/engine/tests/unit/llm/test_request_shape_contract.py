@@ -200,14 +200,22 @@ def test_only_structured_output_difference_is_output_config_format(
     assert with_schema["output_config"]["effort"] == without["output_config"]["effort"]
 
 
-def test_no_engine_label_forces_a_tool(config: LLMConfig, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Forced tool_choice is retired as a structured-output mechanism (DAT-807).
+def test_a_request_without_tools_sends_neither_tools_nor_tool_choice(
+    config: LLMConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Structured output alone needs no tool surface at all.
 
-    ``search_values`` (graph_sql_generation) is the one tool the engine still
-    ships, and it is offered on ``auto`` — the model chooses to call it.
+    This asserts the CHOKEPOINT, not the agents: a request carrying only an
+    output schema must not grow a ``tools``/``tool_choice`` key. That the eight
+    tool-less agents actually build such a request — and that
+    ``graph_sql_generation`` builds one WITH ``search_values`` on ``auto`` — is
+    pinned per agent in the agent tests (test_synthesis_output.py,
+    test_judge.py, test_contract_repair.py, test_agent_request_shape.py); a
+    fixture here could only ever assert itself.
     """
     provider = _provider(config)
-    for label, _ in _LABELS:
-        kwargs = _capture(monkeypatch, provider, _request_for(label, config, with_schema=True))
-        assert "tool_choice" not in kwargs
-        assert "tools" not in kwargs
+    kwargs = _capture(
+        monkeypatch, provider, _request_for("semantic_per_table", config, with_schema=True)
+    )
+    assert "tool_choice" not in kwargs
+    assert "tools" not in kwargs

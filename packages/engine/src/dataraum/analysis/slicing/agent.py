@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.slicing.models import (
@@ -25,6 +24,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
@@ -129,10 +129,10 @@ class SlicingAgent(LLMFeature):
         # we don't re-wrap it. A returned Result is always a success.
         response = self.provider.converse(request).unwrap()
 
-        try:
-            output = SlicingAnalysisOutput.model_validate_json(response.content)
-        except ValidationError as e:
-            return Result.fail(f"Failed to validate slicing response: {e}")
+        parsed = parse_structured_output(response, SlicingAnalysisOutput, label="slicing_analysis")
+        if not parsed.success:
+            return Result.fail(parsed.error or "slicing_analysis failed")
+        output = parsed.unwrap()
 
         # Convert Pydantic output to SlicingAnalysisResult
         return self._convert_output_to_result(output, context_data)
@@ -202,7 +202,11 @@ class SlicingAgent(LLMFeature):
                 distinct_values=distinct_values,
                 value_count=len(distinct_values),
                 reasoning=rec.reasoning,
-                business_context=rec.business_context,
+                # The output model states every attribute (DAT-807), using "" for
+                # the not-applicable case; the domain model + its nullable column
+                # keep None, so the sentinel is normalized back here and the
+                # PERSISTED shape is unchanged.
+                business_context=rec.business_context or None,
                 confidence=rec.confidence,
             )
             recommendations.append(recommendation)

@@ -20,8 +20,6 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from pydantic import ValidationError
-
 from dataraum.analysis.cycles.config import map_to_canonical_type
 from dataraum.analysis.cycles.context import (
     build_cycle_detection_context,
@@ -42,6 +40,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 if TYPE_CHECKING:
     import duckdb
@@ -146,10 +145,12 @@ class BusinessCycleAgent(LLMFeature):
         # silent rescue). Until DAT-807 this path silently degraded to the raw
         # unvalidated dict, which under constrained decoding is indefensible:
         # a shape failure now means the API contract broke.
-        try:
-            output = BusinessCycleAnalysisOutput.model_validate_json(response.content)
-        except ValidationError as e:
-            return Result.fail(f"Failed to parse business cycle analysis: {e}")
+        parsed = parse_structured_output(
+            response, BusinessCycleAnalysisOutput, label="business_cycles"
+        )
+        if not parsed.success:
+            return Result.fail(parsed.error or "business_cycles failed")
+        output = parsed.unwrap()
 
         analysis = self._parse_output(
             output,

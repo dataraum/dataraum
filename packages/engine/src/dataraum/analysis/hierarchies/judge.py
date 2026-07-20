@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -41,6 +41,7 @@ from dataraum.llm.providers.base import (
     LLMProvider,
     Message,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 logger = get_logger(__name__)
 
@@ -222,10 +223,7 @@ class DimensionIdentityJudge(LLMFeature):
             model=model,
         )
         response = self.provider.converse(request).unwrap()
-        try:
-            return Result.ok(output_model.model_validate_json(response.content))
-        except ValidationError as e:
-            return Result.fail(f"Failed to parse {template} response: {e}")
+        return parse_structured_output(response, output_model, label=template)
 
     @staticmethod
     def _format_candidates(candidates: list[dict[str, Any]]) -> str:

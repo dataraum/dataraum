@@ -272,4 +272,6 @@ def test_search_budget_exhaustion_fails_loud(monkeypatch) -> None:
     assert provider.converse.call_count == 5  # 1 initial + 4 budgeted continuations
     # The final tool_result told the model to emit generate_sql now.
     last = provider.converse.call_args_list[4].args[0]
-    assert "call generate_sql now" in last.messages[-1].content[0].content
+    assert "stop searching and answer with the grounding now" in (
+        last.messages[-1].content[0].content
+    )

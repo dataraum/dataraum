@@ -737,6 +737,7 @@ class GraphAgent(LLMFeature):
             ToolDefinition,
             ToolResult,
         )
+        from dataraum.llm.structured_output import parse_structured_output
 
         extract_leaves = [
             step
@@ -832,8 +833,8 @@ class GraphAgent(LLMFeature):
                 "Search a column's distinct values by case-insensitive substring. "
                 "Use it to resolve the EXACT values of a high-cardinality "
                 "discriminator (marked 'NOT enumerated' in the Value sets) before "
-                "writing an IN-list — never guess a predicate. Always finish by "
-                "calling generate_sql."
+                "writing an IN-list — never guess a predicate. When you have the "
+                "values you need, stop calling tools and answer with the grounding."
             ),
             input_schema=ValueSearchInput.model_json_schema(),
             strict=True,
@@ -890,7 +891,9 @@ class GraphAgent(LLMFeature):
             search_call = response.tool_calls[0]
             outcome = self._run_value_search(context, search_call.input)
             if searches == _MAX_VALUE_SEARCHES:
-                outcome += "\n(search budget exhausted — call generate_sql now)"
+                outcome += (
+                    "\n(search budget exhausted — stop searching and answer with the grounding now)"
+                )
             logger.info(
                 "grounding_value_search",
                 graph_id=graph.graph_id,
@@ -925,12 +928,10 @@ class GraphAgent(LLMFeature):
                 + (" (search budget exhausted)" if searches >= _MAX_VALUE_SEARCHES else "")
             )
 
-        try:
-            output = ExtractGroundingOutput.model_validate_json(response.content)
-        except ValidationError as e:
-            # Constrained decoding guarantees the shape, so this is the API
-            # contract breaking, not the model being lazy — fail loud.
-            return Result.fail(f"Failed to parse the extract grounding output: {e}")
+        parsed = parse_structured_output(response, ExtractGroundingOutput, label=prompt_name)
+        if not parsed.success:
+            return Result.fail(parsed.error or "extract grounding failed")
+        output = parsed.unwrap()
 
         # Provenance contract v2 (DAT-727): the enumerated columns in
         # column_mappings_basis are the operating-model graph's `uses` substrate

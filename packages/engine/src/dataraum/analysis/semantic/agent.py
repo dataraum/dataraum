@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -54,6 +53,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
 )
+from dataraum.llm.structured_output import parse_structured_output
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
@@ -214,10 +214,7 @@ class SemanticAgent(LLMFeature):
         the API contract broke, not that the model was lazy — fail loud.
         """
         response = self.provider.converse(request).unwrap()
-        try:
-            return Result.ok(TableSynthesisOutput.model_validate_json(response.content))
-        except ValidationError as e:
-            return Result.fail(f"Failed to parse table synthesis response: {e}")
+        return parse_structured_output(response, TableSynthesisOutput, label="semantic_per_table")
 
     @staticmethod
     def _format_persisted_annotations(annotations: list[dict[str, Any]]) -> str:

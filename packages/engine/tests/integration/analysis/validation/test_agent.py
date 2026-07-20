@@ -308,21 +308,27 @@ class TestValidationAgentGenerateSQL:
         assert "disabled" in result.error
 
     def test_generate_sql_unparseable_output_fails(self, validation_agent, mock_provider):
-        """An unparseable payload = bind ERROR with reason. Constrained decoding
-        makes this unreachable in production (DAT-807), so reaching it means the
-        API contract broke — never a silent rescue (DAT-439)."""
+        """An unparseable payload = bind ERROR with reason, never a silent rescue
+        (DAT-439). Constrained decoding makes a SHAPE failure unreachable, so the
+        live causes are a turn that did not finish (max_tokens / refusal) or a
+        genuine contract break — the error must name which."""
         spec = _eval_spec("balance")
         schema = {"table_name": "test", "duckdb_path": "test", "columns": []}
 
         response = MagicMock()
         response.tool_calls = []
         response.content = "I could not do this."
+        response.stop_reason = "end_turn"
+        response.output_tokens = 7
         mock_provider.converse.return_value = Result.ok(response)
 
         result = validation_agent._generate_sql(spec, schema)
 
         assert not result.success
-        assert "Failed to validate validation_sql response" in result.error
+        assert "Failed to parse the validation_sql output" in result.error
+        # The diagnosis names the stop_reason so a truncation is never
+        # misattributed to a broken API contract (DAT-807).
+        assert "stop_reason=" in result.error
 
     def test_generate_sql_can_validate_without_sql_fails(self, validation_agent, mock_provider):
         """can_validate=true with no SQL is a degraded generation, not a

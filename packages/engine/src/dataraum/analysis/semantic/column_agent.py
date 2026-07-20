@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.concept_store import load_workspace_concepts
@@ -32,6 +31,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
@@ -148,10 +148,12 @@ class ColumnAnnotationAgent(LLMFeature):
         # Result is always a success.
         response = self.provider.converse(request).unwrap()
 
-        try:
-            output = ColumnAnnotationOutput.model_validate_json(response.content)
-        except ValidationError as e:
-            return Result.fail(f"Failed to parse column annotation output: {e}")
+        parsed = parse_structured_output(
+            response, ColumnAnnotationOutput, label="column_annotation"
+        )
+        if not parsed.success:
+            return Result.fail(parsed.error or "column_annotation failed")
+        output = parsed.unwrap()
 
         logger.debug(
             "column_annotation_complete",

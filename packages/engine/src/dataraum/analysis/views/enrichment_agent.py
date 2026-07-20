@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.views.builder import DimensionJoin
@@ -26,6 +25,7 @@ from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
@@ -126,10 +126,12 @@ class EnrichmentAgent(LLMFeature):
         # we don't re-wrap it. A returned Result is always a success.
         response = self.provider.converse(request).unwrap()
 
-        try:
-            output = EnrichmentAnalysisOutput.model_validate_json(response.content)
-        except ValidationError as e:
-            return Result.fail(f"Failed to validate enrichment response: {e}")
+        parsed = parse_structured_output(
+            response, EnrichmentAnalysisOutput, label="enrichment_analysis"
+        )
+        if not parsed.success:
+            return Result.fail(parsed.error or "enrichment_analysis failed")
+        output = parsed.unwrap()
 
         # Convert Pydantic output to EnrichmentAnalysisResult
         return self._convert_output_to_result(output, context_data, response.model)

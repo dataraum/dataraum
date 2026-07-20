@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # =============================================================================
 # Enums
@@ -388,8 +388,31 @@ class GraphProvenanceOutput(BaseModel):
     column_mappings_basis: list[ConceptGroundingEntry] = Field(
         description="Per-concept grounding record, one entry per concept — enumerates ALL "
         "relation columns each grounding touches, by role (see ConceptGroundingBasis). "
-        "Enforced against the served schema at save. [] only in the fall-loud case.",
+        "Enforced against the served schema at save. One entry per concept: do NOT "
+        "repeat a concept. [] only in the fall-loud case.",
     )
+
+    @model_validator(mode="after")
+    def _concepts_are_unique(self) -> GraphProvenanceOutput:
+        """No concept may appear twice — the list must round-trip to a map.
+
+        The map shape this replaced (DAT-807) made duplicates impossible by
+        construction. A list does not: two entries for one concept would both
+        pass ``validate_grounding_basis`` (it iterates the list, so completeness
+        is checked over their union) and then silently collapse to the last one
+        at the persistence boundary — dropping ``uses`` edges validation had
+        just certified. Reject it here instead, where the contract-repair turn
+        can still fix it.
+        """
+        seen = [e.concept for e in self.column_mappings_basis]
+        duplicates = sorted({c for c in seen if seen.count(c) > 1})
+        if duplicates:
+            raise ValueError(
+                f"column_mappings_basis repeats {duplicates} — emit exactly one "
+                "entry per concept, merging its columns"
+            )
+        return self
+
     # No free-text reasoning field: the former `llm_reasoning` was written into the
     # snippet provenance blob and read by nothing (DAT-603 consumer audit) — output
     # tokens are serial-decode latency, so an unread sentence per call is pure cost.
@@ -444,16 +467,17 @@ class HealthySnippetProvenance(BaseModel):
 
     Deliberately still a MAP, while the LLM-facing ``GraphProvenanceOutput`` is a
     LIST of ``{concept, basis}`` entries (DAT-807 — constrained decoding forbids an
-    open map). The writer converts; the stored shape, ``og_uses``, and the cockpit
-    are untouched.
+    open map). The writer converts, so the STRUCTURE ``og_uses`` un-nests and the
+    cockpit reads is unchanged.
 
-    One value-level change from DAT-807: an unfiltered concept now stores
-    ``filter: ""`` where it stored ``filter: null``, because
-    ``ConceptGroundingBasis`` is shared between the wire and this payload and the
-    wire model states every attribute. Nothing branches on the distinction —
-    ``og_uses`` un-nests the COLUMN arrays, not this string, and the cockpit
-    passes it through as opaque context — so it is a rendering difference, not a
-    contract change. No backfill: pre-DAT-807 rows keep their nulls.
+    One VALUE-level change: an unfiltered concept now stores ``filter: ""`` where
+    it stored ``filter: null``, because ``ConceptGroundingBasis`` is shared
+    between the wire and this payload and the wire model states every attribute.
+    No engine or cockpit code branches on that distinction (``og_uses`` un-nests
+    the COLUMN arrays, not this string; the cockpit passes it through as opaque
+    context into the answer agent's prompt), so it is a rendering difference —
+    but it IS a difference, and a reader that treats "" and null differently
+    would see it. No backfill: pre-DAT-807 rows keep their nulls.
     """
 
     model_config = ConfigDict(extra="forbid")

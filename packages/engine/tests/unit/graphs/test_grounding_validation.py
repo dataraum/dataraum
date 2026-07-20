@@ -240,3 +240,31 @@ def test_schema_tables_from_info_shapes_the_served_schema() -> None:
         ]
     }
     assert schema_tables_from_info(info) == {"t": {"a"}, "u": set()}
+
+
+def test_duplicate_concepts_are_rejected() -> None:
+    """The list shape must round-trip to the persisted map without loss.
+
+    Two entries for one concept would both pass ``validate_grounding_basis``
+    (it iterates the list, so completeness is checked over their union) and then
+    silently collapse to the last one at the persistence boundary — dropping
+    ``uses`` edges validation had just certified. The map shape this replaced
+    made that impossible by construction; the validator restores the guarantee.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="repeats"):
+        GraphProvenanceOutput(
+            column_mappings_basis=[
+                *_basis("revenue", ["credit"]),
+                *_basis("revenue", ["debit"]),
+            ]
+        )
+
+
+def test_distinct_concepts_are_fine() -> None:
+    prov = GraphProvenanceOutput(
+        column_mappings_basis=[*_basis("revenue", ["credit"]), *_basis("cost", ["debit"])]
+    )
+    assert len(prov.column_mappings_basis) == 2

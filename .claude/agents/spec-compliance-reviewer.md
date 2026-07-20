@@ -93,8 +93,6 @@ When you find the implementation fundamentally diverges from the spec (not just 
 
 When you find that requirements were dropped without explanation, flag this prominently. The `/implement` skill requires explicit acknowledgment of skipped work at each checkpoint — if something is missing without a stated reason, the checkpoint discipline wasn't followed.
 
-Check `.claude/handoff.md` if it exists — verify that detector or MCP tool changes are noted there. Missing handoff entries mean the eval repo won't know to test these changes.
-
 ## Project Context
 
 This project uses:

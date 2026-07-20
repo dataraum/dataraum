@@ -28,8 +28,6 @@ Correctness over speed. The product is **analytical correctness** — the system
 | cutting a release | `/release-prep` |
 | quick fix (<3 files, obvious) | just do it |
 
-`/implement` updates `.claude/handoff.md`, the bridge telling `dataraum-eval` (calibration) and `dataraum-testdata` what changed. Detector changes always update it.
-
 **Sizing.** S (1–3 files): direct. M (3–8 files): plan, single session. L/XL (8+ files or cross-module): Confluence plan linked to the Jira issue, phased, each phase green before the next. Declare DO-change / DO-NOT-change file lists to fence *unrelated* scope. Cleanup the design implies — deleting dead code, removing a retired field, adapting its tests — is in-scope, not an adjacent-edit violation. What to avoid is unplanned *unrelated* edits, never design-implied deletion (see "Default to the clean cut" in the workspace CLAUDE.md).
 
 ## Testing

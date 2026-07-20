@@ -106,8 +106,7 @@ attempt and tends to oscillate. Instead:
 4. **You integrate.** Review the lane diff yourself, merge the lane branch into the epic
    branch, resolve conflicts, remove the lane worktree.
 5. **Eval gate.** Run the eval after EVERY integration (`dataraum-eval`, sibling repo —
-   see its Makefile; update `.claude/handoff.md` in the same motion as any
-   detector/pipeline/response-shape change). Record the scorecard row in the ledger.
+   see its Makefile). Record the scorecard row in the ledger.
    **Regression = stop-the-line:** fix it before the next lane. A regression is never a
    new ticket. Real-LLM runs draw down the budget; log every run.
 6. **Rebase** the epic branch onto `origin/main` regularly (main moves under you); re-run

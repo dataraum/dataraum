@@ -14,7 +14,7 @@ proves the derived window is measured over the FILTERED rows, not the whole-colu
 is identified by its resolved ``materialization='flow'`` verdict with NO ``statement``
 field — the vertical-neutrality guard the PR-#503 revert demanded. The rest pin the
 happy path (a quarterly flow yields its fencepost-corrected window, NOT the config
-30), the fencepost, and the fall-loud contract (K6): every way the window can't be
+30), the fencepost, and the fall-loud contract: every way the window can't be
 observed — including a stock-only metric with no flow operand — keeps the config
 default but flags it, never a silent 30.
 

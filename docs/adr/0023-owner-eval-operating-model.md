@@ -58,8 +58,7 @@ owner reports at checkpoints (milestone, replan, budget threshold, blocked, uncl
 regression), not per PR.
 
 **Eval as the gate.** After every lane integration the owner runs the eval
-(`dataraum-eval`; `.claude/handoff.md` updated in the same motion) and records the
-scorecard in the ledger. A regression is stop-the-line — fixed before the next lane, never
+(`dataraum-eval`) and records the scorecard in the ledger. A regression is stop-the-line — fixed before the next lane, never
 a new ticket. Real-LLM runs draw down the granted budget; without one, the owner asks per
 run.
 

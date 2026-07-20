@@ -1,12 +1,13 @@
 """DimensionIdentityJudge plumbing (DAT-762 Phase A).
 
-Scripted-provider tests (the test_synthesis_repair pattern): the judge's
-forced-tool turn, the DAT-710 schema repair, and the empty-input
-short-circuit. No LLM calls.
+Scripted-provider tests: the judge's structured-output turn (DAT-807), the
+cross-field contract that constrained decoding cannot enforce, and the
+empty-input short-circuit. No LLM calls.
 """
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 from dataraum.analysis.hierarchies.judge import ConformBatchOutput, DimensionIdentityJudge
@@ -21,22 +22,20 @@ _CONFORM_INPUT = {
         }
     ]
 }
-# Live failure shape: a conform verdict missing its required concept_label.
-_MALFORMED_CONFORM_INPUT = {
-    "verdicts": [{"pair_ref": "p1", "verdict": "conform", "reason": "same thing"}]
+# The one violation constrained decoding cannot prevent: a schema-valid conform
+# verdict whose concept_label is the documented empty value.
+_CONTRACT_VIOLATING_CONFORM = {
+    "verdicts": [
+        {"pair_ref": "p1", "verdict": "conform", "concept_label": "", "reason": "same thing"}
+    ]
 }
 
 
-def _response(tool_name: str, tool_input: dict | None) -> MagicMock:
+def _response(payload: dict) -> MagicMock:
     response = MagicMock()
     response.model = "model-x"
-    if tool_input is None:
-        response.tool_calls = []
-    else:
-        call = MagicMock()
-        call.name = tool_name
-        call.input = tool_input
-        response.tool_calls = [call]
+    response.content = json.dumps(payload)
+    response.tool_calls = []
     return response
 
 
@@ -83,7 +82,7 @@ _CANDIDATES = [
 
 
 def test_conform_happy_path() -> None:
-    provider = _provider(_response("judge_exposures", _CONFORM_INPUT))
+    provider = _provider(_response(_CONFORM_INPUT))
     judge = DimensionIdentityJudge(_config(), provider, _renderer())
 
     result = judge.conform(candidates=_CANDIDATES)
@@ -104,46 +103,59 @@ def test_conform_empty_candidates_short_circuits() -> None:
     provider.converse.assert_not_called()
 
 
-def test_conform_malformed_output_is_repaired(monkeypatch) -> None:
-    provider = _provider(_response("judge_exposures", _MALFORMED_CONFORM_INPUT))
-    repaired = ConformBatchOutput.model_validate(_CONFORM_INPUT)
-    repair = MagicMock(return_value=MagicMock(success=True, unwrap=lambda: repaired))
-    monkeypatch.setattr("dataraum.analysis.hierarchies.judge.repair_tool_output", repair)
+def test_conform_request_carries_the_output_schema_and_no_tool() -> None:
+    """The verdicts are a structured OUTPUT, not a forced tool (DAT-807)."""
+    provider = _provider(_response(_CONFORM_INPUT))
     judge = DimensionIdentityJudge(_config(), provider, _renderer())
 
-    result = judge.conform(candidates=_CANDIDATES)
+    judge.conform(candidates=_CANDIDATES)
 
-    assert result.success
-    assert result.unwrap()[0].concept_label == "account"
-    repair.assert_called_once()
+    request = provider.converse.call_args_list[0].args[0]
+    assert request.tools == []
+    assert request.tool_choice is None
+    assert request.output_schema["title"] == "ConformBatchOutput"
 
 
-def test_conform_wrong_tool_fails_closed() -> None:
-    provider = _provider(_response("other_tool", _CONFORM_INPUT))
+def test_conform_contract_violation_fails_loud() -> None:
+    """A conform verdict without its label is the ONE thing the grammar cannot
+    catch — it is a cross-field contract, so the batch fails loud (no repair
+    turn since DAT-807) and the lane is skipped: absence of judgment is not a
+    judgment."""
+    provider = _provider(_response(_CONTRACT_VIOLATING_CONFORM))
     judge = DimensionIdentityJudge(_config(), provider, _renderer())
 
     result = judge.conform(candidates=_CANDIDATES)
 
     assert not result.success
+    assert provider.converse.call_count == 1
 
 
 def test_conform_batch_output_validates_abstain() -> None:
     out = ConformBatchOutput.model_validate(
-        {"verdicts": [{"pair_ref": "p", "verdict": "abstain", "reason": "no evidence"}]}
+        {
+            "verdicts": [
+                {"pair_ref": "p", "verdict": "abstain", "concept_label": "", "reason": "none"}
+            ]
+        }
     )
-    assert out.verdicts[0].concept_label is None
+    assert out.verdicts[0].concept_label == ""
 
 
 def test_conform_without_label_is_malformed() -> None:
-    """A conform verdict missing its required label FAILS validation — it feeds
-    the DAT-710 repair loop (re-ask the judge), never a deterministic fill-in
-    by the consumer (a column name is not a concept label)."""
+    """A conform verdict with an empty label FAILS validation — never a
+    deterministic fill-in by the consumer (a column name is not a concept
+    label). Constrained decoding guarantees the KEY is present; only this
+    validator can require it to carry a judgment."""
     import pytest
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         ConformBatchOutput.model_validate(
-            {"verdicts": [{"pair_ref": "p", "verdict": "conform", "reason": "same thing"}]}
+            {
+                "verdicts": [
+                    {"pair_ref": "p", "verdict": "conform", "concept_label": "", "reason": "x"}
+                ]
+            }
         )
 
 
@@ -175,7 +187,7 @@ _ALIAS_CANDIDATES = [
 
 
 def test_alias_identity_happy_path() -> None:
-    provider = _provider(_response("judge_aliases", _ALIAS_INPUT))
+    provider = _provider(_response(_ALIAS_INPUT))
     judge = DimensionIdentityJudge(_config(), provider, _renderer())
 
     result = judge.alias_identity(candidates=_ALIAS_CANDIDATES)
@@ -196,7 +208,7 @@ def test_alias_identity_empty_candidates_short_circuits() -> None:
 
 
 def test_alias_confidence_out_of_range_is_malformed() -> None:
-    """A confidence outside [0,1] fails validation → the DAT-710 repair loop."""
+    """A confidence outside [0,1] fails validation — loud, never coerced."""
     import pytest
     from pydantic import ValidationError
 

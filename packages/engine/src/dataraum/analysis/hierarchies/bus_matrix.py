@@ -447,8 +447,8 @@ def _conform_pass(
         )
         if verdict.verdict == "conform":
             stats.conformed += 1
-            # concept_label is non-None here (ConformVerdict's validator).
-            conform_edges.append((i, j, verdict.concept_label or left.fold_key))
+            # concept_label is non-empty here (ConformVerdict's validator).
+            conform_edges.append((i, j, verdict.concept_label))
             parent[find(i)] = find(j)
         elif verdict.verdict == "abstain":
             stats.abstained += 1

@@ -636,7 +636,12 @@ def test_semantic_to_mint_to_enriched_join_holds_grain(session, lake) -> None:
                 # Quiet the DAT-768/769 empty-surface gate (not under test).
                 column_concepts=[
                     ColumnConceptOutput(
-                        table_name="txn", column_name="account", meaning="test meaning"
+                        table_name="txn",
+                        column_name="account",
+                        meaning="test meaning",
+                        unit_source_column="",
+                        derived_formula_hypothesis="",
+                        derived_formula_confidence=0.0,
                     )
                 ],
                 relationships=[

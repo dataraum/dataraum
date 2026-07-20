@@ -360,10 +360,11 @@ class TestConverseTelemetry:
 
 
 class TestStrictTools:
-    """Forced tools ship strict:true with a normalized schema (DAT-661): the
-    API then guarantees the arguments validate — killing the malformed-args
-    class (Sonnet 5 stringified a whole payload into one field, 2026-07-02
-    smoke). Open-map / oversized schemas opt out via ``strict=False``."""
+    """A genuinely-called tool may ship strict:true with a normalized schema.
+
+    One normalization serves both constrained-decoding surfaces (DAT-807), so
+    this asserts the same recursive additionalProperties:false + constraint
+    stripping the output schema gets. Non-strict tools pass through verbatim."""
 
     def _captured_tool(
         self, monkeypatch: pytest.MonkeyPatch, tool: ToolDefinition
@@ -424,111 +425,6 @@ class TestStrictTools:
         )
         assert "strict" not in sent
         assert sent["input_schema"] == schema
-
-
-class TestStringifiedArgCoercion:
-    """The provider repairs JSON-stringified container arguments against the
-    declared schema (Sonnet 5 stringified a whole payload into one field —
-    2026-07-02 smoke) and leaves everything else untouched."""
-
-    def _converse_with_tool_use(
-        self, monkeypatch: pytest.MonkeyPatch, tool_input: dict[str, object]
-    ) -> dict[str, object]:
-        provider = _provider()
-        response = SimpleNamespace(
-            content=[SimpleNamespace(type="tool_use", id="t1", name="emit", input=tool_input)],
-            stop_reason="tool_use",
-            model="claude-x",
-            usage=SimpleNamespace(
-                input_tokens=1,
-                output_tokens=1,
-                cache_read_input_tokens=0,
-                cache_creation_input_tokens=0,
-            ),
-        )
-        _patch_stream(monkeypatch, provider, lambda **_: response)
-        result = provider.converse(
-            ConversationRequest(
-                messages=[Message(role="user", content="hi")],
-                tools=[
-                    ToolDefinition(
-                        name="emit",
-                        description="d",
-                        input_schema={
-                            "type": "object",
-                            "properties": {
-                                "tables": {"type": "array"},
-                                "note": {"type": "string"},
-                            },
-                        },
-                    )
-                ],
-            )
-        ).unwrap()
-        return result.tool_calls[0].input
-
-    def test_stringified_array_is_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        coerced = self._converse_with_tool_use(
-            monkeypatch, {"tables": '[{"table_name": "t"}]', "note": "ok"}
-        )
-        assert coerced["tables"] == [{"table_name": "t"}]
-        assert coerced["note"] == "ok"
-
-    def test_plain_string_field_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A string field that happens to contain JSON must NOT be parsed —
-        # only schema-declared containers are coerced.
-        coerced = self._converse_with_tool_use(monkeypatch, {"note": '["not a list field"]'})
-        assert coerced["note"] == '["not a list field"]'
-
-    def test_unparseable_string_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        coerced = self._converse_with_tool_use(monkeypatch, {"tables": "not json"})
-        assert coerced["tables"] == "not json"
-
-    def test_whole_payload_stringified_into_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Smoke #6: the model serialized the ENTIRE input object into the
-        # container field — the parsed dict's keys match the tool's own
-        # properties, so it is adopted as the whole input.
-        coerced = self._converse_with_tool_use(
-            monkeypatch,
-            {"tables": '{"tables": [{"table_name": "t"}], "note": "n"}'},
-        )
-        assert coerced == {"tables": [{"table_name": "t"}], "note": "n"}
-
-    def test_tool_name_envelope_is_unwrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Sonnet 5 under a forced tool_choice intermittently wraps the WHOLE
-        # argument object under a single key equal to the TOOL NAME
-        # ({"emit": {<real args>}}). Left alone, schema-validation at the call
-        # site finds no known field and silently defaults every field to empty
-        # (the slicing "0 recommendations" flake). Unwrap it.
-        coerced = self._converse_with_tool_use(
-            monkeypatch, {"emit": {"tables": [{"table_name": "t"}], "note": "ok"}}
-        )
-        assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
-
-    def test_paraphrased_envelope_is_unwrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The wrapper key is not always the tool name. `submit_analysis` came back
-        # as {"analysis": {...}} — a PARAPHRASE — and the tool-name-keyed unwrap
-        # declined, so business_cycles validated to zero cycles while its phase
-        # reported success (DAT-795's all-or-nothing cycle collapse). Any lone
-        # top-level key the tool does not declare is an envelope.
-        coerced = self._converse_with_tool_use(
-            monkeypatch, {"emission": {"tables": [{"table_name": "t"}], "note": "ok"}}
-        )
-        assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
-
-    def test_envelope_unwrap_then_coerces_inner(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Unwrap composes with stringified-arg coercion: an enveloped inner whose
-        # container was itself stringified is still parsed.
-        coerced = self._converse_with_tool_use(
-            monkeypatch, {"emit": {"tables": '[{"table_name": "t"}]', "note": "ok"}}
-        )
-        assert coerced == {"tables": [{"table_name": "t"}], "note": "ok"}
-
-    def test_single_real_property_key_not_unwrapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A single-key input whose sole key is a real PROPERTY (not the tool name)
-        # is NOT an envelope — leave it (the list value passes coercion untouched).
-        coerced = self._converse_with_tool_use(monkeypatch, {"tables": [{"table_name": "t"}]})
-        assert coerced == {"tables": [{"table_name": "t"}]}
 
 
 class TestPromptCaching:

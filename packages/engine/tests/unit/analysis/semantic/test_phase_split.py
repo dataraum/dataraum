@@ -41,7 +41,14 @@ from tests.conftest import baseline_run_id
 # fixture below) so the DAT-768/769 empty-surface gate — not under test in the
 # relationship flows — stays quiet.
 _MEANING_MIN = [
-    ColumnConceptOutput(table_name="orders", column_name="order_id", meaning="test meaning")
+    ColumnConceptOutput(
+        table_name="orders",
+        column_name="order_id",
+        meaning="test meaning",
+        unit_source_column="",
+        derived_formula_hypothesis="",
+        derived_formula_confidence=0.0,
+    )
 ]
 
 
@@ -161,6 +168,8 @@ class TestPersistColumnConcepts:
                 column_name="discount",
                 meaning="Per-order discount amount",
                 derived_formula_hypothesis="   ",
+                unit_source_column="",
+                derived_formula_confidence=0.0,
             ),
         ]
 
@@ -194,8 +203,22 @@ class TestPersistColumnConcepts:
         """
         table = _table_with_columns(session, "orders", ["total"])
         concepts = [
-            ColumnConceptOutput(table_name="orders", column_name="total", meaning="gross"),
-            ColumnConceptOutput(table_name="orders", column_name="total", meaning="net"),
+            ColumnConceptOutput(
+                table_name="orders",
+                column_name="total",
+                meaning="gross",
+                unit_source_column="",
+                derived_formula_hypothesis="",
+                derived_formula_confidence=0.0,
+            ),
+            ColumnConceptOutput(
+                table_name="orders",
+                column_name="total",
+                meaning="net",
+                unit_source_column="",
+                derived_formula_hypothesis="",
+                derived_formula_confidence=0.0,
+            ),
         ]
 
         result = persist_column_concepts(
@@ -215,7 +238,14 @@ class TestPersistColumnConcepts:
         being indistinguishable from an empty emission."""
         table = _table_with_columns(session, "orders", ["total"])
         concepts = [
-            ColumnConceptOutput(table_name="orders", column_name="ghost", meaning="phantom")
+            ColumnConceptOutput(
+                table_name="orders",
+                column_name="ghost",
+                meaning="phantom",
+                unit_source_column="",
+                derived_formula_hypothesis="",
+                derived_formula_confidence=0.0,
+            )
         ]
 
         result = persist_column_concepts(
@@ -622,10 +652,20 @@ class TestSynthesizeAndStoreTables:
                     annotations=[],
                     column_concepts=[
                         ColumnConceptOutput(
-                            table_name="invoices", column_name="entry_id", meaning="link"
+                            table_name="invoices",
+                            column_name="entry_id",
+                            meaning="link",
+                            unit_source_column="",
+                            derived_formula_hypothesis="",
+                            derived_formula_confidence=0.0,
                         ),
                         ColumnConceptOutput(
-                            table_name="journal_entries", column_name="entry_id", meaning="key"
+                            table_name="journal_entries",
+                            column_name="entry_id",
+                            meaning="key",
+                            unit_source_column="",
+                            derived_formula_hypothesis="",
+                            derived_formula_confidence=0.0,
                         ),
                     ],
                     entity_detections=[],
@@ -712,10 +752,20 @@ class TestSynthesizeAndStoreTables:
                     annotations=[],
                     column_concepts=[
                         ColumnConceptOutput(
-                            table_name="detail", column_name="link_id", meaning="link"
+                            table_name="detail",
+                            column_name="link_id",
+                            meaning="link",
+                            unit_source_column="",
+                            derived_formula_hypothesis="",
+                            derived_formula_confidence=0.0,
                         ),
                         ColumnConceptOutput(
-                            table_name="master", column_name="link_id", meaning="key"
+                            table_name="master",
+                            column_name="link_id",
+                            meaning="key",
+                            unit_source_column="",
+                            derived_formula_hypothesis="",
+                            derived_formula_confidence=0.0,
                         ),
                     ],
                     entity_detections=[],
@@ -1020,7 +1070,14 @@ class TestColumnConceptCoverageRetry:
 
     @staticmethod
     def _cc(table: str, column: str, meaning: str) -> ColumnConceptOutput:
-        return ColumnConceptOutput(table_name=table, column_name=column, meaning=meaning)
+        return ColumnConceptOutput(
+            table_name=table,
+            column_name=column,
+            meaning=meaning,
+            unit_source_column="",
+            derived_formula_hypothesis="",
+            derived_formula_confidence=0.0,
+        )
 
     @staticmethod
     def _enrichment(concepts: list[ColumnConceptOutput]) -> Result:
@@ -1189,6 +1246,8 @@ class TestTableSynthesisHelpers:
                         "description": "orders",
                         "is_fact_table": True,
                         "grain": ["order_id"],
+                        "time_columns": [],
+                        "identity_columns": [],
                     }
                 ],
                 "relationships": [],

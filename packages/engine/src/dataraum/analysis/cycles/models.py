@@ -105,11 +105,22 @@ class BusinessCycleAnalysis(BaseModel):
 
 
 # =============================================================================
-# Pydantic output models for LLM tool use (submit_analysis)
+# Pydantic output models for the business_cycles structured output
 #
-# Flat schema (max depth 2) to avoid LLM stringification of nested arrays.
-# Stages and entity flows are top-level lists that reference cycles by name.
-# _parse_output groups them back into DetectedCycle objects.
+# Flat schema (max depth 2): stages and entity flows are top-level lists that
+# reference cycles by name; _parse_output groups them back into DetectedCycle.
+#
+# EVERY field is REQUIRED (DAT-807). An optional field is a modelling mistake —
+# either the model must state the attribute or the attribute should not exist —
+# and under constrained decoding each optional also spends one of the request's
+# 24 optional-parameter slots (an ``X | None`` renders as an anyOf, so it spends
+# a union slot too). Not-applicable is expressed by a DOCUMENTED EMPTY VALUE
+# ("" / []), never by omission. The three tri-state MEASUREMENTS below
+# (total_records, completed_cycles, completion_rate) are the deliberate
+# exception: 0 is a real measurement, so they have no valid empty value and the
+# distinction "not measured" is load-bearing downstream (the artifact lifecycle
+# reads ``completion_rate is None`` as grounded-but-not-measured, and the
+# cockpit branches on null).
 # =============================================================================
 
 
@@ -127,17 +138,17 @@ class CycleSummaryOutput(BaseModel):
         )
     )
     description: str = Field(description="What this cycle represents in the business")
-    business_value: str = Field(
-        default="medium", description="Business importance: high, medium, or low"
+    business_value: str = Field(description="Business importance: high, medium, or low")
+    status_column: str = Field(
+        description='Column tracking cycle completion; "" when the cycle has none'
     )
-    status_column: str | None = Field(default=None, description="Column tracking cycle completion")
-    status_table: str | None = Field(default=None, description="Table containing status column")
-    completion_value: str | None = Field(
-        default=None, description="Value indicating cycle complete, e.g., 'Paid'"
+    status_table: str = Field(
+        description='Table containing the status column; "" when there is no status column'
     )
-    tables_involved: list[str] = Field(
-        default_factory=list, description="All tables involved in this cycle"
+    completion_value: str = Field(
+        description="Value indicating cycle complete, e.g., 'Paid'; \"\" when not applicable"
     )
+    tables_involved: list[str] = Field(description="All tables involved in this cycle")
     total_records: int | None = Field(default=None, description="Total records in cycle")
     completed_cycles: int | None = Field(default=None, description="Number of completed cycles")
     completion_rate: float | None = Field(
@@ -150,10 +161,8 @@ class CycleSummaryOutput(BaseModel):
             "posting ratio, balance ratio, period coverage, or similar metric."
         ),
     )
-    confidence: float = Field(default=0.5, description="Confidence in this detection (0.0-1.0)")
-    evidence: list[str] = Field(
-        default_factory=list, description="Evidence supporting this cycle detection"
-    )
+    confidence: float = Field(description="Confidence in this detection (0.0-1.0)")
+    evidence: list[str] = Field(description="Evidence supporting this cycle detection")
 
 
 class StageEntryOutput(BaseModel):
@@ -162,11 +171,11 @@ class StageEntryOutput(BaseModel):
     cycle_name: str = Field(description="Name of the cycle this stage belongs to")
     stage_name: str = Field(description="Name of this stage, e.g., 'Order Shipped'")
     stage_order: int = Field(description="Position in cycle (1, 2, 3...)")
-    indicator_column: str | None = Field(
-        default=None, description="Column that indicates this stage"
+    indicator_column: str = Field(
+        description='Column that indicates this stage; "" when the stage has no indicator'
     )
-    indicator_value: str | None = Field(
-        default=None, description="Value that means this stage (one row per value)"
+    indicator_value: str = Field(
+        description='Value that means this stage (one row per value); "" when none'
     )
 
 
@@ -177,40 +186,37 @@ class EntityFlowEntryOutput(BaseModel):
     entity_type: str = Field(description="Type of entity, e.g., 'customer', 'vendor'")
     entity_column: str = Field(description="Column that identifies the entity")
     entity_table: str = Field(description="Table containing entity data")
-    fact_table: str | None = Field(default=None, description="Related fact/transaction table")
-    fact_column: str | None = Field(default=None, description="Column in fact table")
+    fact_table: str = Field(
+        description='Related fact/transaction table; "" when the entity has no fact table'
+    )
+    fact_column: str = Field(description='Column in the fact table; "" when there is none')
 
 
 class BusinessCycleAnalysisOutput(BaseModel):
-    """Complete analysis output for submit_analysis tool.
+    """Complete business_cycles structured output.
 
     Flat schema: cycles, stages, and entity_flows are separate top-level lists.
     Stages and entity_flows reference their parent cycle via cycle_name.
     """
 
     cycles: list[CycleSummaryOutput] = Field(
-        default_factory=list, description="Detected business cycles (one per cycle)"
+        description="Detected business cycles (one per cycle); [] when none were detected"
     )
     stages: list[StageEntryOutput] = Field(
-        default_factory=list,
-        description="Cycle stages (one row per stage per cycle, referencing cycle_name)",
+        description="Cycle stages (one row per stage per cycle, referencing cycle_name); [] if none",
     )
     entity_flows: list[EntityFlowEntryOutput] = Field(
-        default_factory=list,
-        description="Entity flows (one row per entity per cycle, referencing cycle_name)",
+        description="Entity flows (one row per entity per cycle, referencing cycle_name); [] if none",
     )
     business_summary: str = Field(
         description="Overall interpretation of the business model and its cycles"
     )
     detected_processes: list[str] = Field(
-        default_factory=list,
-        description="List of business processes identified, e.g., 'Order-to-Cash', 'Procure-to-Pay'",
+        description="Business processes identified, e.g., 'Order-to-Cash'; [] when none",
     )
     data_quality_observations: list[str] = Field(
-        default_factory=list,
-        description="Data quality issues noticed during analysis",
+        description="Data quality issues noticed during analysis; [] when none",
     )
     recommendations: list[str] = Field(
-        default_factory=list,
-        description="Suggestions for improving data completeness or cycle tracking",
+        description="Suggestions for improving data completeness or cycle tracking; [] when none",
     )

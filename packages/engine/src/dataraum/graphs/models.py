@@ -347,31 +347,48 @@ class ConceptGroundingBasis(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     measure_columns: list[str] = Field(
-        default_factory=list,
         description="Every relation column the select_expr reads for this concept — bare "
-        "column names exactly as served in the schema, no table qualifier. Empty only when "
+        "column names exactly as served in the schema, no table qualifier. [] only when "
         "the extract reads no column for it (e.g. COUNT(*)).",
     )
     filter_columns: list[str] = Field(
-        default_factory=list,
         description="Every relation column the where predicates filter on for this concept — "
-        "bare served column names, no qualifier. Empty when the concept needs no filter.",
+        "bare served column names, no qualifier. [] when the concept needs no filter.",
     )
-    filter: str | None = Field(
-        default=None,
+    filter: str = Field(
         description="The exact served values the filter selects (the value→concept decision), "
-        "e.g. \"account_type IN ('revenue')\". null when unfiltered.",
+        'e.g. "account_type IN (\'revenue\')". "" when unfiltered.',
+    )
+
+
+class ConceptGroundingEntry(BaseModel):
+    """ONE concept's grounding record — the list element of ``column_mappings_basis``.
+
+    A list of ``{concept, basis}`` entries, not a ``{concept: basis}`` map:
+    constrained decoding requires ``additionalProperties: false`` on every object,
+    which FORBIDS an open map outright (DAT-807). The map shape is restored at the
+    persistence boundary, so ``HealthySnippetProvenance`` — and therefore the
+    ``og_uses`` element view and the cockpit — see the unchanged stored shape.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    concept: str = Field(
+        description="The business concept this entry grounds, named verbatim from the "
+        "graph specification."
+    )
+    basis: ConceptGroundingBasis = Field(
+        description="How this concept grounds to the relation's columns."
     )
 
 
 class GraphProvenanceOutput(BaseModel):
     """Provenance of how the LLM grounded business concepts to SQL."""
 
-    column_mappings_basis: dict[str, ConceptGroundingBasis] = Field(
-        default_factory=dict,
-        description="Per-concept grounding record, keyed by concept name — enumerates ALL "
+    column_mappings_basis: list[ConceptGroundingEntry] = Field(
+        description="Per-concept grounding record, one entry per concept — enumerates ALL "
         "relation columns each grounding touches, by role (see ConceptGroundingBasis). "
-        "Enforced against the served schema at save.",
+        "Enforced against the served schema at save. [] only in the fall-loud case.",
     )
     # No free-text reasoning field: the former `llm_reasoning` was written into the
     # snippet provenance blob and read by nothing (DAT-603 consumer audit) — output
@@ -424,6 +441,11 @@ class HealthySnippetProvenance(BaseModel):
     ``og_uses`` element view, so the persisted shape IS this model's
     ``model_dump``: ``{column_mappings_basis: {concept: {measure_columns[],
     filter_columns[], filter}}, assumptions: [{assumption, basis, confidence}]}``.
+
+    Deliberately still a MAP, while the LLM-facing ``GraphProvenanceOutput`` is a
+    LIST of ``{concept, basis}`` entries (DAT-807 — constrained decoding forbids an
+    open map). The writer converts; the stored shape, ``og_uses``, and the cockpit
+    are untouched.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -506,14 +528,12 @@ class ExtractGroundingOutput(BaseModel):
         '(complete 5-value set)". Name the value-set entries verbatim; if you cannot, '
         "the concept is not grounded — fall loud instead of writing SQL around it."
     )
-    relation: str | None = Field(
-        default=None,
+    relation: str = Field(
         description="The ONE relation the extract reads — an enriched view or table name "
-        "verbatim from the provided schema, never invented. null ONLY in the fall-loud "
+        'verbatim from the provided schema, never invented. "" ONLY in the fall-loud '
         "case (the concept cannot be grounded).",
     )
     where: list[str] = Field(
-        default_factory=list,
         description="Row filters as standalone SQL predicate texts over the relation's "
         "columns, AND-composed by the system. Every literal must be verified against the "
         "served Value sets. A predicate may contain subqueries (e.g. an IN over a "
@@ -529,13 +549,12 @@ class ExtractGroundingOutput(BaseModel):
         "e.g. 'Total volume: SUM(amount) where category IN (Primary)'."
     )
     assumptions: list[GraphAssumptionOutput] = Field(
-        default_factory=list,
-        description="Assumptions made due to data uncertainty during SQL generation",
+        description="Assumptions made due to data uncertainty during SQL generation; [] when none",
     )
-    provenance: GraphProvenanceOutput | None = Field(
-        default=None,
+    provenance: GraphProvenanceOutput = Field(
         description="How the concept was grounded to concrete columns. Required for a real "
         "grounding (non-null relation): column_mappings_basis must enumerate EVERY relation "
         "column the select_expr/where touch, by role, using served names verbatim — it is "
-        "validated against the served schema.",
+        "validated against the served schema. In the fall-loud case emit an empty "
+        "column_mappings_basis.",
     )

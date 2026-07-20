@@ -61,7 +61,7 @@ def test_ungrounded_recommendation_is_dropped() -> None:
     # account_id__account_type is NOT in this run's columns (passthrough view) →
     # it has no resolvable column_id and must be dropped, not stored with an empty FK.
     output = SlicingAnalysisOutput(
-        recommendations=[_rec("cost_center"), _rec("account_id__account_type")]
+        recommendations=[_rec("cost_center"), _rec("account_id__account_type")], time_columns=[]
     )
     with capture_logs() as logs:
         result = _agent()._convert_output_to_result(output, _context())
@@ -73,7 +73,7 @@ def test_ungrounded_recommendation_is_dropped() -> None:
 
 
 def test_grounded_recommendations_pass_through() -> None:
-    output = SlicingAnalysisOutput(recommendations=[_rec("cost_center")])
+    output = SlicingAnalysisOutput(recommendations=[_rec("cost_center")], time_columns=[])
     result = _agent()._convert_output_to_result(output, _context())
     recs = result.value.recommendations
     assert len(recs) == 1
@@ -95,7 +95,8 @@ def test_unknown_table_recommendation_is_dropped() -> None:
                 business_context="b",
                 confidence=0.9,
             )
-        ]
+        ],
+        time_columns=[],
     )
     result = _agent()._convert_output_to_result(output, _context())
     assert result.value.recommendations == []

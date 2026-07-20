@@ -20,6 +20,8 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from dataraum.analysis.cycles.config import map_to_canonical_type
 from dataraum.analysis.cycles.context import (
     build_cycle_detection_context,
@@ -39,7 +41,6 @@ from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
-    ToolDefinition,
 )
 
 if TYPE_CHECKING:
@@ -119,23 +120,15 @@ class BusinessCycleAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to render business cycles prompt: {e}")
 
-        # 3. Single LLM call with structured output
-        tool = ToolDefinition(
-            name="submit_analysis",
-            description=(
-                "Submit your final business cycle analysis. "
-                "Call this tool with your structured findings."
-            ),
-            input_schema=BusinessCycleAnalysisOutput.model_json_schema(),
-        )
-
+        # 3. Single LLM call with structured output (DAT-807): the API constrains
+        # decoding to BusinessCycleAnalysisOutput's schema; the answer is JSON
+        # message content.
         model = self.provider.get_model_for_tier(feature_config.model_tier)
 
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "submit_analysis"},
+            output_schema=BusinessCycleAnalysisOutput.model_json_schema(),
             label="business_cycles",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
@@ -148,19 +141,18 @@ class BusinessCycleAgent(LLMFeature):
         # we don't re-wrap it. A returned Result is always a success.
         response = self.provider.converse(request).unwrap()
 
-        # 4. Parse structured output. No tool call = degraded generation — a
-        # hard failure for the synthesis (DAT-439 standard: no silent rescue).
-        if not response.tool_calls:
-            return Result.fail(
-                "LLM did not call submit_analysis tool. No structured output received."
-            )
-
-        tool_call = response.tool_calls[0]
-        if tool_call.name != "submit_analysis":
-            return Result.fail(f"Unexpected tool call: {tool_call.name}")
+        # 4. Parse the structured output. An unparseable payload = degraded
+        # generation — a hard failure for the synthesis (DAT-439 standard: no
+        # silent rescue). Until DAT-807 this path silently degraded to the raw
+        # unvalidated dict, which under constrained decoding is indefensible:
+        # a shape failure now means the API contract broke.
+        try:
+            output = BusinessCycleAnalysisOutput.model_validate_json(response.content)
+        except ValidationError as e:
+            return Result.fail(f"Failed to parse business cycle analysis: {e}")
 
         analysis = self._parse_output(
-            tool_call.input,
+            output,
             context,
             start_time,
             model=model,
@@ -171,66 +163,47 @@ class BusinessCycleAgent(LLMFeature):
 
     def _parse_output(
         self,
-        tool_input: dict[str, Any],
+        output: BusinessCycleAnalysisOutput,
         context: dict[str, Any],
         start_time: float,
         *,
         model: str | None = None,
         vertical: str,
     ) -> BusinessCycleAnalysis:
-        """Parse submit_analysis tool input into structured analysis.
+        """Group the flat LLM output into the nested analysis.
 
         The LLM output uses a flat schema (stages and entity_flows are
         top-level lists referencing cycles by name). This method groups
         them back into nested DetectedCycle objects.
         """
-        # Validate against Pydantic model
-        try:
-            output = BusinessCycleAnalysisOutput.model_validate(tool_input)
-        except Exception as e:
-            logger.warning("tool_output_validation_failed", error=str(e))
-            output = None
-
         # Group flat stages by cycle_name
         stages_by_cycle: dict[str, list[dict[str, Any]]] = {}
-        raw_stages = (
-            [s.model_dump() for s in output.stages] if output else tool_input.get("stages", [])
-        )
-        for s in raw_stages:
-            if isinstance(s, dict):
-                stages_by_cycle.setdefault(s.get("cycle_name", ""), []).append(s)
+        for s in (item.model_dump() for item in output.stages):
+            stages_by_cycle.setdefault(s.get("cycle_name", ""), []).append(s)
 
         # Group flat entity flows by cycle_name
         flows_by_cycle: dict[str, list[dict[str, Any]]] = {}
-        raw_flows = (
-            [ef.model_dump() for ef in output.entity_flows]
-            if output
-            else tool_input.get("entity_flows", [])
-        )
-        for ef in raw_flows:
-            if isinstance(ef, dict):
-                flows_by_cycle.setdefault(ef.get("cycle_name", ""), []).append(ef)
+        for ef in (item.model_dump() for item in output.entity_flows):
+            flows_by_cycle.setdefault(ef.get("cycle_name", ""), []).append(ef)
 
         # Build cycles from flat summaries + grouped stages/flows
         cycles = []
-        cycle_data_list = (
-            [c.model_dump() for c in output.cycles] if output else tool_input.get("cycles", [])
-        )
+        cycle_data_list = [c.model_dump() for c in output.cycles]
 
         for cd in cycle_data_list:
-            if not isinstance(cd, dict):
-                continue
-
             cname = cd.get("cycle_name", "Unknown Cycle")
 
-            # Reconstruct nested stages — flat schema uses indicator_value (singular)
+            # Reconstruct nested stages — flat schema uses indicator_value (singular).
+            # The output model states every attribute (DAT-807), using "" for the
+            # not-applicable case; the domain model keeps None for it, so the
+            # sentinel is normalized back here and the PERSISTED shape is unchanged.
             entity_flows = [
                 EntityFlow(
                     entity_type=ef.get("entity_type", "unknown"),
                     entity_column=ef.get("entity_column", ""),
                     entity_table=ef.get("entity_table", ""),
-                    fact_table=ef.get("fact_table"),
-                    fact_column=ef.get("fact_column"),
+                    fact_table=ef.get("fact_table") or None,
+                    fact_column=ef.get("fact_column") or None,
                 )
                 for ef in flows_by_cycle.get(cname, [])
             ]
@@ -243,7 +216,7 @@ class BusinessCycleAgent(LLMFeature):
                     stage_map[key] = {
                         "stage_name": s.get("stage_name", ""),
                         "stage_order": s.get("stage_order", 0),
-                        "indicator_column": s.get("indicator_column"),
+                        "indicator_column": s.get("indicator_column") or None,
                         "indicator_values": [],
                     }
                 val = s.get("indicator_value")
@@ -270,17 +243,17 @@ class BusinessCycleAgent(LLMFeature):
                 canonical_type=canonical_type,
                 is_known_type=is_known_type,
                 description=cd.get("description", ""),
-                business_value=cd.get("business_value", "medium"),
+                business_value=cd["business_value"],
                 stages=stages,
                 entity_flows=entity_flows,
                 tables_involved=cd.get("tables_involved", []),
-                status_column=cd.get("status_column"),
-                status_table=cd.get("status_table"),
-                completion_value=cd.get("completion_value"),
+                status_column=cd.get("status_column") or None,
+                status_table=cd.get("status_table") or None,
+                completion_value=cd.get("completion_value") or None,
                 total_records=cd.get("total_records"),
                 completed_cycles=cd.get("completed_cycles"),
                 completion_rate=cd.get("completion_rate"),
-                confidence=cd.get("confidence", 0.5),
+                confidence=cd["confidence"],
                 evidence=cd.get("evidence", []),
             )
             cycles.append(cycle)
@@ -293,17 +266,6 @@ class BusinessCycleAgent(LLMFeature):
             logger.warning("cycle_rejected_improvised_reference", reason=reason)
 
         # Build analysis
-        if output:
-            business_summary = output.business_summary
-            detected_processes = output.detected_processes
-            data_quality_obs = output.data_quality_observations
-            recommendations = output.recommendations
-        else:
-            business_summary = tool_input.get("business_summary", "")
-            detected_processes = tool_input.get("detected_processes", [])
-            data_quality_obs = tool_input.get("data_quality_observations", [])
-            recommendations = tool_input.get("recommendations", [])
-
         analysis = BusinessCycleAnalysis(
             analysis_id=str(uuid4()),
             tables_analyzed=[t["table_name"] for t in context["tables"]],
@@ -312,10 +274,10 @@ class BusinessCycleAgent(LLMFeature):
             cycles=cycles,
             total_cycles_detected=len(cycles),
             high_value_cycles=sum(1 for c in cycles if c.business_value == "high"),
-            business_summary=business_summary,
-            detected_processes=detected_processes,
-            data_quality_observations=data_quality_obs,
-            recommendations=recommendations,
+            business_summary=output.business_summary,
+            detected_processes=output.detected_processes,
+            data_quality_observations=output.data_quality_observations,
+            recommendations=output.recommendations,
             llm_model=model,
             analysis_duration_seconds=time.time() - start_time,
             context_provided={"summary": context["summary"]},

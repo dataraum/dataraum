@@ -56,10 +56,15 @@ features:
   business_cycles:
     enabled: true
     model_tier: balanced
+    # Pinned explicitly (DAT-807) — behaviourally a no-op (high IS the API
+    # default), but every agent's effort is now declared, so a server-side
+    # default change can never silently move a call site's configuration.
+    effort: high
 
   enrichment_analysis:
     enabled: true
     model_tier: balanced
+    effort: high
     prompt_file: prompts/enrichment_analysis.yaml
     description: >
       Identify valuable dimension joins to enrich main datasets
@@ -73,19 +78,23 @@ features:
   # DAT-603: metric grounding (graph_sql_generation) — the pipeline's most
   # central agent and its hardest reasoning task. `thinking: true` keeps the
   # model's adaptive reflection ON (Sonnet 5-class models expose no sampling
-  # knobs; reflection is the quality lever — 2026-07-03 review). `effort` stays
-  # UNSET (API default): low is wrong here, this agent needs the thinking.
+  # knobs; reflection is the quality lever — 2026-07-03 review). `effort: high`
+  # is the API default written down (DAT-807): low is wrong here, this agent
+  # needs the thinking.
   graph_sql_generation:
     enabled: true
     model_tier: balanced
+    effort: high
     thinking: true
 
   # DAT-762: dimension-identity judge — the cross-fact conformed-dimension
   # lane (conform/role judgment on names + attributes + meanings).
   # Forced tool_choice suppresses thinking on the Anthropic API, so the v1
   # judge is non-thinking by design (DAT-757 scorecard was graded that way).
+  # Covers BOTH judged labels (dimension_conform + dimension_alias).
   dimension_identity_judgment:
     model_tier: balanced
+    effort: high
 
 # Cost controls
 limits:

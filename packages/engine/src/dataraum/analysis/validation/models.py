@@ -66,28 +66,36 @@ class ValidationSpec(BaseModel):
 
 
 class ValidationSQLOutput(BaseModel):
-    """Pydantic model for LLM tool output - validation SQL generation.
+    """The ``validation_sql`` structured output.
 
-    Used as a tool definition for structured LLM output via tool use API.
+    Every field is REQUIRED (DAT-807). ``sql`` and ``skip_reason`` are the
+    either/or pair — exactly one is populated and the other is "" — modelled as
+    two required strings rather than a union, because a union spends one of the
+    request's 16 union slots to express what a documented sentinel expresses for
+    free. ``can_validate`` remains the discriminator.
     """
 
-    sql: str | None = Field(
-        description="The DuckDB SQL query to execute. Null if validation cannot be performed."
+    sql: str = Field(
+        description=(
+            'The DuckDB SQL query to execute; "" when the validation cannot be '
+            "performed (can_validate false)."
+        )
     )
     # No free-text `explanation` field: it flowed into GeneratedSQL and was read by
     # nothing (DAT-603 consumer audit) — an unread sentence per call is pure
     # serial-decode latency. The judgeable context lives in columns_used +
     # skip_reason; the spec itself already says what is being validated.
     columns_used: list[str] = Field(
-        default_factory=list,
-        description="List of columns used in the query, in 'table.column' format.",
+        description="Columns used in the query, in 'table.column' format; [] when none.",
     )
     can_validate: bool = Field(
         description="Whether the validation can be performed with the available schema."
     )
-    skip_reason: str | None = Field(
-        default=None,
-        description="If can_validate is false, explain why (e.g., 'Missing required columns: ...').",
+    skip_reason: str = Field(
+        description=(
+            "If can_validate is false, explain why (e.g., 'Missing required "
+            'columns: ...\'); "" when can_validate is true.'
+        ),
     )
 
 

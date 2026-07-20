@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.concept_store import load_workspace_concepts
@@ -30,7 +31,6 @@ from dataraum.llm.privacy import DataSampler
 from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
-    ToolDefinition,
 )
 
 if TYPE_CHECKING:
@@ -128,24 +128,13 @@ class ColumnAnnotationAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to render column_annotation prompt: {e}")
 
-        # Create tool definition
-        schema = ColumnAnnotationOutput.model_json_schema()
-        tool = ToolDefinition(
-            name="annotate_columns",
-            description=(
-                "Provide semantic annotations for each column in the database schema. "
-                "Classify columns by role, entity type, and business concept."
-            ),
-            input_schema=schema,
-        )
-
-        # Call LLM
+        # Call LLM — structured output (DAT-807): the API constrains decoding to
+        # the schema, so the answer is JSON message content, not tool arguments.
         model = self.provider.get_model_for_tier(feature_config.model_tier)
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "annotate_columns"},
+            output_schema=ColumnAnnotationOutput.model_json_schema(),
             label="column_annotation",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
@@ -159,32 +148,18 @@ class ColumnAnnotationAgent(LLMFeature):
         # Result is always a success.
         response = self.provider.converse(request).unwrap()
 
-        # Extract tool output
-        if not response.tool_calls:
-            if response.content:
-                try:
-                    parsed = json.loads(response.content)
-                    output = ColumnAnnotationOutput.model_validate(parsed)
-                    return Result.ok(output)
-                except Exception:
-                    pass
-            return Result.fail("LLM did not use the annotate_columns tool")
-
-        tool_call = response.tool_calls[0]
-        if tool_call.name != "annotate_columns":
-            return Result.fail(f"Unexpected tool call: {tool_call.name}")
-
         try:
-            output = ColumnAnnotationOutput.model_validate(tool_call.input)
-            logger.debug(
-                "column_annotation_complete",
-                tables=len(output.tables),
-                columns=sum(len(t.columns) for t in output.tables),
-                model=response.model,
-            )
-            return Result.ok(output)
-        except Exception as e:
+            output = ColumnAnnotationOutput.model_validate_json(response.content)
+        except ValidationError as e:
             return Result.fail(f"Failed to parse column annotation output: {e}")
+
+        logger.debug(
+            "column_annotation_complete",
+            tables=len(output.tables),
+            columns=sum(len(t.columns) for t in output.tables),
+            model=response.model,
+        )
+        return Result.ok(output)
 
     @staticmethod
     def _format_required_fields(fields: list[str] | None) -> str:

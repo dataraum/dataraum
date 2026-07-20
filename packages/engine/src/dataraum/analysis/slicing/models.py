@@ -103,8 +103,8 @@ class SliceRecommendationOutput(BaseModel):
     priority: int = Field(description="Priority rank (1 = highest priority slice dimension)")
     distinct_values: list[str] = Field(description="List of unique values that will become slices")
     reasoning: str = Field(description="Why this column is a good slicing dimension")
-    business_context: str | None = Field(
-        default=None, description="Business meaning of this dimension"
+    business_context: str = Field(
+        description='Business meaning of this dimension; "" when there is none'
     )
     confidence: float = Field(
         ge=0.0, le=1.0, description="Confidence in this recommendation (0.0 to 1.0)"
@@ -127,18 +127,17 @@ class TableTimeColumnOutput(BaseModel):
 
 
 class SlicingAnalysisOutput(BaseModel):
-    """Pydantic model for LLM tool output - slicing analysis.
+    """The ``slicing_analysis`` structured output.
 
-    Used as a tool definition for structured LLM output via tool use API.
+    Every field is REQUIRED (DAT-807): not-applicable is a documented empty
+    value ("" / []), never an omitted key.
     """
 
     recommendations: list[SliceRecommendationOutput] = Field(
-        default_factory=list,
-        description="List of recommended slicing dimensions, ordered by priority",
+        description=("Recommended slicing dimensions, ordered by priority; [] when none qualify"),
     )
 
     time_columns: list[TableTimeColumnOutput] = Field(
-        default_factory=list,
         description=(
             "The event-time axis for each analyzed table whose context "
             "'time_columns' is empty. Rule: whenever such a table has an enriched "

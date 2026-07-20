@@ -27,7 +27,7 @@ SQL as a *source* of typed data is forbidden. This module is the enforcement:
    fallback over-collects — a string literal containing a column name would
    make an honest enumeration look phantom, so the check stays parse-gated).
 
-The fall-loud grounding shape (``relation: null`` / ``select_expr: "NULL"``)
+The fall-loud grounding shape (``relation: ""`` / ``select_expr: "NULL"``)
 carries no columns and is exempt.
 """
 
@@ -68,7 +68,7 @@ def validate_grounding_basis(
         Human-readable violation lines for the repair turn; ``[]`` when the
         output honors the contract (including the exempt fall-loud shape).
     """
-    if output.relation is None:
+    if not output.relation:
         return []  # fall-loud: no relation, no columns, nothing to enforce
 
     relation_columns = schema_tables.get(output.relation)
@@ -78,17 +78,16 @@ def validate_grounding_basis(
             f"({sorted(schema_tables)}) — use a served relation name verbatim"
         ]
 
-    basis = output.provenance.column_mappings_basis if output.provenance else {}
     measure_enumerated: set[str] = set()
     filter_enumerated: set[str] = set()
     violations: list[str] = []
-    for concept, entry in basis.items():
-        measure_enumerated.update(entry.measure_columns)
-        filter_enumerated.update(entry.filter_columns)
-        for col in [*entry.measure_columns, *entry.filter_columns]:
+    for entry in output.provenance.column_mappings_basis:
+        measure_enumerated.update(entry.basis.measure_columns)
+        filter_enumerated.update(entry.basis.filter_columns)
+        for col in [*entry.basis.measure_columns, *entry.basis.filter_columns]:
             if col not in relation_columns:
                 violations.append(
-                    f"column_mappings_basis['{concept}'] names '{col}', which is not a "
+                    f"column_mappings_basis['{entry.concept}'] names '{col}', which is not a "
                     f"column of '{output.relation}' — enumerate served column names "
                     "verbatim, without table qualifiers"
                 )

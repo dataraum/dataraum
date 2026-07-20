@@ -146,7 +146,6 @@ class RelationshipOutput(BaseModel):
     )
 
     key_columns: list[KeyColumnPair] = Field(
-        default_factory=list,
         description=(
             "ADDITIONAL key columns beyond (from_column, to_column), making the key "
             "COMPOSITE. Leave EMPTY for a normal single-column relationship. Use this "
@@ -265,7 +264,6 @@ class TableEntityOutput(BaseModel):
     )
 
     time_columns: list[TimeColumn] = Field(
-        default_factory=list,
         description=(
             "EVERY date column of the table, each tagged with a typed ``role`` "
             "(DAT-780). Emit event dates — when a row's own event occurred "
@@ -310,7 +308,6 @@ class TableEntityOutput(BaseModel):
         return self
 
     identity_columns: list[IdentityColumn] = Field(
-        default_factory=list,
         description=(
             "Recurring real-world identities — high-cardinality columns that recur "
             "across rows and identify a real entity (a customer, account, vehicle), "
@@ -344,30 +341,29 @@ class ColumnConceptOutput(BaseModel):
             "context to downstream analysts, not parsed."
         ),
     )
-    unit_source_column: str | None = Field(
-        default=None,
+    unit_source_column: str = Field(
         description=(
             "The column defining this measure's unit: a same-table column name, or "
             "'table_name.column_name' reachable via a CONFIRMED relationship, or "
-            "'dimensionless' for ratios/rates/indices. Null when there is no concrete "
+            "'dimensionless' for ratios/rates/indices. \"\" when there is no concrete "
             "unit column — never guess."
         ),
     )
-    derived_formula_hypothesis: str | None = Field(
-        default=None,
+    derived_formula_hypothesis: str = Field(
         description=(
             "If this column reads as COMPUTED, the arithmetic it should obey: exactly "
             "two column names joined by one of + - * / . Operands may be in a JOINED "
             "table reachable via a confirmed relationship (use 'table.column' for a "
             "joined operand) — the derived-value check runs over the enriched view. "
-            "Null when the column does not read as derived."
+            '"" when the column does not read as derived.'
         ),
     )
     derived_formula_confidence: float = Field(
-        default=0.0,
         ge=0.0,
         le=1.0,
-        description="Confidence (0.0–1.0) in derived_formula_hypothesis; 0.0 when null.",
+        description=(
+            'Confidence (0.0-1.0) in derived_formula_hypothesis; 0.0 when the hypothesis is "".'
+        ),
     )
 
 

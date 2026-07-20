@@ -8,6 +8,7 @@ the balanced/Sonnet tier, fed the dataset context + field mappings.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 from dataraum.graphs.agent import ExecutionContext, GraphAgent
@@ -21,6 +22,7 @@ from dataraum.graphs.models import (
     StepType,
     TransformationGraph,
 )
+from dataraum.llm.providers.base import ToolCall
 
 
 def _graph(graph_id: str, steps: dict[str, GraphStep]) -> TransformationGraph:
@@ -130,12 +132,11 @@ def test_feature_config_sets_tier_and_effort(monkeypatch) -> None:
     provider.get_model_for_tier.assert_called_with("fast")
     request = provider.converse.call_args.args[0]
     assert request.effort == "low"
-    # thinking not set on the feature → thinking off; tool_choice is "any"
-    # (some tool must be called — search_values or generate_sql; forcing
-    # generate_sql would make the DAT-699 catalog search impossible), one
-    # call per turn.
+    # thinking not set on the feature → thinking off. tool_choice is auto
+    # regardless (DAT-807): the grounding is a structured OUTPUT, so the turn
+    # that finishes calls no tool — "any" would force search_values forever.
     assert request.thinking is False
-    assert request.tool_choice == {"type": "any", "disable_parallel_tool_use": True}
+    assert request.tool_choice == {"type": "auto", "disable_parallel_tool_use": True}
 
 
 def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
@@ -172,11 +173,10 @@ def test_thinking_feature_uses_auto_tool_choice(monkeypatch) -> None:
     assert request.tool_choice == {"type": "auto", "disable_parallel_tool_use": True}
 
 
-def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
-    """Review fix: under auto tool_choice the model COULD emit several
-    generate_sql calls; binding [0] silently could ground a superseded SQL —
-    refuse instead (disable_parallel_tool_use makes this unreachable; the
-    guard is the tripwire)."""
+def test_ending_on_a_tool_call_fails_loud(monkeypatch) -> None:
+    """The grounding is the turn's structured OUTPUT (DAT-807). A turn that ends
+    still holding a tool call never grounded — a loud bind error, never a
+    guessed SQL."""
     monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr(
         "dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "MAPS"
@@ -190,12 +190,14 @@ def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
     )
     graph = _graph("revenue", {"revenue": ext})
     renderer, provider = _mocks()
-    call_a, call_b = MagicMock(), MagicMock()
-    call_a.name = call_b.name = "generate_sql"
-    provider.converse.return_value.unwrap.return_value = MagicMock(tool_calls=[call_a, call_b])
+    call = ToolCall(id="tu-1", name="search_values", input={"pattern": "x"})
+    provider.converse.return_value.unwrap.return_value = MagicMock(
+        tool_calls=[call], content="", raw_content=None
+    )
     agent = _agent_with(renderer, provider)
     agent._build_schema_info = MagicMock(return_value={})  # type: ignore[method-assign]
     agent._build_prior_context = MagicMock(return_value="")  # type: ignore[method-assign]
+    agent._run_value_search = MagicMock(return_value="no matches")  # type: ignore[method-assign]
     rich = MagicMock()
     rich.field_mappings = [object()]
     rich.conventions = ""
@@ -204,7 +206,7 @@ def test_multiple_tool_calls_fail_loud(monkeypatch) -> None:
     result = agent._generate_sql(MagicMock(), graph, ctx, {}, workspace_id="ws")
 
     assert result.success is False
-    assert "2 tool calls" in (result.error or "")
+    assert "search_values" in (result.error or "")
 
 
 def test_multi_step_graph_fails_loud_before_any_llm_call() -> None:
@@ -251,9 +253,7 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
     )
     graph = _graph("accounts_receivable", {"accounts_receivable": ext})
     renderer, provider = _mocks()
-    tool_call = MagicMock()
-    tool_call.name = "generate_sql"
-    tool_call.input = {
+    payload = {
         "grounding": "accounts_receivable via account_id__name IN ('Accounts Receivable')",
         "relation": "enriched_gl",
         "where": [],
@@ -263,10 +263,21 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
         # Contract v2 (DAT-727): a real grounding must enumerate the columns its
         # parts touch — enforced against the served schema below.
         "provenance": {
-            "column_mappings_basis": {"accounts_receivable": {"measure_columns": ["amount"]}}
+            "column_mappings_basis": [
+                {
+                    "concept": "accounts_receivable",
+                    "basis": {
+                        "measure_columns": ["amount"],
+                        "filter_columns": [],
+                        "filter": "",
+                    },
+                }
+            ]
         },
     }
-    provider.converse.return_value.unwrap.return_value = MagicMock(tool_calls=[tool_call])
+    provider.converse.return_value.unwrap.return_value = MagicMock(
+        tool_calls=[], content=json.dumps(payload)
+    )
     agent = _agent_with(renderer, provider)
     agent._build_schema_info = MagicMock(  # type: ignore[method-assign]
         return_value={

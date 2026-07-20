@@ -73,7 +73,8 @@ disable). Sign in, then follow **Open** into the workspace.
 There is no sign-up *screen*, but better-auth's endpoint is mounted and public: an
 unauthenticated `POST /api/auth/sign-up/email` creates an account. Combined with the create
 policy — any signed-in user of the installation may provision a workspace — anyone who can
-reach the portal can create one. Worth knowing before exposing an install beyond localhost.
+reach the portal can create one. That is accepted while installations carry only test
+users; it needs closing before an install carries real ones or is exposed beyond localhost.
 
 Two things worth knowing:
 

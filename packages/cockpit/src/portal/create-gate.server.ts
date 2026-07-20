@@ -18,9 +18,14 @@
 // can therefore mint an account and provision a workspace, which spins
 // containers on the host.
 //
-// That is the current posture, not a claim that it is the intended one. If it
-// is not, the fix is `disableSignUp: true` (or an invite flow) in auth.ts —
-// NOT a stricter comment here.
+// That openness is ACCEPTED for now, deliberately: every account on an
+// installation today is a test user, so gating sign-up would cost more than it
+// protects. It is a real exposure the moment an installation carries users who
+// are not — closing it is `disableSignUp: true` plus an invite flow in
+// auth.ts, and it belongs in the same change that first admits a real user.
+//
+// So: do not tighten this comment to make the gate sound narrower than it is,
+// and do not treat the openness as an oversight to quietly patch.
 
 import "@tanstack/react-start/server-only";
 

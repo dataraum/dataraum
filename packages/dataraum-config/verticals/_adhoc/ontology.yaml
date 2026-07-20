@@ -1,22 +1,29 @@
-# _adhoc — the empty / start-here vertical (DAT-371)
+# _adhoc — the no-vertical placeholder (DAT-371; description corrected DAT-834)
 #
-# Used when no domain vertical has been selected. Cold-start runs of the
-# semantic_per_column phase trigger an LLM induction agent that proposes
-# business concepts from the data's schemas + samples; those concepts are
-# written as `concept`-type rows in the workspace's `config_overlay`
-# table, NOT back into this file. This baseline stays empty — the
-# overlay materializes the induced concepts on every layered read.
+# Used when no domain vertical has been selected. It stays empty, and an empty
+# `_adhoc` does NOT run: `semantic_per_column` fails loud with "No concepts for
+# vertical '_adhoc'" rather than grounding every column against an empty concept
+# set (`pipeline/phases/semantic_per_column_phase.py`, DAT-382).
 #
-# Selecting `_adhoc` is therefore the "let the engine figure it out"
-# mode; selecting a stock vertical (e.g. `finance`) skips induction and
-# uses the curated concept set under that vertical's directory.
+# This file used to describe engine-side concept induction — "cold-start runs of
+# the semantic_per_column phase trigger an LLM induction agent... selecting
+# `_adhoc` is therefore the 'let the engine figure it out' mode". None of that has
+# been true since DAT-382 moved induction out of the engine to the cockpit `frame`
+# stage, and DAT-728 moved concepts off `config_overlay` rows into the typed
+# `concepts` table. There is no induction agent and no such mode; the text
+# outlived the capability and read as live to anyone opening the file.
+#
+# To bring up a domain that is not a shipped vertical, DECLARE its concepts: the
+# cockpit `frame` stage writes typed `concepts` rows before `add_source` runs, and
+# a vertical whose only footprint is those rows resolves as FRAMED
+# (`core/vertical.py`). A shipped vertical (e.g. finance) seeds the same table from
+# its own directory instead.
 
 name: _adhoc
 version: "1.0.0"
 description: |
-  Empty baseline used when no domain vertical is selected. The engine
-  induces concepts from the data on cold start and stores them as
-  config_overlay rows; the layered loader materializes them as if they
-  were in this file.
+  Empty placeholder for "no domain vertical selected". Declares no concepts and
+  induces none — grounding against an empty vocabulary is refused, not attempted.
+  Declare a vertical through `frame`, or select a shipped one.
 
 concepts: []

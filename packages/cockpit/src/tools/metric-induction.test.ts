@@ -302,6 +302,35 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 		expect(d.transaction_count?.level).toBe(1);
 	});
 
+	it("collapses a step the model repeated in both steps and output_step", () => {
+		// The schema cannot forbid this: `steps` and `output_step` are separate
+		// fields, so a model that also lists the output step inside `steps` is
+		// structurally valid. The map keys by step_id and the output step is folded
+		// in LAST, so the duplicate collapses to one correctly-flagged entry rather
+		// than producing a second, unflagged node the engine would treat as dead.
+		const out = {
+			type: "formula",
+			step_id: "gross_margin",
+			expression: "(revenue - cost_of_goods_sold) / revenue",
+			depends_on: ["revenue", "cost_of_goods_sold"],
+			checks: [
+				{ condition: "value <= 1", severity: "warning", message: "over 100%" },
+			],
+		} satisfies InducedMetric["output_step"];
+
+		const d = deps(
+			toProposedMetric(
+				grossMargin({ steps: [REVENUE, COST, out], output_step: out }),
+			),
+		);
+
+		expect(Object.keys(d)).toHaveLength(3);
+		expect(d.gross_margin?.output_step).toBe(true);
+		expect(d.gross_margin?.expression).toBe(
+			"(revenue - cost_of_goods_sold) / revenue",
+		);
+	});
+
 	it("produces a payload that re-parses as the persisted metric shape", () => {
 		// The strongest assertion available without the engine: whatever the
 		// converter emits must satisfy the SAME schema the teach path writes and
@@ -321,5 +350,149 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 				ProposedMetric.parse(toProposedMetric(induced)),
 			).not.toThrow();
 		}
+	});
+});
+
+// A shipped metric is the only ground truth available without the engine: if
+// the converter can reproduce one, the payload shape is right. `dso` is the
+// richest — every step type, a parameter, an output-step check, and levels
+// spanning two tiers.
+describe("toProposedMetric — reproduces a SHIPPED metric graph", () => {
+	const dso: InducedMetric = {
+		graph_id: "dso",
+		name: "Days Sales Outstanding",
+		description: "Average days to collect payment after sale",
+		category: "working_capital",
+		tags: ["ar", "collection", "working-capital"],
+		output_type: "scalar",
+		unit: "days",
+		decimal_places: 1,
+		parameters: [
+			{
+				name: "days_in_period",
+				param_type: "integer",
+				default: 30,
+				description: "Analysis period length",
+			},
+		],
+		steps: [
+			{
+				type: "extract",
+				step_id: "accounts_receivable",
+				standard_field: "accounts_receivable",
+				statement: "balance_sheet",
+				aggregation: "sum",
+				checks: [],
+			},
+			{
+				type: "extract",
+				step_id: "revenue",
+				standard_field: "revenue",
+				statement: "income_statement",
+				aggregation: "sum",
+				checks: [],
+			},
+			{
+				type: "constant",
+				step_id: "days_in_period",
+				parameter: "days_in_period",
+				checks: [],
+			},
+		],
+		output_step: {
+			type: "formula",
+			step_id: "dso",
+			expression: "(accounts_receivable / revenue) * days_in_period",
+			depends_on: ["accounts_receivable", "revenue", "days_in_period"],
+			checks: [
+				{
+					condition: "0 <= value <= 365",
+					severity: "warning",
+					message: "DSO outside typical range",
+				},
+			],
+		},
+		interpretation_bands: [
+			{
+				min: 0,
+				max: 30,
+				label: "EXCELLENT",
+				description: "Very efficient collection",
+			},
+		],
+	};
+
+	it("matches verticals/finance/metrics/working_capital/dso.yaml key for key", () => {
+		const payload = toProposedMetric(dso) as Record<string, unknown>;
+
+		expect(payload.graph_id).toBe("dso");
+		expect(payload.version).toBe("1.0");
+		expect(payload.output).toEqual({
+			type: "scalar",
+			metric_id: "dso",
+			unit: "days",
+			decimal_places: 1,
+		});
+		expect(payload.parameters).toEqual({
+			days_in_period: {
+				type: "integer",
+				default: 30,
+				description: "Analysis period length",
+			},
+		});
+		expect(deps(payload)).toEqual({
+			accounts_receivable: {
+				level: 1,
+				type: "extract",
+				source: {
+					standard_field: "accounts_receivable",
+					statement: "balance_sheet",
+				},
+				aggregation: "sum",
+			},
+			revenue: {
+				level: 1,
+				type: "extract",
+				source: { standard_field: "revenue", statement: "income_statement" },
+				aggregation: "sum",
+			},
+			days_in_period: {
+				level: 1,
+				type: "constant",
+				parameter: "days_in_period",
+			},
+			dso: {
+				level: 2,
+				type: "formula",
+				expression: "(accounts_receivable / revenue) * days_in_period",
+				depends_on: ["accounts_receivable", "revenue", "days_in_period"],
+				output_step: true,
+				validation: [
+					{
+						condition: "0 <= value <= 365",
+						severity: "warning",
+						message: "DSO outside typical range",
+					},
+				],
+			},
+		});
+		expect(() => ProposedMetric.parse(payload)).not.toThrow();
+	});
+
+	it("differs from the shipped file only in fields the loader defaults or ignores", () => {
+		// Documented, deliberate omissions — each verified against loader.py:
+		//   metadata.source       -> defaults to "system" (_parse_metadata)
+		//   parameters.*.options  -> parsed into ParameterDef.options, zero readers
+		//   constant step.default -> read into GraphStep.value, zero readers; a
+		//                            constant resolves via `parameter` alone
+		const payload = toProposedMetric(dso) as Record<string, unknown>;
+		const metadata = payload.metadata as Record<string, unknown>;
+
+		expect(metadata).not.toHaveProperty("source");
+		expect(
+			(payload.parameters as Record<string, Record<string, unknown>>)
+				.days_in_period,
+		).not.toHaveProperty("options");
+		expect(deps(payload).days_in_period).not.toHaveProperty("default");
 	});
 });

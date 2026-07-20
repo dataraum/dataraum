@@ -45,8 +45,9 @@ prefix:
 - **Vertical:** `workspaces.vertical` (a WORKSPACE property) + a boot-read of it.
   DAT-505 adds the CAPABILITY only; retiring the per-add_source vertical channel
   (payload field + session-row read + cockpit `select` pick) is DAT-506.
-- **Compose:** the engine-worker is parameterized per workspace via YAML anchors;
-  a second workspace lives behind the `multi-workspace` profile.
+- **Compose:** defines exactly one engine-worker + cockpit pair — the bootstrap
+  workspace. Every further workspace is created by the provisioner, which clones
+  that pair's container config (DAT-820).
 - **Deletion sweep:** the provisioner's archive operation (DAT-820, cockpit
   `src/portal/lifecycle.ts`; it retired the `delete-workspace.sh` script) —
   stop/remove the pair → drop `ws_<id>` + `ws_<id>_read` schemas → drop the

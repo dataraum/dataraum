@@ -186,8 +186,9 @@ A default local stack is:
 | `caddy` | the ingress: per-workspace subdomains + the portal's parent domain (`caddy/caddy.json`; admin API = the provisioner seam) |
 | `portal` | the cockpit image in portal mode — login + membership routing on the parent domain |
 
-The `multi-workspace` profile adds workspace 2's pair (`engine-worker-2`, `cockpit-2`)
-for the two-workspace smoke.
+That is the complete installation, and it defines exactly **one** workspace pair — the
+bootstrap workspace. Compose grows no further per workspace: the provisioner clones this
+pair's recorded container config for every workspace created through the portal.
 
 The engine has **no healthcheck port** — its health is the Temporal worker heartbeat, not
 an HTTP probe. See [Running the stack](../getting-started/running-the-stack.md) to bring

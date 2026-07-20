@@ -31,77 +31,19 @@
 # stack deliberately bundles NO egress proxy or network topology: deployers
 # bring their own network policy.
 
-# ── Per-workspace engine-worker template (DAT-505) ─────────────────────────
+# ── The bootstrap workspace's engine worker (DAT-505) ──────────────────────
 # A workspace = one engine container + one task queue + one catalog schema in
-# the shared catalog DB (DAT-815) + one s3://<ws>/ prefix. These anchors hold
-# everything COMMON to every workspace's worker; each per-workspace service
-# (engine-worker, engine-worker-2, …) merges them and overrides only the three
-# routing knobs (workspace id, queue, lake prefix). Workspaces are CREATED by
-# the provisioner (DAT-820, `bun run workspace:create` / the portal role): it
-# clones the seed `engine-worker` + `cockpit` containers' config and overrides
-# the routing knobs + per-workspace secrets — these compose services are the
-# template, not something to hand-copy per workspace.
-x-engine-worker-base: &engine-worker-base
-  build:
-    context: ../engine
-    dockerfile: docker/worker.Dockerfile
-  depends_on:
-    postgres:
-      condition: service_healthy
-    temporal:
-      condition: service_healthy
-    temporal-create-namespace:
-      condition: service_completed_successfully
-    seaweedfs-init:
-      condition: service_completed_successfully
-  volumes:
-    # No lake volume and no sources bind-mount — both the lake and the file
-    # sources live on the object store now (DAT-388 lake, DAT-389 ingest). The
-    # engine reads source files straight from their s3:// URI over httpfs; the
-    # only mount left is the read-only config tree.
-    - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
-
-# Env COMMON to every workspace's worker — the per-workspace service appends the
-# three routing overrides (workspace id, TEMPORAL_TASK_QUEUE, DUCKLAKE_DATA_PATH).
-# S3 creds are plain env (single source is .env).
-x-engine-worker-env: &engine-worker-env
-  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-  # ONE installation-wide DuckLake catalog DB (DAT-815), shared by every
-  # workspace's worker: the per-workspace split is the ws_<id> METADATA_SCHEMA
-  # the worker derives from its DATARAUM_WORKSPACE_ID at bootstrap — the URL
-  # carries no per-workspace DB name, so it is common env, not a routing knob.
-  DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
-  S3_ENDPOINT: ${S3_ENDPOINT}
-  S3_REGION: ${S3_REGION:-us-east-1}
-  S3_USE_SSL: ${S3_USE_SSL:-false}
-  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
-  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
-  # The lake bucket the engine's source-URI validator allows (DAT-389): a
-  # registered source URI must be s3://${S3_BUCKET}/<key> — never a local path
-  # or a foreign bucket. The per-workspace DUCKLAKE_DATA_PATH is built from it.
-  S3_BUCKET: ${S3_BUCKET}
-  DATARAUM_CONFIG_PATH: /opt/dataraum/config
-  PROMPT_DUMP_DIR: ${PROMPT_DUMP_DIR:-}
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-  TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
-  TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
-  # OTLP telemetry sink (ADR-0019/DAT-705). This env var IS the vendor seam:
-  # everything speaks OTLP to whatever it names; unset/empty = telemetry off.
-  # Defaults to the in-stack otel-lgtm collector so composed dev traces work
-  # out of the box.
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
-  # Passwords for the two per-workspace roles the bootstrap mints (DAT-816):
-  # ws_<id>_reader (search_path = ws_<id>_read, SELECT only — the cockpit's
-  # METADATA_DATABASE_URL) and ws_<id>_writer (search_path = ws_<id>, exactly
-  # the control-table verbs — the cockpit's METADATA_WRITER_DATABASE_URL). The
-  # ROLE resolves the schema (ADR-0008/DAT-453 enforcement); role names embed
-  # the workspace id. The secret is PER CONTAINER = PER WORKSPACE: these
-  # shared dev values cover only the compose-defined seed pair(s); a
-  # provisioned workspace (DAT-820) gets its own minted secrets injected by
-  # the provisioning driver, overriding exactly these two vars.
-  METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
-  METADATA_WRITER_PASSWORD: ${METADATA_WRITER_PASSWORD:-cockpit-writer-dev}
-
+# the shared catalog DB (DAT-815) + one s3://<ws>/ prefix.
+#
+# This file defines exactly ONE such worker (+ its cockpit below): the
+# bootstrap workspace that makes a fresh install usable. Every FURTHER
+# workspace is created by the provisioner (DAT-820, the portal's New-workspace
+# flow or `bun run workspace:create`), which clones THESE two containers'
+# recorded config and overrides the routing knobs + per-workspace secrets.
+# That is why they are worth reading as a template: a var added here flows
+# into every provisioned workspace on its next (re)create. It is NOT a thing
+# to hand-copy — a second compose service per workspace is precisely the
+# duplication the provisioner exists to remove.
 services:
   postgres:
     # PG19 for SQL/PGQ property graphs (DAT-726 / ADR-0021) — the operating-model
@@ -284,9 +226,11 @@ services:
         condition: service_completed_successfully
     environment:
       TEMPORAL_ADDRESS: temporal:7233
-      # Subdomain origins added (DAT-819): the /workflows section embeds this
-      # UI from the per-workspace cockpit origins behind Caddy.
-      TEMPORAL_CORS_ORIGINS: http://localhost:3000,http://ws1.dataraum.localhost,http://ws2.dataraum.localhost
+      # No TEMPORAL_CORS_ORIGINS: the cockpit's /workflows section LINKS to this
+      # UI (`<a target="_blank">` on TEMPORAL_UI_URL) and never calls its API
+      # cross-origin, so nothing needs to be allow-listed. It used to enumerate
+      # the workspace subdomains, which could never have covered a provisioned
+      # one anyway — the set is open-ended by design.
     ports:
       - "8080:8080"
 
@@ -319,20 +263,73 @@ services:
       start_period: 30s
       retries: 30
 
-  # Engine Temporal activity worker (DAT-344, parameterized per workspace by
-  # DAT-505). The engine is a pure activity worker — no HTTP port. ONE container
-  # per workspace: it bootstraps that workspace's ConnectionManager + DuckLake
-  # anchor (materializing ws_<id> + its ws_<id> catalog schema in the shared
-  # catalog DB — DAT-815 — on its OWN s3://<ws>/lake prefix) and polls EXACTLY
-  # its own queue `engine-<workspace_id>`. The shared base (anchor below)
-  # carries everything common; each per-workspace service overrides the three
-  # routing knobs: workspace id, queue, lake prefix. "Create a workspace" in
-  # dev = a registry insert + adding such a service. Health = the worker
-  # heartbeat (`temporal worker list`), not a probe.
+  # Engine Temporal activity worker (DAT-344, per workspace by DAT-505) for the
+  # bootstrap workspace. The engine is a pure activity worker — no HTTP port.
+  # ONE container per workspace: it bootstraps that workspace's
+  # ConnectionManager + DuckLake anchor (materializing ws_<id> + its ws_<id>
+  # catalog schema in the shared catalog DB — DAT-815 — on its OWN
+  # s3://<ws>/lake prefix) and polls EXACTLY its own queue
+  # `engine-<workspace_id>`. Health = the worker heartbeat
+  # (`temporal worker list`), not a probe.
+  #
+  # Provisioned workspaces get their own container cloned from this one — see
+  # the template note at the top of this file. Do NOT add a second service here.
   engine-worker:
-    <<: *engine-worker-base
+    build:
+      context: ../engine
+      dockerfile: docker/worker.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      temporal-create-namespace:
+        condition: service_completed_successfully
+      seaweedfs-init:
+        condition: service_completed_successfully
+    volumes:
+      # No lake volume and no sources bind-mount — both the lake and the file
+      # sources live on the object store now (DAT-388 lake, DAT-389 ingest). The
+      # engine reads source files straight from their s3:// URI over httpfs; the
+      # only mount left is the read-only config tree.
+      - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
     environment:
-      <<: *engine-worker-env
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # ONE installation-wide DuckLake catalog DB (DAT-815), shared by every
+      # workspace's worker: the per-workspace split is the ws_<id> METADATA_SCHEMA
+      # the worker derives from its DATARAUM_WORKSPACE_ID at bootstrap — the URL
+      # carries no per-workspace DB name, so it is not a routing knob.
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      # The lake bucket the engine's source-URI validator allows (DAT-389): a
+      # registered source URI must be s3://${S3_BUCKET}/<key> — never a local path
+      # or a foreign bucket. The per-workspace DUCKLAKE_DATA_PATH is built from it.
+      S3_BUCKET: ${S3_BUCKET}
+      DATARAUM_CONFIG_PATH: /opt/dataraum/config
+      PROMPT_DUMP_DIR: ${PROMPT_DUMP_DIR:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      # OTLP telemetry sink (ADR-0019/DAT-705). This env var IS the vendor seam:
+      # everything speaks OTLP to whatever it names; unset/empty = telemetry off.
+      # Defaults to the in-stack otel-lgtm collector so composed dev traces work
+      # out of the box.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
+      # Passwords for the two per-workspace roles the bootstrap mints (DAT-816):
+      # ws_<id>_reader (search_path = ws_<id>_read, SELECT only — the cockpit's
+      # METADATA_DATABASE_URL) and ws_<id>_writer (search_path = ws_<id>, exactly
+      # the control-table verbs — the cockpit's METADATA_WRITER_DATABASE_URL). The
+      # ROLE resolves the schema (ADR-0008/DAT-453 enforcement); role names embed
+      # the workspace id. The secret is PER CONTAINER = PER WORKSPACE: these
+      # shared dev values cover only THIS bootstrap pair; a provisioned workspace
+      # (DAT-820) gets its own minted secrets injected by the provisioning
+      # driver, overriding exactly these two vars.
+      METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
+      METADATA_WRITER_PASSWORD: ${METADATA_WRITER_PASSWORD:-cockpit-writer-dev}
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       # Per-workspace queue (DAT-505) — engine-<workspace_id>. The worker asserts
       # this matches DATARAUM_WORKSPACE_ID at boot (server/workspace.py), and the
@@ -340,23 +337,8 @@ services:
       TEMPORAL_TASK_QUEUE: engine-${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       # Per-workspace S3 lake prefix (DAT-505): the lake parquet lives under
       # this workspace's own s3://<bucket>/<ws>/lake prefix. (The catalog is
-      # the shared DUCKLAKE_CATALOG_URL in the common env — DAT-815.)
+      # the shared DUCKLAKE_CATALOG_URL above — DAT-815.)
       DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}/lake
-
-  # Second workspace worker (DAT-505) — behind the `multi-workspace` profile so a
-  # default `up` stays single-workspace. Bring it up for the two-workspace
-  # side-by-side smoke (`--profile multi-workspace`): a SECOND container, a second
-  # queue (engine-<ws2>), a second ws_<id> schema, a second ws_<id> catalog
-  # schema in the SAME catalog DB (DAT-815), and a second s3://<bucket>/<ws2>/lake
-  # prefix — fully isolated from workspace 1.
-  engine-worker-2:
-    <<: *engine-worker-base
-    profiles: ["multi-workspace"]
-    environment:
-      <<: *engine-worker-env
-      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
-      TEMPORAL_TASK_QUEUE: engine-${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
-      DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}/lake
 
   # One-shot: apply the cockpit_db migrations (DAT-461) before the cockpit
   # serves. Uses the cockpit image's `build` stage — it carries drizzle-kit + the
@@ -481,62 +463,6 @@ services:
       timeout: 5s
       retries: 6
 
-  # ── Workspace 2's cockpit (DAT-819) — the two-workspace smoke pair ────────
-  # Mirrors `cockpit` with workspace 2's identity, reached through Caddy at
-  # ws2.dataraum.localhost. Same shared cockpit_db; isolation is the DAT-817
-  # boot-scope. The metadata role NAMES embed the default ws-2 id — like
-  # cockpit's, these URLs are the smoke pair's; the provisioner (DAT-820) owns
-  # real per-workspace wiring.
-  cockpit-2:
-    profiles: ["multi-workspace"]
-    build:
-      context: ../cockpit
-    depends_on:
-      postgres:
-        condition: service_healthy
-      cockpit-migrate:
-        condition: service_completed_successfully
-      engine-worker-2:
-        condition: service_started
-      seaweedfs-init:
-        condition: service_completed_successfully
-      temporal-ui:
-        condition: service_started
-    environment:
-      COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
-      METADATA_DATABASE_URL: postgresql://ws_00000000_0000_0000_0000_000000000002_reader:${METADATA_READER_PASSWORD:-cockpit-reader-dev}@postgres:5432/${POSTGRES_DB}
-      METADATA_WRITER_DATABASE_URL: postgresql://ws_00000000_0000_0000_0000_000000000002_writer:${METADATA_WRITER_PASSWORD:-cockpit-writer-dev}@postgres:5432/${POSTGRES_DB}
-      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
-      DATARAUM_WORKSPACE_SUBDOMAIN: ${DATARAUM_WORKSPACE_SUBDOMAIN_2:-ws2}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dataraum-dev-secret}
-      DATARAUM_PORTAL_ORIGIN: ${DATARAUM_PORTAL_ORIGIN:-http://dataraum.localhost}
-      DATARAUM_DEV_USER_EMAIL: ${DATARAUM_DEV_USER_EMAIL:-dev@dataraum.dev}
-      DATARAUM_DEV_USER_PASSWORD: ${DATARAUM_DEV_USER_PASSWORD:-dataraum-dev}
-      DATARAUM_LAKE_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}/lake
-      S3_ENDPOINT: ${S3_ENDPOINT}
-      S3_REGION: ${S3_REGION:-us-east-1}
-      S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
-      S3_BUCKET: ${S3_BUCKET}
-      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
-      DATARAUM_CONFIG_PATH: /opt/dataraum/config
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      TEMPORAL_HOST: ${TEMPORAL_HOST:-}
-      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-lgtm:4318}
-    volumes:
-      - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
-    ports:
-      # Caddy-bypass debug port only (3001 is Grafana). The real path is
-      # http://ws2.dataraum.localhost via Caddy.
-      - "3002:3000"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "--spider", "http://localhost:3000/api/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-
   # ── Portal (DAT-819, DD/51740673) — login, membership routing, provisioner ─
   # The SAME cockpit image in its second role (DATARAUM_PORTAL_MODE=1): serves
   # the parent domain (http://dataraum.localhost through Caddy), owns better-auth
@@ -597,18 +523,19 @@ services:
   # ── Caddy (DAT-819) — per-workspace subdomain termination ─────────────────
   # The installation's ONE ingress: `<subdomain>.dataraum.localhost` routes to
   # that workspace's cockpit, the bare parent domain to the portal. Dev config
-  # is FILE-seeded (caddy/caddy.json: ws1 + ws2 + portal, @id-tagged routes,
-  # default workspace ids — a custom id means the admin API, i.e. the
-  # provisioner path) and reloads fresh each `up`; admin-API changes are
+  # is FILE-seeded (caddy/caddy.json: the bootstrap workspace + portal,
+  # @id-tagged routes — every OTHER route is added through the admin API by
+  # the provisioner) and reloads fresh each `up`; admin-API changes are
   # deliberately ephemeral in dev (the provisioner re-asserts routes; `--resume`
   # persistence is a deploy concern). The admin API on :2019 IS the DAT-820
   # provisioner seam (src/portal/caddy.ts) — published for dev/smoke like every
   # other port here (see the sbx note); it accepts arbitrary config, so any
   # non-local deployment must scope it to the compose network.
   #
-  # Dev domain story: Chromium/Firefox resolve *.localhost (any depth) to
-  # 127.0.0.1 natively — open http://dataraum.localhost, no /etc/hosts edit.
-  # Safari and curl use the system resolver: add the three hosts to /etc/hosts
+  # Dev domain story: *.localhost resolves to 127.0.0.1 at any depth with no
+  # /etc/hosts edit — the browsers do it themselves, and on macOS the system
+  # resolver does it too (verified: plain curl and Safari both reach
+  # ws1.dataraum.localhost). Some Linux resolvers do not; there, add the hosts
   # or use `curl --resolve ws1.dataraum.localhost:80:127.0.0.1 …`.
   caddy:
     image: caddy:2-alpine

@@ -446,6 +446,14 @@ class HealthySnippetProvenance(BaseModel):
     LIST of ``{concept, basis}`` entries (DAT-807 — constrained decoding forbids an
     open map). The writer converts; the stored shape, ``og_uses``, and the cockpit
     are untouched.
+
+    One value-level change from DAT-807: an unfiltered concept now stores
+    ``filter: ""`` where it stored ``filter: null``, because
+    ``ConceptGroundingBasis`` is shared between the wire and this payload and the
+    wire model states every attribute. Nothing branches on the distinction —
+    ``og_uses`` un-nests the COLUMN arrays, not this string, and the cockpit
+    passes it through as opaque context — so it is a rendering difference, not a
+    contract change. No backfill: pre-DAT-807 rows keep their nulls.
     """
 
     model_config = ConfigDict(extra="forbid")

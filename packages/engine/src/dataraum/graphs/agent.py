@@ -947,7 +947,7 @@ class GraphAgent(LLMFeature):
             schema_tables_from_info,
             validate_grounding_basis,
         )
-        from dataraum.llm.tool_repair import repair_tool_contract
+        from dataraum.llm.contract_repair import repair_tool_contract
 
         schema_tables = schema_tables_from_info(schema_info)
         violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)

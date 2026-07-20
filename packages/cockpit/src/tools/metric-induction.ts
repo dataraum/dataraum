@@ -24,14 +24,27 @@
 // rule (lead ruling, DAT-807) is: nothing consumes it -> CUT; something consumes
 // it -> REQUIRED with a documented sentinel. Measured: 0 optional / 2 union.
 //
-// NO `.min()` / `.max()` ANYWHERE: `minLength` / `maxLength` / `minimum` are
-// rejected by the grammar compiler. The ONE exception the API documents is
-// array `minItems` with value 0 or 1 — which is exactly what the output step's
-// `checks` uses.
+// NO `.min()` / `.max()` ON STRINGS OR NUMBERS: `minLength` / `maxLength` /
+// `minimum` / `maximum` are rejected by the grammar compiler. The ONE documented
+// exception is array `minItems`, and only with value 0 or 1 — verified against
+// Anthropic's structured-outputs reference
+// (platform.claude.com/docs/en/build-with-claude/structured-outputs), which
+// lists "Array `minItems` (only values 0 and 1 supported)" under supported
+// keywords and "array constraints beyond `minItems` of 0 or 1" under
+// unsupported. That exemption is load-bearing: it is what lets the output step
+// require a check at the grammar level (`outputChecksField` below). NOTE the
+// engine's provider strips `minItems` wholesale as unsupported
+// (`llm/providers/anthropic.py` `_CONSTRAINED_UNSUPPORTED_KEYS`) — that blanket
+// strip is over-broad rather than evidence against this, and is harmless there
+// because no engine schema relies on it.
 
 import { z } from "zod";
 
-import { type MetricSpecInput, OUTPUT_TYPES } from "./metric-spec";
+import {
+	type MetricGraphStep,
+	type MetricSpecInput,
+	OUTPUT_TYPES,
+} from "./metric-spec";
 import { SEVERITIES } from "./validation-spec";
 
 // The conversion target: the persisted metric shape MINUS `vertical`, which
@@ -310,8 +323,8 @@ function stepPayload(
 	step: AnyStep,
 	level: number,
 	outputStep: boolean,
-): Record<string, unknown> {
-	const base: Record<string, unknown> = {
+): MetricGraphStep {
+	const base = {
 		level,
 		type: step.type,
 		...(step.checks.length > 0 ? { validation: step.checks } : {}),
@@ -337,10 +350,43 @@ function stepPayload(
 	return { ...base, parameter: step.parameter };
 }
 
+/** The step id that closes a `depends_on` cycle, or null when the DAG is
+ * acyclic. Standard three-colour DFS; a dangling reference is not a cycle. */
+function findCycle(steps: AnyStep[]): string | null {
+	const byId = new Map(steps.map((s) => [s.step_id, s]));
+	const done = new Set<string>();
+	const onPath = new Set<string>();
+
+	const visit = (id: string): string | null => {
+		if (done.has(id)) return null;
+		if (onPath.has(id)) return id;
+		const step = byId.get(id);
+		if (step === undefined) return null; // dangling: the engine reports it
+		onPath.add(id);
+		if (step.type === "formula") {
+			for (const dep of step.depends_on) {
+				const hit = visit(dep);
+				if (hit !== null) return hit;
+			}
+		}
+		onPath.delete(id);
+		done.add(id);
+		return null;
+	};
+
+	for (const s of steps) {
+		const hit = visit(s.step_id);
+		if (hit !== null) return hit;
+	}
+	return null;
+}
+
 /** Topological depth per step id: a leaf (extract/constant) is 1, a formula is
- * 1 + the deepest step it consumes. Purely derived from `depends_on`, so a
- * cyclic or dangling reference cannot loop — an unresolvable step settles at 1
- * and the engine's composer reports the real problem at execution time. */
+ * 1 + the deepest step it consumes. Only ever reached on a DAG already proven
+ * acyclic and duplicate-free by `toProposedMetric`, so each level is
+ * path-independent, the memo is unconditionally correct, and every formula
+ * expands exactly once. The `seen` guard is belt-and-braces against a future
+ * caller that skips those checks. */
 function stepLevels(steps: AnyStep[]): Map<string, number> {
 	const byId = new Map(steps.map((s) => [s.step_id, s]));
 	const levels = new Map<string, number>();
@@ -370,11 +416,42 @@ function stepLevels(steps: AnyStep[]): Map<string, number> {
  * Derived rather than asked of the model (no LLM judgment, no schema cost):
  * `version` (the loader defaults it), `output.metric_id` (== graph_id), and
  * each step's `level`.
+ *
+ * THROWS on a duplicate `step_id` or a `depends_on` cycle. Both are newly
+ * expressible: the old map-keyed payload made duplicates impossible at
+ * JSON-parse time, and the array shape reintroduces them. Neither can be
+ * allowed through, because the engine's warm DAG is CROSS-METRIC — a cycle
+ * makes `build_warm_dag` raise, `metrics_phase._warm_nodes` swallows it and
+ * returns an empty authoring map, and then EVERY metric in the vertical
+ * honest-fails, not just this one. A duplicate id silently drops a step and
+ * repoints anything that depended on it. Failing one induced metric loudly is
+ * strictly better than poisoning the set; `induceMetrics` drops the offender
+ * and keeps the rest.
  */
 export function toProposedMetric(induced: InducedMetric): ProposedMetric {
 	const all: AnyStep[] = [...induced.steps, induced.output_step];
+
+	const ids = new Set<string>();
+	for (const step of all) {
+		if (ids.has(step.step_id)) {
+			throw new Error(
+				`metric '${induced.graph_id}' repeats step_id '${step.step_id}' — ` +
+					"step ids are the dependency namespace and must be unique",
+			);
+		}
+		ids.add(step.step_id);
+	}
+
+	const cycle = findCycle(all);
+	if (cycle !== null) {
+		throw new Error(
+			`metric '${induced.graph_id}' has a dependency cycle through step ` +
+				`'${cycle}' — a cyclic metric empties the whole vertical's warm DAG`,
+		);
+	}
+
 	const levels = stepLevels(all);
-	const dependencies: Record<string, unknown> = {};
+	const dependencies: Record<string, MetricGraphStep> = {};
 	for (const step of all) {
 		dependencies[step.step_id] = stepPayload(
 			step,
@@ -412,5 +489,5 @@ export function toProposedMetric(induced: InducedMetric): ProposedMetric {
 		...(induced.interpretation_bands.length > 0
 			? { interpretation: { ranges: induced.interpretation_bands } }
 			: {}),
-	} as ProposedMetric;
+	};
 }

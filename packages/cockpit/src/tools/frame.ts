@@ -329,15 +329,15 @@ export async function induceCycles(
 /**
  * Induce a metric-DAG set for a source via one NATIVE structured-output call
  * (DAT-807). The model fills the ARRAY-shaped `InducedMetrics`
- * (metric-induction.ts) — a `steps` array with a nested discriminated union and
- * a structurally separate `output_step`, rather than the `dependencies` map the
+ * (metric-induction.ts) — a `steps` array whose items are a `z.union` on `type`
+ * (NOT `z.discriminatedUnion`, which renders the unsupported `oneOf`) plus a
+ * structurally separate `output_step`, rather than the `dependencies` map the
  * payload uses — and `toProposedMetric` converts it back to the engine's
  * step-id-keyed map here, at the single conversion boundary. Induced OVER the
- * framed concept vocabulary — the concepts are part of the context, so each
- * metric's leaf `extract` steps anchor to framed
- * CONCEPTS rather than to guessed
- * columns — column binding is the semantic phase's job, SQL composition is
- * operating_model's). The induce prompt is seeded with the nearest shipped
+ * framed concept vocabulary, so each metric's leaf `extract` steps anchor to
+ * framed CONCEPTS rather than to guessed columns — column binding is the
+ * semantic phase's job, SQL composition is operating_model's. The prompt is
+ * seeded with the nearest shipped
  * vertical's metric DAGs as STRUCTURAL few-shot (DAT-468) — flagged explicitly
  * as examples and as the dependency SHAPE to learn, never the formula content to
  * copy, which is what makes DAG induction reliable. Returns the proposed metrics;
@@ -371,7 +371,27 @@ export async function induceMetrics(
 		outputSchema: InducedMetrics,
 		signal,
 	});
-	return metrics.map(toProposedMetric);
+
+	// Convert + validate PER METRIC, dropping only the offender. `toProposedMetric`
+	// throws on a duplicate step_id or a depends_on cycle, and `ProposedMetric`
+	// re-checks the value constraints the decoding grammar cannot express (a
+	// non-empty graph_id, a valid output type). Both matter here because the
+	// engine's warm DAG is CROSS-METRIC: one cyclic graph makes `build_warm_dag`
+	// raise, and `metrics_phase` then hands back an empty authoring map so EVERY
+	// metric in the vertical honest-fails. Losing one induced metric loudly beats
+	// poisoning the set — and the frame still returns everything that is sound.
+	const proposed: ProposedMetric[] = [];
+	for (const metric of metrics) {
+		try {
+			proposed.push(ProposedMetric.parse(toProposedMetric(metric)));
+		} catch (error) {
+			console.warn("metric_induction_rejected", {
+				graph_id: metric.graph_id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return proposed;
 }
 
 /**

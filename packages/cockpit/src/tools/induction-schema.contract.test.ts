@@ -23,6 +23,7 @@
 //     nested in one never got `additionalProperties: false` -> `z.strictObject`
 
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { InducedMetrics } from "./metric-induction";
 import { InducedValidations } from "./validation-induction";
@@ -42,13 +43,16 @@ const converterUrl = new URL(
 const { convertSchemaForStructuredOutput } = (await import(
 	/* @vite-ignore */ converterUrl
 )) as {
-	convertSchemaForStructuredOutput: (s: unknown) => { jsonSchema: unknown };
+	convertSchemaForStructuredOutput: (s: z.ZodType) => { jsonSchema: Node };
 };
 
 const OPTIONAL_CAP = 24;
 const UNION_CAP = 16;
 
-/** Keywords the grammar compiler rejects outright. */
+/** Keywords the grammar compiler rejects outright. `propertyNames` /
+ * `patternProperties` are how Zod renders a `z.record` — the OPEN MAP this
+ * whole design exists to avoid — so they are banned by name as well as caught
+ * by the `additionalProperties` check below. */
 const BANNED = [
 	"maxItems",
 	"minLength",
@@ -60,6 +64,8 @@ const BANNED = [
 	"multipleOf",
 	"pattern",
 	"uniqueItems",
+	"propertyNames",
+	"patternProperties",
 ] as const;
 
 interface Audit {
@@ -74,7 +80,19 @@ interface Audit {
 // biome-ignore lint/suspicious/noExplicitAny: walks raw JSON Schema
 type Node = any;
 
-function walk(node: Node, path: string, a: Audit, seen: string[]): void {
+/** Follow a local `#/$defs/Name` (or `definitions`) pointer to its target. */
+function resolveRef(root: Node, ref: string): Node | undefined {
+	const m = /^#\/(\$defs|definitions)\/(.+)$/.exec(ref);
+	return m ? root?.[m[1] as string]?.[m[2] as string] : undefined;
+}
+
+function walk(
+	node: Node,
+	path: string,
+	a: Audit,
+	seen: string[],
+	root: Node,
+): void {
 	if (!node || typeof node !== "object") return;
 
 	for (const k of BANNED) {
@@ -85,13 +103,18 @@ function walk(node: Node, path: string, a: Audit, seen: string[]): void {
 	}
 	if (Array.isArray(node.oneOf)) a.oneOf.push(path);
 
+	// Resolve the ref against the root's $defs and keep walking — a $ref node
+	// has no children of its own, so without this the cycle check could never
+	// accumulate two entries on one path and would be vacuously true.
 	if (node.$ref) {
 		const ref = String(node.$ref);
 		if (seen.includes(ref)) {
 			a.cycle = true;
 			return;
 		}
-		seen = [...seen, ref];
+		const target = resolveRef(root, ref);
+		if (target) walk(target, path, a, [...seen, ref], root);
+		return;
 	}
 
 	const isObject =
@@ -99,8 +122,15 @@ function walk(node: Node, path: string, a: Audit, seen: string[]): void {
 		(Array.isArray(node.type) && node.type.includes("object")) ||
 		("properties" in node && !node.type);
 
+	// NOT gated on `node.properties`: a `z.record` renders as an object with
+	// `additionalProperties: <schema>` and NO `properties` at all, so gating the
+	// check on properties made the one shape this design exists to forbid
+	// invisible to the audit. The API requires `additionalProperties: false` on
+	// every object, full stop.
+	if (isObject && node.additionalProperties !== false)
+		a.looseObjects.push(path);
+
 	if (isObject && node.properties) {
-		if (node.additionalProperties !== false) a.looseObjects.push(path);
 		const required: string[] = node.required ?? [];
 		for (const [name, prop] of Object.entries<Node>(node.properties)) {
 			const p = `${path}.${name}`;
@@ -122,31 +152,29 @@ function walk(node: Node, path: string, a: Audit, seen: string[]): void {
 			) {
 				a.union.push(p);
 			}
-			walk(prop, p, a, seen);
+			walk(prop, p, a, seen, root);
 		}
 	}
 
-	if (node.items) walk(node.items, `${path}[]`, a, seen);
+	if (node.items) walk(node.items, `${path}[]`, a, seen, root);
 	for (const key of ["anyOf", "oneOf", "allOf"]) {
 		if (Array.isArray(node[key])) {
 			node[key].forEach((b: Node, i: number) => {
-				walk(b, `${path}|${key}${i}`, a, seen);
+				walk(b, `${path}|${key}${i}`, a, seen, root);
 			});
 		}
 	}
 	for (const bag of ["$defs", "definitions"]) {
 		if (node[bag]) {
 			for (const [n, d] of Object.entries<Node>(node[bag])) {
-				walk(d, `#/${bag}/${n}`, a, seen);
+				walk(d, `#/${bag}/${n}`, a, seen, root);
 			}
 		}
 	}
 }
 
-function audit(schema: unknown): Audit {
-	// biome-ignore lint/suspicious/noExplicitAny: converter takes a SchemaInput
-	const { jsonSchema } = convertSchemaForStructuredOutput(schema as any);
-	const a: Audit = {
+function blank(): Audit {
+	return {
 		optional: [],
 		union: [],
 		banned: [],
@@ -154,8 +182,27 @@ function audit(schema: unknown): Audit {
 		oneOf: [],
 		cycle: false,
 	};
-	walk(jsonSchema, "$", a, []);
-	return a;
+}
+
+function audit(schema: z.ZodType): Audit {
+	// Everything except optionality is read from the CONVERTED schema — that is
+	// the literal bytes the adapter puts in `output_config.format.schema`.
+	const { jsonSchema } = convertSchemaForStructuredOutput(schema);
+	const converted = blank();
+	walk(jsonSchema, "$", converted, [], jsonSchema);
+
+	// Optionality must be read from the RAW schema instead. The adapter force-adds
+	// EVERY property to `required`, and only null-widens the ones carrying a
+	// scalar/object/array `type`; a property that is a bare `anyOf` (i.e. a union,
+	// which is exactly what `steps` / `output_step` / `parameters` are) or a `$ref`
+	// matches no branch, so an `.optional()` on one silently becomes required with
+	// no `null` in sight — invisible in the converted output. Zod's own rendering
+	// reports `required` honestly, so the "zero optionals" claim is made there.
+	const raw = z.toJSONSchema(schema, { io: "input" });
+	const rawAudit = blank();
+	walk(raw, "$", rawAudit, [], raw);
+
+	return { ...converted, optional: rawAudit.optional };
 }
 
 describe.each([
@@ -224,5 +271,94 @@ describe("the output step's mandatory check", () => {
 		for (const v of steps) {
 			expect(v.properties.checks.minItems).toBeUndefined();
 		}
+	});
+});
+
+// A guard that has never been shown to fail on a bad input is not a guard. Each
+// case below is a shape the API rejects; the audit must SEE it. The first two
+// were live blind spots — the walker reported them clean.
+describe("the audit itself catches the shapes it exists to forbid", () => {
+	it("flags an open map (z.record) — the shape this design exists to avoid", () => {
+		// Was invisible: the `additionalProperties` check used to be gated on
+		// `node.properties`, and a record has none. It renders as
+		// `{type:"object", propertyNames:{...}, additionalProperties:{...}}`.
+		const a = audit(
+			z.strictObject({
+				deps: z.record(z.string(), z.strictObject({ x: z.string() })),
+			}),
+		);
+
+		expect(a.looseObjects.length).toBeGreaterThan(0);
+		expect(a.banned.some((b) => b.includes("propertyNames"))).toBe(true);
+	});
+
+	it("flags an OPTIONAL union property", () => {
+		// Was invisible: the adapter force-adds every property to `required` and
+		// only null-widens ones carrying a concrete `type`, so an optional union
+		// silently became mandatory. Read from the raw schema, it shows up.
+		const branch = z.union([
+			z.strictObject({ k: z.literal("a"), x: z.string() }),
+			z.strictObject({ k: z.literal("b"), y: z.string() }),
+		]);
+		const a = audit(
+			z.strictObject({ maybe: branch.optional(), always: z.string() }),
+		);
+
+		expect(a.optional).toEqual(["$.maybe"]);
+	});
+
+	it("flags a plain optional scalar", () => {
+		expect(
+			audit(z.strictObject({ maybe: z.string().optional() })).optional,
+		).toEqual(["$.maybe"]);
+	});
+
+	it("flags oneOf from a discriminated union", () => {
+		const a = audit(
+			z.strictObject({
+				u: z.discriminatedUnion("k", [
+					z.strictObject({ k: z.literal("a"), x: z.string() }),
+					z.strictObject({ k: z.literal("b"), y: z.string() }),
+				]),
+			}),
+		);
+
+		expect(a.oneOf.length).toBeGreaterThan(0);
+	});
+
+	it("flags the numeric bounds z.int() emits", () => {
+		const a = audit(z.strictObject({ n: z.int() }));
+
+		expect(a.banned.some((b) => b.includes("minimum"))).toBe(true);
+	});
+
+	it("flags a NON-strict object nested inside a union branch", () => {
+		// The adapter's normalizer does not descend into union branches, so this
+		// object never receives `additionalProperties: false` from it.
+		const a = audit(
+			z.strictObject({
+				u: z.union([
+					z.strictObject({
+						k: z.literal("a"),
+						loose: z.object({ x: z.string() }),
+					}),
+					z.strictObject({ k: z.literal("b"), y: z.string() }),
+				]),
+			}),
+		);
+
+		expect(a.looseObjects.length).toBeGreaterThan(0);
+	});
+
+	it("passes a schema that is actually clean", () => {
+		const a = audit(z.strictObject({ x: z.string(), xs: z.array(z.string()) }));
+
+		expect(a).toMatchObject({
+			optional: [],
+			banned: [],
+			looseObjects: [],
+			oneOf: [],
+			cycle: false,
+		});
 	});
 });

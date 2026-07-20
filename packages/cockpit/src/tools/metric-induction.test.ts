@@ -161,9 +161,11 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 		expect(d.gross_margin?.level).toBe(3); // formula over a formula
 	});
 
-	it("terminates on a self-referential or dangling depends_on", () => {
-		// The model can emit a cycle; the converter must not hang on it. The engine
-		// reports the real problem at compose time.
+	it("REJECTS a depends_on cycle rather than passing it to the engine", () => {
+		// A cycle is not this metric's problem alone: the engine's warm DAG is
+		// cross-metric, so `build_warm_dag` raises, `metrics_phase` swallows it and
+		// returns an EMPTY authoring map, and every metric in the vertical then
+		// honest-fails. Rejecting one induced metric is strictly cheaper.
 		const cyclic = grossMargin({
 			steps: [
 				{
@@ -184,17 +186,44 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 			output_step: {
 				type: "formula",
 				step_id: "out",
-				expression: "a + nonexistent",
-				depends_on: ["a", "nonexistent"],
+				expression: "a",
+				depends_on: ["a"],
 				checks: [
 					{ condition: "value >= 0", severity: "error", message: "neg" },
 				],
 			},
 		});
 
-		const d = deps(toProposedMetric(cyclic));
-		expect(Object.keys(d).sort()).toEqual(["a", "b", "out"]);
-		expect(typeof d.out?.level).toBe("number");
+		expect(() => toProposedMetric(cyclic)).toThrow(/dependency cycle/);
+	});
+
+	it("REJECTS a duplicate step_id", () => {
+		// The map-keyed payload made duplicates impossible at parse time; the array
+		// shape reintroduces them, and last-write-wins would silently drop a step
+		// and repoint whatever depended on it.
+		const dup = grossMargin({
+			steps: [REVENUE, { ...COST, step_id: "revenue" }],
+		});
+
+		expect(() => toProposedMetric(dup)).toThrow(/repeats step_id 'revenue'/);
+	});
+
+	it("tolerates a DANGLING depends_on — that is the engine's to report", () => {
+		// Distinct from a cycle: a missing operand fails only this metric, loudly,
+		// at compose time. No need to pre-empt it here.
+		const dangling = grossMargin({
+			output_step: {
+				type: "formula",
+				step_id: "gross_margin",
+				expression: "revenue - nope",
+				depends_on: ["revenue", "nope"],
+				checks: [
+					{ condition: "value >= 0", severity: "error", message: "neg" },
+				],
+			},
+		});
+
+		expect(() => toProposedMetric(dangling)).not.toThrow();
 	});
 
 	it("maps the parameter list to the name-keyed map a constant resolves from", () => {
@@ -302,12 +331,11 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 		expect(d.transaction_count?.level).toBe(1);
 	});
 
-	it("collapses a step the model repeated in both steps and output_step", () => {
-		// The schema cannot forbid this: `steps` and `output_step` are separate
-		// fields, so a model that also lists the output step inside `steps` is
-		// structurally valid. The map keys by step_id and the output step is folded
-		// in LAST, so the duplicate collapses to one correctly-flagged entry rather
-		// than producing a second, unflagged node the engine would treat as dead.
+	it("REJECTS a step repeated in both steps and output_step", () => {
+		// Structurally expressible (the two fields are independent), so the
+		// converter has to catch it. Even the identical-content case is rejected:
+		// distinguishing "harmless echo" from "different node, silently dropped"
+		// is not worth the ambiguity when the cost of being wrong is the set.
 		const out = {
 			type: "formula",
 			step_id: "gross_margin",
@@ -318,17 +346,11 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 			],
 		} satisfies InducedMetric["output_step"];
 
-		const d = deps(
+		expect(() =>
 			toProposedMetric(
 				grossMargin({ steps: [REVENUE, COST, out], output_step: out }),
 			),
-		);
-
-		expect(Object.keys(d)).toHaveLength(3);
-		expect(d.gross_margin?.output_step).toBe(true);
-		expect(d.gross_margin?.expression).toBe(
-			"(revenue - cost_of_goods_sold) / revenue",
-		);
+		).toThrow(/repeats step_id 'gross_margin'/);
 	});
 
 	it("produces a payload that re-parses as the persisted metric shape", () => {

@@ -161,6 +161,11 @@ const InterpretationRangeSchema = z.object({
 // input_schema is `type: object`. `vertical` keys the overlay row to the loading
 // vertical (the engine applier filters `payload.vertical`); `graph_id` is the
 // identity the applier upsert-replaces by.
+/** One parsed DAG step. Exported so the induction converter can build the
+ * `dependencies` map at the REAL type instead of casting a
+ * `Record<string, unknown>` into place. */
+export type MetricGraphStep = z.infer<typeof GraphStepSchema>;
+
 export const MetricSpecSchema = z.object({
 	vertical: z
 		.string()

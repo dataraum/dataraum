@@ -19,24 +19,18 @@
 // and every shipped YAML stay untouched.
 //
 // SCHEMA BUDGET (Anthropic constrained decoding): 24 optional properties, 16
-// union-typed properties, no recursion. Every field below is REQUIRED — an
-// optional renders as `type: [T, "null"]` and spends from BOTH budgets, so the
-// rule (lead ruling, DAT-807) is: nothing consumes it -> CUT; something consumes
-// it -> REQUIRED with a documented sentinel. Measured: 0 optional / 2 union.
+// union-typed properties, no recursion — plus an UNDOCUMENTED limit on the
+// compiled grammar's size, which this schema is the only one in the repo big
+// enough to hit. Every field below is REQUIRED — an optional renders as
+// `type: [T, "null"]` and spends from BOTH documented budgets, so the rule (lead
+// ruling, DAT-807) is: nothing consumes it -> CUT; something consumes it ->
+// REQUIRED with a documented sentinel. Measured: 0 optional / 1 union.
+//
+// The size limit tracks union BRANCHES, not bytes — see `GraphStepInput` for the
+// measurement. Descriptions are free; restating a step shape is not.
 //
 // NO `.min()` / `.max()` ON STRINGS OR NUMBERS: `minLength` / `maxLength` /
-// `minimum` / `maximum` are rejected by the grammar compiler. The ONE documented
-// exception is array `minItems`, and only with value 0 or 1 — verified against
-// Anthropic's structured-outputs reference
-// (platform.claude.com/docs/en/build-with-claude/structured-outputs), which
-// lists "Array `minItems` (only values 0 and 1 supported)" under supported
-// keywords and "array constraints beyond `minItems` of 0 or 1" under
-// unsupported. That exemption is load-bearing: it is what lets the output step
-// require a check at the grammar level (`outputChecksField` below). NOTE the
-// engine's provider strips `minItems` wholesale as unsupported
-// (`llm/providers/anthropic.py` `_CONSTRAINED_UNSUPPORTED_KEYS`) — that blanket
-// strip is over-broad rather than evidence against this, and is harmless there
-// because no engine schema relies on it.
+// `minimum` / `maximum` are rejected by the grammar compiler.
 
 import { z } from "zod";
 
@@ -171,44 +165,43 @@ const constantShape = {
 const checksField = z
 	.array(StepCheck)
 	.describe(
-		"Post-execution checks on this step's value. [] when the step needs none.",
+		"Post-execution checks on this step's value. [] when the step needs none — " +
+			"but the step named by `output_step_id` must declare at least one.",
 	);
 
-/** One dependency step. `checks` may be empty here — only the output step must
- * declare one (see `OutputStepInput`).
+/** One step in the metric's DAG, INCLUDING the one whose value is the metric.
  *
  * `z.union`, NOT `z.discriminatedUnion`: Zod renders a discriminated union as
  * `oneOf`, and Anthropic's constrained decoding supports `anyOf` / `allOf` only
  * — `oneOf` is not in the accepted keyword set. `z.union` renders `anyOf`, and
  * the `type` literal in every branch keeps the discriminator the model needs
- * (it becomes a `const` in each branch). */
+ * (it becomes a `const` in each branch).
+ *
+ * THREE branches is not an arbitrary shape — it is what the compiled grammar
+ * affords. The undocumented grammar-size limit is driven by the number of
+ * union BRANCHES, not by schema bytes: this schema previously restated the step
+ * shape a second time for a structurally separate `output_step` (2 more
+ * branches, 5 in total) and was rejected outright with "The compiled grammar is
+ * too large". Measured against the live compiler (DAT-807): 5 step-shaped
+ * branches rejected, 3 accepted, and stripping EVERY description — 11108 bytes
+ * down to 4091 — did not help at all. So prose is free and branches are not;
+ * spend them only where the shape genuinely differs.
+ *
+ * What the retired `output_step` union bought, and where each guarantee went:
+ *   - EXACTLY ONE output step -> `output_step_id` is a single string, so it is
+ *     structurally impossible to name two.
+ *   - the output step is never a CONSTANT (a resolved parameter is a literal,
+ *     not a measurement; 0 of the 16 shipped metrics do it) -> checked in
+ *     `toProposedMetric`, which drops the metric loudly.
+ *   - a MANDATORY check on the output step (`minItems: 1`) -> the induction
+ *     prompt asks for it and `graphs/verifier.py` enforces it after execution
+ *     with the born-loud flag, which is where the shipped policy always put it
+ *     (a metric with no check is accepted and flagged, never refused).
+ */
 const GraphStepInput = z.union([
 	z.strictObject({ ...extractShape, checks: checksField }),
 	z.strictObject({ ...formulaShape, checks: checksField }),
 	z.strictObject({ ...constantShape, checks: checksField }),
-]);
-
-// The output step is structurally separate from the dependency steps rather
-// than a `output_step: true` flag inside the array. Two things fall out for
-// free that a boolean cannot express: EXACTLY ONE output step (the engine's
-// `get_output_step()` returns the first hit, so zero or two is a silent bug),
-// and a MANDATORY check on it (`minItems: 1` — the one array constraint
-// constrained decoding accepts).
-//
-// CONSTANT is absent by design: a metric whose output is a resolved parameter
-// is a literal, not a measurement — 0 of the 16 shipped metrics do it. It stays
-// fully available as a DEPENDENCY step (4 shipped uses).
-const outputChecksField = z
-	.array(StepCheck)
-	.min(1)
-	.describe(
-		"At least ONE post-execution check on the metric's own value — the range " +
-			"or sign the result must satisfy for the number to be believable.",
-	);
-
-const OutputStepInput = z.union([
-	z.strictObject({ ...extractShape, checks: outputChecksField }),
-	z.strictObject({ ...formulaShape, checks: outputChecksField }),
 ]);
 
 // A user-configurable parameter CONSTANT steps read from. `default` is
@@ -289,14 +282,17 @@ export const InducedMetric = z.strictObject({
 	steps: z
 		.array(GraphStepInput)
 		.describe(
-			"The DEPENDENCY steps feeding the output — leaf 'extract' steps pull " +
-				"concepts, 'formula' steps combine earlier steps, 'constant' steps " +
-				"resolve a parameter. [] when the metric is a single extract.",
+			"EVERY step of the metric, the output one included — leaf 'extract' steps " +
+				"pull concepts, 'formula' steps combine earlier steps, 'constant' steps " +
+				"resolve a parameter. A single-extract metric has exactly one entry.",
 		),
-	output_step: OutputStepInput.describe(
-		"The step whose result IS the metric's value. Exactly one, and it must " +
-			"declare at least one check.",
-	),
+	output_step_id: z
+		.string()
+		.describe(
+			"The `step_id` of the step in `steps` whose result IS the metric's value. " +
+				"It must be an 'extract' or 'formula' step and must declare at least " +
+				"one check.",
+		),
 	interpretation_bands: z
 		.array(InterpretationBandInput)
 		.describe(
@@ -311,7 +307,7 @@ export const InducedMetrics = z.strictObject({
 	metrics: z.array(InducedMetric),
 });
 
-type AnyStep = z.infer<typeof GraphStepInput> | z.infer<typeof OutputStepInput>;
+type AnyStep = z.infer<typeof GraphStepInput>;
 
 /** One step -> its entry in the payload's `dependencies` map. The step's
  * `checks` land under the key `validation` (SINGULAR) because that is what
@@ -417,19 +413,23 @@ function stepLevels(steps: AnyStep[]): Map<string, number> {
  * `version` (the loader defaults it), `output.metric_id` (== graph_id), and
  * each step's `level`.
  *
- * THROWS on a duplicate `step_id` or a `depends_on` cycle. Both are newly
+ * THROWS on a duplicate `step_id`, a `depends_on` cycle, or an `output_step_id`
+ * that does not name an extract/formula step. The first two are newly
  * expressible: the old map-keyed payload made duplicates impossible at
  * JSON-parse time, and the array shape reintroduces them. Neither can be
  * allowed through, because the engine's warm DAG is CROSS-METRIC — a cycle
  * makes `build_warm_dag` raise, `metrics_phase._warm_nodes` swallows it and
  * returns an empty authoring map, and then EVERY metric in the vertical
  * honest-fails, not just this one. A duplicate id silently drops a step and
- * repoints anything that depended on it. Failing one induced metric loudly is
+ * repoints anything that depended on it. The third is the guarantee the retired
+ * `output_step` union used to hold at the grammar level (see `GraphStepInput`):
+ * a dangling id would leave the graph with NO output step, and the engine's
+ * `get_output_step()` would return nothing. Failing one induced metric loudly is
  * strictly better than poisoning the set; `induceMetrics` drops the offender
  * and keeps the rest.
  */
 export function toProposedMetric(induced: InducedMetric): ProposedMetric {
-	const all: AnyStep[] = [...induced.steps, induced.output_step];
+	const all: AnyStep[] = induced.steps;
 
 	const ids = new Set<string>();
 	for (const step of all) {
@@ -440,6 +440,22 @@ export function toProposedMetric(induced: InducedMetric): ProposedMetric {
 			);
 		}
 		ids.add(step.step_id);
+	}
+
+	const outputStep = all.find((s) => s.step_id === induced.output_step_id);
+	if (outputStep === undefined) {
+		throw new Error(
+			`metric '${induced.graph_id}' names output_step_id ` +
+				`'${induced.output_step_id}', which is not one of its steps — the graph ` +
+				"would have no output",
+		);
+	}
+	if (outputStep.type === "constant") {
+		throw new Error(
+			`metric '${induced.graph_id}' makes the constant step ` +
+				`'${outputStep.step_id}' its output — a resolved parameter is a literal, ` +
+				"not a measurement",
+		);
 	}
 
 	const cycle = findCycle(all);
@@ -456,7 +472,7 @@ export function toProposedMetric(induced: InducedMetric): ProposedMetric {
 		dependencies[step.step_id] = stepPayload(
 			step,
 			levels.get(step.step_id) ?? 1,
-			step.step_id === induced.output_step.step_id,
+			step.step_id === outputStep.step_id,
 		);
 	}
 

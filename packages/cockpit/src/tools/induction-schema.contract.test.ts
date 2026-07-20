@@ -1,12 +1,19 @@
-// Constrained-decoding BUDGET contract for the two reshaped induction schemas
-// (DAT-807).
+// Constrained-decoding BUDGET contract for EVERY schema the cockpit sends as
+// `output_config.format` (DAT-807).
 //
-// `InducedMetrics` and `InducedValidations` exist only to be compiled into a
-// decoding grammar by Anthropic. That compiler enforces hard limits the type
-// system knows nothing about, and every one of them fails at REQUEST time on a
-// live call — the one place this repo never exercises (the LLM is stubbed in
-// every test). So the limits are asserted statically here instead, against the
-// JSON Schema the adapter actually sends.
+// These schemas exist to be compiled into a decoding grammar by Anthropic. That
+// compiler enforces hard limits the type system knows nothing about, and every
+// one of them fails at REQUEST time on a live call — the one place this repo
+// never exercises (the LLM is stubbed in every test). So the limits are asserted
+// statically here instead, against the JSON Schema the adapter actually sends.
+//
+// The list below is the WHOLE set, deliberately: this guard first covered only
+// the two reshaped induction schemas, and the four sites migrated before it
+// existed went unaudited — which is exactly where the live 400s came from. The
+// only `chat({ outputSchema })` calls not listed are the four that pass an inline
+// single-field object (`{analysis}` in why_column / why_relationship / why_table,
+// `{summary}` in the report-summary agent, `{kind}` in the nav agent): one
+// required scalar each, no optionals, no unions, nothing to drift.
 //
 // Caps and keyword support are from Anthropic's structured-outputs reference:
 //   - 24 optional properties, 16 union-typed properties, per request
@@ -22,10 +29,31 @@
 //   - the adapter's normalizer does NOT descend into union branches, so objects
 //     nested in one never got `additionalProperties: false` -> `z.strictObject`
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+// `frame.ts` reaches config/db at module scope (it owns the overlay writes), so
+// the same server-only stubs the sibling induce-native contract test uses are
+// needed to import its SCHEMAS. The schemas themselves are pure Zod.
+vi.mock("#/config", () => ({
+	get config() {
+		return { anthropicApiKey: "test-key", dataraumConfigPath: "/nonexistent" };
+	},
+}));
+vi.mock("#/config.base", () => ({ baseConfig: {} }));
+vi.mock("#/db/cockpit/registry", () => ({
+	setActiveWorkspaceVertical: () => {},
+}));
+vi.mock("#/db/metadata/client", () => ({
+	metadataDb: {},
+	metadataWriteDb: {},
+}));
+
+import { AuthoredChartSchema } from "../charts/chart-config";
+import { VerdictSchema } from "../worker/grounding-agent";
+import { InducedCycles, InducedFrame } from "./frame";
 import { InducedMetrics } from "./metric-induction";
+import { QueryDraftSchema } from "./query";
 import { InducedValidations } from "./validation-induction";
 
 // The adapter-internal converter that builds `output_config.format.schema`.
@@ -53,16 +81,26 @@ const UNION_CAP = 16;
  * `patternProperties` are how Zod renders a `z.record` — the OPEN MAP this
  * whole design exists to avoid — so they are banned by name as well as caught
  * by the `additionalProperties` check below. */
+// Only what is PROVEN rejected by the live API. The docs list several keywords
+// as "not supported", but unsupported turns out to mean IGNORED for some of
+// them: concept induction shipped `name.minLength` in its converted schema and
+// the API accepted the request (DAT-807, live). Banning those was an inherited
+// assumption, and a guard stricter than reality just costs us expressiveness
+// for nothing.
+//
+// Proven rejected, each by an observed 400:
+//   minimum/maximum on an integer — "For 'integer' type, properties maximum,
+//     minimum are not supported" (z.int() renders safe-integer bounds)
+//   oneOf — not in the accepted keyword set (z.discriminatedUnion renders it)
+//   an open map — propertyNames/patternProperties are how Zod renders z.record,
+//     which additionalProperties:false forbids by construction
 const BANNED = [
-	"maxItems",
-	"minLength",
-	"maxLength",
 	"minimum",
 	"maximum",
 	"exclusiveMinimum",
 	"exclusiveMaximum",
 	"multipleOf",
-	"pattern",
+	"maxItems",
 	"uniqueItems",
 	"propertyNames",
 	"patternProperties",
@@ -205,9 +243,25 @@ function audit(schema: z.ZodType): Audit {
 	return { ...converted, optional: rawAudit.optional };
 }
 
+// EVERY schema sent as `output_config.format`, not just the two this file was
+// written for. The four sites migrated first (concepts, cycles, chart author,
+// query draft) were NOT audited, and three live 400s came out of that gap on the
+// first real induction calls — an optional enum, an integer carrying
+// minimum/maximum, then the compiled grammar being too large. Statically
+// checkable, so checked statically (DAT-807).
+//
+// The union count is the expected number of union-typed properties. Every one of
+// these is now ZERO: with no optionals left, the only unions that remain are the
+// deliberate ones — the metric DAG's step variants and the validation parameter
+// kinds, which are genuinely either/or and carry their own `const` discriminator.
 describe.each([
-	["InducedMetrics", InducedMetrics, 2],
+	["InducedMetrics", InducedMetrics, 1],
 	["InducedValidations", InducedValidations, 1],
+	["InducedFrame", InducedFrame, 0],
+	["InducedCycles", InducedCycles, 0],
+	["AuthoredChartSchema", AuthoredChartSchema, 0],
+	["QueryDraftSchema", QueryDraftSchema, 0],
+	["VerdictSchema", VerdictSchema, 0],
 ] as const)("%s — constrained-decoding budget", (_label, schema, unions) => {
 	const a = audit(schema);
 
@@ -251,26 +305,43 @@ describe.each([
 	});
 });
 
-describe("the output step's mandatory check", () => {
-	it("renders as minItems:1 on every output-step variant", () => {
+// The UNDOCUMENTED compiled-grammar size limit, which only `InducedMetrics` is
+// big enough to reach. Measured against the live compiler (DAT-807): five
+// step-shaped union branches — three dependency-step variants plus a
+// structurally separate two-variant `output_step` — was rejected with "The
+// compiled grammar is too large"; removing either union made it fit. Stripping
+// every description (11108 bytes -> 4091) did NOT, which is what identifies
+// branches rather than bytes as the cost.
+//
+// So this is a budget, not a style rule, and it is the one limit with no error
+// message until a real request: a fourth step type, or restoring the output-step
+// union, breaks metric induction in production while every test stays green.
+describe("the metric schema's union-branch budget", () => {
+	it("keeps the step union to the three branches the grammar affords", () => {
 		const { jsonSchema } = convertSchemaForStructuredOutput(
 			// biome-ignore lint/suspicious/noExplicitAny: converter takes a SchemaInput
 			InducedMetrics as any,
 		);
-		const variants = (jsonSchema as Node).properties.metrics.items.properties
-			.output_step.anyOf as Node[];
-
-		expect(variants.length).toBeGreaterThan(0);
-		for (const v of variants) {
-			expect(v.properties.checks.minItems).toBe(1);
-		}
-
-		// ...and NOT on the dependency steps, which may legitimately carry none.
 		const steps = (jsonSchema as Node).properties.metrics.items.properties.steps
 			.items.anyOf as Node[];
-		for (const v of steps) {
-			expect(v.properties.checks.minItems).toBeUndefined();
-		}
+
+		expect(steps).toHaveLength(3);
+		expect(steps.map((v) => v.properties.type.const).sort()).toEqual([
+			"constant",
+			"extract",
+			"formula",
+		]);
+	});
+
+	it("names the output step by id instead of restating its shape", () => {
+		const { jsonSchema } = convertSchemaForStructuredOutput(
+			// biome-ignore lint/suspicious/noExplicitAny: converter takes a SchemaInput
+			InducedMetrics as any,
+		);
+		const props = (jsonSchema as Node).properties.metrics.items.properties;
+
+		expect(props.output_step_id.type).toBe("string");
+		expect(props.output_step).toBeUndefined();
 	});
 });
 

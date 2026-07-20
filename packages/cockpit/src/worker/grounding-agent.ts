@@ -49,21 +49,25 @@ You are given the readiness of each column (band + worst-intent risk + the top d
 
 You MUST NOT attempt anything else. Concept meaning (business_meaning), relationships (join_path_determinism), hierarchies, validations, and a measure's unit SOURCE (unit_source — whose unit is defined by a sibling dimension column like currency, not carried in its own values) are HUMAN JUDGEMENT — you cannot teach them and the tool will not let you. (unit_source is a catalogue-grain signal and does not appear in this add_source loop; the concept vocabulary it depends on is declared in the frame stage, not here.) If a remaining gap is one of those, do NOT apply a teach for it; instead set needs_judgement=true and describe it briefly in judgement_note for the human.
 
-Do NOT replay or re-measure — the system re-runs the import and re-measures after your teaches; you only apply teaches this round. When done, emit your verdict: needs_judgement (is there a non-mechanical gap a human must address?) and judgement_note (one sentence naming it, or null).`;
+Do NOT replay or re-measure — the system re-runs the import and re-measures after your teaches; you only apply teaches this round. When done, emit your verdict: needs_judgement (is there a non-mechanical gap a human must address?) and judgement_note (one sentence naming it, or an empty string when there is none).`;
 
 /** The agent's structured verdict (the tool-applied teaches are counted separately
  * via the capture cell, not self-reported). */
-const VerdictSchema = z.object({
+export const VerdictSchema = z.object({
 	needs_judgement: z
 		.boolean()
 		.describe(
 			"True if a NON-mechanical gap remains that a human must address (a concept/relationship/hierarchy/validation), false otherwise.",
 		),
+	// A plain required string, NOT `.nullable()`: `needs_judgement` above is
+	// already the discriminator, so a null branch adds a union — which spends from
+	// the 16-union-per-request constrained-decoding budget to express something
+	// the boolean already says (DAT-807). "" is the documented "no gap" value;
+	// `assessAndGround` maps it back to the null the Temporal contract carries.
 	judgement_note: z
 		.string()
-		.nullable()
 		.describe(
-			"One sentence naming the human-judgement gap (the target + what's needed), or null when none.",
+			"One sentence naming the human-judgement gap (the target + what's needed), or an empty string when there is none.",
 		),
 });
 
@@ -180,6 +184,9 @@ export async function assessAndGround(
 	return {
 		appliedCount: captured.count,
 		needsJudgement: verdict.needs_judgement,
-		judgementNote: verdict.judgement_note,
+		// The activity's result is a cross-package Temporal contract (mirrored in
+		// the engine's `worker/contracts.py`) and keeps `string | null`; the empty
+		// string is a schema sentinel, not a value to hand across the boundary.
+		judgementNote: verdict.judgement_note || null,
 	};
 }

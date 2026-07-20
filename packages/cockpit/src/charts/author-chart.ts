@@ -2,8 +2,10 @@
 // instruction → a validated chart config.
 //
 // The emission rides Anthropic NATIVE structured output (DAT-807): `outputSchema`
-// is the thin ChartConfig subset, so constrained decoding guarantees the SHAPE —
-// there is no forced `emit_chart` tool and no tool-argument boundary to malform.
+// is `AuthoredChartSchema` — the thin ChartConfig subset in its model-facing,
+// optional-free form — so constrained decoding guarantees the SHAPE, and there is
+// no forced `emit_chart` tool and no tool-argument boundary to malform. The gate
+// (`validateAuthoredChart`) folds the sentinels back to a persisted config.
 //
 // What this adds over a single emit: a CIRCUIT-BREAKER — and it is still needed,
 // because constrained decoding guarantees shape, never SEMANTICS. The subset schema
@@ -24,11 +26,11 @@ import { linkedAbortController } from "#/lib/abort";
 import { llmOtel } from "#/lib/llm-otel";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import {
+	AuthoredChartSchema,
 	type ChartConfig,
-	ChartConfigSchema,
 	FIELD_TYPES,
 } from "./chart-config";
-import { validateChartConfig } from "./validate";
+import { validateAuthoredChart } from "./validate";
 
 /** Re-emit attempts before falling back to manual mapping (the circuit breaker). */
 export const CHART_AUTHOR_MAX_ATTEMPTS = 3;
@@ -73,11 +75,13 @@ function systemPrompt(columns: ChartColumn[]): string {
 		columnLines,
 		"",
 		"Rules:",
-		"- Encode `x` and `y` (both required) and optionally `color`, each referencing",
-		"  ONE of the columns above by its EXACT name — never invent or rename a column.",
+		"- Encode `x`, `y` and `color`, each referencing ONE of the columns above by",
+		"  its EXACT name — never invent or rename a column. Most charts need no colour",
+		"  split: give `color` an EMPTY field name to leave the channel unused.",
 		`- Pick a measurement type per encoded field from: ${FIELD_TYPES.join(", ")}.`,
 		"- Aggregate (sum/mean/median/min/max/count) when the instruction implies a",
-		"  summary over categories; otherwise omit the aggregate for a raw value.",
+		"  summary over categories; use 'none' for a raw, unaggregated value.",
+		"- Titles are free text; leave a title EMPTY to fall back to the column name.",
 		"- Choose the mark that best fits the instruction (bar for category↔measure,",
 		"  line/area for a trend over time, point for a relationship, tick for spread).",
 		"- Charts are for AGGREGATED/summarized results — prefer an aggregate + a small",
@@ -106,7 +110,7 @@ const emitOnce: EmitFn = async (systemPrompts, messages, signal) =>
 		},
 		systemPrompts,
 		messages,
-		outputSchema: ChartConfigSchema,
+		outputSchema: AuthoredChartSchema,
 	});
 
 /**
@@ -144,7 +148,7 @@ export async function authorChart(opts: {
 			continue;
 		}
 
-		const validation = validateChartConfig(emitted, columnNames);
+		const validation = validateAuthoredChart(emitted, columnNames);
 		if (validation.ok) return { ok: true, config: validation.config };
 
 		// Feed the failure back so the next attempt corrects it (the breaker).

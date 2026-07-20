@@ -40,7 +40,11 @@ import {
 } from "../prompts";
 import { AgentActionableError } from "./agent-error";
 import { CONCEPT_KINDS, writeConcept } from "./concept-write";
-import { CycleSpecSchema, type ShippedCycleSpec } from "./cycle-spec";
+import {
+	CYCLE_FIELDS,
+	CycleSpecSchema,
+	type ShippedCycleSpec,
+} from "./cycle-spec";
 import {
 	formatSeedExamples,
 	frameFamily,
@@ -95,6 +99,16 @@ function resolveVertical(name?: string | null): string {
 // structured-output call, and frame writes it as a typed `concepts` row (DAT-728,
 // config→DB — no longer a `concept` overlay teach). `temporal_behavior` was dropped
 // (DAT-657): stock/flow is data-determined, not a concept-declared format.
+//
+// EVERY field is required (DAT-807). Unlike the cycle/validation/metric families
+// there is no second authoring contract to keep permissive — this schema is only
+// ever filled by the induction call or echoed back by the ModelFrame widget — so
+// the disposition applies directly rather than through a model-facing variant.
+// All four descriptive fields are consumed downstream (`graphs/context.py` serves
+// description/indicators/exclude_patterns to the SQL agent; `unit_from_concept`
+// resolves a measure's unit in `ontology.py` and the unit-source detector), so
+// each is required with a documented ""/[] sentinel for "none", which `frame`
+// folds back to NULL at the write.
 export const ProposedConcept = z.object({
 	name: z
 		.string()
@@ -109,25 +123,28 @@ export const ProposedConcept = z.object({
 		),
 	description: z
 		.string()
-		.optional()
 		.describe("one sentence: what this concept represents in business terms"),
 	indicators: z
 		.array(z.string())
-		.optional()
-		.describe("column-name substrings that suggest this concept"),
+		.describe(
+			"column-name substrings that suggest this concept; empty only if none apply",
+		),
 	exclude_patterns: z
 		.array(z.string())
-		.optional()
-		.describe("substrings that should NOT match this concept"),
+		.describe(
+			"substrings that should NOT match this concept; empty when nothing needs excluding",
+		),
 	unit_from_concept: z
 		.string()
-		.optional()
-		.describe("name of the concept providing this measure's unit"),
+		.describe(
+			"name of the concept providing this measure's unit; empty string when " +
+				"the concept is not a measure or carries no unit",
+		),
 });
 export type ProposedConcept = z.infer<typeof ProposedConcept>;
 
 // The structured-output shape the concept induction LLM call returns.
-const InducedFrame = z.object({
+export const InducedFrame = z.object({
 	concepts: z.array(ProposedConcept),
 });
 
@@ -145,9 +162,36 @@ export type ProposedValidation = z.infer<typeof ProposedValidation>;
 export const ProposedCycle = CycleSpecSchema.omit({ vertical: true });
 export type ProposedCycle = z.infer<typeof ProposedCycle>;
 
+// The MODEL-FACING cycle shape: `ProposedCycle` with every descriptive field
+// REQUIRED, restored from the shared `CYCLE_FIELDS` bag (cycle-spec.ts) that
+// carries their descriptions.
+//
+// Constrained decoding cannot carry an optional. An optional ENUM is rejected
+// outright — `@tanstack/ai`'s converter widens `.optional()` to
+// `type: ['string','null']` but leaves the `enum` list unwidened, so the values
+// contradict their own declared type and the API refuses the schema before
+// generating a token:
+//   400 output_config.format.schema: Invalid schema:
+//       Enum value 'high' does not match declared type ['string','null']
+// The rest are accepted but each renders as a union with null, spending from the
+// 24-optional AND 16-union per-request budgets and from the undocumented
+// compiled-grammar size budget — which is what rejected this schema next
+// ("The compiled grammar is too large"). Both were live 400s on the first real
+// induction calls; no static check saw either (DAT-807).
+//
+// `CycleSpecSchema` keeps them optional because it is ALSO the `teach_cycle`
+// authoring contract, where a minimal spec (vertical + name) must stay valid —
+// and as a plain tool input it is never compiled into a grammar. Same separation
+// as `InducedMetric` vs `MetricSpecSchema`: the model fills a stricter shape, the
+// authoring contract stays permissive. Required-here is assignable to
+// optional-there, so no conversion is needed; the ""/[] sentinels the model emits
+// for "none" are what `stripUndefined` + the engine's own `or []` reads already
+// treat as absent.
+const InducedCycle = ProposedCycle.extend(CYCLE_FIELDS);
+
 // The structured-output shape the cycle induction LLM call returns.
-const InducedCycles = z.object({
-	cycles: z.array(ProposedCycle),
+export const InducedCycles = z.object({
+	cycles: z.array(InducedCycle),
 });
 
 // One induced/declared metric — a TransformationGraph (DAT-466's MetricSpecSchema)
@@ -330,8 +374,8 @@ export async function induceCycles(
  * Induce a metric-DAG set for a source via one NATIVE structured-output call
  * (DAT-807). The model fills the ARRAY-shaped `InducedMetrics`
  * (metric-induction.ts) — a `steps` array whose items are a `z.union` on `type`
- * (NOT `z.discriminatedUnion`, which renders the unsupported `oneOf`) plus a
- * structurally separate `output_step`, rather than the `dependencies` map the
+ * (NOT `z.discriminatedUnion`, which renders the unsupported `oneOf`) plus an
+ * `output_step_id` naming one of them, rather than the `dependencies` map the
  * payload uses — and `toProposedMetric` converts it back to the engine's
  * step-id-keyed map here, at the single conversion boundary. Induced OVER the
  * framed concept vocabulary, so each metric's leaf `extract` steps anchor to
@@ -429,7 +473,20 @@ export async function frame(
 
 	const writtenConcepts: FrameConceptResult[] = [];
 	for (const c of conceptItems) {
-		const { concept_id } = await writeConcept({ vertical, ...c });
+		const { concept_id } = await writeConcept({
+			vertical,
+			...c,
+			// Fold the model-facing "" / [] sentinels back to absent, so the typed
+			// row keeps NULL for "not declared" exactly as it did when these fields
+			// were optional (DAT-807). This is the single conversion boundary for
+			// the concept family — the sibling families do the same in
+			// `toProposedValidation` / `toProposedMetric`.
+			description: c.description || undefined,
+			indicators: c.indicators.length > 0 ? c.indicators : undefined,
+			exclude_patterns:
+				c.exclude_patterns.length > 0 ? c.exclude_patterns : undefined,
+			unit_from_concept: c.unit_from_concept || undefined,
+		});
 		writtenConcepts.push({ ...c, concept_id });
 	}
 	const concepts = { items: conceptItems, written: writtenConcepts };

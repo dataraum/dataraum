@@ -108,7 +108,7 @@ const Reliability = z.object({
 // narrative + provenance; the steps/final_sql it validated live in its run_steps
 // call (captured server-side), so they can't drift from what the grid runs.
 
-const QueryDraftSchema = z.object({
+export const QueryDraftSchema = z.object({
 	answer: z
 		.string()
 		.describe(

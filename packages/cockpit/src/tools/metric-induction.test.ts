@@ -49,20 +49,24 @@ function grossMargin(over: Partial<InducedMetric> = {}): InducedMetric {
 		unit: "ratio",
 		decimal_places: 2,
 		parameters: [],
-		steps: [REVENUE, COST],
-		output_step: {
-			type: "formula",
-			step_id: "gross_margin",
-			expression: "(revenue - cost_of_goods_sold) / revenue",
-			depends_on: ["revenue", "cost_of_goods_sold"],
-			checks: [
-				{
-					condition: "value <= 1",
-					severity: "warning",
-					message: "Margin above 100%",
-				},
-			],
-		},
+		steps: [
+			REVENUE,
+			COST,
+			{
+				type: "formula",
+				step_id: "gross_margin",
+				expression: "(revenue - cost_of_goods_sold) / revenue",
+				depends_on: ["revenue", "cost_of_goods_sold"],
+				checks: [
+					{
+						condition: "value <= 1",
+						severity: "warning",
+						message: "Margin above 100%",
+					},
+				],
+			},
+		],
+		output_step_id: "gross_margin",
 		interpretation_bands: [],
 		...over,
 	} as InducedMetric;
@@ -138,20 +142,20 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 							depends_on: ["revenue", "cost_of_goods_sold"],
 							checks: [],
 						},
+						{
+							type: "formula",
+							step_id: "gross_margin",
+							expression: "gross_profit / revenue",
+							depends_on: ["gross_profit", "revenue"],
+							checks: [
+								{
+									condition: "value <= 1",
+									severity: "warning",
+									message: "over 100%",
+								},
+							],
+						},
 					],
-					output_step: {
-						type: "formula",
-						step_id: "gross_margin",
-						expression: "gross_profit / revenue",
-						depends_on: ["gross_profit", "revenue"],
-						checks: [
-							{
-								condition: "value <= 1",
-								severity: "warning",
-								message: "over 100%",
-							},
-						],
-					},
 				}),
 			),
 		);
@@ -182,16 +186,17 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 					depends_on: ["a"],
 					checks: [],
 				},
+				{
+					type: "formula",
+					step_id: "out",
+					expression: "a",
+					depends_on: ["a"],
+					checks: [
+						{ condition: "value >= 0", severity: "error", message: "neg" },
+					],
+				},
 			],
-			output_step: {
-				type: "formula",
-				step_id: "out",
-				expression: "a",
-				depends_on: ["a"],
-				checks: [
-					{ condition: "value >= 0", severity: "error", message: "neg" },
-				],
-			},
+			output_step_id: "out",
 		});
 
 		expect(() => toProposedMetric(cyclic)).toThrow(/dependency cycle/);
@@ -212,15 +217,18 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 		// Distinct from a cycle: a missing operand fails only this metric, loudly,
 		// at compose time. No need to pre-empt it here.
 		const dangling = grossMargin({
-			output_step: {
-				type: "formula",
-				step_id: "gross_margin",
-				expression: "revenue - nope",
-				depends_on: ["revenue", "nope"],
-				checks: [
-					{ condition: "value >= 0", severity: "error", message: "neg" },
-				],
-			},
+			steps: [
+				REVENUE,
+				{
+					type: "formula",
+					step_id: "gross_margin",
+					expression: "revenue - nope",
+					depends_on: ["revenue", "nope"],
+					checks: [
+						{ condition: "value >= 0", severity: "error", message: "neg" },
+					],
+				},
+			],
 		});
 
 		expect(() => toProposedMetric(dangling)).not.toThrow();
@@ -244,6 +252,15 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 						step_id: "days_in_period",
 						parameter: "days_in_period",
 						checks: [],
+					},
+					{
+						type: "formula",
+						step_id: "gross_margin",
+						expression: "revenue * days_in_period",
+						depends_on: ["revenue", "days_in_period"],
+						checks: [
+							{ condition: "value >= 0", severity: "error", message: "neg" },
+						],
 					},
 				],
 			}),
@@ -307,21 +324,23 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 			toProposedMetric(
 				grossMargin({
 					graph_id: "transaction_count",
-					steps: [],
-					output_step: {
-						type: "extract",
-						step_id: "transaction_count",
-						standard_field: "transaction_count",
-						statement: "",
-						aggregation: "count",
-						checks: [
-							{
-								condition: "value >= 0",
-								severity: "error",
-								message: "negative count",
-							},
-						],
-					},
+					steps: [
+						{
+							type: "extract",
+							step_id: "transaction_count",
+							standard_field: "transaction_count",
+							statement: "",
+							aggregation: "count",
+							checks: [
+								{
+									condition: "value >= 0",
+									severity: "error",
+									message: "negative count",
+								},
+							],
+						},
+					],
+					output_step_id: "transaction_count",
 				}),
 			),
 		);
@@ -331,26 +350,35 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 		expect(d.transaction_count?.level).toBe(1);
 	});
 
-	it("REJECTS a step repeated in both steps and output_step", () => {
-		// Structurally expressible (the two fields are independent), so the
-		// converter has to catch it. Even the identical-content case is rejected:
-		// distinguishing "harmless echo" from "different node, silently dropped"
-		// is not worth the ambiguity when the cost of being wrong is the set.
-		const out = {
-			type: "formula",
-			step_id: "gross_margin",
-			expression: "(revenue - cost_of_goods_sold) / revenue",
-			depends_on: ["revenue", "cost_of_goods_sold"],
-			checks: [
-				{ condition: "value <= 1", severity: "warning", message: "over 100%" },
-			],
-		} satisfies InducedMetric["output_step"];
+	it("REJECTS an output_step_id that names no step", () => {
+		// The guarantee the retired `output_step` union held at the grammar level:
+		// a dangling id leaves the graph with NO output, and the engine's
+		// `get_output_step()` would return nothing at all.
+		expect(() =>
+			toProposedMetric(grossMargin({ output_step_id: "not_a_step" })),
+		).toThrow(/not one of its steps/);
+	});
 
+	it("REJECTS a CONSTANT step as the metric's output", () => {
+		// The other retired guarantee: `OutputStepInput` offered only extract and
+		// formula branches. A metric whose value is a resolved parameter is a
+		// literal, not a measurement — 0 of the 16 shipped metrics do it.
 		expect(() =>
 			toProposedMetric(
-				grossMargin({ steps: [REVENUE, COST, out], output_step: out }),
+				grossMargin({
+					steps: [
+						REVENUE,
+						{
+							type: "constant",
+							step_id: "days_in_period",
+							parameter: "days_in_period",
+							checks: [],
+						},
+					],
+					output_step_id: "days_in_period",
+				}),
 			),
-		).toThrow(/repeats step_id 'gross_margin'/);
+		).toThrow(/not a measurement/);
 	});
 
 	it("produces a payload that re-parses as the persisted metric shape", () => {
@@ -420,20 +448,21 @@ describe("toProposedMetric — reproduces a SHIPPED metric graph", () => {
 				parameter: "days_in_period",
 				checks: [],
 			},
+			{
+				type: "formula",
+				step_id: "dso",
+				expression: "(accounts_receivable / revenue) * days_in_period",
+				depends_on: ["accounts_receivable", "revenue", "days_in_period"],
+				checks: [
+					{
+						condition: "0 <= value <= 365",
+						severity: "warning",
+						message: "DSO outside typical range",
+					},
+				],
+			},
 		],
-		output_step: {
-			type: "formula",
-			step_id: "dso",
-			expression: "(accounts_receivable / revenue) * days_in_period",
-			depends_on: ["accounts_receivable", "revenue", "days_in_period"],
-			checks: [
-				{
-					condition: "0 <= value <= 365",
-					severity: "warning",
-					message: "DSO outside typical range",
-				},
-			],
-		},
+		output_step_id: "dso",
 		interpretation_bands: [
 			{
 				min: 0,

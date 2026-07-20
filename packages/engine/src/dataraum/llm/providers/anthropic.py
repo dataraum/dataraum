@@ -117,10 +117,17 @@ _CONSTRAINED_UNSUPPORTED_KEYS = frozenset(
         "multipleOf",
         "minLength",
         "maxLength",
-        "minItems",
         "maxItems",
     }
 )
+
+# ``minItems`` is the ONE array constraint the grammar accepts, and only at the
+# values 0 and 1 (Anthropic structured-outputs reference). It is therefore NOT
+# in the unsupported set above: a schema that says "this array must be
+# non-empty" is the only way to make the model produce at least one element,
+# and stripping it silently turns a mandatory list into an optional one. Any
+# other value is rejected by the compiler, so those are dropped.
+_MIN_ITEMS_SUPPORTED_VALUES = (0, 1)
 
 
 def _constrained_schema(node: Any) -> Any:
@@ -142,6 +149,7 @@ def _constrained_schema(node: Any) -> Any:
             k: _constrained_schema(v)
             for k, v in node.items()
             if k not in _CONSTRAINED_UNSUPPORTED_KEYS
+            and not (k == "minItems" and v not in _MIN_ITEMS_SUPPORTED_VALUES)
         }
         if out.get("type") == "object" or "properties" in out:
             out.setdefault("additionalProperties", False)

@@ -474,12 +474,24 @@ class SemanticAgent(LLMFeature):
                 role_parts.append(f"isolated: {', '.join(graph_structure.isolated_tables)}")
             if role_parts:
                 lines.append("Roles: " + "; ".join(role_parts))
-            if graph_structure.schema_cycles:
-                cycle_strs = [
-                    " → ".join(c.tables) + " → " + c.tables[0]
-                    for c in graph_structure.schema_cycles
-                ]
-                lines.append(f"Cycles: {'; '.join(cycle_strs)}")
+            if graph_structure.circuit_rank:
+                lines.append(
+                    f"Join-path ambiguity: {graph_structure.circuit_rank} independent "
+                    f"cycle(s) beyond a tree; density {graph_structure.density:.2f}"
+                )
+            if graph_structure.cyclic_groups:
+                group_strs = [f"{{{', '.join(g.tables)}}}" for g in graph_structure.cyclic_groups]
+                lines.append(f"Circular reference groups: {'; '.join(group_strs)}")
+            # A complete candidate graph is the value-overlap detector matching
+            # everything to everything, not a schema. Enumerating its cycles was
+            # what built a 1.9M-token prompt (DAT-834); naming the degeneracy is
+            # both smaller and more honest than describing the artifact.
+            if graph_structure.density >= 1.0:
+                lines.append(
+                    "NOTE: every table pair is connected — the topology above is a "
+                    "consequence of that, not evidence. Judge each candidate on its own "
+                    "column-level evidence."
+                )
             lines.append("")
 
         if not candidates:

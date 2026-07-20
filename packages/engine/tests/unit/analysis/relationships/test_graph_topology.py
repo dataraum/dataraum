@@ -1,8 +1,8 @@
 """Tests for graph topology analysis."""
 
 from dataraum.analysis.relationships.graph_topology import (
+    CyclicGroup,
     GraphStructure,
-    SchemaCycle,
     TableRole,
     _classify_graph_pattern,
     _extract_table_ids,
@@ -16,15 +16,15 @@ class TestClassifyGraphPattern:
     """Tests for _classify_graph_pattern."""
 
     def test_empty(self):
-        pattern, _ = _classify_graph_pattern(0, 0, 0, 0, 0, 0, 0)
+        pattern, _ = _classify_graph_pattern(0, 0, 0, 0, 0, 0, 0, 0.0)
         assert pattern == "empty"
 
     def test_single_table(self):
-        pattern, _ = _classify_graph_pattern(1, 0, 0, 0, 0, 0, 0)
+        pattern, _ = _classify_graph_pattern(1, 0, 0, 0, 0, 0, 0, 0.0)
         assert pattern == "single_table"
 
     def test_no_relationships(self):
-        pattern, _ = _classify_graph_pattern(3, 0, 0, 0, 0, 0, 0)
+        pattern, _ = _classify_graph_pattern(3, 0, 0, 0, 0, 0, 0, 0.0)
         assert pattern == "disconnected"
 
     def test_star_schema(self):
@@ -34,8 +34,9 @@ class TestClassifyGraphPattern:
             hub_count=1,
             leaf_count=3,
             isolated_count=0,
-            cycle_count=0,
+            cyclic_group_count=0,
             component_count=1,
+            density=0.5,
         )
         assert pattern == "star_schema"
 
@@ -46,8 +47,9 @@ class TestClassifyGraphPattern:
             hub_count=2,
             leaf_count=2,
             isolated_count=0,
-            cycle_count=0,
+            cyclic_group_count=0,
             component_count=1,
+            density=0.5,
         )
         assert pattern == "hub_and_spoke"
 
@@ -58,8 +60,9 @@ class TestClassifyGraphPattern:
             hub_count=0,
             leaf_count=2,
             isolated_count=0,
-            cycle_count=0,
+            cyclic_group_count=0,
             component_count=1,
+            density=0.5,
         )
         assert pattern == "chain"
 
@@ -70,8 +73,9 @@ class TestClassifyGraphPattern:
             hub_count=1,
             leaf_count=0,
             isolated_count=0,
-            cycle_count=2,
+            cyclic_group_count=2,
             component_count=1,
+            density=0.5,
         )
         assert pattern == "mesh_with_cycles"
 
@@ -82,8 +86,9 @@ class TestClassifyGraphPattern:
             hub_count=0,
             leaf_count=0,
             isolated_count=0,
-            cycle_count=1,
+            cyclic_group_count=1,
             component_count=1,
+            density=0.5,
         )
         assert pattern == "cyclic"
 
@@ -94,8 +99,9 @@ class TestClassifyGraphPattern:
             hub_count=0,
             leaf_count=2,
             isolated_count=0,
-            cycle_count=0,
+            cyclic_group_count=0,
             component_count=2,
+            density=0.5,
         )
         assert pattern == "disconnected"
 
@@ -106,8 +112,9 @@ class TestClassifyGraphPattern:
             hub_count=0,
             leaf_count=1,
             isolated_count=3,
-            cycle_count=0,
+            cyclic_group_count=0,
             component_count=1,
+            density=0.5,
         )
         assert pattern == "sparse"
 
@@ -167,7 +174,7 @@ class TestAnalyzeGraphTopology:
         assert len(result.leaf_tables) == 3
         assert result.total_relationships == 3
 
-    def test_cycle_detection(self):
+    def test_circular_reference_group_detection(self):
         table_ids = ["t1", "t2", "t3"]
         relationships = [
             {"from_table_id": "t1", "to_table_id": "t2"},
@@ -177,9 +184,10 @@ class TestAnalyzeGraphTopology:
 
         result = analyze_graph_topology(table_ids, relationships)
 
-        assert len(result.schema_cycles) >= 1
-        cycle_lengths = [c.length for c in result.schema_cycles]
-        assert 3 in cycle_lengths
+        # One SCC holding all three, not three rotations of the same cycle.
+        assert len(result.cyclic_groups) == 1
+        assert result.cyclic_groups[0].size == 3
+        assert result.cyclic_groups[0].tables == ["t1", "t2", "t3"]
 
     def test_table_roles_assigned(self):
         table_ids = ["t1", "t2", "t3"]
@@ -246,16 +254,92 @@ class TestFormatGraphStructure:
         assert "fact_sales" in text
         assert "dim_date" in text
 
-    def test_formats_cycles(self):
+    def test_formats_cyclic_groups(self):
         structure = GraphStructure(
             pattern="cyclic",
-            pattern_description="Has cycles",
-            schema_cycles=[
-                SchemaCycle(tables=["A", "B", "C"], table_ids=["1", "2", "3"], length=3),
+            pattern_description="Has circular references",
+            cyclic_groups=[
+                CyclicGroup(tables=["A", "B", "C"], table_ids=["1", "2", "3"], size=3),
             ],
         )
 
         text = format_graph_structure_for_context(structure)
 
-        assert "cycle" in text.lower()
+        assert "circular" in text.lower()
         assert "A" in text
+
+
+class TestDenseGraphIsDescribedNotEnumerated:
+    """DAT-834: topology output must not grow with the CYCLE COUNT of the graph.
+
+    A complete candidate graph on 9 tables has 53,902 simple cycles. Enumerating
+    them built a 1.9M-token prompt — twice the model's context window — from a
+    1.2 MB corpus. The output is now bounded by the number of TABLES, which is
+    what a schema description should scale with, and by construction rather than
+    by a cap: strongly connected components partition the nodes.
+    """
+
+    @staticmethod
+    def _complete_digraph(n: int) -> tuple[list[str], list[dict[str, str]]]:
+        ids = [f"t{i}" for i in range(n)]
+        rels = [{"from_table_id": a, "to_table_id": b} for a in ids for b in ids if a != b]
+        return ids, rels
+
+    def test_complete_graph_yields_one_group_not_thousands_of_cycles(self):
+        ids, rels = self._complete_digraph(9)
+
+        result = analyze_graph_topology(ids, rels)
+
+        # Every table is mutually reachable => exactly ONE component naming all 9.
+        assert len(result.cyclic_groups) == 1
+        assert result.cyclic_groups[0].size == 9
+        assert result.density == 1.0
+        assert result.pattern == "complete"
+
+    def test_output_scales_with_tables_not_cycles(self):
+        """Doubling the tables must not explode the rendered context.
+
+        9 -> 14 tables takes the simple-cycle count from ~54k to astronomically
+        more; the formatted context must stay proportional to table count.
+        """
+        small = format_graph_structure_for_context(
+            analyze_graph_topology(*self._complete_digraph(9))
+        )
+        big = format_graph_structure_for_context(
+            analyze_graph_topology(*self._complete_digraph(14))
+        )
+
+        # Linear-ish in tables (each table contributes a role line naming its
+        # neighbours, so growth is quadratic at worst) — never exponential.
+        assert len(big) < len(small) * 6
+
+    def test_circuit_rank_is_the_cycle_space_dimension(self):
+        # A triangle: 3 nodes, 3 undirected edges, 1 component => mu = 3-3+1 = 1.
+        ids = ["t1", "t2", "t3"]
+        rels = [
+            {"from_table_id": "t1", "to_table_id": "t2"},
+            {"from_table_id": "t2", "to_table_id": "t3"},
+            {"from_table_id": "t3", "to_table_id": "t1"},
+        ]
+        assert analyze_graph_topology(ids, rels).circuit_rank == 1
+
+    def test_tree_has_no_independent_cycles(self):
+        # A star is a tree: exactly one join path between any two tables.
+        ids = ["f", "d1", "d2", "d3"]
+        rels = [{"from_table_id": "f", "to_table_id": d} for d in ("d1", "d2", "d3")]
+
+        result = analyze_graph_topology(ids, rels)
+
+        assert result.circuit_rank == 0
+        assert result.cyclic_groups == []
+
+    def test_self_loop_is_not_a_circular_reference_group(self):
+        # A within-table hierarchy is a size-1 component; it is not two tables
+        # referencing each other.
+        ids = ["coa", "journal"]
+        rels = [
+            {"from_table_id": "journal", "to_table_id": "coa"},
+            {"from_table_id": "coa", "to_table_id": "coa"},
+        ]
+
+        assert analyze_graph_topology(ids, rels).cyclic_groups == []

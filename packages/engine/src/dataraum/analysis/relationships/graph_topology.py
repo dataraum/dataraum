@@ -3,7 +3,7 @@
 Analyzes the graph structure of table relationships to:
 - Classify tables by role (hub, dimension, bridge, isolated)
 - Detect overall graph patterns (star_schema, mesh, etc.)
-- Find schema-level cycles (circular references between tables)
+- Find circular reference groups (strongly connected components)
 
 This analysis runs after relationship detection and provides context
 for semantic and cycles agents.
@@ -36,21 +36,30 @@ class TableRole(BaseModel):
     role: str  # "hub", "dimension", "bridge", "isolated"
 
 
-class SchemaCycle(BaseModel):
-    """A cycle in the relationship graph (schema-level, not business cycle).
+class CyclicGroup(BaseModel):
+    """A set of tables that reference each other circularly (schema-level).
 
-    These are circular references between tables in the schema,
-    distinct from business process cycles detected by the cycles agent.
+    A **strongly connected component** of size >= 2: every table in the group is
+    reachable from every other by following references. This is the complete,
+    non-redundant answer to "where are the circular references" — distinct from
+    business process cycles, which the cycles agent detects.
+
+    Replaces per-cycle enumeration (DAT-834). Listing individual cycles is
+    listing the *elements* of a set that grows super-exponentially with density:
+    nine mutually-referencing tables produced 53,902 of them, all naming the same
+    nine tables. The component names those tables once. There are at most
+    ``V // 2`` non-trivial components, by construction rather than by a cap, and
+    Tarjan finds them in O(V + E).
     """
 
     tables: list[str] = Field(default_factory=list)
-    """Table names forming the cycle (in order)."""
+    """Table names in the component (sorted — the group is a set, not a path)."""
 
     table_ids: list[str] = Field(default_factory=list)
-    """Table IDs forming the cycle (in order)."""
+    """Table IDs in the component (sorted, aligned with ``tables``)."""
 
-    length: int = 0
-    """Number of tables in the cycle."""
+    size: int = 0
+    """Number of tables that reference each other circularly."""
 
 
 class GraphStructure(BaseModel):
@@ -85,8 +94,26 @@ class GraphStructure(BaseModel):
     connected_components: int = 0
     """Number of disconnected table groups."""
 
-    schema_cycles: list[SchemaCycle] = Field(default_factory=list)
-    """Cycles in the graph (circular table references)."""
+    cyclic_groups: list[CyclicGroup] = Field(default_factory=list)
+    """Table sets that reference each other circularly (non-trivial SCCs)."""
+
+    circuit_rank: int = 0
+    """Independent cycles in the graph: ``mu = E - V + C`` (the cycle space's
+    dimension / first Betti number).
+
+    The magnitude of join-path ambiguity, exactly: a spanning forest needs
+    ``V - C`` edges, so every additional edge closes one independent cycle. Every
+    cycle in the graph is a combination of ``mu`` basis cycles, which is why
+    enumerating them all is enumerating a vector space instead of describing it.
+    ``mu = 0`` means a forest — exactly one join path between any two tables."""
+
+    density: float = 0.0
+    """Undirected edge count over ``V*(V-1)/2``. ``1.0`` = complete graph.
+
+    Reported, never thresholded. It is how a reader can tell a schema from noise:
+    at density 1.0 every table is connected to every other, so roles, patterns and
+    cycles are all vacuous — the topology carries no information regardless of how
+    much of it there is."""
 
     total_tables: int = 0
     total_relationships: int = 0
@@ -163,7 +190,8 @@ def analyze_graph_topology(
             # its own neighbor, so it would misclassify hub/bridge/dimension roles
             # and corrupt the ContextDocument. Topology measures inter-table
             # connectivity; the self-FK still lives in the relationship catalog.
-            # (Cycle detection below already skips self-loops via len >= 2.)
+            # (SCC detection below is unaffected: a self-loop makes a size-1 component,
+            # which the size >= 2 filter drops.)
             if from_id == to_id:
                 continue
             G.add_edge(from_id, to_id)
@@ -206,24 +234,40 @@ def analyze_graph_topology(
             )
         )
 
-    # Detect schema cycles in directed graph
-    schema_cycles: list[SchemaCycle] = []
-    try:
-        for cycle_ids in nx.simple_cycles(G_directed):
-            if len(cycle_ids) >= 2:  # Ignore self-loops
-                cycle_names = [id_to_name.get(tid, tid) for tid in cycle_ids]
-                schema_cycles.append(
-                    SchemaCycle(
-                        tables=cycle_names,
-                        table_ids=list(cycle_ids),
-                        length=len(cycle_ids),
-                    )
-                )
-    except Exception as e:
-        logger.warning("cycle_detection_failed", error=str(e))
+    # Circular references = the non-trivial strongly connected components.
+    #
+    # This used to enumerate `nx.simple_cycles(G_directed)`. The number of simple
+    # cycles is super-exponential in density, and every one of them was rendered
+    # into the semantic + cycles prompts: nine mutually-referencing tables emitted
+    # 53,902 cycles and a 1.9M-token prompt, twice the context window (DAT-834).
+    # Those 53,902 cycles named the same nine tables over and over — one strongly
+    # connected component. Tarjan finds it in O(V + E) and says the same thing
+    # once. Not a truncation of the old answer; the whole of it, deduplicated.
+    cyclic_groups: list[CyclicGroup] = []
+    for component in nx.strongly_connected_components(G_directed):
+        if len(component) < 2:  # a single node is only "cyclic" via a self-loop
+            continue
+        ids = sorted(component)
+        cyclic_groups.append(
+            CyclicGroup(
+                tables=sorted(id_to_name.get(tid, tid) for tid in ids),
+                table_ids=ids,
+                size=len(ids),
+            )
+        )
+    cyclic_groups.sort(key=lambda g: (-g.size, g.tables))
 
     # Count connected components
     connected_components = nx.number_connected_components(G) if len(G) > 0 else 0
+
+    # The cycle space, described rather than enumerated: mu = E - V + C is its
+    # dimension, so it counts the join paths beyond a spanning forest. Uses the
+    # UNDIRECTED edge count — join ambiguity does not care which way an FK points.
+    n_nodes = G.number_of_nodes()
+    n_undirected = G.number_of_edges()
+    circuit_rank = max(0, n_undirected - n_nodes + connected_components)
+    max_edges = n_nodes * (n_nodes - 1) // 2
+    density = (n_undirected / max_edges) if max_edges else 0.0
 
     # Classify overall pattern
     pattern, pattern_desc = _classify_graph_pattern(
@@ -232,8 +276,9 @@ def analyze_graph_topology(
         hub_count=len(hub_tables),
         leaf_count=len(leaf_tables),
         isolated_count=len(isolated_tables),
-        cycle_count=len(schema_cycles),
+        cyclic_group_count=len(cyclic_groups),
         component_count=connected_components,
+        density=density,
     )
 
     return GraphStructure(
@@ -245,7 +290,9 @@ def analyze_graph_topology(
         pattern=pattern,
         pattern_description=pattern_desc,
         connected_components=connected_components,
-        schema_cycles=schema_cycles,
+        cyclic_groups=cyclic_groups,
+        circuit_rank=circuit_rank,
+        density=density,
         total_tables=len(table_ids),
         total_relationships=len(edges),
     )
@@ -313,8 +360,9 @@ def _classify_graph_pattern(
     hub_count: int,
     leaf_count: int,
     isolated_count: int,
-    cycle_count: int,
+    cyclic_group_count: int,
     component_count: int,
+    density: float,
 ) -> tuple[str, str]:
     """Classify the overall graph pattern.
 
@@ -324,8 +372,9 @@ def _classify_graph_pattern(
         hub_count: Number of hub tables (3+ connections)
         leaf_count: Number of leaf tables (1 connection)
         isolated_count: Number of isolated tables (0 connections)
-        cycle_count: Number of schema cycles
+        cyclic_group_count: Number of circularly-referencing table groups
         component_count: Number of connected components
+        density: Undirected edges over the maximum possible (1.0 = complete)
 
     Returns:
         Tuple of (pattern_name, pattern_description)
@@ -339,6 +388,19 @@ def _classify_graph_pattern(
     if total_relationships == 0:
         return "disconnected", "Tables exist but no relationships detected"
 
+    # Checked before every structural pattern below, because it invalidates them
+    # all: if every table is connected to every other, then every table is a hub,
+    # every table pair is a cycle, and "star" / "mesh" / "chain" describe nothing.
+    # The exact mathematical condition (every pair present), not a tuned cutoff —
+    # a schema is either complete or it is not.
+    if density >= 1.0:
+        return (
+            "complete",
+            f"Every one of the {total_tables * (total_tables - 1) // 2} table pairs is "
+            "connected. A complete graph carries no topological information — treat "
+            "these relationships as unfiltered candidates, not as structure",
+        )
+
     if component_count > 1:
         return (
             "disconnected",
@@ -351,28 +413,29 @@ def _classify_graph_pattern(
             return "sparse", f"{isolated_count} of {total_tables} tables have no relationships"
 
     # Single component patterns
-    if hub_count == 1 and leaf_count >= 2 and cycle_count == 0:
+    if hub_count == 1 and leaf_count >= 2 and cyclic_group_count == 0:
         return (
             "star_schema",
             f"Classic star schema: 1 central hub table connected to {leaf_count} dimension tables",
         )
 
-    if hub_count >= 1 and leaf_count >= 1 and cycle_count == 0:
+    if hub_count >= 1 and leaf_count >= 1 and cyclic_group_count == 0:
         return (
             "hub_and_spoke",
             f"{hub_count} hub table(s) connecting to {leaf_count} dimension table(s)",
         )
 
-    if cycle_count > 0 and hub_count >= 1:
+    if cyclic_group_count > 0 and hub_count >= 1:
         return (
             "mesh_with_cycles",
-            f"Interconnected tables with {cycle_count} cycle(s) - may indicate circular references",
+            f"Interconnected tables, with {cyclic_group_count} group(s) of tables that "
+            "reference each other circularly",
         )
 
-    if cycle_count > 0:
+    if cyclic_group_count > 0:
         return (
             "cyclic",
-            f"Tables form {cycle_count} cycle(s) - relationships loop back",
+            f"{cyclic_group_count} group(s) of tables reference each other circularly",
         )
 
     if hub_count == 0 and total_relationships == total_tables - 1:
@@ -401,7 +464,19 @@ def format_graph_structure_for_context(structure: GraphStructure) -> str:
     lines.append(f"- Total tables: {structure.total_tables}")
     lines.append(f"- Total relationships: {structure.total_relationships}")
     lines.append(f"- Connected components: {structure.connected_components}")
+    lines.append(f"- Graph density: {structure.density:.2f} (1.00 = every table pair connected)")
+    lines.append(f"- Independent join paths beyond a tree (circuit rank): {structure.circuit_rank}")
     lines.append("")
+
+    # On a complete graph the role/cycle sections below describe an artifact of
+    # candidate generation, not a schema. Say so instead of listing it (DAT-834).
+    if structure.density >= 1.0:
+        lines.append(
+            "NOTE: the graph is complete — every table pair is connected, so the roles "
+            "and cyclic groups below are consequences of that, not evidence about the "
+            "schema. Judge each relationship on its own merits."
+        )
+        lines.append("")
 
     if structure.hub_tables:
         lines.append(f"Hub tables (central, 3+ connections): {', '.join(structure.hub_tables)}")
@@ -415,11 +490,14 @@ def format_graph_structure_for_context(structure: GraphStructure) -> str:
     if structure.isolated_tables:
         lines.append(f"Isolated tables (no relationships): {', '.join(structure.isolated_tables)}")
 
-    if structure.schema_cycles:
+    if structure.cyclic_groups:
         lines.append("")
-        lines.append(f"Schema cycles detected: {len(structure.schema_cycles)}")
-        for i, cycle in enumerate(structure.schema_cycles, 1):
-            lines.append(f"  {i}. {' → '.join(cycle.tables)} → {cycle.tables[0]}")
+        lines.append(f"Circular reference groups: {len(structure.cyclic_groups)}")
+        for i, group in enumerate(structure.cyclic_groups, 1):
+            lines.append(
+                f"  {i}. {group.size} tables reference each other circularly: "
+                f"{', '.join(group.tables)}"
+            )
 
     lines.append("")
     lines.append("Table roles:")
@@ -433,7 +511,7 @@ def format_graph_structure_for_context(structure: GraphStructure) -> str:
 
 __all__ = [
     "TableRole",
-    "SchemaCycle",
+    "CyclicGroup",
     "GraphStructure",
     "analyze_graph_topology",
     "format_graph_structure_for_context",

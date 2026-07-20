@@ -2,20 +2,35 @@
 //
 // induceConcepts / induceValidations / induceCycles / induceMetrics are reached
 // only via `frameStagingSet` from the staging-hub modal, so nothing in the
-// engine smoke or the chat surface exercises them. Two of the four carry
-// schemas reshaped for constrained decoding (z.union step variants,
-// minItems:1 on the output-step check, the array<->map boundary conversion)
-// that have never hit the live API.
+// engine smoke or the chat surface exercises them. All four carry schemas
+// reshaped for constrained decoding (the z.union step variants, the
+// id-referenced output step, the array<->map boundary conversion, the ""/[]
+// sentinels replacing every optional) — and a schema's first REAL compile
+// happens on a request like this one, never in a test.
 //
-// Frames a DISTINCT vertical so the existing `finance` model is untouched.
+// Frames a DISTINCT vertical (PROBE_VERTICAL) so the existing `finance` model is
+// untouched — framing WRITES concepts + overlay rows.
 //
-// Run with the same env as scripts/smoke-operating-model.ts.
+// Run with the same env as scripts/smoke-operating-model.ts, plus PROBE_CSV_DIR.
 
 import { readFileSync } from "node:fs";
+import { z } from "zod";
 
 import { frame } from "#/tools/frame";
 
-const CLEAN = "/Users/philipp/Code/dataraum/dataraum-testdata/output/clean";
+const env = z
+	.object({
+		// Directory holding the CSVs to frame, one file per table. REQUIRED —
+		// the driver names its data explicitly, no hidden fixture default (the
+		// `SOURCE_PATH` convention the sibling smoke drivers use).
+		PROBE_CSV_DIR: z.string().min(1),
+		// The vertical to frame under. Deliberately NOT `finance`: framing writes
+		// concepts + overlay rows, and this must not disturb a real model.
+		PROBE_VERTICAL: z.string().min(1).default("dat807_probe"),
+	})
+	.parse(process.env);
+
+const CLEAN = env.PROBE_CSV_DIR.replace(/\/$/, "");
 const TABLES = [
 	"chart_of_accounts",
 	"journal_entries",
@@ -64,7 +79,7 @@ console.log(
 const started = Date.now();
 const result = await frame({
 	schema,
-	vertical_name: "dat807_probe",
+	vertical_name: env.PROBE_VERTICAL,
 });
 const secs = Math.round((Date.now() - started) / 1000);
 

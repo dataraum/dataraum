@@ -51,19 +51,21 @@ open http://dataraum.localhost              # dev@dataraum.dev / dataraum-dev
 
 Caddy routes by hostname: the parent domain serves the **portal** (login + your workspaces),
 and each workspace has its own subdomain (`http://ws1.dataraum.localhost`). `localhost:3000`
-is published for debugging but always `401`s — the session cookie lives on the parent domain.
+is published for debugging only — the session cookie is scoped to the parent domain, so a
+browser there is redirected to the portal and a script gets `401`.
 
-The one thing that bites on a first run: **port 80 must be free.** Caddy binds it, and if it
-can't, `--wait` aborts before the portal ever starts — set `CADDY_HTTP_PORT` *and* a matching
-`DATARAUM_PORTAL_ORIGIN` to move it. (`*.localhost` needs no `/etc/hosts` entry.)
+The thing that bites on a first run: **Caddy binds port 80.** If something already holds it
+(macOS ships Apache), `up` fails at container start and the portal never comes up — set
+`CADDY_HTTP_PORT` *and* a matching `DATARAUM_PORTAL_ORIGIN` to move it. (`*.localhost` needs
+no `/etc/hosts` entry.)
 
 Compose defines exactly **one** workspace pair — bootstrap scaffolding, so a fresh install
 has something to log into and something for the provisioner to clone. Every other workspace
-is created from the portal (**New workspace**) or
-`cd packages/cockpit && bun run workspace:create`; compose does not grow a service per
-workspace.
+is created from the portal (**New workspace**) or `bun run workspace:create`; compose does
+not grow a service per workspace.
 
 Full walkthrough, including troubleshooting: [Running the stack](docs/getting-started/running-the-stack.md).
+
 For UI iteration, run the cockpit dev server outside docker for hot reload — see `packages/cockpit/README.md`.
 
 ### Run a released version (published images)

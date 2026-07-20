@@ -9,10 +9,18 @@
 // (`MembershipRole` is `member`-only). The creator is the membership the new
 // workspace gets; the client can never attach other users.
 //
-// "Signed-in" is a narrower gate than it sounds: there is NO sign-up surface
-// yet, so the only accounts that exist are the ones the bootstrap workspace's
-// registry seeds from DATARAUM_DEV_USER_EMAIL/PASSWORD. Self-service sign-up
-// is what would make this policy mean what it says.
+// Read "ANY signed-in user" literally, and note what it composes with:
+// better-auth's handler is mounted as a splat over /api/auth/* (routes/api/
+// auth/$.ts) and the gate allow-lists that prefix as public (gate.server.ts),
+// while auth.ts sets `emailAndPassword.enabled` with no `disableSignUp`. So
+// POST /api/auth/sign-up/email is reachable UNAUTHENTICATED today — there is
+// no sign-up *UI*, but the endpoint is open. Anyone who can reach the portal
+// can therefore mint an account and provision a workspace, which spins
+// containers on the host.
+//
+// That is the current posture, not a claim that it is the intended one. If it
+// is not, the fix is `disableSignUp: true` (or an invite flow) in auth.ts —
+// NOT a stricter comment here.
 
 import "@tanstack/react-start/server-only";
 

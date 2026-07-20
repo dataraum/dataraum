@@ -40,19 +40,22 @@ for what each one is.
 
 ### If port 80 is taken
 
-Caddy can't bind, `--wait` aborts, and the `portal` service never starts — the failure
-looks like the stack half-came-up. (On macOS the built-in Apache is a common squatter;
-`curl -I http://localhost` will name whoever holds it.) Either free the port, or move the
-ingress — in `packages/infra/.env`:
+Caddy can't bind, so `up` fails at container start and the `portal` service is left in
+`Created` — the failure looks like the stack half-came-up. (On macOS the built-in Apache
+is a common squatter; `curl -I http://localhost` names whoever holds it. A squatter bound
+to IPv4 only does *not* collide — Docker binds the IPv6 stack and `up` succeeds — so the
+symptom appears with dual-stack listeners.) Either free the port, or move the ingress — in
+`packages/infra/.env`:
 
 ```bash
 CADDY_HTTP_PORT=8000
 DATARAUM_PORTAL_ORIGIN=http://dataraum.localhost:8000
 ```
 
-**Both lines, same port.** The portal origin is what the session cookie is derived from and
-what workspace links are built from; if it disagrees with the published port, sign-in
-appears to work and then every workspace link 401s. Every URL below then carries `:8000`.
+**Both lines, same port.** `DATARAUM_PORTAL_ORIGIN` is what workspace links are built from
+(`workspace-url.ts` uses its `host`, port included) and what better-auth matches request
+origins against; if it disagrees with the published port, links point at a port nothing
+listens on. Every URL below then carries `:8000`.
 
 ## Sign in
 
@@ -67,16 +70,22 @@ Start at the portal. Dev stacks seed a credential user from `DATARAUM_DEV_USER_E
 `DATARAUM_DEV_USER_PASSWORD` (`dev@dataraum.dev` / `dataraum-dev` by default; unset both to
 disable). Sign in, then follow **Open** into the workspace.
 
+There is no sign-up *screen*, but better-auth's endpoint is mounted and public: an
+unauthenticated `POST /api/auth/sign-up/email` creates an account. Combined with the create
+policy — any signed-in user of the installation may provision a workspace — anyone who can
+reach the portal can create one. Worth knowing before exposing an install beyond localhost.
+
 Two things worth knowing:
 
 - **`http://localhost:3000` is not the entry point.** The cockpit container still publishes
-  it for debugging, but the session cookie lives on the parent domain — a request to
-  `localhost` never carries one, so the membership gate returns `401` every time. Use the
-  subdomain.
-- **`*.localhost` resolves to `127.0.0.1` on its own**, at any depth — no `/etc/hosts`
-  edit. Every major browser does this itself, and on macOS the system resolver does too,
-  so plain `curl` and Safari work as well. Some Linux resolvers don't; there, add the
-  hosts or use `curl --resolve ws1.dataraum.localhost:80:127.0.0.1 …`.
+  it for debugging, but the session cookie is scoped to the parent domain, so a request to
+  `localhost` never carries one. A browser there is redirected to the portal; a non-HTML
+  caller (curl, a script) gets `401`. Use the subdomain.
+- **`*.localhost` resolves to loopback on its own**, at any depth — no `/etc/hosts` edit.
+  Browsers implement this themselves, and on macOS the system resolver does too, which is
+  why plain `curl` and Safari also work (Safari relies on the resolver, not its own rule).
+  Some Linux resolvers don't; there, add the hosts or use
+  `curl --resolve ws1.dataraum.localhost:80:127.0.0.1 …`.
 
 ## Verify
 
@@ -99,28 +108,36 @@ A [workspace](../platform/architecture.md#the-per-workspace-model) is the unit o
 catalog schema, and object-store prefix.
 
 **One exists already — as bootstrap, not as a feature.** The compose stack defines a single
-engine + cockpit pair, and that cockpit seeds "Default Workspace" at boot from its own
-`DATARAUM_WORKSPACE_ID`: the registry row, the `ws_<id>` schema, its two metadata roles, and
-the dev user's membership. It exists so a fresh install has something to log into and
-something for the provisioner to clone — there is no sign-up surface yet, so without it
-nobody could get in at all. Treat it as scaffolding.
+engine + cockpit pair, and the two halves seed it between them: the **engine** worker
+creates the `ws_<id>` schema, its promoted-read schema, and the two metadata roles from its
+`DATARAUM_WORKSPACE_ID` (it never reads `cockpit_db`), while the **cockpit** seeds the
+`cockpit_db` side — the registry row named "Default Workspace", and the dev user's
+membership. It exists so a fresh install has something to log into and something for the
+provisioner to clone. Treat it as scaffolding.
 
 **Every other workspace is provisioned**, which mints the roles and catalog schema, starts an
 engine + cockpit pair, and registers the Caddy route. Compose does *not* grow a service per
 workspace. Two equivalent front doors:
 
 - The portal → **New workspace**: name, [vertical](../concepts/approach.md), subdomain.
-- The CLI, for scripted or headless setups:
+  This is the path to prefer — the portal container already holds the admin connections
+  and the docker socket the lifecycle needs.
+- The CLI, for scripted or headless setups. It runs on the **host**, so it needs the
+  provisioner env pointed at the published ports — the full block is documented at the top
+  of `packages/cockpit/scripts/provision-workspace.ts`; without it you get a config throw
+  naming the missing field.
 
   ```bash
   cd packages/cockpit
-  bun run workspace:create -- --name "Controlling" --subdomain ws3 \
-      --vertical finance --member dev@dataraum.dev
+  # ... provisioner env (see the script header) ...
+  bun run workspace:create -- --id "$(uuidgen | tr A-Z a-z)" --name "Controlling" \
+      --subdomain ws3 --vertical finance --member dev@dataraum.dev
   bun run workspace:archive -- --id <workspace-id>     # the undo
   ```
 
-  Both ops are idempotent — re-running with the same id converges, so a create that died
-  midway resumes instead of duplicating.
+  Both ops are idempotent **on an id**: re-running with the same `--id` resumes a create
+  that died midway. That is why the example passes one — without `--id` a re-run mints a
+  fresh UUID and then collides with the first attempt's still-live subdomain.
 
 ## Everyday operations
 
@@ -131,8 +148,10 @@ make down                    # stop the stack
 
 - **Iterating on the cockpit UI?** Skip the cockpit container and run the dev server
   outside docker for hot reload — bring up only the backend deps and `bun --bun run dev`.
-  Bare host dev has no Caddy and no subdomains: the portal origin defaults to
-  `http://localhost:3000` and `/` serves that workspace directly. See
+  Note that bare host dev runs the **workspace** role only: there is no portal and no
+  sign-in screen, and the membership gate redirects a signed-out request to the portal
+  origin — which defaults to `http://localhost:3000`, i.e. itself. Use the composed stack
+  for anything that involves logging in. See
   [`packages/cockpit/README.md`](https://github.com/dataraum/dataraum/blob/main/packages/cockpit/README.md).
 - **Changed engine or cockpit code and want it in the container?** A plain `up` reuses the
   cached image. Rebuild and recreate the affected service:

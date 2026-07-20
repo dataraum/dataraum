@@ -532,11 +532,11 @@ services:
   # other port here (see the sbx note); it accepts arbitrary config, so any
   # non-local deployment must scope it to the compose network.
   #
-  # Dev domain story: *.localhost resolves to 127.0.0.1 at any depth with no
-  # /etc/hosts edit — the browsers do it themselves, and on macOS the system
-  # resolver does it too (verified: plain curl and Safari both reach
-  # ws1.dataraum.localhost). Some Linux resolvers do not; there, add the hosts
-  # or use `curl --resolve ws1.dataraum.localhost:80:127.0.0.1 …`.
+  # Dev domain story: *.localhost resolves to loopback at any depth with no
+  # /etc/hosts edit — browsers implement it themselves, and the macOS system
+  # resolver does too (so curl and Safari work without their own rule). Some
+  # Linux resolvers do not; there, add the hosts or use
+  # `curl --resolve ws1.dataraum.localhost:80:127.0.0.1 …`.
   caddy:
     image: caddy:2-alpine
     command: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]

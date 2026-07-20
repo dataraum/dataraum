@@ -6,8 +6,10 @@
 // `resolve.ts` lifts it to a real Vega-Lite spec, and `validate.ts` compile-checks
 // the result before anything is frozen. No `z.record`/open maps — every field is
 // a named key, which is exactly what lets this schema ride Anthropic NATIVE
-// structured output (DAT-807), the constraint the frame path's metric/validation
-// schemas still fail (see frame-family.ts `induceStructured`).
+// structured output (DAT-807). The frame path's metric/validation schemas
+// reached the same place from the other direction: their PERSISTED shape keeps
+// its open maps, and a separate array-shaped LLM-facing schema is converted to
+// it at the induce boundary (`metric-induction.ts` / `validation-induction.ts`).
 //
 // Scope (v1): cartesian marks over an x/y pair with optional color split. No
 // arc/pie (needs theta, not x/y), no layering, no faceting — those are spec shapes

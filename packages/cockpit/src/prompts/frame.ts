@@ -70,16 +70,18 @@ Propose validations that fit THIS source's concepts and schema. A validation dec
     - "comparison": two computed values must agree
     - "constraint": a query must return zero violating rows
     - "aggregate": an aggregate must fall within bounds
-- parameters: free-form check parameters the engine reads when grounding SQL (e.g. { tolerance: 0.01 }), otherwise omit
-- sql_hints: free-form guidance for grounding the SQL — join paths, columns to sum, how to classify rows — otherwise omit
-- expected_outcome: what a passing result looks like, in prose, otherwise omit
-- tags: optional free-form tags for grouping/search
-- relevant_cycles: optional process/accounting cycle types this applies to; empty = universal
+- parameters: a LIST of check parameters the engine reads when grounding SQL. Each entry is either { kind: "number", name, value } or { kind: "string_list", name, values }. Use [] when the check needs none.
+- sql_hints: guidance for grounding the SQL — join paths, columns to sum, how to classify rows. Use "" if you have none.
+- expected_outcome: what a passing result looks like, in prose. Use "" if you have none.
+- tags: free-form tags for grouping/search; [] if none apply
+- relevant_cycles: process/accounting cycle types this applies to; [] = universal
 </validation_fields>
 
 <guidelines>
 - Propose validations OVER the framed concepts — anchor descriptions to the concept vocabulary, not raw column names you guess at
 - Pick the check_type whose semantics match the rule; never invent a type — the four branches are exhaustive
+- A "balance" or "comparison" check needs a numeric slack: give it a parameter { kind: "number", name: "tolerance", value: ... }. The engine reads that key BY NAME — spelling it anything else makes it a prompt hint instead of a threshold.
+- Every other parameter is a hint the SQL-grounding step reads: numeric thresholds as { kind: "number", ... }, classification vocabularies (e.g. which account_type values count as assets) as { kind: "string_list", ... }
 - The description + sql_hints shape WHAT is checked; the check_type is HOW the result is scored — keep them consistent
 - Propose 3-12 validations depending on the data; quality over quantity — every validation should be one the data can support
 - Use any example specs only as a STRUCTURAL template (the field shape and the kind of rule); never copy their ids, names, or parameters
@@ -153,22 +155,28 @@ Propose metrics that fit THIS source's concepts and schema. A metric is NOT a fl
 
 <metric_fields>
 - graph_id: lowercase_snake_case metric identifier (e.g. "ebitda", "dso", "current_ratio")
-- metadata.name: human-readable metric name (e.g. "EBITDA", "Days Sales Outstanding"); metadata.description + metadata.category (e.g. "profitability", "liquidity") optional
-- output: what the metric produces — output.type is "scalar" (default), "series", or "table"; output.unit (e.g. "currency", "days", "ratio", "percent") + decimal_places optional
-- dependencies: the computation DAG, keyed by step id. Each step has a "type":
-    - "extract": a LEAF — pulls a value for ONE framed concept. Set source.standard_field to the CONCEPT NAME from the framed vocabulary (e.g. "revenue"), and aggregation (e.g. "sum", "avg"). Do NOT name a column — the concept is grounded to a column later.
-    - "formula": combines earlier steps via expression (arithmetic over the step ids it consumes) + depends_on (the step ids). This is where the dependency wiring lives.
-    - "constant": a literal or parameter-derived value (set value, or parameter naming an entry in parameters).
-  Exactly ONE step is the output — mark it output_step: true.
-- interpretation.ranges: optional value bands ({ min, max, label, description }) classifying the result (e.g. negative / breakeven / healthy) — the declared MEANING, not a current value.
+- name: human-readable metric name (e.g. "EBITDA", "Days Sales Outstanding"); description: what it measures in business terms; category: e.g. "profitability", "liquidity"; tags: [] if none
+- output_type: "scalar" unless the metric truly produces a "series" or "table"; unit (e.g. "currency", "days", "ratio", "percent"); decimal_places (a whole number)
+- parameters: a LIST of named numeric parameters that CONSTANT steps read from — { name, param_type: "integer"|"float", default, description }. Use [] when the metric has no constant step.
+- steps: the DEPENDENCY steps, as a LIST. Each carries a "type" and its own fields:
+    - "extract": a LEAF — pulls a value for ONE framed concept. Set standard_field to the CONCEPT NAME from the framed vocabulary (e.g. "revenue"), statement (the grouping it lives in, e.g. "income_statement", or "" if the vertical has no such notion), and aggregation. Do NOT name a column — the concept is grounded to a column later.
+    - "formula": combines earlier steps via expression (arithmetic over the step ids it consumes) + depends_on (those step ids). This is where the dependency wiring lives.
+    - "constant": resolves a value from a graph parameter — set parameter to the name of an entry in parameters. There is no inline literal.
+  Every step also carries step_id (its lowercase_snake_case name, which formulas reference) and checks (see below).
+- output_step: the ONE step whose result IS the metric's value — a single "extract" or "formula" step, given separately from the steps list rather than flagged inside it. Use steps: [] when the metric is just that one extract.
+- checks: post-execution conditions on a step's value — { condition, severity, message }. The condition is a comparison over the bare name \`value\`, e.g. "value >= 0" or "0 <= value <= 365" — plain Python comparison syntax over numeric literals, never SQL.
+- interpretation_bands: value bands ({ min, max, label, description }) classifying the result (e.g. negative / breakeven / healthy) — the declared MEANING, not a current value. [] when the metric has no well-known benchmarks.
 </metric_fields>
 
 <guidelines>
-- Leaves are CONCEPTS, not columns: every "extract" step's source.standard_field names a framed concept from the vocabulary above. Never reference a raw column name or write SQL — grounding and SQL composition happen downstream.
+- Leaves are CONCEPTS, not columns: every "extract" step's standard_field names a framed concept from the vocabulary above. Never reference a raw column name or write SQL — grounding and SQL composition happen downstream.
 - Build a real DAG: leaf "extract" steps feed "formula" steps; a formula's depends_on must list the step ids it consumes, and its expression must reference exactly those ids. Wire the structure correctly — the wiring is the point.
-- Mark exactly one output_step: true (the step whose result IS the metric).
+- ALWAYS give the output_step at least one check. This is the metric's own believability test — the range or sign its value must satisfy for the number to be trusted (e.g. a ratio "value >= 0", a days metric "0 <= value <= 365", a margin "-1 <= value <= 1"). A metric that executes is not a metric that is correct; the check is what catches a wrong number, and without it the engine has nothing to test the result against. Pick a band wide enough that a healthy business never trips it.
+- Dependency steps take checks too, but only where a bound is genuinely known — use [] otherwise. Do not invent bounds to fill the field.
+- A "constant" step needs a matching entry in parameters: the step's parameter field and the parameter's name must be the same string, or the step cannot resolve.
 - Propose 3-12 metrics depending on the data; quality over quantity — only metrics whose leaf concepts the framed vocabulary actually contains.
 - Use the example metric DAGs ONLY as a STRUCTURAL template (the dependency shape and the kind of computation); never copy their graph_ids, names, expressions, or parameters — induce metrics that fit THIS source's concepts.
+- The examples are shown in the engine's STORED form, where the steps are a map keyed by step id and the output step carries an output_step flag. Learn the dependency wiring from them, not their layout: your own answer uses the field set described above — a steps list, each step carrying its own step_id, and the output step given separately.
 - Do NOT propose a metric whose leaf concepts are not in the framed vocabulary — a metric the data cannot ground is noise.
 </guidelines>`;
 }

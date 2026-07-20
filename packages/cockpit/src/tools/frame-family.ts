@@ -3,12 +3,15 @@
 // `frame` co-designs the user's whole model — concepts AND the executable
 // knowledge over them (validations, later cycles + metrics, DAT-470/471). Each
 // family follows the SAME two-path shape the concept path proved (DAT-382):
-//   - induce: no edited set → one structured-output Anthropic call proposes the
-//     family's set (seeded with structural few-shot from the nearest shipped
-//     vertical). Concepts + cycles use native structured output
-//     (`induceNative`); validations + metrics still ride the forced-tool
-//     `induceStructured` because their `z.record` fields are inexpressible under
-//     constrained decoding (DAT-807 — see that function's docstring).
+//   - induce: no edited set → one NATIVE structured-output Anthropic call
+//     (`induceNative`) proposes the family's set, seeded with structural
+//     few-shot from the nearest shipped vertical. All four families now go
+//     through it (DAT-807): validations and metrics were the last holdouts —
+//     their payloads carry open maps constrained decoding cannot express, which
+//     is now solved by giving those two families a separate ARRAY-shaped
+//     LLM-facing schema (`validation-induction.ts` / `metric-induction.ts`) and
+//     converting to the payload shape at the induce boundary, rather than by
+//     keeping a forced-tool call.
 //   - declare: an edited set → those are written verbatim, no LLM (the
 //     accept/edit round-trip of the ModelFrame widget).
 // Either way each member is persisted as a `config_overlay` row through the
@@ -17,20 +20,19 @@
 //
 // This module factors that shape so adding a family (DAT-470/471) is supplying
 // `{ teach type, item schema, induce fn, payload mapper }` — the induce-call
-// scaffolding (`induceNative` / `induceStructured`), the declare/write loop
+// scaffolding (`induceNative`), the declare/write loop
 // (`frameFamily`), and the library-as-seed helpers (`nearestSeedVertical` +
 // `formatSeedExamples`) are shared. The concept path runs through `frameFamily` unchanged.
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { chat, toolDefinition } from "@tanstack/ai";
+import { chat } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import type { z } from "zod";
 
 import { config } from "../config";
 import { linkedAbortController } from "../lib/abort";
 import { llmOtel } from "../lib/llm-otel";
-import { toolArgsGuardMiddleware } from "../lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { teach } from "./teach";
 import type { TeachType } from "./teach.validation";
@@ -81,92 +83,6 @@ export async function induceNative<R>(opts: {
 		messages: [{ role: "user", content: opts.userMessage }],
 		outputSchema: opts.outputSchema,
 	})) as R;
-}
-
-/**
- * The LEGACY forced-tool induction — retained ONLY for the two families whose
- * schemas constrained decoding cannot express (DAT-807). The model is given a
- * single `emit_result` tool whose input IS `outputSchema`, and `tool_choice`
- * FORCES it, so the structured value arrives as the tool's validated arguments.
- *
- * Why these two still need it: native structured output requires
- * `additionalProperties: false` everywhere, so an OPEN MAP is inexpressible —
- * and both remaining schemas are keyed by a name the model invents:
- * `ValidationSpecSchema.parameters` and `MetricSpecSchema.dependencies` /
- * `.parameters` are `z.record`. Turning them into arrays is not a cockpit-local
- * change: the overlay payload IS the engine's parse contract (`graphs/loader.py`
- * `_parse_steps` iterates `dependencies.items()`; `analysis/validation/models.py`
- * declares `parameters: dict[str, Any]`), so the reshape is cross-package.
- * `induceConcepts` / `induceCycles` have no such field and went native — see
- * {@link induceNative}.
- *
- * `signal` is the tool-context abort (DAT-449) — a stopped run aborts the call.
- */
-export async function induceStructured<R>(opts: {
-	instructions: string;
-	userMessage: string;
-	outputSchema: z.ZodType<R>;
-	signal?: AbortSignal;
-}): Promise<R> {
-	let captured: R | undefined;
-	const emit = toolDefinition({
-		name: "emit_result",
-		description:
-			"Return your proposal as this tool's arguments, in the required structure.",
-		inputSchema: opts.outputSchema,
-	}).server((input) => {
-		// A generic `z.ZodType<R>` widens the inferred tool input to `unknown`; the
-		// args were validated against `outputSchema` before this runs, so narrow to R.
-		captured = input as R;
-		return { ok: true };
-	});
-
-	// Held so we can abort the in-flight request on early break (below) — otherwise
-	// the Anthropic response keeps streaming to completion after we already have the
-	// tool args, billing tokens we discard (×4 per frame).
-	const abortController = linkedAbortController(opts.signal);
-	const stream = await chat({
-		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		middleware: [
-			...llmOtel("frame_family"),
-			toolArgsGuardMiddleware("frame_family"),
-		],
-		abortController,
-		modelOptions: {
-			max_tokens: MAX_OUTPUT_TOKENS,
-			// Anthropic `tool_choice` (passed through as a provider option) — forces the
-			// model to call `emit_result` on the first turn. If a dep bump renames/drops
-			// this field, the model may answer in prose with no tool call and we fall
-			// through to the `captured === undefined` throw rather than silently looping.
-			tool_choice: { type: "tool", name: "emit_result" },
-			// Disable thinking: this is one-shot structured extraction (forced tool),
-			// not agentic reasoning. Sonnet 5 defaults adaptive thinking ON, which would
-			// bill a thinking trace before every forced emit (×4 per frame) with no
-			// quality gain — and forcing a specific tool while thinking is on is a
-			// fragile combination. The agentic loops (agent-turn, query) keep thinking.
-			thinking: { type: "disabled" },
-		},
-		systemPrompts: [opts.instructions],
-		messages: [{ role: "user", content: opts.userMessage }],
-		tools: [emit],
-	});
-
-	// Drain the agent-loop stream so the forced tool actually executes (its
-	// `.server()` handler captures the validated args). Stop at the first capture:
-	// `tool_choice` keeps forcing `emit_result`, so draining further would bill an
-	// extra turn that only re-emits — abort the in-flight request, then break.
-	for await (const _chunk of stream) {
-		if (captured !== undefined) {
-			abortController?.abort();
-			break;
-		}
-	}
-	if (captured === undefined) {
-		throw new Error(
-			"Induction returned no result — the model emitted no tool call.",
-		);
-	}
-	return captured;
 }
 
 /** A written family member + the overlay row id it landed as. */

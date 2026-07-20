@@ -45,14 +45,18 @@ import {
 	formatSeedExamples,
 	frameFamily,
 	induceNative,
-	induceStructured,
 	nearestSeedVertical,
 	stripUndefined,
 } from "./frame-family";
+import { InducedMetrics, toProposedMetric } from "./metric-induction";
 import { MetricSpecSchema, type ShippedMetricSpec } from "./metric-spec";
 import { readShippedCycles } from "./teach-cycle";
 import { readShippedMetrics } from "./teach-metric";
 import { readShippedValidations } from "./teach-validation";
+import {
+	InducedValidations,
+	toProposedValidation,
+} from "./validation-induction";
 import {
 	type ShippedValidationSpec,
 	ValidationSpecSchema,
@@ -134,11 +138,6 @@ const InducedFrame = z.object({
 export const ProposedValidation = ValidationSpecSchema.omit({ vertical: true });
 export type ProposedValidation = z.infer<typeof ProposedValidation>;
 
-// The structured-output shape the validation induction LLM call returns.
-const InducedValidations = z.object({
-	validations: z.array(ProposedValidation),
-});
-
 // One induced/declared business cycle. The engine's `cycle_types` entry shape
 // (cycle-spec.ts, DAT-465) MINUS `vertical`, which `frame` fixes on write —
 // exactly as ProposedConcept / ProposedValidation omit it. The model fills this
@@ -160,11 +159,6 @@ const InducedCycles = z.object({
 // operating_model (DAT-468/471).
 export const ProposedMetric = MetricSpecSchema.omit({ vertical: true });
 export type ProposedMetric = z.infer<typeof ProposedMetric>;
-
-// The structured-output shape the metric induction LLM call returns.
-const InducedMetrics = z.object({
-	metrics: z.array(ProposedMetric),
-});
 
 // One written concept + the typed `concepts` row id it landed as (DAT-728 — a
 // concept_id, not an overlay_id, now that concepts are typed rows).
@@ -254,12 +248,13 @@ export async function induceConcepts(
 }
 
 /**
- * Induce a validation set for a source via one FORCED-TOOL structured-output
- * call — the one family shape native structured output cannot express, because
- * `parameters` is an open map the engine parses as a dict (DAT-807; see
- * `induceStructured`). Induced OVER the framed concept vocabulary — the concepts
- * are part of the context, so the proposed checks anchor to them rather than to
- * guessed column names. The induce
+ * Induce a validation set for a source via one NATIVE structured-output call
+ * (DAT-807). The model fills the ARRAY-shaped `InducedValidations`
+ * (validation-induction.ts) — `parameters` as a typed list rather than the open
+ * map the payload uses — and `toProposedValidation` folds it back to the engine's
+ * `dict[str, Any]` here, at the single conversion boundary. Induced OVER the
+ * framed concept vocabulary — the concepts are part of the context, so the
+ * proposed checks anchor to them rather than to guessed column names. The induce
  * prompt is seeded with the nearest shipped vertical's specs as STRUCTURAL
  * few-shot (DAT-468) — the framing that makes the proposed shape reliable.
  * Returns the proposed validations; does NOT write anything. The shipped-spec
@@ -276,7 +271,7 @@ export async function induceValidations(
 	) => Promise<ShippedValidationSpec[]> = readShippedValidations,
 ): Promise<ProposedValidation[]> {
 	const seed = await nearestSeedVertical(vertical, readSeed);
-	const { validations } = await induceStructured({
+	const { validations } = await induceNative({
 		instructions: getFrameValidationsInstructions(),
 		userMessage:
 			"Propose data-quality and business-rule validations for the following " +
@@ -291,7 +286,7 @@ export async function induceValidations(
 		outputSchema: InducedValidations,
 		signal,
 	});
-	return validations;
+	return validations.map(toProposedValidation);
 }
 
 /**
@@ -332,11 +327,14 @@ export async function induceCycles(
 }
 
 /**
- * Induce a metric-DAG set for a source via one FORCED-TOOL structured-output
- * call — `dependencies` is keyed by the step ids the model invents, so the DAG
- * is an open map native structured output cannot express (DAT-807; see
- * `induceStructured`). Induced OVER the framed concept vocabulary — the concepts
- * are part of the context, so each metric's leaf `extract` steps anchor to framed
+ * Induce a metric-DAG set for a source via one NATIVE structured-output call
+ * (DAT-807). The model fills the ARRAY-shaped `InducedMetrics`
+ * (metric-induction.ts) — a `steps` array with a nested discriminated union and
+ * a structurally separate `output_step`, rather than the `dependencies` map the
+ * payload uses — and `toProposedMetric` converts it back to the engine's
+ * step-id-keyed map here, at the single conversion boundary. Induced OVER the
+ * framed concept vocabulary — the concepts are part of the context, so each
+ * metric's leaf `extract` steps anchor to framed
  * CONCEPTS rather than to guessed
  * columns — column binding is the semantic phase's job, SQL composition is
  * operating_model's). The induce prompt is seeded with the nearest shipped
@@ -357,7 +355,7 @@ export async function induceMetrics(
 	readSeed: (v: string) => Promise<ShippedMetricSpec[]> = readShippedMetrics,
 ): Promise<ProposedMetric[]> {
 	const seed = await nearestSeedVertical(vertical, readSeed);
-	const { metrics } = await induceStructured({
+	const { metrics } = await induceNative({
 		instructions: getFrameMetricsInstructions(),
 		userMessage:
 			"Propose metrics — each a small computation DAG over the framed concept " +
@@ -373,7 +371,7 @@ export async function induceMetrics(
 		outputSchema: InducedMetrics,
 		signal,
 	});
-	return metrics;
+	return metrics.map(toProposedMetric);
 }
 
 /**

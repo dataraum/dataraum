@@ -28,8 +28,8 @@ compose file; they need no override.
 ## Run a released version
 
 The base compose file builds; a thin overlay, `docker-compose.release.yml`, swaps the
-three app services over to the published tags (`pull_policy: always`). Layer it on top and
-name the version you want:
+app services — `engine-worker`, `cockpit`, `cockpit-migrate`, and `portal` — over to the
+published tags (`pull_policy: always`). Layer it on top and name the version you want:
 
 ```bash
 cp packages/infra/.env.example packages/infra/.env
@@ -45,6 +45,13 @@ docker compose \
 
 - **`DATARAUM_VERSION` is required** by the overlay — a deploy must name the tag it runs
   (no implicit `latest`). Set it in the environment or uncomment it in `.env`.
+- **The ingress needs a free port 80** (or `CADDY_HTTP_PORT`), and
+  **`DATARAUM_PORTAL_ORIGIN` must name the origin users actually reach**, port included.
+  Caddy serves the portal on that origin and each workspace on a subdomain of it; the
+  value is what workspace links are built from and what better-auth matches request
+  origins against, so a mismatch breaks sign-in flows. Set `BETTER_AUTH_SECRET` to a real
+  value (`openssl rand -base64 32`) — the committed default is a dev placeholder, and the
+  portal and every workspace cockpit must share it.
 - **`--no-build` is load-bearing.** The base file's `build:` sections still merge in, so
   without it a failed pull could silently build from whatever source is on the host. With
   it, an unreachable or misspelled tag fails loud instead.
@@ -84,12 +91,15 @@ per service.
 A [workspace](../platform/architecture.md#the-per-workspace-model) is the unit of
 isolation — its own engine container, Temporal queue (`engine-<id>`), Postgres schema
 (`ws_<id>`), DuckLake catalog schema (`ws_<id>` in the installation-wide catalog DB),
-and `s3://bucket/<id>/` prefix. The
-`x-engine-worker-base` anchor in `docker-compose.yml` is the per-workspace template:
-adding a workspace is a registry row plus one more engine service that merges the anchor
-and overrides the three routing knobs (workspace id, queue, lake prefix). The
-cockpit is a **single** app that routes each request to the right workspace by the
-registry.
+and `s3://bucket/<id>/` prefix. Each workspace runs its **own** engine container *and its
+own cockpit container* — the cockpit is per-workspace, not one app routing every request.
+
+Do not add workspaces by editing compose. The `engine-worker` + `cockpit` services are the
+one bootstrap pair, and they double as the template: the provisioner clones their recorded
+container config, overrides the routing knobs and the minted per-workspace secrets, and
+registers the Caddy route. Adding a workspace is therefore the portal's **New workspace**
+flow (or `bun run workspace:create`), and a var added to those two services flows into
+every workspace provisioned afterwards.
 
 The images are plain OCI containers — the compose overlay is the reference topology, not a
 requirement. Run them under any orchestrator that gives them the same substrate (one

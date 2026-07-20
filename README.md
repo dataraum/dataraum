@@ -25,6 +25,8 @@ DataRaum runs as a multi-container platform, isolated per **workspace**:
 - **engine** (Python) — a **Temporal activity worker**, no HTTP. Does the durable analysis (`add_source`, `begin_session`, `operating_model`) and writes metadata to the workspace's Postgres schema.
 - **cockpit** (TanStack Start) — the web app you use. Hosts the chat agent, renders the results, and orchestrates the journey by triggering engine workflows via Temporal.
 
+Each workspace runs its own pair of those two containers. In front of them sit the **portal** (the cockpit image in a second role — login, membership routing, workspace provisioning) and **Caddy**, which serves the portal on the parent domain and each workspace on its own subdomain.
+
 They share one substrate: **Postgres** (metadata + cockpit state + catalogs), an **S3 object store** (the DuckLake data lake + uploads), and **Temporal** (durable orchestration). No HTTP seam between engine and cockpit — the integration surface is Postgres + Temporal. See the [platform architecture](docs/platform/architecture.md).
 
 ## Quick start
@@ -34,7 +36,8 @@ They share one substrate: **Postgres** (metadata + cockpit state + catalogs), an
 cp packages/infra/.env.example packages/infra/.env
 echo "ANTHROPIC_API_KEY=sk-ant-..." >> packages/infra/.env
 
-# Bring up the full stack (Postgres, object store, Temporal, engine worker, cockpit)
+# Bring up the whole installation (substrate, engine worker + cockpit for the
+# default workspace, portal, and the Caddy ingress)
 docker compose -f packages/infra/docker-compose.yml up -d --wait
 
 # Engine health = the Temporal worker heartbeat (no HTTP endpoint):
@@ -42,9 +45,26 @@ docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
   --entrypoint temporal temporal-admin-tools \
   worker list --namespace default --address temporal:7233   # → Status: Running
 
-# Open the cockpit
-open http://localhost:3000
+# Sign in at the portal, then open the default workspace from there
+open http://dataraum.localhost              # dev@dataraum.dev / dataraum-dev
 ```
+
+Caddy routes by hostname: the parent domain serves the **portal** (login + your workspaces),
+and each workspace has its own subdomain (`http://ws1.dataraum.localhost`). `localhost:3000`
+is published for debugging only — the session cookie is scoped to the parent domain, so a
+browser there is redirected to the portal and a script gets `401`.
+
+The thing that bites on a first run: **Caddy binds port 80.** If something already holds it
+(macOS ships Apache), `up` fails at container start and the portal never comes up — set
+`CADDY_HTTP_PORT` *and* a matching `DATARAUM_PORTAL_ORIGIN` to move it. (`*.localhost` needs
+no `/etc/hosts` entry.)
+
+Compose defines exactly **one** workspace pair — bootstrap scaffolding, so a fresh install
+has something to log into and something for the provisioner to clone. Every other workspace
+is created from the portal (**New workspace**) or `bun run workspace:create`; compose does
+not grow a service per workspace.
+
+Full walkthrough, including troubleshooting: [Running the stack](docs/getting-started/running-the-stack.md).
 
 For UI iteration, run the cockpit dev server outside docker for hot reload — see `packages/cockpit/README.md`.
 

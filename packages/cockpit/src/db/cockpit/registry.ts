@@ -31,6 +31,12 @@ import { accounts, memberships, users, workspaces } from "./schema";
 // WORKSPACE property; the per-add_source channel retires in DAT-506.
 const DEFAULT_VERTICAL = "_adhoc";
 
+/** Display name for the env-seeded workspace. Deliberately short and id-free:
+ * it renders in the portal list, the workspace switcher, and the app shell,
+ * where a full UUID overflows. Provisioned workspaces (DAT-820) carry the name
+ * their creator typed; only the boot-seeded one lands here. */
+const DEFAULT_WORKSPACE_NAME = "Default Workspace";
+
 /** The provisioner lifecycle of a workspace (DAT-817, DD/51740673). The retired
  * `archived_at` timestamp folds into `archiving`/`archived`. Mirrored as
  * `LifecycleState` in portal/lifecycle.ts (kept import-free of the workspace
@@ -112,7 +118,7 @@ async function seedRegistry(workspaceId: string): Promise<void> {
 	const subdomain = config.dataraumWorkspaceSubdomain;
 	const workspaceRow = cockpitDb.insert(workspaces).values({
 		id: workspaceId,
-		name: `Workspace ${workspaceId}`,
+		name: DEFAULT_WORKSPACE_NAME,
 		vertical: DEFAULT_VERTICAL,
 		state: "ready" satisfies WorkspaceState,
 		...(subdomain ? { subdomain } : {}),
@@ -182,7 +188,8 @@ async function seedRegistry(workspaceId: string): Promise<void> {
 				userId: devUser.id,
 				password: passwordHash,
 			})
-			// Concurrent boot-seeds (cockpit + cockpit-2 share the dev user and
+			// Concurrent boot-seeds (every workspace cockpit shares the dev user
+			// — a provisioned one inherits the env from the clone — and they
 			// start unordered): both can SELECT-miss above and race this insert
 			// on the deterministic id. The loser converges by re-asserting its
 			// hash — same password, either scrypt hash verifies — instead of
@@ -276,7 +283,7 @@ export async function setActiveWorkspaceVertical(
 		.insert(workspaces)
 		.values({
 			id: workspaceId,
-			name: `Workspace ${workspaceId}`,
+			name: DEFAULT_WORKSPACE_NAME,
 			vertical,
 			state: "ready" satisfies WorkspaceState,
 		})

@@ -188,9 +188,28 @@ describe("resolveActiveWorkspace seed (DAT-461 / DAT-817 / DAT-819)", () => {
 		// (DAT-817 — a self-seeded boot workspace is by definition live).
 		expect(ws?.row.vertical).toBe("_adhoc");
 		expect(ws?.row.state).toBe("ready");
+		// Short, id-free display name: it renders in the portal list and the
+		// app-shell switcher, where a full UUID overflows.
+		expect(ws?.row.name).toBe("Default Workspace");
+		expect(ws?.row.name).not.toContain(WS);
 		// No subdomain declared -> plain DoNothing insert, no upsert.
 		expect(ws?.row).not.toHaveProperty("subdomain");
 		expect(h.upserts).toEqual([]);
+	});
+
+	it("never overwrites an existing row's name — a provisioned workspace keeps the creator's (DAT-820)", async () => {
+		// The two seed paths differ in conflict handling, so pin BOTH: neither
+		// may carry `name` in its update set, or a provisioned workspace's own
+		// cockpit would rename it to "Default Workspace" on boot.
+		h.config = { dataraumWorkspaceId: WS, dataraumWorkspaceSubdomain: "ws1" };
+		const { resolveActiveWorkspace, setActiveWorkspaceVertical } =
+			await freshRegistry();
+		await resolveActiveWorkspace();
+		await setActiveWorkspaceVertical("finance");
+
+		for (const up of h.upserts.filter((u) => u.table === "workspaces")) {
+			expect(up.set).not.toHaveProperty("name");
+		}
 	});
 
 	it("re-asserts the env-declared subdomain on a warm row (DAT-819)", async () => {
@@ -226,8 +245,9 @@ describe("resolveActiveWorkspace seed (DAT-461 / DAT-817 / DAT-819)", () => {
 			userId: DEV_USER_ID,
 			password: "scrypt:pw",
 		});
-		// The insert is upsert-guarded: a concurrent boot-seed (cockpit-2, same
-		// dev user) losing the race converges on the hash instead of throwing
+		// The insert is upsert-guarded: a concurrent boot-seed (another
+		// workspace's cockpit, same dev user) losing the race converges on the
+		// hash instead of throwing
 		// mid-seed and skipping its own membership below.
 		const accountUpsert = h.upserts.find((u) => u.table === "accounts");
 		expect(accountUpsert?.set).toEqual({ password: "scrypt:pw" });

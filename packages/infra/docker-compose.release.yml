@@ -28,16 +28,18 @@ services:
     image: ghcr.io/dataraum/dataraum:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
     pull_policy: always
 
-  # Present only under the multi-workspace profile, but pin it too so a
-  # profile-enabled deploy runs the same published engine image.
-  engine-worker-2:
-    image: ghcr.io/dataraum/dataraum:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
-    pull_policy: always
-
   cockpit-migrate:
     image: ghcr.io/dataraum/dataraum-cockpit-migrate:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
     pull_policy: always
 
   cockpit:
+    image: ghcr.io/dataraum/dataraum-cockpit:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
+    pull_policy: always
+
+  # The portal is the SAME cockpit image in its second role (DAT-819) — it must
+  # be pinned too, or `--no-build` fails the deploy on a host with no source.
+  # It is also what the provisioner clones from, so the pin propagates to every
+  # workspace it creates.
+  portal:
     image: ghcr.io/dataraum/dataraum-cockpit:${DATARAUM_VERSION:?set DATARAUM_VERSION to a released tag}
     pull_policy: always

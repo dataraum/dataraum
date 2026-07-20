@@ -15,7 +15,7 @@ const SPEC = {
 	workspaceId: "00000000-0000-0000-0000-000000000002",
 	subdomain: "ws2",
 	parentDomain: "dataraum.localhost",
-	upstream: "cockpit-2:3000",
+	upstream: "ws-00000000-0000-0000-0000-000000000002-cockpit:3000",
 };
 const ADMIN = "http://caddy:2019";
 const ID = `ws-${SPEC.workspaceId}`;
@@ -53,7 +53,9 @@ describe("workspaceRoute (DAT-819)", () => {
 			handle: [
 				{
 					handler: "reverse_proxy",
-					upstreams: [{ dial: "cockpit-2:3000" }],
+					upstreams: [
+						{ dial: "ws-00000000-0000-0000-0000-000000000002-cockpit:3000" },
+					],
 				},
 			],
 			terminal: true,

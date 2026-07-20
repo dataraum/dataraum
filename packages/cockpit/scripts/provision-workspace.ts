@@ -58,8 +58,9 @@ async function resolveMemberIds(emails: string[]): Promise<string[]> {
 	if (missing.length > 0) {
 		throw new Error(
 			`no cockpit_db user for: ${missing.join(", ")} — members must exist ` +
-				"(sign up through the portal, or bring the stack up so the dev " +
-				"user is seeded)",
+				"first. Either sign the address up (POST /api/auth/sign-up/email " +
+				"at the portal; there is no sign-up UI yet), or bring the stack up " +
+				"and pass the seeded DATARAUM_DEV_USER_EMAIL address",
 		);
 	}
 	return [...found.values()];

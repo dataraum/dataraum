@@ -66,7 +66,10 @@ docker compose -f packages/infra/docker-compose.yml up -d --wait   # full stack
 docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
   --entrypoint temporal temporal-admin-tools \
   worker list --namespace default --address temporal:7233          # → Status: Running
-open http://localhost:3000                                          # cockpit (run dev outside docker for hot reload)
+open http://dataraum.localhost                                      # portal → sign in → your workspace
+# Caddy owns the entry: parent domain = portal, <sub>.dataraum.localhost = a workspace.
+# :80 must be free (else CADDY_HTTP_PORT + a matching DATARAUM_PORTAL_ORIGIN).
+# localhost:3000 is a debug port only — signed-out HTML bounces to the portal.
 ```
 
 Settled architecture decisions → `docs/adr/` (short, git-tracked). Long-form design docs → Confluence (space DD). Active work → Jira (DAT-*).

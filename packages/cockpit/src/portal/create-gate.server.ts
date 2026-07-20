@@ -5,10 +5,27 @@
 //
 // v1 policy (decided on DAT-821): the portal role only, an authenticated
 // session required, and ANY signed-in user of the installation may create —
-// one installation = one tenant, every account arrived through this portal's
-// sign-up, and finer roles are explicitly post-v1 (`MembershipRole` is
-// `member`-only). The creator is the membership the new workspace gets; the
-// client can never attach other users.
+// one installation = one tenant, and finer roles are explicitly post-v1
+// (`MembershipRole` is `member`-only). The creator is the membership the new
+// workspace gets; the client can never attach other users.
+//
+// Read "ANY signed-in user" literally, and note what it composes with:
+// better-auth's handler is mounted as a splat over /api/auth/* (routes/api/
+// auth/$.ts) and the gate allow-lists that prefix as public (gate.server.ts),
+// while auth.ts sets `emailAndPassword.enabled` with no `disableSignUp`. So
+// POST /api/auth/sign-up/email is reachable UNAUTHENTICATED today — there is
+// no sign-up *UI*, but the endpoint is open. Anyone who can reach the portal
+// can therefore mint an account and provision a workspace, which spins
+// containers on the host.
+//
+// That openness is ACCEPTED for now, deliberately: every account on an
+// installation today is a test user, so gating sign-up would cost more than it
+// protects. It is a real exposure the moment an installation carries users who
+// are not — closing it is `disableSignUp: true` plus an invite flow in
+// auth.ts, and it belongs in the same change that first admits a real user.
+//
+// So: do not tighten this comment to make the gate sound narrower than it is,
+// and do not treat the openness as an oversight to quietly patch.
 
 import "@tanstack/react-start/server-only";
 

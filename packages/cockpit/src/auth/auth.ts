@@ -32,10 +32,13 @@ import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { baseConfig } from "#/config.base";
 import { cockpitDb } from "#/db/cockpit/client";
 import { accounts, sessions, users, verifications } from "#/db/cockpit/schema";
+import { trustedOriginPattern } from "./trusted-origins";
 
-/** The parent domain — the portal origin's hostname. Workspace subdomains
- * hang off it (`ws1.dataraum.localhost`), and the session cookie is scoped to
- * it so one login reaches every workspace cockpit. */
+/** The parent domain — the portal origin's HOSTNAME (never the port). This is
+ * the cookie `domain`, and cookies are not port-scoped: a cookie set for
+ * `dataraum.localhost` is sent to every port on it. Workspace subdomains hang
+ * off it (`ws1.dataraum.localhost`) so one login reaches every workspace
+ * cockpit. */
 export const parentDomain = new URL(baseConfig.portalOrigin).hostname;
 
 // Subdomain cookie sharing needs a dotted parent (`dataraum.localhost`); on a
@@ -60,8 +63,10 @@ export const auth = betterAuth({
 	},
 	// POSTs to the auth handler (sign-out from a workspace cockpit) originate
 	// from workspace subdomains — trust the whole parent-domain family, not
-	// just the portal origin.
-	trustedOrigins: crossSubDomain ? [`*.${parentDomain}`] : [],
+	// just the portal origin. Port-inclusive by necessity — see trusted-origins.ts.
+	trustedOrigins: crossSubDomain
+		? [trustedOriginPattern(baseConfig.portalOrigin)]
+		: [],
 	advanced: {
 		crossSubDomainCookies: {
 			enabled: crossSubDomain,

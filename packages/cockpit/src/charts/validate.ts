@@ -3,6 +3,9 @@
 //
 // Three layers, cheapest first:
 //   1. zod parse against the thin subset (chart-config.ts) — shape + enums.
+//      Two entry points differing ONLY in this layer: `validateChartConfig` parses
+//      the persisted shape (manual mapper, mint route), `validateAuthoredChart`
+//      parses the model-facing shape and folds its sentinels first.
 //   2. referenced-column check — every encoded `field` must be a real result
 //      column (the agent emits from columns+types only, but a hallucinated or
 //      misspelled name still has to be caught here, not at render).
@@ -16,9 +19,11 @@
 import { compile } from "vega-lite";
 import type { ZodError } from "zod";
 import {
+	AuthoredChartSchema,
 	type ChartConfig,
 	ChartConfigSchema,
 	referencedFields,
+	toChartConfig,
 } from "./chart-config";
 import { resolveSpec } from "./resolve";
 
@@ -53,8 +58,37 @@ export function validateChartConfig(
 			error: `config does not match the chart schema — ${formatZodError(parsed.error)}`,
 		};
 	}
-	const config = parsed.data;
+	return checkAgainstResult(parsed.data, columns);
+}
 
+/**
+ * The AUTHOR path's gate. The model emits the sentinel-bearing `AuthoredChart`
+ * (chart-config.ts) — the shape constrained decoding can express — which is
+ * folded to a persisted config before the same column + compile checks run.
+ * Separate entry point rather than a union input: the sentinels are read in
+ * exactly one place, and a manual mapping can never smuggle an empty `field`
+ * past the persisted schema's `min(1)`.
+ */
+export function validateAuthoredChart(
+	raw: unknown,
+	columns: readonly string[],
+): ChartValidation {
+	const parsed = AuthoredChartSchema.safeParse(raw);
+	if (!parsed.success) {
+		return {
+			ok: false,
+			error: `config does not match the chart schema — ${formatZodError(parsed.error)}`,
+		};
+	}
+	return checkAgainstResult(toChartConfig(parsed.data), columns);
+}
+
+/** Layers 2 + 3 of the gate, shared by both entry points: every encoded field
+ * must be a real result column, and the resolved spec must compile. */
+function checkAgainstResult(
+	config: ChartConfig,
+	columns: readonly string[],
+): ChartValidation {
 	const missing = referencedFields(config).filter((f) => !columns.includes(f));
 	if (missing.length > 0) {
 		return {

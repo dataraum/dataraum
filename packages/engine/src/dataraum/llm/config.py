@@ -40,7 +40,8 @@ class FeatureConfig(BaseModel):
     # mechanical extractors run thinking-off. A reasoning-heavy feature (metric
     # grounding) sets true — the model reflects before committing, which is the
     # quality lever now that Sonnet 5-class models expose no sampling knobs.
-    # Requires the call site to use a non-forced tool_choice (API constraint).
+    # Requires the call site to leave tool_choice unforced — a forced choice
+    # silently suppresses thinking on the first-party API.
     thinking: bool = False
 
 

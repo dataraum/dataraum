@@ -1,9 +1,10 @@
 // Unit tests for the generic frame-a-family core (DAT-469) — the pure helpers
 // that don't need the LLM or the DB: the library-as-seed formatting + the
-// nearest-shipped-vertical resolution + the payload sanitizer. `induceStructured`
-// (the forced-tool LLM call) and the `frameFamily` write loop are an LLM/DB
-// boundary that a mock can only fake — they're verified by the live frame→import
-// smoke (DAT-597) + a per-family live-API check, not unit tests.
+// nearest-shipped-vertical resolution + the payload sanitizer. `induceNative`
+// (the LLM call) and the `frameFamily` write loop are an LLM/DB boundary that a
+// mock can only fake — the call SHAPE is pinned by induce-native.contract.test.ts
+// and the schemas by induction-schema.contract.test.ts; behaviour is verified by
+// the live frame→import smoke (DAT-597), not unit tests.
 
 import { describe, expect, it, vi } from "vitest";
 

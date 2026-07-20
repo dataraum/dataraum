@@ -9,6 +9,7 @@ column were unreachable and the agent emitted SELECT NULL for them.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import duckdb
@@ -127,14 +128,18 @@ _VALID_OUTPUT = {
     "select_expr": "SUM(amount)",
     "description": "Depreciation expense",
     # Contract v2 (DAT-727): enumerate the columns the parts touch, by role.
+    "assumptions": [],
     "provenance": {
-        "column_mappings_basis": {
-            "depreciation": {
-                "measure_columns": ["amount"],
-                "filter_columns": ["account_name"],
-                "filter": "Depreciation",
+        "column_mappings_basis": [
+            {
+                "concept": "depreciation",
+                "basis": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": ["account_name"],
+                    "filter": "Depreciation",
+                },
             }
-        },
+        ],
     },
 }
 
@@ -172,18 +177,25 @@ def _graph() -> TransformationGraph:
     )
 
 
-def _response(tool_name: str | None, tool_input: dict | None = None) -> MagicMock:
+def _search_turn(tool_input: dict) -> MagicMock:
+    """A turn that calls the ONE real tool instead of finishing."""
     from dataraum.llm.providers.base import ToolCall
 
     response = MagicMock()
     response.content = ""
     response.raw_content = None
-    if tool_name is None:
-        response.tool_calls = []
-    else:
-        # Real ToolCall models — the loop echoes them back into a Message,
-        # which validates its fields (a MagicMock would be rejected).
-        response.tool_calls = [ToolCall(id="tc-1", name=tool_name, input=tool_input or {})]
+    # Real ToolCall models — the loop echoes them back into a Message, which
+    # validates its fields (a MagicMock would be rejected).
+    response.tool_calls = [ToolCall(id="tc-1", name="search_values", input=tool_input)]
+    return response
+
+
+def _grounding(payload: dict) -> MagicMock:
+    """A finished turn: the structured-output grounding, no tool call."""
+    response = MagicMock()
+    response.content = json.dumps(payload)
+    response.raw_content = None
+    response.tool_calls = []
     return response
 
 
@@ -222,11 +234,10 @@ def test_search_then_generate_grounds_with_the_searched_values(monkeypatch) -> N
     conn = duckdb.connect()
     conn.execute("CREATE TABLE coa AS SELECT * FROM (VALUES ('Depreciation')) v(account_name)")
     provider = _provider(
-        _response(
-            "search_values",
-            {"table": "chart_of_account_ob", "column": "account_name", "pattern": "deprec"},
+        _search_turn(
+            {"table": "chart_of_account_ob", "column": "account_name", "pattern": "deprec"}
         ),
-        _response("generate_sql", _VALID_OUTPUT),
+        _grounding(_VALID_OUTPUT),
     )
     agent = _loop_agent(provider)
 
@@ -251,7 +262,7 @@ def test_search_budget_exhaustion_fails_loud(monkeypatch) -> None:
     conn = duckdb.connect()
     conn.execute("CREATE TABLE coa AS SELECT * FROM (VALUES ('Depreciation')) v(account_name)")
     search = {"table": "chart_of_account_ob", "column": "account_name", "pattern": "x"}
-    provider = _provider(*[_response("search_values", search) for _ in range(5)])
+    provider = _provider(*[_search_turn(search) for _ in range(5)])
     agent = _loop_agent(provider)
 
     result = agent._generate_sql(MagicMock(), _graph(), _rich_exec_ctx(conn), {}, workspace_id="ws")
@@ -261,4 +272,6 @@ def test_search_budget_exhaustion_fails_loud(monkeypatch) -> None:
     assert provider.converse.call_count == 5  # 1 initial + 4 budgeted continuations
     # The final tool_result told the model to emit generate_sql now.
     last = provider.converse.call_args_list[4].args[0]
-    assert "call generate_sql now" in last.messages[-1].content[0].content
+    assert "stop searching and answer with the grounding now" in (
+        last.messages[-1].content[0].content
+    )

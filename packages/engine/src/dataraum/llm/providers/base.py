@@ -59,18 +59,20 @@ class PermanentProviderError(ProviderError):
 
 
 class ToolDefinition(BaseModel):
-    """Definition of a tool the LLM can use.
+    """Definition of a tool the LLM can genuinely CALL.
+
+    Since DAT-807 a tool is a tool: the engine's typed results arrive through
+    ``ConversationRequest.output_schema`` (Anthropic structured outputs), not
+    by forcing a tool the model was never meant to invoke. The one remaining
+    tool is ``search_values`` — a real side-effecting lookup the grounding
+    agent chooses to call.
 
     ``strict=True`` asks the API to guarantee the tool's arguments validate
-    against ``input_schema`` — killing the malformed-args class (Sonnet 5
-    stringifying a whole payload into one field, 2026-07-02 smoke). It is
-    OPT-IN per tool, not the default: on the large batched extractions the
-    strict grammar made Sonnet 5 legally under-produce (column_annotation
-    emitted 1 of 8 tables, 642 output tokens vs 6060 — same smoke), so only
-    small fixed-shape outputs (validation_sql) enable it. The stringified-
-    payload hazard for non-strict tools is handled at the parse boundary
-    instead (the provider coerces a stringified array/object argument by
-    parsing it against the declared schema).
+    against ``input_schema``. It is the right default for a genuinely-called
+    tool with a small fixed-shape input; it stays opt-in because a strict
+    grammar over a large variable-length payload makes the model legally
+    under-produce (observed 2026-07-02: column_annotation emitted 1 of 8
+    tables under a strict forced tool).
     """
 
     name: str
@@ -119,6 +121,14 @@ class ConversationRequest(BaseModel):
     # e.g. {"type": "tool", "name": "..."} or
     # {"type": "auto", "disable_parallel_tool_use": True} (bool values occur).
     tool_choice: dict[str, Any] | None = None
+    # Structured output (DAT-807): the JSON Schema the RESPONSE TEXT must
+    # satisfy, sent as ``output_config.format`` so the API constrains decoding
+    # to it. This — not a forced tool_choice — is how every engine agent gets
+    # its typed result; the answer arrives as message content the caller parses
+    # with ``<Model>.model_validate_json(response.content)``, and ``stop_reason``
+    # is ``end_turn``. Composes with real tools: an agent may both call
+    # ``search_values`` and finish under this schema.
+    output_schema: dict[str, Any] | None = None
     max_tokens: int = 4096
     temperature: float = 0.0
     model: str | None = None  # Override default model

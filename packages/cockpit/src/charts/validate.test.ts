@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ChartConfig } from "./chart-config";
+import type { AuthoredChart, ChartConfig } from "./chart-config";
 import { CHART_DATA_NAME, resolveSpec } from "./resolve";
-import { validateChartConfig } from "./validate";
+import { validateAuthoredChart, validateChartConfig } from "./validate";
 
 const COLUMNS = ["month", "revenue", "region"];
 
@@ -96,5 +96,88 @@ describe("validateChartConfig", () => {
 			// `config` is ChartConfig, not unknown — encoding is reachable.
 			expect(res.config.encoding.y.aggregate).toBe("sum");
 		}
+	});
+});
+
+// The author path's gate. Its whole job beyond `validateChartConfig` is folding
+// the sentinels the model-facing schema carries (DAT-807) — so those are what is
+// tested here, not the shared column/compile layers above.
+describe("validateAuthoredChart", () => {
+	const authored: AuthoredChart = {
+		mark: "bar",
+		encoding: {
+			x: { field: "month", type: "temporal", aggregate: "none", title: "" },
+			y: {
+				field: "revenue",
+				type: "quantitative",
+				aggregate: "sum",
+				title: "Revenue",
+			},
+			color: { field: "region", type: "nominal", aggregate: "none", title: "" },
+		},
+		title: "Revenue by month",
+	};
+
+	it("folds a full emission to the persisted config, dropping the sentinels", () => {
+		const res = validateAuthoredChart(authored, COLUMNS);
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		// "none" is the authored spelling of "plotted raw" — never a Vega-Lite
+		// aggregate, so it must not survive into the persisted config.
+		expect("aggregate" in res.config.encoding.x).toBe(false);
+		expect(res.config.encoding.y.aggregate).toBe("sum");
+		// An empty title is absent, not an empty string.
+		expect("title" in res.config.encoding.x).toBe(false);
+		expect(res.config.encoding.y.title).toBe("Revenue");
+		expect(res.config.title).toBe("Revenue by month");
+	});
+
+	it("drops the colour channel when its field is the empty sentinel", () => {
+		const res = validateAuthoredChart(
+			{
+				...authored,
+				encoding: {
+					...authored.encoding,
+					color: { field: "", type: "nominal", aggregate: "none", title: "" },
+				},
+				title: "",
+			},
+			COLUMNS,
+		);
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		// Dropped, NOT carried as a channel with an empty field — which would fail
+		// the referenced-column check as a phantom column.
+		expect(res.config.encoding.color).toBeUndefined();
+		expect(res.config.title).toBeUndefined();
+	});
+
+	it("still rejects an emission referencing an unknown column", () => {
+		const res = validateAuthoredChart(
+			{
+				...authored,
+				encoding: {
+					...authored.encoding,
+					y: {
+						field: "profit",
+						type: "quantitative",
+						aggregate: "sum",
+						title: "",
+					},
+				},
+			},
+			COLUMNS,
+		);
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.error).toContain("profit");
+	});
+
+	it("rejects a PERSISTED-shape config — the author must emit every field", () => {
+		// The two entry points are not interchangeable: a config with the optionals
+		// omitted is exactly what constrained decoding cannot produce, so accepting
+		// it here would hide a schema/adapter regression.
+		const res = validateAuthoredChart(valid, COLUMNS);
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.error).toMatch(/chart schema/);
 	});
 });

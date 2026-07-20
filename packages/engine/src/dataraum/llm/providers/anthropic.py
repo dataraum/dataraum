@@ -45,19 +45,26 @@ tracer = trace.get_tracer(__name__)
 
 # --- Model request-shape capabilities (Claude 4.7+ / Sonnet 5 / Fable 5) ---
 #
-# The engine is the structured-extraction tier (ADR-0004): every call forces a
-# tool for typed output and wants determinism, not agentic reasoning. Two
-# request-shape changes landed with this model generation that the tier must
-# honour, or Sonnet 5 rejects the call outright:
+# The engine is the structured-extraction tier (ADR-0004): every call asks for a
+# typed result and wants determinism, not agentic reasoning. That typed result
+# comes from Anthropic STRUCTURED OUTPUTS — ``output_config.format`` constrains
+# decoding to the caller's JSON Schema and the answer arrives as message content
+# (DAT-807). It is NOT a forced ``tool_choice`` any more: forcing a tool the
+# model was never meant to call was a structured-output stand-in from before the
+# API had one, and it produced the malformation class this tier spent a year
+# compensating for (stringified payloads, paraphrased envelopes that silently
+# zeroed every field). A tool in this tier is now a tool the model genuinely
+# calls (``search_values``). Two request-shape changes landed with this model
+# generation that the tier must honour, or Sonnet 5 rejects the call outright:
 #
 #   * Non-default sampling params (``temperature``/``top_p``/``top_k``) return a
 #     400. Our prompt templates ask for temperature 0.0-0.1 for determinism, so
-#     on these models we OMIT ``temperature`` and rely on the forced tool +
-#     prompt for stable output (temperature 0 never guaranteed identical output
-#     anyway).
+#     on these models we OMIT ``temperature`` and rely on the constrained
+#     grammar + prompt for stable output (temperature 0 never guaranteed
+#     identical output anyway).
 #   * Thinking defaults DIFFER across the family: Sonnet 5 runs adaptive
 #     thinking ON when ``thinking`` is omitted; Opus 4.7/4.8 default it OFF.
-#     A forced-tool extractor never wants it (it burns output budget the
+#     A mechanical extractor never wants it (it burns output budget the
 #     small-cap calls can't spare, and it diverges from the prior Sonnet 4.6
 #     behaviour), so the default path DISABLES it explicitly where a default-on
 #     model would otherwise think. A thinking feature (request.thinking) sends
@@ -77,7 +84,7 @@ _TEMPERATURE_REJECTING_PREFIXES = (
 # non-thinking path so a default-on model (Sonnet 5) doesn't think; harmless
 # on Opus 4.7/4.8 (already default-off). Fable 5 / Mythos 5 are always-on and
 # REJECT an explicit disable, so they are intentionally excluded — the
-# engine's forced-tool tier does not target them.
+# engine's extraction tier does not target them.
 _THINKING_DEFAULT_ON_PREFIXES = (
     "claude-sonnet-5",
     "claude-opus-4-7",
@@ -95,11 +102,13 @@ def _thinking_defaults_on(model: str) -> bool:
     return model.startswith(_THINKING_DEFAULT_ON_PREFIXES)
 
 
-# JSON-Schema keywords strict grammar compilation rejects. Stripping them is
-# lossless for correctness: Pydantic re-validates the parsed arguments client-
-# side, so range/length constraints are still enforced — strict guarantees the
-# SHAPE (no stringified payloads, no missing/extra keys), Pydantic the values.
-_STRICT_UNSUPPORTED_KEYS = frozenset(
+# JSON-Schema keywords constrained-grammar compilation rejects — the same set
+# for ``output_config.format`` and for a ``strict: true`` tool. Stripping them
+# is lossless for correctness: Pydantic re-validates the decoded payload
+# client-side, so range/length constraints are still enforced — the grammar
+# guarantees the SHAPE (no stringified payloads, no missing/extra keys),
+# Pydantic the values.
+_CONSTRAINED_UNSUPPORTED_KEYS = frozenset(
     {
         "minimum",
         "maximum",
@@ -108,28 +117,45 @@ _STRICT_UNSUPPORTED_KEYS = frozenset(
         "multipleOf",
         "minLength",
         "maxLength",
-        "minItems",
         "maxItems",
     }
 )
 
+# ``minItems`` is the ONE array constraint the grammar accepts, and only at the
+# values 0 and 1 (Anthropic structured-outputs reference). It is therefore NOT
+# in the unsupported set above: a schema that says "this array must be
+# non-empty" is the only way to make the model produce at least one element,
+# and stripping it silently turns a mandatory list into an optional one. Any
+# other value is rejected by the compiler, so those are dropped.
+_MIN_ITEMS_SUPPORTED_VALUES = (0, 1)
 
-def _strict_tool_schema(node: Any) -> Any:
-    """Normalize a Pydantic JSON schema for ``strict: true`` tool use.
 
-    Recursively sets ``additionalProperties: false`` on every object node
-    (strict requires it explicitly; Pydantic never emits it) and strips the
-    constraint keywords strict rejects (see ``_STRICT_UNSUPPORTED_KEYS``).
+def _constrained_schema(node: Any) -> Any:
+    """Normalize a Pydantic JSON schema for constrained decoding.
+
+    One normalization serves both constrained-decoding surfaces —
+    ``output_config.format`` (the typed RESULT of every engine agent) and a
+    ``strict: true`` tool's ``input_schema``: recursively set
+    ``additionalProperties: false`` on every object node (both require it
+    explicitly; Pydantic never emits it) and strip the constraint keywords the
+    grammar compiler rejects (see ``_CONSTRAINED_UNSUPPORTED_KEYS``).
+
+    ``additionalProperties: false`` also FORBIDS an open map — a
+    ``dict[str, Model]`` field cannot be expressed under constrained decoding
+    and must be modelled as a list of ``{key, value}`` entries.
     """
     if isinstance(node, dict):
         out = {
-            k: _strict_tool_schema(v) for k, v in node.items() if k not in _STRICT_UNSUPPORTED_KEYS
+            k: _constrained_schema(v)
+            for k, v in node.items()
+            if k not in _CONSTRAINED_UNSUPPORTED_KEYS
+            and not (k == "minItems" and v not in _MIN_ITEMS_SUPPORTED_VALUES)
         }
         if out.get("type") == "object" or "properties" in out:
             out.setdefault("additionalProperties", False)
         return out
     if isinstance(node, list):
-        return [_strict_tool_schema(v) for v in node]
+        return [_constrained_schema(v) for v in node]
     return node
 
 
@@ -150,60 +176,6 @@ _EFFORT_SUPPORTING_PREFIXES = (
 def _supports_effort(model: str) -> bool:
     """True when the model accepts ``output_config.effort``."""
     return model.startswith(_EFFORT_SUPPORTING_PREFIXES)
-
-
-def _coerce_stringified_args(
-    tool_input: dict[str, Any], schema: dict[str, Any], *, label: str | None
-) -> dict[str, Any]:
-    """Parse tool arguments the model JSON-stringified against the schema.
-
-    Sonnet 5 occasionally serializes a whole array/object argument into a JSON
-    string (`{"tables": "[{…}]"}` — 2026-07-02 smoke, semantic_per_table died
-    on Pydantic list_type). The declared ``input_schema`` says which top-level
-    properties must be containers, so this boundary repairs exactly those:
-    a ``str`` value where the schema expects ``array``/``object`` is parsed;
-    everything else passes through untouched. Coercions are logged so the
-    frequency stays observable (the strict alternative is opt-in per tool —
-    see ``ToolDefinition.strict``).
-    """
-    properties = schema.get("properties")
-    if not isinstance(properties, dict):
-        return tool_input
-    out = dict(tool_input)
-    for key, value in tool_input.items():
-        expected = properties.get(key)
-        if not isinstance(expected, dict) or not isinstance(value, str):
-            continue
-        if expected.get("type") not in ("array", "object"):
-            continue
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            continue
-        # Whole-payload variant (observed in smoke #6): the model serialized
-        # the ENTIRE input object into one field — {"tables": '{"tables": […]}'}.
-        # If the parsed dict's keys are the tool's own top-level properties,
-        # it IS the input; adopt it wholesale.
-        if (
-            isinstance(parsed, dict)
-            and parsed.keys() <= properties.keys()
-            and expected.get("type") != "object"
-        ):
-            logger.warning(
-                "stringified_tool_payload_coerced",
-                label=label,
-                argument=key,
-            )
-            return parsed
-        if isinstance(parsed, (list, dict)):
-            out[key] = parsed
-            logger.warning(
-                "stringified_tool_arg_coerced",
-                label=label,
-                argument=key,
-                expected_type=expected.get("type"),
-            )
-    return out
 
 
 # 4xx codes the user must fix — credentials, schema, request shape.
@@ -339,7 +311,7 @@ class AnthropicProvider(LLMProvider):
                         {
                             "name": t.name,
                             "description": t.description,
-                            "input_schema": _strict_tool_schema(t.input_schema)
+                            "input_schema": _constrained_schema(t.input_schema)
                             if t.strict
                             else t.input_schema,
                             **({"strict": True} if t.strict else {}),
@@ -398,12 +370,26 @@ class AnthropicProvider(LLMProvider):
             if request.tool_choice:
                 kwargs["tool_choice"] = request.tool_choice
 
-            # DAT-603: per-feature effort. Extraction agents run thinking-off +
-            # effort:low (shorter output = lower serial-decode latency). Only
-            # sent where the model supports the parameter — Haiku 4.5 rejects
-            # it, so the fast tier drops it silently.
+            # ONE output_config carries both knobs the API nests there.
+            #   * effort (DAT-603) — per-feature output effort. Extraction agents
+            #     run thinking-off + effort:low (shorter output = lower serial-
+            #     decode latency). Only sent where the model supports the
+            #     parameter — Haiku 4.5 rejects it, so the fast tier drops it.
+            #   * format (DAT-807) — the structured-output grammar. This is how
+            #     every engine agent gets its typed result; the schema is
+            #     normalized exactly like a strict tool's (recursive
+            #     additionalProperties:false, unsupported constraint keywords
+            #     stripped) because constrained decoding compiles both the same way.
+            output_config: dict[str, Any] = {}
             if request.effort and _supports_effort(model):
-                kwargs["output_config"] = {"effort": request.effort}
+                output_config["effort"] = request.effort
+            if request.output_schema is not None:
+                output_config["format"] = {
+                    "type": "json_schema",
+                    "schema": _constrained_schema(request.output_schema),
+                }
+            if output_config:
+                kwargs["output_config"] = output_config
 
             # GenAI-semconv span (DAT-706) around the client call. Current
             # conventions (the relocated semantic-conventions-genai repo):
@@ -422,7 +408,7 @@ class AnthropicProvider(LLMProvider):
             }
             if "temperature" in kwargs:
                 span_attributes["gen_ai.request.temperature"] = request.temperature
-            if "output_config" in kwargs:
+            if "effort" in output_config:
                 span_attributes["gen_ai.request.reasoning.level"] = request.effort
             if request.label:
                 # Same key the cockpit's otelMiddleware enricher stamps, so
@@ -478,76 +464,34 @@ class AnthropicProvider(LLMProvider):
                     }
                 )
 
-            # Extract content and tool calls from response. raw_content keeps
-            # the turn's blocks VERBATIM (incl. signed thinking blocks) so a
-            # continued conversation can echo the assistant turn back — the
-            # thinking-model API rejects a continuation whose assistant turn
-            # lost its thinking blocks (DAT-699).
+            # Extract content and tool calls from response. Under
+            # ``output_config.format`` the typed result IS the text content —
+            # constrained decoding guarantees it parses against the request's
+            # schema, so there is nothing to coerce, unwrap or repair on this
+            # boundary (DAT-807 deleted all three). raw_content keeps the turn's
+            # blocks VERBATIM (incl. signed thinking blocks) so a continued
+            # conversation can echo the assistant turn back — the thinking-model
+            # API rejects a continuation whose assistant turn lost its thinking
+            # blocks (DAT-699).
             text_content = ""
             tool_calls: list[ToolCall] = []
             raw_content: list[dict[str, Any]] = []
 
-            schemas_by_name = {t.name: t.input_schema for t in request.tools}
             for block in response.content:
                 if block.type == "text":
                     text_content += block.text
                     raw_content.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
-                    original_input = dict(block.input) if block.input else {}
-                    # Echo the ORIGINAL input in raw_content (exact round-trip);
-                    # the coerced form is for OUR consumers only.
+                    tool_input = dict(block.input) if block.input else {}
                     raw_content.append(
                         {
                             "type": "tool_use",
                             "id": block.id,
                             "name": block.name,
-                            "input": original_input,
+                            "input": tool_input,
                         }
                     )
-                    coerced = original_input
-                    tool_schema = schemas_by_name.get(block.name)
-                    # Envelope unwrap (Sonnet 5 under a forced tool_choice): the model
-                    # intermittently wraps the WHOLE argument object under a single key
-                    # — {"analyze_slicing": {<the real args>}}. It is a valid tool call,
-                    # but schema-validation at the call site then finds no known
-                    # top-level field and silently defaults every field to empty (an
-                    # empty ``recommendations`` list is indistinguishable from "model
-                    # declined"). This silently zeroed slicing on a sampling-dependent
-                    # fraction of runs → no slices → dimension_hierarchies/
-                    # aggregation_lineage/drivers all skipped, and it hits EVERY
-                    # forced-tool extractor (relationship judge, reconciliation).
-                    # Unwrap it here, once, for all of them.
-                    #
-                    # The wrapper key is NOT always the tool name: submit_analysis came
-                    # back as {"analysis": {...}} — a paraphrase — which zeroed
-                    # business_cycles (DAT-795's all-or-nothing cycle collapse). So key
-                    # on the SCHEMA, not the name: a lone top-level key that the tool
-                    # does not declare, carrying a dict, is an envelope by construction.
-                    # A single-property tool whose one declared key holds an object is
-                    # therefore left alone — that payload is legitimate, not wrapped.
-                    if len(coerced) == 1:
-                        (only_key,) = coerced
-                        enveloped = coerced[only_key]
-                        declared = (tool_schema or {}).get("properties") or {}
-                        if isinstance(enveloped, dict) and only_key not in declared:
-                            logger.warning(
-                                "tool_output_envelope_unwrapped",
-                                label=request.label,
-                                tool=block.name,
-                                envelope_key=only_key,
-                            )
-                            coerced = dict(enveloped)
-                    if tool_schema is not None:
-                        coerced = _coerce_stringified_args(
-                            coerced, tool_schema, label=request.label
-                        )
-                    tool_calls.append(
-                        ToolCall(
-                            id=block.id,
-                            name=block.name,
-                            input=coerced,
-                        )
-                    )
+                    tool_calls.append(ToolCall(id=block.id, name=block.name, input=tool_input))
                 elif block.type == "thinking":
                     raw_content.append(
                         {
@@ -574,12 +518,14 @@ class AnthropicProvider(LLMProvider):
                 cache_creation_input_tokens=cache_creation,
             )
 
-            # Dump the ACTUAL rendered prompt + the model's raw response (incl. the
-            # tool-call input) for EVERY call at the provider chokepoint — not just
-            # the graph agent (DAT-758/759 diag). Gated by settings.prompt_dump_dir
-            # (no-op otherwise); best-effort. This is the only way to see what a
-            # forced-tool extractor really returned: an EMPTY tool call is invisible
-            # in the token log (it reads the same as a rich one).
+            # Dump the ACTUAL rendered prompt + the model's raw response — the
+            # structured-output JSON plus any real tool call — for EVERY call at
+            # the provider chokepoint, not just the graph agent (DAT-758/759
+            # diag). Gated by settings.prompt_dump_dir (no-op otherwise);
+            # best-effort. This is the only way to see what an extractor really
+            # produced: a schema-valid but EMPTY payload is invisible in the
+            # token log (it reads the same as a rich one), and the eval reads
+            # these dumps keyed by (label, prompt_hash).
             _label = request.label or "unlabeled"
             _user = "\n\n".join(m.content for m in request.messages if isinstance(m.content, str))
             _phash = hashlib.sha256(_user.encode("utf-8")).hexdigest()[:16]

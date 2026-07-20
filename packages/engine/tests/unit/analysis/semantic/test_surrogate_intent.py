@@ -97,7 +97,12 @@ def _agent(relationships: list[Relationship]) -> MagicMock:
                 # module seeds a `txn` table with an `account` column.
                 column_concepts=[
                     ColumnConceptOutput(
-                        table_name="txn", column_name="account", meaning="test meaning"
+                        table_name="txn",
+                        column_name="account",
+                        meaning="test meaning",
+                        unit_source_column="",
+                        derived_formula_hypothesis="",
+                        derived_formula_confidence=0.0,
                     )
                 ],
             )

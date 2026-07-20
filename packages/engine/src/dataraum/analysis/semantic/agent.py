@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -53,9 +52,8 @@ from dataraum.llm.privacy import DataSampler
 from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
-    ToolDefinition,
 )
-from dataraum.llm.tool_repair import repair_tool_output
+from dataraum.llm.structured_output import parse_structured_output
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
@@ -181,24 +179,11 @@ class SemanticAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to render semantic_per_table prompt: {e}")
 
-        tool = ToolDefinition(
-            name="analyze_tables",
-            description=(
-                "Classify each table as a business entity (fact/dimension, grain, "
-                "time column), confirm relationships between tables, and author the "
-                "catalogue-grain column_concepts (a meaning for EVERY column). The "
-                "OBJECT-grain per-column annotations (role, entity label, term) are "
-                "already decided — do not re-emit those."
-            ),
-            input_schema=TableSynthesisOutput.model_json_schema(),
-        )
-
         model = self.provider.get_model_for_tier(feature_config.model_tier)
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "analyze_tables"},
+            output_schema=TableSynthesisOutput.model_json_schema(),
             label="semantic_per_table",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
@@ -206,12 +191,11 @@ class SemanticAgent(LLMFeature):
             model=model,
         )
 
-        result = self._converse_and_validate(request, tool, model)
+        result = self._converse_and_validate(request)
         if not result.success:
             return Result.fail(result.error or "Table synthesis failed")
-        # column_concepts is a REQUIRED field on the tool schema (DAT-768), so a
-        # crowded-out omission surfaces here as a ValidationError that
-        # _converse_and_validate already repaired; a still-empty surface is caught
+        # column_concepts is a REQUIRED field on the output schema (DAT-768), so
+        # constrained decoding cannot crowd it out; a still-EMPTY surface is caught
         # loud downstream by synthesize_and_store_tables' emptiness gate (DAT-769:
         # blanket — every column carries a meaning by contract).
         return self._build_enrichment_result(result.unwrap())
@@ -219,41 +203,18 @@ class SemanticAgent(LLMFeature):
     def _converse_and_validate(
         self,
         request: ConversationRequest,
-        tool: ToolDefinition,
-        model: str,
     ) -> Result[TableSynthesisOutput]:
-        """One ``analyze_tables`` turn → validated output, with a DAT-710 schema repair.
+        """One ``semantic_per_table`` turn → validated output.
 
         ``converse`` raises a typed ProviderError on an API failure (DAT-503) —
         retryability rides the exception to the worker's durable boundary, so we
-        don't re-wrap it; a returned Result is always a success. One lazy tool
-        output (a relationship missing ``to_column``, a ``"placeholder"`` reasoning)
-        must not fail begin_session whole (DAT-710): it is schema-repaired in one
-        turn — the DAT-699 pattern — instead of a non-retryable PhaseFailed with
-        whole-cascade blast radius. strict grammar is the WRONG lever here: this is
-        a large batched extraction, exactly the shape where strict makes the model
-        legally under-produce (see ``ToolDefinition.strict``), so repair, never strict.
+        don't re-wrap it; a returned Result is always a success. The result comes
+        back as structured-output content the API constrained to
+        ``TableSynthesisOutput``'s schema (DAT-807), so a shape failure here means
+        the API contract broke, not that the model was lazy — fail loud.
         """
         response = self.provider.converse(request).unwrap()
-        if not response.tool_calls or response.tool_calls[0].name != "analyze_tables":
-            return Result.fail("LLM did not use the analyze_tables tool")
-        tool_input = response.tool_calls[0].input
-        try:
-            return Result.ok(TableSynthesisOutput.model_validate(tool_input))
-        except ValidationError as e:
-            repaired = repair_tool_output(
-                self.provider,
-                tool,
-                tool_input,
-                e,
-                TableSynthesisOutput,
-                model=model,
-                label="semantic_per_table",
-                max_tokens=self.config.limits.max_output_tokens_per_request,
-            )
-            if not repaired.success:
-                return Result.fail(f"Failed to parse table synthesis response: {repaired.error}")
-            return Result.ok(repaired.unwrap())
+        return parse_structured_output(response, TableSynthesisOutput, label="semantic_per_table")
 
     @staticmethod
     def _format_persisted_annotations(annotations: list[dict[str, Any]]) -> str:

@@ -20,6 +20,7 @@ from dataraum.graphs.grounding_validation import (
 )
 from dataraum.graphs.models import (
     ConceptGroundingBasis,
+    ConceptGroundingEntry,
     ExtractGroundingOutput,
     GraphProvenanceOutput,
 )
@@ -36,10 +37,10 @@ def conn():
 
 def _output(
     *,
-    relation: str | None = "t",
+    relation: str = "t",
     select_expr: str = "SUM(amount)",
     where: list[str] | None = None,
-    basis: dict[str, ConceptGroundingBasis] | None = None,
+    basis: list[ConceptGroundingEntry] | None = None,
 ) -> ExtractGroundingOutput:
     return ExtractGroundingOutput(
         grounding="evidence",
@@ -47,12 +48,22 @@ def _output(
         where=where or [],
         select_expr=select_expr,
         description="d",
-        provenance=GraphProvenanceOutput(column_mappings_basis=basis or {}),
+        provenance=GraphProvenanceOutput(column_mappings_basis=basis or []),
+        assumptions=[],
     )
 
 
-def _basis(concept: str, measure: list[str], filters: list[str] | None = None):
-    return {concept: ConceptGroundingBasis(measure_columns=measure, filter_columns=filters or [])}
+def _basis(
+    concept: str, measure: list[str], filters: list[str] | None = None
+) -> list[ConceptGroundingEntry]:
+    return [
+        ConceptGroundingEntry(
+            concept=concept,
+            basis=ConceptGroundingBasis(
+                measure_columns=measure, filter_columns=filters or [], filter=""
+            ),
+        )
+    ]
 
 
 def test_clean_enumeration_passes(conn) -> None:
@@ -65,7 +76,7 @@ def test_clean_enumeration_passes(conn) -> None:
 
 
 def test_fall_loud_shape_is_exempt(conn) -> None:
-    out = _output(relation=None, select_expr="NULL")
+    out = _output(relation="", select_expr="NULL")
     assert validate_grounding_basis(out, _SCHEMA, conn) == []
 
 
@@ -96,21 +107,24 @@ def test_used_but_not_enumerated_is_a_violation(conn) -> None:
 def test_empty_basis_with_real_grounding_is_incomplete(conn) -> None:
     """A real grounding with NO enumeration at all fails completeness — the
     graph cannot ground `uses` edges on nothing."""
-    out = _output(basis={})
+    out = _output(basis=[])
     violations = validate_grounding_basis(out, _SCHEMA, conn)
     assert any("'amount'" in v for v in violations)
 
 
-def test_missing_provenance_with_real_grounding_is_incomplete(conn) -> None:
-    """provenance=None on a real grounding is the same violation class as an
-    empty basis — the enumeration is REQUIRED for a non-null relation."""
+def test_empty_provenance_with_real_grounding_is_incomplete(conn) -> None:
+    """An empty enumeration on a real grounding is a violation — the enumeration
+    is REQUIRED whenever the relation is non-empty. Since DAT-807 ``provenance``
+    itself is a required field (its empty value is an empty
+    ``column_mappings_basis``), so "absent" and "empty" are the same shape."""
     out = ExtractGroundingOutput(
         grounding="evidence",
         relation="t",
         where=[],
         select_expr="SUM(amount)",
         description="d",
-        provenance=None,
+        provenance=GraphProvenanceOutput(column_mappings_basis=[]),
+        assumptions=[],
     )
     violations = validate_grounding_basis(out, _SCHEMA, conn)
     assert any("'amount'" in v for v in violations)
@@ -118,7 +132,7 @@ def test_missing_provenance_with_real_grounding_is_incomplete(conn) -> None:
 
 def test_count_star_with_empty_basis_is_clean(conn) -> None:
     """COUNT(*) touches no column — an empty enumeration is honest, not lazy."""
-    out = _output(select_expr="COUNT(*)", basis={})
+    out = _output(select_expr="COUNT(*)", basis=[])
     assert validate_grounding_basis(out, _SCHEMA, conn) == []
 
 
@@ -153,9 +167,14 @@ def test_dual_role_column_enumerated_under_both_roles_is_clean(conn) -> None:
     out = _output(
         select_expr="SUM(amount)",
         where=["amount > 0"],
-        basis={
-            "revenue": ConceptGroundingBasis(measure_columns=["amount"], filter_columns=["amount"])
-        },
+        basis=[
+            ConceptGroundingEntry(
+                concept="revenue",
+                basis=ConceptGroundingBasis(
+                    measure_columns=["amount"], filter_columns=["amount"], filter=""
+                ),
+            )
+        ],
     )
     assert validate_grounding_basis(out, _SCHEMA, conn) == []
 
@@ -221,3 +240,31 @@ def test_schema_tables_from_info_shapes_the_served_schema() -> None:
         ]
     }
     assert schema_tables_from_info(info) == {"t": {"a"}, "u": set()}
+
+
+def test_duplicate_concepts_are_rejected() -> None:
+    """The list shape must round-trip to the persisted map without loss.
+
+    Two entries for one concept would both pass ``validate_grounding_basis``
+    (it iterates the list, so completeness is checked over their union) and then
+    silently collapse to the last one at the persistence boundary — dropping
+    ``uses`` edges validation had just certified. The map shape this replaced
+    made that impossible by construction; the validator restores the guarantee.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="repeats"):
+        GraphProvenanceOutput(
+            column_mappings_basis=[
+                *_basis("revenue", ["credit"]),
+                *_basis("revenue", ["debit"]),
+            ]
+        )
+
+
+def test_distinct_concepts_are_fine() -> None:
+    prov = GraphProvenanceOutput(
+        column_mappings_basis=[*_basis("revenue", ["credit"]), *_basis("cost", ["debit"])]
+    )
+    assert len(prov.column_mappings_basis) == 2

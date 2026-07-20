@@ -180,7 +180,7 @@ def persist_column_annotations(
 
     Args:
         session: Database session.
-        column_output: Per-column tool output (tables -> columns).
+        column_output: Per-column structured output (tables -> columns).
         table_ids: Tables the annotations belong to (for column-id resolution).
         annotated_by: Model identifier that produced the annotations.
 
@@ -281,7 +281,7 @@ def persist_column_concepts(
                 # Normalized like the formula hypothesis: an all-whitespace meaning
                 # is absence, so the gate below and the feed's IS NOT NULL read agree.
                 "meaning": (cc.meaning or "").strip() or None,
-                "unit_source_column": cc.unit_source_column,
+                "unit_source_column": (cc.unit_source_column or "").strip() or None,
                 "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
                 "derived_formula_confidence": cc.derived_formula_confidence,
                 "annotation_source": DecisionSource.LLM.value,

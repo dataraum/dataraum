@@ -1,17 +1,15 @@
-"""Tool-boundary enforcement with a repair turn — schema (DAT-699) + contract (DAT-727).
+"""Grounding-output enforcement: structured output (DAT-807) + contract v2 (DAT-727).
 
-The grounding output schema is ENFORCED, never coerced: when the model's
-generate_sql arguments fail validation (live kill: `provenance` emitted as a
-JSON-encoded string), the agent re-prompts the model with its own output plus
-the exact validation error under a forced tool choice, and validates again.
-One finished, correct grounding must never be discarded whole on a
-serialization slip — and the repair is the model's, not a silent
-``json.loads`` behind its back.
+The grounding arrives as message CONTENT the API constrained to
+``ExtractGroundingOutput``'s schema, so the malformation class the DAT-699/710
+schema-repair turn existed for — ``provenance`` emitted as a JSON-encoded string
+— is structurally unreachable and that repair is gone.
 
-The provenance contract v2 (DAT-727) rides the same mechanics one level up:
-a schema-valid output whose column enumeration violates the served schema
-(membership) or its own SQL parts (completeness) gets a contract-repair turn;
-a still-invalid output falls loud into the failed-snippet path.
+The CONTRACT repair is not: constrained decoding guarantees SHAPE, never
+semantics. A schema-valid output whose column enumeration violates the served
+schema (membership) or its own SQL parts (completeness) still gets one
+contract-repair turn, and a still-invalid output falls loud into the
+failed-snippet path.
 """
 
 from __future__ import annotations
@@ -32,31 +30,34 @@ from dataraum.graphs.models import (
     StepType,
     TransformationGraph,
 )
+from dataraum.llm.providers.base import ToolCall
 
-_VALID_INPUT = {
+_VALID_OUTPUT = {
     "grounding": "revenue via account_type = 'Income' (complete value set)",
     "relation": "t",
     "where": ["account_type IN ('Income')"],
     "select_expr": "SUM(amount)",
     "description": "Total revenue",
+    "assumptions": [],
     # Contract v2 (DAT-727): the enumeration covers exactly the columns the
-    # parts touch, by role.
+    # parts touch, by role. A LIST of {concept, basis} since DAT-807 — an open
+    # map cannot be expressed under constrained decoding.
     "provenance": {
-        "column_mappings_basis": {
-            "revenue": {
-                "measure_columns": ["amount"],
-                "filter_columns": ["account_type"],
-                "filter": "Income",
+        "column_mappings_basis": [
+            {
+                "concept": "revenue",
+                "basis": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": ["account_type"],
+                    "filter": "Income",
+                },
             }
-        },
+        ],
     },
 }
 
-# What compose_extract_sql renders from _VALID_INPUT's parts — the step's `sql`.
+# What compose_extract_sql renders from _VALID_OUTPUT's parts — the step's `sql`.
 _VALID_RENDERED = "SELECT SUM(amount) AS value\nFROM t\nWHERE account_type IN ('Income')"
-
-# The live failure shape: the nested provenance object emitted as a JSON string.
-_STRINGIFIED_INPUT = {**_VALID_INPUT, "provenance": json.dumps(_VALID_INPUT["provenance"])}
 
 # The relation's SERVED schema — what _build_schema_info renders into the prompt
 # and what the contract enforcement validates against.
@@ -109,15 +110,26 @@ def _agent_with(provider: MagicMock) -> GraphAgent:
     return agent
 
 
-def _tool_response(tool_input: dict | None) -> MagicMock:
+def _output_response(payload: dict) -> MagicMock:
+    """A finished turn: structured-output content, no tool call."""
     response = MagicMock()
-    if tool_input is None:
-        response.tool_calls = []
-    else:
-        call = MagicMock()
-        call.name = "generate_sql"
-        call.input = tool_input
-        response.tool_calls = [call]
+    response.content = json.dumps(payload)
+    response.tool_calls = []
+    return response
+
+
+def _search_response() -> MagicMock:
+    """A turn that calls the ONE real tool instead of finishing."""
+    response = MagicMock()
+    response.content = ""
+    response.raw_content = None
+    response.tool_calls = [
+        ToolCall(
+            id="tu-1",
+            name="search_values",
+            input={"table": "t", "column": "account_type", "pattern": "inc"},
+        )
+    ]
     return response
 
 
@@ -144,85 +156,87 @@ def _generate(agent: GraphAgent) -> object:
     return agent._generate_sql(MagicMock(), _graph(), _ctx(), {}, workspace_id="ws")
 
 
-def test_valid_output_needs_no_repair(monkeypatch) -> None:
+def _patch_context(monkeypatch) -> None:
     monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
-    provider = _provider(_tool_response(_VALID_INPUT))
+
+
+def test_valid_output_grounds_in_one_turn(monkeypatch) -> None:
+    _patch_context(monkeypatch)
+    provider = _provider(_output_response(_VALID_OUTPUT))
     agent = _agent_with(provider)
 
     result = _generate(agent)
 
     assert result.success
+    assert result.unwrap().steps[0]["sql"] == _VALID_RENDERED
     assert provider.converse.call_count == 1
 
 
-def test_stringified_field_is_repaired_by_the_model(monkeypatch) -> None:
-    """The live kill: provenance as a JSON string. The repair turn carries the
-    invalid input + the validation error, forces the tool, and the repaired
-    output grounds the extract — the finished SQL is never discarded."""
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
-    provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(_VALID_INPUT))
+def test_request_carries_the_output_schema_and_only_the_real_tool(monkeypatch) -> None:
+    """``search_values`` is a tool the model genuinely calls; the typed grounding
+    is a structured OUTPUT, so tool_choice stays auto (DAT-807)."""
+    _patch_context(monkeypatch)
+    provider = _provider(_output_response(_VALID_OUTPUT))
     agent = _agent_with(provider)
 
-    result = _generate(agent)
+    _generate(agent)
 
-    assert result.success
-    generated = result.unwrap()
-    assert generated.steps[0]["sql"] == _VALID_RENDERED
-    assert provider.converse.call_count == 2
-
-    repair_request = provider.converse.call_args_list[1].args[0]
-    assert repair_request.tool_choice == {"type": "tool", "name": "generate_sql"}
-    assert repair_request.label == "graph_sql_generation_repair"
-    content = repair_request.messages[0].content
-    assert "Validation error" in content
-    assert "column_mappings_basis" in content  # the model's own output rides along
+    request = provider.converse.call_args_list[0].args[0]
+    assert [t.name for t in request.tools] == ["search_values"]
+    assert request.tools[0].strict is True
+    assert request.tool_choice == {"type": "auto", "disable_parallel_tool_use": True}
+    assert request.output_schema["title"] == "ExtractGroundingOutput"
 
 
-def test_second_validation_failure_fails_loud_with_both_errors(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
-    provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(_STRINGIFIED_INPUT))
-    agent = _agent_with(provider)
+def test_ending_on_a_tool_call_is_a_bind_error(monkeypatch) -> None:
+    """The agent must FINISH with the grounding output. Burning the search budget
+    without ever grounding is a loud bind error, never a guessed SQL (DAT-439)."""
+    _patch_context(monkeypatch)
+    agent = _agent_with(_provider(*[_search_response() for _ in range(6)]))
+    agent._run_value_search = MagicMock(return_value="no matches")  # type: ignore[method-assign]
 
     result = _generate(agent)
 
     assert not result.success
-    assert "after a repair turn" in result.error
-    assert "original error" in result.error
-    assert provider.converse.call_count == 2
-
-
-def test_repair_turn_without_tool_call_fails_loud(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
-    provider = _provider(_tool_response(_STRINGIFIED_INPUT), _tool_response(None))
-    agent = _agent_with(provider)
-
-    result = _generate(agent)
-
-    assert not result.success
-    assert "no tool call" in result.error
+    assert "search_values" in result.error
 
 
 # --- Provenance contract v2 enforcement (DAT-727) ----------------------------------
 
 
-def _with_basis(basis: dict) -> dict:
-    return {**_VALID_INPUT, "provenance": {"column_mappings_basis": basis}}
+def _with_basis(basis: list[dict]) -> dict:
+    return {**_VALID_OUTPUT, "provenance": {"column_mappings_basis": basis}}
+
+
+_BAD_MEMBERSHIP = _with_basis(
+    [
+        {
+            "concept": "revenue",
+            "basis": {
+                "measure_columns": ["amout"],
+                "filter_columns": ["account_type"],
+                "filter": "Income",
+            },
+        }
+    ]
+)
+_INCOMPLETE = _with_basis(
+    [
+        {
+            "concept": "revenue",
+            "basis": {"measure_columns": ["amount"], "filter_columns": [], "filter": ""},
+        }
+    ]
+)
 
 
 def test_membership_violation_gets_a_contract_repair_turn(monkeypatch) -> None:
     """A schema-valid output enumerating a column the served relation does not
     have ('amout') is contract-repaired — the repair prompt names the violation
     and the repaired enumeration grounds the extract."""
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
-    bad = _with_basis(
-        {"revenue": {"measure_columns": ["amout"], "filter_columns": ["account_type"]}}
-    )
-    provider = _provider(_tool_response(bad), _tool_response(_VALID_INPUT))
+    _patch_context(monkeypatch)
+    provider = _provider(_output_response(_BAD_MEMBERSHIP), _output_response(_VALID_OUTPUT))
     agent = _agent_with(provider)
 
     result = _generate(agent)
@@ -230,7 +244,8 @@ def test_membership_violation_gets_a_contract_repair_turn(monkeypatch) -> None:
     assert result.success
     assert provider.converse.call_count == 2
     repair_request = provider.converse.call_args_list[1].args[0]
-    assert repair_request.tool_choice == {"type": "tool", "name": "generate_sql"}
+    assert repair_request.output_schema["title"] == "ExtractGroundingOutput"
+    assert repair_request.label == "graph_sql_generation_repair"
     content = repair_request.messages[0].content
     assert "Contract violations" in content
     assert "'amout'" in content
@@ -240,10 +255,8 @@ def test_completeness_violation_gets_a_contract_repair_turn(monkeypatch) -> None
     """The SQL parts filter on account_type but the enumeration omits it — the
     completeness net (parts cross-check) catches it and the repair turn fixes
     the enumeration, not the SQL."""
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
-    incomplete = _with_basis({"revenue": {"measure_columns": ["amount"]}})
-    provider = _provider(_tool_response(incomplete), _tool_response(_VALID_INPUT))
+    _patch_context(monkeypatch)
+    provider = _provider(_output_response(_INCOMPLETE), _output_response(_VALID_OUTPUT))
     agent = _agent_with(provider)
 
     result = _generate(agent)
@@ -259,10 +272,8 @@ def test_contract_violation_after_repair_falls_into_failed_snippet_path(monkeypa
     """A still-violating repaired output falls loud (DAT-543): the authored SQL is
     retained flagged with mode='provenance_invalid' so prior_context can feed the
     exact violations back to the next authoring."""
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
-    incomplete = _with_basis({"revenue": {"measure_columns": ["amount"]}})
-    provider = _provider(_tool_response(incomplete), _tool_response(incomplete))
+    _patch_context(monkeypatch)
+    provider = _provider(_output_response(_INCOMPLETE), _output_response(_INCOMPLETE))
     agent = _agent_with(provider)
     agent._save_failed_snippet = MagicMock()  # type: ignore[method-assign]
 
@@ -277,16 +288,16 @@ def test_contract_violation_after_repair_falls_into_failed_snippet_path(monkeypa
 
 
 def test_fall_loud_grounding_is_exempt_from_the_contract(monkeypatch) -> None:
-    """The fall-loud shape (relation null, select NULL) carries no columns —
-    no contract check, no repair turn, the honest abstention passes through."""
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
-    monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
+    """The fall-loud shape (relation "", select NULL) carries no columns — no
+    contract check, no repair turn, the honest abstention passes through."""
+    _patch_context(monkeypatch)
     fall_loud = {
         "grounding": "revenue cannot be grounded: no served value names it",
-        "relation": None,
+        "relation": "",
         "where": [],
         "select_expr": "NULL",
         "description": "ungroundable",
+        "provenance": {"column_mappings_basis": []},
         "assumptions": [
             {
                 "dimension": "semantic.grounding",
@@ -297,7 +308,7 @@ def test_fall_loud_grounding_is_exempt_from_the_contract(monkeypatch) -> None:
             }
         ],
     }
-    provider = _provider(_tool_response(fall_loud))
+    provider = _provider(_output_response(fall_loud))
     agent = _agent_with(provider)
 
     result = _generate(agent)

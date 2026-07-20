@@ -108,6 +108,37 @@ const GraphStepSchema = z
 			.boolean()
 			.optional()
 			.describe("True on the single step whose result IS the metric's output."),
+		// The engine's `GraphStep.validations` (graphs/models.py, DAT-616),
+		// enforced by `graphs/verifier.py` against the executed value —
+		// execution-pass is not validation. THE KEY IS SINGULAR: the loader reads
+		// `data.get("validation")` (loader.py `_parse_step`), so a `validations`
+		// key would be dropped on the floor. Shipped metrics declare these on their
+		// output step (dpo/dso/dio/current_ratio); until DAT-807 the cockpit mirror
+		// had no counterpart, so no taught or induced metric could declare one.
+		validation: z
+			.array(
+				z.object({
+					condition: z
+						.string()
+						.describe(
+							"A comparison over the bare name `value`, e.g. 'value >= 0' or " +
+								"'0 <= value <= 365'.",
+						),
+					severity: z
+						.string()
+						.optional()
+						.describe("info | warning | error (the default) | critical."),
+					message: z
+						.string()
+						.optional()
+						.describe("What the violation means, in business terms."),
+				}),
+			)
+			.optional()
+			.describe(
+				"Post-execution checks on this step's value. A violation FLAGS the " +
+					"metric born-loud; it never suppresses the number.",
+			),
 	})
 	.describe(
 		"One node of the metric's computation DAG. The fields that apply depend on " +
@@ -130,6 +161,11 @@ const InterpretationRangeSchema = z.object({
 // input_schema is `type: object`. `vertical` keys the overlay row to the loading
 // vertical (the engine applier filters `payload.vertical`); `graph_id` is the
 // identity the applier upsert-replaces by.
+/** One parsed DAG step. Exported so the induction converter can build the
+ * `dependencies` map at the REAL type instead of casting a
+ * `Record<string, unknown>` into place. */
+export type MetricGraphStep = z.infer<typeof GraphStepSchema>;
+
 export const MetricSpecSchema = z.object({
 	vertical: z
 		.string()

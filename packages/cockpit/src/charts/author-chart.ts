@@ -1,36 +1,36 @@
 // Text-to-chart authoring (DAT-626 / ADR-0015) — the PRIMARY path: a typed
 // instruction → a validated chart config.
 //
-// Same forced-tool drain-stream shape as `induceStructured` (frame-family.ts): the
-// model is given a single `emit_chart` tool whose input IS the thin ChartConfig
-// subset and `tool_choice` FORCES it, so the structured value arrives as validated
-// tool arguments — NOT `chat({ outputSchema })` (the Anthropic native path rejects
-// our schemas; see frame-family.ts for the full why).
+// The emission rides Anthropic NATIVE structured output (DAT-807): `outputSchema`
+// is `AuthoredChartSchema` — the thin ChartConfig subset in its model-facing,
+// optional-free form — so constrained decoding guarantees the SHAPE, and there is
+// no forced `emit_chart` tool and no tool-argument boundary to malform. The gate
+// (`validateAuthoredChart`) folds the sentinels back to a persisted config.
 //
-// What this adds over a single emit: a CIRCUIT-BREAKER. The subset schema can't
-// express "this field must be a real result column" or "this must compile", so each
-// emission goes through `validateChartConfig`; on failure the error is fed back and
-// the model re-emits, up to CHART_AUTHOR_MAX_ATTEMPTS. Then we give up and tell the
-// user to map it manually — NOT a heavy repair loop.
+// What this adds over a single emit: a CIRCUIT-BREAKER — and it is still needed,
+// because constrained decoding guarantees shape, never SEMANTICS. The subset schema
+// can't express "this field must be a real result column" or "this must compile",
+// so each emission goes through `validateChartConfig`; on failure the error is fed
+// back and the model re-emits, up to CHART_AUTHOR_MAX_ATTEMPTS. Then we give up and
+// tell the user to map it manually — NOT a heavy repair loop.
 //
 // CONTEXT IS DELIBERATELY THIN (ADR-0015): result columns + their measurement types
 // + the user's instruction. NO catalogue, NO query-context, NO result-column→
 // lineage name-matching (fragile + false-positive-prone on composed-SQL aliases).
 // The instruction carries intent; the model reads measure/temporal from name+type.
 
-import { chat, toolDefinition } from "@tanstack/ai";
+import { chat } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { config } from "#/config";
 import { linkedAbortController } from "#/lib/abort";
 import { llmOtel } from "#/lib/llm-otel";
-import { toolArgsGuardMiddleware } from "#/lib/tool-args-guard";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import {
+	AuthoredChartSchema,
 	type ChartConfig,
-	ChartConfigSchema,
 	FIELD_TYPES,
 } from "./chart-config";
-import { validateChartConfig } from "./validate";
+import { validateAuthoredChart } from "./validate";
 
 /** Re-emit attempts before falling back to manual mapping (the circuit breaker). */
 export const CHART_AUTHOR_MAX_ATTEMPTS = 3;
@@ -49,8 +49,11 @@ export type AuthorChartResult =
 /** A chart-author conversation turn. */
 export type AuthorMessage = { role: "user" | "assistant"; content: string };
 
-/** One forced-emit turn: given the prompts + conversation, return the raw emitted
- * args (untrusted) or `undefined` for no tool call. Injectable so the retry loop is
+/** One emit turn: given the prompts + conversation, resolve to the emitted config
+ * — still untrusted, because constrained decoding guarantees the SHAPE and never
+ * that the fields name real result columns — or THROW when the model produced
+ * none. There is no "resolved but empty" outcome: `chat({ outputSchema })` either
+ * returns the validated value or throws. Injectable so the retry loop is
  * unit-testable without a live LLM (production uses {@link emitOnce}). */
 export type EmitFn = (
 	systemPrompts: string[],
@@ -66,17 +69,19 @@ function systemPrompt(columns: ChartColumn[]): string {
 	return [
 		"You author a chart specification for a tabular SQL result. You are given the",
 		"result's columns (with a measurement-type hint) and a user instruction; emit",
-		"ONE chart config via the `emit_chart` tool.",
+		"ONE chart config in the required structure.",
 		"",
 		"Result columns:",
 		columnLines,
 		"",
 		"Rules:",
-		"- Encode `x` and `y` (both required) and optionally `color`, each referencing",
-		"  ONE of the columns above by its EXACT name — never invent or rename a column.",
+		"- Encode `x`, `y` and `color`, each referencing ONE of the columns above by",
+		"  its EXACT name — never invent or rename a column. Most charts need no colour",
+		"  split: give `color` an EMPTY field name to leave the channel unused.",
 		`- Pick a measurement type per encoded field from: ${FIELD_TYPES.join(", ")}.`,
 		"- Aggregate (sum/mean/median/min/max/count) when the instruction implies a",
-		"  summary over categories; otherwise omit the aggregate for a raw value.",
+		"  summary over categories; use 'none' for a raw, unaggregated value.",
+		"- Titles are free text; leave a title EMPTY to fall back to the column name.",
 		"- Choose the mark that best fits the instruction (bar for category↔measure,",
 		"  line/area for a trend over time, point for a relationship, tick for spread).",
 		"- Charts are for AGGREGATED/summarized results — prefer an aggregate + a small",
@@ -85,52 +90,28 @@ function systemPrompt(columns: ChartColumn[]): string {
 }
 
 /**
- * One forced `emit_chart` turn — returns the raw emitted args (untrusted; the
- * caller validates) or `undefined` if the model emitted no tool call. Mirrors the
- * drain-stream + early-abort of `induceStructured`. Wrapped by the retry loop.
+ * One native structured-output turn — resolves to the emitted config (the caller
+ * still validates it against the real result columns) or throws if the model
+ * produced none. Wrapped by the retry loop.
  */
-const emitOnce: EmitFn = async (systemPrompts, messages, signal) => {
-	let captured: unknown;
-	const emit = toolDefinition({
-		name: "emit_chart",
-		description:
-			"Return the chart specification as this tool's arguments, in the required structure.",
-		inputSchema: ChartConfigSchema,
-	}).server((input) => {
-		captured = input;
-		return { ok: true };
-	});
-
-	// Abort the in-flight request once we have the args (tool_choice would otherwise
-	// keep forcing emit_chart and bill another turn that only re-emits).
-	const abortController = linkedAbortController(signal);
-	const stream = await chat({
+const emitOnce: EmitFn = async (systemPrompts, messages, signal) =>
+	await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		middleware: [
-			...llmOtel("chart_author"),
-			toolArgsGuardMiddleware("chart_author"),
-		],
-		abortController,
+		// No toolArgsGuardMiddleware: no tools, so no tool-argument boundary to
+		// guard (see lib/tool-args-guard.ts header).
+		middleware: llmOtel("chart_author"),
+		abortController: linkedAbortController(signal),
 		modelOptions: {
 			max_tokens: MAX_OUTPUT_TOKENS,
-			tool_choice: { type: "tool", name: "emit_chart" },
-			// Disable thinking: one-shot structured extraction (forced tool), not
-			// reasoning. Sonnet 5 defaults adaptive thinking ON, which bills a trace
-			// before the forced emit for no quality gain (see frame-family.ts).
+			// Disable thinking: one-shot structured extraction, not reasoning.
+			// Sonnet 5 defaults adaptive thinking ON, which bills a trace before
+			// every emit for no quality gain (see frame-family.ts).
 			thinking: { type: "disabled" },
 		},
 		systemPrompts,
 		messages,
-		tools: [emit],
+		outputSchema: AuthoredChartSchema,
 	});
-	for await (const _chunk of stream) {
-		if (captured !== undefined) {
-			abortController?.abort();
-			break;
-		}
-	}
-	return captured;
-};
 
 /**
  * Author a chart from a typed instruction over the given result columns. Validates
@@ -142,7 +123,7 @@ export async function authorChart(opts: {
 	columns: ChartColumn[];
 	instruction: string;
 	signal?: AbortSignal;
-	/** Injected for tests; defaults to the live forced-emit call. */
+	/** Injected for tests; defaults to the live structured-output call. */
 	emit?: EmitFn;
 }): Promise<AuthorChartResult> {
 	const emit = opts.emit ?? emitOnce;
@@ -161,12 +142,13 @@ export async function authorChart(opts: {
 			// A cancelled request (client closed the modal) — stop, don't burn the
 			// remaining attempts re-failing fast against an already-aborted signal.
 			if (opts.signal?.aborted) return { ok: false, error: "Cancelled." };
+			// Everything else — including "the model emitted nothing", which native
+			// structured output surfaces as a throw — costs one attempt and retries.
 			lastError = err instanceof Error ? err.message : String(err);
 			continue;
 		}
-		if (emitted === undefined) continue;
 
-		const validation = validateChartConfig(emitted, columnNames);
+		const validation = validateAuthoredChart(emitted, columnNames);
 		if (validation.ok) return { ok: true, config: validation.config };
 
 		// Feed the failure back so the next attempt corrects it (the breaker).

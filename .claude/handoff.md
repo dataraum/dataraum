@@ -5,6 +5,86 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-807 — structured outputs replace forced tool_choice at EVERY engine agent (dump-shape change)
+
+**Branch:** `feat/dat-807-engine-structured-outputs`. All 9 engine labels now get
+their typed result from Anthropic structured outputs (`output_config.format` —
+constrained decoding against the Pydantic JSON Schema, answer returned as message
+CONTENT) instead of a forced `tool_choice` whose arguments were read as the
+result. The client-side coercion/repair layer that compensated for forced-tool
+malformation is DELETED.
+
+**What eval should expect — the dumps change shape:**
+- **`stop_reason` flips `tool_use` → `end_turn`** on every label. The only
+  remaining `tool_use` turns are `graph_sql_generation`'s `search_values`
+  exploration turns (still a real tool, now `strict: true`, offered on `auto`).
+  A scorecard that keys on `stop_reason == "tool_use"` to find "the answer turn"
+  must invert.
+- **The response dump body moves.** `prompt_log.dump_response` writes
+  `stop_reason=…\n<text_content><[tool_use …] sections>`. The typed JSON used to
+  live in the `[tool_use <name>]` section; it is now the `text_content` itself.
+  `[tool_use …]` sections survive only for `search_values`.
+- **Malformation counters are structurally unreachable, not merely zero** — the
+  code is gone: `stringified_tool_arg_coerced`, `stringified_tool_payload_coerced`,
+  `tool_output_envelope_unwrapped`, `tool_output_validation_failed`. The
+  `<label>_repair` call disappears for `semantic_per_table`, `dimension_conform`,
+  `dimension_alias`, and the graph agent's SCHEMA repair; `graph_sql_generation_repair`
+  survives ONLY as the DAT-727 provenance CONTENT-contract repair (shape is
+  guaranteed by the grammar; semantics never were).
+
+**What eval should expect — the output schemas changed:**
+- **No optional fields left anywhere** — all nine schemas are 0 optional / 0
+  union / no recursion. Every not-applicable case is a DOCUMENTED EMPTY VALUE
+  (`""` / `[]`) the model must emit, never an omitted key. Expect fields that
+  used to be absent to be present-and-empty in the dumps.
+- **`business_cycles` gained a required `measured: bool` per cycle.** Completion
+  is a tri-state, and it is now carried by that explicit flag rather than by a
+  null: `measured: false` means the accompanying `total_records` /
+  `completed_cycles` / `completion_rate` are `0 / 0 / 0.0` and MEANINGLESS. The
+  engine maps that back to NULL before persisting, so the stored columns, the
+  `detected_business_cycles` view, and the cockpit are unchanged — but a dump
+  reader must not treat an unmeasured cycle's `0.0` as a 0% completion rate.
+  Expect the prompt to have moved accordingly.
+- `ValidationSQLOutput.sql` / `.skip_reason` are the either/or pair as two
+  required strings — the unused one is `""`, previously `null`.
+- `ExtractGroundingOutput.relation` is `""` in the fall-loud case, previously
+  `null`. The PERSISTED parts still store `None` (normalized at the boundary).
+- `provenance.column_mappings_basis` is a **list of `{concept, basis}`** on the
+  wire (an open map is forbidden under `additionalProperties: false`) and still a
+  **map in storage** — `og_uses`, the cockpit, and every persisted-shape reader
+  are untouched. One value-level difference: an unfiltered concept stores
+  `filter: ""` where it stored `filter: null`.
+
+**The prompts WERE migrated — `prompt_hash` moves, so re-key the comparison:**
+- Every prompt instructed the model to call a tool this slice deleted (e.g.
+  graph_sql_generation: *"you MUST call the generate_sql tool … the tool call is
+  the only accepted output"*). Left alone, the model is told the new mechanism's
+  one way of finishing is wrong — for `graph_sql_generation`, whose only
+  remaining tool is `search_values`, the likely outcome is a search loop to the
+  budget ceiling and a hard bind failure on every metric. The eval would then
+  attribute that to structured outputs rather than to an unmigrated prompt. Same
+  finding, same resolution as the cockpit lane's `ff256c89f`.
+- **Only those sentences changed**, to "emit the required output structure;
+  emitting it ends the turn". Everything else in every template is byte-identical.
+- **Consequence for the scorecard:** the user-prompt half of the edit moves
+  `prompt_hash`, so `(label, prompt_hash)` no longer pairs with the on-disk
+  baseline. Key the completeness comparison by **label** for this run. The
+  alternative — a frozen prompt that contradicts the mechanism — would have
+  corrupted the measurement itself rather than just its key.
+
+**NOT changed (the eval compares one run against the on-disk baseline):**
+- `model`, `max_tokens`, `effort`, `thinking`, `temperature` per label are
+  unchanged. `effort` was written down explicitly for the five features that
+  inherited the API default (`high`) — a no-op pinned by
+  `tests/unit/llm/test_request_shape_contract.py`, which also asserts the ONLY
+  structured-output-related difference in the request is `output_config.format`.
+
+**Two in-scope behavior fixes:** `slicing_analysis` now passes `model=` (it
+silently ran on the provider default, ignoring its configured tier), and
+`business_cycles` fails loud instead of degrading to the raw unvalidated dict.
+
+---
+
 ## DAT-725 Lane P9 (DAT-734) — graph context replaces flat at the GraphAgent; flat assembly DELETED (grounding-prompt content change)
 
 **Branch:** `feat/dat-725-lane-p9`. `graphs/context.py` now assembles the

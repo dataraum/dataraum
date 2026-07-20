@@ -127,7 +127,7 @@ system_prompt: |
   Only set it when there is a concrete dimension column — never guess a unit.
   </unit_detection>
 
-  Use the annotate_columns tool to provide your analysis.
+  Emit your analysis in the required output structure; emitting it ends the turn.
 
 # User prompt - provides data and context
 user_prompt: |
@@ -151,7 +151,7 @@ user_prompt: |
   {required_standard_fields}
   </required_standard_fields>
 
-  Annotate all columns using the annotate_columns tool.
+  Annotate all columns and emit the required output structure.
 
 # Input variable definitions
 inputs:

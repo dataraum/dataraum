@@ -40,18 +40,27 @@ import {
 } from "../prompts";
 import { AgentActionableError } from "./agent-error";
 import { CONCEPT_KINDS, writeConcept } from "./concept-write";
-import { CycleSpecSchema, type ShippedCycleSpec } from "./cycle-spec";
+import {
+	CYCLE_FIELDS,
+	CycleSpecSchema,
+	type ShippedCycleSpec,
+} from "./cycle-spec";
 import {
 	formatSeedExamples,
 	frameFamily,
-	induceStructured,
+	induceNative,
 	nearestSeedVertical,
 	stripUndefined,
 } from "./frame-family";
+import { InducedMetrics, toProposedMetric } from "./metric-induction";
 import { MetricSpecSchema, type ShippedMetricSpec } from "./metric-spec";
 import { readShippedCycles } from "./teach-cycle";
 import { readShippedMetrics } from "./teach-metric";
 import { readShippedValidations } from "./teach-validation";
+import {
+	InducedValidations,
+	toProposedValidation,
+} from "./validation-induction";
 import {
 	type ShippedValidationSpec,
 	ValidationSpecSchema,
@@ -90,6 +99,16 @@ function resolveVertical(name?: string | null): string {
 // structured-output call, and frame writes it as a typed `concepts` row (DAT-728,
 // config→DB — no longer a `concept` overlay teach). `temporal_behavior` was dropped
 // (DAT-657): stock/flow is data-determined, not a concept-declared format.
+//
+// EVERY field is required (DAT-807). Unlike the cycle/validation/metric families
+// there is no second authoring contract to keep permissive — this schema is only
+// ever filled by the induction call or echoed back by the ModelFrame widget — so
+// the disposition applies directly rather than through a model-facing variant.
+// All four descriptive fields are consumed downstream (`graphs/context.py` serves
+// description/indicators/exclude_patterns to the SQL agent; `unit_from_concept`
+// resolves a measure's unit in `ontology.py` and the unit-source detector), so
+// each is required with a documented ""/[] sentinel for "none", which `frame`
+// folds back to NULL at the write.
 export const ProposedConcept = z.object({
 	name: z
 		.string()
@@ -104,25 +123,28 @@ export const ProposedConcept = z.object({
 		),
 	description: z
 		.string()
-		.optional()
 		.describe("one sentence: what this concept represents in business terms"),
 	indicators: z
 		.array(z.string())
-		.optional()
-		.describe("column-name substrings that suggest this concept"),
+		.describe(
+			"column-name substrings that suggest this concept; empty only if none apply",
+		),
 	exclude_patterns: z
 		.array(z.string())
-		.optional()
-		.describe("substrings that should NOT match this concept"),
+		.describe(
+			"substrings that should NOT match this concept; empty when nothing needs excluding",
+		),
 	unit_from_concept: z
 		.string()
-		.optional()
-		.describe("name of the concept providing this measure's unit"),
+		.describe(
+			"name of the concept providing this measure's unit; empty string when " +
+				"the concept is not a measure or carries no unit",
+		),
 });
 export type ProposedConcept = z.infer<typeof ProposedConcept>;
 
 // The structured-output shape the concept induction LLM call returns.
-const InducedFrame = z.object({
+export const InducedFrame = z.object({
 	concepts: z.array(ProposedConcept),
 });
 
@@ -133,11 +155,6 @@ const InducedFrame = z.object({
 export const ProposedValidation = ValidationSpecSchema.omit({ vertical: true });
 export type ProposedValidation = z.infer<typeof ProposedValidation>;
 
-// The structured-output shape the validation induction LLM call returns.
-const InducedValidations = z.object({
-	validations: z.array(ProposedValidation),
-});
-
 // One induced/declared business cycle. The engine's `cycle_types` entry shape
 // (cycle-spec.ts, DAT-465) MINUS `vertical`, which `frame` fixes on write —
 // exactly as ProposedConcept / ProposedValidation omit it. The model fills this
@@ -145,9 +162,36 @@ const InducedValidations = z.object({
 export const ProposedCycle = CycleSpecSchema.omit({ vertical: true });
 export type ProposedCycle = z.infer<typeof ProposedCycle>;
 
+// The MODEL-FACING cycle shape: `ProposedCycle` with every descriptive field
+// REQUIRED, restored from the shared `CYCLE_FIELDS` bag (cycle-spec.ts) that
+// carries their descriptions.
+//
+// Constrained decoding cannot carry an optional. An optional ENUM is rejected
+// outright — `@tanstack/ai`'s converter widens `.optional()` to
+// `type: ['string','null']` but leaves the `enum` list unwidened, so the values
+// contradict their own declared type and the API refuses the schema before
+// generating a token:
+//   400 output_config.format.schema: Invalid schema:
+//       Enum value 'high' does not match declared type ['string','null']
+// The rest are accepted but each renders as a union with null, spending from the
+// 24-optional AND 16-union per-request budgets and from the undocumented
+// compiled-grammar size budget — which is what rejected this schema next
+// ("The compiled grammar is too large"). Both were live 400s on the first real
+// induction calls; no static check saw either (DAT-807).
+//
+// `CycleSpecSchema` keeps them optional because it is ALSO the `teach_cycle`
+// authoring contract, where a minimal spec (vertical + name) must stay valid —
+// and as a plain tool input it is never compiled into a grammar. Same separation
+// as `InducedMetric` vs `MetricSpecSchema`: the model fills a stricter shape, the
+// authoring contract stays permissive. Required-here is assignable to
+// optional-there, so no conversion is needed; the ""/[] sentinels the model emits
+// for "none" are what `stripUndefined` + the engine's own `or []` reads already
+// treat as absent.
+const InducedCycle = ProposedCycle.extend(CYCLE_FIELDS);
+
 // The structured-output shape the cycle induction LLM call returns.
-const InducedCycles = z.object({
-	cycles: z.array(ProposedCycle),
+export const InducedCycles = z.object({
+	cycles: z.array(InducedCycle),
 });
 
 // One induced/declared metric — a TransformationGraph (DAT-466's MetricSpecSchema)
@@ -159,11 +203,6 @@ const InducedCycles = z.object({
 // operating_model (DAT-468/471).
 export const ProposedMetric = MetricSpecSchema.omit({ vertical: true });
 export type ProposedMetric = z.infer<typeof ProposedMetric>;
-
-// The structured-output shape the metric induction LLM call returns.
-const InducedMetrics = z.object({
-	metrics: z.array(ProposedMetric),
-});
 
 // One written concept + the typed `concepts` row id it landed as (DAT-728 — a
 // concept_id, not an overlay_id, now that concepts are typed rows).
@@ -229,17 +268,18 @@ export interface FrameInput {
 }
 
 /**
- * Induce a business vocabulary from a `ConnectSchema` via one forced
- * structured-output Anthropic call. Returns the proposed concepts; does NOT
- * write anything. Split out so the induction step is testable apart from the
- * DB write. `signal` is the tool-context abort (DAT-449): a stopped run aborts
- * this nested call instead of billing it to completion.
+ * Induce a business vocabulary from a `ConnectSchema` via one NATIVE
+ * structured-output Anthropic call (DAT-807 — the shape is schema-guaranteed by
+ * constrained decoding, not parsed out of tool arguments). Returns the proposed
+ * concepts; does NOT write anything. Split out so the induction step is testable
+ * apart from the DB write. `signal` is the tool-context abort (DAT-449): a
+ * stopped run aborts this nested call instead of billing it to completion.
  */
 export async function induceConcepts(
 	schema: ConnectSchema,
 	signal?: AbortSignal,
 ): Promise<ProposedConcept[]> {
-	const { concepts } = await induceStructured({
+	const { concepts } = await induceNative({
 		instructions: getFrameInstructions(),
 		userMessage:
 			"Propose a domain ontology for the following source. " +
@@ -252,9 +292,13 @@ export async function induceConcepts(
 }
 
 /**
- * Induce a validation set for a source via one forced structured-output call,
- * OVER the framed concept vocabulary (the concepts are part of the context, so
- * the proposed checks anchor to them, not guessed column names). The induce
+ * Induce a validation set for a source via one NATIVE structured-output call
+ * (DAT-807). The model fills the ARRAY-shaped `InducedValidations`
+ * (validation-induction.ts) — `parameters` as a typed list rather than the open
+ * map the payload uses — and `toProposedValidation` folds it back to the engine's
+ * `dict[str, Any]` here, at the single conversion boundary. Induced OVER the
+ * framed concept vocabulary — the concepts are part of the context, so the
+ * proposed checks anchor to them rather than to guessed column names. The induce
  * prompt is seeded with the nearest shipped vertical's specs as STRUCTURAL
  * few-shot (DAT-468) — the framing that makes the proposed shape reliable.
  * Returns the proposed validations; does NOT write anything. The shipped-spec
@@ -271,7 +315,7 @@ export async function induceValidations(
 	) => Promise<ShippedValidationSpec[]> = readShippedValidations,
 ): Promise<ProposedValidation[]> {
 	const seed = await nearestSeedVertical(vertical, readSeed);
-	const { validations } = await induceStructured({
+	const { validations } = await induceNative({
 		instructions: getFrameValidationsInstructions(),
 		userMessage:
 			"Propose data-quality and business-rule validations for the following " +
@@ -286,13 +330,14 @@ export async function induceValidations(
 		outputSchema: InducedValidations,
 		signal,
 	});
-	return validations;
+	return validations.map(toProposedValidation);
 }
 
 /**
- * Induce a business-cycle set for a source via one forced structured-output call,
- * OVER the framed concept vocabulary (the concepts are part of the context, so
- * the proposed cycles anchor to them, not guessed column names). The induce prompt
+ * Induce a business-cycle set for a source via one NATIVE structured-output call
+ * (DAT-807), OVER the framed concept vocabulary — the concepts are part of the
+ * context, so the proposed cycles anchor to them rather than to guessed column
+ * names. The induce prompt
  * is seeded with the nearest shipped vertical's `cycle_types` as STRUCTURAL
  * few-shot (DAT-468/470) — the framing that makes the proposed shape reliable.
  * Returns the proposed cycles; does NOT write anything. The shipped-spec reader is
@@ -307,7 +352,7 @@ export async function induceCycles(
 	readSeed: (v: string) => Promise<ShippedCycleSpec[]> = readShippedCycles,
 ): Promise<ProposedCycle[]> {
 	const seed = await nearestSeedVertical(vertical, readSeed);
-	const { cycles } = await induceStructured({
+	const { cycles } = await induceNative({
 		instructions: getFrameCyclesInstructions(),
 		userMessage:
 			"Propose the business cycles (recurring multi-stage processes) for the " +
@@ -326,11 +371,17 @@ export async function induceCycles(
 }
 
 /**
- * Induce a metric-DAG set for a source via one forced structured-output call,
- * OVER the framed concept vocabulary (the concepts are part of the context, so
- * each metric's leaf `extract` steps anchor to framed CONCEPTS, not guessed
- * columns — column binding is the semantic phase's job, SQL composition is
- * operating_model's). The induce prompt is seeded with the nearest shipped
+ * Induce a metric-DAG set for a source via one NATIVE structured-output call
+ * (DAT-807). The model fills the ARRAY-shaped `InducedMetrics`
+ * (metric-induction.ts) — a `steps` array whose items are a `z.union` on `type`
+ * (NOT `z.discriminatedUnion`, which renders the unsupported `oneOf`) plus an
+ * `output_step_id` naming one of them, rather than the `dependencies` map the
+ * payload uses — and `toProposedMetric` converts it back to the engine's
+ * step-id-keyed map here, at the single conversion boundary. Induced OVER the
+ * framed concept vocabulary, so each metric's leaf `extract` steps anchor to
+ * framed CONCEPTS rather than to guessed columns — column binding is the
+ * semantic phase's job, SQL composition is operating_model's. The prompt is
+ * seeded with the nearest shipped
  * vertical's metric DAGs as STRUCTURAL few-shot (DAT-468) — flagged explicitly
  * as examples and as the dependency SHAPE to learn, never the formula content to
  * copy, which is what makes DAG induction reliable. Returns the proposed metrics;
@@ -348,7 +399,7 @@ export async function induceMetrics(
 	readSeed: (v: string) => Promise<ShippedMetricSpec[]> = readShippedMetrics,
 ): Promise<ProposedMetric[]> {
 	const seed = await nearestSeedVertical(vertical, readSeed);
-	const { metrics } = await induceStructured({
+	const { metrics } = await induceNative({
 		instructions: getFrameMetricsInstructions(),
 		userMessage:
 			"Propose metrics — each a small computation DAG over the framed concept " +
@@ -364,7 +415,27 @@ export async function induceMetrics(
 		outputSchema: InducedMetrics,
 		signal,
 	});
-	return metrics;
+
+	// Convert + validate PER METRIC, dropping only the offender. `toProposedMetric`
+	// throws on a duplicate step_id or a depends_on cycle, and `ProposedMetric`
+	// re-checks the value constraints the decoding grammar cannot express (a
+	// non-empty graph_id, a valid output type). Both matter here because the
+	// engine's warm DAG is CROSS-METRIC: one cyclic graph makes `build_warm_dag`
+	// raise, and `metrics_phase` then hands back an empty authoring map so EVERY
+	// metric in the vertical honest-fails. Losing one induced metric loudly beats
+	// poisoning the set — and the frame still returns everything that is sound.
+	const proposed: ProposedMetric[] = [];
+	for (const metric of metrics) {
+		try {
+			proposed.push(ProposedMetric.parse(toProposedMetric(metric)));
+		} catch (error) {
+			console.warn("metric_induction_rejected", {
+				graph_id: metric.graph_id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return proposed;
 }
 
 /**
@@ -402,7 +473,20 @@ export async function frame(
 
 	const writtenConcepts: FrameConceptResult[] = [];
 	for (const c of conceptItems) {
-		const { concept_id } = await writeConcept({ vertical, ...c });
+		const { concept_id } = await writeConcept({
+			vertical,
+			...c,
+			// Fold the model-facing "" / [] sentinels back to absent, so the typed
+			// row keeps NULL for "not declared" exactly as it did when these fields
+			// were optional (DAT-807). This is the single conversion boundary for
+			// the concept family — the sibling families do the same in
+			// `toProposedValidation` / `toProposedMetric`.
+			description: c.description || undefined,
+			indicators: c.indicators.length > 0 ? c.indicators : undefined,
+			exclude_patterns:
+				c.exclude_patterns.length > 0 ? c.exclude_patterns : undefined,
+			unit_from_concept: c.unit_from_concept || undefined,
+		});
 		writtenConcepts.push({ ...c, concept_id });
 	}
 	const concepts = { items: conceptItems, written: writtenConcepts };

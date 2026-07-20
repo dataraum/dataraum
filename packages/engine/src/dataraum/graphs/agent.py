@@ -737,6 +737,7 @@ class GraphAgent(LLMFeature):
             ToolDefinition,
             ToolResult,
         )
+        from dataraum.llm.structured_output import parse_structured_output
 
         extract_leaves = [
             step
@@ -819,44 +820,39 @@ class GraphAgent(LLMFeature):
             model=model,
         )
 
-        # Define tools: the structured output plus the bounded catalog search
-        # (DAT-699) — high-cardinality discriminators are served size+sample
-        # only, and their exact values live behind search_values.
-        tool = ToolDefinition(
-            name="generate_sql",
-            description="Provide the SQL grounding the one concept in the graph specification",
-            input_schema=ExtractGroundingOutput.model_json_schema(),
-        )
+        # The typed grounding is a structured OUTPUT (DAT-807), not a tool: the
+        # answer arrives as JSON message content constrained to the schema. The
+        # ONE tool here is a tool the model genuinely calls — the bounded catalog
+        # search (DAT-699), since high-cardinality discriminators are served
+        # size+sample only and their exact values live behind search_values.
+        # ``strict`` is right for it: a three-string fixed-shape input, nothing
+        # a strict grammar can make the model under-produce.
         search_tool = ToolDefinition(
             name="search_values",
             description=(
                 "Search a column's distinct values by case-insensitive substring. "
                 "Use it to resolve the EXACT values of a high-cardinality "
                 "discriminator (marked 'NOT enumerated' in the Value sets) before "
-                "writing an IN-list — never guess a predicate. Always finish by "
-                "calling generate_sql."
+                "writing an IN-list — never guess a predicate. When you have the "
+                "values you need, stop calling tools and answer with the grounding."
             ),
             input_schema=ValueSearchInput.model_json_schema(),
+            strict=True,
         )
 
         # Thinking (DAT-603): grounding is the pipeline's hardest reasoning task
         # and Sonnet 5-class models expose no sampling knobs — the model's own
         # reflection is the quality lever. A FORCED tool_choice silently
         # suppresses thinking on the live API (probed 2026-07-03: forced -> no
-        # thinking block, auto -> thinking block), so a thinking run offers the
-        # tools on auto and the prompt mandates the final call; no tool call
-        # remains a loud bind error (checked below), never a silent prose
-        # answer. Non-thinking runs use "any" (some tool must be called —
-        # search_values or generate_sql; the old forced generate_sql would
-        # make searching impossible). disable_parallel_tool_use keeps every
-        # turn to ONE call, so the search loop stays sequential and binding
-        # [0] can never ground a superseded SQL.
+        # thinking block, auto -> thinking block), so the tools are offered on
+        # AUTO. Since DAT-807 auto is also the only correct choice regardless of
+        # thinking: the grounding is a structured OUTPUT, so the turn that
+        # finishes calls no tool at all — "any" would force a search_values call
+        # forever. disable_parallel_tool_use keeps every turn to ONE call, so the
+        # search loop stays sequential and binding [0] can never ground a
+        # superseded SQL.
         thinking = bool(feature_config and feature_config.thinking)
-        tool_choice: dict[str, Any] = (
-            {"type": "auto", "disable_parallel_tool_use": True}
-            if thinking
-            else {"type": "any", "disable_parallel_tool_use": True}
-        )
+        tool_choice: dict[str, Any] = {"type": "auto", "disable_parallel_tool_use": True}
         messages = [Message(role="user", content=user_prompt)]
 
         def _converse() -> Any:
@@ -867,8 +863,9 @@ class GraphAgent(LLMFeature):
                 ConversationRequest(
                     messages=messages,
                     system=system_prompt,
-                    tools=[tool, search_tool],
+                    tools=[search_tool],
                     tool_choice=tool_choice,
+                    output_schema=ExtractGroundingOutput.model_json_schema(),
                     thinking=thinking,
                     label=prompt_name,
                     effort=feature_config.effort if feature_config else None,
@@ -894,7 +891,9 @@ class GraphAgent(LLMFeature):
             search_call = response.tool_calls[0]
             outcome = self._run_value_search(context, search_call.input)
             if searches == _MAX_VALUE_SEARCHES:
-                outcome += "\n(search budget exhausted — call generate_sql now)"
+                outcome += (
+                    "\n(search budget exhausted — stop searching and answer with the grounding now)"
+                )
             logger.info(
                 "grounding_value_search",
                 graph_id=graph.graph_id,
@@ -917,55 +916,30 @@ class GraphAgent(LLMFeature):
             )
             response = _converse()
 
-        # Extract tool call result. No tool call is a bind ERROR — never guess by
-        # parsing free text as JSON (DAT-439's born-loud cut): a metric that can't
-        # be composed stays grounded with the reason, it does not get a guessed SQL.
-        if not response.tool_calls:
-            return Result.fail("LLM did not call the generate_sql tool")
-        if len(response.tool_calls) > 1:
-            # disable_parallel_tool_use makes this unreachable; guard stays LOUD
-            # because binding [0] of several calls could ground a superseded SQL.
+        # The grounding is the turn's structured-output CONTENT (DAT-807). Still
+        # holding a search_values call here means the agent burned its budget
+        # without ever grounding — a bind ERROR, never a guess (DAT-439's
+        # born-loud cut): a metric that can't be composed stays grounded with the
+        # reason, it does not get a guessed SQL.
+        if response.tool_calls:
             return Result.fail(
-                f"LLM emitted {len(response.tool_calls)} tool calls for a single "
-                "extract grounding — ambiguous, refusing to pick one"
-            )
-
-        tool_call = response.tool_calls[0]
-        if tool_call.name != "generate_sql":
-            return Result.fail(
-                f"Unexpected tool call: {tool_call.name}"
+                f"LLM ended on a {response.tool_calls[0].name} call instead of the "
+                "grounding output"
                 + (" (search budget exhausted)" if searches >= _MAX_VALUE_SEARCHES else "")
             )
 
-        try:
-            output = ExtractGroundingOutput.model_validate(tool_call.input)
-        except ValidationError as e:
-            # Enforced schema, never coercion (DAT-699): the model fixes its own
-            # output in one cheap repair turn. A finished, correct grounding was
-            # previously discarded whole on a single stringified `provenance`
-            # field — losing the metric to a serialization slip, silently.
-            from dataraum.llm.tool_repair import repair_tool_output
-
-            repaired = repair_tool_output(
-                self.provider,
-                tool,
-                tool_call.input,
-                e,
-                ExtractGroundingOutput,
-                model=model,
-                label=prompt_name,
-                max_tokens=self.config.limits.max_output_tokens_per_request,
-            )
-            if not repaired.success:
-                return Result.fail(repaired.error or "schema repair failed")
-            output = repaired.unwrap()
+        parsed = parse_structured_output(response, ExtractGroundingOutput, label=prompt_name)
+        if not parsed.success:
+            return Result.fail(parsed.error or "extract grounding failed")
+        output = parsed.unwrap()
 
         # Provenance contract v2 (DAT-727): the enumerated columns in
         # column_mappings_basis are the operating-model graph's `uses` substrate
         # (og_uses un-nests them), so they are ENFORCED here — against the SAME
         # served schema the prompt rendered — never trusted, never recovered by
         # parsing the SQL later. Membership + completeness violations get one
-        # contract-repair turn (the DAT-710 mechanics); a still-invalid output
+        # contract-repair turn (DAT-807: the ONE repair that survives —
+        # constrained decoding guarantees shape, never semantics); a still-invalid output
         # falls loud into the failed-snippet path (DAT-543) so the authored SQL
         # + the exact violations feed the next run's prior_context instead of
         # vanishing.
@@ -973,14 +947,13 @@ class GraphAgent(LLMFeature):
             schema_tables_from_info,
             validate_grounding_basis,
         )
-        from dataraum.llm.tool_repair import repair_tool_contract
+        from dataraum.llm.contract_repair import repair_tool_contract
 
         schema_tables = schema_tables_from_info(schema_info)
         violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
         if violations:
             repaired = repair_tool_contract(
                 self.provider,
-                tool,
                 output.model_dump(mode="json"),
                 violations,
                 ExtractGroundingOutput,
@@ -1000,7 +973,11 @@ class GraphAgent(LLMFeature):
         # the step so persistence keeps them as the artifact.
         from dataraum.graphs.formula_composer import compose_extract_sql, extract_parts_dict
 
-        rendered_sql = compose_extract_sql(output.select_expr, output.relation, output.where)
+        # The output model states every attribute (DAT-807): the fall-loud case is
+        # relation="" rather than an omitted/None key. Normalize the sentinel back to
+        # None here so the PERSISTED parts keep their existing shape.
+        relation = output.relation or None
+        rendered_sql = compose_extract_sql(output.select_expr, relation, output.where)
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
@@ -1010,7 +987,7 @@ class GraphAgent(LLMFeature):
                     "step_id": leaf.step_id,
                     "sql": rendered_sql,
                     "description": output.description,
-                    "parts": extract_parts_dict(output.select_expr, output.relation, output.where),
+                    "parts": extract_parts_dict(output.select_expr, relation, output.where),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
@@ -1045,19 +1022,15 @@ class GraphAgent(LLMFeature):
         # inspectable offline. No-op unless prompt_dump_dir is set.
         from dataraum.llm.prompt_log import dump_response
 
-        basis = (
-            {
-                c: b.model_dump(mode="json")
-                for c, b in output.provenance.column_mappings_basis.items()
-            }
-            if output.provenance
-            else {}
-        )
+        basis = {
+            e.concept: e.basis.model_dump(mode="json")
+            for e in output.provenance.column_mappings_basis
+        }
         response_body = json.dumps(
             {
                 "step_id": leaf.step_id,
                 "grounding": output.grounding,
-                "relation": output.relation,
+                "relation": relation,
                 "where": output.where,
                 "select_expr": output.select_expr,
                 "sql": rendered_sql,
@@ -1447,8 +1420,12 @@ class GraphAgent(LLMFeature):
         if not generated_code.provenance and not generated_code.assumptions:
             return None
         payload = HealthySnippetProvenance(
+            # LIST of {concept, basis} on the wire (DAT-807), MAP in storage — the
+            # persisted shape og_uses un-nests is unchanged.
             column_mappings_basis=(
-                generated_code.provenance.column_mappings_basis if generated_code.provenance else {}
+                {e.concept: e.basis for e in generated_code.provenance.column_mappings_basis}
+                if generated_code.provenance
+                else {}
             ),
             assumptions=[
                 SnippetAssumption(assumption=a.assumption, basis=a.basis, confidence=a.confidence)

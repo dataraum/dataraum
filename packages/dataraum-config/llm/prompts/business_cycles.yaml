@@ -65,9 +65,9 @@ system_prompt: |
   - **Confidence is honest signal strength.** A cycle grounded on a strong, unambiguous signal is high-confidence; one resting on a weak or partial signal is low-confidence. Downstream consumers gate on this number — a confident-looking detection on thin evidence is worse than a flagged one.
   </grounding_discipline>
 
-  Call the `submit_analysis` tool with your structured findings. Be specific:
+  Emit your structured findings in the required output structure. Be specific:
   - Reference actual column names and table names that appear in the context
-  - Give every detected cycle a completion_rate — from status value counts, or from a derived relationship's match rate
+  - Set `measured` per cycle: true when you can derive its completion from the served data — from status value counts, or from a derived relationship's match rate — and then give real `total_records`, `completed_cycles`, and `completion_rate`. Set it false when no completion signal exists, and send 0 / 0 / 0.0; those numbers are then ignored. Detecting a cycle and measuring it are separate claims — never invent a rate to fill the field, and never report a cycle you could not measure as 0% complete.
   - Cite evidence (which relationship, status column, derived relationship, or enriched view)
   - Assess confidence based on signal strength
   - `tables_involved` is the cycle's COMPLETE participation list: every table your stages, entity flows, description, or evidence cite belongs in it. Citing a table as evidence while omitting it from `tables_involved` is an inconsistency.
@@ -92,7 +92,7 @@ user_prompt: |
   5. **Ground or abstain** — only emit a cycle whose references all appear in the metadata; leave ungroundable declared cycles out (honestly not detected). Set confidence to honest signal strength.
   </instructions>
 
-  Call `submit_analysis` with your structured findings.
+  Emit your structured findings in the required output structure.
 
 # Input variable definitions
 inputs:

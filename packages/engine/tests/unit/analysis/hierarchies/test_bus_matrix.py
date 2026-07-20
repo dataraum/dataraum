@@ -244,7 +244,7 @@ class TestFoldedLeg:
         t3 = _seed_fold_fact(real_session, duck, "f3", key="state", attr="state_name")
         t4 = _seed_fold_fact(real_session, duck, "f4", key="state", attr="state_name")
         distinct = [
-            ConformVerdict(pair_ref=ref, verdict="distinct", concept_label=None, reason="other")
+            ConformVerdict(pair_ref=ref, verdict="distinct", concept_label="", reason="other")
             for ref in ("pair:0:2", "pair:0:3", "pair:1:2", "pair:1:3")
         ]
         judge = _conform_judge(
@@ -276,7 +276,7 @@ class TestFoldedLeg:
         judge = _conform_judge(
             [
                 ConformVerdict(
-                    pair_ref="pair:0:1", verdict="distinct", concept_label=None, reason="other"
+                    pair_ref="pair:0:1", verdict="distinct", concept_label="", reason="other"
                 )
             ]
         )
@@ -350,7 +350,7 @@ class TestFoldedLeg:
                 ConformVerdict(
                     pair_ref="pair:0:1",
                     verdict="abstain",
-                    concept_label=None,
+                    concept_label="",
                     reason="insufficient evidence",
                 )
             ]

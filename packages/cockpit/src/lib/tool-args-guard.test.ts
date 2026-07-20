@@ -251,7 +251,7 @@ describe("toolArgsGuardMiddleware", () => {
 
 	it("counts the run-fatal unparseable-args path via onError, and ignores other errors", () => {
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
-		const mw = toolArgsGuardMiddleware("frame_family");
+		const mw = toolArgsGuardMiddleware("grounding");
 
 		mw.onError?.(ctx(), {
 			error: new Error('Failed to parse tool arguments as JSON: "{oops'),
@@ -264,7 +264,7 @@ describe("toolArgsGuardMiddleware", () => {
 
 		expect(info).toHaveBeenCalledTimes(1);
 		expect(info).toHaveBeenCalledWith("tool_args_rejected", {
-			label: "frame_family",
+			label: "grounding",
 			tool: null,
 			error: 'Failed to parse tool arguments as JSON: "{oops',
 		});

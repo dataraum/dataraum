@@ -108,7 +108,7 @@ const Reliability = z.object({
 // narrative + provenance; the steps/final_sql it validated live in its run_steps
 // call (captured server-side), so they can't drift from what the grid runs.
 
-const QueryDraftSchema = z.object({
+export const QueryDraftSchema = z.object({
 	answer: z
 		.string()
 		.describe(
@@ -200,13 +200,13 @@ export interface RunStepsFailure {
 	steps: string[];
 }
 
-/** The per-invocation capture cell: the last successful run_steps validation (for the
- * grid), the last failure (for the no-result diagnostic), and the model's final answer
- * draft once it calls `emit_result`. */
+/** The per-invocation capture cell: the last successful run_steps validation (for
+ * the grid) and the last failure (for the no-result diagnostic). The model's draft
+ * is NOT captured here — it is the return value of the structured-output call
+ * (DAT-807), so nothing writes it through a tool any more. */
 interface RunStepsCapture {
 	value: ValidatedRun | null;
 	lastError: RunStepsFailure | null;
-	draft: QueryDraft | null;
 }
 
 // --- Reuse classification (CLASSIFY-don't-substitute; informed by the engine's
@@ -487,9 +487,10 @@ export async function persistLearnedSnippets(
 }
 
 // --- No-result handling (DAT-608): the agent loop can end without the model emitting
-// an answer (it gave up, or hit the iteration ceiling). `emit_result` not being called
-// is how that surfaces now — captured.draft stays null. We salvage a validated query if
-// one exists, else tell the no-result story from the last state (see noResultNarrative).
+// an answer (it gave up, or hit the iteration ceiling). That now surfaces as a thrown
+// `structured-output-*` error from chat() rather than an unwritten capture cell. We
+// salvage a validated query if one exists, else tell the no-result story from the last
+// state (see noResultNarrative).
 
 /** Synthesize a draft from a validated-but-unfinalized run: the model proved a
  * query via run_steps but ran out of steps before writing the summary. The grid
@@ -556,6 +557,20 @@ export function noResultNarrative(lastError: RunStepsFailure | null): string {
 	);
 }
 
+/** The structured-output failures `chat({ outputSchema })` raises when the loop
+ * ends without a usable draft — the model emitted no final text, emitted text the
+ * grammar didn't hold to, or emitted a value that failed the zod parse. These are
+ * the recoverable "no draft" cases (DAT-608 salvage); every OTHER error out of
+ * chat() is a real transport/auth/abort failure and must propagate. The adapter
+ * stamps the code on the thrown Error (@tanstack/ai
+ * activities/chat/index.js — harvestCombinedStructuredOutput). Exported for the
+ * unit test; pure. */
+export function isMissingStructuredResult(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	const code = (err as { code?: unknown }).code;
+	return typeof code === "string" && code.startsWith("structured-output-");
+}
+
 /**
  * The query sub-agent: ONE nested chat() over [snippet_search, run_steps] with the
  * concrete `QueryDraftSchema`, then deterministic post-processing (the grid +
@@ -610,79 +625,96 @@ export async function querySubAgent(
 
 	const userMessage = `<question>\n${question}\n</question>`;
 
-	// Per-invocation capture cell — run_steps writes the last validation (+ last failure)
-	// and emit_result writes the model's final draft. Isolated across concurrent calls.
-	const captured: RunStepsCapture = {
-		value: null,
-		lastError: null,
-		draft: null,
-	};
+	// Per-invocation capture cell — run_steps writes the last validation (+ last
+	// failure). Isolated across concurrent calls.
+	const captured: RunStepsCapture = { value: null, lastError: null };
 
-	// The structured answer arrives as an EXPLICIT `emit_result` tool call, deliberately
-	// NOT native `chat({ outputSchema })`. Native combined mode (Anthropic 4.x) harvests
-	// the model's FINAL-TURN TEXT as the structured output — so a prose preamble ("Let me
-	// now compose…") emitted before the model means to call run_steps gets harvested as
-	// the `answer`, ending the loop before any SQL runs (the silent no-result bug). A
-	// plain tool can't be finalized by prose: the loop runs until the model EXPLICITLY
-	// emits its answer (or gives up), and run_steps stays a real step in between. Mirrors
-	// frame-family's induceStructured lesson, adapted from one-shot to this tool loop.
-	const emitResult = toolDefinition({
-		name: "emit_result",
-		description:
-			"Return your final answer as this tool's arguments, AFTER validating the query " +
-			"with run_steps. Call this exactly once, as your last action.",
-		inputSchema: QueryDraftSchema,
-	}).server((input) => {
-		captured.draft = input as QueryDraft;
-		return { ok: true };
-	});
-
+	// The COMBINED shape (DAT-807): the real tools and the schema-guaranteed final
+	// draft ride ONE streaming request (`output_config.format` + `tools`), exactly
+	// like the grounding agent (worker/grounding-agent.ts). The draft is no longer
+	// parsed out of an `emit_result` tool's arguments — constrained decoding
+	// guarantees it — so the tool-argument malformation that could silently zero
+	// the answer is structurally gone.
+	//
+	// The hazard the forced tool was working around — the model ending the loop
+	// with a prose preamble ("Let me now compose…") that gets harvested as the
+	// answer — is CAUGHT rather than impossible: the adapter attaches the schema
+	// to every request, so a prose ending fails the harvest with
+	// `structured-output-parse-failed` and falls into the salvage branch below
+	// (verified against the installed adapter, not assumed). The other failure —
+	// finalizing a well-formed draft WITHOUT ever validating SQL — is unchanged
+	// and also handled below (`captured.value === null` → noResultNarrative).
+	// The prompt carries the load here: `prompts/query.ts` tells the model that
+	// emitting the answer is what ENDS the turn.
 	const abortController = linkedAbortController(signal);
-	const stream = await chat({
-		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		abortController,
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
-		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
-		systemPrompts: [
-			{
-				content: getQueryInstructions(),
-				metadata: { cache_control: { type: "ephemeral" } },
-			},
-			{
-				content: stableContext,
-				metadata: { cache_control: { type: "ephemeral" } },
-			},
-		],
-		messages: [{ role: "user", content: userMessage }],
-		tools: [
-			snippetSearchTool,
-			lookValuesTool,
-			makeRunStepsTool(captured, nearUniqueColumns),
-			emitResult,
-		],
-		// Per-run gen_ai spans/metrics (DAT-706) + the tool-args guard (DAT-661
-		// coercion/rejection counters). Tags this nested sub-agent loop SEPARATELY
-		// from the orchestrator; the iteration spans expose its round-trip depth.
-		middleware: [
-			...llmOtel("answer_subagent"),
-			toolArgsGuardMiddleware("answer_subagent"),
-		],
-	});
-
-	// Drain the agent-loop stream so the tools actually execute. Stop as soon as the
-	// model emits its answer — draining further bills an extra turn that only re-confirms
-	// (abort the in-flight request, then break). If the loop ends with no emit (the model
-	// gave up, or hit the iteration ceiling), captured.draft stays null.
-	for await (const _chunk of stream) {
-		if (captured.draft !== null) {
-			abortController?.abort();
-			break;
-		}
+	let draft: QueryDraft | null = null;
+	try {
+		draft = await chat({
+			adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+			abortController,
+			// The draft rides the streaming tool loop itself, so the loop's full
+			// budget applies; there is no separate structured-output call to
+			// re-budget (see llm.ts + grounding-agent.ts).
+			modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+			agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
+			systemPrompts: [
+				{
+					content: getQueryInstructions(),
+					metadata: { cache_control: { type: "ephemeral" } },
+				},
+				{
+					content: stableContext,
+					metadata: { cache_control: { type: "ephemeral" } },
+				},
+			],
+			messages: [{ role: "user", content: userMessage }],
+			tools: [
+				snippetSearchTool,
+				lookValuesTool,
+				makeRunStepsTool(captured, nearUniqueColumns),
+			],
+			outputSchema: QueryDraftSchema,
+			// Per-run gen_ai spans/metrics (DAT-706) + the tool-args guard (DAT-661
+			// coercion/rejection counters) — still warranted here, unlike the pure
+			// outputSchema sites: snippet_search / look_values / run_steps are real
+			// tools with a real argument boundary. Tags this nested sub-agent loop
+			// SEPARATELY from the orchestrator; the iteration spans expose its
+			// round-trip depth.
+			middleware: [
+				...llmOtel("answer_subagent"),
+				toolArgsGuardMiddleware("answer_subagent"),
+			],
+		});
+	} catch (err) {
+		// ONLY a missing/malformed structured result is recoverable here: the model
+		// gave up or hit the iteration ceiling without emitting its draft (DAT-608).
+		// That is not a dead turn — if run_steps validated a query we still have the
+		// real result, and the salvage path below returns it.
+		//
+		// Everything else (auth, rate limit, network, abort) propagates to the
+		// `asAgentError` envelope. Swallowing those would report "I couldn't compose
+		// a query" for what is actually a 401 — a misleading non-fact the
+		// orchestrator hallucinates from (the failure noResultNarrative avoids).
+		//
+		// CAVEAT, verified against the installed adapter: a provider error does NOT
+		// arrive with its cause intact. `@tanstack/ai-anthropic` yields a RUN_ERROR
+		// chunk rather than throwing; the engine early-terminates and chat() throws
+		// its UNCODED fallback ("structured output finalization produced no
+		// result"), discarding the real message. So the classification below is
+		// correct — an uncoded error is not salvageable — but the envelope the
+		// orchestrator sees is opaque for this class. Log BEFORE re-raising so the
+		// failure at least leaves a trace; without this a 401 is silent everywhere.
+		const salvageable = isMissingStructuredResult(err);
+		console.info("answer_subagent_no_structured_result", {
+			error: err instanceof Error ? err.message : String(err),
+			code: err instanceof Error ? (err as { code?: unknown }).code : undefined,
+			salvageable,
+			validated: captured.value !== null,
+		});
+		if (!salvageable) throw err;
 	}
 
-	const dataQuality = await readDataQuality(
-		captured.draft?.tables_touched ?? [],
-	);
+	const dataQuality = await readDataQuality(draft?.tables_touched ?? []);
 	// Save-on-clean (P2a): grow the snippet library from this answer's fresh/adapted
 	// steps. Fire-and-forget — runs AFTER assembly, never on the critical path.
 	void persistLearnedSnippets(captured.value);
@@ -691,15 +723,18 @@ export async function querySubAgent(
 		// A query validated — that's the answer. Use the model's emitted draft, or salvage
 		// from the validated run if it validated but never emitted (the grid IS the answer,
 		// DAT-608: a near-miss returns the real result rather than failing the turn).
-		const draft = captured.draft ?? salvageDraft(captured.value);
-		return assembleAnswer(draft, captured.value, dataQuality);
+		return assembleAnswer(
+			draft ?? salvageDraft(captured.value),
+			captured.value,
+			dataQuality,
+		);
 	}
 
 	// No validated query → an honest no-result (the last state), never a blank. The
 	// narrative tells the story from facts (the last validation failure, or a plain
 	// "stopped before running any SQL"); the log line leaves a debuggable trace.
 	console.info("answer_no_result", {
-		emitted_answer: captured.draft !== null,
+		emitted_answer: draft !== null,
 		last_error: captured.lastError?.message ?? null,
 		last_sql: captured.lastError?.sql ?? null,
 		steps_attempted: captured.lastError?.steps ?? [],
@@ -707,8 +742,8 @@ export async function querySubAgent(
 	return assembleAnswer(
 		{
 			answer: noResultNarrative(captured.lastError),
-			assumptions: captured.draft?.assumptions ?? [],
-			concepts_used: captured.draft?.concepts_used ?? [],
+			assumptions: draft?.assumptions ?? [],
+			concepts_used: draft?.concepts_used ?? [],
 			tables_touched: [],
 		},
 		null,

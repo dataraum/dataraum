@@ -32,7 +32,6 @@
 		"db:migrate:cockpit": "bun --bun drizzle-kit migrate --config drizzle.config.cockpit.ts"
 	},
 	"dependencies": {
-		"@anthropic-ai/sdk": "^0.107.0",
 		"@codemirror/commands": "^6.10.4",
 		"@codemirror/lang-sql": "^6.10.0",
 		"@dagrejs/dagre": "^3.0.0",

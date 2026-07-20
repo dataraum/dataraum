@@ -14,19 +14,24 @@ import {
 	CHART_AUTHOR_MAX_ATTEMPTS,
 	type EmitFn,
 } from "./author-chart";
-import type { ChartConfig } from "./chart-config";
+import type { AuthoredChart } from "./chart-config";
 
 const COLUMNS = [
 	{ name: "month", type: "temporal" },
 	{ name: "revenue", type: "quantitative" },
 ];
 
-const validConfig: ChartConfig = {
+// The model emits the AUTHORED shape (DAT-807) — every field present, "none"/""
+// standing in for the optionals constrained decoding cannot express. The gate
+// folds it to a persisted config, which is what `res.config` holds.
+const validEmission: AuthoredChart = {
 	mark: "bar",
 	encoding: {
-		x: { field: "month", type: "temporal" },
-		y: { field: "revenue", type: "quantitative", aggregate: "sum" },
+		x: { field: "month", type: "temporal", aggregate: "none", title: "" },
+		y: { field: "revenue", type: "quantitative", aggregate: "sum", title: "" },
+		color: { field: "", type: "nominal", aggregate: "none", title: "" },
 	},
+	title: "",
 };
 
 /** An emit that returns a scripted sequence of emissions, recording the messages
@@ -40,14 +45,19 @@ function scriptedEmit(sequence: unknown[]): {
 	const emit: EmitFn = async (_prompts, messages) => {
 		// Snapshot the conversation as handed to this attempt.
 		calls.push(messages.map((m) => ({ ...m })));
-		return sequence[i++];
+		const next = sequence[i++];
+		// An Error in the script models the live failure mode: native structured
+		// output THROWS when the model produced no config (there is no
+		// resolved-but-empty outcome), and the breaker must spend one attempt.
+		if (next instanceof Error) throw next;
+		return next;
 	};
 	return { emit, calls };
 }
 
 describe("authorChart circuit breaker", () => {
 	it("returns the config on a first valid emission", async () => {
-		const { emit, calls } = scriptedEmit([validConfig]);
+		const { emit, calls } = scriptedEmit([validEmission]);
 		const res = await authorChart({
 			columns: COLUMNS,
 			instruction: "revenue by month",
@@ -62,13 +72,18 @@ describe("authorChart circuit breaker", () => {
 		// First emission references a non-existent column → rejected by the gate;
 		// second is valid.
 		const bad = {
-			mark: "bar",
+			...validEmission,
 			encoding: {
-				x: { field: "month", type: "temporal" },
-				y: { field: "profit", type: "quantitative" },
+				...validEmission.encoding,
+				y: {
+					field: "profit",
+					type: "quantitative" as const,
+					aggregate: "sum" as const,
+					title: "",
+				},
 			},
 		};
-		const { emit, calls } = scriptedEmit([bad, validConfig]);
+		const { emit, calls } = scriptedEmit([bad, validEmission]);
 		const res = await authorChart({
 			columns: COLUMNS,
 			instruction: "revenue by month",
@@ -100,8 +115,11 @@ describe("authorChart circuit breaker", () => {
 		expect(calls).toHaveLength(CHART_AUTHOR_MAX_ATTEMPTS);
 	});
 
-	it("treats a no-tool-call emission as a failed attempt", async () => {
-		const { emit, calls } = scriptedEmit([undefined, validConfig]);
+	it("treats a produced-nothing emission (a throw) as a failed attempt", async () => {
+		const { emit, calls } = scriptedEmit([
+			new Error("structured output finalization produced no result"),
+			validEmission,
+		]);
 		const res = await authorChart({
 			columns: COLUMNS,
 			instruction: "revenue by month",

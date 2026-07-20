@@ -1,6 +1,6 @@
 """Pydantic models for LLM-powered enrichment analysis.
 
-Contains tool output models for structured LLM output and internal
+Contains the output models the LLM's structured output is constrained to, and internal
 result models for processing enrichment recommendations.
 
 DAT-801: the selection question is neutral — "what related data usefully extends
@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from dataraum.analysis.views.builder import DimensionJoin
 
 # =============================================================================
-# Tool Output Models - Used as Pydantic tools for LLM structured output
+# Output Models - the schemas the LLM's structured outputs are constrained to
 # =============================================================================
 
 
@@ -77,17 +77,21 @@ class MainDatasetOutput(BaseModel):
     table_name: str = Field(description="Name of the main/fact table")
     is_primary_fact: bool = Field(description="True if this is the primary transactional dataset")
     recommended_enrichments: list[RelatedTableJoinOutput] = Field(
-        default_factory=list, description="Recommended related-table joins that extend this table"
+        description="Recommended related-table joins that extend this table; [] when none"
     )
-    skip_reason: str | None = Field(
-        default=None, description="If no extensions recommended, explain why"
+    skip_reason: str = Field(
+        description=(
+            'Why no extensions are recommended; "" when recommended_enrichments is '
+            "non-empty. Exactly one of the two is populated."
+        )
     )
 
 
 class EnrichmentAnalysisOutput(BaseModel):
-    """Complete enrichment analysis result.
+    """Complete enrichment analysis result — the ``enrichment_analysis`` output.
 
-    Top-level tool output for the analyze_enrichment tool.
+    Every field is REQUIRED (DAT-807): not-applicable is a documented empty
+    value ("" / []), never an omitted key.
     """
 
     main_datasets: list[MainDatasetOutput] = Field(
@@ -125,7 +129,7 @@ class EnrichmentAnalysisResult(BaseModel):
 
 
 __all__ = [
-    # Tool output models
+    # Structured-output models
     "EnrichmentColumnOutput",
     "RelatedTableJoinOutput",
     "MainDatasetOutput",

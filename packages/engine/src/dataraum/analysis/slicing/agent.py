@@ -2,7 +2,7 @@
 
 This agent analyzes table statistics, semantic annotations, and correlations
 to recommend the best categorical dimensions for slicing data into subsets.
-Uses tool-based output for structured responses.
+Uses Anthropic structured outputs for a typed response.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
-    ToolDefinition,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
@@ -41,7 +41,7 @@ class SlicingAgent(LLMFeature):
     creating data subsets (slices). Each unique value in a slice
     dimension creates a separate subset.
 
-    Uses tool-based output for structured responses.
+    Uses Anthropic structured outputs for a typed response.
 
     Uses inputs from:
     - Statistical profiles (distinct counts, value distributions)
@@ -107,23 +107,21 @@ class SlicingAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
-        # Define tool for structured output
-        tool = ToolDefinition(
-            name="analyze_slicing",
-            description="Provide structured slicing dimension recommendations",
-            input_schema=SlicingAnalysisOutput.model_json_schema(),
-        )
-
-        # Call LLM with tool use
+        # Call LLM — structured output (DAT-807): constrained decoding against
+        # SlicingAnalysisOutput's schema; the answer is JSON message content.
+        # ``model`` is passed explicitly like every other agent — omitting it fell
+        # back to the provider's default_model, so this call site silently ignored
+        # its configured tier (DAT-807 fix).
+        model = self.provider.get_model_for_tier(feature_config.model_tier)
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "analyze_slicing"},
+            output_schema=SlicingAnalysisOutput.model_json_schema(),
             label="slicing_analysis",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
+            model=model,
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —
@@ -131,27 +129,10 @@ class SlicingAgent(LLMFeature):
         # we don't re-wrap it. A returned Result is always a success.
         response = self.provider.converse(request).unwrap()
 
-        # Extract tool call result
-        if not response.tool_calls:
-            # LLM didn't use the tool - try to parse text as fallback
-            if response.content:
-                try:
-                    response_data = json.loads(response.content)
-                    output = SlicingAnalysisOutput.model_validate(response_data)
-                except Exception:
-                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
-            else:
-                return Result.fail("LLM did not use the analyze_slicing tool")
-        else:
-            # Parse tool response using Pydantic model
-            tool_call = response.tool_calls[0]
-            if tool_call.name != "analyze_slicing":
-                return Result.fail(f"Unexpected tool call: {tool_call.name}")
-
-            try:
-                output = SlicingAnalysisOutput.model_validate(tool_call.input)
-            except Exception as e:
-                return Result.fail(f"Failed to validate tool response: {e}")
+        parsed = parse_structured_output(response, SlicingAnalysisOutput, label="slicing_analysis")
+        if not parsed.success:
+            return Result.fail(parsed.error or "slicing_analysis failed")
+        output = parsed.unwrap()
 
         # Convert Pydantic output to SlicingAnalysisResult
         return self._convert_output_to_result(output, context_data)
@@ -161,10 +142,10 @@ class SlicingAgent(LLMFeature):
         output: SlicingAnalysisOutput,
         context_data: dict[str, Any],
     ) -> Result[SlicingAnalysisResult]:
-        """Convert Pydantic tool output to SlicingAnalysisResult.
+        """Convert the validated LLM output to SlicingAnalysisResult.
 
         Args:
-            output: Validated Pydantic output from LLM
+            output: Validated Pydantic output from the LLM
             context_data: Original context data for lookups
 
         Returns:
@@ -221,7 +202,11 @@ class SlicingAgent(LLMFeature):
                 distinct_values=distinct_values,
                 value_count=len(distinct_values),
                 reasoning=rec.reasoning,
-                business_context=rec.business_context,
+                # The output model states every attribute (DAT-807), using "" for
+                # the not-applicable case; the domain model + its nullable column
+                # keep None, so the sentinel is normalized back here and the
+                # PERSISTED shape is unchanged.
+                business_context=rec.business_context or None,
                 confidence=rec.confidence,
             )
             recommendations.append(recommendation)

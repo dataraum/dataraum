@@ -31,8 +31,8 @@ from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
-    ToolDefinition,
 )
+from dataraum.llm.structured_output import parse_structured_output
 
 logger = get_logger(__name__)
 
@@ -334,29 +334,16 @@ class ValidationAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to render validation prompt: {e}")
 
-        # Create tool definition from Pydantic model
-        tool = ToolDefinition(
-            name="generate_validation_sql",
-            description=(
-                "Generate a DuckDB SQL query for the validation check. "
-                "Analyze the schema to identify relevant columns and tables."
-            ),
-            input_schema=ValidationSQLOutput.model_json_schema(),
-            # Strict-compatible AND behaviorally safe here (smoke-verified
-            # 2026-07-02: 8/9 validations executed under strict) — a small
-            # fixed-shape output, unlike the batched extractors where strict
-            # grammar made the model under-produce.
-            strict=True,
-        )
-
         model = self.provider.get_model_for_tier(feature_config.model_tier)
 
-        # Call LLM with tool use
+        # Call LLM — structured output (DAT-807): constrained decoding against
+        # ValidationSQLOutput's schema; the answer is JSON message content. This
+        # call site was already on a constrained grammar (a strict forced tool),
+        # so the mechanism swap is the closest to a no-op of the nine.
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "generate_validation_sql"},
+            output_schema=ValidationSQLOutput.model_json_schema(),
             label="validation_sql",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
@@ -369,29 +356,14 @@ class ValidationAgent(LLMFeature):
         # we don't re-wrap it. A returned Result is always a success.
         response = self.provider.converse(request).unwrap()
 
-        # No tool call = degraded generation. There is no rescue: under the
-        # lifecycle this is a bind ERROR — the artifact stays ``declared``
-        # with the reason. (DAT-439 deleted the JSON-parse-from-text fallback
-        # that silently rescued unstructured responses.)
-        if not response.tool_calls:
-            logger.warning(
-                "validation_llm_no_tool_call",
-                validation_id=spec.validation_id,
-                has_content=bool(response.content),
-            )
-            return Result.fail(
-                "LLM did not use the generate_validation_sql tool — no structured output"
-            )
-
-        # Parse tool response using Pydantic model
-        tool_call = response.tool_calls[0]
-        if tool_call.name != "generate_validation_sql":
-            return Result.fail(f"Unexpected tool call: {tool_call.name}")
-
-        try:
-            output = ValidationSQLOutput.model_validate(tool_call.input)
-        except Exception as e:
-            return Result.fail(f"Failed to validate tool response: {e}")
+        # A payload that does not parse = degraded generation. There is no
+        # rescue: under the lifecycle this is a bind ERROR — the artifact stays
+        # ``declared`` with the reason. (DAT-439 deleted the JSON-parse-from-text
+        # fallback that silently rescued unstructured responses.)
+        parsed = parse_structured_output(response, ValidationSQLOutput, label="validation_sql")
+        if not parsed.success:
+            return Result.fail(parsed.error or "validation_sql failed")
+        output = parsed.unwrap()
 
         # can_validate without SQL is a degraded generation, not a skip —
         # labeling it SKIPPED would mislabel the degradation as legitimate
@@ -409,7 +381,9 @@ class ValidationAgent(LLMFeature):
             generated_at=datetime.now(UTC),
             model_used=model,
             is_valid=output.can_validate,
-            validation_error=output.skip_reason,
+            # "" is the DAT-807 not-applicable sentinel; the field is optional
+            # downstream, so normalize it back rather than storing an empty string.
+            validation_error=output.skip_reason or None,
         )
 
         return Result.ok(generated)

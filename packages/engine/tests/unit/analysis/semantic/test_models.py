@@ -250,6 +250,8 @@ def test_table_synthesis_output_validates_entities_and_relationships() -> None:
                     "description": "Customer orders.",
                     "is_fact_table": True,
                     "grain": ["order_id"],
+                    "time_columns": [],
+                    "identity_columns": [],
                 }
             ],
             "relationships": [
@@ -261,6 +263,7 @@ def test_table_synthesis_output_validates_entities_and_relationships() -> None:
                     "relationship_type": "foreign_key",
                     "confidence": 0.9,
                     "reasoning": "FK by name + value overlap.",
+                    "key_columns": [],
                 }
             ],
             "column_concepts": [],
@@ -270,16 +273,24 @@ def test_table_synthesis_output_validates_entities_and_relationships() -> None:
     assert out.relationships[0].to_table == "customers"
 
 
-def test_load_bearing_fields_are_required_in_the_tool_schema() -> None:
-    """``column_concepts`` and ``relationships`` are REQUIRED in the tool schema (DAT-768).
+def test_every_field_is_required_in_the_output_schema() -> None:
+    """No optional fields anywhere in the semantic_per_table schema (DAT-807).
 
-    They were ``default_factory=list``, so a crowded-out omission was schema-legal and
-    the DAT-710 repair turn never fired (the DAT-672 class). Marking them required makes
-    an omission a validation error the repair turn catches — the model must emit the
-    field (``[]`` is still allowed, but the key cannot silently vanish).
+    An optional field is a modelling mistake — either the model must state the
+    attribute or it should not exist — and under constrained decoding every
+    optional also spends one of the request's 24 optional-parameter slots (an
+    ``X | None`` renders as an anyOf, so it spends a union slot too). The
+    not-applicable case is a documented empty value ("" / []), never an omitted
+    key: ``column_concepts`` crowded out by an omission was schema-legal before
+    DAT-768 and silently zeroed the surface (the DAT-672 class).
     """
-    required = set(TableSynthesisOutput.model_json_schema()["required"])
-    assert {"tables", "relationships", "column_concepts"} <= required
+    schema = TableSynthesisOutput.model_json_schema()
+    for owner, node in [("TableSynthesisOutput", schema), *schema["$defs"].items()]:
+        props = node.get("properties")
+        if not props:
+            continue
+        optional = set(props) - set(node.get("required", []))
+        assert not optional, f"{owner} has optional fields: {sorted(optional)}"
 
 
 def test_omitting_column_concepts_is_a_validation_error() -> None:

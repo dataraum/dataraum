@@ -33,12 +33,18 @@ malformation is DELETED.
   guaranteed by the grammar; semantics never were).
 
 **What eval should expect — the output schemas changed:**
-- **No optional fields left**, except three deliberately-kept tri-state
-  measurements on `CycleSummaryOutput` (`total_records`, `completed_cycles`,
-  `completion_rate`) where 0 is a real value and "not measured" is load-bearing.
-  Every other not-applicable case is now a DOCUMENTED EMPTY VALUE (`""` / `[]`)
-  the model must emit, never an omitted key. Expect fields that used to be absent
-  to be present-and-empty in the dumps.
+- **No optional fields left anywhere** — all nine schemas are 0 optional / 0
+  union / no recursion. Every not-applicable case is a DOCUMENTED EMPTY VALUE
+  (`""` / `[]`) the model must emit, never an omitted key. Expect fields that
+  used to be absent to be present-and-empty in the dumps.
+- **`business_cycles` gained a required `measured: bool` per cycle.** Completion
+  is a tri-state, and it is now carried by that explicit flag rather than by a
+  null: `measured: false` means the accompanying `total_records` /
+  `completed_cycles` / `completion_rate` are `0 / 0 / 0.0` and MEANINGLESS. The
+  engine maps that back to NULL before persisting, so the stored columns, the
+  `detected_business_cycles` view, and the cockpit are unchanged — but a dump
+  reader must not treat an unmeasured cycle's `0.0` as a 0% completion rate.
+  Expect the prompt to have moved accordingly.
 - `ValidationSQLOutput.sql` / `.skip_reason` are the either/or pair as two
   required strings — the unused one is `""`, previously `null`.
 - `ExtractGroundingOutput.relation` is `""` in the fall-loud case, previously

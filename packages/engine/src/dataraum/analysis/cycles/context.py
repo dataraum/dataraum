@@ -18,6 +18,7 @@ never cross-run (fail-closed, DAT-429).
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -85,8 +86,8 @@ def build_cycle_detection_context(
     Args:
         session: SQLAlchemy session
         duckdb_conn: DuckDB connection for row counts and the
-            chain-conditioned label aggregates on the reference lines
-            (DAT-853)
+            chain-conditioned label + measure-range aggregates on the
+            reference lines (DAT-853)
         table_ids: Tables to analyze
         vertical: Vertical name (e.g. 'finance')
         base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).
@@ -232,14 +233,17 @@ def build_cycle_detection_context(
 
     sampler = DataSampler(privacy) if privacy is not None else None
 
-    # Chain-conditioned label samples on the reference lines (DAT-853): for
-    # each A.fk -> B.key, the from-side identity labels aggregated over ONLY
-    # the rows that ride the join. The flat samples served per column below
-    # blur populations sharing a table (counterparty at 37% vendors flat vs
-    # 100% vendors on payment-linked rows — the AP mislabel); the conditioned
-    # distribution is the direction evidence. Additional serving — the flat
-    # samples stay. Privacy follows this builder's convention: a sensitive
-    # label serves NOTHING (absence, never a placeholder).
+    # Chain-conditioned evidence on the reference lines (DAT-853): for each
+    # A.fk -> B.key, aggregated over ONLY the rows that ride the join —
+    # (a) the from-side identity labels' top values, and (b) the from-side
+    # measure columns' min/max with a plain sign statement. The flat samples
+    # and profiles served per column below blur populations sharing a table
+    # (counterparty at 37% vendors flat vs 100% vendors on payment-linked
+    # rows — the AP mislabel; a measure globally mixed-sign yet uniformly one
+    # sign on the joined rows); the conditioned distribution and sign are the
+    # direction evidence. Additional serving — the flat samples stay. Privacy
+    # follows this builder's convention: a sensitive column serves NOTHING
+    # (absence, never a placeholder).
     for r in rel_list:
         from_tbl = table_by_id.get(r["from_table_id"])
         to_tbl = table_by_id.get(r["to_table_id"])
@@ -274,6 +278,39 @@ def build_cycle_detection_context(
                 )
         if conditioned:
             r["conditioned_label_samples"] = conditioned
+        # Measure sign/range over the same joined population — one aggregate
+        # per relationship × measure column, the measure selection being this
+        # builder's pinned annotations (semantic_role == "measure").
+        ranges: list[dict[str, Any]] = []
+        for measure_col in sorted(from_tbl.columns, key=lambda c: c.column_position):
+            ann = annotations.get(measure_col.column_id)
+            if ann is None or ann.semantic_role != "measure":
+                continue
+            if (r["from_table"], measure_col.column_name) in endpoint_columns:
+                continue
+            if sampler is not None and sampler.is_sensitive(measure_col.column_name):
+                continue
+            value_range = _conditioned_measure_range(
+                duckdb_conn,
+                from_path=from_tbl.duckdb_path,
+                to_path=to_tbl.duckdb_path,
+                fk=r["from_column"],
+                key=r["to_column"],
+                measure_column=measure_col.column_name,
+            )
+            if value_range is None:
+                continue
+            min_v, max_v = value_range
+            ranges.append(
+                {
+                    "column": measure_col.column_name,
+                    "min": min_v,
+                    "max": max_v,
+                    "summary": _sign_summary(min_v, max_v),
+                }
+            )
+        if ranges:
+            r["conditioned_measure_ranges"] = ranges
 
     # Build table info with columns and semantic annotations
     table_info = []
@@ -616,6 +653,71 @@ def _conditioned_top_values(
     return [(value, float(pct)) for value, pct in rows]
 
 
+def _sign_summary(min_v: float, max_v: float) -> str:
+    """Plain-language sign statement of a served ``[min, max]`` range."""
+    if max_v < 0:
+        return "all negative"
+    if min_v > 0:
+        return "all positive"
+    if min_v >= 0:
+        return "none negative"
+    if max_v <= 0:
+        return "none positive"
+    return "mixed signs"
+
+
+def _conditioned_measure_range(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    from_path: str,
+    to_path: str,
+    fk: str,
+    key: str,
+    measure_column: str,
+) -> tuple[float, float] | None:
+    """One DuckDB aggregate: a measure's min/max over rows riding the join.
+
+    Twin of the catalogue builder's helper (analysis/catalogue/context.py) —
+    same semantics, this builder's own rendering. The same semi-join
+    restriction as :func:`_conditioned_top_values` (the fk RESOLVES into the
+    key — orphans and NULL fks do not ride): the flow sign a chain carries is
+    a property of the joined population, and a measure globally mixed-sign
+    can be uniformly one sign on the chain-linked rows. NULLs are ignored by
+    MIN/MAX; an empty or all-NULL joined population serves nothing.
+    Fail-soft: a missing typed table logs and serves nothing; a non-numeric,
+    all-NULL, or NaN-tainted result serves nothing silently — the context
+    build must survive it.
+    """
+    query = f"""
+        SELECT MIN({_qident(measure_column)}), MAX({_qident(measure_column)})
+        FROM {_qident(from_path)} src
+        WHERE src.{_qident(fk)} IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM {_qident(to_path)} tgt
+              WHERE tgt.{_qident(key)} = src.{_qident(fk)}
+          )
+    """
+    try:
+        row = duckdb_conn.execute(query).fetchone()
+    except Exception as e:
+        logger.warning(
+            "conditioned_range_failed", table=from_path, column=measure_column, error=str(e)
+        )
+        return None
+    if row is None:
+        return None
+    try:
+        min_v, max_v = float(row[0]), float(row[1])
+    except TypeError, ValueError:
+        # All-NULL joined population (MIN/MAX → None) or a non-numeric column.
+        return None
+    if math.isnan(min_v) or math.isnan(max_v):
+        # One NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every
+        # sign comparison — absence is the honest serving.
+        return None
+    return min_v, max_v
+
+
 def _load_pinned_annotations(
     session: Session,
     tables: list[Table] | Any,
@@ -857,14 +959,21 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             f"{rel['to_table']}.{rel['to_column']} "
             f"({rel['relationship_type']}, {rel['cardinality']}, conf={rel['confidence']:.0%})"
         )
-        # Chain-conditioned label samples (DAT-853): the from-side labels on
-        # ONLY the rows that ride this join — where these differ from a
-        # column's flat samples, they are the evidence for what the chain
-        # itself carries (e.g. which party the linked rows involve).
+        # Chain-conditioned evidence (DAT-853): the from-side labels and
+        # measure sign/ranges on ONLY the rows that ride this join — where
+        # these differ from a column's flat samples/profile, they are the
+        # evidence for what the chain itself carries (e.g. which party the
+        # linked rows involve, and the flow sign of the linked rows).
         for cls_entry in rel.get("conditioned_label_samples", []):
             lines.append(
                 f"    {rel['from_table']}.{cls_entry['column']} "
                 f"({rel['from_column']}-joined rows only): " + ", ".join(cls_entry["samples"])
+            )
+        for range_entry in rel.get("conditioned_measure_ranges", []):
+            lines.append(
+                f"    {rel['from_table']}.{range_entry['column']} "
+                f"({rel['from_column']}-joined rows only): "
+                f"min={range_entry['min']} max={range_entry['max']} — {range_entry['summary']}"
             )
     lines.append("")
 

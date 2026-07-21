@@ -518,6 +518,105 @@ class TestChainConditionedSamples:
         assert "bank_txns.payment_id -> payments.payment_id" in out["relationship_catalogue"]
         assert "-joined rows" not in out["relationship_catalogue"]
 
+    def test_conditioned_measure_range_serves_the_conditioned_sign(self, session) -> None:
+        """Measure sign/range over the join-riding rows only: globally the
+        amounts are mixed-sign (positive unlinked rows, a positive orphan),
+        on the joined rows uniformly negative — the flow-sign evidence the
+        flat table-level range blurs. A genuinely mixed measure says so
+        plainly, in column order. No TableEntity is written: the measure
+        selection rides the pinned annotations, not the entity's identity
+        columns."""
+        duck = duckdb.connect()
+        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2')")
+        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE, fee DOUBLE)")
+        duck.execute(
+            "INSERT INTO typed_bank_txns VALUES "
+            "('P1', -135000.0, -5.0), ('P2', -50.25, 10.0), "
+            "('ORPHAN-1', 77.0, 1.0), "  # fk set, never resolves — must not ride
+            "(NULL, 200.0, 2.0), (NULL, 950.5, 3.0)"  # unlinked rows: positive
+        )
+        bank = _mk_table(
+            session, "bank_txns", ["payment_id", "amount", "fee"], duckdb_path="typed_bank_txns"
+        )
+        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
+        _promote(session, bank)
+        _promote(session, payments)
+        for name in ("amount", "fee"):
+            session.add(
+                SemanticAnnotation(
+                    column_id=_col_id(session, bank, name),
+                    run_id=_GEN_RUN,
+                    semantic_role="measure",
+                )
+            )
+        session.flush()
+        _relationship(session, bank, "payment_id", payments, "payment_id")
+
+        out = _build(session, [bank, payments], duckdb_conn=duck)
+        text = out["relationship_catalogue"]
+        assert "amount (payment_id-joined rows): min=-135000.0 max=-50.25 — all negative" in text
+        assert "fee (payment_id-joined rows): min=-5.0 max=10.0 — mixed signs" in text
+        assert text.index("amount (payment_id-joined") < text.index("fee (payment_id-joined")
+
+    def test_sensitive_measure_range_renders_redacted(self, session) -> None:
+        """The label convention holds for measure ranges: ``<REDACTED>``
+        without touching the data (the column does NOT exist in duckdb — an
+        aggregate would fail loudly, redaction must short-circuit)."""
+        duck = duckdb.connect()
+        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_payments VALUES ('P1')")
+        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_bank_txns VALUES ('P1')")
+        bank = _mk_table(
+            session, "bank_txns", ["payment_id", "salary_amount"], duckdb_path="typed_bank_txns"
+        )
+        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
+        _promote(session, bank)
+        _promote(session, payments)
+        session.add(
+            SemanticAnnotation(
+                column_id=_col_id(session, bank, "salary_amount"),
+                run_id=_GEN_RUN,
+                semantic_role="measure",
+            )
+        )
+        session.flush()
+        _relationship(session, bank, "payment_id", payments, "payment_id")
+
+        out = _build(session, [bank, payments], duckdb_conn=duck, sampler=_sampler([r".*salary.*"]))
+        assert "salary_amount (payment_id-joined rows): <REDACTED>" in out["relationship_catalogue"]
+
+    def test_nan_tainted_measure_range_serves_nothing(self, session) -> None:
+        """A NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every
+        sign comparison — a poisoned range would read 'all positive'.
+        Absence is the honest serving."""
+        duck = duckdb.connect()
+        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2')")
+        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE)")
+        duck.execute(
+            "INSERT INTO typed_bank_txns VALUES ('P1', 2.0), ('P2', CAST('nan' AS DOUBLE))"
+        )
+        bank = _mk_table(
+            session, "bank_txns", ["payment_id", "amount"], duckdb_path="typed_bank_txns"
+        )
+        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
+        _promote(session, bank)
+        _promote(session, payments)
+        session.add(
+            SemanticAnnotation(
+                column_id=_col_id(session, bank, "amount"),
+                run_id=_GEN_RUN,
+                semantic_role="measure",
+            )
+        )
+        session.flush()
+        _relationship(session, bank, "payment_id", payments, "payment_id")
+
+        out = _build(session, [bank, payments], duckdb_conn=duck)
+        assert "amount (payment_id-joined rows)" not in out["relationship_catalogue"]
+
 
 class TestEnrichedViewsAndAxes:
     def test_views_render_fact_dims_and_join_pairs(self, session) -> None:

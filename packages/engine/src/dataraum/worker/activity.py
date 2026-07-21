@@ -128,11 +128,19 @@ OPERATING_MODEL_DETECTOR_PHASES = ("validation",)
 
 @dataclass
 class PhaseRun:
-    """Temporal-agnostic outcome of one phase body (no detector side-effects)."""
+    """Temporal-agnostic outcome of one phase body (no detector side-effects).
+
+    ``declared`` carries a phase's declared-artifact count up to the activity
+    boundary when its outputs report one (the three operating_model families;
+    ``None`` otherwise). It is the ONE output field that survives the collapse to
+    :class:`PhaseOutcome` — the gate signal ``OperatingModelWorkflow`` reads to
+    refuse an empty promote (DAT-845).
+    """
 
     status: str
     summary: str = ""
     error: str | None = None
+    declared: int | None = None
 
 
 def run_phase(
@@ -449,6 +457,10 @@ def run_session_phase(
         status=result.status.value,
         summary=result.summary,
         error=result.error,
+        # The three operating_model families report their declared-artifact count
+        # in outputs; thread it up as the promote gate's signal (DAT-845). Every
+        # other session phase omits the key → None.
+        declared=result.outputs.get("declared"),
     )
 
 

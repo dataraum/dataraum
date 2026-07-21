@@ -450,7 +450,11 @@ class TestCoverage:
     def test_cheap_path_carries_coverage_but_no_unmeasured_row(self):
         """compute_rollup=False (contract gate) keeps today's shape for unmeasured."""
         ctx = assemble_readiness_context(
-            [make_abstention(detector_id="null_ratio")], compute_rollup=False
+            # A GAP reason: pins that the cheap path suppresses the unmeasured
+            # row even for a genuine gap (not_applicable would yield no row on
+            # EITHER path and pin nothing).
+            [make_abstention(detector_id="null_ratio", reason="missing_inputs")],
+            compute_rollup=False,
         )
         assert ctx.columns == {}  # gate reads scores; the trace is entropy_objects
         mixed = assemble_readiness_context(

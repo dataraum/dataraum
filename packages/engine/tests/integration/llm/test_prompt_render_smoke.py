@@ -55,3 +55,20 @@ def test_sql_prompt_renders_with_empty_conventions(prompt_name: str) -> None:
     template = renderer.load_template(prompt_name)
     # Required-only context (conventions omitted → its default "" fills the slot).
     renderer.render_split(prompt_name, _ctx_for(template))
+
+
+def test_every_shipped_template_satisfies_the_schema() -> None:
+    """Every prompt in dataraum-config loads under the strict schema.
+
+    ``PromptTemplate`` forbids unknown keys, so this is the test that catches a
+    typo'd field in a real prompt file — the unit contract test proves the model
+    rejects one, this proves none of the shipped templates HAS one.
+    """
+    renderer = PromptRenderer()
+    names = sorted(p.stem for p in renderer.prompts_dir.glob("*.yaml"))
+    assert names, "no prompt templates found — wrong config dir?"
+
+    for name in names:
+        template = renderer.load_template(name)  # raises ValidationError on any defect
+        assert template.system_prompt, f"{name}: empty system_prompt"
+        assert template.user_prompt, f"{name}: empty user_prompt"

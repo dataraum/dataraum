@@ -8,11 +8,19 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PromptTemplate(BaseModel):
     """A prompt template from YAML."""
+
+    # Unknown keys are an ERROR, not noise to skip: a template is authored by hand
+    # in `dataraum-config/llm/prompts/`, so a misspelled `validation`/`inputs`/
+    # `output_schema` would otherwise be dropped in silence and default to `{}` —
+    # the prompt would ship without its validation or its declared inputs and look
+    # fine. Same posture as ``LLMConfig`` (llm/config.py). Paired with the required
+    # `system_prompt`/`user_prompt`: a missing key fails loud, a stray key does too.
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     version: str

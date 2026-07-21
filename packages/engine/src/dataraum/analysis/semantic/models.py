@@ -229,25 +229,25 @@ class IdentityColumn(BaseModel):
 
     column: str = Field(description="Exact column name from the provided schema.")
     note: str = Field(
-        description=("One sentence: what entity this identifies and how it recurs across rows.")
+        description=(
+            "One sentence of STRUCTURAL observation: how the column recurs across "
+            "rows, its cardinality, whether it is a cross-table reference "
+            "candidate. Do NOT name the business entity it identifies — the "
+            "business reading is authored downstream at the catalogue horizon "
+            "(DAT-823), and an entity claim here would pre-empt it."
+        )
     )
 
 
 class TableEntityOutput(BaseModel):
-    """Entity-level classification for a single table (per-table tier)."""
+    """Structural classification for a single table (per-table tier).
+
+    Structure only (DAT-823): the business reading — ``entity_type`` +
+    ``description`` — is authored downstream by the catalogue_semantics phase,
+    which UPDATEs the stub row this output INSERTs.
+    """
 
     table_name: str = Field(description="Exact table name from the provided schema.")
-
-    entity_type: str = Field(
-        description=(
-            "What real-world entity this table represents. Examples: 'customers', "
-            "'orders', 'products', 'transactions', 'shipments', 'appointments'"
-        )
-    )
-
-    description: str = Field(
-        description="One sentence describing the table's purpose in the business domain."
-    )
 
     is_fact_table: bool = Field(
         description=(
@@ -318,67 +318,19 @@ class TableEntityOutput(BaseModel):
     )
 
 
-class ColumnConceptOutput(BaseModel):
-    """Catalogue-grain semantics the table agent authors for ONE column (DAT-637/769).
-
-    These need the composed catalogue — the cross-cutting ontology, the confirmed
-    relationships, the joined views — so they are decided here, never by the
-    object-grain per-column agent. Emit an entry for EVERY column: ``meaning`` is
-    the load-bearing context surface (DAT-769 — meaning transported as context,
-    never a categorical binding); the other fields only where they apply.
-    """
-
-    table_name: str = Field(description="Exact table name from the provided schema.")
-    column_name: str = Field(description="Exact column name from the provided schema.")
-
-    meaning: str = Field(
-        description=(
-            "The column's business-model characterization in the context of its table "
-            "and the composed catalogue: what one row's value represents (its grain), "
-            "and the role it plays in the business process or statement. One to three "
-            "sentences of honest prose — ambiguity is expressible and welcome; never "
-            "force a single label onto a multi-facet column. This is transported as "
-            "context to downstream analysts, not parsed."
-        ),
-    )
-    unit_source_column: str = Field(
-        description=(
-            "The column defining this measure's unit: a same-table column name, or "
-            "'table_name.column_name' reachable via a CONFIRMED relationship, or "
-            "'dimensionless' for ratios/rates/indices. \"\" when there is no concrete "
-            "unit column — never guess."
-        ),
-    )
-    derived_formula_hypothesis: str = Field(
-        description=(
-            "If this column reads as COMPUTED, the arithmetic it should obey: exactly "
-            "two column names joined by one of + - * / . Operands may be in a JOINED "
-            "table reachable via a confirmed relationship (use 'table.column' for a "
-            "joined operand) — the derived-value check runs over the enriched view. "
-            '"" when the column does not read as derived.'
-        ),
-    )
-    derived_formula_confidence: float = Field(
-        ge=0.0,
-        le=1.0,
-        description=(
-            'Confidence (0.0-1.0) in derived_formula_hypothesis; 0.0 when the hypothesis is "".'
-        ),
-    )
-
-
 class TableSynthesisOutput(BaseModel):
-    """Per-table synthesis output: entities, relationships, column concepts.
+    """Per-table synthesis output: structural classifications + relationships.
 
-    The per-table (catalogue-grain) tier. It classifies tables, confirms
-    relationships, AND authors the catalogue-grain per-column semantics
-    (``column_concepts``, DAT-637) that the object-grain per-column agent cannot
-    decide. The object-grain column annotations (role, term, stock/flow claim) are
-    produced by the per-column phase and provided here only as read-only context.
+    The per-table (structural) tier. It classifies tables and confirms
+    relationships. The catalogue-grain per-column semantics and the tables'
+    business readings moved to the catalogue_semantics phase (DAT-823), which
+    authors them once the structure settled here is composed. The object-grain
+    column annotations (role, term, stock/flow claim) are produced by the
+    per-column phase and provided here only as read-only context.
     """
 
     tables: list[TableEntityOutput] = Field(
-        description="Entity classification for each table in the schema."
+        description="Structural classification for each table in the schema."
     )
 
     relationships: list[RelationshipOutput] = Field(
@@ -387,16 +339,6 @@ class TableSynthesisOutput(BaseModel):
             "only when there are genuinely none). Evaluate the pre-computed candidates "
             "and include only confirmed relationships. Add any additional relationships "
             "you detect that weren't in the candidates."
-        ),
-    )
-
-    column_concepts: list[ColumnConceptOutput] = Field(
-        description=(
-            "Catalogue-grain per-column semantics (meaning, unit "
-            "source, derived-formula hypothesis) — REQUIRED, always emit this field, "
-            "with an entry for EVERY column in the schema. Every column has a meaning "
-            "(a noise or unidentifiable column's honest meaning is saying exactly "
-            "that); returning [] for a non-empty schema is an error, not a shortcut."
         ),
     )
 
@@ -453,13 +395,16 @@ class SemanticAnnotation(BaseModel):
 
 
 class EntityDetection(BaseModel):
-    """Entity type detection for a table."""
+    """Structural table classification (per-table tier).
+
+    Carries NO business reading (DAT-823): the per-table phase INSERTs the
+    ``TableEntity`` stub with ``detected_entity_type IS NULL``; the
+    catalogue_semantics phase authors entity type + description onto the same
+    ``(table_id, run_id)`` row later in the run.
+    """
 
     table_id: str
     table_name: str
-
-    entity_type: str
-    description: str | None = None  # LLM-generated table description
 
     grain_columns: list[str] = Field(default_factory=list)
     # The operating-model role (DAT-728): fact | periodic_snapshot | dimension
@@ -498,14 +443,15 @@ class Relationship(BaseModel):
 
 
 class SemanticEnrichmentResult(BaseModel):
-    """Result of semantic enrichment operation."""
+    """Result of semantic enrichment operation.
+
+    Structural only (DAT-823): column concepts are authored and persisted by
+    the catalogue_semantics phase, not carried here.
+    """
 
     annotations: list[SemanticAnnotation] = Field(default_factory=list)
     entity_detections: list[EntityDetection] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
-    # Catalogue-grain per-column semantics authored by the table agent (DAT-637),
-    # persisted as ``ColumnConcept`` rows under the catalogue head.
-    column_concepts: list[ColumnConceptOutput] = Field(default_factory=list)
     source: str = "llm"  # 'llm', 'manual', 'override'
 
 
@@ -515,7 +461,6 @@ __all__ = [
     "RelationshipOutput",
     # Per-table synthesis output (DAT-362 Option B)
     "TableEntityOutput",
-    "ColumnConceptOutput",
     "TableSynthesisOutput",
     # Per-column annotation output
     "TableColumnAnnotation",

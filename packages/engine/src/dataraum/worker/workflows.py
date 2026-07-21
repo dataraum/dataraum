@@ -472,6 +472,7 @@ _LLM_PHASES = frozenset(
         "semantic_per_column",
         "semantic_per_table",
         "slicing",
+        "catalogue_semantics",
         "enriched_views",
         "validation",
         "business_cycles",
@@ -491,6 +492,13 @@ def _retry_for(phase: str) -> RetryPolicy:
 # by the session's table set (``scoped``), source-free like the spine above.
 _SESSION_VALUE_PHASE_ORDER = (
     "slicing",
+    # DAT-823: the catalogue-semantics authoring turn — table business readings
+    # + column concepts (LLM), argued over the COMPOSED catalogue: the confirmed
+    # relationships, the enriched views, and slicing's just-resolved dimension
+    # identities. After slicing (its evidence includes the slice axes), before
+    # dimension_hierarchies (whose conform judge is downstream of the axes the
+    # catalogue turn reads as deterministic facts).
+    "catalogue_semantics",
     # DAT-537: deterministic g3 FD pass over the slice catalog — drill-down
     # hierarchies + 1:1 aliases (no LLM). Reads slicing's catalog; nothing in the
     # value layer depends on it yet (answer agent consumes it in DAT-538).

@@ -35,6 +35,9 @@ from dataraum.llm.providers.base import ConversationRequest, Message
 # an engine agent, so it is deliberately absent.
 _LABELS: list[tuple[str, str]] = [
     ("semantic_per_table", "semantic_analysis"),
+    # DAT-823: the catalogue authoring turn shares the semantic_analysis feature
+    # (it is that feature's relocated authoring half, not a new knob).
+    ("catalogue_semantics", "semantic_analysis"),
     ("column_annotation", "column_annotation"),
     ("slicing_analysis", "slicing_analysis"),
     ("business_cycles", "business_cycles"),
@@ -49,6 +52,7 @@ _LABELS: list[tuple[str, str]] = [
 # (DAT-807) — no label inherits the server-side default any more.
 _EXPECTED: dict[str, dict[str, Any]] = {
     "semantic_per_table": {"tier": "balanced", "effort": "high", "thinking": False},
+    "catalogue_semantics": {"tier": "balanced", "effort": "high", "thinking": False},
     "column_annotation": {"tier": "balanced", "effort": "low", "thinking": False},
     "slicing_analysis": {"tier": "balanced", "effort": "medium", "thinking": False},
     "business_cycles": {"tier": "balanced", "effort": "high", "thinking": False},

@@ -20,7 +20,6 @@ from sqlalchemy import select
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipDB
 from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
 from dataraum.analysis.semantic.models import (
-    ColumnConceptOutput,
     Relationship,
     SemanticEnrichmentResult,
 )
@@ -92,23 +91,9 @@ def _agent(relationships: list[Relationship]) -> MagicMock:
                 annotations=[],
                 entity_detections=[],
                 relationships=relationships,
-                # A minimal resolvable meaning so the DAT-768/769 empty-surface
-                # gate (not under test here) stays quiet — every test in this
-                # module seeds a `txn` table with an `account` column.
-                column_concepts=[
-                    ColumnConceptOutput(
-                        table_name="txn",
-                        column_name="account",
-                        meaning="test meaning",
-                        unit_source_column="",
-                        derived_formula_hypothesis="",
-                        derived_formula_confidence=0.0,
-                    )
-                ],
             )
         )
     )
-    # persist_column_concepts stamps annotated_by from the provider tier lookup.
     agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
     return agent
 

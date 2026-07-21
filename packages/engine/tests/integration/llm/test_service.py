@@ -39,6 +39,8 @@ def test_prompt_renderer_loads_templates(mock_anthropic_key):
     # Load per-table semantic synthesis template
     template = renderer.load_template("semantic_per_table")
     assert template.name == "semantic_per_table"
-    # Template can use either legacy `prompt` or new `system_prompt`/`user_prompt` format
-    assert template.prompt or (template.system_prompt or template.user_prompt)
+    # Both halves are required: the single-`prompt` format is gone, so a template
+    # missing either fails loud at load rather than rendering an empty half.
+    assert template.system_prompt
+    assert template.user_prompt
     assert template.temperature >= 0

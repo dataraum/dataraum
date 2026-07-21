@@ -8,21 +8,29 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PromptTemplate(BaseModel):
     """A prompt template from YAML."""
 
+    # Unknown keys are an ERROR, not noise to skip: a template is authored by hand
+    # in `dataraum-config/llm/prompts/`, so a misspelled `validation`/`inputs`/
+    # `output_schema` would otherwise be dropped in silence and default to `{}` —
+    # the prompt would ship without its validation or its declared inputs and look
+    # fine. Same posture as ``LLMConfig`` (llm/config.py). Paired with the required
+    # `system_prompt`/`user_prompt`: a missing key fails loud, a stray key does too.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     version: str
     description: str
     temperature: float
-    # Legacy: single prompt (for backward compatibility)
-    prompt: str | None = None  # Template with {variable} placeholders
-    # New: system/user split for Anthropic API best practices
-    system_prompt: str | None = None  # System message (instructions, role)
-    user_prompt: str | None = None  # User message (context, data)
+    # System/user split, per Anthropic API practice: the system message carries
+    # the stable instructions (cacheable prefix, see providers/anthropic.py),
+    # the user message carries the volatile per-call context.
+    system_prompt: str  # System message (instructions, role)
+    user_prompt: str  # User message (context, data)
     inputs: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     validation: dict[str, list[str]] = Field(default_factory=dict)
@@ -81,9 +89,7 @@ class PromptRenderer:
         self._cache[name] = template
         return template
 
-    def render_split(
-        self, template_name: str, context: dict[str, Any]
-    ) -> tuple[str | None, str, float]:
+    def render_split(self, template_name: str, context: dict[str, Any]) -> tuple[str, str, float]:
         """Render a prompt with system/user split.
 
         Args:
@@ -91,11 +97,7 @@ class PromptRenderer:
             context: Context variables for substitution
 
         Returns:
-            Tuple of (system_prompt, user_prompt, temperature).
-            system_prompt is None only for a template that declares neither
-            ``system_prompt`` nor ``user_prompt`` — every template shipped under
-            ``dataraum-config/llm/prompts/`` declares a ``system_prompt``, so no
-            shipped template takes that path.
+            Tuple of (system_prompt, user_prompt, temperature)
 
         Raises:
             ValueError: If required inputs are missing
@@ -104,16 +106,9 @@ class PromptRenderer:
         template = self.load_template(template_name)
         full_context = self._prepare_context(template, context)
 
-        # System/user split — the shape every shipped template uses
-        if template.system_prompt is not None or template.user_prompt is not None:
-            system = self._render_text(template.system_prompt or "", full_context)
-            user = self._render_text(template.user_prompt or "", full_context)
-            return system, user, template.temperature
-
-        # Single-``prompt`` template — user message only; no shipped template
-        # reaches here (see the Returns note above).
-        rendered = self._render_text(template.prompt or "", full_context)
-        return None, rendered, template.temperature
+        system = self._render_text(template.system_prompt, full_context)
+        user = self._render_text(template.user_prompt, full_context)
+        return system, user, template.temperature
 
     def _prepare_context(self, template: PromptTemplate, context: dict[str, Any]) -> dict[str, Any]:
         """Prepare context with defaults and validation."""

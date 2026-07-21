@@ -97,10 +97,10 @@ export async function listPrefixObjects(
 /**
  * List every object KEY under `prefix` in `bucket`, paginating to completion.
  *
- * The select-time enumeration primitive (DAT-378): the engine NEVER globs, so
- * the cockpit lists the prefix here and hands the engine an EXPLICIT URI list.
- * Returns raw keys (e.g. `uploads/<digest>/orders.csv`); `enumeratePrefixUris`
- * filters + maps them to `s3://<bucket>/<key>` URIs.
+ * Returns raw keys (e.g. `<ws>/uploads/<digest>/orders.csv`). Injected into the
+ * upload route as `deps.listPrefix` (`routes/api/upload.ts`): a non-empty
+ * listing under the content digest's directory means those bytes are already
+ * staged, so the route returns the existing handle and skips the re-PUT.
  */
 export async function listPrefixKeys(
 	bucket: string,

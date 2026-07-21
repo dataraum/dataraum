@@ -138,17 +138,3 @@ def qualified_table(layer: str, table_name: str) -> str:
         ``"<schema>.<table>"``, safe to embed unquoted in SQL.
     """
     return f"{schema_for_layer(layer)}.{workspace_table_name(table_name)}"
-
-
-# Prefixes a generated schema name may never take, so a dynamically-built name
-# can never collide with the workspace-stable layer schemas above.
-RESERVED_SCHEMA_PREFIXES = frozenset({"session_", "archive_"})
-
-
-def is_reserved_schema(schema: str) -> bool:
-    """Return True if ``schema`` uses a reserved prefix.
-
-    Production code that constructs schema names dynamically should refuse
-    to produce a name with any of the reserved prefixes.
-    """
-    return any(schema.startswith(prefix) for prefix in RESERVED_SCHEMA_PREFIXES)

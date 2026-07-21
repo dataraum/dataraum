@@ -238,7 +238,8 @@ export function ResultGridView({
 	// DOM, so a 50k-row result is ~40 <tr> nodes, not 50k. The columnar store +
 	// index rows make this the intended, cheap path. `initialRect` gives a sane
 	// window before the real ResizeObserver measurement (and in tests, which have
-	// no layout). Rows are uniform-height text, so a fixed estimate is fine — 	// per-row measureElement (add it if variable heights ever land).
+	// no layout). Rows are uniform-height text, so a fixed estimate is fine — no
+	// per-row measureElement (add it if variable heights ever land).
 	const rows = table.getRowModel().rows;
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const rowVirtualizer = useVirtualizer({

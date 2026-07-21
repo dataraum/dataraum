@@ -62,7 +62,7 @@ export function ColumnWhyWidget({
 						{why.table_name}
 					</Text>
 				</Text>
-				<BandBadge band={why.band} />
+				<BandBadge band={why.band} coverage={why.coverage} />
 			</Group>
 
 			<VerdictProvenance

@@ -201,7 +201,7 @@ export function RelationshipListWidget({
 										<CatalogFactsCell rel={rel} />
 									</Table.Td>
 									<Table.Td>
-										<BandBadge band={rel.band} />
+										<BandBadge band={rel.band} coverage={rel.coverage} />
 									</Table.Td>
 									<Table.Td>
 										{rel.top_drivers.length === 0 ? (

@@ -77,6 +77,12 @@ const RelationshipReadiness = z.object({
 	to_table_name: z.string().nullable(),
 	to_column_name: z.string().nullable(),
 	band: z.string().nullable(),
+	// Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null.
+	// 'unmeasured' means the band is vacuous (all loss-path detectors abstained) →
+	// render "not measured", never 'ready'. null on a catalog-only relationship
+	// (no readiness row). (join_path's structural ≤1-path abstention is
+	// not_applicable and does NOT degrade coverage — DAT-851.)
+	coverage: z.string().nullable(),
 	worst_intent_risk: z.number().nullable(),
 	intents: z.array(IntentBand),
 	top_drivers: z.array(TopDriver),
@@ -111,6 +117,9 @@ const TOP_DRIVERS_SHOWN = 3;
 export interface RelationshipReadinessRow {
 	target: string;
 	band: string | null;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null.
+	 * Optional as a fixture affordance; the live read always sets it. */
+	coverage?: string | null;
 	worstIntentRisk: number | null;
 	intents: unknown;
 	topDrivers: unknown;
@@ -208,6 +217,7 @@ export function projectRelationshipReadiness(
 		to_column_id: pair.toColumnId,
 		...endpointNames(pair.fromColumnId, pair.toColumnId, names),
 		band: row.band ?? null,
+		coverage: row.band == null ? null : (row.coverage ?? null),
 		worst_intent_risk: row.worstIntentRisk ?? null,
 		intents: intents.success
 			? intents.data.map((i) => ({
@@ -240,6 +250,7 @@ function projectCatalogOnly(
 		to_column_id: row.toColumnId,
 		...endpointNames(row.fromColumnId, row.toColumnId, names),
 		band: null,
+		coverage: null,
 		worst_intent_risk: null,
 		intents: [],
 		top_drivers: [],
@@ -388,6 +399,7 @@ export async function lookRelationships(): Promise<LookRelationshipsResult> {
 		.select({
 			target: currentEntropyReadiness.target,
 			band: currentEntropyReadiness.band,
+			coverage: currentEntropyReadiness.coverage,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			topDrivers: currentEntropyReadiness.topDrivers,
@@ -505,8 +517,11 @@ export const lookRelationshipsTool = toolDefinition({
 		"facts (relationship_type, cardinality, confidence, detection_method, " +
 		"confirmation_source) — WHAT it is alongside HOW READY it is. Read-only; reflects the " +
 		"promoted begin_session detect run. pending_teaches counts un-applied teaches " +
-		"across the workspace; if > 0, suggest a `replay` before trusting the bands. Use " +
-		"`why_relationship` to explain a specific relationship's band.",
+		"across the workspace; if > 0, suggest a `replay` before trusting the bands. Each " +
+		"band carries a coverage: 'unmeasured' means the band is VACUOUS (every loss-path " +
+		"detector abstained), so treat it as NOT MEASURED, never ready; 'partial' means " +
+		"incomplete measurement. Use `why_relationship` to explain a specific " +
+		"relationship's band.",
 	inputSchema: z.object({}),
 	outputSchema: LookRelationshipsResult,
 }).server(() => lookRelationships());

@@ -132,6 +132,17 @@ function StatsBlock({ stats }: { stats: ProfileStats }) {
 	);
 }
 
+/** Benford verdict label (DAT-853): 'not_applicable' is DISTINCT from "not
+ * computed" — a column whose values span under ~one order of magnitude has
+ * scale-determined leading digits, so Benford is mathematically undefined and
+ * must read "not applicable", never compliant/violating or a bare "—". The typed
+ * `status` disambiguates the two nulls the boolean `benford_compliant` conflates. */
+function benfordLabel(quality: ProfileQuality): string {
+	if (quality.benford?.status === "not_applicable") return "not applicable";
+	if (quality.benford_compliant === null) return "—";
+	return quality.benford_compliant ? "compliant" : "non-compliant";
+}
+
 function QualityBlock({ quality }: { quality: ProfileQuality }) {
 	return (
 		<Stack gap={4} data-testid="canvas-column-profile-quality">
@@ -157,16 +168,7 @@ function QualityBlock({ quality }: { quality: ProfileQuality }) {
 					label="z-score outlier ratio"
 					value={pct(quality.zscore_outlier_ratio)}
 				/>
-				<Field
-					label="Benford"
-					value={
-						quality.benford_compliant === null
-							? "—"
-							: quality.benford_compliant
-								? "compliant"
-								: "non-compliant"
-					}
-				/>
+				<Field label="Benford" value={benfordLabel(quality)} />
 			</Group>
 			{quality.benford?.interpretation && (
 				<Text size="xs" c="dimmed">

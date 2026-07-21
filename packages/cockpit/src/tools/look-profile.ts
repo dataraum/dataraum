@@ -95,9 +95,13 @@ const ProfileData = z.object({
 });
 
 const BenfordAnalysis = z.object({
+	// The typed applicability outcome (DAT-843/853): 'compliant' | 'violating' |
+	// 'not_applicable'. Replaces the removed `is_compliant` boolean, which could not
+	// express "not applicable" (Benford undefined for the column) — that used to
+	// null-degrade into "unknown". chi_square/p_value are null when not applicable.
+	status: z.string().nullable().optional(),
 	chi_square: z.number().nullable().optional(),
 	p_value: z.number().nullable().optional(),
-	is_compliant: z.boolean().nullable().optional(),
 	interpretation: z.string().nullable().optional(),
 });
 
@@ -196,12 +200,18 @@ const Quality = z.object({
 	has_outliers: z.boolean().nullable(),
 	iqr_outlier_ratio: z.number().nullable(),
 	zscore_outlier_ratio: z.number().nullable(),
+	// Tri-state (DAT-853): true/false ONLY for a measured verdict; null when Benford
+	// is not applicable (undefined for this column) OR was not computed (n<100). Read
+	// `benford.status` to tell those two nulls apart.
 	benford_compliant: z.boolean().nullable(),
 	benford: z
 		.object({
+			// The typed applicability: 'compliant' | 'violating' | 'not_applicable' |
+			// null — sourced from the constrained `benford_status` column so a
+			// not-applicable column renders "not applicable", never compliant/violating.
+			status: z.string().nullable(),
 			chi_square: z.number().nullable(),
 			p_value: z.number().nullable(),
-			is_compliant: z.boolean().nullable(),
 			interpretation: z.string().nullable(),
 		})
 		.nullable(),
@@ -310,6 +320,10 @@ export interface QualityRow {
 	iqrOutlierRatio: number | null;
 	zscoreOutlierRatio: number | null;
 	benfordCompliant: number | null;
+	/** The typed applicability status column (DAT-853): 'compliant' | 'violating' |
+	 * 'not_applicable' | null (not computed). The authoritative source for the
+	 * not-applicable rendering — distinct from the boolean `benfordCompliant`. */
+	benfordStatus: string | null;
 	qualityData: unknown;
 }
 
@@ -474,9 +488,11 @@ function projectQuality(row: QualityRow | null): ProfileQuality | null {
 		benford_compliant: intToBool(row.benfordCompliant),
 		benford: benford
 			? {
+					// The typed column is authoritative; fall back to the blob's own
+					// status if the column somehow lags (engine writes them together).
+					status: row.benfordStatus ?? benford.status ?? null,
 					chi_square: benford.chi_square ?? null,
 					p_value: benford.p_value ?? null,
-					is_compliant: benford.is_compliant ?? null,
 					interpretation: benford.interpretation ?? null,
 				}
 			: null,
@@ -727,6 +743,7 @@ async function loadQuality(columnId: string): Promise<QualityRow | null> {
 			iqrOutlierRatio: currentStatisticalQualityMetrics.iqrOutlierRatio,
 			zscoreOutlierRatio: currentStatisticalQualityMetrics.zscoreOutlierRatio,
 			benfordCompliant: currentStatisticalQualityMetrics.benfordCompliant,
+			benfordStatus: currentStatisticalQualityMetrics.benfordStatus,
 			qualityData: currentStatisticalQualityMetrics.qualityData,
 		})
 		.from(currentStatisticalQualityMetrics)

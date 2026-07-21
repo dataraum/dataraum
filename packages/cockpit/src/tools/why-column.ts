@@ -21,6 +21,7 @@ import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { getPendingOverlays } from "../db/metadata/pending-overlays";
 import {
+	Abstention,
 	PersistedIntent,
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
@@ -60,7 +61,14 @@ const IntentExplanation = z.object({
 const EvidenceSignal = z.object({
 	dimension_path: z.string(),
 	detector_id: z.string(),
-	score: z.number(),
+	// Null on an ABSTAINED detector (DAT-853): an abstention carries NO score — it
+	// must render as "abstained (reason)", never as a real 0.0 measurement.
+	score: z.number().nullable(),
+	// "measured" | "abstained" (DAT-853) — the discriminator for the null score.
+	status: z.string().nullable(),
+	// Why the detector abstained (missing_inputs / detector_error /
+	// insufficient_data / not_applicable); null on a measured signal.
+	abstain_reason: z.string().nullable(),
 	// Compact JSON of the detector-specific evidence blob (shape varies per
 	// detector), rendered agent-safe via `renderEvidenceDetail` (DAT-433) — the
 	// narrative + the widget render it as-is.
@@ -79,6 +87,16 @@ const WhyColumnResult = z.object({
 	found: z.boolean(),
 	// null band = no readiness row yet (not analyzed).
 	band: z.string().nullable(),
+	// The rollup's coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' —
+	// null when there's no readiness row. 'unmeasured' means the band is VACUOUS
+	// (all loss-path detectors abstained), so the caller must render "not measured",
+	// never the frozen-default 'ready'. 'partial' qualifies the band as resting on
+	// incomplete measurement.
+	coverage: z.string().nullable(),
+	// The self-describing abstention trace (DAT-853): which loss-path detectors
+	// abstained, WHY, and the intents each left without a contributor — the reasons
+	// behind a 'partial'/'unmeasured' coverage.
+	abstentions: z.array(Abstention),
 	// WHICH pipeline stage sealed the shown verdict (DAT-513) — the pick is
 	// only evaluable if the caller can see it. null when unanalyzed.
 	band_stage: z.string().nullable(),
@@ -109,6 +127,11 @@ export interface WhyReadinessRow {
 	/** Raw physical table name (`src_<digest>__<stem>`) — projected to display form. */
 	tableName: string;
 	band: string | null;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null.
+	 * Optional as a fixture affordance; the live read always sets it. */
+	coverage?: string | null;
+	/** Raw `entropy_readiness.abstentions` JSONB — parsed leniently in the projection. */
+	abstentions?: unknown;
 	/** Stage that sealed the picked verdict (DAT-513); null when unanalyzed. */
 	bandStage: string | null;
 	bandComputedAt: Date | null;
@@ -116,12 +139,16 @@ export interface WhyReadinessRow {
 	intents: unknown;
 }
 
-/** One entropy_objects row for the target column. */
+/** One entropy_objects row for the target column. `score` is null on an ABSTAINED
+ * row (DAT-853) — the status + reason carry the "why", never a fabricated 0.0.
+ * `status`/`abstainReason` optional as a fixture affordance; the live read sets them. */
 export interface WhyEvidenceRow {
 	layer: string;
 	dimension: string;
 	subDimension: string;
-	score: number;
+	score: number | null;
+	status?: string | null;
+	abstainReason?: string | null;
 	detectorId: string;
 	evidence: unknown;
 }
@@ -150,13 +177,18 @@ export function projectWhyData(
 
 	// `detail` reaches the agent AND the synthesis prompt — render through the
 	// shared sanitizer (DAT-433): engine-internal `_`-keys dropped, explicit
-	// table-name keys display-mapped, src-digest backstop applied.
+	// table-name keys display-mapped, src-digest backstop applied. An abstained
+	// detector keeps its null score + status + reason (DAT-853) — never coerced to 0.
 	const evidence: z.infer<typeof EvidenceSignal>[] = evidenceRows.map((e) => ({
 		dimension_path: `${e.layer}.${e.dimension}.${e.subDimension}`,
 		detector_id: e.detectorId,
 		score: e.score,
+		status: e.status ?? null,
+		abstain_reason: e.abstainReason ?? null,
 		detail: renderEvidenceDetail(e.evidence),
 	}));
+
+	const abstentionsParsed = Abstention.array().safeParse(readiness.abstentions);
 
 	return {
 		column_id: readiness.columnId,
@@ -167,6 +199,8 @@ export function projectWhyData(
 		table_name: displayTableName(readiness.tableName),
 		found: true,
 		band: readiness.band ?? null,
+		coverage: readiness.band === null ? null : (readiness.coverage ?? null),
+		abstentions: abstentionsParsed.success ? abstentionsParsed.data : [],
 		band_stage: readiness.band === null ? null : (readiness.bandStage ?? null),
 		band_computed_at:
 			readiness.band === null
@@ -176,7 +210,10 @@ export function projectWhyData(
 		analyzed: readiness.band !== null,
 		intents,
 		evidence,
-		signal_count: evidence.length,
+		// Signals that BACK the band — measured detectors only. An abstained row is
+		// an ABSENCE of measurement, so it must not inflate the "based on N signals"
+		// honesty count (DAT-853).
+		signal_count: evidence.filter((e) => e.score !== null).length,
 		verdict_history: verdictHistory,
 		pending_teaches: pendingTeaches,
 	};
@@ -211,6 +248,8 @@ export async function synthesizeAnalysis(
 				content: `Explain the readiness for column "${data.column_name}" of table "${data.table_name}", grounded only in these signals:\n\n${JSON.stringify(
 					{
 						band: data.band,
+						coverage: data.coverage,
+						abstentions: data.abstentions,
 						intents: data.intents,
 						evidence: data.evidence,
 						signal_count: data.signal_count,
@@ -260,6 +299,8 @@ export async function whyColumn(
 			table_name: "",
 			found: false,
 			band: null,
+			coverage: null,
+			abstentions: [],
 			band_stage: null,
 			band_computed_at: null,
 			worst_intent_risk: null,
@@ -282,6 +323,8 @@ export async function whyColumn(
 	const allReadinessRows = await metadataDb
 		.select({
 			band: currentEntropyReadiness.band,
+			coverage: currentEntropyReadiness.coverage,
+			abstentions: currentEntropyReadiness.abstentions,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			computedAt: currentEntropyReadiness.computedAt,
@@ -301,6 +344,8 @@ export async function whyColumn(
 		columnName: col.columnName ?? "",
 		tableName: col.tableName ?? "",
 		band: readinessRow?.band ?? null,
+		coverage: readinessRow?.coverage ?? null,
+		abstentions: readinessRow?.abstentions ?? null,
 		bandStage: readinessRow === undefined ? null : stageOfRow(readinessRow),
 		bandComputedAt: readinessRow?.computedAt ?? null,
 		worstIntentRisk: readinessRow?.worstIntentRisk ?? null,
@@ -318,6 +363,8 @@ export async function whyColumn(
 			dimension: currentEntropyObjects.dimension,
 			subDimension: currentEntropyObjects.subDimension,
 			score: currentEntropyObjects.score,
+			status: currentEntropyObjects.status,
+			abstainReason: currentEntropyObjects.abstainReason,
 			detectorId: currentEntropyObjects.detectorId,
 			evidence: currentEntropyObjects.evidence,
 			computedAt: currentEntropyObjects.computedAt,
@@ -330,11 +377,15 @@ export async function whyColumn(
 		.where(eq(currentEntropyObjects.columnId, input.column_id))
 		.orderBy(asc(currentEntropyObjects.dimension));
 	const rawEvidence = mergeCurrentEvidence(unmergedEvidence);
+	// An abstained object carries a NULL score (DAT-853) — preserve it (never `?? 0`);
+	// the status + reason ride along so the projection renders it as abstained.
 	const evidenceRows = rawEvidence.map((e) => ({
 		layer: e.layer ?? "",
 		dimension: e.dimension ?? "",
 		subDimension: e.subDimension ?? "",
-		score: e.score ?? 0,
+		score: e.score ?? null,
+		status: e.status ?? null,
+		abstainReason: e.abstainReason ?? null,
 		detectorId: e.detectorId ?? "",
 		evidence: e.evidence,
 	}));
@@ -369,7 +420,10 @@ export const whyColumnTool = toolDefinition({
 		"coexisting snapshot (oldest first) so you can see how the verdict " +
 		"evolved as evidence accrued — each entry's signals counts the detectors " +
 		"its rollup ran over, so later stages carry strictly more; they " +
-		"supersede earlier ones, they don't disagree.",
+		"supersede earlier ones, they don't disagree. coverage qualifies the band: " +
+		"'unmeasured' means the band is VACUOUS (every loss-path detector abstained " +
+		"— see abstentions for why), so treat it as NOT MEASURED, never ready; " +
+		"'partial' means the band rests on incomplete measurement.",
 	inputSchema: z.object({
 		column_id: z
 			.string()

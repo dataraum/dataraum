@@ -317,11 +317,12 @@ describe("projectColumnProfile — quality JSONB parse + caps", () => {
 				iqrOutlierRatio: 0.02,
 				zscoreOutlierRatio: 0.01,
 				benfordCompliant: 0,
+				benfordStatus: "violating",
 				qualityData: {
 					benford_analysis: {
+						status: "violating",
 						chi_square: 12.3,
 						p_value: 0.04,
-						is_compliant: false,
 						interpretation: "non-compliant",
 					},
 					outlier_detection: { outlier_samples: [999, 1000, 1001] },
@@ -331,12 +332,41 @@ describe("projectColumnProfile — quality JSONB parse + caps", () => {
 		expect(out.quality?.has_outliers).toBe(true);
 		expect(out.quality?.benford_compliant).toBe(false);
 		expect(out.quality?.benford).toEqual({
+			status: "violating",
 			chi_square: 12.3,
 			p_value: 0.04,
-			is_compliant: false,
 			interpretation: "non-compliant",
 		});
 		expect(out.quality?.outlier_samples).toEqual([999, 1000, 1001]);
+	});
+
+	it("renders a not-applicable Benford as its typed status, not compliant/violating (DAT-853)", () => {
+		// Benford is mathematically undefined for a column whose values span under
+		// ~one order of magnitude. The engine sets benford_compliant NULL and
+		// benford_status='not_applicable'; the reader must surface the status so it
+		// reads "not applicable", never a bare "—" (which conflates with not-computed)
+		// and never compliant/violating.
+		const out = projectColumnProfile("c_1", "flag", "orders", null, {
+			...EMPTY_ROWS,
+			quality: {
+				hasOutliers: 0,
+				iqrOutlierRatio: 0,
+				zscoreOutlierRatio: 0,
+				benfordCompliant: null,
+				benfordStatus: "not_applicable",
+				qualityData: {
+					benford_analysis: {
+						status: "not_applicable",
+						chi_square: null,
+						p_value: null,
+						interpretation: "Values span under one order of magnitude.",
+					},
+				},
+			},
+		});
+		expect(out.quality?.benford_compliant).toBeNull();
+		expect(out.quality?.benford?.status).toBe("not_applicable");
+		expect(out.quality?.benford?.chi_square).toBeNull();
 	});
 
 	it("caps outlier_samples at 10", () => {
@@ -348,6 +378,7 @@ describe("projectColumnProfile — quality JSONB parse + caps", () => {
 				iqrOutlierRatio: null,
 				zscoreOutlierRatio: null,
 				benfordCompliant: null,
+				benfordStatus: null,
 				qualityData: { outlier_detection: { outlier_samples: samples } },
 			},
 		});
@@ -362,6 +393,7 @@ describe("projectColumnProfile — quality JSONB parse + caps", () => {
 				iqrOutlierRatio: 0,
 				zscoreOutlierRatio: 0,
 				benfordCompliant: 1,
+				benfordStatus: "compliant",
 				qualityData: 42,
 			},
 		});

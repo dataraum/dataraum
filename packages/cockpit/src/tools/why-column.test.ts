@@ -133,4 +133,87 @@ describe("projectWhyData (DAT-351)", () => {
 		);
 		expect(out.table_name).toBe("orders");
 	});
+
+	// --- DAT-853: coverage + abstention rendering.
+
+	it("carries coverage + the abstention trace so an unmeasured column is not a bare 'ready'", () => {
+		// The engine keeps the band vocabulary frozen: a never-measured column reads
+		// band='ready' with coverage='unmeasured' — the loss-path detectors ALL
+		// abstained. The reader must surface coverage + reasons, never a bare 'ready'.
+		const out = projectWhyData(
+			readiness({
+				band: "ready",
+				coverage: "unmeasured",
+				intents: [],
+				abstentions: [
+					{
+						detector: "unit_entropy",
+						reason: "insufficient_data",
+						intents: ["aggregation_intent"],
+					},
+				],
+			}),
+			[],
+			0,
+		);
+		expect(out.band).toBe("ready");
+		expect(out.coverage).toBe("unmeasured");
+		expect(out.abstentions).toEqual([
+			{
+				detector: "unit_entropy",
+				reason: "insufficient_data",
+				intents: ["aggregation_intent"],
+			},
+		]);
+	});
+
+	it("qualifies a partial-coverage band and keeps the real band", () => {
+		const out = projectWhyData(
+			readiness({ band: "investigate", coverage: "partial" }),
+			evidenceRows,
+			0,
+		);
+		expect(out.band).toBe("investigate");
+		expect(out.coverage).toBe("partial");
+	});
+
+	it("null coverage + empty abstentions when there is no readiness row", () => {
+		const out = projectWhyData(
+			readiness({ band: null, coverage: null, abstentions: null }),
+			[],
+			0,
+		);
+		expect(out.coverage).toBeNull();
+		expect(out.abstentions).toEqual([]);
+	});
+
+	it("renders an abstained detector as null score + reason, never a fabricated 0", () => {
+		// An abstained entropy_object carries a NULL score — the old `score ?? 0`
+		// turned that into a real 0.0 measurement. It must stay null and carry its
+		// status + reason, and it must NOT count toward signal_count.
+		const out = projectWhyData(
+			readiness(),
+			[
+				evidenceRows[0],
+				{
+					layer: "value",
+					dimension: "distribution",
+					subDimension: "benford_compliance",
+					score: null,
+					status: "abstained",
+					abstainReason: "not_applicable",
+					detectorId: "benford",
+					evidence: null,
+				},
+			],
+			0,
+		);
+		const abstained = out.evidence.find((e) => e.detector_id === "benford");
+		expect(abstained?.score).toBeNull();
+		expect(abstained?.status).toBe("abstained");
+		expect(abstained?.abstain_reason).toBe("not_applicable");
+		// Two evidence rows surfaced, but only the ONE measured signal backs the band.
+		expect(out.evidence).toHaveLength(2);
+		expect(out.signal_count).toBe(1);
+	});
 });

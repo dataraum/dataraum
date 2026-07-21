@@ -6,7 +6,7 @@
 // the not-analyzed state. The live read + LLM synthesis are smoke-covered.
 
 import { MantineProvider } from "@mantine/core";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { WhyColumnResult } from "#/tools/why-column";
@@ -27,6 +27,8 @@ const analyzed: WhyColumnResult = {
 	table_name: "orders",
 	found: true,
 	band: "investigate",
+	coverage: "measured",
+	abstentions: [],
 	band_stage: "session_detect",
 	band_computed_at: "2026-06-11T10:00:00.000Z",
 	worst_intent_risk: 0.42,
@@ -52,6 +54,8 @@ const analyzed: WhyColumnResult = {
 			dimension_path: "semantic.units.unit_declaration",
 			detector_id: "unit_entropy",
 			score: 0.8,
+			status: "measured",
+			abstain_reason: null,
 			detail: '[{"metric":"undeclared_ratio","value":0.8}]',
 		},
 	],
@@ -60,6 +64,7 @@ const analyzed: WhyColumnResult = {
 		{
 			stage: "add_source",
 			band: "blocked",
+			coverage: "measured",
 			worst_intent_risk: 0.8,
 			computed_at: "2026-06-11T09:00:00.000Z",
 			run_id: "run-add",
@@ -68,6 +73,7 @@ const analyzed: WhyColumnResult = {
 		{
 			stage: "session_detect",
 			band: "investigate",
+			coverage: "measured",
 			worst_intent_risk: 0.42,
 			computed_at: "2026-06-11T10:00:00.000Z",
 			run_id: "run-ses",
@@ -80,6 +86,38 @@ const analyzed: WhyColumnResult = {
 
 describe("ColumnWhyWidget (DAT-351)", () => {
 	afterEach(() => cleanup());
+
+	it("renders an unmeasured verdict-history snapshot as 'Not measured', never 'Ready' (DAT-853)", () => {
+		// The verdict history must label a vacuous band='ready' snapshot by its
+		// coverage — otherwise a green "Ready" badge shows in history right under a
+		// "Not measured" header. Two entries so the history block renders.
+		renderWidget({
+			...analyzed,
+			verdict_history: [
+				{
+					stage: "add_source",
+					band: "ready",
+					coverage: "unmeasured",
+					worst_intent_risk: null,
+					computed_at: "2026-06-11T09:00:00.000Z",
+					run_id: "run-add",
+					signals: 0,
+				},
+				{
+					stage: "session_detect",
+					band: "investigate",
+					coverage: "measured",
+					worst_intent_risk: 0.42,
+					computed_at: "2026-06-11T10:00:00.000Z",
+					run_id: "run-ses",
+					signals: 3,
+				},
+			],
+		});
+		const history = screen.getByTestId("canvas-column-why-provenance-history");
+		expect(within(history).getByText("Not measured")).toBeTruthy();
+		expect(within(history).queryByText("Ready")).toBeNull();
+	});
 
 	it("renders the narrative, the driver label, the signal count, and the evidence", () => {
 		renderWidget(analyzed);
@@ -119,6 +157,8 @@ describe("ColumnWhyWidget (DAT-351)", () => {
 					dimension_path: "",
 					detector_id: "mystery_detector",
 					score: 0.5,
+					status: "measured",
+					abstain_reason: null,
 					detail: "",
 				},
 			],
@@ -127,6 +167,7 @@ describe("ColumnWhyWidget (DAT-351)", () => {
 				{
 					stage: "add_source",
 					band: "blocked",
+					coverage: "measured",
 					worst_intent_risk: 0.8,
 					computed_at: "2026-06-11T09:00:00.000Z",
 					run_id: "run-add",
@@ -135,6 +176,7 @@ describe("ColumnWhyWidget (DAT-351)", () => {
 				{
 					stage: "session_detect",
 					band: "investigate",
+					coverage: "measured",
 					worst_intent_risk: 0.42,
 					computed_at: "2026-06-11T10:00:00.000Z",
 					run_id: "run-ses",

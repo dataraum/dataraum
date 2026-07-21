@@ -33,7 +33,11 @@ interface IntentExplanationLike {
 interface EvidenceSignalLike {
 	dimension_path: string;
 	detector_id: string;
-	score: number;
+	// Null on an ABSTAINED detector (DAT-853) — the cell renders "abstained
+	// (reason)", never a fabricated 0.00.
+	score: number | null;
+	status?: string | null;
+	abstain_reason?: string | null;
 	detail: string;
 }
 
@@ -139,7 +143,23 @@ export function EvidenceTable({
 										{humanizeIdentifier(e.detector_id) || e.detector_id}
 									</Text>
 								</Table.Td>
-								<Table.Td>{e.score.toFixed(2)}</Table.Td>
+								<Table.Td>
+									{e.score === null ? (
+										<Text
+											span
+											size="xs"
+											c="dimmed"
+											title={e.abstain_reason ?? undefined}
+										>
+											abstained
+											{e.abstain_reason
+												? ` (${humanizeIdentifier(e.abstain_reason)})`
+												: ""}
+										</Text>
+									) : (
+										e.score.toFixed(2)
+									)}
+								</Table.Td>
 								<Table.Td>
 									<EvidenceDetail detail={e.detail} />
 								</Table.Td>
@@ -163,6 +183,9 @@ export function EvidenceTable({
 export interface VerdictHistoryRow {
 	stage: string;
 	band: string;
+	// Rollup coverage (DAT-853) — an 'unmeasured' snapshot's band='ready' is
+	// vacuous, so the badge renders "Not measured", never a green ready in history.
+	coverage: string | null;
 	worst_intent_risk: number | null;
 	computed_at: string | null;
 	run_id: string | null;
@@ -215,7 +238,7 @@ export function VerdictProvenance({
 							<Text size="xs" c="dimmed" w={140}>
 								{stageLabel(h.stage)}
 							</Text>
-							<BandBadge band={h.band} />
+							<BandBadge band={h.band} coverage={h.coverage} />
 							<Text size="xs" c="dimmed">
 								{historyTime(h.computed_at)}
 								{h.signals !== null && ` · ${h.signals} signals`}

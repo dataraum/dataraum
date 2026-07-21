@@ -119,6 +119,10 @@ export function mergeCurrentEvidence<
 export interface VerdictHistoryEntry {
 	stage: GrainStage;
 	band: string;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null. An
+	 * 'unmeasured' snapshot carries a vacuous band='ready' — the history MUST label
+	 * it so a "not measured" row never renders as a green "ready" verdict. */
+	coverage: string | null;
 	worst_intent_risk: number | null;
 	computed_at: string | null;
 	run_id: string | null;
@@ -146,10 +150,14 @@ const STAGE_ORDER: Record<GrainStage, number> = {
 export function projectVerdictHistory(
 	readinessRows: readonly (GrainRow & {
 		band: string | null;
+		coverage?: string | null;
 		worstIntentRisk: number | null;
 		runId: string | null;
 	})[],
-	evidenceRows: readonly (GrainRow & { detectorId: string | null })[] = [],
+	evidenceRows: readonly (GrainRow & {
+		detectorId: string | null;
+		status?: string | null;
+	})[] = [],
 ): VerdictHistoryEntry[] {
 	function signalsAtOrBelow(stage: GrainStage): number | null {
 		if (evidenceRows.length === 0 || stage === "unknown") return null;
@@ -157,6 +165,10 @@ export function projectVerdictHistory(
 		const detectors = new Set<string>();
 		for (const e of evidenceRows) {
 			if (e.detectorId === null) continue;
+			// Measured signals only — an abstained detector (DAT-853) is an ABSENCE,
+			// so it must not inflate a stage's signal count (which would then
+			// contradict the tool's measured-only top-level signal_count).
+			if (e.status === "abstained") continue;
 			const order = STAGE_ORDER[stageOfRow(e)];
 			// Legacy rows without grain bits rank as add_source-era evidence.
 			if ((order === -1 ? 0 : order) <= cap) detectors.add(e.detectorId);
@@ -170,6 +182,7 @@ export function projectVerdictHistory(
 				return {
 					stage,
 					band: r.band ?? "",
+					coverage: r.coverage ?? null,
 					worst_intent_risk: r.worstIntentRisk ?? null,
 					computed_at: r.computedAt?.toISOString() ?? null,
 					// run_id is the per-snapshot discriminator (catalog-grain views
@@ -188,6 +201,7 @@ export function projectVerdictHistory(
 export const VerdictHistorySchema = z.object({
 	stage: z.string(),
 	band: z.string(),
+	coverage: z.string().nullable(),
 	worst_intent_risk: z.number().nullable(),
 	computed_at: z.string().nullable(),
 	run_id: z.string().nullable(),

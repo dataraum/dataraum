@@ -49,6 +49,7 @@ const analyzed: LookTableResult = {
 			column_name: "amount",
 			resolved_type: "DECIMAL(18,2)",
 			band: "investigate",
+			coverage: "measured",
 			band_stage: "session_detect",
 			worst_intent_risk: 0.42,
 			// The persisted intent keys are the engine's network NODE names
@@ -67,6 +68,7 @@ const analyzed: LookTableResult = {
 			column_name: "id",
 			resolved_type: "INTEGER",
 			band: "ready",
+			coverage: "measured",
 			band_stage: "add_source",
 			worst_intent_risk: 0.05,
 			intents: [{ intent: "query_intent", band: "ready", risk: 0.05 }],
@@ -102,11 +104,37 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		expect(amountRow.getAllByText("Investigate")).toHaveLength(2);
 	});
 
+	it("renders an unmeasured column as 'Not measured', never a green 'Ready' badge (DAT-853)", () => {
+		renderWidget({
+			...analyzed,
+			columns: [
+				{
+					column_id: "c_flag",
+					column_name: "flag",
+					resolved_type: "INTEGER",
+					// The engine freezes the band vocabulary — a never-measured column
+					// reads band='ready' with coverage='unmeasured'. The badge must NOT
+					// read "Ready".
+					band: "ready",
+					coverage: "unmeasured",
+					band_stage: "add_source",
+					worst_intent_risk: null,
+					intents: [],
+					top_drivers: [],
+				},
+			],
+		});
+		expect(screen.getByText("Not measured")).toBeTruthy();
+		const flagRow = within(screen.getByTestId("canvas-table-readiness"));
+		expect(flagRow.queryByText("Ready")).toBeNull();
+	});
+
 	it("renders the whole-table band summary when table_readiness is present (DAT-415)", () => {
 		renderWidget({
 			...analyzed,
 			table_readiness: {
 				band: "investigate",
+				coverage: "measured",
 				worst_intent_risk: 0.42,
 				intents: [
 					{ intent: "query_intent", band: "ready", risk: 0.1 },
@@ -146,6 +174,7 @@ describe("TableReadinessWidget (DAT-350)", () => {
 					column_name: "x",
 					resolved_type: null,
 					band: null,
+					coverage: null,
 					band_stage: null,
 					worst_intent_risk: null,
 					intents: [],

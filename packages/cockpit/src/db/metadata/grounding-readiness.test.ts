@@ -10,7 +10,7 @@
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 
-const captured: { cond?: unknown } = {};
+const captured: { cond?: unknown; rows: unknown[] } = { rows: [] };
 
 vi.mock("#/db/metadata/client", () => ({
 	metadataDb: {
@@ -18,7 +18,7 @@ vi.mock("#/db/metadata/client", () => ({
 			from: () => ({
 				where: (cond: unknown) => {
 					captured.cond = cond;
-					return Promise.resolve([]);
+					return Promise.resolve(captured.rows);
 				},
 			}),
 		}),
@@ -37,8 +37,60 @@ describe("readGroundingReadiness — add_source grain pin (DAT-597)", () => {
 
 	it("short-circuits to [] with no query when there are no tables", async () => {
 		captured.cond = undefined;
+		captured.rows = [];
 		const rows = await readGroundingReadiness([]);
 		expect(rows).toEqual([]);
 		expect(captured.cond).toBeUndefined();
+	});
+
+	it("carries coverage + the abstention trace so the loop can flag unmeasured (DAT-853)", async () => {
+		captured.rows = [
+			{
+				target: "column:payments.amount",
+				tableId: "t1",
+				columnId: "c1",
+				band: "ready",
+				worstIntentRisk: 0,
+				coverage: "unmeasured",
+				abstentions: [
+					{
+						detector: "unit_entropy",
+						reason: "insufficient_data",
+						intents: ["aggregation_intent"],
+					},
+				],
+				topDrivers: [],
+			},
+		];
+		const [g] = await readGroundingReadiness(["t1"]);
+		expect(g.band).toBe("ready");
+		expect(g.coverage).toBe("unmeasured");
+		expect(g.abstentions).toEqual([
+			{
+				detector: "unit_entropy",
+				reason: "insufficient_data",
+				intents: ["aggregation_intent"],
+			},
+		]);
+	});
+
+	it("fails CLOSED on an (unreachable) null coverage — biases to 'unmeasured'", async () => {
+		// coverage is NOT NULL underneath, so this never fires; but if it ever did,
+		// defaulting to 'unmeasured' keeps the gap filter from exiting green on an
+		// unmeasured target (the epic's core failure), at worst one wasted LLM look.
+		captured.rows = [
+			{
+				target: "column:payments.amount",
+				tableId: "t1",
+				columnId: "c1",
+				band: "ready",
+				worstIntentRisk: 0,
+				coverage: null,
+				abstentions: null,
+				topDrivers: [],
+			},
+		];
+		const [g] = await readGroundingReadiness(["t1"]);
+		expect(g.coverage).toBe("unmeasured");
 	});
 });

@@ -133,4 +133,60 @@ describe("projectWhyTable (DAT-415)", () => {
 		const out = projectWhyTable(TABLE_ID, "payments", readiness(), [], 0);
 		expect(out.table_name).toBe("payments");
 	});
+
+	// --- DAT-853: coverage + abstention rendering.
+
+	it("carries coverage + abstentions for an unmeasured table band", () => {
+		const out = projectWhyTable(
+			TABLE_ID,
+			TABLE_NAME,
+			readiness({
+				band: "ready",
+				coverage: "unmeasured",
+				intents: [],
+				abstentions: [
+					{
+						detector: "dimension_coverage",
+						reason: "missing_inputs",
+						intents: ["reporting_intent"],
+					},
+				],
+			}),
+			[],
+			0,
+		);
+		expect(out.band).toBe("ready");
+		expect(out.coverage).toBe("unmeasured");
+		expect(out.abstentions[0].reason).toBe("missing_inputs");
+	});
+
+	it("null coverage + empty abstentions when there is no readiness row", () => {
+		const out = projectWhyTable(TABLE_ID, TABLE_NAME, null, [evidenceRow()], 0);
+		expect(out.coverage).toBeNull();
+		expect(out.abstentions).toEqual([]);
+	});
+
+	it("keeps an abstained detector's null score (never 0) out of signal_count", () => {
+		const out = projectWhyTable(
+			TABLE_ID,
+			TABLE_NAME,
+			readiness(),
+			[
+				evidenceRow(),
+				evidenceRow({
+					dimension: "distribution",
+					subDimension: "benford_compliance",
+					detectorId: "benford",
+					score: null,
+					status: "abstained",
+					abstainReason: "not_applicable",
+				}),
+			],
+			0,
+		);
+		const abstained = out.evidence.find((e) => e.detector_id === "benford");
+		expect(abstained?.score).toBeNull();
+		expect(abstained?.abstain_reason).toBe("not_applicable");
+		expect(out.signal_count).toBe(1);
+	});
 });

@@ -63,7 +63,7 @@ export function TableWhyWidget({
 						· whole-table readiness
 					</Text>
 				</Text>
-				<BandBadge band={why.band} />
+				<BandBadge band={why.band} coverage={why.coverage} />
 			</Group>
 
 			<VerdictProvenance

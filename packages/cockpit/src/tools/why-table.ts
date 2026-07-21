@@ -22,6 +22,7 @@ import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { getPendingOverlays } from "../db/metadata/pending-overlays";
 import {
+	Abstention,
 	PersistedIntent,
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
@@ -57,7 +58,11 @@ const IntentExplanation = z.object({
 const EvidenceSignal = z.object({
 	dimension_path: z.string(),
 	detector_id: z.string(),
-	score: z.number(),
+	// Null on an ABSTAINED detector (DAT-853) — rendered as "abstained (reason)",
+	// never a fabricated 0.0.
+	score: z.number().nullable(),
+	status: z.string().nullable(),
+	abstain_reason: z.string().nullable(),
 	detail: z.string(),
 });
 
@@ -71,6 +76,13 @@ const WhyTableResult = z.object({
 	// the promoted run — distinct from "found but not analyzed".
 	found: z.boolean(),
 	band: z.string().nullable(),
+	// Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null.
+	// 'unmeasured' = the band is vacuous (all loss-path detectors abstained) → render
+	// "not measured", never 'ready'.
+	coverage: z.string().nullable(),
+	// The self-describing abstention trace (DAT-853): the detectors that abstained,
+	// WHY, and the intents each left without a contributor.
+	abstentions: z.array(Abstention),
 	// WHICH pipeline stage sealed the shown verdict (DAT-513) + when — the
 	// pick is only evaluable if the caller can see it. null when unanalyzed.
 	band_stage: z.string().nullable(),
@@ -91,9 +103,14 @@ export type WhyTableResult = z.infer<typeof WhyTableResult>;
 /** The structured non-narrative payload (everything except `analysis`). */
 export type WhyTableData = Omit<WhyTableResult, "analysis">;
 
-/** The table's readiness row from the promoted run (null fields = no row). */
+/** The table's readiness row from the promoted run (null fields = no row).
+ * `coverage`/`abstentions` optional as a fixture affordance; the live read sets them. */
 export interface WhyTableReadinessRow {
 	band: string | null;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null. */
+	coverage?: string | null;
+	/** Raw `entropy_readiness.abstentions` JSONB — parsed leniently in the projection. */
+	abstentions?: unknown;
 	/** Stage that sealed the picked verdict (DAT-513); null when unanalyzed. */
 	bandStage: string | null;
 	bandComputedAt: Date | null;
@@ -101,12 +118,15 @@ export interface WhyTableReadinessRow {
 	intents: unknown;
 }
 
-/** One entropy_objects row for the table target. */
+/** One entropy_objects row for the table target. `score` is null on an ABSTAINED
+ * row (DAT-853); `status`/`abstainReason` optional as a fixture affordance. */
 export interface WhyTableEvidenceRow {
 	layer: string;
 	dimension: string;
 	subDimension: string;
-	score: number;
+	score: number | null;
+	status?: string | null;
+	abstainReason?: string | null;
 	detectorId: string;
 	evidence: unknown;
 }
@@ -140,13 +160,20 @@ export function projectWhyTable(
 
 	// `detail` reaches the agent AND the synthesis prompt — render through the
 	// shared sanitizer (DAT-433): engine-internal `_`-keys dropped, explicit
-	// table-name keys display-mapped, src-digest backstop applied.
+	// table-name keys display-mapped, src-digest backstop applied. An abstained
+	// detector keeps its null score + status + reason (DAT-853) — never coerced to 0.
 	const evidence: z.infer<typeof EvidenceSignal>[] = evidenceRows.map((e) => ({
 		dimension_path: `${e.layer}.${e.dimension}.${e.subDimension}`,
 		detector_id: e.detectorId,
 		score: e.score,
+		status: e.status ?? null,
+		abstain_reason: e.abstainReason ?? null,
 		detail: renderEvidenceDetail(e.evidence),
 	}));
+
+	const abstentionsParsed = readiness
+		? Abstention.array().safeParse(readiness.abstentions)
+		: null;
 
 	return {
 		table_id: tableId,
@@ -158,6 +185,8 @@ export function projectWhyTable(
 		// the table in the promoted run.
 		found: readiness !== null || evidence.length > 0,
 		band: readiness?.band ?? null,
+		coverage: readiness?.band == null ? null : (readiness.coverage ?? null),
+		abstentions: abstentionsParsed?.success ? abstentionsParsed.data : [],
 		band_stage: readiness?.band == null ? null : (readiness.bandStage ?? null),
 		band_computed_at:
 			readiness?.band == null
@@ -167,7 +196,8 @@ export function projectWhyTable(
 		analyzed: (readiness?.band ?? null) !== null,
 		intents,
 		evidence,
-		signal_count: evidence.length,
+		// Measured signals only — an abstained row is an absence, not a signal (DAT-853).
+		signal_count: evidence.filter((e) => e.score !== null).length,
 		verdict_history: verdictHistory,
 		pending_teaches: pendingTeaches,
 	};
@@ -201,6 +231,8 @@ export async function synthesizeAnalysis(
 				content: `Explain the readiness for the table "${label}", grounded only in these signals:\n\n${JSON.stringify(
 					{
 						band: data.band,
+						coverage: data.coverage,
+						abstentions: data.abstentions,
 						intents: data.intents,
 						evidence: data.evidence,
 						signal_count: data.signal_count,
@@ -258,6 +290,8 @@ export async function whyTable(
 	const allReadinessRows = await metadataDb
 		.select({
 			band: currentEntropyReadiness.band,
+			coverage: currentEntropyReadiness.coverage,
+			abstentions: currentEntropyReadiness.abstentions,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			computedAt: currentEntropyReadiness.computedAt,
@@ -280,6 +314,8 @@ export async function whyTable(
 			dimension: currentEntropyObjects.dimension,
 			subDimension: currentEntropyObjects.subDimension,
 			score: currentEntropyObjects.score,
+			status: currentEntropyObjects.status,
+			abstainReason: currentEntropyObjects.abstainReason,
 			detectorId: currentEntropyObjects.detectorId,
 			evidence: currentEntropyObjects.evidence,
 			computedAt: currentEntropyObjects.computedAt,
@@ -293,12 +329,15 @@ export async function whyTable(
 		.orderBy(asc(currentEntropyObjects.dimension));
 	const rawEvidence = mergeCurrentEvidence(unmergedEvidence);
 	// View columns type as nullable (Postgres views carry no NOT NULL); the
-	// underlying table guarantees these — coalesce at the edge.
+	// underlying table guarantees identity fields — coalesce at the edge. An
+	// abstained object keeps its NULL score (DAT-853), never `?? 0`.
 	const evidenceRows: WhyTableEvidenceRow[] = rawEvidence.map((e) => ({
 		layer: e.layer ?? "",
 		dimension: e.dimension ?? "",
 		subDimension: e.subDimension ?? "",
-		score: e.score ?? 0,
+		score: e.score ?? null,
+		status: e.status ?? null,
+		abstainReason: e.abstainReason ?? null,
 		detectorId: e.detectorId ?? "",
 		evidence: e.evidence,
 	}));
@@ -334,7 +373,10 @@ export const whyTableTool = toolDefinition({
 		"detector evidence, with a short synthesized explanation. Read-only. Use " +
 		"after look_table to drill into the table-grain band; identify it by its " +
 		"table_id. signal_count shows how many detector signals back the explanation " +
-		"— a low count means the picture is partial.",
+		"— a low count means the picture is partial. coverage qualifies the band: " +
+		"'unmeasured' means the band is VACUOUS (every loss-path detector abstained " +
+		"— see abstentions for why), so treat it as NOT MEASURED, never ready; " +
+		"'partial' means the band rests on incomplete measurement.",
 	inputSchema: z.object({
 		table_id: z
 			.string()

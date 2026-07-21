@@ -26,6 +26,7 @@ import {
 import {
 	getWorkflowProgress,
 	isWorkflowAbsent,
+	terminalRunOutcome,
 	terminalRunStatus,
 } from "#/temporal/progress";
 
@@ -90,11 +91,26 @@ async function reconcileOne(run: ActiveRun): Promise<void> {
 		});
 		if (progress.done) {
 			// Temporal HAS the run and reports it closed — take its verdict verbatim.
-			await markRunStatus(
-				run.workflowId,
-				run.runId,
-				terminalRunStatus(progress),
-			);
+			// DAT-845: when the terminal progress phase names a `nothing_declared`
+			// operating_model run, persist that outcome too so the briefing renders it
+			// (this sweep is the fallback path for a run that finished while no chat
+			// stream was open). Only that phase is unambiguous here — every other DONE
+			// run marks status-only (3-arg), leaving the outcome column NULL.
+			const outcome = terminalRunOutcome(progress);
+			if (outcome !== null) {
+				await markRunStatus(
+					run.workflowId,
+					run.runId,
+					terminalRunStatus(progress),
+					outcome,
+				);
+			} else {
+				await markRunStatus(
+					run.workflowId,
+					run.runId,
+					terminalRunStatus(progress),
+				);
+			}
 			return;
 		}
 		// Temporal has NO execution for this id. Past the start-race grace that means

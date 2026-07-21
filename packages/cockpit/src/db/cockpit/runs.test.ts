@@ -20,8 +20,9 @@ const h = vi.hoisted(() => ({
 		where: unknown[];
 	}>,
 	whereArgs: [] as unknown[][],
-	// Rows the latest-run lookup (markRunAwaitingInput) returns.
-	latestRows: [{ id: "run-row-latest" }] as Array<{ id: string }>,
+	// Rows the latest-run lookups return (markRunAwaitingInput reads `.id`;
+	// latestOperatingModelNothingDeclared reads `.status`/`.outcome`).
+	latestRows: [{ id: "run-row-latest" }] as Array<Record<string, unknown>>,
 	throwOnInsert: false,
 }));
 
@@ -38,9 +39,11 @@ vi.mock("#/db/cockpit/schema", () => ({
 		id: "id",
 		workspaceId: "workspace_id",
 		kind: "kind",
+		stage: "stage",
 		workflowId: "workflow_id",
 		runId: "run_id",
 		status: "status",
+		outcome: "outcome",
 		awaitingNote: "awaiting_note",
 		startedAt: "started_at",
 	},
@@ -90,7 +93,12 @@ vi.mock("#/db/cockpit/client", () => ({
 }));
 
 import { runWithConversation } from "#/lib/run-context";
-import { markRunAwaitingInput, markRunStatus, recordRun } from "./runs";
+import {
+	latestOperatingModelNothingDeclared,
+	markRunAwaitingInput,
+	markRunStatus,
+	recordRun,
+} from "./runs";
 
 const BASE = {
 	workspaceId: "ws-1",
@@ -179,6 +187,21 @@ describe("markRunStatus (DAT-461)", () => {
 		expect(JSON.stringify(h.updates[0].where)).toContain("workspace_id");
 	});
 
+	it("persists the operating_model outcome when given (DAT-845), leaving status intact", async () => {
+		await markRunStatus("wf-1", "run-1", "completed", "nothing_declared");
+		expect(h.updates).toHaveLength(1);
+		// Both axes set — the lifecycle status AND the result outcome.
+		expect(h.updates[0].set).toEqual({
+			status: "completed",
+			outcome: "nothing_declared",
+		});
+	});
+
+	it("a 3-arg mark sets status ONLY (never nulls a stored outcome)", async () => {
+		await markRunStatus("wf-1", "run-1", "completed");
+		expect(h.updates[0].set).toEqual({ status: "completed" });
+	});
+
 	it("is best-effort: swallows a db error", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const boom = await import("./client");
@@ -189,6 +212,44 @@ describe("markRunStatus (DAT-461)", () => {
 			markRunStatus("wf-1", "run-1", "failed"),
 		).resolves.toBeUndefined();
 		expect(warn).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("latestOperatingModelNothingDeclared (DAT-845)", () => {
+	it("true when the latest OM run is completed + nothing_declared", async () => {
+		h.latestRows = [{ status: "completed", outcome: "nothing_declared" }];
+		await expect(latestOperatingModelNothingDeclared("ws-1")).resolves.toBe(
+			true,
+		);
+		// Ordered newest-first + capped at one row (the LATEST run is authoritative).
+		expect(limitMock).toHaveBeenCalled();
+	});
+
+	it("false when the latest OM run promoted (a real operating model exists)", async () => {
+		h.latestRows = [{ status: "completed", outcome: "promoted" }];
+		await expect(latestOperatingModelNothingDeclared("ws-1")).resolves.toBe(
+			false,
+		);
+	});
+
+	it("false when the workspace has never run the operating model", async () => {
+		h.latestRows = [];
+		await expect(latestOperatingModelNothingDeclared("ws-1")).resolves.toBe(
+			false,
+		);
+	});
+
+	it("false when the latest OM run failed (no outcome persisted)", async () => {
+		h.latestRows = [{ status: "failed", outcome: null }];
+		await expect(latestOperatingModelNothingDeclared("ws-1")).resolves.toBe(
+			false,
+		);
+	});
+
+	it("refuses a non-boot workspace born-loud (DAT-817)", async () => {
+		await expect(
+			latestOperatingModelNothingDeclared("ws-other"),
+		).rejects.toThrow(/cross-workspace query refused/);
 	});
 });
 

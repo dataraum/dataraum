@@ -48,6 +48,13 @@ const OPERATING_MODEL_DISPLAY: WorkflowProgressDisplay = {
 	doneMessage: () =>
 		"Done — validations executed. Use look_validation to see what passed, " +
 		"failed, or could not be grounded.",
+	// DAT-845: the run completed but the framed vertical declared nothing to build
+	// an operating model from — an honest dead-end, not a success. A re-run can't
+	// fix it; the declarations must be added (framed) first.
+	nothingDeclaredMessage: () =>
+		"No operating model — this vertical declares no validations, cycles, or " +
+		"metrics, so there was nothing to build one from. Add declarations (frame) " +
+		"to the workspace, then run the operating model again.",
 };
 
 export function OperatingModelProgressWidget({

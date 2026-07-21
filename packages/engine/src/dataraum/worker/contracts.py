@@ -567,6 +567,16 @@ class SessionCascadeInput(BaseModel):
 # workflows schedule them BY NAME on the cockpit queue, and both converters
 # (pydantic here, the TS default there) pass JSON keys through verbatim. Do not
 # "fix" the casing — a rename here is a silent wire break.
+#
+# ``markRunStatus`` / ``markRunAwaitingInput`` take no model — they are scheduled
+# with POSITIONAL args, so there is nothing to mirror as a class here; the TS
+# signatures in ``src/db/cockpit/runs.ts`` are authoritative and ``_run_stage``
+# below must pass matching positionals. ``markRunStatus`` is
+# ``(workflowId, runId, status, outcome?)`` (DAT-845): ``status`` is the lifecycle
+# axis ("completed" | "failed" | "retired"); the trailing ``outcome`` is a distinct
+# RESULT axis ("promoted" | "nothing_declared") set only for the operating_model
+# stage, optional-with-default (None → JSON null) so the three-arg failed/retired
+# marks and the non-OM stages stay valid. Evolve the positional order in lockstep.
 
 
 class RecordRunInput(BaseModel):

@@ -128,13 +128,18 @@ function deriveProgress(
 				? "needs_attention"
 				: "ready";
 
+	// Precedence: an in-flight run wins; then a promoted head (ready / needs_attention);
+	// then the DAT-845 terminal `nothing_declared` (completed, no head, nothing
+	// declared) as its own state; else never-run `empty`.
 	const analyse: StageStatus = flags.operatingModelRunning
 		? "in_progress"
-		: !flags.operatingModelPromoted
-			? "empty"
-			: columnsBlocked > 0
+		: flags.operatingModelPromoted
+			? columnsBlocked > 0
 				? "needs_attention"
-				: "ready";
+				: "ready"
+			: flags.operatingModelNothingDeclared
+				? "nothing_declared"
+				: "empty";
 
 	return { connect, stage, analyse };
 }

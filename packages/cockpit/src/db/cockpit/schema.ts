@@ -254,6 +254,17 @@ export const runs = pgTable(
 			() => conversations.id,
 		),
 		status: varchar("status").notNull().default("running"),
+		// The operating_model run's terminal DISPOSITION (DAT-845) — a RESULT axis
+		// DISTINCT from `status` (the lifecycle axis running/completed/failed/…):
+		// 'promoted' | 'nothing_declared' (varchar + TS union `RunOutcome`, per the
+		// kind/status/stage convention, not a pgEnum). Written by the terminal
+		// markRunStatus bracket ONLY for operating_model runs — NULL for
+		// add_source/begin_session and every historic row. A `nothing_declared` run
+		// COMPLETES without flipping the (catalog, "operating_model") snapshot head, so
+		// head-presence alone can't tell it from a fresh workspace; this column can —
+		// the briefing reads (status='completed' AND outcome='nothing_declared') to
+		// render the analyse stage's own honest terminal state.
+		outcome: varchar("outcome"),
 		startedAt: timestamp("started_at", { mode: "date" }).notNull().defaultNow(),
 		// Why the run is parked in `status='awaiting_input'` (DAT-551 P3c): the
 		// grounding-teach agent fixed what it mechanically could and a human-judgement

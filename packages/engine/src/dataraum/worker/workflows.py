@@ -1069,9 +1069,20 @@ async def _run_stage[StageResultT: (AddSourceResult, BeginSessionResult, Operati
         # The by-string handle is untyped (Any); ``result_type`` above makes the
         # converter reconstruct the concrete model, so this annotation is true.
         result: StageResultT = await child
+        # DAT-845: the operating_model stage carries a terminal DISPOSITION distinct
+        # from success — a ``nothing_declared`` run COMPLETES (head NOT flipped, no
+        # operating model exists). Thread it onto the cockpit_db run row via the
+        # terminal mark so the cockpit briefing can render that state as its own; the
+        # other two stages have no such axis, so ``outcome`` is None and the cockpit
+        # activity leaves the column NULL. The ``markRunStatus`` wire contract is
+        # POSITIONAL — (workflowId, runId, status, outcome?) — with the TS side
+        # authoritative (``src/db/cockpit/runs.ts``); the trailing ``outcome`` is
+        # optional-with-default there, so a None crosses as JSON null and old 3-arg
+        # callers stay valid.
+        outcome = result.outcome if isinstance(result, OperatingModelResult) else None
         await workflow.execute_activity(
             "markRunStatus",
-            args=[workflow_id, run_id, "completed"],
+            args=[workflow_id, run_id, "completed", outcome],
             task_queue=cockpit_task_queue,
             start_to_close_timeout=_COCKPIT_WRITE_TIMEOUT,
             retry_policy=_COCKPIT_WRITE_RETRY,

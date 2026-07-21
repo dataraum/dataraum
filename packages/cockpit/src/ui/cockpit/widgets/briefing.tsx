@@ -21,12 +21,16 @@ const STAGE_TONE: Record<StageStatus, string> = {
 	in_progress: "blue",
 	ready: "green",
 	needs_attention: "yellow",
+	// A handled-but-invalid terminal state (DAT-845) — orange sets it apart from
+	// needs_attention's yellow while still reading as "needs a human".
+	nothing_declared: "orange",
 };
 const STAGE_LABEL: Record<StageStatus, string> = {
 	empty: "Not started",
 	in_progress: "Running",
 	ready: "Ready",
 	needs_attention: "Needs attention",
+	nothing_declared: "No operating model",
 };
 
 const CHAT_LABEL = { connect: "Connect", stage: "Stage", analyse: "Analyse" };

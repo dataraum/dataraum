@@ -39,6 +39,16 @@ import { runs } from "./schema";
 export type RunKind = "onboarding" | "begin_session" | "replay";
 /** Which workflow a run executed. */
 export type RunStage = "add_source" | "begin_session" | "operating_model";
+/**
+ * An operating_model run's terminal DISPOSITION (DAT-845) — a RESULT axis distinct
+ * from `status` (the lifecycle axis). `promoted`: declared ≥1 validation/cycle/metric
+ * and flipped the (catalog, "operating_model") head. `nothing_declared`: the framed
+ * vertical declared ZERO across all three families, so no operating model exists —
+ * the run COMPLETES but does NOT flip the head (a misconfiguration to surface, not a
+ * valid end state). ONLY operating_model runs carry it; add_source/begin_session and
+ * every historic row are NULL. Mirrors `OperatingModelResult.outcome` on the wire.
+ */
+export type RunOutcome = "promoted" | "nothing_declared";
 
 export interface RecordRunInput {
 	workspaceId: string;
@@ -120,16 +130,30 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
  * namespace retention TTL — it is terminal (not in-flight) but its OUTCOME is
  * unrecoverable. We assert neither success nor failure: `retired` is the honest
  * "closed, outcome no longer knowable" state.
+ *
+ * `outcome` (DAT-845) is the RESULT axis, orthogonal to `status` — passed ONLY for
+ * an operating_model completion (the engine `_run_stage` cascade threads
+ * `OperatingModelResult.outcome`; the direct-path completion-watcher reads it off
+ * the run result; the reconcile reads the terminal progress phase). Omitted (the
+ * default `null`) for every other writer — a 3-arg call sets only `status` and never
+ * clobbers an already-persisted outcome with null, so a later re-mark is safe. This
+ * is the hand-mirrored cross-package activity contract (POSITIONAL args, mirrored in
+ * the engine's `worker/workflows.py` caller) — evolve the positional order in lockstep.
  */
 export async function markRunStatus(
 	workflowId: string,
 	runId: string,
 	status: "completed" | "failed" | "retired",
+	outcome: RunOutcome | null = null,
 ): Promise<void> {
 	try {
 		await cockpitDb
 			.update(runs)
-			.set({ status })
+			// Set `outcome` ONLY when explicitly provided (an operating_model
+			// completion) — a 3-arg call leaves the column at its stored value (NULL on
+			// a fresh row), so a failed/retired mark or a re-mark can't null out a set
+			// outcome.
+			.set(outcome === null ? { status } : { status, outcome })
 			.where(
 				and(
 					eq(runs.workspaceId, bootWorkspaceId()),
@@ -349,6 +373,35 @@ export async function hasRunningRun(
 		)
 		.limit(1);
 	return row !== undefined;
+}
+
+/**
+ * Whether the workspace's LATEST operating_model run terminated `nothing_declared`
+ * (DAT-845) — the briefing's honest terminal-state signal. A framed vertical that
+ * declared zero validations/cycles/metrics COMPLETES without flipping the
+ * (catalog, "operating_model") snapshot head, so head-presence alone can't tell that
+ * run from a fresh, never-analysed workspace; the run's persisted `outcome` can.
+ *
+ * Predicate: the SINGLE most-recent operating_model run (by `startedAt`) has
+ * `status='completed'` AND `outcome='nothing_declared'`. "Latest" is load-bearing —
+ * a later promoted re-run (DAT-855 adds declarations) supersedes it, and a fresh
+ * in-flight run is `running`, not `completed`; either way this reads false and the
+ * briefing's running/head checks take precedence. (A promoted re-run also flips the
+ * head, so the briefing short-circuits to ready before this even matters.)
+ */
+export async function latestOperatingModelNothingDeclared(
+	workspaceId: string,
+): Promise<boolean> {
+	assertBootWorkspace(workspaceId);
+	const [row] = await cockpitDb
+		.select({ status: runs.status, outcome: runs.outcome })
+		.from(runs)
+		.where(
+			and(eq(runs.workspaceId, workspaceId), eq(runs.stage, "operating_model")),
+		)
+		.orderBy(desc(runs.startedAt))
+		.limit(1);
+	return row?.status === "completed" && row?.outcome === "nothing_declared";
 }
 
 /** One run for the workspace-wide monitor (DAT-550). `kind` is the run's own

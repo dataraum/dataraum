@@ -9,7 +9,7 @@
 # the CatalogueSemanticsOutput Pydantic schema.
 
 name: catalogue_semantics
-version: "1.0.0"
+version: "1.1.0"
 description: Catalogue-horizon business semantics — table readings + column concepts
 
 temperature: 0.0
@@ -106,7 +106,11 @@ user_prompt: |
   <relationships>
   The CONFIRMED relationship catalogue with its stored measured evidence. Value
   samples of the join columns ride each line — what a reference actually points
-  at is evidence for both surfaces you author.
+  at is evidence for both surfaces you author. Lines marked "(<fk>-joined
+  rows)" are chain-conditioned: that label column's top values over ONLY the
+  rows that resolve across the join. Where they differ from a column's flat
+  all-rows samples, the conditioned values are the evidence for what the chain
+  itself carries.
 
   {relationship_catalogue}
   </relationships>

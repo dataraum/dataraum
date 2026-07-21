@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import duckdb
 from sqlalchemy import select
 
 from dataraum.analysis.catalogue.models import (
@@ -269,6 +270,13 @@ def _agent(results: list[Result]) -> MagicMock:
     return agent
 
 
+def _duck() -> duckdb.DuckDBPyConnection:
+    """Pass-through conn for the plumbed duckdb parameter — the agent is
+    mocked here, so nothing ever queries it (the conditioned-sample SQL is
+    covered by test_context.py against real tables)."""
+    return duckdb.connect()
+
+
 class TestAuthorAndStoreCatalogue:
     def test_full_coverage_single_call(self, session) -> None:
         table = _table_with_columns(session, "orders", ["id"])
@@ -276,7 +284,7 @@ class TestAuthorAndStoreCatalogue:
         agent = _agent([_output([_cc("orders", "id", "row key")], [_reading("orders")])])
 
         result = author_and_store_catalogue(
-            session, agent, [table.table_id], "general", run_id=baseline_run_id()
+            session, _duck(), agent, [table.table_id], "general", run_id=baseline_run_id()
         )
         session.flush()
 
@@ -298,7 +306,7 @@ class TestAuthorAndStoreCatalogue:
         agent = _agent([empty, empty, empty])  # initial + exhausted retries
 
         result = author_and_store_catalogue(
-            session, agent, [table.table_id], "general", run_id=baseline_run_id()
+            session, _duck(), agent, [table.table_id], "general", run_id=baseline_run_id()
         )
 
         assert not result.success
@@ -323,7 +331,12 @@ class TestAuthorAndStoreCatalogue:
         )
 
         result = author_and_store_catalogue(
-            session, agent, [alpha.table_id, beta.table_id], "general", run_id=baseline_run_id()
+            session,
+            _duck(),
+            agent,
+            [alpha.table_id, beta.table_id],
+            "general",
+            run_id=baseline_run_id(),
         )
         session.flush()
 
@@ -348,7 +361,12 @@ class TestAuthorAndStoreCatalogue:
         agent = _agent([covered, _output([], []), _output([], [])])
 
         result = author_and_store_catalogue(
-            session, agent, [alpha.table_id, beta.table_id], "general", run_id=baseline_run_id()
+            session,
+            _duck(),
+            agent,
+            [alpha.table_id, beta.table_id],
+            "general",
+            run_id=baseline_run_id(),
         )
         session.flush()
 
@@ -373,7 +391,7 @@ class TestAuthorAndStoreCatalogue:
         )
 
         result = author_and_store_catalogue(
-            session, agent, [alpha.table_id], "general", run_id=baseline_run_id()
+            session, _duck(), agent, [alpha.table_id], "general", run_id=baseline_run_id()
         )
         session.flush()
 
@@ -398,7 +416,7 @@ class TestAuthorAndStoreCatalogue:
         )
 
         result = author_and_store_catalogue(
-            session, agent, [alpha.table_id], "general", run_id=baseline_run_id()
+            session, _duck(), agent, [alpha.table_id], "general", run_id=baseline_run_id()
         )
         session.flush()
 
@@ -422,7 +440,12 @@ class TestAuthorAndStoreCatalogue:
         )
 
         result = author_and_store_catalogue(
-            session, agent, [alpha.table_id, beta.table_id], "general", run_id=baseline_run_id()
+            session,
+            _duck(),
+            agent,
+            [alpha.table_id, beta.table_id],
+            "general",
+            run_id=baseline_run_id(),
         )
         session.flush()
 
@@ -433,7 +456,7 @@ class TestAuthorAndStoreCatalogue:
     def test_propagates_agent_failure(self, session) -> None:
         agent = _agent([Result.fail("LLM down")])
         result = author_and_store_catalogue(
-            session, agent, ["t1"], "general", run_id=baseline_run_id()
+            session, _duck(), agent, ["t1"], "general", run_id=baseline_run_id()
         )
         assert not result.success
         assert "LLM down" in (result.error or "")
@@ -447,7 +470,7 @@ class TestAuthorAndStoreCatalogue:
         for _ in range(2):
             agent = _agent(list(output))
             assert author_and_store_catalogue(
-                session, agent, [table.table_id], "general", run_id=baseline_run_id()
+                session, _duck(), agent, [table.table_id], "general", run_id=baseline_run_id()
             ).success
             session.flush()
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import duckdb
+
 from dataraum.analysis.catalogue.context import build_catalogue_inputs
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
@@ -30,11 +32,17 @@ def _sampler(patterns: list[str] | None = None) -> DataSampler:
     return DataSampler(LLMPrivacy(sensitive_patterns=patterns or []))
 
 
-def _mk_table(session, name: str, columns: list[str]) -> Table:
+def _mk_table(session, name: str, columns: list[str], *, duckdb_path: str | None = None) -> Table:
     src = Source(name=f"src_{name}", source_type="csv")
     session.add(src)
     session.flush()
-    table = Table(source_id=src.source_id, table_name=name, layer="typed", row_count=100)
+    table = Table(
+        source_id=src.source_id,
+        table_name=name,
+        layer="typed",
+        row_count=100,
+        duckdb_path=duckdb_path,
+    )
     session.add(table)
     session.flush()
     for pos, col in enumerate(columns):
@@ -137,6 +145,10 @@ def _build(session, tables: list[Table], **kw) -> dict[str, str]:
     table_ids = [t.table_id for t in tables]
     return build_catalogue_inputs(
         session,
+        # An ephemeral conn by default: tables without a duckdb_path serve no
+        # chain-conditioned lines (fail-soft), so metadata-only tests run
+        # against an empty database.
+        kw.get("duckdb_conn") or duckdb.connect(),
         table_ids=kw.get("scope", table_ids),
         session_table_ids=table_ids,
         run_id=kw.get("run_id", baseline_run_id()),
@@ -386,6 +398,126 @@ class TestRelationships:
 
         out = _build(session, [orders, vendors])
         assert "No confirmed relationships" in out["relationship_catalogue"]
+
+
+class TestChainConditionedSamples:
+    """Chain-conditioned label evidence on the relationship lines (DAT-853).
+
+    The AP forensics shape: a label column mixing several populations over all
+    rows (vendors + customers + fees) is unanimous on the rows that ride the
+    join. The conditioned aggregate must serve the discriminating distribution
+    — flat samples alone rendered the mixed one and the cycle was mislabeled.
+    """
+
+    def _payment_chain(self, session, duck: duckdb.DuckDBPyConnection) -> tuple[Table, Table]:
+        """bank_txns.payment_id -> payments.payment_id with a discriminating
+        conditioned distribution: flat counterparty is customer-dominated,
+        payment-linked counterparty is 100% vendors; one orphan fk row whose
+        label must NOT ride the join."""
+        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2'), ('P3'), ('P4')")
+        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, counterparty VARCHAR)")
+        duck.execute(
+            "INSERT INTO typed_bank_txns VALUES "
+            "('P1', 'Vendor A'), ('P2', 'Vendor A'), ('P3', 'Vendor A'), ('P4', 'Vendor B'), "
+            "('ORPHAN-1', 'Orphan Corp'), "  # fk set, never resolves
+            "(NULL, 'Customer X'), (NULL, 'Customer X'), (NULL, 'Customer X'), "
+            "(NULL, 'Customer X'), (NULL, 'Bank Fee'), (NULL, 'Bank Fee')"
+        )
+        bank = _mk_table(
+            session, "bank_txns", ["payment_id", "counterparty"], duckdb_path="typed_bank_txns"
+        )
+        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
+        _promote(session, bank)
+        _promote(session, payments)
+        _entity(
+            session,
+            bank,
+            identity_columns=[
+                {"column": "payment_id", "note": "matches the payments key"},
+                {"column": "counterparty", "note": "external party label"},
+            ],
+        )
+        _relationship(session, bank, "payment_id", payments, "payment_id")
+        return bank, payments
+
+    def test_conditioned_line_serves_the_discriminating_distribution(self, session) -> None:
+        duck = duckdb.connect()
+        bank, payments = self._payment_chain(session, duck)
+        # Flat endpoint samples stay served next to the conditioned line.
+        _profile(session, _col_id(session, bank, "payment_id"), top=[("P1", 1, 9.0)])
+
+        out = _build(session, [bank, payments], duckdb_conn=duck)
+        text = out["relationship_catalogue"]
+        # The conditioned line: only join-riding rows, frequency-ordered, with
+        # percentages over the joined population (4 rows).
+        assert "counterparty (payment_id-joined rows): 'Vendor A' (75%), 'Vendor B' (25%)" in text
+        # Flat (all-rows) evidence is additional, not replaced.
+        assert "from values (payment_id): 'P1' (9%)" in text
+        # NULL-fk populations (customers, fees) and the orphan fk (claims a
+        # link that never resolves) must not ride the join.
+        assert "Customer X" not in text
+        assert "Bank Fee" not in text
+        assert "Orphan Corp" not in text
+        # The fk column itself is a join key — never served as a conditioned
+        # label (its IDs are the information-free evidence class).
+        assert "payment_id (payment_id-joined rows)" not in text
+
+    def test_sensitive_label_renders_redacted_without_touching_data(self, session) -> None:
+        duck = duckdb.connect()
+        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_payments VALUES ('P1')")
+        # The label column does NOT exist in duckdb: if the builder tried to
+        # aggregate it the query would fail loudly — redaction must short-circuit.
+        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_bank_txns VALUES ('P1')")
+        bank = _mk_table(
+            session, "bank_txns", ["payment_id", "owner_email"], duckdb_path="typed_bank_txns"
+        )
+        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
+        _entity(session, bank, identity_columns=[{"column": "owner_email", "note": "contact"}])
+        _relationship(session, bank, "payment_id", payments, "payment_id")
+
+        out = _build(session, [bank, payments], duckdb_conn=duck, sampler=_sampler([r".*email.*"]))
+        assert "owner_email (payment_id-joined rows): <REDACTED>" in out["relationship_catalogue"]
+
+    def test_conformed_dimension_serves_no_conditioned_lines(self, session) -> None:
+        """No fk rides a shared-axis meeting — conditioning has no join to honor."""
+        duck = duckdb.connect()
+        duck.execute("CREATE TABLE typed_ap (period VARCHAR, vendor VARCHAR)")
+        duck.execute("INSERT INTO typed_ap VALUES ('2025-01', 'Vendor A')")
+        duck.execute("CREATE TABLE typed_ar (period VARCHAR)")
+        duck.execute("INSERT INTO typed_ar VALUES ('2025-01')")
+        ap = _mk_table(session, "ap_ledger", ["period", "vendor"], duckdb_path="typed_ap")
+        ar = _mk_table(session, "ar_ledger", ["period"], duckdb_path="typed_ar")
+        _entity(session, ap, identity_columns=[{"column": "vendor", "note": "n"}])
+        _relationship(
+            session,
+            ap,
+            "period",
+            ar,
+            "period",
+            relationship_type="conformed_dimension",
+            cardinality="many-to-many",
+        )
+
+        out = _build(session, [ap, ar], duckdb_conn=duck)
+        assert "-joined rows" not in out["relationship_catalogue"]
+
+    def test_missing_typed_table_fails_soft(self, session) -> None:
+        """A duckdb_path that resolves to no table logs and serves nothing —
+        the prompt build must survive a missing typed table."""
+        duck = duckdb.connect()  # empty database, paths dangle
+        bank = _mk_table(
+            session, "bank_txns", ["payment_id", "counterparty"], duckdb_path="typed_bank_txns"
+        )
+        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
+        _entity(session, bank, identity_columns=[{"column": "counterparty", "note": "n"}])
+        _relationship(session, bank, "payment_id", payments, "payment_id")
+
+        out = _build(session, [bank, payments], duckdb_conn=duck)
+        assert "bank_txns.payment_id -> payments.payment_id" in out["relationship_catalogue"]
+        assert "-joined rows" not in out["relationship_catalogue"]
 
 
 class TestEnrichedViewsAndAxes:

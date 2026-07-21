@@ -29,6 +29,8 @@ from dataraum.core.models.base import DecisionSource, Result
 from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
+    import duckdb
+
     from dataraum.analysis.catalogue.agent import CatalogueSemanticsAgent
 
 logger = get_logger(__name__)
@@ -247,6 +249,7 @@ def _missing_reading_tables(
 
 def _retry_missing_coverage(
     session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
     agent: CatalogueSemanticsAgent,
     output: CatalogueSemanticsOutput,
     *,
@@ -284,6 +287,7 @@ def _retry_missing_coverage(
         )
         retry_result = agent.author(
             session,
+            duckdb_conn,
             table_ids=retry_table_ids,
             session_table_ids=session_table_ids,
             ontology=ontology,
@@ -309,6 +313,7 @@ def _retry_missing_coverage(
 
 def author_and_store_catalogue(
     session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
     agent: CatalogueSemanticsAgent,
     table_ids: list[str],
     ontology: str,
@@ -329,6 +334,7 @@ def author_and_store_catalogue(
     """
     llm_result = agent.author(
         session,
+        duckdb_conn,
         table_ids=table_ids,
         session_table_ids=table_ids,
         ontology=ontology,
@@ -343,6 +349,7 @@ def author_and_store_catalogue(
 
     _retry_missing_coverage(
         session,
+        duckdb_conn,
         agent,
         output,
         column_map=column_map,

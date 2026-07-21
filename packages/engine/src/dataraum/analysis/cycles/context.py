@@ -652,7 +652,11 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         )
         row_str = f", {row_count:,} rows" if row_count else ""
         grain = f", grain: {', '.join(ent['grain_columns'])}" if ent.get("grain_columns") else ""
-        lines.append(f"- {ent['table_name']} ({table_type}{row_str}{grain}): {ent['entity_type']}")
+        # Nullable since DAT-823 (the catalogue turn may honestly leave a table
+        # unread after retries) — render declared ignorance, never the literal
+        # string "None", matching the guarded siblings above.
+        entity_type = ent.get("entity_type") or "(entity type undetermined)"
+        lines.append(f"- {ent['table_name']} ({table_type}{row_str}{grain}): {entity_type}")
         if ent.get("description"):
             lines.append(f"  {ent['description'][:500]}")
         # Recurring identity columns (DAT-565): the entity-identifying columns

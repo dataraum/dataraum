@@ -32,6 +32,7 @@ from dataraum.analysis.statistics.models import (
 from dataraum.analysis.statistics.quality_db_models import (
     StatisticalQualityMetrics as DBStatisticalQualityMetrics,
 )
+from dataraum.core.duckdb_types import is_numeric
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
@@ -429,9 +430,7 @@ def assess_statistical_quality(
         columns = list(session.execute(stmt).scalars().all())
 
         # Filter to numeric columns
-        numeric_columns = [
-            c for c in columns if c.resolved_type in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]
-        ]
+        numeric_columns = [c for c in columns if is_numeric(c.resolved_type)]
 
         if not numeric_columns:
             return Result.ok([])

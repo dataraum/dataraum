@@ -38,6 +38,7 @@ from dataraum.analysis.statistics.models import (
     StringStats,
     ValueCount,
 )
+from dataraum.core.duckdb_types import is_numeric
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
@@ -99,7 +100,7 @@ def _profile_column_stats_parallel(
 
             # Numeric stats
             numeric_stats = None
-            if resolved_type in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]:
+            if is_numeric(resolved_type):
                 try:
                     numeric_query = f"""
                         SELECT

@@ -45,8 +45,8 @@ system_prompt: |
   </critical_requirements>
 
   <output_contract>
-  EVERY query MUST return EXACTLY ONE ROW with these two numeric columns,
-  aliased with these EXACT names:
+  EVERY query MUST return ONE ROW PER INDEPENDENTLY-JUDGED SUBJECT, each row
+  with these two numeric columns aliased with these EXACT names:
 
   - deviation: the measured discrepancy as a NON-NEGATIVE number. 0 means the
     check is perfectly satisfied; larger means worse. The caller compares it
@@ -55,6 +55,20 @@ system_prompt: |
   - magnitude: the reference scale the deviation is judged against (for
     severity). Use a positive number; if no meaningful scale applies, return
     the same value as deviation.
+
+  Most checks judge ONE subject: return EXACTLY ONE row.
+
+  A check that judges SEVERAL subjects of the same kind independently — e.g.
+  referential integrity over several foreign-key relationships — returns one
+  row per subject and ADDS one identifying column:
+
+  - leg (VARCHAR): a short stable label naming the subject, e.g.
+    'fact_table.fk_column->dim_table.key_column'.
+
+  NEVER pool independent subjects into one aggregated number (e.g.
+  SUM(orphans) / SUM(rows) across relationships): pooling hides WHICH subject
+  is broken and dilutes a real failure below tolerance. The caller judges
+  every row and the worst row decides the verdict.
 
   Compute `deviation` (and `magnitude`) per check type:
 
@@ -67,15 +81,16 @@ system_prompt: |
       magnitude = ABS(left_side)
 
   - aggregate: a rate/ratio must stay within bounds (e.g. orphan rate)
-      deviation = the rate itself (0..1)
+      deviation = the rate itself (0..1), per subject when several are checked
       magnitude = 1.0
 
   - constraint: rows that violate a rule must not exist
       deviation = COUNT of violating rows
       magnitude = COUNT of total rows considered
 
-  Use a single SELECT (with CTEs/subqueries as needed) that produces this one
-  summary row. Example shape:
+  Use a single SELECT (with CTEs/subqueries as needed; UNION ALL for
+  multi-subject checks) that produces this summary shape. Example (one
+  subject):
       WITH sides AS (SELECT SUM(...) AS a, SUM(...) AS b FROM ...)
       SELECT ABS(a - b) AS deviation, GREATEST(ABS(a), ABS(b)) AS magnitude FROM sides
   </output_contract>
@@ -120,8 +135,10 @@ user_prompt: |
   1. Identify which columns from the schema are needed for this validation
   2. Use the duckdb_path for table references
   3. Quote ALL column names with double quotes
-  4. Return the single contracted row: `deviation` and `magnitude` (see the
-     output_contract) — never a boolean verdict, never the raw rows
+  4. Return the contracted rows: `deviation` and `magnitude`, one row per
+     judged subject plus a `leg` label when there is more than one (see the
+     output_contract) — never a boolean verdict, never the raw rows, never
+     subjects pooled into one number
   5. If the required columns don't exist, set can_validate=false
   6. If enriched views are available, prefer them over manual JOINs
   7. Emit your response in the required output structure

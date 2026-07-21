@@ -57,6 +57,13 @@ contracted output column instead of guessing it.**
    failure, not a production surprise. (A two-line threshold is not the duplication risk; the
    deleted 150-line shape-sniffing was.)
 
+   *Amended by DAT-852:* a check grounding **several independent subjects** (e.g.
+   reference-integrity legs, one per FK relationship) returns one contracted row per
+   subject with a `leg` label; the threshold applies to **every** row and the worst row
+   decides. Pooling subjects into one aggregated number is forbidden — it dilutes a broken
+   leg below tolerance and hides which one failed. Both judgement copies and the shared
+   fixtures carry the per-leg rule; single-subject checks still return exactly one row.
+
 ## Consequences
 
 - **Engine:** `ValidationResultRecord` slimmed; `evaluate_result` collapses to the threshold;

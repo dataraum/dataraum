@@ -1,5 +1,5 @@
 {
-  "_comment": "ADR-0017 shared verdict truth table. The single source of truth for the validation judgement, asserted by BOTH the engine (pytest: tests/unit/analysis/validation/test_evaluate.py) and the cockpit (vitest, the TS mirror). The judgement is uniform: passed = deviation <= tolerance; a missing/absent/non-numeric deviation (or no row) is inconclusive (status 'error', never 'failed'). Keep the two consumers in lockstep — a divergence is a test failure, not a production surprise.",
+  "_comment": "ADR-0017 shared verdict truth table (per-leg since DAT-852). The single source of truth for the validation judgement, asserted by BOTH the engine (pytest: tests/unit/analysis/validation/test_evaluate.py) and the cockpit (vitest, the TS mirror). The judgement is uniform: one row per independently-judged subject (multi-leg checks label rows with 'leg'); EVERY row is judged passed = deviation <= tolerance and the WORST row decides; a missing/non-numeric deviation in ANY row (or no rows) is inconclusive (status 'error', never 'failed'). Keep the two consumers in lockstep — a divergence is a test failure, not a production surprise.",
   "cases": [
     {
       "name": "balance_clean_passes",
@@ -77,6 +77,43 @@
       "tolerance": 0.01,
       "rows": [{ "deviation": 0.0 }],
       "expected": { "status": "passed", "passed": true }
+    },
+    {
+      "name": "multi_leg_all_within_tolerance_passes",
+      "check_type": "aggregate",
+      "tolerance": 0.02,
+      "rows": [
+        { "leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0 },
+        { "leg": "txns.vendor_id->vendors.id", "deviation": 0.01, "magnitude": 1.0 }
+      ],
+      "expected": { "status": "passed", "passed": true }
+    },
+    {
+      "name": "multi_leg_worst_leg_over_tolerance_fails",
+      "check_type": "aggregate",
+      "tolerance": 0.02,
+      "rows": [
+        { "leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0 },
+        { "leg": "txns.vendor_id->vendors.id", "deviation": 0.315, "magnitude": 1.0 }
+      ],
+      "expected": { "status": "failed", "passed": false }
+    },
+    {
+      "name": "multi_leg_unlabelled_rows_still_judged_per_row",
+      "check_type": "aggregate",
+      "tolerance": 0.01,
+      "rows": [{ "deviation": 0.0 }, { "deviation": 3.0, "magnitude": 100.0 }],
+      "expected": { "status": "failed", "passed": false }
+    },
+    {
+      "name": "multi_leg_missing_deviation_in_any_row_is_inconclusive",
+      "check_type": "aggregate",
+      "tolerance": 0.02,
+      "rows": [
+        { "leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0 },
+        { "leg": "txns.vendor_id->vendors.id", "magnitude": 1.0 }
+      ],
+      "expected": { "status": "error", "passed": false }
     }
   ]
 }

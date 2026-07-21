@@ -4,11 +4,16 @@ The durable validation artifact stores the run-versioned SQL, not the pass/fail
 verdict: a stored verdict goes stale the moment data is re-imported, the SQL does
 not (DAT-617). So the verdict is *computed*, never stored-and-read.
 
-The judgement is uniform: every validation SQL returns ONE row with a
-non-negative numeric ``deviation`` (0 = perfectly satisfied) and a ``magnitude``
-(the reference scale). The verdict is the single rule ``deviation <= tolerance``
-— no per-check_type branching, no guessing which column carries the answer (the
-deleted column-name string-matching).
+The judgement is uniform: every validation SQL returns one row PER
+independently-judged subject — most checks judge one subject and return exactly
+one row; a multi-leg check (e.g. reference integrity over several FK
+relationships, DAT-852) returns one row per leg with a ``leg`` label — each row
+carrying a non-negative numeric ``deviation`` (0 = perfectly satisfied) and a
+``magnitude`` (the reference scale). The verdict is the single rule
+``deviation <= tolerance`` applied to EVERY row; the worst row decides — no
+per-check_type branching, no guessing which column carries the answer (the
+deleted column-name string-matching), and no pooling of independent legs into
+one diluted number.
 
 Entry points:
 - ``evaluate_result(spec, rows)`` — pure judgement over already-fetched rows.
@@ -141,59 +146,87 @@ def _judge(
     tolerance: float,
     result_rows: list[dict[str, Any]],
 ) -> tuple[ValidationStatus, str, dict[str, Any]]:
-    """The contract judgement (ADR-0017): ``deviation <= tolerance``.
+    """The contract judgement (ADR-0017, per-leg since DAT-852).
 
-    Every validation SQL returns ONE row with a non-negative numeric
-    ``deviation`` (0 = perfectly satisfied) and a ``magnitude`` (the reference
-    scale severity is judged against). PASSED/FAILED is the judged measurement.
-    ERROR means INCONCLUSIVE: the SQL ran but did not honor the contract (no
-    row, or no numeric ``deviation``). Inconclusive is never FAILED — it would
-    pollute the ``cross_table_consistency`` failure measurements (DAT-439).
+    Every returned row is one independently-judged subject carrying a
+    non-negative numeric ``deviation`` (0 = perfectly satisfied) and a
+    ``magnitude`` (the reference scale severity is judged against); a
+    multi-subject check labels each row with ``leg``. EVERY row is judged
+    (``deviation <= tolerance``) and the WORST row decides — the pre-DAT-852
+    silent ``result_rows[0]`` pick judged an arbitrary leg, and the pooled
+    alternative (SUM over legs) diluted a broken relationship below tolerance.
+
+    PASSED/FAILED is the judged measurement. ERROR means INCONCLUSIVE: the SQL
+    ran but did not honor the contract (no rows, or ANY row without a numeric
+    ``deviation`` — one malformed leg makes the whole measurement unjudgeable;
+    a partial verdict would silently hide that leg). Inconclusive is never
+    FAILED — it would pollute the ``cross_table_consistency`` failure
+    measurements (DAT-439).
 
     Returns ``(status, message, details)``; ``details`` carries the flat
-    ``deviation``/``magnitude``/``tolerance`` the entropy scorer reads.
+    ``deviation``/``magnitude``/``tolerance`` of the WORST row (the entropy
+    scorer's unchanged contract) plus, for multi-row results, the full
+    per-leg breakdown under ``legs``.
     """
+    label = check_type or "validation"
     if not result_rows:
         return (
             ValidationStatus.ERROR,
-            f"{check_type or 'validation'} check inconclusive: query returned no rows",
+            f"{label} check inconclusive: query returned no rows",
             {"check_type": check_type},
         )
 
-    row = result_rows[0]
-    raw_deviation = row.get("deviation")
-    if raw_deviation is None:
-        return (
-            ValidationStatus.ERROR,
-            f"{check_type or 'validation'} check inconclusive: SQL did not return the "
-            f"contracted 'deviation' column (got {list(row.keys())})",
-            {"check_type": check_type, "row": row},
-        )
-    try:
-        deviation = abs(float(raw_deviation))
-        # magnitude falls back so the scorer's deviation/magnitude never divides
-        # by zero: a 0/absent magnitude falls to the deviation itself, then 1.0.
-        magnitude = abs(float(row.get("magnitude") or 0)) or deviation or 1.0
-    except TypeError, ValueError:
-        return (
-            ValidationStatus.ERROR,
-            f"{check_type or 'validation'} check inconclusive: non-numeric deviation "
-            f"{raw_deviation!r}",
-            {"check_type": check_type, "row": row},
+    judged: list[dict[str, Any]] = []
+    for index, row in enumerate(result_rows):
+        raw_deviation = row.get("deviation")
+        if raw_deviation is None:
+            return (
+                ValidationStatus.ERROR,
+                f"{label} check inconclusive: row {index + 1} did not return the "
+                f"contracted 'deviation' column (got {list(row.keys())})",
+                {"check_type": check_type, "row": row},
+            )
+        try:
+            deviation = abs(float(raw_deviation))
+            # magnitude falls back so the scorer's deviation/magnitude never
+            # divides by zero: a 0/absent magnitude falls to the deviation
+            # itself, then 1.0.
+            magnitude = abs(float(row.get("magnitude") or 0)) or deviation or 1.0
+        except TypeError, ValueError:
+            return (
+                ValidationStatus.ERROR,
+                f"{label} check inconclusive: non-numeric deviation "
+                f"{raw_deviation!r} (row {index + 1})",
+                {"check_type": check_type, "row": row},
+            )
+        leg = row.get("leg")
+        judged.append(
+            {
+                "leg": str(leg) if leg is not None else f"row {index + 1}",
+                "deviation": deviation,
+                "magnitude": magnitude,
+            }
         )
 
-    passed = deviation <= tolerance
+    # max() keeps the FIRST maximal row — deterministic on ties.
+    worst = max(judged, key=lambda j: float(j["deviation"]))
+    passed = float(worst["deviation"]) <= tolerance
     status = ValidationStatus.PASSED if passed else ValidationStatus.FAILED
-    return (
-        status,
-        f"{check_type or 'validation'}: deviation {deviation:.6g} (tolerance {tolerance:.6g})",
-        {
-            "check_type": check_type,
-            "deviation": deviation,
-            "magnitude": magnitude,
-            "tolerance": tolerance,
-        },
-    )
+    details: dict[str, Any] = {
+        "check_type": check_type,
+        "deviation": worst["deviation"],
+        "magnitude": worst["magnitude"],
+        "tolerance": tolerance,
+    }
+    if len(judged) > 1:
+        details["legs"] = judged
+        message = (
+            f"{label}: worst leg {worst['leg']!r} deviation {worst['deviation']:.6g} "
+            f"(tolerance {tolerance:.6g}; {len(judged)} legs judged)"
+        )
+    else:
+        message = f"{label}: deviation {worst['deviation']:.6g} (tolerance {tolerance:.6g})"
+    return (status, message, details)
 
 
 __all__ = [

@@ -83,6 +83,31 @@ class TestEvaluateResultDetails:
         assert "inconclusive" in message
         assert "deviation" in message
 
+    def test_multi_leg_flat_details_are_the_worst_leg(self) -> None:
+        """DAT-852: the entropy scorer's flat contract is the WORST leg's numbers,
+        and the full per-leg breakdown rides ``legs`` — never a pooled number."""
+        spec = _eval_spec("aggregate", tolerance=0.02)
+        rows = [
+            {"leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0},
+            {"leg": "txns.vendor_id->vendors.id", "deviation": 0.315, "magnitude": 1.0},
+        ]
+        status, message, details = evaluate_result(spec, rows)
+        assert status == ValidationStatus.FAILED
+        assert details["deviation"] == 0.315
+        assert details["magnitude"] == 1.0
+        assert details["legs"] == [
+            {"leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0},
+            {"leg": "txns.vendor_id->vendors.id", "deviation": 0.315, "magnitude": 1.0},
+        ]
+        assert "txns.vendor_id->vendors.id" in message
+        assert "2 legs judged" in message
+
+    def test_single_row_details_carry_no_legs_breakdown(self) -> None:
+        spec = _eval_spec("balance", tolerance=0.01)
+        _, message, details = evaluate_result(spec, [{"deviation": 0.0, "magnitude": 1.0}])
+        assert "legs" not in details
+        assert "leg" not in message
+
 
 class TestEvaluateValidation:
     """The on-demand wrapper: re-run sql_used (contracted output), then judge.

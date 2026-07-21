@@ -2,7 +2,7 @@
 
 Seeds one controlled, fully-promoted workspace (deterministic — no pipeline, no
 LLM), materializes the read views + the property graph exactly as the engine
-bootstrap does, then exercises the P1 acceptance criteria on the live SQL/PGQ
+bootstrap does, then exercises the acceptance criteria on the live SQL/PGQ
 engine:
 
 * the graph binds over the ``current_*`` views (element views + CREATE PROPERTY
@@ -21,7 +21,7 @@ engine:
   never re-enters its source) and the walk terminates, and the fixed-depth PGQ
   unroll agrees with the closure at the same depth;
 * the drop-before-refresh bootstrap is idempotent across a re-boot;
-* the P2 grounding reification (DAT-727): ``current_groundings`` membership
+* the grounding reification (DAT-727): ``current_groundings`` membership
   (graph-authored extracts only — the cockpit's query rows never surface), the
   Grounding vertex set incl. the ``failed`` discriminator, the clause-parts
   round-trip (parity vs ``compose_extract_sql``), ``grounded_by`` with the
@@ -339,7 +339,7 @@ def _seed(engine: Engine) -> None:
             conn.execute(text(s))
 
 
-# Grounding fixtures (P2 / DAT-727): the snippet-KB rows current_groundings
+# Grounding fixtures (DAT-727): the snippet-KB rows current_groundings
 # surfaces and og_grounding reifies. Each spec is (snippet_id, standard_field,
 # statement, relation, select_expr, where[], provenance, failed) — sql + parts
 # are produced by the REAL render path (compose_extract_sql / extract_parts_dict),
@@ -434,7 +434,7 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
 
 
 def _grounding_stmts() -> list[str]:
-    """INSERT statements for the P2 grounding fixtures (see ``_SNIPPETS``)."""
+    """INSERT statements for the grounding fixtures (see ``_SNIPPETS``)."""
     import json
 
     from dataraum.graphs.formula_composer import compose_extract_sql, extract_parts_dict
@@ -539,7 +539,7 @@ def _graph_ref() -> str:
 
 
 def test_measure_column_matches_its_materialization(graph_engine: Engine) -> None:
-    """The P1 AC MATCH: every measure column → its stock/flow materialization."""
+    """The headline MATCH: every measure column → its stock/flow materialization."""
     sql = (
         f"SELECT column_name, materialization FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (c IS column_node WHERE c.semantic_role = 'measure') "
@@ -609,7 +609,7 @@ def test_enriched_view_columns_carry_source_resolved_semantics(graph_engine: Eng
     assert rows == {
         # f.* passthrough measure: its OWN id (ec_amt, NOT the typed c_amt), semantics
         # resolved through source c_amt → measure + flow. This is what a MATCH-driven
-        # GraphAgent (P9) and the cadence resolver (DAT-812) will read off the view.
+        # GraphAgent and the cadence resolver (DAT-812) will read off the view.
         ("ec_amt", "amount", "measure", "flow"),
         # joined dim column: surfaces with its own id; source c_at is unannotated → NULL.
         ("ec_at", "account_id__account_type", None, None),
@@ -762,7 +762,8 @@ def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:
 def test_concept_edge_disjoint_with_matches(graph_engine: Engine) -> None:
     """DAT-729: the concept→concept binding — a disjoint_with edge is enumerable via PGQ.
 
-    This is the P4 de-risk: P1 bound only table→table and table→column edges; a concept
+    This is the concept-edge de-risk: the graph previously bound only table→table and
+    table→column edges; a concept
     edge over the og_concepts vertex is a new element shape. A directed MATCH filtering on
     the predicate property must return both stored directions of the symmetric edge.
     """
@@ -797,7 +798,7 @@ def test_concept_edge_part_of_matches(graph_engine: Engine) -> None:
 def _part_of_closure(conn, read: str, start: str) -> list[tuple[str, int]]:
     """Bounded recursive-CTE ancestor closure over the part_of concept edges.
 
-    The P1 mechanism (test_property_graph ``_closure_from``) applied to the concept_edge
+    The same mechanism as ``_closure_from`` above, applied to the concept_edge
     view: depth < 4 caps traversal, ``NOT to_concept_id = ANY(path)`` is the cycle guard,
     ``predicate = 'part_of'`` selects the one relation. Returns (ancestor_id, depth).
     """
@@ -816,7 +817,7 @@ def _part_of_closure(conn, read: str, start: str) -> list[tuple[str, int]]:
 
 
 def test_part_of_closure_walks_ancestors_and_guards_cycle(graph_engine: Engine) -> None:
-    """part_of ancestry via the recursive CTE: transitive ancestors, cycle-guarded (P4 AC).
+    """part_of ancestry via the recursive CTE: transitive ancestors, cycle-guarded.
 
     From comp_a the closure reaches its transitive wholes comp_b (depth 1) and comp_c
     (depth 2); the back edge comp_c→comp_a does NOT re-enter comp_a — the cycle guard
@@ -828,7 +829,7 @@ def test_part_of_closure_walks_ancestors_and_guards_cycle(graph_engine: Engine) 
     assert "cmp_a" not in {dst for dst, _ in rows}  # cycle guard blocked the back edge
 
 
-# --- Grounding reification (P2 / DAT-727) -----------------------------------------
+# --- Grounding reification (DAT-727) ----------------------------------------------
 
 
 def test_current_groundings_is_graph_authored_extracts_only(graph_engine: Engine) -> None:
@@ -869,7 +870,7 @@ def test_grounding_vertices_carry_the_failed_discriminator(graph_engine: Engine)
 
 
 def test_grounding_parts_round_trip_vs_compose_extract_sql(graph_engine: Engine) -> None:
-    """The P2 parity AC: the vertex properties (relation / select_expr /
+    """The parity AC: the vertex properties (relation / select_expr /
     where_predicates) re-render through compose_extract_sql to EXACTLY the
     snippet's persisted sql — the graph is a lossless reading of the parts."""
     import json
@@ -921,7 +922,7 @@ def test_grounded_by_enumerates_each_concepts_groundings(graph_engine: Engine) -
 
 
 def test_multi_grounding_concepts_are_enumerable(graph_engine: Engine) -> None:
-    """The P2 multi-grounding AC (the finance ws shape): account_balance holds
+    """The multi-grounding AC (the finance ws shape): account_balance holds
     TWO healthy groundings — trial_balance and balance_sheet — and a plain
     aggregate over the PGQ match surfaces exactly it. revenue's second row is
     a retained FAILURE, which the vertex filter excludes: failure retention
@@ -981,7 +982,7 @@ def test_derived_reconciles_with_self_loop_resolves_in_the_graph(graph_engine: E
 
 
 def test_concept_groundings_and_their_columns_in_one_match(graph_engine: Engine) -> None:
-    """The P2 headline AC verbatim: per concept, all its groundings and the
+    """The headline AC verbatim: per concept, all its groundings and the
     columns each uses — one 2-hop PGQ MATCH."""
     sql = (
         f"SELECT sid, cname FROM GRAPH_TABLE ({_graph_ref()} "

@@ -41,11 +41,11 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Seven edges: refs, has_dimension, derived_from (P1), concept_edge (DAT-729),
+    # Seven edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
     # conformed_dimension (DAT-756), grounded_by + uses (DAT-727).
     assert graph_sql.count("SOURCE KEY") == 7
     assert graph_sql.count("DESTINATION KEY") == 7
-    # The measure→materialization MATCH (the P1 AC) reads these vertex properties.
+    # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
     assert "KEY (concept_id) LABEL concept_node" in graph_sql

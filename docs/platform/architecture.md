@@ -26,7 +26,7 @@ flowchart TB
     subgraph EWk["Engine container(s) — Python"]
         direction TB
         Worker["Temporal worker — workflows + activities<br/>(engine-&lt;workspace&gt; queue)"]
-        Phases["20 pipeline phases<br/>typing · stats · semantic · …"]
+        Phases["19 pipeline phases<br/>typing · stats · semantic · …"]
     end
 
     User --> UI --> Agent
@@ -42,9 +42,11 @@ flowchart TB
   call back into. ([ADR-0004](../adr/0004-agent-tier-boundary.md): agentic LLM lives in
   the cockpit; [ADR-0020](../adr/0020-workflows-python-cockpit-activity-only.md): no
   workflow code in the cockpit.)
-- **The engine** is the **durable analysis tier**. It is a pure **Temporal worker** —
-  it has no HTTP server and no API. It hosts every workflow and runs the
-  deterministic, long-running analysis, writing results to Postgres. ([ADR-0002](../adr/0002-engine-no-http-transport.md): engine is a pure activity worker, no HTTP/MCP transport.)
+- **The engine** is the **durable analysis tier**. It is a **Temporal worker** and nothing
+  else — no HTTP server, no API. It hosts every workflow *and* the activities they call,
+  and runs the deterministic, long-running analysis, writing results to Postgres.
+  ([ADR-0002](../adr/0002-engine-no-http-transport.md): no HTTP or MCP transport on the
+  engine.)
 
 There is **no shared process state** between them. The cockpit and engine talk only
 through the substrate: Postgres for metadata, Temporal for work.
@@ -146,9 +148,9 @@ flowchart TB
     end
 ```
 
-Each workspace runs its **own engine container** and its **own cockpit container**
-(DD/51740673). The engine bootstraps that workspace's connection manager and DuckLake
-anchor at startup and polls exactly its own queue (`engine-<id>`); the cockpit boots with
+Each workspace runs its **own engine container** and its **own cockpit container**. The
+engine bootstraps that workspace's connection manager and DuckLake anchor at startup and
+polls exactly its own queue (`engine-<id>`); the cockpit boots with
 a single workspace identity (`DATARAUM_WORKSPACE_ID`) and never resolves the workspace
 per request — its activity worker polls `cockpit-<id>`, and every `cockpit_db` query is
 scoped to the boot workspace. Adding a workspace is, mechanically, a registry row plus
@@ -162,8 +164,8 @@ Caddy is the installation's one ingress: each workspace's cockpit is served on i
 subdomain (`ws1.<domain>`), and the bare parent domain serves the **portal** — the same
 cockpit image in a second role (`DATARAUM_PORTAL_MODE=1`) that owns login and membership
 routing. Caddy routes are `@id`-tagged and managed through its admin API
-(`src/portal/caddy.ts`), which is the seam the provisioner (DAT-820) uses to make a
-workspace reachable.
+(`src/portal/caddy.ts`), which is the seam the provisioner uses to make a workspace
+reachable.
 
 Identity is **better-auth**, self-hosted in `cockpit_db` (its `user` table *is* the
 `users` table; `memberships` FKs onto it). The portal issues the session cookie on the
@@ -185,10 +187,12 @@ A default local stack is:
 | `cockpit` (+ `cockpit-migrate`) | workspace 1's web app + its co-located activity-only worker; migrations run once first |
 | `caddy` | the ingress: per-workspace subdomains + the portal's parent domain (`caddy/caddy.json`; admin API = the provisioner seam) |
 | `portal` | the cockpit image in portal mode — login + membership routing on the parent domain |
+| `otel-lgtm` | the dev telemetry backend — an OTLP collector (`:4317` gRPC, `:4318` HTTP) with Grafana on `:3001`. Both workers export to it; the endpoint env var is the vendor seam, and unsetting it turns telemetry off ([ADR-0019](../adr/0019-observability-opentelemetry.md)) |
 
-That is the complete installation, and it defines exactly **one** workspace pair — the
-bootstrap workspace. Compose grows no further per workspace: the provisioner clones this
-pair's recorded container config for every workspace created through the portal.
+No service sits behind a compose profile, so this is what a plain `up` starts. That is the
+complete installation, and it defines exactly **one** workspace pair — the bootstrap
+workspace. Compose grows no further per workspace: the provisioner clones this pair's
+recorded container config for every workspace created through the portal.
 
 The engine has **no healthcheck port** — its health is the Temporal worker heartbeat, not
 an HTTP probe. See [Running the stack](../getting-started/running-the-stack.md) to bring

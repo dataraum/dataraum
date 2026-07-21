@@ -108,7 +108,7 @@ def test_empty_table_set_is_a_noop(session: Session) -> None:
 def test_table_grain_readiness_round_trip(session: Session) -> None:
     """A table-scoped dimension_coverage object rolls up to a banded ``table:`` row (DAT-415).
 
-    Proves the P4 round-trip: a ``table:`` entropy object rolls up the network
+    Proves the round-trip: a ``table:`` entropy object rolls up the network
     (dimension_coverage → query/reporting intents), persists with the table FK and
     NO column FK, and ``load_table_readiness`` reads it back via the catalog head.
     """
@@ -162,7 +162,7 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
 
 
 class TestRunResolvedLoad:
-    """Per (target, detector): current run > catalog head > table heads (review C2).
+    """Per (target, detector): current run > catalog head > table heads.
 
     temporal_behavior is the first detector on BOTH detect paths; a blind load
     let the stale add_source conflict outlive its session-detect re-adjudication

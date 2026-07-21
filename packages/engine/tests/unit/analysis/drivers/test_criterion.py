@@ -1,6 +1,6 @@
-"""DAT-545 P1 — the split criterion + (A)/(B) null gates.
+"""DAT-545 — the split criterion + (A)/(B) null gates.
 
-Criterion-level only (no permutation null yet — that's the tree, P2): the gain
+Criterion-level only (no permutation null yet — that's ``tree.py``): the gain
 ranks a planted driver above an independent null, the (A) gate drops dim-null rows,
 the (B) gate closes the measure-conditional-missingness leak, and min-support
 suppresses a tiny-group dimension.

@@ -20,11 +20,11 @@ Versioning contract (DAT-408/413 + ADR-0008):
   ``current_*`` view generator covers it with the standard head join; no
   reader needs hand-rolled head resolution.
 
-Provenance lives ON the row (refine decision D2 — no edge table in slice 1):
+Provenance lives ON the row — there is no separate edge table:
 ``grounded_against`` snapshots the pinned base-run map the artifact was bound
 against, ``teaches`` names what produced it (spec id, vertical, spec version),
 ``strictness`` records the journey parameter (nullable — frame does not write
-it yet, and nothing gates on it; refine decision D3).
+it yet, nothing gates on it, and no default is invented for it).
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ class LifecycleArtifact(Base):
     state: Mapped[str] = mapped_column(String, nullable=False)
     state_reason: Mapped[str | None] = mapped_column(Text)
 
-    # Provenance (refine decision D2: on the row, no edge table in slice 1)
+    # Provenance: carried on the row itself, no edge table
     stage: Mapped[str] = mapped_column(String, nullable=False)
     strictness: Mapped[float | None] = mapped_column(Float)
     grounded_against: Mapped[dict[str, Any] | None] = mapped_column(JSON)

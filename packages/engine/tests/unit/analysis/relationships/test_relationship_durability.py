@@ -257,7 +257,7 @@ def test_relationship_readiness_excludes_suppressed(session: Session) -> None:
     assert load_relationship_readiness(session) == []
 
 
-# --- Materialize-from-overlay (DAT-409 C2) ---------------------------------------
+# --- Materialize-from-overlay (DAT-409) ------------------------------------------
 
 
 def _overlay(session: Session, action: str, frm: str, to: str) -> None:
@@ -627,7 +627,7 @@ def test_materialize_skips_endpoint_outside_selection(session: Session) -> None:
     assert _materialized(session) == []
 
 
-# --- Silent-accept keeper writer (DAT-409 C3) ------------------------------------
+# --- Silent-accept keeper writer (DAT-409) ------------------------------------
 
 
 def _seed_prior_promoted_run(session: Session, run_id: str) -> None:

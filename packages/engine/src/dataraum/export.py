@@ -50,8 +50,9 @@ def export_sql(
         duckdb_conn: DuckDB connection.
         output_path: Destination file path (extension auto-corrected).
         fmt: Export format — csv or parquet.
-        sidecar: Caller-provided metadata dict for the .meta.json file.
-            Typically the MCP tool result minus rows/data.
+        sidecar: Caller-provided metadata dict for the .meta.json file —
+            the query's result envelope (provenance, column types, caveats)
+            minus the rows themselves.
 
     Returns:
         Path to the exported data file.

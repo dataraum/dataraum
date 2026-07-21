@@ -57,7 +57,8 @@ export interface MessageEntry {
 }
 
 /** The chat type (DAT-528) — set at create, immutable. Binds the toolstack +
- * system prompt ("skill"); the binding lands in S2, S1 stores + routes by it. */
+ * system prompt ("skill") through `tools/registry.ts` `toolsByKind`; stored here
+ * and used to route runs by conversation. */
 export type ConversationKind = "connect" | "stage" | "analyse";
 
 /** How many recent conversations the history list shows. Bounded (DD/36667393:
@@ -72,8 +73,8 @@ export interface ConversationSummary {
 	lastActiveAt: Date;
 }
 
-/** A conversation as the chat route hydrates it (kind drives the toolstack in
- * S2; workspaceId anchors the FK reads). */
+/** A conversation as the chat route hydrates it (kind drives the toolstack via
+ * `toolsByKind`; workspaceId anchors the FK reads). */
 export interface ConversationRow {
 	id: string;
 	workspaceId: string;
@@ -153,7 +154,7 @@ export async function getConversation(
 /**
  * Set a conversation's history label ONCE, from the first user message (DAT-528).
  * The `title IS NULL` guard makes it first-write-wins + idempotent — a later turn
- * never overwrites it, and a Haiku summary (S4) can replace this slice. Bumped
+ * never overwrites it, and a generated summary could replace this slice. Bumped
  * via a conditional UPDATE so no read-modify-write race. Best-effort: title is
  * cosmetic, so a failure is swallowed (never fail a turn over a label).
  */

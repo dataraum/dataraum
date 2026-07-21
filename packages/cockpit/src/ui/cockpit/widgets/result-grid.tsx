@@ -1,4 +1,4 @@
-// Result-grid widget (DAT-385 P2 grid + P3 server-side sort + DAT-613 windowed
+// Result-grid widget (DAT-385 grid + server-side sort + DAT-613 windowed
 // paging) — the human-facing SQL result surface.
 //
 // Splits cleanly in four:
@@ -114,7 +114,7 @@ export function cycleSort(
 
 /** Pure presentation of a (possibly still-filling / still-paging) GridView.
  *
- * `sort` + `onToggleSort` make the column headers interactive (DAT-385 P3): a
+ * `sort` + `onToggleSort` make the column headers interactive (DAT-385): a
  * click asks the OWNER to re-issue the query with a new server-side sort. The
  * view itself never reorders rows — sort runs across the full result, server-
  * side. `onReachEnd` (DAT-613) fires when the virtualized body scrolls within an
@@ -239,7 +239,7 @@ export function ResultGridView({
 	// index rows make this the intended, cheap path. `initialRect` gives a sane
 	// window before the real ResizeObserver measurement (and in tests, which have
 	// no layout). Rows are uniform-height text, so a fixed estimate is fine — no
-	// per-row measureElement (P3 can add it if variable heights ever land).
+	// per-row measureElement (add it if variable heights ever land).
 	const rows = table.getRowModel().rows;
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const rowVirtualizer = useVirtualizer({

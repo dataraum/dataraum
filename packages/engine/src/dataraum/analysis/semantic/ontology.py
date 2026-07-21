@@ -64,8 +64,8 @@ class OntologyComposition(BaseModel):
     transitive closure (all ancestors of a concept) is a bounded recursive CTE.
 
     This is the concept-grain composition ONLY — the account-instance chart-of-accounts
-    tree is the physical ``references`` topology (P1) and the dimension-member roll-up
-    is ``rolls_up_to`` (P5); neither is re-expressed here.
+    tree is the physical ``references`` topology and the dimension-member roll-up
+    is ``rolls_up_to``; neither is re-expressed here.
     """
 
     whole: str  # the composite concept

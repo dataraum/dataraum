@@ -5,8 +5,9 @@
 //
 //   - DEFAULT_ROW_LIMIT — applied when the caller passes no `limit`. Sized for
 //     the AGENT's in-context JSON sample (a few hundred/thousand rows), NOT the
-//     human-facing streaming grid (that path has its own, larger default — see
-//     `plans/run-sql-streaming-design.md` §5.5).
+//     human-facing streaming grid: nothing there lands in a context window, so
+//     it is bounded per scroll-window instead (GRID_PAGE_SIZE / GRID_MAX_PAGE in
+//     `duckdb/grid-query.ts`), not by these two numbers.
 //   - HARD_ROW_CEILING — a server-side clamp applied REGARDLESS of the requested
 //     size, so an agent asking for `limit: 10_000_000` still can't trigger an
 //     unbounded materialization into the chat context.

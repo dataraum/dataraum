@@ -171,7 +171,7 @@ class TestRunGrainGate:
 
 
 def test_entropy_readiness_two_conflicting_bands_latest_promoted_wins() -> None:
-    """The L3 precedence AC: when the SAME target has an ``entropy_readiness`` row
+    """Catalog-grain precedence: when the SAME target has an ``entropy_readiness`` row
     promoted under the ``catalog`` head AND another under ``operating_model``,
     ``current_entropy_readiness`` returns EXACTLY ONE row — the latest-promoted.
 

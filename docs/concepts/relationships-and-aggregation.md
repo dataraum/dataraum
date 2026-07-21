@@ -59,11 +59,8 @@ The claim: is a measure column a **flow** (a per-period movement, summable acros
 or a **stock** (a carried-forward level, like a balance)? The distinction decides how the
 column may be aggregated — summing a stock across periods double-counts it.
 
-Three witnesses pool over the claim space {stock, flow}:
+Two witnesses pool over the claim space {stock, flow}:
 
-- **the concept's declared temporal behaviour** — the ontology prior, with its strength
-  scaled by the grounding confidence: a contested grounding weakens the prior instead of
-  hiding the contest,
 - **the LLM's independent read** of the column — name, table context, sample values,
 - **structural reconciliation** — the data witness. Where a measure aggregates an event
   table, the engine compares the measure's period series `y[t]` with the per-period net
@@ -73,20 +70,36 @@ Three witnesses pool over the claim space {stock, flow}:
   anchor — wrong entity, wrong join, wrong period — rather than a verdict), when the
   series is shorter than four periods, or when too few entities agree.
 
-The data witness exists because the other two read the name: on ambiguously named columns
-they fail together, and calibration shows their accuracy falls to chance there. Only a
-witness whose input is the data can dissent in that case.
+The concept's declared behaviour is deliberately not a witness. The same concept
+materializes as a flow in one table and a stock in another — a periodic movement column and
+a period-end level column can both ground *account balance* — so the vocabulary has nothing
+to declare here. Stock or flow is decided from the data.
 
-The pooled verdict is recorded on the column — `additive` or `point_in_time`, with a
-contested flag when witnesses disagree — and aggregation follows it: metrics and
-[drivers](operating-model.md#the-parts) sum a flow over the period and take a stock at the
-period's level. The same reconciliation pass also checks sum-consistency across fact
+The reconciliation exists because the alternative reads the name, and on an ambiguously
+named column a name-reader is confidently wrong — calibration puts its accuracy there at
+chance. Only a witness whose input is the data can dissent in that case, which is why it
+carries the verdict when the two disagree: an LLM read landing on the opposite side of the
+line from a reconciliation that fired is overruled rather than pooled against it. A reading
+that agrees corroborates and lowers the remaining ignorance; where no lineage reconciled —
+every add_source run, and any measure with no event table behind it — the LLM read stands
+alone.
+
+The pooled verdict is recorded on the column as `additive` or `point_in_time`, and
+aggregation follows it: metrics and [drivers](operating-model.md#the-parts) sum a flow over
+the period and take a stock at the period's level. Only the verdict is carried; a
+disagreement between the two reads is logged where it is resolved, not propagated as a
+doubt flag downstream. The same reconciliation pass also checks sum-consistency across fact
 tables that share a slice dimension, so a measure reported by two sources is compared
 per slice value and period rather than assumed to agree.
 
-## Correcting either
+## Correcting them
 
-Both claims accept teaches: a `relationship` teach adds or confirms a join; a
-`concept_property` or `rebind` teach corrects a column's temporal behaviour. As with every
-teach, the correction enters the pool as a witness and the claim is re-adjudicated on the
-next run — see [frame, ground, teach](frame-ground-teach.md).
+The join claim accepts a teach: a `relationship` teach confirms, rejects, or adds one. Like
+every teach, it enters the pool as a witness and the claim is re-adjudicated on the next run
+— see [frame, ground, teach](frame-ground-teach.md).
+
+Temporal behaviour has **no** teach, deliberately. It is decided from the data, so there is
+no format for a person to declare — a column that resolves to the wrong behaviour is a
+column that is grounded wrongly (the wrong join, the wrong anchor), and it is corrected
+there. Offering a "behaviour" button off the disagreement would put a name-based override on
+top of the one witness that read the data.

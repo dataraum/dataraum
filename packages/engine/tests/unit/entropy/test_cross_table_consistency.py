@@ -91,7 +91,7 @@ class TestScore:
 
     def test_failed_critical_is_categorical(self) -> None:
         # A CRITICAL identity failing beyond tolerance scores 1.0 regardless of
-        # the relative magnitude (L7): a 10% TB↔GL break scored as a rate was
+        # the relative magnitude: a 10% TB↔GL break scored as a rate was
         # invisible below the band while every GL deliverable was provably wrong.
         v = _verdict(ValidationStatus.FAILED, deviation=50_000, magnitude=50_000_000)
         assert ctc._score(v, "critical") == 1.0
@@ -179,7 +179,7 @@ class TestDetectFailures:
 
 
 class TestColumnFanOut:
-    """Failed checks band the columns their SQL touched (L7).
+    """Failed checks band the columns their SQL touched.
 
     The band must reach the columns deliverable metrics flow through — a
     ``table:`` row joins to nothing downstream (scoreboard baseline:

@@ -66,9 +66,10 @@ enforced by grants.** Concretely:
 - **Forbidden**: new readers querying raw run-stamped tables for current state;
   cockpit grants on the raw schema; views inside detect/measurement runs.
 - View coverage tracks the version axis: tables without `run_id`
-  (`SliceDefinition`, `ColumnDriftSummary`, `DerivedColumn`) cannot get a
-  `current_*` view until DAT-448 stamps them — closing that gap is a prerequisite,
-  not a parallel track.
+  (`SliceDefinition`, `DerivedColumn`) cannot get a `current_*` view until DAT-448
+  stamps them — closing that gap is a prerequisite, not a parallel track. (Both are
+  stamped and covered today: `current_slice_definitions` / `current_derived_columns`
+  in `schema_read.sql`.)
 - Follow-ups / risks: verify the cockpit's pinned `drizzle-kit` supports view
   introspection on `pull`; workspace bootstrap must create the read schema and
   grant the cockpit role per new `ws_<id>`; eval's score read moves to
@@ -85,13 +86,15 @@ enforced by grants.** Concretely:
   `current_*` views for the cockpit (the role grants make those the only
   expressible reads).
 - **A minimal control-plane write surface exists alongside the read schema**:
-  the cockpit legitimately WRITES three un-versioned control tables (`sources`,
-  `investigation_sessions`, `config_overlay` — registering a source, opening a
-  session, teaching). The reader role carries exactly those verbs on exactly
-  those tables (column-level UPDATE on `sources` for the select upsert); all
-  run-stamped tables remain unreachable raw.
+  the cockpit legitimately WRITES un-versioned control tables — `sources`
+  (registering a source), `config_overlay` (teaching), `concepts` (DAT-728),
+  `sql_snippets` (DAT-486). A separate `<ws>_writer` role carries exactly those
+  verbs on exactly those tables (`_CONTROL_WRITE_GRANTS`; column-level UPDATE on
+  `sources` for the select upsert); all run-stamped tables remain unreachable raw.
+  (`investigation_sessions` was on this list until DAT-506 dropped the table —
+  run-grouping is the cockpit's own concern, in `cockpit_db`.)
 - **Dual-grain artifacts carry discriminators**: `entropy_objects` /
   `entropy_readiness` are written by BOTH detect paths, so after
   add_source + begin_session a column has two legitimately-current rows;
-  `current_*` exposes `via_table_head` / `via_session_head` for consumers to
-  pin a grain.
+  `current_*` exposes `via_table_head` / `via_catalog_head` /
+  `via_operating_model_head` for consumers to pin a grain.

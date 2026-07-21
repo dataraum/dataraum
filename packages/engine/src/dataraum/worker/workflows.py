@@ -828,7 +828,7 @@ class OperatingModelWorkflow:
             retry_policy=_LLM_RETRY,
         )
 
-        # Terminal-for-evidence detect (DAT-432/L7): score this run's executed
+        # Terminal-for-evidence detect (DAT-432): score this run's executed
         # validation results (cross_table_consistency → table + column bands)
         # and persist readiness BEFORE the LLM-heavy families. NOTE: the rows
         # become visible to head-resolved readers only at the terminal promote

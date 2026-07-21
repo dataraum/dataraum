@@ -17,7 +17,7 @@ Two numpy primitives the tree is built from:
 - :func:`variance_reduction` is the FLOW gain: the fraction of the measure's
   variance explained by the grouping, over groups that clear ``min_support``.
   ``stock`` measures use the same row-grain reduction (additivity-respecting
-  because it never sums); ``ratio`` has its own support-weighted gain (DAT-545 P4).
+  because it never sums); ``ratio`` has its own support-weighted gain (DAT-545).
 
 The magnitude is never compared to a global threshold — the tree RANKS by it and
 gates significance with a within-dataset permutation null (see ``tree.py``).
@@ -148,7 +148,7 @@ def intraclass_correlation(
     """ICC of the measure within an entity = η² of the measure BY the entity.
 
     The fraction of the measure's variance that sits BETWEEN entities — exactly
-    :func:`variance_reduction` with the entity as the grouping (DAT-544 E2). It
+    :func:`variance_reduction` with the entity as the grouping (DAT-544). It
     decides whether the row-wise permutation null is valid: rows are exchangeable
     only when this is ≈0; a high ICC (per-entity-level measure) means the cluster,
     not the row, is the exchangeable unit (DAT-552). Uses a small ``min_entity_rows``
@@ -166,7 +166,7 @@ def weighted_variance_reduction(
     *,
     min_support: int = DEFAULT_MIN_SUPPORT,
 ) -> float:
-    """Support-weighted variance reduction for a RATIO measure (DAT-545 P4).
+    """Support-weighted variance reduction for a RATIO measure (DAT-545).
 
     A ratio ``R = Σnum / Σden`` is the weight-``den`` mean of the per-row ratios
     ``r = num/den`` — so the explained fraction is a *weighted* variance reduction of

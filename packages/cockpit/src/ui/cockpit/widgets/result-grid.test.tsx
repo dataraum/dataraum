@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-// Render tests for the PURE ResultGridView (DAT-385 P2). Pre-seed a ColumnStore
+// Render tests for the PURE ResultGridView (DAT-385). Pre-seed a ColumnStore
 // (exactly what the live stream folds into) and assert the layout-INDEPENDENT
 // shell: the grid container, the (non-virtualized) header, row-count, status
 // badge, and the truncation/error banners.
@@ -56,7 +56,7 @@ function renderSortable(
 	);
 }
 
-describe("cycleSort (DAT-385 P3 sort state machine)", () => {
+describe("cycleSort (DAT-385 sort state machine)", () => {
 	it("cycles unsorted → asc → desc → unsorted on the same column", () => {
 		expect(cycleSort(null, "amount")).toEqual({ column: "amount", dir: "asc" });
 		expect(cycleSort({ column: "amount", dir: "asc" }, "amount")).toEqual({
@@ -74,7 +74,7 @@ describe("cycleSort (DAT-385 P3 sort state machine)", () => {
 	});
 });
 
-describe("ResultGridView (DAT-385 P2)", () => {
+describe("ResultGridView (DAT-385)", () => {
 	afterEach(() => cleanup());
 
 	it("renders the grid shell: scroll container, headers, row count, done status", () => {
@@ -109,7 +109,7 @@ describe("ResultGridView (DAT-385 P2)", () => {
 		expect(screen.getByText("error")).toBeTruthy();
 	});
 
-	it("fires onToggleSort with the clicked column name (DAT-385 P3)", () => {
+	it("fires onToggleSort with the clicked column name (DAT-385)", () => {
 		const store = seeded();
 		store.apply({ t: "f", rows: 3 });
 		const onToggleSort = vi.fn();

@@ -5,8 +5,8 @@
     converging on. It is kept as a record of intent, not as a description of what
     runs today. Parts of it are built, parts are partial, and parts (the `simulate`
     stage, the `canonical` lifecycle state, the endorsement workflow) are not built
-    at all. **For what the platform actually does today, start at the
-    [Overview](../getting-started/overview.md) and the
+    at all. **For what the platform actually does today, start at
+    [the journey](../concepts/the-journey.md) and the
     [Platform](../platform/architecture.md) section.**
 
 *dataraum — target architecture, May 2026*
@@ -88,9 +88,10 @@ The learnable surface is the set of things the system can be taught about a spec
 !!! note "How this maps to the live set"
     The **implemented** vocabulary is documented in
     [the learnable surface](../concepts/learnable-surface.md), and it differs from this
-    target list in both directions: `validation_exception` and `explanation` are **not
-    built yet**, while three types that exist today — `unit`, `rebind`,
-    `expected_dependency` — postdate this list.
+    target list in both directions. `validation_exception` and `explanation` are **not
+    built yet**; `unit` and `hierarchy` postdate this list; and `concept` /
+    `concept_property` are no longer teaches at all — the concept vocabulary moved to a
+    typed table the frame stage writes directly.
 
 The set is closed *for the agent in the loop*. An agent cannot invent a new kind of thing to teach; it can only fill in the types that exist. A user reviewing the agent's proposals sees the same types. The system, the agent, and the user share one vocabulary. This is the **Goodhart firewall**: the agent can only optimize against signals the closed set was designed to surface.
 

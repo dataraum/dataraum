@@ -38,7 +38,7 @@ class ValidationResultRecord(Base):
     validation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     # The "table.column" names the generated SQL actually touched (LLM-declared
-    # at bind time, DAT-432/L7) — the entropy detector bands these columns when
+    # at bind time, DAT-432) — the entropy detector bands these columns when
     # the recomputed verdict is a failure.
     columns_used: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 

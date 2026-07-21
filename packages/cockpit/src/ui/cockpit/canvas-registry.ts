@@ -1,9 +1,9 @@
-// The one shared widget registry (DAT-347, C1).
+// The one shared widget registry (DAT-347).
 //
-// Single instance the focus canvas resolves against. C1 registers the three
-// baseline widgets. A C2-C6 column lands its widget by adding ONE register()
-// line here — it does not touch FocusCanvas, the stream, or the shell. See
-// README.md for the register-don't-replace contract.
+// Single instance the focus canvas resolves against. A new canvas surface lands
+// its widget by adding ONE register() line here — it does not touch FocusCanvas,
+// the stream, or the shell. See README.md for the register-don't-replace
+// contract.
 
 import { WidgetRegistry } from "#/ui/cockpit/widget-registry";
 import { AnswerResultWidget } from "#/ui/cockpit/widgets/answer-result";

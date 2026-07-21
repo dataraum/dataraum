@@ -62,14 +62,14 @@ are created at :func:`bootstrap_lake` time.
 
 Reserved namespace (do not create dynamically as a workspace schema):
 
-* ``session_*`` — reserved for slice 2 (DAT-356) per-session overlay schemas
-* ``archive_*`` — reserved for slice 2 archived-session schemas
+* ``session_*``, ``archive_*`` — refused as generated schema names
+  (:func:`dataraum.core.duckdb_naming.is_reserved_schema`)
 
 Per-workspace catalog migration: ``LAKE_CATALOG_ALIAS`` is the single point
-where the alias is encoded. If slice 2+ moves to per-workspace ATTACH
-aliases (e.g. ``lake_<workspace_id>``), only the ATTACH and consumers that
-build FQNs from this constant need to change — the layer schemas themselves
-stay workspace-stable.
+where the alias is encoded. Moving to per-workspace ATTACH aliases (e.g.
+``lake_<workspace_id>``) would touch only the ATTACH and the consumers that
+build FQNs from this constant — the layer schemas themselves stay
+workspace-stable.
 """
 
 LAKE_LAYER_SCHEMAS: tuple[str, ...] = ("raw", "typed", "quarantine")

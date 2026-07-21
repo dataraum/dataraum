@@ -1,4 +1,4 @@
-// Unit tests for the pure streaming core (DAT-385 P1). No real DuckDB, no
+// Unit tests for the pure streaming core (DAT-385). No real DuckDB, no
 // native addon — we drive `streamNdjson` with a fake StreamableResult and assert
 // the cap clamp, the chunk→columnar reshaping, and header/batch/footer framing.
 

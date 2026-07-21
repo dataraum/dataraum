@@ -1,4 +1,4 @@
-"""DAT-545 P3 — driver discovery over the real catalog + enriched view.
+"""DAT-545 — driver discovery over the real catalog + enriched view.
 
 End-to-end: seed a fact's grain-verified enriched view in DuckDB (the spike corpus
 + an exact 1:1 alias column) and the begin_session catalog in SQLite

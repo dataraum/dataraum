@@ -665,7 +665,7 @@ class TestComposeMetricFromDag:
 
 
 class TestSaveComposedSnippets:
-    """Per-metric FORMULA/CONSTANT persistence for the cockpit reuse KB (DAT-646 P2).
+    """Per-metric FORMULA/CONSTANT persistence for the cockpit reuse KB (DAT-646).
 
     The warm pass saves only shared EXTRACT leaves; a metric's composed formula/constants
     are persisted here, sourced to ``graph:{graph_id}`` so the cockpit groups them under

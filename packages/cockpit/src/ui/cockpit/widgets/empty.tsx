@@ -1,4 +1,4 @@
-// Empty-canvas widget (DAT-347, C1).
+// Empty-canvas widget (DAT-347).
 //
 // The resting state of the focus canvas: nothing to show yet. Reads theme
 // tokens only — no hardcoded px/hex.

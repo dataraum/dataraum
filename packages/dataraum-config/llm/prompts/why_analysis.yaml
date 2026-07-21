@@ -1,6 +1,6 @@
 # Why Analysis Prompt
 #
-# Translates entropy measurements and BBN network inference into
+# Translates entropy measurements and per-intent loss rollup into
 # domain explanations with actionable teach suggestions. Inspired by
 # the retired entropy_interpretation and quality_summary_batch prompts.
 
@@ -35,14 +35,15 @@ system_prompt: |
   uncertainty). Scores are discretized: low (<0.3), medium (0.3-0.6),
   high (>0.6).
 
-  A Bayesian Belief Network (BBN) combines detector scores into intent
-  readiness — P(high) for query, aggregation, and reporting intents.
-  High P(high) means the data is likely to produce wrong answers for
-  that use case.
+  Per-intent loss tables combine detector scores into intent readiness —
+  a risk score for query, aggregation, and reporting intents. High risk
+  means the data is likely to produce wrong answers for that use case.
+  A pooled measurement feeds its intent's risk directly; there are no
+  hand-set edge weights between detectors.
 
-  **impact_delta** is the causal impact of fixing a specific node —
-  how much P(high) across intents would decrease. Higher = more
-  impactful to fix first.
+  **impact_delta** is the impact of fixing a specific node — how much
+  risk across intents would decrease. Higher = more impactful to fix
+  first.
   </entropy_model>
 
   <teach_types>

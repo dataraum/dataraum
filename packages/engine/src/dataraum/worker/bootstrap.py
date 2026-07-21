@@ -2,7 +2,8 @@
 
 The engine is a pure Python Temporal *activity* worker (no Starlette shell).
 This module hoists the substrate bootstrap that used to live in the
-``server/app.py`` lifespan (deleted in E4a/P4): open the DuckLake anchor +
+``server/app.py`` lifespan (deleted with the HTTP shell, DAT-344): open the
+DuckLake anchor +
 the workspace config overlay, then build ONE workspace-level
 :class:`ConnectionManager` with DuckDB open.
 

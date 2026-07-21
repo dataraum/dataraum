@@ -1,5 +1,6 @@
 // Chat-type availability (DAT-533) — the deterministic state→types mapping the
-// nav switcher reads to dim unavailable types. No LLM (the entry-router is S4):
+// nav switcher reads to dim unavailable types. No LLM here (the entry-router is
+// its own Haiku call, `NAV_MODEL`):
 // a plain function over workspace state. Pure + side-effect-free so the mapping
 // is unit-tested in isolation; the route loader supplies the state (a cockpit_db
 // + metadata read) and renders the result.

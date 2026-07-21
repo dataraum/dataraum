@@ -31,23 +31,23 @@ The architecture is fixed; the work now is fixing bugs and inconsistencies. Don'
 - **In-flight work, plans, design exploration, refinement notes, status** → **the Jira epic/task** (description or an attached `.md`). Closed issue = delete the artifact; the code is the truth, do *not* migrate a closed issue's docs anywhere.
 - **Non-derivable, currently-true, cross-cutting facts with no other home** → agent memory (gotchas, seams, preferences). Not a status board.
 
-**The rule that enforces it: a ticket ID in a filename (`dat-NNN-*.md`) means the file is ephemeral → it belongs in Jira, never committed to the repo and never in memory.** `docs/adr/` is the one ticket-free zone. One sanctioned exception: the owner ledger `.claude/epics/dat-NNN.md` (ADR-0023) lives on its epic integration branch only — the final integration PR deletes it; it never reaches `main`. When a task lands, delete its plan/handoff/status file — don't archive it. When a Jira issue closes, delete its `project_` memory and prune its MEMORY.md line.
+**The rule that enforces it: a ticket ID in a filename (`dat-NNN-*.md`) means the file is ephemeral → it belongs in Jira, never committed to the repo and never in memory.** `docs/adr/` is the one ticket-free zone. One sanctioned exception: the owner ledger `.claude/epics/dat-NNN.md` (ADR-0023), created by `/own` on its epic integration branch and deleted by the final integration PR — it never reaches `main`, so there is no `.claude/epics/` on `main` and none is expected. When a task lands, delete its plan/handoff/status file — don't archive it. When a Jira issue closes, delete its `project_` memory and prune its MEMORY.md line.
 
 ## How the packages connect
 
 - **Engine ↔ cockpit:** the engine is a **Temporal worker** (no HTTP). No OpenAPI, no codegen. The cockpit reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle (`bun run db:pull:metadata`) and drives long-running work as Temporal workflows.
-- **Orchestration:** Temporal (DAT-344). ALL workflows — analysis and orchestration — are **Python on the engine worker** (ADR-0020 / DAT-708); the cockpit is a **Client** that triggers workflows by name (`@temporalio/client`) and renders progress, plus a co-located **activity-only** worker (per-workspace queue `cockpit-<ws>`, DAT-818) hosting the cockpit_db run writers + the grounding-teach agent the orchestration workflows call back into. See `feedback-durable-execution-lean` memory. (This reverses DAT-360's "workflows in TS"; DAT-529/609's TS orchestration workflows were retired by DAT-708.)
+- **Orchestration:** Temporal. ALL workflows — analysis and orchestration — are **Python on the engine worker**; the cockpit is a **Client** plus a co-located **activity-only** worker on its own per-workspace queue `cockpit-<ws>`. Authority: **ADR-0020** (with ADR-0001; supersedes ADR-0014's TS orchestration workflows). Don't restate it here — read the ADR, then the package CLAUDE.md.
 - **Persistence:** one Postgres instance, separate schemas — engine owns `ws_<id>` (SQLAlchemy), cockpit owns `cockpit_db` (Drizzle). Never shared.
 - **Config:** `packages/dataraum-config/` is **data, not code** — bind-mounted at `/opt/dataraum/config`, resolved through `dataraum.core.config` (engine) / `fs` (cockpit), never imported or path-navigated.
 
 ## Skills
 
-Workflow skills live at the workspace root (`.claude/skills/`): `/own` `/refine` `/implement` `/smoke` `/release-prep`.
+Workflow skills live at the workspace root (`.claude/skills/`): `/own` `/refine` `/implement` `/smoke`. Releases are cut by hand — there is no release skill and no CI doc check.
 
 Epic-scale work runs the **Owner/Eval model** (ADR-0023): a spec conversation with the lead sets the objective + a measurable scorecard, then one long-lived `/own` agent drives the slice on an epic branch to eval-green — spawning lanes, integrating them itself, running the eval after every integration, absorbing discovered work instead of spawning satellite tickets. `/refine` + `/implement` are its per-lane discipline.
 
 External, stack-specific skills:
-- **Temporal** — `npx skills add temporalio/skill-temporal-developer` (install once, auto-activates).
+- **Temporal** — `temporal-developer`, already installed at `.claude/skills/temporal-developer/` (gitignored, not vendored). Nothing to install.
 - **TanStack** — official **[TanStack Intent](https://tanstack.com/intent/latest)** skills, version-pinned to the cockpit's installed packages and discovered via CLI (`bunx @tanstack/intent@latest list` / `load <pkg>#<skill>` from `packages/cockpit`). Wired through the `intent-skills` block in `packages/cockpit/CLAUDE.md` — not vendored into `.claude/skills/`. (Replaced the `DeckardGer/tanstack-agent-skills` workaround, which lacked `@tanstack/ai`.)
 
 ## Dev environment
@@ -55,13 +55,18 @@ External, stack-specific skills:
 Dev runs in a sandboxed (SBX) container — the sandbox handles permissions, so agents run **without per-command gating**. Don't add `permissionMode: bypassPermissions`, cd-must-be-relative rules, or `permissions.allow` allowlists to dodge prompts.
 
 **Git hygiene for concurrent agents (this repo runs several at once):**
-- **ALWAYS WORK IN A WORKTREE.** Never edit on a shared checkout's branch — another agent can switch or commit under you, and your work ends up stranded on someone else's branch (or their commits land in your PR). Spawn with `isolation: "worktree"`, or `git worktree add .claude/worktrees/<task> -b <branch>`; commit there.
+- **ALWAYS WORK IN A WORKTREE.** Never edit on a shared checkout's branch — another agent can switch or commit under you, and your work ends up stranded on someone else's branch (or their commits land in your PR). Create it with `git worktree add .claude/worktrees/<task> -b <branch>` and commit there — **not** `isolation: "worktree"`, which does not guarantee placement inside the project dir; reviewer subagents inherit `$CLAUDE_PROJECT_DIR` and silently pass on code they cannot read (ADR-0023).
 - **ALWAYS REBASE/MERGE onto `origin/main` BEFORE PUSHING.** Fetch + rebase first — main moves under long runs. Pushing a stale-base branch forces a non-fast-forward fixup later (or clobbers a teammate's force-push). Rebase clean, re-verify, then push.
 
 ## Dev loop
 
+Canonical copy — the package files and `/smoke` follow this block.
+
 ```bash
-docker compose -f packages/infra/docker-compose.yml up -d --wait   # full stack
+# `env -u ANTHROPIC_API_KEY` so a stale shell key doesn't shadow the .env one
+# (host env beats the env-file in compose interpolation — this has bitten us).
+env -u ANTHROPIC_API_KEY \
+  docker compose -f packages/infra/docker-compose.yml up -d --wait   # full stack
 # engine health = Temporal worker heartbeat (no HTTP endpoint):
 docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
   --entrypoint temporal temporal-admin-tools \

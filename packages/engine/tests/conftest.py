@@ -176,7 +176,7 @@ def duckdb_conn():
 # ---------------------------------------------------------------------------
 # Postgres workspace fixtures (DAT-321)
 #
-# The full SQLAlchemy spine runs against Postgres post-L2. A single container
+# The full SQLAlchemy spine runs against Postgres. A single container
 # is reused for the entire pytest invocation (boot ~3 s, amortized across all
 # tests); per-test isolation is handled by TRUNCATE CASCADE over every table
 # registered on Base.metadata.
@@ -215,7 +215,7 @@ def lake_catalog_url(pg_container: PostgresContainer) -> str:
     """Create + return a Postgres URL for the DuckLake catalog database.
 
     Sibling DB on the same testcontainer used for the workspace; mirrors the
-    L1 docker-compose shape (one Postgres, two logical DBs).
+    docker-compose shape (one Postgres, two logical DBs).
     """
     import psycopg
     from psycopg.conninfo import make_conninfo
@@ -319,7 +319,7 @@ def clean_lake_layers() -> None:
     Post-DAT-341 the workspace-stable layer schemas (``raw`` / ``typed`` /
     ``quarantine``) survive across tests, so isolation needs to drop the
     tables INSIDE those schemas rather than dropping the schemas themselves.
-    Reserved ``session_*`` / ``archive_*`` schemas (slice 2) are dropped
+    Reserved ``session_*`` / ``archive_*`` schemas are dropped
     wholesale. Plain function so both the function-scoped ``lake_clean``
     fixture and module-scoped read-only fixtures can reuse it.
     """
@@ -337,7 +337,7 @@ def clean_lake_layers() -> None:
         for (name,) in tables:
             anchor.execute(f'DROP TABLE IF EXISTS {LAKE_CATALOG_ALIAS}."{layer_schema}"."{name}"')
 
-    # Reserved session_* / archive_* namespaces (slice 2): drop wholesale.
+    # Reserved session_* / archive_* namespaces: drop wholesale.
     schemas = anchor.execute(
         "SELECT schema_name FROM duckdb_schemas() "
         f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "

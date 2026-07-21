@@ -143,9 +143,9 @@ class TestWorkspaceTypedDuckLake:
 
         Post-DAT-341 there is no schema-level isolation between sessions —
         the substrate is workspace-stable. Row-level scoping (``workspace_id``
-        on Table / EntropyObjectRecord) is the new isolation mechanism;
-        slice 2's session overlays will live under reserved ``session_*``
-        schemas, not in the ``typed`` schema itself.
+        on Table / EntropyObjectRecord) is the isolation mechanism — the
+        ``session_*`` / ``archive_*`` prefixes stay refused, never a second
+        schema-level scope.
         """
         a = ConnectionManager(
             ConnectionConfig.for_workspace(),

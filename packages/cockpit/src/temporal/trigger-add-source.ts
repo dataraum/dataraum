@@ -1,11 +1,11 @@
-// add_source TRIGGER (DAT-352, folded into the select tool by DAT-436; DAT-609) —
-// starts the per-workspace `groundingLoopWorkflow` to run the engine's
-// addSourceWorkflow for the source set `select` just persisted, then auto-ground.
+// add_source TRIGGER (DAT-352, folded into the acquisition path by DAT-436;
+// DAT-609) — starts the per-workspace `groundingLoopWorkflow` to run the engine's
+// addSourceWorkflow for the source set just persisted, then auto-ground.
 //
-// Since DAT-436 the ONLY caller is `select.server` (tools/select.ts): calling
-// the `select` tool registers the source(s) AND starts the import in one step —
-// there is no separate "Add source" button or `/api/add-source` route, and no
-// approval hop.
+// The ONLY non-test caller is the staging hub's import server fn
+// (`server/import-sources.ts`, which dynamic-imports `triggerAddSource`):
+// persisting the source rows and starting the import are ONE step — there is no
+// separate "Add source" button or `/api/add-source` route, and no approval hop.
 //
 // DAT-609/708: this trigger starts the per-workspace `groundingLoopWorkflow` (id
 // `grounding-<ws>`) — Python on the engine worker since DAT-708 — on the
@@ -13,11 +13,11 @@
 // native child on the same queue, records the run in cockpit_db with the child's
 // real execution id (via the cockpit's activity-only worker), and runs the
 // autonomous teach-and-replay loop. (A manual `replay` is a DIRECT engine start —
-// not this loop.) The workflow advances tab-independently; the tool captures the
-// current conversationId and threads it through so the import's progress routes to
-// THIS chat (the worker has no request ALS — DAT-528).
+// not this loop.) The workflow advances tab-independently; this trigger captures
+// the current conversationId and threads it through so the import's progress routes
+// to THIS chat (the worker has no request ALS — DAT-528).
 //
-// The tool returns the DETERMINISTIC engine workflow id immediately (the cockpit polls
+// It returns the DETERMINISTIC engine workflow id immediately (the cockpit polls
 // progress by workflow id — the latest execution; the real Temporal run id is owned by
 // the workflow). The workflow id is `addsource-<workspace_id>` — one per workspace
 // (DAT-562 retired the per-import session segment); single-flight (the id-reuse policy)
@@ -83,7 +83,7 @@ export async function triggerAddSource(
 	const workspace = await resolveActiveWorkspaceRow();
 	const workflowId = addSourceWorkflowId(workspace.id);
 
-	// Start the grounding-loop workflow (DAT-609). The tool passes the derived
+	// Start the grounding-loop workflow (DAT-609). We pass the derived
 	// ids/queue + the source SET + verticals + the originating conversationId
 	// (captured from the request-scoped ALS HERE, while we're still in the chat turn
 	// — the worker has none). The workflow records the run authoritatively and starts

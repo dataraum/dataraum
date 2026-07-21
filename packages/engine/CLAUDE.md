@@ -25,7 +25,7 @@ Correctness over speed. The product is **analytical correctness** — the system
 | "implement X", "is X feasible?" | `/refine` first (understand, surface conflicts) |
 | approved approach | `/implement` (phased; invokes the two reviewers at the end) |
 | UI or tool just built | `/smoke` (drive it, feel the UX) |
-| cutting a release | `/release-prep` |
+| cutting a release | the lead does this by hand — don't offer to automate it |
 | quick fix (<3 files, obvious) | just do it |
 
 **Sizing.** S (1–3 files): direct. M (3–8 files): plan, single session. L/XL (8+ files or cross-module): Confluence plan linked to the Jira issue, phased, each phase green before the next. Declare DO-change / DO-NOT-change file lists to fence *unrelated* scope. Cleanup the design implies — deleting dead code, removing a retired field, adapting its tests — is in-scope, not an adjacent-edit violation. What to avoid is unplanned *unrelated* edits, never design-implied deletion (see "Default to the clean cut" in the workspace CLAUDE.md).
@@ -45,7 +45,7 @@ uv run pytest tests/unit -q -n auto                # full unit suite, parallel (
 - For a **full-suite or whole-directory** run (no `--testmon`), add `-n auto` — pytest-xdist fans it across cores (~2.5× on the unit suite; `--dist loadscope` in `pyproject.toml` keeps module-scoped fixtures + per-worker testcontainers correct). Run specific integration files only when you touched integration code.
 - **Calibration tests live in `dataraum-eval`** and are the ultimate measure of detector correctness.
 - **e2e tests make real LLM calls — never run them without asking.**
-- The end-of-turn hook runs ruff + mypy + vulture + testmon automatically; don't duplicate it.
+- The end-of-turn hook runs `ruff format --check` + vulture + mypy + `pytest --testmon` automatically; don't duplicate those. It does **not** run `ruff check` — lint is a CI-only gate (`.github/workflows/ci.yml`), so run `uv run ruff check src tests` yourself before declaring done.
 
 ## Definition of done
 
@@ -60,10 +60,10 @@ The engine is a **Temporal worker** (`src/dataraum/worker/`, entrypoint `python 
 - **Pre-computed context** — AI receives a fully-assembled `ContextDocument`; no runtime discovery.
 - **Ontologies are config** — domain ontologies (financial_reporting, marketing, …) are YAML mapping column patterns → business terms, defining metrics, guiding interpretation. They live in `packages/dataraum-config/` (bind-mounted at `/opt/dataraum/config`); load them only through `dataraum.core.config`, never `Path(__file__)` navigation.
 - **Pipeline measures, doesn't interpret** — detectors run as pipeline post-steps; interpretation happens interactively through the cockpit (Temporal workflows + chat).
-- **Loss-based readiness** — per-column ready / investigate / blocked via per-intent loss tables (`config/entropy/loss.yaml`); the Bayesian network was deleted in DAT-442.
+- **Loss-based readiness** — per-column ready / investigate / blocked via per-intent loss tables (`packages/dataraum-config/entropy/loss.yaml`, mounted at `/opt/dataraum/config/entropy/loss.yaml`); the Bayesian network was deleted in DAT-442.
 - **Concurrency** — standard **GIL-on** CPython 3.14 (container `python:3.14-slim`; free-threading was evaluated and dropped as a target). The Temporal activity worker still runs phases concurrently on a `ThreadPoolExecutor`, so shared worker state — notably the one `ConnectionManager` — is touched by multiple activity threads; guard it as concurrent.
 
-**Temporal (durable orchestration).** Skill: `npx skills add temporalio/skill-temporal-developer`. The engine runs a **bundled Python worker** (`worker/`): the analysis workflows (`AddSourceWorkflow` + children) **and** the orchestration workflows (`GroundingLoopWorkflow`, `SessionCascadeWorkflow` — DAT-708 / ADR-0020, moved here from the cockpit's TS worker) in `worker/workflows.py` (sandbox-deterministic, imports only `temporalio` + the engine-free `worker/contracts.py`), **plus** the phase activities (`worker/activities.py`, `@activity.defn(name="<phase>")` over `run_phase_activity`) on one task queue. Activities are **sync**, run on a `ThreadPoolExecutor` (NOT `asyncio.to_thread`). The cockpit triggers workflows via the Temporal Client. Workflow names are called by string; no shared catalogue. The orchestration workflows additionally schedule four **cockpit-owned activities** by name on the cockpit's activity-only queue — their camelCase wire models in `worker/contracts.py` mirror the TS contracts (cross-PACKAGE change), and the orchestration start payloads are engine-owned, mirrored in the cockpit's `src/temporal/types.ts`. Locked decision + the DAT-360→DAT-344 reversal (workflows are Python, not TS) live in the `feedback-durable-execution-lean` memory.
+**Temporal (durable orchestration).** Skill: `temporal-developer`, already installed at `.claude/skills/temporal-developer/` — nothing to install. The engine runs a **bundled Python worker** (`worker/`): the analysis workflows (`AddSourceWorkflow` + children) **and** the orchestration workflows (`GroundingLoopWorkflow`, `SessionCascadeWorkflow` — DAT-708 / ADR-0020, moved here from the cockpit's TS worker) in `worker/workflows.py` (sandbox-deterministic, imports only `temporalio` + the engine-free `worker/contracts.py`), **plus** the phase activities (`worker/activities.py`, `@activity.defn(name="<phase>")` over `run_phase_activity`) on one task queue. Activities are **sync**, run on a `ThreadPoolExecutor` (NOT `asyncio.to_thread`). The cockpit triggers workflows via the Temporal Client. Workflow names are called by string; no shared catalogue. The orchestration workflows additionally schedule four **cockpit-owned activities** by name on the cockpit's activity-only queue — their camelCase wire models in `worker/contracts.py` mirror the TS contracts (cross-PACKAGE change), and the orchestration start payloads are engine-owned, mirrored in the cockpit's `src/temporal/types.ts`. Locked decision + the DAT-360→DAT-344 reversal (workflows are Python, not TS) live in the `feedback-durable-execution-lean` memory.
 
 **Module layout:**
 ```
@@ -99,7 +99,7 @@ settings = get_settings()        # validates once, fails loud at boot
 
 - Type hints everywhere; Pydantic for data classes; functions over classes; ~50 lines max.
 - Google-style docstrings on **new** public functions (no backfill obligation); enforced by ruff `D`.
-- Quality gates run as hooks — `ruff format` after each edit; ruff + mypy + vulture + testmon at end-of-turn.
+- Quality gates run as hooks — `ruff format` after each edit; `ruff format --check` + vulture + mypy + testmon at end-of-turn. `ruff check` is not among them (see Testing).
 
 ## Run it
 

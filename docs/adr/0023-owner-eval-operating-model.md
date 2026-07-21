@@ -3,15 +3,14 @@
 - **Status:** Accepted
 - **Date:** 2026-07-19
 - **Ticket:** —
-- **Supersedes:** ADR-0006
 
 > **Internal process record** — how this repository is developed, not product
 > architecture. Not part of the documented product decision set.
 
 ## Context
 
-ADR-0006 organized work as ticket-sized parallel lanes behind two human intent gates. It
-delivered ticket throughput — and its failure mode appeared at epic scale. DAT-725, first
+Work used to be organized as ticket-sized parallel lanes behind two human intent gates.
+That delivered ticket throughput — and its failure mode appeared at epic scale. DAT-725, first
 week: 3 of 18 planned phase issues done (one reverted), while 22 of the 25 issues actually
 completed were reactive substrate-bug tickets created after the epic started; every
 value-bearing phase (graph-context cutover, generated validations, cockpit read side, frame
@@ -64,10 +63,11 @@ run.
 
 Rejected alternatives: a stronger status board / more coordination atop the lane model
 (still no agent holds the objective — coordination was not the missing piece, ownership
-was); agent teams (same robustness trade rejected in ADR-0006, and it parallelizes
-*attention*, which was never the bottleneck — integration and objective-holding were).
+was); agent teams (the same robustness trade the lane model already rejected, and it
+parallelizes *attention*, which was never the bottleneck — integration and
+objective-holding were).
 
-### Inherited from ADR-0006 (the rules survive; the machinery retires)
+### Rules carried over from the lane model (the rules survive; the machinery retired)
 
 - **Worktrees live inside the repo** (`.claude/worktrees/...`): reviewer subagents inherit
   the session's `$CLAUDE_PROJECT_DIR` and cannot read sibling paths — outside placement
@@ -78,11 +78,14 @@ was); agent teams (same robustness trade rejected in ADR-0006, and it paralleliz
 - **Lanes run the full CI gates locally** before handing back (`ruff format`,
   `biome --write`, the CI set) — lane agents don't fire the end-of-turn hook.
 - **Lane review gate:** `/implement`'s senior-code-reviewer + spec-compliance-reviewer;
-  the ledger's lane brief is the spec the compliance reviewer reads.
+  the ledger's lane brief is the spec the compliance reviewer reads. A third agent,
+  `strict-reviewer`, stays available for direct invocation on a diff the owner wants
+  hardened; it is not part of the automatic gate.
 - **Ask-don't-guess:** a lane at a design fork its brief doesn't settle asks the owner
   instead of guessing; the owner answers from spec/ledger context or escalates a genuine
-  fork to the lead. ADR-0006's insight stands — confidently-wrong assumptions don't
-  escalate — the owner's brief + diff review and the eval gate are the structural answer,
+  fork to the lead. The reason the gate must exist at all: a confidently-wrong assumption
+  never escalates, because the agent holding it doesn't know it is wrong. The owner's
+  brief + diff review and the eval gate are the structural answer,
   with the lead's checkpoint as backstop.
 - **Workflow `agent()` has no Agent tool** (probe `wf_acbcecdc`): implementation lanes are
   Agent-tool subagents (which can spawn reviewers); `Workflow` remains useful for
@@ -92,8 +95,8 @@ was); agent teams (same robustness trade rejected in ADR-0006, and it paralleliz
 
 `/ideate`, `/decompose`, `/take` (skills); `team-refine.js` / `team-build.js`
 (workflows); `.claude/platform-status.md` (the ledger replaces the status board).
-`/refine` and `/implement` survive as lane discipline; `/smoke` and `/release-prep` are
-unchanged.
+`/refine` and `/implement` survive as lane discipline; `/smoke` is unchanged.
+`/release-prep` was retired separately — releases are cut by hand.
 
 ## Consequences
 
@@ -117,7 +120,7 @@ eight lanes briefed/integrated with reviewers, six budgeted eval runs, three Jir
 checkpoints, two stop-the-line regressions cleared, the P9 cutover (flat assembly deleted)
 landed, ledger deleted at close, four residual defects extracted as tickets (DAT-823–826)
 *at closeout* rather than mid-flight. The discovery rule is what changed the outcome —
-substrate repairs that would have become satellite tickets under ADR-0006 were absorbed
+substrate repairs that would previously have become satellite tickets were absorbed
 into the slice.
 
 Two weaknesses surfaced, both now addressed in `/own`:

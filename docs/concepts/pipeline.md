@@ -1,7 +1,8 @@
 # The pipeline & phases
 
-Under the journey's analysis stages is a pipeline of focused **phases** — roughly twenty of
-them — run by the engine. Each phase does one job with the right [method](approach.md), and
+Under the journey's analysis stages is a pipeline of focused **phases** — nineteen of them —
+run by the engine. Each phase does one job with the right method — deterministic,
+statistical, or LLM — and
 after each, the relevant [detectors](measurement.md) update the entropy scores. This page is
 the map of those phases.
 
@@ -37,24 +38,32 @@ columns and a terminal step measures.
 | `column_eligibility` | deterministic | Score which columns are worth analyzing |
 | `statistical_quality` | statistical | Outliers (IQR, isolation forest), Benford's law |
 | `temporal` | statistical | Granularity and gap analysis for time columns |
-| `semantic_per_column` | **LLM** | Annotate each column — role, entity, term, concept binding |
+| `semantic_per_column` | **LLM** | Annotate each column against the declared concepts — role, entity, business term, description, stock-or-flow claim |
 | *detect* | — | Run the column-grain detectors; promote |
 
 ## begin_session — typed tables to an analytical workspace
 
+The whole stage is one sequential chain — the work is cross-table, so there is no fan-out.
+
 | Phase | Method | Does |
 |---|---|---|
 | `begin_session_select` | deterministic | Validate the chosen table scope for the session |
-| `session_materialize_overlays` | deterministic | Fold durable relationship teaches into the run |
 | `relationships` | deterministic | Value-overlap, cardinality, and join detection |
 | `semantic_per_table` | **LLM** | Classify tables (fact/dimension, grain), confirm relationships, author catalogue-grain column semantics |
+| `session_materialize_overlays` | deterministic | Fold durable relationship teaches into the run, after the LLM pass has had its say |
 | `surrogate_mint` | deterministic | Fuse confirmed composite keys into hash key columns; record the single-column join |
 | `enriched_views` | **LLM** | Score and build grain-preserving join views |
 | `slicing` | **LLM** | Identify the categorical dimensions you can slice by |
-| `aggregation_lineage` | deterministic | Reconcile measures across facts (sum-consistency) |
-| `dimension_hierarchies` | deterministic | Drill-down hierarchies and alias discovery over views |
-| `drivers` | deterministic | Rank the drivers behind each measure |
-| *detect → keepers → promote* | — | Relationship-grain readiness; lift accepted results; promote |
+| `dimension_hierarchies` | deterministic | Drill-down hierarchies and alias discovery over the slice catalog |
+| `aggregation_lineage` | deterministic | Reconcile measures against event tables and across facts (sum-consistency) |
+| `correlations` | statistical | Within-table correlation, and the derived-column signal it feeds |
+| *detect* | — | Relationship- and value-grain readiness; resolve stock vs flow onto the column |
+| `driver_rankings` | deterministic | Rank the drivers behind each measure |
+| *keepers → promote* | — | Lift accepted results into the next run; promote |
+
+`driver_rankings` runs **after** the detect, not before it: driver discovery reads each
+measure's *resolved* temporal behaviour to pick what it ranks against, and that verdict only
+exists once the detect has pooled it.
 
 ## operating_model — intent to executed model
 
@@ -62,8 +71,15 @@ columns and a terminal step measures.
 |---|---|---|
 | `operating_model_resolve` | deterministic | Pin the base-run map and table set once for the run |
 | `validation` | **LLM** | Generate and execute the declared rules; move them through their lifecycle |
+| *operating_model_detect* | — | Score this run's executed validation results into table- and column-grain readiness |
 | `business_cycles` | **LLM** | Detect and bind multi-table processes; execute |
 | `metrics` | **LLM** | Compose declared measures as calculation graphs; execute |
+| *operating_model_promote* | — | Flip the stage's head to this run |
+
+The detect sits between validation and the two LLM-heavy families deliberately: it reads
+validation's results, and running it there means a later failure doesn't cost the
+recomputation. Its rows still only become visible at the terminal promote, so a failed run
+never surfaces.
 
 Each artifact in this stage is tracked through **declared → grounded → executed** — see
 [the learnable surface](learnable-surface.md).

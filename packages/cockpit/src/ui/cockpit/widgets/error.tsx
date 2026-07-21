@@ -1,8 +1,8 @@
-// Error-canvas widget (DAT-347, C1).
+// Error-canvas widget (DAT-347).
 //
 // Renders a tool/stream error message. Doubles as the focus canvas's fallback
-// when a CanvasState kind has no registered widget (a partially-landed C2-C6
-// member degrades to this instead of crashing). Reads theme tokens only.
+// when a CanvasState kind has no registered widget (a partially-landed member
+// degrades to this instead of crashing). Reads theme tokens only.
 
 import { Alert } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";

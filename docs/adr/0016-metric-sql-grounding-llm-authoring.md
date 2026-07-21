@@ -1,6 +1,6 @@
 # ADR-0016 — Metric SQL: feed deterministic grounding, let the LLM author
 
-- **Status:** Accepted
+- **Status:** Accepted (amended by [ADR-0021](./0021-operating-model-property-graph.md) — the flat named-context contract of Decision §1 was retired at P9; the SQL authors' context is now assembled by traversal over the operating-model property graph. The feed-don't-starve decision itself is unchanged.)
 - **Date:** 2026-06-25
 - **Ticket:** DAT-543 (epic), DAT-616/620/631 (the implementing arc)
 - **Design doc:** Confluence DD space (DAT-543 epic)

@@ -123,7 +123,10 @@ class _LakeScopedConnection:
         object.__setattr__(self, "_qualified_schema", qualified_schema)
 
     def cursor(self) -> _LakeScopedConnection:
-        """Open a derived cursor and ``USE`` the session schema on it.
+        """Open a derived cursor and ``USE`` the lake schema on it.
+
+        The schema is the workspace-stable ``lake.typed`` (post-DAT-341), not a
+        per-session one — see the module docstring.
 
         Returns another wrapper so cursor-of-cursor chains (analysis modules
         opening a sub-cursor from a phase cursor) stay scoped to the same
@@ -209,9 +212,9 @@ class ConnectionConfig:
 
         ``output_dir`` is retained for caller signature compatibility but
         no longer drives any DuckDB-side state — the file-backed
-        ``data.duckdb`` is gone (L4).
+        ``data.duckdb`` is gone.
         """
-        del output_dir  # kept for signature; lake schema is driven by session_id
+        del output_dir  # kept for signature; the lake schema is workspace-stable
         return cls(database_url=_resolve_database_url(), **kwargs)
 
 
@@ -225,8 +228,9 @@ class ConnectionManager:
     - Proper cleanup on close
 
     The ``session_id`` field is populated by callers that open a per-session
-    manager; per-session rows carry it as FK scoping so writes land under the
-    right ``InvestigationSession``.
+    manager and is carried on rows as provenance only. There is no engine-side
+    session row to key on (sessions live in cockpit_db, DAT-506) — the engine's
+    models are run-versioned and scope by ``run_id``.
 
     Thread Safety:
     - SQLAlchemy sessions: One session per thread via ``session_scope()``

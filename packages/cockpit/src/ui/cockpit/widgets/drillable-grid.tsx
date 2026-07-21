@@ -262,7 +262,7 @@ export function DrillableGrid({
 	/** The base query (the node's composed SQL on the canvas path). */
 	sql: string;
 	params?: SqlParams;
-	/** What the Slice control offers — resolved by the metric path in P1. */
+	/** What the Slice control offers — resolved by the metric path only. */
 	axesRequest: DrillAxesRequest;
 	/** Present on the canvas path: drill steps recompose the NODE from its
 	 *  persisted parts (`/api/drill/node`) instead of wrapping the base SQL. */

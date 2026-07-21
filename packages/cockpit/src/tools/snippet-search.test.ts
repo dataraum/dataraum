@@ -1,6 +1,6 @@
 // Unit coverage for snippet_search's PURE projection + vocabulary formatting +
 // the no-keys guard (DAT-485). The live key-lookup is integration-covered via
-// P0's snippet-library.integration.test.ts; here we pin the metadata projection
+// `db/metadata/snippet-library.integration.test.ts`; here we pin the metadata projection
 // (no raw SQL bodies) and the prompt block.
 
 import { describe, expect, it, vi } from "vitest";

@@ -20,7 +20,7 @@ witness classes already exist as ROWS on the pair
   overlay: the user explicitly asserted the relationship, at the row's
   confidence. Abstains when absent.
 * **keeper retention** — the ``keeper`` row materialized from a ``keep``
-  overlay (silent acceptance, DAT-409 C3): a promoted run's llm relationship
+  overlay (silent acceptance, DAT-409): a promoted run's llm relationship
   the current run did not reproduce and the user never rejected. Weaker
   provenance than an explicit add — its own reliability ``r`` carries that,
   not an inline constant. Abstains when absent.

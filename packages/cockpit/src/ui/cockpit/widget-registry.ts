@@ -1,10 +1,10 @@
-// Widget registry (DAT-347, C1).
+// Widget registry (DAT-347).
 //
 // The focus canvas is a REGISTRY, not a switch. Each CanvasState `kind` maps to
-// one widget component. A C2-C6 column adds a member to CanvasState, a widget
-// file, and ONE register() call here (via canvas-registry.ts) — it never edits
-// the canvas, stream, or shell. See README.md for the register-don't-replace
-// contract.
+// one widget component. A new canvas surface adds a member to CanvasState, a
+// widget file, and ONE register() call here (via canvas-registry.ts) — it never
+// edits the canvas, stream, or shell. See README.md for the
+// register-don't-replace contract.
 
 import type { ComponentType } from "react";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";

@@ -1,5 +1,5 @@
 // CENTRAL UI DEFINITION — single source of truth for the cockpit's visual
-// shell (DAT-380, C0).
+// shell (DAT-380).
 //
 // Palette values are placeholders; visual identity tuned later. Structure is
 // the contract — change design in this one file. Every region size / color /

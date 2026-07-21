@@ -1,9 +1,11 @@
-// What the focus canvas is currently showing (DAT-347, C1).
+// What the focus canvas is currently showing (DAT-347).
 //
-// A discriminated union over `kind`. C1 ships ONLY the baseline members below;
-// C2-C6 each add one member here, one widget file, one register() line, and one
-// tool→canvas mapper case — they never touch the canvas/stream/shell plumbing.
-// Keep the union sorted baseline-first so the extension point is obvious.
+// A discriminated union over `kind`, one member per canvas surface, each tagged
+// with the ticket that added it. Adding a surface is FOUR additive edits and
+// nothing else: a member here, a widget file, one register() line in
+// canvas-registry.ts, and one tool→canvas mapper case — the canvas, stream, and
+// shell plumbing stay untouched. Keep the union sorted with the three baseline
+// members (empty / loading / error) first so that extension point stays obvious.
 
 import type { ConversationKind } from "#/db/cockpit/conversations";
 import type { WorkspaceBriefing } from "#/db/metadata/briefing/types";
@@ -106,8 +108,8 @@ export type CanvasState =
 	// DAT-440 (DAT-435 follow-on): live operating_model workflow progress —
 	// same carry, projected from the operating_model TOOL RESULT.
 	| { kind: "operating-model-progress"; workflowId: string; runId: string }
-	// DAT-385 P2: the human-facing SQL grid. The P1 stream server is stateless
-	// (no queryId→SQL registry), so the grid re-issues the query — it carries the
+	// DAT-385: the human-facing SQL grid. The `/api/run-sql` stream server is
+	// stateless (no queryId→SQL registry), so the grid re-issues the query — it carries the
 	// `sql` (+ optional bind `params`) the mapper lifts off the `run_sql` tool
 	// CALL input, not a server handle. Columns/types arrive on the stream header.
 	| {

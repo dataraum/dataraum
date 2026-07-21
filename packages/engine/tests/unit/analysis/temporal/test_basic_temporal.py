@@ -3,7 +3,7 @@
 DAT-783 consolidated every served temporal fact onto this single DISTINCT-timestamp
 pass (span, granularity + confidence, completeness/gaps, staleness) and deleted the
 duplicate-corrupted row-interval path plus the WRONG fiscal/update-frequency analyzers.
-These tests lock in the behaviour the cockpit + P5 coverage now read.
+These tests lock in the behaviour the cockpit + coverage surfaces now read.
 """
 
 from __future__ import annotations

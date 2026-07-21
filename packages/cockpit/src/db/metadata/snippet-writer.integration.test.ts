@@ -1,6 +1,6 @@
-// Integration coverage for save-on-clean (DAT-486 P2a). The correctness that
+// Integration coverage for save-on-clean (DAT-486). The correctness that
 // matters lives in the SQL — the IS-NULL-aware dedup against a NULLS-DISTINCT
-// unique key — so, like the P0 conformance test, this must hit a real Postgres,
+// unique key — so, like the snippet-library conformance test, this must hit a real Postgres,
 // not a mock. A naive `ON CONFLICT` would silently duplicate; these tests prove
 // the app-level find-then-insert gives SEQUENTIAL first-writer-wins dedup (the
 // common case). Concurrent same-key saves can still double-insert — NULLS
@@ -55,7 +55,7 @@ const SCHEMA = STACK_AVAILABLE
 // data; cleanup is by this value (DAT-506: snippets are workspace-scoped).
 const TEST_WORKSPACE = "dat486-write-test-workspace";
 // Synthetic schema_mapping_id — isolates these rows from real producer data and
-// from the P0 read fixture.
+// from the snippet-library read fixture.
 const MAP = "dat486-write-test";
 
 describe.skipIf(!STACK_AVAILABLE)(

@@ -125,7 +125,7 @@ After implementation is complete (honestly complete, reviewers satisfied):
    - What needs acceptance testing
    - Reviewer verdicts
 
-2. If the engine REST surface or the cockpit changed: run `/smoke` to drive the cockpit in a browser before wrapping up. If you only touched engine Python, also rebuild the container (`docker compose -f packages/infra/docker-compose.yml up -d --build control-plane`).
+2. If the cockpit or the engine worker changed: run `/smoke` to drive the cockpit in a browser before wrapping up. If you touched engine Python, rebuild its container first (`docker compose -f packages/infra/docker-compose.yml up -d --build engine-worker`).
 
 ## Rules
 

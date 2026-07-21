@@ -42,7 +42,8 @@ git worktree add .claude/worktrees/epic-dat-NNN -b epic/dat-NNN-<slug> origin/ma
 Then `EnterWorktree` with the absolute path so every subsequent call resolves inside the
 epic worktree.
 
-Init the ledger at `.claude/epics/dat-NNN.md` (template below) and commit it. The ledger
+Create `.claude/epics/` (it does not exist on `main` — no ledger ever lands there) and init the
+ledger at `.claude/epics/dat-NNN.md` (template below), then commit it. The ledger
 exists ONLY on this branch — the final integration PR deletes it (ADR-0023; the one
 exception to the ticket-ID-filename rule). It is your memory: re-read it first on every
 wake-up and after every context compaction.
@@ -56,7 +57,9 @@ not `isolation:"worktree"` (placement inside the project is not guaranteed).
 
 ## Step 2 — Ground before cutting
 
-Fan out read-only agents (Explore agents, or a read-only Workflow) over everything the
+Fan out read-only agents — the **Agent tool**, several in one block, each with a brief that
+says *read and report, change nothing* (the `Explore` subagent type is read-only by
+construction and the right default) — over everything the
 slice touches: models/tables, pipeline phases, consumers — **engine AND cockpit** ("no
 writers" needs a cockpit grep too) — config, tests, and the eval's oracle surface. Write
 the **substrate map** into the ledger: what exists, who consumes it, where the seams are,
@@ -77,9 +80,22 @@ Repeat until the scorecard is green:
    (`git worktree add .claude/worktrees/<lane-id> -b feat/dat-NNN-<lane-slug>
    epic/dat-NNN-<slug>`) → `/refine` discipline against its brief → `/implement`
    discipline (its two reviewers at the end; the ledger brief is the spec the
-   spec-compliance reviewer reads) → runs the FULL CI gates locally (`ruff format`,
-   `biome --write`, the CI gate set — lanes don't fire the end-of-turn hook) → commits.
-   Lanes never push and never touch `main`.
+   spec-compliance reviewer reads) → runs the FULL CI gate set locally, since lanes don't
+   fire the end-of-turn hook → commits. Lanes never push and never touch `main`.
+
+   The gates, mirroring `.github/workflows/ci.yml` (run only the side the lane touched):
+
+   ```bash
+   # engine
+   uv --directory packages/engine run ruff check src/ && \
+   uv --directory packages/engine run ruff format --check src/ && \
+   uv --directory packages/engine run mypy src/ && \
+   uv --directory packages/engine run pytest tests/unit tests/integration -q -n auto
+   # cockpit — `--cwd` goes AFTER `run` and takes an ABSOLUTE path
+   C=<abs>/packages/cockpit
+   bun run --cwd $C check && bun run --cwd $C typecheck && \
+   bun run --cwd $C test && bun run --cwd $C build
+   ```
 3. **Ask-don't-guess:** a lane that hits a design fork its brief doesn't settle ends its
    turn with the question instead of guessing. Answer from spec/ledger context
    (SendMessage to resume it), or escalate a genuine fork to the lead. Never let a lane
@@ -105,8 +121,19 @@ attempt and tends to oscillate. Instead:
 - Every resolution gets a **Decisions** entry: fork · criterion · call · evidence.
 4. **You integrate.** Review the lane diff yourself, merge the lane branch into the epic
    branch, resolve conflicts, remove the lane worktree.
-5. **Eval gate.** Run the eval after EVERY integration (`dataraum-eval`, sibling repo —
-   see its Makefile). Record the scorecard row in the ledger.
+5. **Eval gate.** Run the eval after EVERY integration. It lives in the sibling repo
+   `../dataraum-eval` (a Makefile over one runner, `python -m calibration.run`):
+
+   ```bash
+   make -C ../dataraum-eval list                              # the strategies available
+   make -C ../dataraum-eval calibrate                         # clean + detection-v1, then assert
+   make -C ../dataraum-eval calibrate STRATEGY=<strategy>     # a specific strategy
+   make -C ../dataraum-eval calibrate-all                     # every strategy
+   ```
+
+   `clean` wipes the eval's generated dirs; `reset` tears down the **isolated eval stack** — it
+   is the only sanctioned `down -v` and never touches the shared `infra` stack. These are
+   real-LLM runs: they draw down the budget. Record the scorecard row in the ledger.
    **Regression = stop-the-line:** fix it before the next lane. A regression is never a
    new ticket. Real-LLM runs draw down the budget; log every run.
 6. **Rebase** the epic branch onto `origin/main` regularly (main moves under you); re-run

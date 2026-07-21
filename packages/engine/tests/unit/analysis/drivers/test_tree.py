@@ -1,4 +1,4 @@
-"""DAT-545 P2 — the greedy tree + within-dataset permutation null.
+"""DAT-545 — the greedy tree + within-dataset permutation null.
 
 Inherits the DAT-544 kill-gate's claims, now over the engine: the STRONG driver
 surfaces ~always (≥0.9) while independent nulls stay gated at ≈α (FDR ≤ 2α) even

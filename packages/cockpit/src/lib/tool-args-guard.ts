@@ -1,10 +1,13 @@
 // Tool-boundary args guard — coercion + rejection counters for DAT-661.
 //
-// The cockpit mirror of the engine's provider-boundary coercion telemetry
-// (`stringified_tool_payload_coerced` in llm/providers/anthropic.py): when a model
-// emits malformed tool arguments, make it COUNTABLE from logs — and rescue the one
-// shape that is mechanically recoverable — so the DAT-661 strict-tools decision
-// can measure the baseline malformation rate. Two structured console.info lines:
+// When a model emits malformed tool arguments, make it COUNTABLE from logs — and
+// rescue the one shape that is mechanically recoverable — so the DAT-661
+// strict-tools decision can measure the baseline malformation rate. This is a
+// cockpit-tier concern only: the engine has no equivalent, because DAT-807 moved
+// every engine LLM call to constrained decoding, which makes malformed payloads
+// structurally unreachable there (see engine `llm/contract_repair.py`). The
+// cockpit's agent loop still passes real `tools`, so the boundary is live here.
+// Two structured console.info lines:
 //   tool_args_coerced  { label, tool, argument } — a JSON-STRING payload where the
 //     schema expects an array/object was parse-rescued; the call then proceeded.
 //   tool_args_rejected { label, tool, error }    — args failed schema validation
@@ -34,10 +37,10 @@
 //   - A top-level stringified payload (case 1) cannot be rescued at all: it
 //     reaches the schema as `{}` and is counted as a rejection, not a coercion.
 //
-// The coercion logic mirrors the engine's `_coerce_stringified_args` exactly
-// (observed malformation: Sonnet 5 serializing a whole array/object argument into
-// a JSON string — `{"steps": "[{…}]"}` — plus the whole-payload-in-one-field
-// variant). Only top-level fields whose declared JSON type is exactly
+// The coercion targets exactly the observed malformation: Sonnet 5 serializing a
+// whole array/object argument into a JSON string — `{"steps": "[{…}]"}` — plus
+// the whole-payload-in-one-field variant. Only top-level fields whose declared
+// JSON type is exactly
 // `array`/`object` are candidates; everything else passes through untouched, and
 // zod still validates the parsed value, so the rescue cannot admit bad data.
 //
@@ -89,9 +92,9 @@ export function readTopLevelProperties(
 
 /**
  * Parse tool arguments the model JSON-stringified against the schema's declared
- * containers (the engine's `_coerce_stringified_args`, ported): a string value
- * where the schema expects an array/object is JSON.parsed; everything else passes
- * through untouched. Handles the whole-payload variant too — the model serializing
+ * containers: a string value where the schema expects an array/object is
+ * JSON.parsed; everything else passes through untouched. Handles the
+ * whole-payload variant too — the model serializing
  * the ENTIRE input object into one array-typed field (`{"steps": '{"steps": […]}'}`);
  * when the parsed object's keys are the tool's own top-level properties, it IS the
  * input and is adopted wholesale. Each rescue reports the argument name via

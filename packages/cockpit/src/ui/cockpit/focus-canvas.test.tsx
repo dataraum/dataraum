@@ -42,7 +42,7 @@ describe("FocusCanvas (DAT-347)", () => {
 	});
 
 	it("falls back to the error widget for an unregistered kind", () => {
-		// Forge a future C2-C6 member whose widget hasn't landed — it must degrade,
+		// Forge a future canvas member whose widget hasn't landed — it must degrade,
 		// not crash.
 		renderCanvas({ kind: "table-preview" } as unknown as CanvasState);
 		expect(screen.getByTestId("canvas-error").textContent).toContain(

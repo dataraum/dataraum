@@ -8,11 +8,9 @@ docs_dir = "docs"
 nav = [
   "index.md",
   { "Getting Started" = [
-    "getting-started/overview.md",
     "getting-started/running-the-stack.md",
   ] },
   { "Concepts" = [
-    "concepts/approach.md",
     "concepts/the-journey.md",
     "concepts/operating-model.md",
     "concepts/frame-ground-teach.md",

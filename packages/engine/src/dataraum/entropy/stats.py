@@ -2,9 +2,9 @@
 
 Each function maps raw column data → a value in ``[0, 1]``. No config, no I/O, no
 boost curves, no magic constants: a measurement is a *pure function*, testable in
-microseconds on synthetic or recorded data (``entropy_eval_architecture.md``). The
-engine detectors and the eval Tier-1/2 tests import the SAME function, so there is
-one implementation of each statistic, proven once.
+microseconds on synthetic or recorded data. The engine detectors and the eval
+Tier-1/2 tests import the SAME function, so there is one implementation of each
+statistic, proven once.
 
 Only *tunable entropy* a teach can close lives here (completeness, type fidelity,
 referential integrity, derived-formula match, time role, naming/unit confidence,

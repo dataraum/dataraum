@@ -1,11 +1,12 @@
 // Cockpit home (DAT-528) — the landing + chat history, shown at /cockpit.
 //
-// A chat now has a TYPE chosen up front (connect | stage | analyse) that binds
-// its toolstack (the binding is S2). So the entry point is no longer one free-text
-// composer: it's the recent history plus type chips that mint a typed chat and
-// deep-link into it. The Haiku entry-router that infers the type from a sentence
-// is S4 (DAT-534); for now the user picks. A chat cannot change type once created,
-// and there is no jump between types within a chat (DD/36667393).
+// A chat has a TYPE chosen up front (connect | stage | analyse) that binds its
+// toolstack. So the entry point is no longer one free-text composer: it's the
+// recent history plus type chips that mint a typed chat and deep-link into it.
+// The free-text "tell" box is routed by the Haiku entry-router (the nav-agent,
+// DAT-534); the chips are the deterministic alternative. A chat cannot change
+// type once created, and there is no jump between types within a chat
+// (DD/36667393).
 //
 // Pure + props-driven: it renders OUTSIDE a CockpitProvider (no conversation yet),
 // so it takes `conversations` + `onOpen`/`onCreate` rather than reading chat state.

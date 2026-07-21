@@ -51,9 +51,14 @@ Be explicit about three categories:
 
 **Known hard things**: "The mocking for X is complex because Y depends on Z" — things you can see will be difficult.
 
-**Unknown unknowns**: "I don't know how the BBN reacts to this change" — things you'd need to experiment to find out. Say so. Don't pretend you know.
+**Unknown unknowns**: "I don't know how the grounding agent reacts to this evidence change" — things you'd need to experiment to find out. Say so. Don't pretend you know.
 
-**Cross-repo implications**: Does this affect eval calibration? Testdata generation? The MCP tool surface? If yes, what's the handoff?
+**Cross-repo / cross-package implications**: name the handoff for each that applies.
+- **`../dataraum-eval`** — does this move anything calibration grades? (`make calibrate`, `make list`)
+- **`../dataraum-testdata`** — does the corpus need a new table, column, or ground-truth entry?
+- **The engine↔cockpit Temporal contract** — `packages/engine/src/dataraum/worker/contracts.py` is
+  hand-mirrored by `packages/cockpit/src/temporal/types.ts`; a change to either is a
+  cross-PACKAGE change. Same for SQLAlchemy models → the cockpit's generated Drizzle mirror.
 
 ## Step 4: Propose approach (not plan)
 
@@ -62,7 +67,7 @@ Present the trade-offs. 1-3 options with:
 - **Size**: S / M / L / XL classification
 - **Value/effort**: where does this option land in the PO matrix? High value / low effort = quick win. High value / high effort = big bet. Low value / high effort = money pit — flag it and ask if the scope should change.
 - **Risk**: what could go wrong, and how bad is it
-- **Test strategy**: how do we KNOW it works (unit? calibration? manual MCP exercise?)
+- **Test strategy**: how do we KNOW it works (unit? integration? `dataraum-eval` calibration? a `/smoke` run in the browser?)
 - **What I'd recommend and why** — the value/effort ratio should weigh heavily here. Between two options that both work, prefer the one with better return.
 
 ## Step 5: Align with user

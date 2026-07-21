@@ -2,9 +2,9 @@
 // content-keyed `src_<digest>` source PER uploaded file, the file analog of
 // `recipe-source.ts`'s one-query = one-source path.
 //
-// This is the file-source persistence extracted OUT of the agent `select` tool
-// (tools/select.ts) so BOTH the agent and the probe surface's staging hub
-// (server/import-sources.ts) write file sources the same way. The model is locked
+// This is the file-source persistence extracted OUT of the (since-retired) agent
+// `select` tool so the probe surface's staging hub (`server/import-sources.ts`)
+// writes file sources through one seam. The model is locked
 // (DAT-422): one file = one content-keyed source, keyed by its upload digest, so
 // identical bytes (same digest) UPSERT one row and two distinct files never
 // collide on a raw table even with matching basenames.

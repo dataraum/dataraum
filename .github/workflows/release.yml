@@ -12,28 +12,8 @@ on:
         types: [published]
 
 jobs:
-    preflight:
-        name: Preflight (doc counts)
-        runs-on: ubuntu-latest
-        permissions:
-            contents: read
-        defaults:
-            run:
-                working-directory: packages/engine
-        steps:
-            - uses: actions/checkout@v7
-
-            - name: Set up Python
-              uses: actions/setup-python@v6
-              with:
-                  python-version: "3.x"
-
-            - name: Check doc counts (phases / detectors)
-              run: python scripts/check_doc_counts.py
-
     engine:
         name: Push engine to GHCR
-        needs: preflight
         runs-on: ubuntu-latest
         permissions:
             contents: read
@@ -64,7 +44,6 @@ jobs:
 
     cockpit:
         name: Push cockpit to GHCR
-        needs: preflight
         runs-on: ubuntu-latest
         permissions:
             contents: read

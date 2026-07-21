@@ -128,7 +128,7 @@ def test_spurious_m2m_needs_two_scoping_cols(con) -> None:
 
 def test_junk_overlap_column_does_not_poison_the_rescue(con) -> None:
     """A coincidental column that matches NOTHING in-context must not be preferred
-    over the real scope column (B1). Real candidate lists carry such decoys; without
+    over the real scope column. Real candidate lists carry such decoys; without
     ranking zero-match keys as worst, the greedy fuses the junk, drives the composite
     to zero matches, and silently abandons a valid rescue."""
     con.execute("CREATE TABLE f (a VARCHAR, b VARCHAR, c VARCHAR, v INT)")

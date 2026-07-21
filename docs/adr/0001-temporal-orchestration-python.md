@@ -1,6 +1,6 @@
 # ADR-0001 — Temporal orchestration: Python workflows + activities on one worker
 
-- **Status:** Accepted (amended by [ADR-0014](./0014-cockpit-orchestration-worker.md))
+- **Status:** Accepted (2026-07-07 — [ADR-0020](./0020-workflows-python-cockpit-activity-only.md) restored this ADR's original scope; the [ADR-0014](./0014-cockpit-orchestration-worker.md) amendment is void)
 - **Date:** 2026-05-25
 - **Ticket:** DAT-344 (built), DAT-360 (locked the direction)
 - **Design doc:** Confluence DD space
@@ -26,4 +26,4 @@ triggers workflows by name (`@temporalio/client`) and renders progress. The cock
 - The cockpit↔engine contract is "trigger by name + read progress", not shared workflow code — but the cockpit **hand-mirrors** the worker's Temporal contracts (`worker/contracts.py` → cockpit `types.ts`), so changing a workflow's signature/return shape is a cross-package change.
 - Determinism is verified offline via Temporal's `Replayer`; tests use **testcontainers**, not the bundled `WorkflowEnvironment` test server (it stalls CI).
 - Retires: TS-authored workflows; any second orchestration mechanism (the hand-rolled scheduler/monitoring was removed in DAT-369).
-- **Amended by [ADR-0014](./0014-cockpit-orchestration-worker.md):** scoped — **analysis** workflows stay Python on the engine worker (this ADR holds for them). The cockpit now also authors and hosts short-lived **orchestration** workflows on its own co-located TS worker (`cockpit-orchestration` queue), which drive the engine analysis workflows as cross-language children. "The cockpit does not author workflows" is now true only of *analysis*.
+- **Amendment history:** [ADR-0014](./0014-cockpit-orchestration-worker.md) scoped this ADR to analysis and let the cockpit author orchestration workflows on a co-located TS worker. [ADR-0020](./0020-workflows-python-cockpit-activity-only.md) reversed that: all workflows are Python on the engine worker again, and the cockpit worker is activity-only. The Decision above holds unscoped — the cockpit authors no workflows of any kind.

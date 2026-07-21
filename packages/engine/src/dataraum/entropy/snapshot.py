@@ -127,7 +127,7 @@ def _resolve_column_target(
 
 # Representative-row precedence for a directional column pair (DAT-408): a user
 # teach (manual) wins over a retained keeper, over an LLM confirmation, over a
-# raw candidate — aligned with loaders.load_relationship_for_pair (lane L2).
+# raw candidate — aligned with loaders.load_relationship_for_pair.
 _REL_METHOD_PRECEDENCE = {"manual": 4, "keeper": 3, "llm": 2, "candidate": 1}
 
 

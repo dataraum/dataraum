@@ -23,8 +23,8 @@ filter (the agent improvises ``WHERE account_type ILIKE '%cost%'`` and matches t
 wrong rows) returns a well-typed, in-range value that passes every check here. The
 grounding fix lives elsewhere — feed the agent the real value distribution + a
 teach-confirmed concept→value-set binding (DAT-620) so it stops improvising the
-predicate (design: ``docs/dat543-construct-dont-improvise.md``). Keep this as the
-cheap floor; do not mistake it for the fix.
+predicate: construct the filter from bound values, never guess it. Keep this as
+the cheap floor; do not mistake it for the fix.
 
 The signal is **support, not magnitude**: a genuine ``0`` (a filter that matched
 rows summing to zero) passes; only a NULL (nothing aggregated) fails.

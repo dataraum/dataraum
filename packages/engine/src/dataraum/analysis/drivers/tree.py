@@ -1,4 +1,4 @@
-"""The greedy driver tree + within-dataset permutation null (DAT-545 P2/P4).
+"""The greedy driver tree + within-dataset permutation null (DAT-545).
 
 The engine's decision core, ported and generalized from the DAT-544 spike:
 

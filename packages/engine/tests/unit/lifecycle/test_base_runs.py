@@ -41,7 +41,7 @@ def test_unresolved_heads_are_absent_not_guessed(session: Session) -> None:
 
 
 def test_map_is_json_round_trippable(session: Session) -> None:
-    # The map is recorded verbatim as grounded_against provenance (D2) and
+    # The map is recorded verbatim as grounded_against provenance and
     # travels through Temporal contracts — it must serialize cleanly.
     session.add(MetadataSnapshotHead(target=catalog_head_target(), stage="catalog", run_id="r"))
     session.flush()

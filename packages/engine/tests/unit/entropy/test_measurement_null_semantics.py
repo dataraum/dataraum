@@ -189,7 +189,7 @@ class TestResolvedNullTokens:
 
 
 class TestAbstainerExclusion:
-    """An abstaining witness is ignorance, not a diluting party (review C3)."""
+    """An abstaining witness is ignorance, not a diluting party."""
 
     def test_abstaining_type_claim_does_not_dilute_novel_sentinel(self) -> None:
         from dataraum.entropy.measurements.null_semantics import measure_null_semantics

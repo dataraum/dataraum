@@ -5,7 +5,7 @@ edges, seeded the same way concepts were (config→DB, DAT-728): the shipped ver
 YAML is the seed, the runtime reads the typed ``concept_edges`` table, the property
 graph binds it as the ``concept_edge`` edge over the ``og_concepts`` vertex. Later
 phases derive more edges (``reconciles_with`` from the aggregation-lineage witness)
-and ``frame`` authors them for novel datasets (P13); this module owns the SEED
+and ``frame`` authors them for novel datasets; this module owns the SEED
 authoring from the vertical's own declarations.
 
 ``disjoint_with`` is read off convention ``concept_groups``: a convention partitions

@@ -655,7 +655,7 @@ def _build_surrogate_intent(
 
 
 # Bounded re-prompts when the batched synthesis under-covers column_concepts
-# (DAT-725 B1). The contract is a meaning for EVERY column, but one wide batched
+# (DAT-725). The contract is a meaning for EVERY column, but one wide batched
 # call can truncate (observed: 9/62 on a run whose siblings hit 62/62 — output
 # jitter under the warn-only contract). Each retry serves the SAME prompt scoped
 # to the tables that still have uncovered columns, so it is cheap; warn-only
@@ -1003,7 +1003,7 @@ def synthesize_and_store_tables(
         annotated_by = agent.provider.get_model_for_tier(
             agent.config.features.semantic_analysis.model_tier
         )
-        # Coverage retry (DAT-725 B1): fill truncation gaps BEFORE the single
+        # Coverage retry (DAT-725): fill truncation gaps BEFORE the single
         # persist — bounded scoped re-prompts for the tables whose columns are
         # still uncovered; a retry that fails or under-produces leaves the
         # warn-only terminal state below untouched. ``column_map``/``table_map``

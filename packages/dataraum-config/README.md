@@ -13,10 +13,11 @@ sites.
 
 ```
 dataraum-config/
-├── entropy/                 # detector contracts, thresholds, network topology
+├── entropy/                 # detector contracts, thresholds, per-intent loss
 │   ├── contracts.yaml
 │   ├── thresholds.yaml
-│   └── network.yaml
+│   ├── reliabilities.yaml
+│   └── loss.yaml
 ├── llm/
 │   ├── config.yaml          # provider + model selection
 │   └── prompts/             # one YAML per prompt template

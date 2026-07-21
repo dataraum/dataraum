@@ -7,11 +7,11 @@ verdict — it never reads a stored pass/fail (a stored verdict goes stale on
 re-import, the SQL does not).
 
 Scope: table-level, with COLUMN-grain objects fanned out for failed checks
-(DAT-432/L7): a failed reconciliation bands the columns its SQL actually
+(DAT-432): a failed reconciliation bands the columns its SQL actually
 touched (``columns_used``), so the band reaches the columns deliverable
 metrics flow through — not just an aggregate ``table:`` row nothing joins on.
 
-Score semantics (DAT-442 honesty + the L7 scoreboard finding):
+Score semantics (DAT-442 honesty + the scoreboard finding below):
 - A failed CRITICAL check is CATEGORICAL: score 1.0. The spec's own tolerance
   already decided pass/fail, so "failed critical" means a declared identity is
   broken beyond its declared tolerance — the magnitude stays in evidence as
@@ -73,7 +73,7 @@ def _score(verdict: ValidationVerdict, severity: str) -> float:
         return 0.0
 
     if severity == "critical":
-        # Categorical (L7): a CRITICAL identity failed beyond its declared
+        # Categorical: a CRITICAL identity failed beyond its declared
         # tolerance — the books don't reconcile. The relative magnitude stays
         # in evidence; scoring it as a rate hid provably-wrong deliverables.
         return 1.0
@@ -254,7 +254,7 @@ class CrossTableConsistencyDetector(EntropyDetector):
         context: DetectorContext,
         per_column: dict[str, tuple[float, list[dict[str, Any]]]],
     ) -> list[EntropyObject]:
-        """Column-grain objects for the columns failing checks touched (L7).
+        """Column-grain objects for the columns failing checks touched.
 
         The band must reach the columns deliverable metrics flow through —
         a ``table:`` row joins to nothing downstream. ``column_id`` rides in

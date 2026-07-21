@@ -280,7 +280,8 @@ export const runs = pgTable(
  *
  * Typed, resumable chat-sessions (DAT-528): a workspace has MANY conversations,
  * each with an immutable `kind` (connect | stage | analyse) that binds its
- * toolstack + system prompt ("skill" — the binding itself is S2). They are listed
+ * toolstack + system prompt ("skill" — the binding is `tools/registry.ts`
+ * `toolsByKind`). They are listed
  * (bounded recent) + resumable by id; `lastActiveAt` is the recency axis the
  * history list orders on.
  */
@@ -293,11 +294,11 @@ export const conversations = pgTable(
 			.references(() => workspaces.id),
 		// The immutable chat type (DAT-528). NOT NULL + never updated after create —
 		// a chat cannot change type, and the user cannot jump types within one chat.
-		// S1 stores + displays it and routes runs by conversation; S2 fences the
-		// toolstack on it.
+		// The cockpit displays it, routes runs by conversation on it, and
+		// `toolsByKind` fences the toolstack on it.
 		kind: varchar("kind").notNull(),
 		// A short human label for the history list — the first user message, sliced
-		// (a Haiku summary is deferred, S4). Null until the first turn names it.
+		// (no generated summary today). Null until the first turn names it.
 		title: varchar("title"),
 		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
 		updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),

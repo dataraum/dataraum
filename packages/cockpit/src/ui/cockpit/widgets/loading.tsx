@@ -1,4 +1,4 @@
-// Loading-canvas widget (DAT-347, C1).
+// Loading-canvas widget (DAT-347).
 //
 // Shown while a tool call is in flight before its result maps to a richer
 // canvas member. Reads theme tokens only.

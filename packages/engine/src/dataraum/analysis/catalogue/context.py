@@ -21,9 +21,11 @@ attached to the relationship they travel on (privacy-gated by name pattern,
 truncated, capped). Flat all-rows samples alone are not enough — a label
 column shared by several populations blurs them (DAT-853: counterparty at
 37% vendors flat, 100% vendors on the payment-linked rows), so each
-reference line additionally carries CHAIN-CONDITIONED label samples: the
+reference line additionally carries CHAIN-CONDITIONED evidence: the
 from-side identity labels aggregated over only the rows that resolve
-across the join.
+across the join, plus the min/max (and plain sign statement) of the
+from-side measure columns over that same joined population — the flow
+sign the chain itself carries.
 """
 
 from __future__ import annotations
@@ -396,7 +398,65 @@ def _conditioned_top_values(
     return ", ".join(f"'{_truncate(value)}' ({pct:.0f}%)" for value, _cnt, pct in rows)
 
 
-def _conditioned_label_samples(
+def _sign_summary(min_v: float, max_v: float) -> str:
+    """Plain-language sign statement of a served ``[min, max]`` range."""
+    if max_v < 0:
+        return "all negative"
+    if min_v > 0:
+        return "all positive"
+    if min_v >= 0:
+        return "none negative"
+    if max_v <= 0:
+        return "none positive"
+    return "mixed signs"
+
+
+def _conditioned_measure_range(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    from_path: str,
+    to_path: str,
+    fk: str,
+    key: str,
+    measure_column: str,
+) -> tuple[float, float] | None:
+    """One DuckDB aggregate: a measure's min/max over rows riding the join.
+
+    The same semi-join restriction as :func:`_conditioned_top_values` (the fk
+    RESOLVES into the key — orphans and NULL fks do not ride), because the
+    flow sign a chain carries is a property of the joined population: a
+    measure globally mixed-sign can be uniformly one sign on the chain-linked
+    rows, and that conditioned sign is the direction evidence. NULLs are
+    ignored by MIN/MAX; an empty or all-NULL joined population serves nothing.
+    Fail-soft: a missing typed table or a non-numeric result logs/returns
+    None — the prompt build must survive it.
+    """
+    query = f"""
+        SELECT MIN({_qident(measure_column)}), MAX({_qident(measure_column)})
+        FROM {_qident(from_path)} src
+        WHERE src.{_qident(fk)} IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM {_qident(to_path)} tgt
+              WHERE tgt.{_qident(key)} = src.{_qident(fk)}
+          )
+    """
+    try:
+        row = duckdb_conn.execute(query).fetchone()
+    except Exception as e:
+        logger.warning(
+            "conditioned_range_failed", table=from_path, column=measure_column, error=str(e)
+        )
+        return None
+    if row is None:
+        return None
+    try:
+        return float(row[0]), float(row[1])
+    except (TypeError, ValueError):
+        # All-NULL joined population (MIN/MAX → None) or a non-numeric column.
+        return None
+
+
+def _conditioned_evidence(
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     relationships: list[Relationship],
@@ -404,23 +464,32 @@ def _conditioned_label_samples(
     *,
     run_id: str,
     endpoint_ids: set[str],
+    measure_ids: set[str],
 ) -> dict[str, list[str]]:
-    """Chain-conditioned label evidence per confirmed reference relationship.
+    """Chain-conditioned evidence per confirmed reference relationship.
 
-    For each ``A.fk -> B.key`` reference, the top values of A's label-bearing
-    columns — this run's TableEntity identity columns, existence-filtered —
-    restricted to the rows that ride the join. This is THE discriminating
-    evidence the flat samples blur (DAT-853): a label column shared by
-    several populations (vendor payments, customer receipts, fees) looks
-    mixed over all rows and unanimous on the chain-linked rows.
+    For each ``A.fk -> B.key`` reference, two evidence classes restricted to
+    the rows that ride the join (DAT-853):
+
+    - **label samples** — the top values of A's label-bearing columns (this
+      run's TableEntity identity columns, existence-filtered). This is THE
+      discriminating evidence the flat samples blur: a label column shared by
+      several populations looks mixed over all rows and unanimous on the
+      chain-linked rows.
+    - **measure ranges** — min/max + plain sign statement for A's measure
+      columns (``measure_ids``, the annotation-derived selection the
+      structural section already uses). The flow sign of the joined rows is
+      direction evidence the flat table-level range blurs the same way.
 
     Join-key columns (any served relationship endpoint) are excluded — their
     values are the information-free IDs the flat endpoint samples already
-    carry. A sensitive label name renders ``<REDACTED>`` without touching the
-    data (the ``_sample_line`` convention: existence visible, values never
-    leave). Conformed_dimension rows get nothing: no fk rides a shared-axis
-    meeting. Fail-soft per relationship: a table with no TableEntity at this
-    run or no typed duckdb_path serves no conditioned lines.
+    carry. A sensitive column name renders ``<REDACTED>`` without touching
+    the data (the ``_sample_line`` convention: existence visible, values
+    never leave). Conformed_dimension rows get nothing: no fk rides a
+    shared-axis meeting. Fail-soft per relationship: no typed duckdb_path
+    serves no conditioned lines; a table with no TableEntity at this run
+    serves no LABEL lines (the measure selection rides the pinned
+    annotations, not the entity).
     """
     references = [rel for rel in relationships if rel.relationship_type != "conformed_dimension"]
     if not references:
@@ -442,11 +511,12 @@ def _conditioned_label_samples(
     for rel in references:
         entity = entities.get(rel.from_table_id)
         from_table, to_table = rel.from_column.table, rel.to_column.table
-        if entity is None or not from_table.duckdb_path or not to_table.duckdb_path:
+        if not from_table.duckdb_path or not to_table.duckdb_path:
             continue
         columns = real_columns.get(rel.from_table_id, {})
         lines: list[str] = []
-        for ic in entity.identity_columns or []:
+        identity_columns = (entity.identity_columns or []) if entity is not None else []
+        for ic in identity_columns:
             if not isinstance(ic, dict):
                 continue
             name = ic.get("column")
@@ -470,6 +540,32 @@ def _conditioned_label_samples(
             )
             if samples:
                 lines.append(f"{header}: {samples}")
+        # One aggregate per relationship × measure column, in column order.
+        measure_columns = sorted(
+            (
+                c
+                for c in columns.values()
+                if c.column_id in measure_ids and c.column_id not in endpoint_ids
+            ),
+            key=lambda c: c.column_position,
+        )
+        for measure_col in measure_columns:
+            header = f"{measure_col.column_name} ({rel.from_column.column_name}-joined rows)"
+            if sampler.is_sensitive(measure_col.column_name):
+                lines.append(f"{header}: <REDACTED>")
+                continue
+            value_range = _conditioned_measure_range(
+                duckdb_conn,
+                from_path=from_table.duckdb_path,
+                to_path=to_table.duckdb_path,
+                fk=rel.from_column.column_name,
+                key=rel.to_column.column_name,
+                measure_column=measure_col.column_name,
+            )
+            if value_range is None:
+                continue
+            min_v, max_v = value_range
+            lines.append(f"{header}: min={min_v} max={max_v} — {_sign_summary(min_v, max_v)}")
         if lines:
             out[rel.relationship_id] = lines
     return out
@@ -486,9 +582,10 @@ def _format_relationships(
     THE load-bearing section (DAT-823): the endpoint value samples ride the
     confirmed chain, so what a reference actually points at (the counterparty
     names behind a shared dimension key) is on the same line as the reference.
-    ``conditioned`` (DAT-853) adds the chain-conditioned label lines per
-    relationship_id — extra evidence next to, never instead of, the flat
-    endpoint samples. ``relationship_type`` is served honestly (DAT-850): a
+    ``conditioned`` (DAT-853) adds the chain-conditioned evidence lines (label
+    samples + measure sign/ranges) per relationship_id — extra evidence next
+    to, never instead of, the flat endpoint samples. ``relationship_type`` is
+    served honestly (DAT-850): a
     ``conformed_dimension`` row is two facts meeting at a shared axis, named
     as such — never dressed as a genuine reference.
     """
@@ -517,8 +614,8 @@ def _format_relationships(
             sample = _sample_line(sampler, col.column_name, profiles.get(col.column_id))
             if sample:
                 lines.append(f"  {label} values ({col.column_name}): {sample}")
-        # Chain-conditioned label samples (DAT-853): additional evidence, the
-        # flat endpoint samples above stay served.
+        # Chain-conditioned evidence (DAT-853): label samples + measure
+        # sign/ranges — additional, the flat endpoint samples above stay served.
         for conditioned_line in conditioned.get(rel.relationship_id, []):
             lines.append(f"  {conditioned_line}")
     return "\n".join(lines)
@@ -686,8 +783,20 @@ def build_catalogue_inputs(
             )
         )
     endpoint_ids = {c.column_id for rel in relationships for c in (rel.from_column, rel.to_column)}
-    conditioned = _conditioned_label_samples(
-        session, duckdb_conn, relationships, sampler, run_id=run_id, endpoint_ids=endpoint_ids
+    # The measure selection the structural section renders sign/range for —
+    # reused so the conditioned serve and the flat serve agree on what a
+    # measure IS (the pinned annotations' semantic_role).
+    measure_ids = {
+        row["column_id"] for row in annotation_rows if row.get("semantic_role") == "measure"
+    }
+    conditioned = _conditioned_evidence(
+        session,
+        duckdb_conn,
+        relationships,
+        sampler,
+        run_id=run_id,
+        endpoint_ids=endpoint_ids,
+        measure_ids=measure_ids,
     )
 
     all_table_names: dict[str, str] = dict(

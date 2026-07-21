@@ -29,3 +29,15 @@ export const PersistedIntent = z.object({
 	drivers: z.array(ReadinessDriver).default([]),
 });
 export type PersistedIntent = z.infer<typeof PersistedIntent>;
+
+/** One entry of `entropy_readiness.abstentions` (DAT-853) — the self-describing
+ * trace of a loss-path detector that could NOT measure: which detector, WHY
+ * (`missing_inputs` / `detector_error` / `insufficient_data` / `not_applicable`),
+ * and the intents whose risk is now missing a contributor. This is what turns a
+ * vacuous "ready" band into an honest "not measured (reason)" for the reader. */
+export const Abstention = z.object({
+	detector: z.string(),
+	reason: z.string(),
+	intents: z.array(z.string()).default([]),
+});
+export type Abstention = z.infer<typeof Abstention>;

@@ -47,6 +47,8 @@ function row(
 	target: string,
 	band: string,
 	risk = 0.5,
+	coverage = "measured",
+	abstentions: unknown[] = [],
 ): Record<string, unknown> {
 	return {
 		target,
@@ -54,6 +56,8 @@ function row(
 		columnId: null,
 		band,
 		worstIntentRisk: risk,
+		coverage,
+		abstentions,
 		topDrivers: [
 			{ node: "type_fidelity", state: "conflict", impact_delta: 0.4 },
 		],
@@ -126,6 +130,41 @@ describe("assessAndGround (DAT-551)", () => {
 			needsJudgement: true,
 			judgementNote: "payments.method needs a concept mapping",
 		});
+	});
+
+	it("treats an unmeasured target as a gap (band=ready but coverage=unmeasured) — DAT-853", async () => {
+		// The epic's core failure: a never-measured column reads band='ready'. The old
+		// `band !== 'ready'` filter let it slip through as clean, so the loop exited
+		// green on data it never measured. It must now be a gap → the agent runs.
+		h.readiness = [
+			row("column:payments.amount", "ready", 0, "unmeasured", [
+				{
+					detector: "unit_entropy",
+					reason: "insufficient_data",
+					intents: ["aggregation_intent"],
+				},
+			]),
+		];
+		await assessAndGround({ tableIds: ["t1"], attemptsRemaining: 3 });
+		expect(h.chat).toHaveBeenCalledTimes(1);
+		const opts = h.chat.mock.calls[0][0] as {
+			messages: Array<{ content: string }>;
+		};
+		const userMsg = opts.messages[0].content;
+		// The message surfaces coverage + the abstention reasons so the agent can see
+		// it's a measurement gap, not a measured quality risk.
+		expect(userMsg).toContain("coverage=unmeasured");
+		expect(userMsg).toContain("insufficient_data");
+	});
+
+	it("still fast-paths a ready + measured target (no gap, no LLM) — DAT-853", async () => {
+		h.readiness = [row("column:payments.amount", "ready", 0, "measured")];
+		const res = await assessAndGround({
+			tableIds: ["t1"],
+			attemptsRemaining: 3,
+		});
+		expect(res.needsJudgement).toBe(false);
+		expect(h.chat).not.toHaveBeenCalled();
 	});
 
 	it("only sends NON-ready targets to the agent", async () => {

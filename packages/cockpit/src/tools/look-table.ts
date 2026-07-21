@@ -74,6 +74,11 @@ const ColumnReadiness = z.object({
 	resolved_type: z.string().nullable(),
 	// null band = this column has no readiness row yet (not analyzed).
 	band: z.string().nullable(),
+	// Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null.
+	// 'unmeasured' means the band is VACUOUS — all loss-path detectors abstained —
+	// so the grid must render "not measured", never the frozen-default 'ready'.
+	// 'partial' qualifies the band as resting on incomplete measurement.
+	coverage: z.string().nullable(),
 	// WHICH pipeline stage sealed the shown band (DAT-513): add_source /
 	// session_detect / operating_model — the grain pick made visible.
 	band_stage: z.string().nullable(),
@@ -94,6 +99,9 @@ export type ColumnReadiness = z.infer<typeof ColumnReadiness>;
 // `why_table` drills into the full per-intent drivers + evidence.
 const TableReadiness = z.object({
 	band: z.string().nullable(),
+	// Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null —
+	// an 'unmeasured' whole-table band renders "not measured", never 'ready'.
+	coverage: z.string().nullable(),
 	worst_intent_risk: z.number().nullable(),
 	intents: z.array(IntentBand),
 	top_drivers: z.array(TopDriver),
@@ -187,6 +195,10 @@ export interface ReadinessRow {
 	columnName: string;
 	resolvedType: string | null;
 	band: string | null;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null.
+	 * Optional so a caller that doesn't join it still typechecks; the live grid
+	 * always sets it. */
+	coverage?: string | null;
 	/** Stage of the picked verdict (DAT-513); null/absent when unanalyzed.
 	 * No run_id/history here by design — the grid labels the pick, why_column
 	 * carries the full verdict history. */
@@ -241,6 +253,7 @@ export function projectColumnReadiness(row: ReadinessRow): ColumnReadiness {
 		column_name: row.columnName,
 		resolved_type: row.resolvedType,
 		band: row.band ?? null,
+		coverage: row.band == null ? null : (row.coverage ?? null),
 		band_stage: row.band == null ? null : (row.bandStage ?? null),
 		worst_intent_risk: row.worstIntentRisk ?? null,
 		intents: intents.success
@@ -264,6 +277,9 @@ export function projectColumnReadiness(row: ReadinessRow): ColumnReadiness {
 /** One table-grain `entropy_readiness` row, as Drizzle returns it. */
 export interface TableBandRow {
 	band: string | null;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null.
+	 * Optional as a fixture affordance; the live read always sets it. */
+	coverage?: string | null;
 	worstIntentRisk: number | null;
 	intents: unknown;
 	topDrivers: unknown;
@@ -281,6 +297,7 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
 	const drivers = ReadinessDriver.array().safeParse(row.topDrivers);
 	return {
 		band: row.band ?? null,
+		coverage: row.band == null ? null : (row.coverage ?? null),
 		worst_intent_risk: row.worstIntentRisk ?? null,
 		intents: intents.success
 			? intents.data.map((i) => ({
@@ -492,6 +509,7 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 		.select({
 			columnId: currentEntropyReadiness.columnId,
 			band: currentEntropyReadiness.band,
+			coverage: currentEntropyReadiness.coverage,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			topDrivers: currentEntropyReadiness.topDrivers,
@@ -525,6 +543,7 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 		return projectColumnReadiness({
 			...r,
 			band: readiness?.band ?? null,
+			coverage: readiness?.coverage ?? null,
 			bandStage: readiness === undefined ? null : stageOfRow(readiness),
 			worstIntentRisk: readiness?.worstIntentRisk ?? null,
 			intents: readiness?.intents ?? null,
@@ -576,6 +595,7 @@ async function loadTableBand(
 	const [row] = await metadataDb
 		.select({
 			band: currentEntropyReadiness.band,
+			coverage: currentEntropyReadiness.coverage,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			topDrivers: currentEntropyReadiness.topDrivers,
@@ -610,8 +630,11 @@ export const lookTableTool = toolDefinition({
 		"concept, semantic role, business name) — all from begin_session analysis, " +
 		"so null/empty before a session has run. pending_teaches counts un-applied " +
 		"teaches across the workspace (not scoped to this table); if > 0, suggest " +
-		"a `replay` before trusting the bands. Use `why_column` to explain a " +
-		"specific column's band.",
+		"a `replay` before trusting the bands. Each band carries a coverage " +
+		"(columns[].coverage, table_readiness.coverage): 'unmeasured' means the band " +
+		"is VACUOUS (every loss-path detector abstained), so treat it as NOT MEASURED, " +
+		"never ready; 'partial' means incomplete measurement. Use `why_column` to " +
+		"explain a specific column's band.",
 	inputSchema: z.object({
 		table_id: z
 			.string()

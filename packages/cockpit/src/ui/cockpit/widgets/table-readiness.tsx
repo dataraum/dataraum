@@ -42,7 +42,7 @@ function TableBandSummary({ band }: { band: TableReadiness }) {
 			<Text size="sm" fw={500}>
 				Whole-table readiness (this session)
 			</Text>
-			<BandBadge band={band.band} />
+			<BandBadge band={band.band} coverage={band.coverage} />
 			{band.intents.length > 0 &&
 				INTENTS.map((intent) => (
 					<Group key={intent} gap={4} align="center">
@@ -292,7 +292,7 @@ export function TableReadinessWidget({
 												: `as of ${stageLabel(c.band_stage)}`
 										}
 									>
-										<BandBadge band={c.band} />
+										<BandBadge band={c.band} coverage={c.coverage} />
 									</Table.Td>
 									{INTENTS.map((intent) => (
 										<Table.Td key={intent}>

@@ -120,6 +120,30 @@ describe("assembleBriefing — inventory (source-qualified)", () => {
 		expect(b.inventory.tables.find((x) => x.name === "items")?.band).toBeNull();
 	});
 
+	it("treats an unmeasured column as no-signal (unknown), never ready (DAT-853)", () => {
+		// A never-measured column reads band='ready' with coverage='unmeasured'. The
+		// briefing must NOT count it as ready — it lands in the "not analyzed" (unknown)
+		// bucket, and its table's worst-band is no-signal, never a green "ready".
+		const b = assembleBriefing(
+			inputs({
+				tableMetaById: { t: meta("src_a", "orders") },
+				readiness: [
+					readiness({
+						tableId: "t",
+						columnId: "c1",
+						band: "ready",
+						coverage: "unmeasured",
+					}),
+				],
+			}),
+		);
+		expect(b.inventory.bandCounts.ready).toBe(0);
+		expect(b.inventory.bandCounts.unknown).toBe(1);
+		expect(
+			b.inventory.tables.find((x) => x.name === "orders")?.band,
+		).toBeNull();
+	});
+
 	it("sorts by source, then worst band, then name", () => {
 		const b = assembleBriefing(
 			inputs({

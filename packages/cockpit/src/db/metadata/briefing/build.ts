@@ -56,6 +56,7 @@ export async function buildWorkspaceBriefing(): Promise<WorkspaceBriefing> {
 				tableId: currentEntropyReadiness.tableId,
 				columnId: currentEntropyReadiness.columnId,
 				band: currentEntropyReadiness.band,
+				coverage: currentEntropyReadiness.coverage,
 				worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 				topDrivers: currentEntropyReadiness.topDrivers,
 			})

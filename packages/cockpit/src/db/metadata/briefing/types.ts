@@ -137,6 +137,11 @@ export interface BriefingReadinessRow {
 	tableId: string | null;
 	columnId: string | null;
 	band: string | null;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null. An
+	 * 'unmeasured' row carries a vacuous band='ready' — the briefing treats it as
+	 * no-signal (counts it as "not analyzed"), never as ready. Optional as a fixture
+	 * affordance; the live read always sets it. */
+	coverage?: string | null;
 	worstIntentRisk: number | null;
 	topDrivers: unknown;
 }

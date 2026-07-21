@@ -157,4 +157,55 @@ describe("projectWhyRelationship (DAT-409)", () => {
 		expect(out.from_table_name).toBe("payments");
 		expect(out.to_table_name).toBeNull();
 	});
+
+	// --- DAT-853: coverage + abstention rendering.
+
+	it("carries coverage + abstentions for an unmeasured relationship band", () => {
+		const out = projectWhyRelationship(
+			FROM,
+			TO,
+			endpoints,
+			readiness({
+				band: "ready",
+				coverage: "unmeasured",
+				intents: [],
+				abstentions: [
+					{
+						detector: "relationship_entropy",
+						reason: "detector_error",
+						intents: ["query_intent"],
+					},
+				],
+			}),
+			[],
+			0,
+		);
+		expect(out.band).toBe("ready");
+		expect(out.coverage).toBe("unmeasured");
+		expect(out.abstentions[0].reason).toBe("detector_error");
+	});
+
+	it("keeps an abstained detector's null score out of signal_count", () => {
+		const out = projectWhyRelationship(
+			FROM,
+			TO,
+			endpoints,
+			readiness(),
+			[
+				evidenceRow(),
+				evidenceRow({
+					subDimension: "join_path_determinism",
+					detectorId: "join_path",
+					score: null,
+					status: "abstained",
+					abstainReason: "not_applicable",
+				}),
+			],
+			0,
+		);
+		const abstained = out.evidence.find((e) => e.detector_id === "join_path");
+		expect(abstained?.score).toBeNull();
+		expect(abstained?.abstain_reason).toBe("not_applicable");
+		expect(out.signal_count).toBe(1);
+	});
 });

@@ -71,7 +71,7 @@ export function RelationshipWhyWidget({
 					</Text>{" "}
 					{toLabel}
 				</Text>
-				<BandBadge band={why.band} />
+				<BandBadge band={why.band} coverage={why.coverage} />
 			</Group>
 
 			<VerdictProvenance

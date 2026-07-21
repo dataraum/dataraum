@@ -95,9 +95,9 @@ const full: LookProfileResult = {
 		zscore_outlier_ratio: 0.01,
 		benford_compliant: false,
 		benford: {
+			status: "violating",
 			chi_square: 12.3,
 			p_value: 0.04,
-			is_compliant: false,
 			interpretation: "non-compliant",
 		},
 		outlier_samples: [999, 1000],
@@ -123,6 +123,28 @@ const full: LookProfileResult = {
 
 describe("ColumnProfileWidget (DAT-475)", () => {
 	afterEach(() => cleanup());
+
+	it("renders a not-applicable Benford as 'not applicable', never compliant/violating (DAT-853)", () => {
+		renderWidget({
+			...EMPTY,
+			quality: {
+				has_outliers: false,
+				iqr_outlier_ratio: 0,
+				zscore_outlier_ratio: 0,
+				benford_compliant: null,
+				benford: {
+					status: "not_applicable",
+					chi_square: null,
+					p_value: null,
+					interpretation: "Values span under one order of magnitude.",
+				},
+				outlier_samples: [],
+			},
+		});
+		expect(screen.getByText("not applicable")).toBeTruthy();
+		expect(screen.queryByText("compliant")).toBeNull();
+		expect(screen.queryByText("non-compliant")).toBeNull();
+	});
 
 	it("renders the not-found state for an unknown column", () => {
 		renderWidget({ ...EMPTY, found: false });

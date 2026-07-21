@@ -587,6 +587,36 @@ class TestChainConditionedSamples:
         out = _build(session, [bank, payments], duckdb_conn=duck, sampler=_sampler([r".*salary.*"]))
         assert "salary_amount (payment_id-joined rows): <REDACTED>" in out["relationship_catalogue"]
 
+    def test_nan_tainted_measure_range_serves_nothing(self, session) -> None:
+        """A NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every
+        sign comparison — a poisoned range would read 'all positive'.
+        Absence is the honest serving."""
+        duck = duckdb.connect()
+        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+        duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2')")
+        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE)")
+        duck.execute(
+            "INSERT INTO typed_bank_txns VALUES ('P1', 2.0), ('P2', CAST('nan' AS DOUBLE))"
+        )
+        bank = _mk_table(
+            session, "bank_txns", ["payment_id", "amount"], duckdb_path="typed_bank_txns"
+        )
+        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
+        _promote(session, bank)
+        _promote(session, payments)
+        session.add(
+            SemanticAnnotation(
+                column_id=_col_id(session, bank, "amount"),
+                run_id=_GEN_RUN,
+                semantic_role="measure",
+            )
+        )
+        session.flush()
+        _relationship(session, bank, "payment_id", payments, "payment_id")
+
+        out = _build(session, [bank, payments], duckdb_conn=duck)
+        assert "amount (payment_id-joined rows)" not in out["relationship_catalogue"]
+
 
 class TestEnrichedViewsAndAxes:
     def test_views_render_fact_dims_and_join_pairs(self, session) -> None:

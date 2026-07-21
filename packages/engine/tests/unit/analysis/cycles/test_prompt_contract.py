@@ -86,5 +86,14 @@ def test_generic_prompt_carries_no_domain_vocabulary() -> None:
     description, comments, examples — trips it.
     """
     raw = (PromptRenderer().prompts_dir / "business_cycles.yaml").read_text().lower()
-    for leaked in ("payable", "receivable", "vendor", "order-to-cash", "order_to_cash"):
+    for leaked in (
+        "payable",
+        "receivable",
+        "vendor",
+        "order-to-cash",
+        "order_to_cash",
+        "supplier",
+        "customer",
+        "invoice",
+    ):
         assert leaked not in raw, f"domain vocabulary leaked into the generic prompt: {leaked!r}"

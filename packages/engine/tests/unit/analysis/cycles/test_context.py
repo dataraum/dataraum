@@ -1117,6 +1117,79 @@ def test_conditioned_measure_ranges_sensitive_name_serves_nothing(
     assert "-135000.0" not in format_context_for_prompt(ctx)
 
 
+def test_conditioned_measure_ranges_nan_serves_nothing(session) -> None:
+    """A NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every sign
+    comparison — a poisoned range would read 'all positive'. Absence is the
+    honest serving."""
+    duck = duckdb.connect()
+    duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+    duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2')")
+    duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE)")
+    duck.execute("INSERT INTO typed_bank_txns VALUES ('P1', 2.0), ('P2', CAST('nan' AS DOUBLE))")
+
+    source = Source(name="nan_chain_source", source_type="csv")
+    session.add(source)
+    session.flush()
+    bank = Table(
+        source_id=source.source_id,
+        table_name="bank_txns",
+        layer="typed",
+        row_count=2,
+        duckdb_path="typed_bank_txns",
+    )
+    payments = Table(
+        source_id=source.source_id,
+        table_name="payments",
+        layer="typed",
+        row_count=2,
+        duckdb_path="typed_payments",
+    )
+    session.add_all([bank, payments])
+    session.flush()
+    fk_col = Column(
+        table_id=bank.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    amount_col = Column(
+        table_id=bank.table_id, column_name="amount", column_position=1, raw_type="DOUBLE"
+    )
+    key_col = Column(
+        table_id=payments.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    session.add_all([fk_col, amount_col, key_col])
+    session.flush()
+    session.add(
+        SemanticAnnotation(
+            column_id=amount_col.column_id, run_id="gen-run", semantic_role="measure"
+        )
+    )
+    session.add(
+        Relationship(
+            run_id="run-current",
+            from_table_id=bank.table_id,
+            from_column_id=fk_col.column_id,
+            to_table_id=payments.table_id,
+            to_column_id=key_col.column_id,
+            relationship_type="foreign_key",
+            cardinality="many-to-one",
+            confidence=0.9,
+            detection_method="llm",
+        )
+    )
+    session.commit()
+
+    ctx = build_cycle_detection_context(
+        session,
+        duck,
+        [bank.table_id, payments.table_id],
+        vertical="finance",
+        base_runs=BaseRunMap(
+            relationship_run_id="run-current", semantic_runs={bank.table_id: "gen-run"}
+        ),
+    )
+    (rel,) = ctx["relationships"]
+    assert "conditioned_measure_ranges" not in rel
+
+
 def test_format_context_renders_zero_annotation_confidence() -> None:
     """0.0 is a real confidence, not absence — the falsy boundary must render."""
     context = {

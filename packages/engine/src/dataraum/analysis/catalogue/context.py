@@ -30,6 +30,7 @@ sign the chain itself carries.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -428,8 +429,9 @@ def _conditioned_measure_range(
     measure globally mixed-sign can be uniformly one sign on the chain-linked
     rows, and that conditioned sign is the direction evidence. NULLs are
     ignored by MIN/MAX; an empty or all-NULL joined population serves nothing.
-    Fail-soft: a missing typed table or a non-numeric result logs/returns
-    None — the prompt build must survive it.
+    Fail-soft: a missing typed table logs and serves nothing; a non-numeric,
+    all-NULL, or NaN-tainted result serves nothing silently — the prompt
+    build must survive it.
     """
     query = f"""
         SELECT MIN({_qident(measure_column)}), MAX({_qident(measure_column)})
@@ -450,10 +452,15 @@ def _conditioned_measure_range(
     if row is None:
         return None
     try:
-        return float(row[0]), float(row[1])
+        min_v, max_v = float(row[0]), float(row[1])
     except TypeError, ValueError:
         # All-NULL joined population (MIN/MAX → None) or a non-numeric column.
         return None
+    if math.isnan(min_v) or math.isnan(max_v):
+        # One NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every
+        # sign comparison — absence is the honest serving.
+        return None
+    return min_v, max_v
 
 
 def _conditioned_evidence(

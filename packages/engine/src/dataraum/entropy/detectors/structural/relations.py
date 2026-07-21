@@ -10,7 +10,11 @@ from typing import Any
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import (
+    ABSTAIN_MISSING_INPUTS,
+    ABSTAIN_NOT_APPLICABLE,
+    EntropyObject,
+)
 
 
 class JoinPathDeterminismDetector(EntropyDetector):
@@ -18,11 +22,17 @@ class JoinPathDeterminismDetector(EntropyDetector):
 
     Measures whether the focal relationship is an *unambiguous* way to join its
     two tables. Multiple distinct column-pair paths between the SAME two tables =
-    HIGH entropy (ambiguous which to use); a single path = LOW (deterministic). A
-    user teach (``ConfigOverlay(type='relationship')``) that picks the path
-    resolves the ambiguity.
+    HIGH entropy (ambiguous which to use); a user teach
+    (``ConfigOverlay(type='relationship')``) that picks one path resolves the
+    ambiguity (LOW).
 
-    Source: the session's relationships (LLM-confirmed + candidates).
+    With ≤1 distinct path the ambiguity question is UNANSWERABLE — the loader
+    excludes candidates (DAT-405) and the LLM confirms ~one relationship per
+    pair, so a single path is the structural norm, not evidence of determinism.
+    The detector ABSTAINS (DAT-851/853) instead of emitting a constant
+    confident score; it measures only on genuine multi-path ambiguity.
+
+    Source: the session's defined relationships (loaders.load_session_relationships).
     Scores configurable in config/entropy/thresholds.yaml.
     """
 
@@ -48,9 +58,10 @@ class JoinPathDeterminismDetector(EntropyDetector):
         """Detect join-path ambiguity for the focal relationship (DAT-408).
 
         Counts the distinct column-pair join paths between the focal relationship's
-        two tables. More than one (and not resolved by a preferred-join teach) =
-        ambiguous; exactly one = deterministic. Emits a single EntropyObject keyed
-        ``relationship:{from}::{to}``.
+        two tables. ≤1 path: the ambiguity question doesn't arise — ABSTAIN
+        (not_applicable, DAT-851). >1 paths: a real measurement — ambiguous, or
+        deterministic when a preferred-join teach picked this path. Emits a single
+        EntropyObject keyed ``relationship:{from}::{to}``.
         """
         config = get_entropy_config()
         detector_config = config.detector("join_path")
@@ -61,7 +72,15 @@ class JoinPathDeterminismDetector(EntropyDetector):
         from_table = context.from_table_name
         to_table = context.to_table_name
         if not from_table or not to_table:
-            return []
+            # A relationship context without endpoint names is an upstream
+            # resolution gap — trace it, don't skip silently (DAT-853).
+            return [
+                self.create_abstention(
+                    context,
+                    ABSTAIN_MISSING_INPUTS,
+                    evidence=[{"missing": "focal table names"}],
+                )
+            ]
 
         rels = context.get_analysis("relationships", [])
         if isinstance(rels, dict):
@@ -82,6 +101,26 @@ class JoinPathDeterminismDetector(EntropyDetector):
             if fc and tc:
                 col_paths.add(frozenset({fc, tc}))
 
+        # ≤1 distinct path: "which of several joins?" doesn't arise, so a score
+        # would be a confident answer to an unasked question (DAT-851: the old
+        # constant 0.1 here made every relationship read "measured
+        # deterministic" while the branch below was structurally unreachable).
+        if len(col_paths) <= 1:
+            return [
+                self.create_abstention(
+                    context,
+                    ABSTAIN_NOT_APPLICABLE,
+                    evidence=[
+                        {
+                            "path_status": "single_path",
+                            "from_table": from_table,
+                            "to_table": to_table,
+                            "distinct_join_paths": len(col_paths),
+                        }
+                    ],
+                )
+            ]
+
         # A user teach confirming THIS join path resolves the ambiguity (DAT-409).
         # Keyed on the focal column pair (the path's identity), not the table pair:
         # confirming one path among several between the same two tables marks that
@@ -95,12 +134,12 @@ class JoinPathDeterminismDetector(EntropyDetector):
             and frozenset({context.from_column_id, context.to_column_id}) in confirmed
         )
 
-        if len(col_paths) > 1 and not resolved:
+        if resolved:
+            score = score_deterministic
+            path_status = "resolved"
+        else:
             score = score_ambiguous
             path_status = "ambiguous"
-        else:
-            score = score_deterministic
-            path_status = "resolved" if resolved else "deterministic"
 
         evidence = [
             {

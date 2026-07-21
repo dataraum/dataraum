@@ -156,7 +156,7 @@ class StatisticalQualityPhase(BasePhase):
 
             # Count findings
             for qr in quality_results:
-                if qr.benford_analysis and not qr.benford_analysis.is_compliant:
+                if qr.benford_analysis and qr.benford_analysis.status == "violating":
                     benford_violations += 1
                 if qr.outlier_detection and qr.outlier_detection.iqr_outlier_ratio > 0.05:
                     outlier_columns += 1

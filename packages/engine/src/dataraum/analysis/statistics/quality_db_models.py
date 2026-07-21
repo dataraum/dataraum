@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -24,6 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from dataraum.analysis.statistics.models import BENFORD_STATUSES
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
@@ -50,6 +52,15 @@ class StatisticalQualityMetrics(Base):
     # and two coexisting runs' rows don't collide.
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_statistical_quality_metrics_column_run"),
+        # Benford applicability vocabulary (DAT-843): derived from the single-home
+        # constants in ``analysis.statistics.models`` (strict Pydantic at the
+        # writer; this is the DB backstop). Sorted for a deterministic dump.
+        CheckConstraint(
+            "benford_status IS NULL OR benford_status IN ("
+            + ", ".join(f"'{v}'" for v in sorted(BENFORD_STATUSES))
+            + ")",
+            name="benford_status",
+        ),
     )
 
     metric_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -62,6 +73,11 @@ class StatisticalQualityMetrics(Base):
 
     # STRUCTURED: Queryable quality indicators
     # Flags for filtering (fast queries)
+    # Typed Benford applicability state (DAT-843): 'compliant' / 'violating' /
+    # 'not_applicable'; NULL = not computed (n < 100 or the test errored). The
+    # engine's truth — the boolean below is its cockpit-facing projection
+    # (True/False only for a measured verdict, else NULL).
+    benford_status: Mapped[str | None] = mapped_column(String)
     benford_compliant: Mapped[bool | None] = mapped_column(Integer)
     has_outliers: Mapped[bool | None] = mapped_column(Integer)
 

@@ -117,12 +117,21 @@ _PRIMARY_SIGNALS = frozenset({"score", "conflict", "surprise"})
 def _signal_value(obj: EntropyObject, signal: str) -> float:
     """The measurement's value for one named loss signal."""
     if signal in _PRIMARY_SIGNALS:
-        return obj.score
+        return obj.measured_score
     return max((float(e.get(signal, 0.0)) for e in obj.evidence), default=0.0)
 
 
 def loss_risk_for_object(obj: EntropyObject, config: LossConfig) -> dict[str, float]:
-    """Per-intent expected-loss risk for one measurement object."""
+    """Per-intent expected-loss risk for one MEASURED object.
+
+    An abstention carries no number and must never contribute a risk — callers
+    (the readiness rollup) partition on ``status`` first; this raises if one
+    slips through (fail loud, DAT-853).
+    """
+    if obj.score is None:
+        raise ValueError(
+            f"abstained object reached the loss path: {obj.detector_id} on {obj.target}"
+        )
     table = config.measurements.get(obj.detector_id)
     if not table:
         return {}

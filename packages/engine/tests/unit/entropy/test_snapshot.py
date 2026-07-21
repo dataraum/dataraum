@@ -517,3 +517,117 @@ class TestTakeSnapshotViewScope:
 
         assert snap.scores == {}
         assert snap.detectors_run == []
+
+
+# --- Abstentions (DAT-853): the harness's silent paths become first-class rows ---
+
+
+class LoadDataFailingDetector(StubTypingDetector):
+    """Detector whose load_data raises."""
+
+    def load_data(self, context: DetectorContext) -> None:
+        raise RuntimeError("loader crashed")
+
+
+class AbstainingDetector(StubTypingDetector):
+    """Detector that deliberately abstains (question unanswerable)."""
+
+    def load_data(self, context: DetectorContext) -> None:
+        context.analysis_results["typing"] = {"parse_success_rate": 0.95}
+
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
+        return [
+            self.create_abstention(
+                context,
+                "not_applicable",
+                evidence=[{"why": "undefined here"}],
+            )
+        ]
+
+
+def _snapshot_with(registry: DetectorRegistry) -> Snapshot:
+    with (
+        patch(
+            "dataraum.entropy.snapshot._resolve_column_target",
+            return_value=("tbl1", "col1", "orders", "amount"),
+        ),
+        patch("dataraum.entropy.snapshot.get_default_registry", return_value=registry),
+    ):
+        return take_snapshot("column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock())
+
+
+class TestAbstentions:
+    def test_can_run_false_yields_abstention(self):
+        """can_run() False is no longer a silent skip — it emits missing_inputs."""
+        registry = DetectorRegistry()
+        registry.register(StubTypingDetector())  # requires "typing", never loaded
+
+        snap = _snapshot_with(registry)
+
+        assert snap.scores == {}
+        assert snap.detectors_run == []
+        assert len(snap.objects) == 1
+        obj = snap.objects[0]
+        assert obj.status == "abstained"
+        assert obj.abstain_reason == "missing_inputs"
+        assert obj.score is None
+        assert obj.detector_id == "stub_typing"
+        assert obj.sub_dimension == "type_fidelity"
+        assert obj.evidence[0]["missing_analyses"] == ["typing"]
+
+    def test_detect_exception_yields_abstention(self):
+        """A detect() crash leaves a queryable detector_error trace."""
+        registry = DetectorRegistry()
+        registry.register(PreloadingFailingDetector())
+
+        snap = _snapshot_with(registry)
+
+        assert snap.scores == {}
+        assert len(snap.objects) == 1
+        obj = snap.objects[0]
+        assert obj.status == "abstained"
+        assert obj.abstain_reason == "detector_error"
+        assert obj.evidence[0]["stage"] == "detect"
+        assert "Detector crashed" in obj.evidence[0]["error"]
+
+    def test_load_data_exception_yields_abstention(self):
+        """A load_data() crash leaves a queryable detector_error trace."""
+        registry = DetectorRegistry()
+        registry.register(LoadDataFailingDetector())
+
+        snap = _snapshot_with(registry)
+
+        assert snap.scores == {}
+        assert len(snap.objects) == 1
+        obj = snap.objects[0]
+        assert obj.status == "abstained"
+        assert obj.abstain_reason == "detector_error"
+        assert obj.evidence[0]["stage"] == "load_data"
+
+    def test_deliberate_abstention_passes_through(self):
+        """A detector's own abstention rides objects but never scores."""
+        registry = DetectorRegistry()
+        registry.register(AbstainingDetector())
+
+        snap = _snapshot_with(registry)
+
+        # detect() completed, so the detector counts as run — but no score.
+        assert snap.detectors_run == ["stub_typing"]
+        assert snap.scores == {}
+        assert len(snap.objects) == 1
+        obj = snap.objects[0]
+        assert obj.status == "abstained"
+        assert obj.abstain_reason == "not_applicable"
+        assert obj.evidence[0]["why"] == "undefined here"
+
+    def test_measured_detector_unaffected(self):
+        """A measured detector alongside an abstaining one keeps its score."""
+        registry = DetectorRegistry()
+        registry.register(PreloadingStubSemanticDetector())
+        registry.register(StubTypingDetector())  # will abstain (missing_inputs)
+
+        snap = _snapshot_with(registry)
+
+        assert snap.scores == {"naming_clarity": 0.5}
+        statuses = {obj.detector_id: obj.status for obj in snap.objects}
+        assert statuses == {"stub_semantic": "measured", "stub_typing": "abstained"}

@@ -25,6 +25,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.statistics.models import (
+    BENFORD_COMPLIANT,
+    BENFORD_NOT_APPLICABLE,
+    BENFORD_VIOLATING,
     BenfordAnalysis,
     OutlierDetection,
     StatisticalQualityResult,
@@ -58,7 +61,10 @@ def check_benford_law(
     indicate data manipulation or fraud.
 
     Applicable to: amounts, counts, financial transactions, population data
-    Not applicable to: assigned numbers (IDs, phone numbers), uniformly distributed data
+    Not applicable to: assigned numbers (IDs, phone numbers), uniformly distributed
+    data — and values confined to under ~one order of magnitude (DAT-843): the law
+    is mathematically undefined there (leading digits are scale-determined), so
+    the result carries ``status='not_applicable'`` instead of a chi-square verdict.
 
     Args:
         table: Table containing the column
@@ -66,7 +72,8 @@ def check_benford_law(
         duckdb_conn: DuckDB connection
 
     Returns:
-        Result containing BenfordAnalysis or None if not applicable
+        Result containing BenfordAnalysis (measured or not_applicable) or None
+        when there is too little data to say anything (n < 100).
     """
     try:
         table_name = table.duckdb_path
@@ -86,6 +93,27 @@ def check_benford_law(
             # Not enough data for meaningful Benford's test
             return Result.ok(None)
 
+        # Applicability gate (DAT-843): Benford needs the values to span roughly
+        # an order of magnitude or more. Bounded ranges (small-integer counts,
+        # ratings, capped quantities) have scale-determined leading digits — a
+        # chi-square there always "detects" a violation that is pure geometry.
+        abs_values = np.abs(values)
+        span_decades = float(np.log10(abs_values.max() / abs_values.min()))
+        if span_decades < 1.0:
+            return Result.ok(
+                BenfordAnalysis(
+                    status=BENFORD_NOT_APPLICABLE,
+                    magnitude_span_decades=span_decades,
+                    chi_square=None,
+                    p_value=None,
+                    digit_distribution=None,
+                    interpretation=(
+                        f"Benford's Law not applicable: values span "
+                        f"{span_decades:.2f} decades (< 1 order of magnitude)"
+                    ),
+                )
+            )
+
         # Extract first digits
         first_digits = np.array([int(str(abs(x))[0]) for x in values])
 
@@ -104,12 +132,14 @@ def check_benford_law(
         p_value_float = float(np.asarray(p_value).item())
 
         # Interpretation
-        is_compliant = bool(p_value_float > 0.05)
-        if is_compliant:
+        if p_value_float > 0.05:
+            status = BENFORD_COMPLIANT
             interpretation = "Follows Benford's Law (no anomalies detected)"
         elif p_value_float > 0.01:
+            status = BENFORD_VIOLATING
             interpretation = "Weak deviation from Benford's Law (monitor)"
         else:
+            status = BENFORD_VIOLATING
             interpretation = "Strong deviation from Benford's Law (investigate potential anomalies)"
 
         # Digit distribution for review
@@ -118,9 +148,10 @@ def check_benford_law(
         }
 
         result = BenfordAnalysis(
+            status=status,
+            magnitude_span_decades=span_decades,
             chi_square=chi2_float,
             p_value=p_value_float,
-            is_compliant=is_compliant,
             digit_distribution=digit_distribution,
             interpretation=interpretation,
         )
@@ -499,8 +530,15 @@ def assess_statistical_quality(
                             "column_id": column_id,
                             "run_id": run_id,
                             "computed_at": computed_at,
-                            "benford_compliant": benford_analysis.is_compliant
+                            # Typed applicability state (DAT-843); NULL = not
+                            # computed (n < 100 or the test errored).
+                            "benford_status": benford_analysis.status if benford_analysis else None,
+                            # Boolean read the cockpit renders: True/False only
+                            # for a MEASURED verdict; not-applicable maps to NULL
+                            # (renders as "—", never as a violation).
+                            "benford_compliant": (benford_analysis.status == BENFORD_COMPLIANT)
                             if benford_analysis
+                            and benford_analysis.status != BENFORD_NOT_APPLICABLE
                             else None,
                             "has_outliers": (outlier_detection.iqr_outlier_ratio > 0.05)
                             if outlier_detection
@@ -540,8 +578,13 @@ def _generate_statistical_quality_issues(
     """Generate quality issues from statistical analysis results."""
     issues = []
 
-    # Benford's Law violation
-    if benford_analysis and not benford_analysis.is_compliant:
+    # Benford's Law violation — only a MEASURED violation is an issue; a
+    # not_applicable outcome (DAT-843) is not evidence of anything.
+    if (
+        benford_analysis
+        and benford_analysis.status == BENFORD_VIOLATING
+        and benford_analysis.p_value is not None
+    ):
         severity = "warning" if benford_analysis.p_value > 0.01 else "critical"
         issues.append(
             {

@@ -32,3 +32,23 @@ def make_entropy_object(
         evidence=evidence or [{"metric": "test", "value": score}],
         detector_id=detector_id,
     )
+
+
+def make_abstention(
+    *,
+    target: str = "column:test_table.col1",
+    detector_id: str = "null_ratio",
+    reason: str = "not_applicable",
+    sub_dimension: str = "null_ratio",
+) -> EntropyObject:
+    """An abstained EntropyObject (DAT-853): score None, first-class row."""
+    return EntropyObject(
+        layer="value",
+        dimension="nulls",
+        sub_dimension=sub_dimension,
+        target=target,
+        score=None,
+        status="abstained",
+        abstain_reason=reason,
+        detector_id=detector_id,
+    )

@@ -107,6 +107,7 @@ export const currentColumnConcepts = pgView("current_column_concepts", {
 	columnId: varchar("column_id"),
 	runId: varchar("run_id"),
 	meaning: text(),
+	meaningStatus: varchar("meaning_status"),
 	temporalBehavior: varchar("temporal_behavior"),
 	unitSourceColumn: varchar("unit_source_column"),
 	derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
@@ -116,7 +117,7 @@ export const currentColumnConcepts = pgView("current_column_concepts", {
 	annotatedBy: varchar("annotated_by"),
 	confidence: doublePrecision(),
 }).as(
-	sql`SELECT concept_id, column_id, run_id, meaning, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT concept_id, column_id, run_id, meaning, meaning_status, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentColumnEligibility = pgView("current_column_eligibility", {

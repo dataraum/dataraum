@@ -262,11 +262,14 @@ def _run_detectors(
                 for key in detector.required_analyses
                 if key not in det_context.analysis_results
             ]
+            # A custom can_run() override can be False with every required
+            # analysis present — keep the trace honest instead of an empty list.
+            evidence = {"missing_analyses": missing} if missing else {"can_run": False}
             all_objects.append(
                 detector.create_abstention(
                     det_context,
                     ABSTAIN_MISSING_INPUTS,
-                    evidence=[{"missing_analyses": missing}],
+                    evidence=[evidence],
                 )
             )
             continue
@@ -275,6 +278,8 @@ def _run_detectors(
             detectors_run.append(detector.detector_id)
             all_objects.extend(objects)
             for obj in objects:
+                # ``score is not None`` is implied by measured (__post_init__)
+                # but kept for mypy narrowing — don't "simplify" it away.
                 if obj.status == STATUS_MEASURED and obj.score is not None:
                     scores[obj.sub_dimension] = obj.score
         except Exception as exc:

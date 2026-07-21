@@ -26,6 +26,7 @@ from dataraum.entropy.loss import (
     loss_risk_for_object,
 )
 from dataraum.entropy.models import (
+    ABSTAIN_GAP_REASONS,
     COVERAGE_MEASURED,
     COVERAGE_PARTIAL,
     COVERAGE_UNMEASURED,
@@ -100,11 +101,13 @@ class ColumnNodeEvidence:
 class ColumnReadinessResult:
     """Readiness rollup result for a single column.
 
-    ``coverage`` is the third rollup outcome (DAT-853): 'measured' — every
-    contributing loss-path detector measured; 'partial' — some abstained;
-    'unmeasured' — zero measured loss-path objects, so ``readiness`` stays the
-    vacuous default 'ready' (band vocabulary is frozen) and coverage carries
-    the truth. ``abstentions`` lists the loss-path abstentions behind it:
+    ``coverage`` is the third rollup outcome (DAT-853): 'measured' — no
+    measurement gap; 'partial' — some loss-path detector abstained for a GAP
+    reason (missing_inputs/detector_error/insufficient_data); 'unmeasured' —
+    zero measured loss-path objects with at least one gap abstention, so
+    ``readiness`` stays the vacuous default 'ready' (band vocabulary is
+    frozen) and coverage carries the truth. ``abstentions`` lists ALL
+    loss-path abstentions (including non-degrading not_applicable ones):
     ``[{detector, reason, intents}]``.
     """
 
@@ -199,10 +202,14 @@ def _build_column_result(
     benford) fall through to direct signals — context, never a band driver.
 
     Abstentions (DAT-853) never contribute a risk or a signal score. A loss-path
-    abstention degrades ``coverage`` ('partial', or 'unmeasured' when NOTHING
-    measured — which now yields a result row instead of silence); a non-loss
-    abstention is dropped here (its queryable trace is the persisted
-    ``entropy_objects`` row).
+    abstention with a GAP reason (missing_inputs/detector_error/insufficient_data)
+    degrades ``coverage`` ('partial', or 'unmeasured' when NOTHING measured —
+    which yields a result row instead of silence). A ``not_applicable``
+    abstention is a complete answer ("no such question here"), so it rides the
+    ``abstentions`` trace WITHOUT degrading coverage — join_path's ≤1-path
+    abstention is the structural norm (DAT-851) and must not stamp 'partial'
+    on every relationship. Non-loss abstentions are dropped here (their
+    queryable trace is the persisted ``entropy_objects`` row).
 
     Args:
         target: Target string (e.g. "column:table.col", "relationship:..", "table:..").
@@ -234,24 +241,29 @@ def _build_column_result(
         else:
             direct_signals.append(_object_to_direct_signal(obj))
 
+    gap_abstained = [o for o in abstained_loss if o.abstain_reason in ABSTAIN_GAP_REASONS]
     coverage = COVERAGE_MEASURED
-    if abstained_loss:
+    if gap_abstained:
         coverage = COVERAGE_PARTIAL if loss_objects else COVERAGE_UNMEASURED
-    abstentions = _abstention_payload(abstained_loss, loss_config)
 
     if not loss_objects:
-        if compute_rollup and abstained_loss:
+        if compute_rollup and gap_abstained:
             # THE third outcome (DAT-853): zero measured loss objects, but the
-            # loss-path detectors were asked and said "I did not measure this".
+            # loss-path detectors were asked and could not answer (gap reasons).
             # Band vocabulary stays frozen — the row claims no risk ('ready',
             # 0.0) and ``coverage='unmeasured'`` says the band is vacuous.
             # Previously this target produced NO row: silent green.
             return ColumnReadinessResult(
                 target=target,
                 coverage=coverage,
-                abstentions=abstentions,
+                abstentions=_abstention_payload(abstained_loss, loss_config),
             ), direct_signals
+        # Nothing measured and no measurement gap (nothing at all, or only
+        # not_applicable "no such question" abstentions): no readiness row —
+        # the abstention trace lives in entropy_objects.
         return None, direct_signals
+
+    abstentions = _abstention_payload(abstained_loss, loss_config)
 
     # Per-measurement node evidence (the raw half — always built). One node per loss
     # object; its impact is the worst per-intent loss it contributes (a rollup product,

@@ -19,7 +19,7 @@ from dataraum.entropy.views.readiness_context import (
     assemble_readiness_context,
 )
 
-from .conftest import make_entropy_object
+from .conftest import make_abstention, make_entropy_object
 
 # ===================================================================
 # A. Dataclass defaults
@@ -388,9 +388,6 @@ class TestMultiIntentAssembly:
 # ===================================================================
 
 
-from .conftest import make_abstention  # noqa: E402
-
-
 class TestCoverage:
     def test_all_measured_is_coverage_measured(self):
         """Existing behavior: a measured target rolls up with coverage='measured'."""
@@ -457,8 +454,42 @@ class TestCoverage:
         )
         assert ctx.columns == {}  # gate reads scores; the trace is entropy_objects
         mixed = assemble_readiness_context(
-            [make_entropy_object(score=0.5), make_abstention(detector_id="type_fidelity")],
+            [
+                make_entropy_object(score=0.5),
+                make_abstention(detector_id="type_fidelity", reason="detector_error"),
+            ],
             compute_rollup=False,
         )
         col = mixed.columns["column:test_table.col1"]
         assert col.coverage == "partial"
+
+    def test_not_applicable_does_not_degrade_coverage(self):
+        """A 'no such question' abstention rides the trace but is not a gap.
+
+        The relationship norm (DAT-851): join_path abstains not_applicable on
+        ~every single-path pair — if that degraded coverage, 'partial' would be
+        wallpaper and bury genuine missing_inputs/detector_error gaps.
+        """
+        measured = make_entropy_object(score=0.2)
+        na = make_abstention(
+            detector_id="join_path_determinism",
+            sub_dimension="join_path_determinism",
+            reason="not_applicable",
+        )
+        ctx = assemble_readiness_context([measured, na])
+        col = ctx.columns["column:test_table.col1"]
+        assert col.coverage == "measured"
+        # The trace stays complete — the abstention is visible, just not a gap.
+        assert [a["detector"] for a in col.abstentions] == ["join_path_determinism"]
+
+    def test_only_not_applicable_yields_no_row(self):
+        """All-not_applicable (no gap, nothing measured): no readiness row.
+
+        Nothing measurable existed, so there is no unmeasured RISK to warn
+        about; the trace lives in entropy_objects.
+        """
+        ctx = assemble_readiness_context(
+            [make_abstention(detector_id="join_path_determinism", reason="not_applicable")]
+        )
+        assert ctx.columns == {}
+        assert ctx.columns_unmeasured == 0

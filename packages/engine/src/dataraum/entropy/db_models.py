@@ -203,8 +203,10 @@ class EntropyReadinessRecord(Base):
     worst_intent_risk: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # Rollup coverage (DAT-853): whether the band rests on actual measurements.
-    # 'unmeasured' rows carry band='ready' with zero risk — the band is vacuous
-    # and this column says so; previously such targets got NO row (silent green).
+    # Degraded only by GAP-reason abstentions (ABSTAIN_GAP_REASONS — a
+    # not_applicable "no such question" does not degrade coverage). 'unmeasured'
+    # rows carry band='ready' with zero risk — the band is vacuous and this
+    # column says so; previously such targets got NO row (silent green).
     # ``abstentions`` is the self-describing trace: [{detector, reason, intents}].
     coverage: Mapped[str] = mapped_column(String, nullable=False, default=COVERAGE_MEASURED)
     abstentions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON_TYPE)

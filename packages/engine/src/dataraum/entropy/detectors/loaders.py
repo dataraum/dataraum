@@ -274,9 +274,8 @@ def load_statistics(
     if qm:
         qd = qm.quality_data or {}
         quality_dict: dict[str, Any] = {
-            # Typed applicability state (DAT-843) — the detector reads the full
-            # benford_analysis dict; the status rides along for cheap gating.
-            "benford_status": qm.benford_status,
+            # The benford detector reads the full benford_analysis dict — the
+            # typed status (DAT-843) rides inside it; no separate key.
             "benford_analysis": qd.get("benford_analysis"),
             "quality_data": qm.quality_data,
         }

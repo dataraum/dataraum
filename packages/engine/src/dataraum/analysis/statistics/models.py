@@ -129,6 +129,7 @@ class BenfordAnalysis(BaseModel):
     measured (model-enforced).
     """
 
+    # Literal must spell the values; keep in lockstep with BENFORD_STATUSES above.
     status: Literal["compliant", "violating", "not_applicable"]
     # log10(max|v| / min|v|) over the non-zero values — the applicability gate's
     # measured input, kept for all outcomes.

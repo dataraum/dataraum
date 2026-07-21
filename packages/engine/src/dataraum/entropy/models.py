@@ -44,6 +44,17 @@ ABSTAIN_REASONS: tuple[str, ...] = (
     ABSTAIN_INSUFFICIENT_DATA,
 )
 
+# The reasons that are a MEASUREMENT GAP — evidence that should exist is
+# missing. ``not_applicable`` is deliberately NOT here: "the question is
+# undefined for this target" is a complete answer, not missing evidence.
+# Coverage degradation (readiness rollup) counts only gap reasons — otherwise
+# join_path_determinism's structural-norm abstention (≤1 path, DAT-851) would
+# stamp 'partial' on every relationship and bury genuine gaps in wallpaper.
+# not_applicable abstentions still ride the persisted ``abstentions`` trace.
+ABSTAIN_GAP_REASONS: frozenset[str] = frozenset(
+    {ABSTAIN_MISSING_INPUTS, ABSTAIN_DETECTOR_ERROR, ABSTAIN_INSUFFICIENT_DATA}
+)
+
 # Readiness-rollup coverage (DAT-853): the loss rollup's third outcome. The
 # product band vocabulary (ready/investigate/blocked) stays frozen — band
 # answers "how risky is what we measured", coverage answers "did the loss-path

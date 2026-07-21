@@ -227,9 +227,7 @@ class TestStructuralTables:
             distinct_count=90,
             null_ratio=0.0,
             cardinality_ratio=0.9,
-            numeric_stats=NumericStats(
-                min_value=-250.5, max_value=1200.0, mean=10.0, stddev=5.0
-            ),
+            numeric_stats=NumericStats(min_value=-250.5, max_value=1200.0, mean=10.0, stddev=5.0),
         )
         session.add(
             StatisticalProfile(
@@ -247,9 +245,10 @@ class TestStructuralTables:
         session.flush()
 
         out = _build(session, [ledger])
-        assert "net_amount: min=-250.5 max=1200.0 — negative values present" in out[
-            "structural_tables"
-        ]
+        assert (
+            "net_amount: min=-250.5 max=1200.0 — negative values present"
+            in out["structural_tables"]
+        )
 
     def test_missing_generation_head_serves_no_samples_or_ranges(self, session) -> None:
         """Fail-closed: no promoted head → no profile reads, never an arbitrary run's."""

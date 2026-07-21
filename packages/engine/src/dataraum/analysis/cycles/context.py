@@ -862,8 +862,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         for cls_entry in rel.get("conditioned_label_samples", []):
             lines.append(
                 f"    {rel['from_table']}.{cls_entry['column']} "
-                f"({rel['from_column']}-joined rows only): "
-                + ", ".join(cls_entry["samples"])
+                f"({rel['from_column']}-joined rows only): " + ", ".join(cls_entry["samples"])
             )
     lines.append("")
 

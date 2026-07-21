@@ -750,6 +750,10 @@ class OperatingModelWorkflow:
     second family and ``metrics`` (DAT-456) the third, each running after the
     prior so the later families' graph context can read this run's evidence;
     DAT-432 inserts the terminal detect (cross_table_consistency) before promote.
+    A promote GATE (DAT-845) sits before that flip: if all three families
+    declared ZERO, no operating model exists, so the head is NOT flipped and the
+    run completes with the ``nothing_declared`` terminal outcome (see
+    :meth:`_run_inner`) — a misconfiguration signal, not a benign variant.
     A re-run is a full re-run under a fresh ``run_id`` — declared artifacts,
     validation results, detected cycles, and composed metrics supersede, never
     mutate (DAT-408).
@@ -820,7 +824,7 @@ class OperatingModelWorkflow:
         # a concurrent begin_session promote cannot shift the set mid-run.
         scoped = OperatingModelScopedInput(run=run, scope=scope, vertical=vertical)
         self._progress.phase = "validation"
-        outcome = await workflow.execute_activity(
+        validation_outcome = await workflow.execute_activity(
             "validation",
             scoped,
             result_type=PhaseOutcome,
@@ -848,7 +852,7 @@ class OperatingModelWorkflow:
         # and measured. Runs AFTER validation so cycle health reads this run's
         # validation results. Ungroundable cycles stay declared-with-reason.
         self._progress.phase = "business_cycles"
-        await workflow.execute_activity(
+        cycles_outcome = await workflow.execute_activity(
             "business_cycles",
             scoped,
             result_type=PhaseOutcome,
@@ -863,7 +867,7 @@ class OperatingModelWorkflow:
         # run's cycle + validation evidence. Ungroundable metrics stay
         # declared-with-reason; composed-but-unexecutable stay grounded-with-reason.
         self._progress.phase = "metrics"
-        await workflow.execute_activity(
+        metrics_outcome = await workflow.execute_activity(
             "metrics",
             scoped,
             result_type=PhaseOutcome,
@@ -871,6 +875,37 @@ class OperatingModelWorkflow:
             heartbeat_timeout=_HEARTBEAT_TIMEOUT,
             retry_policy=_LLM_RETRY,
         )
+
+        # Promote gate (DAT-845): a framed vertical that declared ZERO across all
+        # three lifecycle families (validation ⊕ business_cycles ⊕ metrics) has no
+        # operating model to seal. Refuse to flip the (catalog, "operating_model")
+        # head — an empty promote is indistinguishable downstream from a real one
+        # (the cockpit reads head-presence as "analyzed"), and a re-run can't fix a
+        # vertical that declares nothing, so failing would only loop. COMPLETE
+        # instead with the typed ``nothing_declared`` terminal outcome: loud +
+        # queryable (result.outcome + the terminal progress phase), a
+        # misconfiguration signal the briefing surfaces — never a benign variant.
+        # Each phase threads its own declared count on PhaseOutcome; only an
+        # explicit 0 from ALL three refuses (a None — no such signal — promotes).
+        declared_counts = (
+            validation_outcome.declared,
+            cycles_outcome.declared,
+            metrics_outcome.declared,
+        )
+        if all(count == 0 for count in declared_counts):
+            self._progress.phase = "nothing_declared"
+            workflow.logger.warning(
+                "operating_model_nothing_declared: no operating model exists — vertical "
+                "declares no validations, cycles, or metrics; head NOT promoted "
+                "(run_id=%s vertical=%s)",
+                run_id,
+                vertical,
+            )
+            return OperatingModelResult(
+                run_id=run_id,
+                validation_summary=validation_outcome.summary,
+                outcome="nothing_declared",
+            )
 
         # Terminal promote: flip (catalog, "operating_model") to this run.
         self._progress.phase = "operating_model_promote"
@@ -885,7 +920,8 @@ class OperatingModelWorkflow:
         self._progress.phase = "done"
         return OperatingModelResult(
             run_id=run_id,
-            validation_summary=outcome.summary,
+            validation_summary=validation_outcome.summary,
+            outcome="promoted",
         )
 
 

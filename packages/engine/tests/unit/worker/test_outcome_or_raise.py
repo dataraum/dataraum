@@ -105,6 +105,28 @@ def test_completed_run_returns_outcome() -> None:
     outcome = _acts()._outcome_or_raise(run, "slicing")
     assert outcome.status == PhaseStatus.COMPLETED.value
     assert outcome.summary == "2 drift summaries"
+    # A non-operating_model phase carries no declared signal → None.
+    assert outcome.declared is None
+
+
+def test_declared_count_passes_through() -> None:
+    """The declared gate signal (DAT-845) survives the PhaseRun→PhaseOutcome collapse.
+
+    The three operating_model families thread their declared-artifact count on the
+    PhaseRun; ``_outcome_or_raise`` must carry it onto the PhaseOutcome the workflow
+    reads to gate the promote — an explicit ``0`` (nothing declared) stays ``0``,
+    not silently dropped to ``None``.
+    """
+    empty = _acts()._outcome_or_raise(
+        PhaseRun(status=PhaseStatus.COMPLETED.value, summary="0 declared", declared=0),
+        "validation",
+    )
+    assert empty.declared == 0
+    populated = _acts()._outcome_or_raise(
+        PhaseRun(status=PhaseStatus.COMPLETED.value, summary="3 declared", declared=3),
+        "metrics",
+    )
+    assert populated.declared == 3
 
 
 # --- the propagation seam: a typed ProviderError out of the phase body ---

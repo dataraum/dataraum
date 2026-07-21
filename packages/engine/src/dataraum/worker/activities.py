@@ -703,4 +703,4 @@ class PhaseActivities:
             if _is_transient_commit_conflict(run.error):
                 raise ApplicationError(message, type="TransientPhaseFailure")
             raise ApplicationError(message, type="PhaseFailed", non_retryable=True)
-        return PhaseOutcome(status=run.status, summary=run.summary)
+        return PhaseOutcome(status=run.status, summary=run.summary, declared=run.declared)

@@ -306,6 +306,18 @@ def materialize_relationship_overlays(
                     to_column_id=to_col,
                 )
                 evidence = {**measured_evidence, **evidence}
+            # Edge KIND (DAT-850): a durable row copying an llm row's measurement
+            # also copies its resolved kind — a keeper (or a teach confirming a
+            # measured pair) must not resurrect a 'foreign_key' claim the
+            # measurement already refuted to 'conformed_dimension'. Without a
+            # measured row the teach's own claim IS a reference ('foreign_key' —
+            # a candidate reference's 'candidate' placeholder is a measurement,
+            # not a claim, so it is never copied). Either way ``oriented_row``
+            # re-resolves against the cardinality actually persisted, and the DB
+            # CHECK backstops.
+            claimed_type = (
+                measured.relationship_type if measured is not None else "foreign_key"
+            )
             session.add(
                 Relationship(
                     **Relationship.oriented_row(
@@ -314,7 +326,7 @@ def materialize_relationship_overlays(
                         from_column_id=from_col_r,
                         to_table_id=to_table_r,
                         to_column_id=to_col_r,
-                        relationship_type="foreign_key",
+                        relationship_type=claimed_type,
                         cardinality=cardinality,
                         confidence=confidence,
                         detection_method=method,

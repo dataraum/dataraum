@@ -90,7 +90,7 @@ def test_flip_swaps_every_directional_metric_generically() -> None:
     assert row["evidence"]["join_confidence"] == 0.7
 
 
-@pytest.mark.parametrize("cardinality", ["many-to-one", "many-to-many", None])
+@pytest.mark.parametrize("cardinality", ["many-to-one", None])
 def test_unorientable_cardinalities_are_left_as_emitted(cardinality: str | None) -> None:
     row = Relationship.oriented_row(
         run_id="r1",
@@ -109,6 +109,76 @@ def test_unorientable_cardinalities_are_left_as_emitted(cardinality: str | None)
     assert row["cardinality"] == cardinality
     # Untouched — no fabricated fan-out flag, no evidence swap.
     assert row["evidence"] == {"left_referential_integrity": 1.0}
+
+
+# --- Edge-kind resolution (DAT-850): measurement refutes a reference claim. ---
+
+
+@pytest.mark.parametrize("claimed", ["foreign_key", "hierarchy"])
+def test_many_to_many_resolves_a_reference_claim_to_conformed_dimension(claimed: str) -> None:
+    """A reference needs a unique parent side; measured m2m is a fact meeting.
+
+    The judge's claim is kept as evidence (``resolved_from_type``), its
+    EXISTENCE verdict survives (confirmation_source untouched), and the
+    endpoints/cardinality are not reoriented — m2m is symmetric.
+    """
+    row = Relationship.oriented_row(
+        run_id="r1",
+        from_table_id="fact_a",
+        from_column_id="a_region",
+        to_table_id="fact_b",
+        to_column_id="b_region",
+        relationship_type=claimed,
+        cardinality="many-to-many",
+        confidence=0.9,
+        detection_method="llm",
+        confirmation_source="judge",
+        evidence={"join_confidence": 0.8},
+    )
+    assert row["relationship_type"] == "conformed_dimension"
+    assert row["evidence"]["resolved_from_type"] == claimed
+    assert row["cardinality"] == "many-to-many"
+    assert (row["from_column_id"], row["to_column_id"]) == ("a_region", "b_region")
+    assert row["confirmation_source"] == "judge"
+    assert row["evidence"]["join_confidence"] == 0.8
+
+
+def test_many_to_many_candidate_passes_through_unresolved() -> None:
+    """A structural candidate is a measurement awaiting a claim, not a claim."""
+    row = Relationship.oriented_row(
+        run_id="r1",
+        from_table_id="a",
+        from_column_id="ac",
+        to_table_id="b",
+        to_column_id="bc",
+        relationship_type="candidate",
+        cardinality="many-to-many",
+        confidence=0.7,
+        detection_method="candidate",
+        confirmation_source="unconfirmed",
+        evidence=None,
+    )
+    assert row["relationship_type"] == "candidate"
+    assert "resolved_from_type" not in row["evidence"]
+
+
+def test_unmeasured_reference_claim_is_not_resolved() -> None:
+    """NULL cardinality is unknown, not contradicted — the claim stands."""
+    row = Relationship.oriented_row(
+        run_id="r1",
+        from_table_id="a",
+        from_column_id="ac",
+        to_table_id="b",
+        to_column_id="bc",
+        relationship_type="foreign_key",
+        cardinality=None,
+        confidence=0.9,
+        detection_method="llm",
+        confirmation_source="judge",
+        evidence=None,
+    )
+    assert row["relationship_type"] == "foreign_key"
+    assert "resolved_from_type" not in row["evidence"]
 
 
 # --- 1:1 orientation from measured containment asymmetry (DAT-725). ----------
@@ -278,9 +348,36 @@ def test_check_rejects_a_reversed_one_to_many_row(session: Session) -> None:
 
 
 def test_check_admits_the_canonical_orientations(session: Session) -> None:
-    for cardinality in ("many-to-one", "one-to-one", "many-to-many", None):
+    # A REFERENCE row's legal cardinalities exclude many-to-many (DAT-850 —
+    # that shape refutes the reference claim, see the test below).
+    for cardinality in ("many-to-one", "one-to-one", None):
         _add(session, cardinality=cardinality, from_column_id="ca", to_column_id="cb")
         session.rollback()  # each is its own attempt on the unique pair
+    # many-to-many persists as the conformed kind (or a structural candidate).
+    _add(session, relationship_type="conformed_dimension", cardinality="many-to-many")
+    session.rollback()
+    _add(
+        session,
+        relationship_type="candidate",
+        cardinality="many-to-many",
+        detection_method="candidate",
+        confirmation_source="unconfirmed",
+    )
+    session.rollback()
+
+
+@pytest.mark.parametrize("claimed", ["foreign_key", "hierarchy"])
+def test_check_rejects_a_reference_claim_with_many_to_many(
+    session: Session, claimed: str
+) -> None:
+    """DAT-850: the fk+m2m contradiction is unwritable even bypassing the helper."""
+    with pytest.raises(IntegrityError):
+        _add(session, relationship_type=claimed, cardinality="many-to-many")
+
+
+def test_check_rejects_a_value_outside_the_type_vocabulary(session: Session) -> None:
+    with pytest.raises(IntegrityError):
+        _add(session, relationship_type="semantic_reference")
 
 
 # --- the prefix contract, enforced rather than documented (DAT-725). ---------

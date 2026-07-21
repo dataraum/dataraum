@@ -281,13 +281,14 @@ class TestTopologicalModels:
         assert saved.confidence == 0.95
 
     def test_relationship_type_check_constraint(self, session: Session):
-        """The closed relationship_type vocabulary is DB-enforced (DAT-782).
+        """The closed relationship_type vocabulary is DB-enforced (DAT-782, DAT-850).
 
         ``ck_relationships_relationship_type`` admits exactly the values the
-        writers produce ('foreign_key', 'hierarchy', 'candidate'). A dead
-        value — e.g. 'semantic_reference', once advertised in the column
-        comment but never written — must be rejected at INSERT, not merely
-        discouraged by a producer-side Literal (which drifted once already).
+        write paths produce ('foreign_key', 'hierarchy', 'conformed_dimension',
+        'candidate'). A dead value — e.g. 'semantic_reference', once advertised
+        in the column comment but never written — must be rejected at INSERT,
+        not merely discouraged by a producer-side Literal (which drifted once
+        already).
         """
         source = Source(name="test_source", source_type="csv")
         sales_table = Table(source=source, table_name="sales", layer="raw")
@@ -297,33 +298,77 @@ class TestTopologicalModels:
         session.add_all([source, sales_table, customer_table, customer_id_col, id_col])
         session.flush()
 
-        def _rel(relationship_type: str, detection_method: str) -> Relationship:
+        def _rel(
+            relationship_type: str, detection_method: str, *, reversed_pair: bool = False
+        ) -> Relationship:
             # detection_method varies per row to sidestep the run-grain unique
             # constraint (run_id, from_column_id, to_column_id, detection_method) —
             # every value here must itself be real (ck_relationships_detection_method,
-            # DAT-802), so the 4 rows below exhaust the closed detection_method set.
+            # DAT-802). The 4 admitted rows below exhaust the closed detection_method
+            # set, so the rejection row reuses a method on the REVERSED column pair
+            # (a distinct identity under the constraint). The type↔method pairing is
+            # uniqueness bookkeeping, not a semantic claim.
+            from_col, to_col = (id_col, customer_id_col) if reversed_pair else (
+                customer_id_col,
+                id_col,
+            )
             return Relationship(
                 from_table_id=sales_table.table_id,
-                from_column_id=customer_id_col.column_id,
+                from_column_id=from_col.column_id,
                 to_table_id=customer_table.table_id,
-                to_column_id=id_col.column_id,
+                to_column_id=to_col.column_id,
                 relationship_type=relationship_type,
                 confidence=0.9,
                 detection_method=detection_method,
             )
 
-        # Every value a real writer produces is admitted.
-        real_detection_methods = ("candidate", "llm", "manual")
+        # Every value a real write path produces is admitted ('conformed_dimension'
+        # is assigned by ``oriented_row``'s edge-kind resolution, DAT-850).
+        real_detection_methods = ("candidate", "llm", "manual", "keeper")
         for relationship_type, detection_method in zip(
-            ("foreign_key", "hierarchy", "candidate"), real_detection_methods, strict=True
+            ("candidate", "foreign_key", "hierarchy", "conformed_dimension"),
+            real_detection_methods,
+            strict=True,
         ):
             session.add(_rel(relationship_type, detection_method=detection_method))
         session.flush()
 
         # A value outside the closed vocabulary is rejected by the CHECK — the
-        # row's detection_method ('keeper', the one real value unused above) is
-        # itself valid, so the rejection is proven to come from relationship_type.
-        session.add(_rel("semantic_reference", detection_method="keeper"))
+        # row's detection_method and column pair are themselves valid, so the
+        # rejection is proven to come from relationship_type.
+        session.add(_rel("semantic_reference", detection_method="llm", reversed_pair=True))
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
+
+    def test_reference_claim_with_many_to_many_is_unwritable(self, session: Session):
+        """DAT-850: ``ck_relationships_reference_not_many_to_many`` on real Postgres.
+
+        The contradiction that used to persist — relationship_type='foreign_key'
+        with measured cardinality='many-to-many' (exactly the conformed-dimension
+        meetings the judge mislabels) — fails at INSERT even on a write path that
+        bypasses ``oriented_row``.
+        """
+        source = Source(name="test_source", source_type="csv")
+        fact_a = Table(source=source, table_name="fact_a", layer="raw")
+        fact_b = Table(source=source, table_name="fact_b", layer="raw")
+        a_region = Column(table=fact_a, column_name="region", column_position=1)
+        b_region = Column(table=fact_b, column_name="region", column_position=1)
+        session.add_all([source, fact_a, fact_b, a_region, b_region])
+        session.flush()
+
+        session.add(
+            Relationship(
+                from_table_id=fact_a.table_id,
+                from_column_id=a_region.column_id,
+                to_table_id=fact_b.table_id,
+                to_column_id=b_region.column_id,
+                relationship_type="foreign_key",
+                cardinality="many-to-many",
+                confidence=0.9,
+                detection_method="llm",
+            )
+        )
         with pytest.raises(IntegrityError):
             session.flush()
         session.rollback()

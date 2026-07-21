@@ -77,12 +77,21 @@ class SemanticRole(StrEnum):
 
 
 class RelationshipType(StrEnum):
-    """Type of relationship between tables."""
+    """The semantic KIND of a table-to-table edge (DAT-850).
+
+    The LLM judge only ever *claims* a reference (``FOREIGN_KEY``/``HIERARCHY``
+    — ``RelationshipOutput``'s Literal); ``CONFORMED_DIMENSION`` is assigned by
+    the write path when the measured cardinality refutes that claim (two facts
+    meeting at a shared axis are not a reference — ``Relationship.oriented_row``).
+    The DB-enforced backstop is ``ck_relationships_relationship_type``, which
+    additionally admits the detector's ``'candidate'`` placeholder literal.
+    (``CORRELATION``/``SEMANTIC`` were removed: never written, and the CHECK
+    forbids persisting them — the enum had drifted from the enforced set.)
+    """
 
     FOREIGN_KEY = "foreign_key"
     HIERARCHY = "hierarchy"
-    CORRELATION = "correlation"
-    SEMANTIC = "semantic"
+    CONFORMED_DIMENSION = "conformed_dimension"
 
 
 class Cardinality(StrEnum):

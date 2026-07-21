@@ -529,9 +529,7 @@ class TestChainConditionedSamples:
         duck = duckdb.connect()
         duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
         duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2')")
-        duck.execute(
-            "CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE, fee DOUBLE)"
-        )
+        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE, fee DOUBLE)")
         duck.execute(
             "INSERT INTO typed_bank_txns VALUES "
             "('P1', -135000.0, -5.0), ('P2', -50.25, 10.0), "
@@ -587,9 +585,7 @@ class TestChainConditionedSamples:
         _relationship(session, bank, "payment_id", payments, "payment_id")
 
         out = _build(session, [bank, payments], duckdb_conn=duck, sampler=_sampler([r".*salary.*"]))
-        assert (
-            "salary_amount (payment_id-joined rows): <REDACTED>" in out["relationship_catalogue"]
-        )
+        assert "salary_amount (payment_id-joined rows): <REDACTED>" in out["relationship_catalogue"]
 
 
 class TestEnrichedViewsAndAxes:

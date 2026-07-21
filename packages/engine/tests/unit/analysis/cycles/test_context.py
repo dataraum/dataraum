@@ -1028,7 +1028,9 @@ def payment_chain_with_measures(session):
     amount_col = Column(
         table_id=bank.table_id, column_name="amount", column_position=1, raw_type="DOUBLE"
     )
-    fee_col = Column(table_id=bank.table_id, column_name="fee", column_position=2, raw_type="DOUBLE")
+    fee_col = Column(
+        table_id=bank.table_id, column_name="fee", column_position=2, raw_type="DOUBLE"
+    )
     key_col = Column(
         table_id=payments.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
     )

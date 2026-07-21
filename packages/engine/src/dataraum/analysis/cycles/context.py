@@ -706,7 +706,7 @@ def _conditioned_measure_range(
         return None
     try:
         return float(row[0]), float(row[1])
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         # All-NULL joined population (MIN/MAX → None) or a non-numeric column.
         return None
 

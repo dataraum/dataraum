@@ -42,7 +42,7 @@ The architecture is fixed; the work now is fixing bugs and inconsistencies. Don'
 
 ## Skills
 
-Workflow skills live at the workspace root (`.claude/skills/`): `/own` `/refine` `/implement` `/smoke` `/release-prep`.
+Workflow skills live at the workspace root (`.claude/skills/`): `/own` `/refine` `/implement` `/smoke`. Releases are cut by hand — there is no release skill and no CI doc check.
 
 Epic-scale work runs the **Owner/Eval model** (ADR-0023): a spec conversation with the lead sets the objective + a measurable scorecard, then one long-lived `/own` agent drives the slice on an epic branch to eval-green — spawning lanes, integrating them itself, running the eval after every integration, absorbing discovered work instead of spawning satellite tickets. `/refine` + `/implement` are its per-lane discipline.
 

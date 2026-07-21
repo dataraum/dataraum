@@ -94,8 +94,8 @@ was); agent teams (same robustness trade rejected in ADR-0006, and it paralleliz
 
 `/ideate`, `/decompose`, `/take` (skills); `team-refine.js` / `team-build.js`
 (workflows); `.claude/platform-status.md` (the ledger replaces the status board).
-`/refine` and `/implement` survive as lane discipline; `/smoke` and `/release-prep` are
-unchanged.
+`/refine` and `/implement` survive as lane discipline; `/smoke` is unchanged.
+`/release-prep` was retired separately — releases are cut by hand.
 
 ## Consequences
 

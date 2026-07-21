@@ -25,7 +25,7 @@ Correctness over speed. The product is **analytical correctness** — the system
 | "implement X", "is X feasible?" | `/refine` first (understand, surface conflicts) |
 | approved approach | `/implement` (phased; invokes the two reviewers at the end) |
 | UI or tool just built | `/smoke` (drive it, feel the UX) |
-| cutting a release | `/release-prep` |
+| cutting a release | the lead does this by hand — don't offer to automate it |
 | quick fix (<3 files, obvious) | just do it |
 
 **Sizing.** S (1–3 files): direct. M (3–8 files): plan, single session. L/XL (8+ files or cross-module): Confluence plan linked to the Jira issue, phased, each phase green before the next. Declare DO-change / DO-NOT-change file lists to fence *unrelated* scope. Cleanup the design implies — deleting dead code, removing a retired field, adapting its tests — is in-scope, not an adjacent-edit violation. What to avoid is unplanned *unrelated* edits, never design-implied deletion (see "Default to the clean cut" in the workspace CLAUDE.md).

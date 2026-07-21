@@ -147,11 +147,11 @@ def _describe(expr: str) -> str:
 
 @pytest.mark.parametrize("expr", _DUCKDB_NUMERIC)
 def test_duckdbs_own_numeric_names_are_recognized(expr: str) -> None:
-    assert is_numeric(_describe(expr)), f"{expr} → {_describe(expr)!r} not recognized as numeric"
+    described = _describe(expr)
+    assert is_numeric(described), f"{expr} → {described!r} not recognized as numeric"
 
 
 @pytest.mark.parametrize("expr", _DUCKDB_TIME_POINT)
 def test_duckdbs_own_timestamp_names_are_recognized(expr: str) -> None:
-    assert is_time_point(_describe(expr)), (
-        f"{expr} → {_describe(expr)!r} not recognized as a time point"
-    )
+    described = _describe(expr)
+    assert is_time_point(described), f"{expr} → {described!r} not recognized as a time point"

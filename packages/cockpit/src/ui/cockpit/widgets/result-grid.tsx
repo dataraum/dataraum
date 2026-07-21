@@ -971,7 +971,8 @@ export function StreamingGrid({
 	}, []);
 
 	// Value-stable request identity: re-stream iff the body OR sort changed. Parse
-	// it back inside the effect so the effect's ONLY dependency is the key — 	// stale closures, no churn from a fresh `body` object each parent render.
+	// it back inside the effect so the effect's ONLY dependency is the key — no
+	// stale closures, no churn from a fresh `body` object each parent render.
 	const requestKey = useMemo(() => JSON.stringify([body, sort]), [body, sort]);
 	useEffect(() => {
 		const [qBody, qSort] = JSON.parse(requestKey) as [

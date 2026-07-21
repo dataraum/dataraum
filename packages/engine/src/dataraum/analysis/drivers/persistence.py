@@ -23,7 +23,12 @@ from sqlalchemy import select
 from dataraum.analysis.drivers.db_models import DriverRankingArtifact
 from dataraum.analysis.drivers.models import DriverRanking, Measure
 from dataraum.analysis.drivers.processor import discover_drivers
-from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
+from dataraum.analysis.semantic.db_models import (
+    ColumnConcept,
+    SemanticAnnotation,
+    TableEntity,
+    TableRole,
+)
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column
 from dataraum.storage.upsert import upsert
@@ -77,7 +82,7 @@ def ranking_to_row(
 def _measure_columns(
     session: Session, table_ids: list[str], *, run_id: str
 ) -> list[tuple[str, str, str, str | None]]:
-    """The session's measure-role columns: ``(column_id, table_id, name, behavior)``.
+    """The session's measure-role columns on FACT/PERIODIC_SNAPSHOT tables only.
 
     ``semantic_role`` is object-grain (add_source generation) and read by ``column_id``
     without a run filter (the ``slicing_phase`` convention) — stable across runs, deduped
@@ -88,6 +93,19 @@ def _measure_columns(
     outer join keeps a measure with no bound concept (behavior ``None`` → defaults
     downstream); the ``SemanticAnnotation.run_id`` desc only orders the dedup of the
     object-grain rows.
+
+    DAT-846: ``semantic_role`` alone is not enough — the per-column LLM judges it from
+    the column in isolation, with no fact/dimension context, so a numeric DIMENSION
+    attribute (a circuit's latitude) can legitimately carry ``'measure'``. Dimension
+    tables never get an ``EnrichedView`` (only FACT/PERIODIC_SNAPSHOT do), so such a
+    column would deterministically hit the empty-ranking path and get persisted anyway
+    by the born-loud rule below — a driver_rankings row for something that was never a
+    measure. Restrict to ``TableEntity.table_role IN (FACT, PERIODIC_SNAPSHOT)``,
+    scoped to THIS begin_session ``run_id`` (``TableEntity`` is catalogue-grain, DAT-408,
+    same as ``enriched_views_phase``'s fact lookup — the pattern this mirrors). The join
+    is INNER: a table with no ``TableEntity`` row for this run (unclassified) is
+    excluded, exactly like ``enriched_views_phase.should_skip``/``_run`` treat an absent
+    row as "not a fact" rather than defaulting it in.
     """
     rows = session.execute(
         select(
@@ -97,6 +115,10 @@ def _measure_columns(
             ColumnConcept.temporal_behavior,
         )
         .join(SemanticAnnotation, SemanticAnnotation.column_id == Column.column_id)
+        .join(
+            TableEntity,
+            (TableEntity.table_id == Column.table_id) & (TableEntity.run_id == run_id),
+        )
         .outerjoin(
             ColumnConcept,
             (ColumnConcept.column_id == Column.column_id) & (ColumnConcept.run_id == run_id),
@@ -104,6 +126,7 @@ def _measure_columns(
         .where(
             Column.table_id.in_(table_ids),
             SemanticAnnotation.semantic_role == "measure",
+            TableEntity.table_role.in_([TableRole.FACT, TableRole.PERIODIC_SNAPSHOT]),
         )
         .order_by(Column.column_id, SemanticAnnotation.run_id.desc())
     ).all()

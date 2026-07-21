@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import duckdb
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.drivers.db_models import DriverRankingArtifact
@@ -22,7 +22,12 @@ from dataraum.analysis.drivers.persistence import (
     persist_driver_rankings,
     ranking_to_row,
 )
-from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.db_models import (
+    ColumnConcept,
+    SemanticAnnotation,
+    TableEntity,
+    TableRole,
+)
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column, Table
@@ -53,13 +58,18 @@ def _seed(
     behavior: str = "additive",
     table_name: str = "sales",
     view_name: str = VIEW,
+    table_role: str = TableRole.FACT,
 ) -> tuple[str, str]:
-    """Seed a fact + catalog with a ``semantic_role`` column the orchestrator enumerates.
+    """Seed a table + catalog with a ``semantic_role`` column the orchestrator enumerates.
 
-    Returns ``(fact_table_id, measure_column_id)``. ``dims`` become grain-safe slice
+    Returns ``(table_id, measure_column_id)``. ``dims`` become grain-safe slice
     definitions; ``measure`` gets a ``SemanticAnnotation`` with ``measure_role`` (set
     to a non-measure role to exercise the born-loud zero path); identities (if given)
     are persisted as ``TableEntity.identity_columns`` for the resolver to read.
+
+    A ``TableEntity`` row is ALWAYS written (DAT-846: ``_measure_columns`` inner-joins
+    it) — ``table_role`` defaults to FACT so existing callers keep exercising the fact
+    path; pass ``TableRole.DIMENSION`` to seed the excluded-attribute regression.
     """
     fact = Table(
         table_id=str(uuid4()),
@@ -105,15 +115,17 @@ def _seed(
             run_id=RUN, fact_table_id=fact.table_id, view_name=view_name, is_grain_verified=True
         )
     )
-    if identities:
-        session.add(
-            TableEntity(
-                run_id=RUN,
-                table_id=fact.table_id,
-                detected_entity_type="orders",
-                identity_columns=[{"column": c, "note": "seed"} for c in identities],
-            )
+    session.add(
+        TableEntity(
+            run_id=RUN,
+            table_id=fact.table_id,
+            detected_entity_type="orders",
+            table_role=table_role,
+            identity_columns=[{"column": c, "note": "seed"} for c in identities]
+            if identities
+            else None,
         )
+    )
     session.flush()
     return fact.table_id, measure_col_id
 
@@ -238,6 +250,62 @@ def test_no_measure_role_persists_nothing(
     # Born-loud zero: a fact whose only annotated column is NOT a measure role yields no
     # rows (and no crash) — nothing to rank, surfaced as an explicit 0.
     tid, _ = _seed(real_session, dims=CL_DIMS, measure_role="attribute")
+    _write_view(duck, make_clustered_corpus(np.random.default_rng(0)))
+
+    n = persist_driver_rankings(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+    assert n == 0
+    assert real_session.execute(select(DriverRankingArtifact)).first() is None
+
+
+def test_dimension_table_measure_role_column_persists_nothing(
+    real_session: Session, duck: duckdb.DuckDBPyConnection
+) -> None:
+    """DAT-846: a DIMENSION-role table's measure-labeled column is not a driver measure.
+
+    The per-column LLM judges ``semantic_role`` from the column alone (no fact/dimension
+    context), so a numeric dimension attribute — a circuit's latitude — can legitimately
+    carry ``'measure'``. Before the table-role filter this hit the born-loud path and
+    persisted an empty ``n_rows=0`` ranking row anyway; it must now be excluded upstream,
+    never even entering ``discover_drivers``.
+    """
+    tid, _ = _seed(real_session, dims=CL_DIMS, table_role=TableRole.DIMENSION)
+    _write_view(duck, make_clustered_corpus(np.random.default_rng(0)))
+
+    n = persist_driver_rankings(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+    assert n == 0
+    assert real_session.execute(select(DriverRankingArtifact)).first() is None
+
+
+def test_fact_table_measure_role_column_still_ranked(
+    real_session: Session, duck: duckdb.DuckDBPyConnection
+) -> None:
+    """DAT-846 counterpart: a real FACT measure keeps getting its row (born loud)."""
+    tid, measure_col_id = _seed(real_session, dims=CL_DIMS, table_role=TableRole.FACT)
+    _write_view(duck, make_clustered_corpus(np.random.default_rng(0)))
+
+    n = persist_driver_rankings(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+    assert n == 1
+    row = real_session.execute(
+        select(DriverRankingArtifact).where(
+            DriverRankingArtifact.measure_column_id == measure_col_id
+        )
+    ).scalar_one()
+    assert row.measure_table_id == tid
+
+
+def test_unclassified_table_persists_nothing(
+    real_session: Session, duck: duckdb.DuckDBPyConnection
+) -> None:
+    """A table with no ``TableEntity`` row for this run is excluded, not defaulted in.
+
+    Mirrors ``enriched_views_phase``'s fact lookup (an INNER join / membership test):
+    an absent row means "not known to be a fact," not "assume fact." Directly deletes
+    the ``TableEntity`` row ``_seed`` writes to isolate the missing-classification case
+    from the DIMENSION case above.
+    """
+    tid, _ = _seed(real_session, dims=CL_DIMS, table_role=TableRole.FACT)
+    real_session.execute(delete(TableEntity).where(TableEntity.table_id == tid))
+    real_session.flush()
     _write_view(duck, make_clustered_corpus(np.random.default_rng(0)))
 
     n = persist_driver_rankings(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)

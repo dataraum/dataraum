@@ -107,6 +107,10 @@ def persist_readiness(
                 worst_intent_risk=round(col.worst_intent_risk, 4),
                 intents=_intents_payload(col),
                 top_drivers=_top_drivers_payload(col),
+                # Rollup coverage (DAT-853): 'unmeasured'/'partial' keep "not
+                # measured" distinguishable from measured-clean in the persisted row.
+                coverage=col.coverage,
+                abstentions=col.abstentions or None,
             )
         )
 

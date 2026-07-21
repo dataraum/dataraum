@@ -73,3 +73,15 @@ def test_scores_a_statistical_detector_via_surprise_alias() -> None:
     config = LossConfig(measurements={"benford": {"aggregation_intent": {"surprise": 0.8}}})
     obj = EntropyObject(detector_id="benford", score=0.5, evidence=[])
     assert loss_risk_for_object(obj, config)["aggregation_intent"] == pytest.approx(0.4)
+
+
+def test_abstained_object_never_reaches_the_loss_path() -> None:
+    """DAT-853: an abstention has no number — feeding it to loss is a caller bug."""
+    abstained = EntropyObject(
+        detector_id="null_semantics",
+        score=None,
+        status="abstained",
+        abstain_reason="missing_inputs",
+    )
+    with pytest.raises(ValueError, match="abstained"):
+        loss_risk_for_object(abstained, _CONFIG)

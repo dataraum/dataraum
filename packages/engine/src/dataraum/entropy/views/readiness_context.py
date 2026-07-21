@@ -25,7 +25,13 @@ from dataraum.entropy.loss import (
     get_loss_config,
     loss_risk_for_object,
 )
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import (
+    COVERAGE_MEASURED,
+    COVERAGE_PARTIAL,
+    COVERAGE_UNMEASURED,
+    STATUS_MEASURED,
+    EntropyObject,
+)
 from dataraum.storage import Column, Table
 from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 
@@ -92,7 +98,15 @@ class ColumnNodeEvidence:
 
 @dataclass
 class ColumnReadinessResult:
-    """Readiness rollup result for a single column."""
+    """Readiness rollup result for a single column.
+
+    ``coverage`` is the third rollup outcome (DAT-853): 'measured' — every
+    contributing loss-path detector measured; 'partial' — some abstained;
+    'unmeasured' — zero measured loss-path objects, so ``readiness`` stays the
+    vacuous default 'ready' (band vocabulary is frozen) and coverage carries
+    the truth. ``abstentions`` lists the loss-path abstentions behind it:
+    ``[{detector, reason, intents}]``.
+    """
 
     target: str = ""
     node_evidence: list[ColumnNodeEvidence] = field(default_factory=list)
@@ -103,6 +117,8 @@ class ColumnReadinessResult:
     nodes_high: int = 0
     worst_intent_risk: float = 0.0
     readiness: str = "ready"
+    coverage: str = COVERAGE_MEASURED
+    abstentions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -120,6 +136,9 @@ class EntropyForReadiness:
     columns_blocked: int = 0
     columns_investigate: int = 0
     columns_ready: int = 0
+    # DAT-853: targets whose loss-path detectors ALL abstained. Counted apart
+    # from ``columns_ready`` — an unmeasured column is not a clean one.
+    columns_unmeasured: int = 0
     total_direct_signals: int = 0
     overall_readiness: str = "ready"
     avg_entropy_score: float = 0.0
@@ -155,11 +174,11 @@ def _state_from_score(score: float, low_upper: float, medium_upper: float) -> st
 
 
 def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
-    """Convert an unmapped EntropyObject to a DirectSignal."""
+    """Convert an unmapped MEASURED EntropyObject to a DirectSignal."""
     return DirectSignal(
         dimension_path=obj.dimension_path,
         target=obj.target,
-        score=obj.score,
+        score=obj.measured_score,
         evidence=list(obj.evidence),
         detector_id=obj.detector_id,
     )
@@ -179,6 +198,12 @@ def _build_column_result(
     worst measurement (max). Detectors with no loss row (informative signals like
     benford) fall through to direct signals — context, never a band driver.
 
+    Abstentions (DAT-853) never contribute a risk or a signal score. A loss-path
+    abstention degrades ``coverage`` ('partial', or 'unmeasured' when NOTHING
+    measured — which now yields a result row instead of silence); a non-loss
+    abstention is dropped here (its queryable trace is the persisted
+    ``entropy_objects`` row).
+
     Args:
         target: Target string (e.g. "column:table.col", "relationship:..", "table:..").
         objects: EntropyObjects for this target only.
@@ -189,21 +214,43 @@ def _build_column_result(
             ``entropy_readiness`` rows are the source of truth for the banded result.
 
     Returns:
-        Tuple of (ColumnReadinessResult or None, list of DirectSignals). None when no
-        object maps to a loss measurement (nothing to band).
+        Tuple of (ColumnReadinessResult or None, list of DirectSignals). None when
+        no object (measured or abstained) maps to a loss measurement (nothing to
+        band), or on the cheap path when nothing measured (the gate reads scores).
     """
     low_upper = loss_config.readiness_bands["low_upper"]
     medium_upper = loss_config.readiness_bands["medium_upper"]
 
     loss_objects: list[EntropyObject] = []
+    abstained_loss: list[EntropyObject] = []
     direct_signals: list[DirectSignal] = []
     for obj in objects:
+        if obj.status != STATUS_MEASURED:
+            if loss_config.is_loss_measurement(obj.detector_id):
+                abstained_loss.append(obj)
+            continue
         if loss_config.is_loss_measurement(obj.detector_id):
             loss_objects.append(obj)
         else:
             direct_signals.append(_object_to_direct_signal(obj))
 
+    coverage = COVERAGE_MEASURED
+    if abstained_loss:
+        coverage = COVERAGE_PARTIAL if loss_objects else COVERAGE_UNMEASURED
+    abstentions = _abstention_payload(abstained_loss, loss_config)
+
     if not loss_objects:
+        if compute_rollup and abstained_loss:
+            # THE third outcome (DAT-853): zero measured loss objects, but the
+            # loss-path detectors were asked and said "I did not measure this".
+            # Band vocabulary stays frozen — the row claims no risk ('ready',
+            # 0.0) and ``coverage='unmeasured'`` says the band is vacuous.
+            # Previously this target produced NO row: silent green.
+            return ColumnReadinessResult(
+                target=target,
+                coverage=coverage,
+                abstentions=abstentions,
+            ), direct_signals
         return None, direct_signals
 
     # Per-measurement node evidence (the raw half — always built). One node per loss
@@ -221,8 +268,8 @@ def _build_column_result(
                 node_name=obj.detector_id,
                 dimension_path=obj.dimension_path,
                 label=_node_label(obj.detector_id),
-                state=_state_from_score(obj.score, low_upper, medium_upper),
-                score=obj.score,
+                state=_state_from_score(obj.measured_score, low_upper, medium_upper),
+                score=obj.measured_score,
                 impact_delta=impact,
                 evidence=list(obj.evidence),
                 detector_id=obj.detector_id,
@@ -238,6 +285,8 @@ def _build_column_result(
             node_evidence=node_evidence,
             nodes_observed=len(node_evidence),
             nodes_high=nodes_high,
+            coverage=coverage,
+            abstentions=abstentions,
         ), direct_signals
 
     # Per-intent risk = worst measurement (max across objects). Drivers = each
@@ -253,7 +302,7 @@ def _build_column_result(
                 node=obj.detector_id,
                 dimension_path=obj.dimension_path,
                 label=_node_label(obj.detector_id),
-                state=_state_from_score(obj.score, low_upper, medium_upper),
+                state=_state_from_score(obj.measured_score, low_upper, medium_upper),
                 impact_delta=per,
             )
             for obj in loss_objects
@@ -281,7 +330,27 @@ def _build_column_result(
         nodes_high=nodes_high,
         worst_intent_risk=worst_intent_risk,
         readiness=loss_config.band(worst_intent_risk),
+        coverage=coverage,
+        abstentions=abstentions,
     ), direct_signals
+
+
+def _abstention_payload(
+    abstained: list[EntropyObject], loss_config: LossConfig
+) -> list[dict[str, Any]]:
+    """Self-describing trace of loss-path abstentions: [{detector, reason, intents}].
+
+    ``intents`` names what the abstaining detector's loss table WOULD have
+    scored — the intents whose risk is missing a contributor.
+    """
+    return [
+        {
+            "detector": obj.detector_id,
+            "reason": obj.abstain_reason,
+            "intents": sorted(loss_config.measurements.get(obj.detector_id, {})),
+        }
+        for obj in abstained
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -352,10 +421,12 @@ def assemble_readiness_context(
         if col_result is not None:
             columns[target] = col_result
 
-    # Step 5: Other targets (table:/view:) -> all objects become DirectSignal
+    # Step 5: Other targets (view:) -> measured objects become DirectSignals.
+    # Abstentions carry no score to signal; their trace is the entropy_objects row.
     for _target, target_objects in other_targets.items():
         for obj in target_objects:
-            all_direct_signals.append(_object_to_direct_signal(obj))
+            if obj.status == STATUS_MEASURED:
+                all_direct_signals.append(_object_to_direct_signal(obj))
 
     # Step 5b: Deduplicate direct signals — keep highest score per key
     seen: dict[tuple[str, str, str], DirectSignal] = {}
@@ -366,11 +437,15 @@ def assemble_readiness_context(
             seen[key] = ds
     all_direct_signals = list(seen.values())
 
-    # Step 6: Summary stats
+    # Step 6: Summary stats. An unmeasured column (DAT-853) is counted apart —
+    # its band is the vacuous 'ready' and must not inflate the clean count.
     total_columns = len(columns)
+    columns_unmeasured = sum(1 for c in columns.values() if c.coverage == COVERAGE_UNMEASURED)
     columns_blocked = sum(1 for c in columns.values() if c.readiness == "blocked")
     columns_investigate = sum(1 for c in columns.values() if c.readiness == "investigate")
-    columns_ready = sum(1 for c in columns.values() if c.readiness == "ready")
+    columns_ready = sum(
+        1 for c in columns.values() if c.readiness == "ready" and c.coverage != COVERAGE_UNMEASURED
+    )
 
     # Overall readiness derived from per-column readiness (which uses
     # dynamic subgraphs to avoid prior leakage from unobserved nodes).
@@ -381,9 +456,11 @@ def assemble_readiness_context(
     else:
         overall_readiness = "ready"
 
-    # Average entropy: per-target max score, then mean across targets.
+    # Average entropy: per-target max MEASURED score, then mean across targets.
     target_max: dict[str, float] = {}
     for obj in objects:
+        if obj.score is None:
+            continue
         if obj.target not in target_max or obj.score > target_max[obj.target]:
             target_max[obj.target] = obj.score
     avg_entropy_score = sum(target_max.values()) / len(target_max) if target_max else 0.0
@@ -395,6 +472,7 @@ def assemble_readiness_context(
         columns_blocked=columns_blocked,
         columns_investigate=columns_investigate,
         columns_ready=columns_ready,
+        columns_unmeasured=columns_unmeasured,
         total_direct_signals=len(all_direct_signals),
         overall_readiness=overall_readiness,
         avg_entropy_score=avg_entropy_score,
@@ -560,9 +638,12 @@ def load_persisted_readiness(
             continue
         columns[target] = _record_to_column_result(target, rec)
 
+    columns_unmeasured = sum(1 for c in columns.values() if c.coverage == COVERAGE_UNMEASURED)
     columns_blocked = sum(1 for c in columns.values() if c.readiness == "blocked")
     columns_investigate = sum(1 for c in columns.values() if c.readiness == "investigate")
-    columns_ready = sum(1 for c in columns.values() if c.readiness == "ready")
+    columns_ready = sum(
+        1 for c in columns.values() if c.readiness == "ready" and c.coverage != COVERAGE_UNMEASURED
+    )
     if columns_blocked > 0:
         overall_readiness = "blocked"
     elif columns_investigate > 0:
@@ -576,6 +657,7 @@ def load_persisted_readiness(
         columns_blocked=columns_blocked,
         columns_investigate=columns_investigate,
         columns_ready=columns_ready,
+        columns_unmeasured=columns_unmeasured,
         overall_readiness=overall_readiness,
     )
 
@@ -723,6 +805,8 @@ def _record_to_column_result(target: str, rec: EntropyReadinessRecord) -> Column
         nodes_high=sum(1 for ne in node_evidence if ne.state == "high"),
         worst_intent_risk=rec.worst_intent_risk,
         readiness=rec.band,
+        coverage=rec.coverage,
+        abstentions=list(rec.abstentions or []),
     )
 
 

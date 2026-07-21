@@ -192,6 +192,8 @@ class EntropyRepository:
             sub_dimension=record.sub_dimension,
             target=record.target,
             score=record.score,
+            status=record.status,
+            abstain_reason=record.abstain_reason,
             evidence=evidence,
             computed_at=record.computed_at,
             source_analysis_ids=record.source_analysis_ids or [],

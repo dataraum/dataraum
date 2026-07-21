@@ -1592,6 +1592,9 @@ def _column_readiness_to_dict(result: Any) -> dict[str, Any]:
     return {
         "worst_intent_risk": result.worst_intent_risk,
         "readiness": result.readiness,
+        # DAT-853: 'unmeasured'/'partial' tell the agent a 'ready' band rests on
+        # missing measurements, not on evidence of cleanliness.
+        "coverage": result.coverage,
         "top_priority_node": result.top_priority_node,
         "top_priority_impact": result.top_priority_impact,
         "high_entropy_dimensions": high_dims,

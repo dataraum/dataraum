@@ -24,17 +24,28 @@ from dataraum.entropy.detectors.base import (
     DetectorContext,
     get_default_registry,
 )
-from dataraum.entropy.models import EntropyObject, parse_relationship_target
+from dataraum.entropy.models import (
+    ABSTAIN_DETECTOR_ERROR,
+    ABSTAIN_MISSING_INPUTS,
+    STATUS_MEASURED,
+    EntropyObject,
+    parse_relationship_target,
+)
 
 logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
 class Snapshot:
-    """Immutable snapshot of detector scores for a target."""
+    """Immutable snapshot of detector scores for a target.
 
-    scores: dict[str, float]  # sub_dimension -> score
-    detectors_run: list[str]  # detector_ids that were executed
+    ``scores`` carries MEASURED results only; abstentions (DAT-853) ride in
+    ``objects`` with ``status='abstained'`` so they persist as first-class rows
+    but never masquerade as a number.
+    """
+
+    scores: dict[str, float]  # sub_dimension -> score (measured only)
+    detectors_run: list[str]  # detector_ids whose detect() completed
     objects: tuple[EntropyObject, ...] = ()  # full EntropyObject instances
     measured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -193,6 +204,11 @@ def _run_detectors(
     Each detector gets a fresh DetectorContext copy. The detector calls
     load_data() to populate its required analysis keys, then can_run()
     checks they're present, and detect() produces EntropyObjects.
+
+    No silent skips (DAT-853, the DAT-405 lesson made structural): a
+    load_data()/detect() exception and a can_run() False each yield a persisted
+    ABSTENTION object — a queryable trace, not just a log line — so a detector
+    that never measured is distinguishable from one that measured clean.
     """
     scores: dict[str, float] = {}
     detectors_run: list[str] = []
@@ -226,25 +242,52 @@ def _run_detectors(
 
         try:
             detector.load_data(det_context)
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 f"Detector {detector.detector_id} load_data failed on {target}",
                 exc_info=True,
             )
+            all_objects.append(
+                detector.create_abstention(
+                    det_context,
+                    ABSTAIN_DETECTOR_ERROR,
+                    evidence=[{"stage": "load_data", "error": str(exc)}],
+                )
+            )
             continue
 
         if not detector.can_run(det_context):
+            missing = [
+                str(key)
+                for key in detector.required_analyses
+                if key not in det_context.analysis_results
+            ]
+            all_objects.append(
+                detector.create_abstention(
+                    det_context,
+                    ABSTAIN_MISSING_INPUTS,
+                    evidence=[{"missing_analyses": missing}],
+                )
+            )
             continue
         try:
             objects: list[EntropyObject] = detector.detect(det_context)
             detectors_run.append(detector.detector_id)
             all_objects.extend(objects)
             for obj in objects:
-                scores[obj.sub_dimension] = obj.score
-        except Exception:
+                if obj.status == STATUS_MEASURED and obj.score is not None:
+                    scores[obj.sub_dimension] = obj.score
+        except Exception as exc:
             logger.warning(
                 f"Hard detector {detector.detector_id} failed on {target}",
                 exc_info=True,
+            )
+            all_objects.append(
+                detector.create_abstention(
+                    det_context,
+                    ABSTAIN_DETECTOR_ERROR,
+                    evidence=[{"stage": "detect", "error": str(exc)}],
+                )
             )
 
     return Snapshot(scores=scores, detectors_run=detectors_run, objects=tuple(all_objects))

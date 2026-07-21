@@ -330,6 +330,8 @@ def _make_record(
         dimension=entropy_obj.dimension,
         sub_dimension=entropy_obj.sub_dimension,
         score=entropy_obj.score,
+        status=entropy_obj.status,
+        abstain_reason=entropy_obj.abstain_reason,
         evidence=entropy_obj.evidence,
         detector_id=entropy_obj.detector_id,
     )

@@ -88,3 +88,37 @@ def test_uniqueness_asymmetry_is_rendered() -> None:
     cands[0]["join_columns"][0]["right_uniqueness"] = 1.0
     out = agent._format_relationship_candidates(cands)
     assert "[uniq: L=0.02 R=1.00]" in out
+
+
+def test_role_annotations_are_rendered_pair_local() -> None:
+    """DAT-723: established per-column roles render on the candidate line.
+
+    The judge weighs "period identifier × containment" on the line where the
+    containment is printed, instead of cross-referencing the far-away
+    annotation block.
+    """
+    agent = SemanticAgent.__new__(SemanticAgent)
+    cands = _candidates()
+    jc = cands[0]["join_columns"][0]
+    jc["column1_role"] = "timestamp"
+    jc["column1_entity_type"] = "fiscal_period"
+    jc["column2_role"] = "key"
+    out = agent._format_relationship_candidates(cands)
+    assert "[role: L=timestamp(fiscal_period) R=key]" in out
+
+
+def test_role_bracket_renders_only_annotated_sides() -> None:
+    """A one-sided annotation renders one side — the bare side stays absent."""
+    agent = SemanticAgent.__new__(SemanticAgent)
+    cands = _candidates()
+    cands[0]["join_columns"][0]["column2_role"] = "key"
+    out = agent._format_relationship_candidates(cands)
+    assert "[role: R=key]" in out
+    assert "L=" not in out.split("[role: ")[1].split("]")[0]
+
+
+def test_role_bracket_omitted_when_no_annotations() -> None:
+    """Candidates without annotation fields render no role bracket at all."""
+    agent = SemanticAgent.__new__(SemanticAgent)
+    out = agent._format_relationship_candidates(_candidates())
+    assert "[role:" not in out

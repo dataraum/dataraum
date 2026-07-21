@@ -601,6 +601,27 @@ class SemanticAgent(LLMFeature):
                     if metrics:
                         line += f" [{', '.join(metrics)}]"
 
+                    # Established per-column annotations (DAT-723): the roles the
+                    # per-column phase already decided, served pair-local so the
+                    # judge weighs them AGAINST the containment on this same line
+                    # (a period identifier contained in a surrogate key is shared
+                    # format, not entity identity) instead of cross-referencing
+                    # the annotation block. Sides without an annotation render
+                    # nothing — absence stays visible as absence.
+                    side_strs = []
+                    for label, role_key, entity_key in (
+                        ("L", "column1_role", "column1_entity_type"),
+                        ("R", "column2_role", "column2_entity_type"),
+                    ):
+                        role = jc.get(role_key)
+                        entity = jc.get(entity_key)
+                        if role and entity:
+                            side_strs.append(f"{label}={role}({entity})")
+                        elif role or entity:
+                            side_strs.append(f"{label}={role or entity}")
+                    if side_strs:
+                        line += f" [role: {' '.join(side_strs)}]"
+
                     lines.append(line)
 
         return "\n".join(lines)

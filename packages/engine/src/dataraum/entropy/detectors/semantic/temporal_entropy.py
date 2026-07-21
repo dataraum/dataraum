@@ -8,6 +8,7 @@ in time-based analysis.
 Source: semantic.semantic_role, typing.data_type
 """
 
+from dataraum.core.duckdb_types import is_datetime_like
 from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
@@ -33,9 +34,6 @@ class TemporalEntropyDetector(EntropyDetector):
     sub_dimension = SubDimension.TIME_ROLE
     required_analyses = [AnalysisKey.TYPING, AnalysisKey.SEMANTIC]
     description = "Measures whether temporal columns are properly identified"
-
-    # Date/time type indicators (uppercase for case-insensitive matching)
-    DATETIME_TYPES = frozenset({"DATE", "TIME", "TIMESTAMP", "DATETIME", "INTERVAL"})
 
     def load_data(self, context: DetectorContext) -> None:
         """Load typing and semantic data for this column."""
@@ -92,7 +90,11 @@ class TemporalEntropyDetector(EntropyDetector):
                 semantic.get("temporal_behavior") if isinstance(semantic, dict) else None
             )
 
-        is_datetime_type = any(dt in data_type for dt in self.DATETIME_TYPES)
+        # Temporal in ANY sense — durations and times-of-day included. The
+        # question here is whether the TYPE agrees with a timestamp ROLE, not
+        # whether the column bounds a window, so this is deliberately the wider
+        # family than the one temporal profiling uses (DAT-835).
+        is_datetime_type = is_datetime_like(data_type)
         is_marked_timestamp = semantic_role == "timestamp"
 
         # Not a temporal column at all → nothing to measure.

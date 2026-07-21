@@ -22,6 +22,7 @@ from dataraum.analysis.correlation.db_models import (
 from dataraum.analysis.correlation.models import DerivedColumn
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.views.served_columns import enriched_dimension_columns
+from dataraum.core.duckdb_types import is_numeric
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
@@ -196,9 +197,7 @@ def detect_derived_columns(
                     zero_constant_source_ids.add(col_id)
 
         # Check arithmetic derivations (numeric columns only)
-        numeric_cols = [
-            c for c in columns if c.resolved_type in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]
-        ]
+        numeric_cols = [c for c in columns if is_numeric(c.resolved_type)]
 
         # Generate all triples and operations to check
         operations = [
@@ -377,10 +376,9 @@ def detect_enriched_derived_columns(
                     zero_constant_source_ids.add(col_id)
 
         # 4. Build combined numeric column list
-        numeric_types = {"INTEGER", "BIGINT", "DOUBLE", "DECIMAL"}
-        numeric_fact = [c for c in fact_columns if c.resolved_type in numeric_types]
+        numeric_fact = [c for c in fact_columns if is_numeric(c.resolved_type)]
 
-        numeric_dim = [c for c in dim_columns if c.resolved_type in numeric_types]
+        numeric_dim = [c for c in dim_columns if is_numeric(c.resolved_type)]
         all_numeric: list[Column] = list(numeric_fact) + numeric_dim
 
         if len(all_numeric) < 2:

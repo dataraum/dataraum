@@ -64,6 +64,7 @@ from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
+from dataraum.core.duckdb_types import is_numeric
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
@@ -90,17 +91,6 @@ _GRAIN_SQL: dict[str, tuple[str, str]] = {
     "weekly": ("week", "%G-W%V"),
     "monthly": ("month", "%Y-%m"),
 }
-
-_NUMERIC_TYPES = frozenset(
-    {"TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "FLOAT", "DOUBLE", "DECIMAL"}
-)
-
-
-def _is_numeric(resolved_type: str | None) -> bool:
-    """A column's resolved type is a summable numeric (ignores DECIMAL precision)."""
-    return (
-        resolved_type is not None and resolved_type.split("(")[0].strip().upper() in _NUMERIC_TYPES
-    )
 
 
 @dataclass(frozen=True)
@@ -547,7 +537,7 @@ def discover_aggregation_lineage(
         if axes:
             time_cols_by_table[entity.table_id] = axes
     numeric_cols_by_table = {
-        tid: sorted(name for name, col in by_name.items() if _is_numeric(col.resolved_type))
+        tid: sorted(name for name, col in by_name.items() if is_numeric(col.resolved_type))
         for tid, by_name in columns_by_table.items()
     }
 

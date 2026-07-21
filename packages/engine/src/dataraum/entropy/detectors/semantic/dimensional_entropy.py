@@ -32,6 +32,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.core.duckdb_types import is_numeric
 from dataraum.core.logging import get_logger
 from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
@@ -45,20 +46,6 @@ from dataraum.entropy.models import EntropyObject
 from dataraum.storage import Column
 
 logger = get_logger(__name__)
-
-# resolved_type prefixes treated as numeric → folded to a non-zero indicator.
-_NUMERIC_TYPES = (
-    "DECIMAL",
-    "NUMERIC",
-    "FLOAT",
-    "DOUBLE",
-    "REAL",
-    "INTEGER",
-    "BIGINT",
-    "HUGEINT",
-    "SMALLINT",
-    "TINYINT",
-)
 
 # distinct/total above this ⇒ an identifier (distinct ≈ rowcount) → excluded entirely.
 _NEAR_UNIQUE_RATIO = 0.99
@@ -154,8 +141,9 @@ class DimensionalEntropyDetector(EntropyDetector):
             )
             if self._is_excluded(col, semantic, stats_row):
                 continue
-            resolved = (col.resolved_type or "").upper()
-            if resolved.startswith(_NUMERIC_TYPES):
+            # Numeric → folded to a non-zero indicator (the shared type family,
+            # DAT-835 — a prefix tuple missed the unsigned widths).
+            if is_numeric(col.resolved_type):
                 candidates.append((col, _NUMERIC))
                 continue
             cardinality = stats_row.get("cardinality_ratio")

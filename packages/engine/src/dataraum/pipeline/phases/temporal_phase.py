@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from dataraum.analysis.temporal import profile_temporal
+from dataraum.core.duckdb_types import TIME_POINT_TYPES, is_time_point
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -60,8 +61,6 @@ class TemporalPhase(BasePhase):
 
         logger.debug(f"Temporal: Found {len(typed_tables)} typed tables")
 
-        # Check for temporal columns
-        temporal_types = ["DATE", "TIMESTAMP", "TIMESTAMPTZ"]
         typed_table_ids = [t.table_id for t in typed_tables]
 
         # First, get all columns to see what types exist
@@ -73,10 +72,13 @@ class TemporalPhase(BasePhase):
             type_counts[t] = type_counts.get(t, 0) + 1
         logger.debug(f"Temporal: Column types in typed tables: {type_counts}")
 
-        temporal_columns = [c for c in all_columns if c.resolved_type in temporal_types]
+        temporal_columns = [c for c in all_columns if is_time_point(c.resolved_type)]
 
         if not temporal_columns:
-            return f"No temporal columns found (types: {temporal_types}, available: {list(type_counts.keys())})"
+            return (
+                f"No temporal columns found (types: {sorted(TIME_POINT_TYPES)}, "
+                f"available: {list(type_counts.keys())})"
+            )
 
         logger.debug(f"Temporal: Found {len(temporal_columns)} temporal columns")
 
@@ -89,12 +91,13 @@ class TemporalPhase(BasePhase):
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
 
-        # Check for temporal columns
-        temporal_types = ["DATE", "TIMESTAMP", "TIMESTAMPTZ"]
+        # Check for temporal columns. The IN list is exhaustive by construction:
+        # DuckDB timestamp names carry no parameters, so every spelling a column
+        # can hold is a literal member of TIME_POINT_TYPES (DAT-835).
         typed_table_ids = [t.table_id for t in typed_tables]
         temporal_columns_stmt = select(Column).where(
             Column.table_id.in_(typed_table_ids),
-            Column.resolved_type.in_(temporal_types),
+            Column.resolved_type.in_(sorted(TIME_POINT_TYPES)),
         )
         temporal_columns = (ctx.session.execute(temporal_columns_stmt)).scalars().all()
 

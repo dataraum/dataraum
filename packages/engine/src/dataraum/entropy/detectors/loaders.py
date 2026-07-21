@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from dataraum.core.duckdb_types import is_numeric
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -658,13 +660,12 @@ def load_hypothesis_match_rate(
     # over DATE/VARCHAR sources (e.g. "end_date - start_date" for a duration
     # column) TRY_CASTs every row to NULL, grades match_rate 0.0, and a
     # perfectly clean column scores 1.0 (review wave-1 blocker).
-    _numeric_types = ("INTEGER", "BIGINT", "DOUBLE", "DECIMAL")
-    if col.resolved_type not in _numeric_types:
+    if not is_numeric(col.resolved_type):
         return None
     siblings = {
         c.column_name.strip().lower(): c.column_name
         for c in session.execute(select(Column).where(Column.table_id == col.table_id)).scalars()
-        if c.resolved_type in _numeric_types
+        if is_numeric(c.resolved_type)
     }
     resolved = [siblings.get(name.strip().lower()) for name in source_columns]
     if any(name is None for name in resolved) or len(resolved) != 2:

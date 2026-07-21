@@ -41,6 +41,7 @@ from dataraum.analysis.temporal.models import (
     TemporalProfileResult,
 )
 from dataraum.core.config import load_yaml_config
+from dataraum.core.duckdb_types import TIME_POINT_TYPES
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
@@ -160,13 +161,14 @@ def profile_temporal(
         if table.layer != "typed":
             return Result.fail(f"Temporal profiling requires typed tables. Got: {table.layer}")
 
-        # Get all temporal columns for this table
-        temporal_types = ["DATE", "TIMESTAMP", "TIMESTAMPTZ"]
+        # Get all temporal columns for this table (DAT-835: the shared point-in-time
+        # family, not a three-name literal that misses TIMESTAMP_NS and never
+        # matched a timezone-aware column at all).
         column_stmt = (
             select(Column)
             .where(
                 Column.table_id == table.table_id,
-                Column.resolved_type.in_(temporal_types),
+                Column.resolved_type.in_(sorted(TIME_POINT_TYPES)),
             )
             .order_by(Column.column_position)
         )

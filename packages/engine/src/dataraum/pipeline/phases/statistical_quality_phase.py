@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 from dataraum.analysis.statistics import assess_statistical_quality
 from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
+from dataraum.core.duckdb_types import NUMERIC_TYPES, is_numeric
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -74,11 +75,13 @@ class StatisticalQualityPhase(BasePhase):
         logger.debug(f"StatQuality: Column types in typed tables: {type_counts}")
 
         # Filter to numeric columns only
-        numeric_types = ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]
-        numeric_columns = [c for c in all_columns if c.resolved_type in numeric_types]
+        numeric_columns = [c for c in all_columns if is_numeric(c.resolved_type)]
 
         if not numeric_columns:
-            return f"No numeric columns to assess (types: {numeric_types}, available: {list(type_counts.keys())})"
+            return (
+                f"No numeric columns to assess (types: {sorted(NUMERIC_TYPES)}, "
+                f"available: {list(type_counts.keys())})"
+            )
 
         logger.debug(f"StatQuality: Found {len(numeric_columns)} numeric columns")
 
@@ -110,11 +113,7 @@ class StatisticalQualityPhase(BasePhase):
         unassessed_tables = []
         for tt in typed_tables:
             table_columns = [c for c in all_columns if c.table_id == tt.table_id]
-            numeric_columns = [
-                c
-                for c in table_columns
-                if c.resolved_type in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]
-            ]
+            numeric_columns = [c for c in table_columns if is_numeric(c.resolved_type)]
             if numeric_columns:
                 numeric_ids = {c.column_id for c in numeric_columns}
                 if numeric_ids - assessed_ids:

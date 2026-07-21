@@ -90,13 +90,8 @@ SELECT relationship_id::text AS relationship_id,
        from_column_id, to_column_id, cardinality, relationship_type,
        confidence, confirmation_source
 FROM __READ__.current_relationships r
-WHERE NOT EXISTS (
-  SELECT 1 FROM __READ__.current_slice_definitions s1
-  JOIN __READ__.current_slice_definitions s2
-    ON s1.dimension_table_id = s2.dimension_table_id
-  WHERE s1.column_id = r.from_column_id AND s2.column_id = r.to_column_id
-    AND s1.table_id <> s2.table_id AND s1.dimension_table_id IS NOT NULL
-);
+WHERE r.relationship_type IN ('foreign_key', 'hierarchy')
+  AND r.detection_method != 'candidate';
 
 CREATE VIEW __READ__.og_has_dimension AS
 SELECT slice_id::text AS slice_id, table_id::text AS table_id,

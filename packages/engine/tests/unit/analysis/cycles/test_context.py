@@ -164,6 +164,65 @@ def test_scopes_to_pinned_run(session, two_tables_two_runs) -> None:
     assert entities[0]["grain_columns"] == ["account_id", "period"]
 
 
+def test_conformed_meetings_split_out_of_the_reference_serve(
+    session, two_tables_two_runs
+) -> None:
+    """DAT-850: a 'conformed_dimension' row is not served as a reference.
+
+    It leaves the relationships list (no entity flow rides a shared axis, and
+    the graph topology below consumes that list) and lands in the
+    explicitly-labelled conformed_meetings block the prompt renders — loud
+    typing, never a silent drop.
+    """
+    from dataraum.analysis.cycles.context import format_context_for_prompt
+
+    table_ids = two_tables_two_runs
+    # A shared-axis column on each table — the shape a meeting actually links.
+    region_cols = [
+        Column(
+            table_id=tid,
+            column_name="region",
+            column_position=5,
+            raw_type="VARCHAR",
+            resolved_type="VARCHAR",
+        )
+        for tid in table_ids
+    ]
+    session.add_all(region_cols)
+    session.flush()
+    session.add(
+        Relationship(
+            run_id="run-current",
+            from_table_id=table_ids[0],
+            from_column_id=region_cols[0].column_id,
+            to_table_id=table_ids[1],
+            to_column_id=region_cols[1].column_id,
+            relationship_type="conformed_dimension",
+            cardinality="many-to-many",
+            confidence=0.9,
+            detection_method="llm",
+            evidence={"resolved_from_type": "foreign_key"},
+        )
+    )
+    session.commit()
+
+    ctx = _build(
+        session,
+        table_ids,
+        base_runs=BaseRunMap(relationship_run_id="run-current"),
+    )
+
+    assert [r["relationship_type"] for r in ctx["relationships"]] == ["foreign_key"]
+    assert [r["relationship_type"] for r in ctx["conformed_meetings"]] == [
+        "conformed_dimension"
+    ]
+    assert ctx["summary"]["conformed_meetings_found"] == 1
+
+    prompt = format_context_for_prompt(ctx)
+    assert "CONFORMED DIMENSION MEETINGS" in prompt
+    assert "NOT references" in prompt
+
+
 def test_format_context_for_prompt_renders_grain_column_names() -> None:
     """DAT-775 regression: the cycle-detection prompt renders the table's ACTUAL
     grain columns, never the literal string "columns" — the symptom of the fixed

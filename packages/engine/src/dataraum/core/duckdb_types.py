@@ -8,11 +8,11 @@ the source and stores DuckDB's verbatim ``DESCRIBE`` name — ``DECIMAL(18,2)``,
 width or precision variants, so none of those are enum members and none of them
 match a hardcoded literal list.
 
-Before this module, eight consumers each answered "is this numeric / temporal"
-their own way. Five compared against ``["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]``
+Before this module, multiple consumers each answered "is this numeric / temporal"
+their own way. Several compared against ``["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]``
 with exact string equality, which on a parquet source silently drops FLOAT
 (float32 — the ordinary parquet float), every parameterized DECIMAL (every money
-column in a real warehouse), TINYINT and SMALLINT. Two compared temporal columns
+column in a real warehouse), TINYINT and SMALLINT. Others compared temporal columns
 against ``["DATE", "TIMESTAMP", "TIMESTAMPTZ"]``, which drops ``TIMESTAMP_NS``
 (what pandas writes by default) and never matches a timezone-aware column at all —
 DuckDB spells that ``TIMESTAMP WITH TIME ZONE``, so the literal ``"TIMESTAMPTZ"``

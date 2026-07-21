@@ -93,8 +93,14 @@ class TestJoinPathDeterminismDetector:
         """Create detector instance."""
         return JoinPathDeterminismDetector()
 
-    def test_single_path_deterministic(self, detector: JoinPathDeterminismDetector):
-        """One distinct column-pair path between the two tables -> deterministic."""
+    def test_single_path_abstains(self, detector: JoinPathDeterminismDetector):
+        """≤1 distinct path: the ambiguity question is unanswerable -> ABSTAIN.
+
+        DAT-851: the loader excludes candidates and the LLM confirms ~one
+        relationship per pair, so a single path is the structural norm — the old
+        constant 0.1 here claimed "measured deterministic" for every
+        relationship while the ambiguous branch was unreachable.
+        """
         context = DetectorContext(
             from_table_name="orders",
             to_table_name="customers",
@@ -115,8 +121,10 @@ class TestJoinPathDeterminismDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.1, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "deterministic"
+        assert results[0].status == "abstained"
+        assert results[0].abstain_reason == "not_applicable"
+        assert results[0].score is None
+        assert results[0].evidence[0]["path_status"] == "single_path"
         assert results[0].evidence[0]["distinct_join_paths"] == 1
 
     def test_two_paths_same_tables_ambiguous(self, detector: JoinPathDeterminismDetector):
@@ -147,12 +155,58 @@ class TestJoinPathDeterminismDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
+        assert results[0].status == "measured"
         assert results[0].score == pytest.approx(0.7, abs=0.01)
         assert results[0].evidence[0]["path_status"] == "ambiguous"
         assert results[0].evidence[0]["distinct_join_paths"] == 2
 
+    def test_two_paths_resolved_by_teach_is_deterministic(
+        self, detector: JoinPathDeterminismDetector, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Genuine ambiguity resolved by a preferred-join teach -> measured 0.1."""
+        from dataraum.analysis.relationships import utils as rel_utils
+
+        monkeypatch.setattr(
+            rel_utils,
+            "load_confirmed_relationship_pairs",
+            lambda session: {frozenset({"c_fk1", "c_pk"})},
+        )
+        context = DetectorContext(
+            from_table_name="orders",
+            to_table_name="customers",
+            from_column_id="c_fk1",
+            to_column_id="c_pk",
+            # A session sentinel so the overlay lookup runs (monkeypatched).
+            session=object(),  # type: ignore[arg-type]
+            analysis_results={
+                "relationships": [
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "from_column_id": "c_fk1",
+                        "to_column_id": "c_pk",
+                    },
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "from_column_id": "c_fk2",
+                        "to_column_id": "c_pk",
+                    },
+                ]
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        assert results[0].status == "measured"
+        assert results[0].score == pytest.approx(0.1, abs=0.01)
+        assert results[0].evidence[0]["path_status"] == "resolved"
+        assert results[0].evidence[0]["resolved_by_overlay"] is True
+
     def test_paths_to_other_tables_dont_add_ambiguity(self, detector: JoinPathDeterminismDetector):
-        """A relationship to a DIFFERENT table is not ambiguity for this pair (star schema)."""
+        """A relationship to a DIFFERENT table is not ambiguity for this pair (star
+        schema) — the focal pair still has one path, so the detector abstains."""
         context = DetectorContext(
             from_table_name="orders",
             to_table_name="customers",
@@ -178,13 +232,17 @@ class TestJoinPathDeterminismDetector:
 
         results = detector.detect(context)
 
-        assert results[0].score == pytest.approx(0.1, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "deterministic"
+        assert results[0].status == "abstained"
+        assert results[0].abstain_reason == "not_applicable"
+        assert results[0].evidence[0]["distinct_join_paths"] == 1
 
-    def test_missing_endpoints_no_result(self, detector: JoinPathDeterminismDetector):
-        """No focal endpoints -> nothing to measure."""
+    def test_missing_endpoints_abstains(self, detector: JoinPathDeterminismDetector):
+        """No focal endpoints -> an upstream gap, traced as missing_inputs (DAT-853)."""
         context = DetectorContext(analysis_results={"relationships": []})
-        assert detector.detect(context) == []
+        results = detector.detect(context)
+        assert len(results) == 1
+        assert results[0].status == "abstained"
+        assert results[0].abstain_reason == "missing_inputs"
 
     def test_detector_properties(self, detector: JoinPathDeterminismDetector):
         """Test detector has correct properties."""

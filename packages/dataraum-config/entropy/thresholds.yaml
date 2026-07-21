@@ -43,11 +43,12 @@ detectors:
   # --------------------------------------------------------------------------
   # JOIN PATH DETERMINISM DETECTOR (structural.relations.join_path_determinism)
   # --------------------------------------------------------------------------
-  # Score assigned by path ambiguity (multiple paths to SAME table = high entropy)
+  # Measures only on genuine multi-path ambiguity (DAT-851/853): with <=1 distinct
+  # column-pair path between the two tables the question is unanswerable and the
+  # detector ABSTAINS (no score at all - never a confident low one).
   join_path:
-    score_orphan: 0.9 # No relationships (isolated table)
-    score_deterministic: 0.1 # Each connected table has exactly one path (star schema OK)
-    score_ambiguous: 0.7 # Multiple paths to at least one table
+    score_deterministic: 0.1 # >1 paths, resolved by a preferred-join teach
+    score_ambiguous: 0.7 # >1 distinct paths between the same two tables, unresolved
 
   # --------------------------------------------------------------------------
   # RELATIONSHIP ENTROPY DETECTOR (structural.relations.relationship_quality)

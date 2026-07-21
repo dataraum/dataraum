@@ -84,7 +84,9 @@ def build_cycle_detection_context(
 
     Args:
         session: SQLAlchemy session
-        duckdb_conn: DuckDB connection for row counts
+        duckdb_conn: DuckDB connection for row counts and the
+            chain-conditioned label aggregates on the reference lines
+            (DAT-853)
         table_ids: Tables to analyze
         vertical: Vertical name (e.g. 'finance')
         base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).

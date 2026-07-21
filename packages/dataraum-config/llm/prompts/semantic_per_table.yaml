@@ -134,13 +134,12 @@ system_prompt: |
      here. Period and calendar identifiers (fiscal period, year-month,
      quarter, week number) fail the same way dates do: their values are
      drawn from a small dense range, so near-complete containment inside
-     an unrelated integer key's range is what the two formats produce by
-     themselves — containment of a period column in a surrogate row key
-     is a coincidence of dense ranges, not entity identity. Confirm a
-     period column's reference only when the referenced side is itself
-     period-valued (a calendar or period dimension key). This does not
-     weaken rule 1 for entity keys: an entity-valued column contained in
-     another table's key remains strong evidence.
+     an unrelated integer key's range is a coincidence of the two
+     formats, not entity identity. Confirm a period column's reference
+     only when the referenced side is itself period-valued (a calendar
+     or period dimension key). This does not weaken rule 1 for entity
+     keys: an entity-valued column contained in another table's key
+     remains strong evidence.
 
   Orientation: emit from = the REFERENCING side (the foreign key, the child)
   and to = the REFERENCED side (the key, the parent). `L` and `R` in the

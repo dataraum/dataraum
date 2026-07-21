@@ -188,10 +188,11 @@ def load_relationship_candidates_for_semantic(
             }
         ]
     """
-    # Local import: relationships/__init__ imports this module at package init,
-    # and semantic/__init__ imports agent.py which imports
-    # relationships.graph_topology — a module-level import here would close
-    # that cycle.
+    # Local import, defensive: the relationships↔semantic coupling is already
+    # order-dependent (relationships/__init__ imports this module;
+    # semantic/__init__ imports agent.py, which imports
+    # relationships.graph_topology) — today both orders happen to resolve, but
+    # a module-level import here is one __init__ reordering away from a cycle.
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
     # Build query — scoped to the current run's catalog (DAT-408) when ``run_id`` is

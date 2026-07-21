@@ -315,9 +315,7 @@ def materialize_relationship_overlays(
             # not a claim, so it is never copied). Either way ``oriented_row``
             # re-resolves against the cardinality actually persisted, and the DB
             # CHECK backstops.
-            claimed_type = (
-                measured.relationship_type if measured is not None else "foreign_key"
-            )
+            claimed_type = measured.relationship_type if measured is not None else "foreign_key"
             session.add(
                 Relationship(
                     **Relationship.oriented_row(

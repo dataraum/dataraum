@@ -562,8 +562,7 @@ def test_manual_add_measuring_many_to_many_lands_as_conformed(session: Session) 
         "SELECT * FROM (VALUES (1), (1), (2)) AS t(customer_id)"
     )
     conn.execute(
-        'CREATE TABLE lake.typed."csv__customers" AS '
-        "SELECT * FROM (VALUES (1), (1), (2)) AS t(id)"
+        'CREATE TABLE lake.typed."csv__customers" AS SELECT * FROM (VALUES (1), (1), (2)) AS t(id)'
     )
     try:
         materialize_relationship_overlays(

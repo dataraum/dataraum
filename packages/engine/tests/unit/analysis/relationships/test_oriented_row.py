@@ -367,9 +367,7 @@ def test_check_admits_the_canonical_orientations(session: Session) -> None:
 
 
 @pytest.mark.parametrize("claimed", ["foreign_key", "hierarchy"])
-def test_check_rejects_a_reference_claim_with_many_to_many(
-    session: Session, claimed: str
-) -> None:
+def test_check_rejects_a_reference_claim_with_many_to_many(session: Session, claimed: str) -> None:
     """DAT-850: the fk+m2m contradiction is unwritable even bypassing the helper."""
     with pytest.raises(IntegrityError):
         _add(session, relationship_type=claimed, cardinality="many-to-many")

@@ -164,9 +164,7 @@ def test_scopes_to_pinned_run(session, two_tables_two_runs) -> None:
     assert entities[0]["grain_columns"] == ["account_id", "period"]
 
 
-def test_conformed_meetings_split_out_of_the_reference_serve(
-    session, two_tables_two_runs
-) -> None:
+def test_conformed_meetings_split_out_of_the_reference_serve(session, two_tables_two_runs) -> None:
     """DAT-850: a 'conformed_dimension' row is not served as a reference.
 
     It leaves the relationships list (no entity flow rides a shared axis, and
@@ -213,9 +211,7 @@ def test_conformed_meetings_split_out_of_the_reference_serve(
     )
 
     assert [r["relationship_type"] for r in ctx["relationships"]] == ["foreign_key"]
-    assert [r["relationship_type"] for r in ctx["conformed_meetings"]] == [
-        "conformed_dimension"
-    ]
+    assert [r["relationship_type"] for r in ctx["conformed_meetings"]] == ["conformed_dimension"]
     assert ctx["summary"]["conformed_meetings_found"] == 1
 
     prompt = format_context_for_prompt(ctx)

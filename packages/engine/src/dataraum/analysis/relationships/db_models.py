@@ -72,8 +72,7 @@ class Relationship(Base):
         # ``RelationshipOutput.relationship_type``) already drifted from this
         # once — the CHECK is the DB-enforced backstop.
         CheckConstraint(
-            "relationship_type IN "
-            "('foreign_key', 'hierarchy', 'conformed_dimension', 'candidate')",
+            "relationship_type IN ('foreign_key', 'hierarchy', 'conformed_dimension', 'candidate')",
             name="relationship_type",
         ),
         # Edge-kind × cardinality consistency (DAT-850): a reference claim

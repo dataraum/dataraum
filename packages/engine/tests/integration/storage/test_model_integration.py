@@ -308,9 +308,13 @@ class TestTopologicalModels:
             # set, so the rejection row reuses a method on the REVERSED column pair
             # (a distinct identity under the constraint). The type↔method pairing is
             # uniqueness bookkeeping, not a semantic claim.
-            from_col, to_col = (id_col, customer_id_col) if reversed_pair else (
-                customer_id_col,
-                id_col,
+            from_col, to_col = (
+                (id_col, customer_id_col)
+                if reversed_pair
+                else (
+                    customer_id_col,
+                    id_col,
+                )
             )
             return Relationship(
                 from_table_id=sales_table.table_id,

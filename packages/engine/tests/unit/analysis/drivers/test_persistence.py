@@ -293,6 +293,27 @@ def test_fact_table_measure_role_column_still_ranked(
     assert row.measure_table_id == tid
 
 
+def test_periodic_snapshot_table_measure_role_column_still_ranked(
+    real_session: Session, duck: duckdb.DuckDBPyConnection
+) -> None:
+    """PERIODIC_SNAPSHOT is the other half of the admitted ``table_role`` set (DAT-846).
+
+    Distinct from ``test_fact_table_measure_role_column_still_ranked`` — pins that
+    ``.in_([FACT, PERIODIC_SNAPSHOT])`` really is an OR, not FACT-only in disguise.
+    """
+    tid, measure_col_id = _seed(real_session, dims=CL_DIMS, table_role=TableRole.PERIODIC_SNAPSHOT)
+    _write_view(duck, make_clustered_corpus(np.random.default_rng(0)))
+
+    n = persist_driver_rankings(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+    assert n == 1
+    row = real_session.execute(
+        select(DriverRankingArtifact).where(
+            DriverRankingArtifact.measure_column_id == measure_col_id
+        )
+    ).scalar_one()
+    assert row.measure_table_id == tid
+
+
 def test_unclassified_table_persists_nothing(
     real_session: Session, duck: duckdb.DuckDBPyConnection
 ) -> None:

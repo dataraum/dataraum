@@ -101,11 +101,12 @@ def _measure_columns(
     column would deterministically hit the empty-ranking path and get persisted anyway
     by the born-loud rule below — a driver_rankings row for something that was never a
     measure. Restrict to ``TableEntity.table_role IN (FACT, PERIODIC_SNAPSHOT)``,
-    scoped to THIS begin_session ``run_id`` (``TableEntity`` is catalogue-grain, DAT-408,
-    same as ``enriched_views_phase``'s fact lookup — the pattern this mirrors). The join
-    is INNER: a table with no ``TableEntity`` row for this run (unclassified) is
-    excluded, exactly like ``enriched_views_phase.should_skip``/``_run`` treat an absent
-    row as "not a fact" rather than defaulting it in.
+    scoped to THIS begin_session ``run_id`` (``TableEntity`` is run-versioned, one row
+    per ``(table_id, run_id)``, DAT-408/728 — same as ``enriched_views_phase``'s fact
+    lookup, the pattern this mirrors). The join is INNER: a table with no
+    ``TableEntity`` row for this run (unclassified) is excluded, exactly like
+    ``enriched_views_phase.should_skip``/``_run`` treat an absent row as "not a fact"
+    rather than defaulting it in.
     """
     rows = session.execute(
         select(

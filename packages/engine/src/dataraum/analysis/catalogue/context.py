@@ -18,7 +18,12 @@ The value samples on the join chain are the load-bearing section: the
 discrimination between two look-alike ledgers lives in the counterparty
 values riding the CONFIRMED relationship lines, so samples are rendered
 attached to the relationship they travel on (privacy-gated by name pattern,
-truncated, capped).
+truncated, capped). Flat all-rows samples alone are not enough — a label
+column shared by several populations blurs them (DAT-853: counterparty at
+37% vendors flat, 100% vendors on the payment-linked rows), so each
+reference line additionally carries CHAIN-CONDITIONED label samples: the
+from-side identity labels aggregated over only the rows that resolve
+across the join.
 """
 
 from __future__ import annotations
@@ -40,6 +45,8 @@ from dataraum.storage import Column, Table
 from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 
 if TYPE_CHECKING:
+    import duckdb
+
     from dataraum.llm.privacy import DataSampler
 
 logger = get_logger(__name__)
@@ -288,7 +295,12 @@ def _format_structural_tables(
             numeric = (profile.profile_data or {}).get("numeric_stats") if profile else None
             if not numeric:
                 continue
-            min_v, max_v = numeric.get("min"), numeric.get("max")
+            # The writer's key shape: analysis/statistics persists
+            # ``ColumnProfile.model_dump()`` whose NumericStats serializes as
+            # ``min_value``/``max_value`` — NOT ``min``/``max``. Reading the
+            # wrong keys rendered ``min=None max=None`` and silently dropped
+            # the sign line for every measure (DAT-853 forensics).
+            min_v, max_v = numeric.get("min_value"), numeric.get("max_value")
             sign = ""
             if isinstance(min_v, (int, float)):
                 sign = (
@@ -325,19 +337,160 @@ def _evidence_metrics(evidence: dict[str, Any]) -> str:
     return f" [{', '.join(parts)}]" if parts else ""
 
 
+def _qident(name: str) -> str:
+    """Double-quote one DuckDB identifier (embedded quotes doubled)."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _conditioned_top_values(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    from_path: str,
+    to_path: str,
+    fk: str,
+    key: str,
+    label_column: str,
+    limit: int,
+) -> str | None:
+    """One DuckDB aggregate: a label's top values over rows riding the join.
+
+    The restriction is a semi-join (the fk RESOLVES into the key), not just
+    ``fk IS NOT NULL``: an orphaned fk claims a link that never resolves, and
+    those rows are already visible on the relationship line as unresolved
+    counts — evidence labeled "joined rows" must describe the population that
+    actually joins, or a 20%-orphan chain (the corpus's ORPHAN- invoice ids)
+    would blend the orphan labels into it.
+
+    Percentage denominator = ALL joined rows (NULL labels included), the same
+    convention as the stored profile's flat ``top_values``; ordering is count
+    DESC then value, keeping the render deterministic. Returns the rendered
+    sample string, or None on empty/failed (fail-soft: a missing typed table
+    must never sink the prompt build).
+    """
+    query = f"""
+        SELECT value, cnt, pct FROM (
+            SELECT CAST({_qident(label_column)} AS VARCHAR) AS value,
+                   COUNT(*) AS cnt,
+                   COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS pct
+            FROM {_qident(from_path)} src
+            WHERE src.{_qident(fk)} IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM {_qident(to_path)} tgt
+                  WHERE tgt.{_qident(key)} = src.{_qident(fk)}
+              )
+            GROUP BY 1
+        )
+        WHERE value IS NOT NULL
+        ORDER BY cnt DESC, value
+        LIMIT {int(limit)}
+    """
+    try:
+        rows = duckdb_conn.execute(query).fetchall()
+    except Exception as e:
+        logger.warning(
+            "conditioned_samples_failed", table=from_path, column=label_column, error=str(e)
+        )
+        return None
+    if not rows:
+        return None
+    return ", ".join(f"'{_truncate(value)}' ({pct:.0f}%)" for value, _cnt, pct in rows)
+
+
+def _conditioned_label_samples(
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    relationships: list[Relationship],
+    sampler: DataSampler,
+    *,
+    run_id: str,
+    endpoint_ids: set[str],
+) -> dict[str, list[str]]:
+    """Chain-conditioned label evidence per confirmed reference relationship.
+
+    For each ``A.fk -> B.key`` reference, the top values of A's label-bearing
+    columns — this run's TableEntity identity columns, existence-filtered —
+    restricted to the rows that ride the join. This is THE discriminating
+    evidence the flat samples blur (DAT-853): a label column shared by
+    several populations (vendor payments, customer receipts, fees) looks
+    mixed over all rows and unanimous on the chain-linked rows.
+
+    Join-key columns (any served relationship endpoint) are excluded — their
+    values are the information-free IDs the flat endpoint samples already
+    carry. A sensitive label name renders ``<REDACTED>`` without touching the
+    data (the ``_sample_line`` convention: existence visible, values never
+    leave). Conformed_dimension rows get nothing: no fk rides a shared-axis
+    meeting. Fail-soft per relationship: a table with no TableEntity at this
+    run or no typed duckdb_path serves no conditioned lines.
+    """
+    references = [rel for rel in relationships if rel.relationship_type != "conformed_dimension"]
+    if not references:
+        return {}
+    from_ids = list({rel.from_table_id for rel in references})
+    entities: dict[str, TableEntity] = {
+        e.table_id: e
+        for e in session.execute(
+            select(TableEntity).where(
+                TableEntity.table_id.in_(from_ids), TableEntity.run_id == run_id
+            )
+        ).scalars()
+    }
+    real_columns: dict[str, dict[str, Column]] = {}
+    for column in session.execute(select(Column).where(Column.table_id.in_(from_ids))).scalars():
+        real_columns.setdefault(column.table_id, {})[column.column_name] = column
+
+    out: dict[str, list[str]] = {}
+    for rel in references:
+        entity = entities.get(rel.from_table_id)
+        from_table, to_table = rel.from_column.table, rel.to_column.table
+        if entity is None or not from_table.duckdb_path or not to_table.duckdb_path:
+            continue
+        columns = real_columns.get(rel.from_table_id, {})
+        lines: list[str] = []
+        for ic in entity.identity_columns or []:
+            if not isinstance(ic, dict):
+                continue
+            name = ic.get("column")
+            if not isinstance(name, str):
+                continue
+            label_col = columns.get(name)
+            if label_col is None or label_col.column_id in endpoint_ids:
+                continue
+            header = f"{name} ({rel.from_column.column_name}-joined rows)"
+            if sampler.is_sensitive(name):
+                lines.append(f"{header}: <REDACTED>")
+                continue
+            samples = _conditioned_top_values(
+                duckdb_conn,
+                from_path=from_table.duckdb_path,
+                to_path=to_table.duckdb_path,
+                fk=rel.from_column.column_name,
+                key=rel.to_column.column_name,
+                label_column=name,
+                limit=sampler.config.max_sample_values,
+            )
+            if samples:
+                lines.append(f"{header}: {samples}")
+        if lines:
+            out[rel.relationship_id] = lines
+    return out
+
+
 def _format_relationships(
     relationships: list[Relationship],
     profiles: dict[str, StatisticalProfile],
     sampler: DataSampler,
+    conditioned: dict[str, list[str]],
 ) -> str:
     """The confirmed relationship catalogue WITH evidence and endpoint samples.
 
     THE load-bearing section (DAT-823): the endpoint value samples ride the
     confirmed chain, so what a reference actually points at (the counterparty
     names behind a shared dimension key) is on the same line as the reference.
-    ``relationship_type`` is served honestly (DAT-850): a ``conformed_dimension``
-    row is two facts meeting at a shared axis, named as such — never dressed as
-    a genuine reference.
+    ``conditioned`` (DAT-853) adds the chain-conditioned label lines per
+    relationship_id — extra evidence next to, never instead of, the flat
+    endpoint samples. ``relationship_type`` is served honestly (DAT-850): a
+    ``conformed_dimension`` row is two facts meeting at a shared axis, named
+    as such — never dressed as a genuine reference.
     """
     if not relationships:
         return "No confirmed relationships in this catalogue."
@@ -364,6 +517,10 @@ def _format_relationships(
             sample = _sample_line(sampler, col.column_name, profiles.get(col.column_id))
             if sample:
                 lines.append(f"  {label} values ({col.column_name}): {sample}")
+        # Chain-conditioned label samples (DAT-853): additional evidence, the
+        # flat endpoint samples above stay served.
+        for conditioned_line in conditioned.get(rel.relationship_id, []):
+            lines.append(f"  {conditioned_line}")
     return "\n".join(lines)
 
 
@@ -461,6 +618,7 @@ def _format_shared_axes(
 
 def build_catalogue_inputs(
     session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
     *,
     table_ids: list[str],
     session_table_ids: list[str],
@@ -473,8 +631,10 @@ def build_catalogue_inputs(
     ``session_table_ids`` is the whole session selection — cross-table evidence
     (relationships, views, axes) always loads over the full session and is
     filtered to lines touching the scope, so a scoped retry still sees the
-    chains its tables ride. The ontology steer (section 8) is added by the
-    agent, mirroring ``ground_columns``.
+    chains its tables ride. ``duckdb_conn`` serves the chain-conditioned label
+    aggregates on the relationship lines (DAT-853) — every other read stays on
+    the stored metadata. The ontology steer (section 8) is added by the agent,
+    mirroring ``ground_columns``.
     """
     tables = list(
         session.execute(
@@ -526,6 +686,9 @@ def build_catalogue_inputs(
             )
         )
     endpoint_ids = {c.column_id for rel in relationships for c in (rel.from_column, rel.to_column)}
+    conditioned = _conditioned_label_samples(
+        session, duckdb_conn, relationships, sampler, run_id=run_id, endpoint_ids=endpoint_ids
+    )
 
     all_table_names: dict[str, str] = dict(
         session.execute(
@@ -590,7 +753,9 @@ def build_catalogue_inputs(
             relationship_endpoint_ids=endpoint_ids,
         ),
         "column_annotations": _format_annotations(annotation_rows),
-        "relationship_catalogue": _format_relationships(relationships, profiles, sampler),
+        "relationship_catalogue": _format_relationships(
+            relationships, profiles, sampler, conditioned
+        ),
         "enriched_views": _format_enriched_views(views, all_table_names, rel_by_id),
         "shared_axes": _format_shared_axes(slices, all_table_names, scope=scope),
     }

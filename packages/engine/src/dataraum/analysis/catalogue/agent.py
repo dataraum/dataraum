@@ -25,6 +25,8 @@ from dataraum.llm.providers.base import ConversationRequest, Message
 from dataraum.llm.structured_output import parse_structured_output
 
 if TYPE_CHECKING:
+    import duckdb
+
     from dataraum.llm.config import LLMConfig
     from dataraum.llm.prompts import PromptRenderer
     from dataraum.llm.providers.base import LLMProvider
@@ -74,6 +76,7 @@ class CatalogueSemanticsAgent(LLMFeature):
     def author(
         self,
         session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
         *,
         table_ids: list[str],
         session_table_ids: list[str],
@@ -84,10 +87,11 @@ class CatalogueSemanticsAgent(LLMFeature):
 
         ``table_ids`` is the authoring scope (the coverage retry narrows it to
         the still-uncovered tables); ``session_table_ids`` is the full session
-        selection the cross-table evidence loads over. Structured output is
-        constrained to :class:`CatalogueSemanticsOutput`; a provider failure
-        raises typed (retryability rides the exception to the durable boundary,
-        DAT-503).
+        selection the cross-table evidence loads over. ``duckdb_conn`` feeds
+        the chain-conditioned label aggregates on the relationship lines
+        (DAT-853). Structured output is constrained to
+        :class:`CatalogueSemanticsOutput`; a provider failure raises typed
+        (retryability rides the exception to the durable boundary, DAT-503).
         """
         feature_config = self.config.features.semantic_analysis
         if not feature_config.enabled:
@@ -100,6 +104,7 @@ class CatalogueSemanticsAgent(LLMFeature):
         sampler = DataSampler(self.config.privacy)
         inputs = build_catalogue_inputs(
             session,
+            duckdb_conn,
             table_ids=table_ids,
             session_table_ids=session_table_ids,
             run_id=run_id,

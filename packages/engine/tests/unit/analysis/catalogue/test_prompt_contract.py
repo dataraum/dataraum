@@ -64,6 +64,16 @@ class TestCataloguePrompt:
         # The settled structure is input, never re-opened.
         assert "Do not re-open the settled structure" in system
 
+    def test_names_the_chain_conditioned_lines(self, catalogue: PromptTemplate) -> None:
+        """DAT-853: the relationships header is the reader's decoder ring for
+        the conditioned lines — served evidence the agent was never taught to
+        read stays unread, so softening this wording fails here, not in an
+        eval run (the cycles prompt carries the same pin)."""
+        user = _flat(catalogue.user_prompt)
+        assert 'Lines marked "(<fk>-joined rows)" are chain-conditioned' in user
+        assert "ONLY the rows that resolve across the join" in user
+        assert "the conditioned values are the evidence for what the chain itself carries" in user
+
 
 class TestPerTablePromptShrink:
     def test_identity_note_is_structural_only(self, per_table: PromptTemplate) -> None:

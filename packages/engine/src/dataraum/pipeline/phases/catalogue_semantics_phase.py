@@ -106,6 +106,7 @@ class CatalogueSemanticsPhase(BasePhase):
         )
         result = author_and_store_catalogue(
             ctx.session,
+            ctx.duckdb_conn,
             agent,
             table_ids,
             ontology,

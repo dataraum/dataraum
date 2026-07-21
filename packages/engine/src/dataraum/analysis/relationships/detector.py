@@ -111,8 +111,12 @@ def detect_relationships(
         # Store candidates in database
         _store_candidates(session, table_ids, candidates, run_id=run_id)
 
-        # Count high confidence candidates
-        high_conf_count = sum(
+        # Count high-OVERLAP candidates (DAT-839): jc.join_confidence is the
+        # value-overlap statistic max(Jaccard, containment), NOT a posterior —
+        # an unconfirmed candidate can sit at 1.0 while a judge-confirmed FK is
+        # 0.95. This is a structural-detection tally for the phase summary, never
+        # a confidence gate.
+        high_overlap_count = sum(
             1 for c in candidates for jc in c.join_candidates if jc.join_confidence > 0.7
         )
 
@@ -121,7 +125,7 @@ def detect_relationships(
                 candidates=candidates,
                 total_tables=len(tables_data),
                 total_candidates=len(candidates),
-                high_confidence_count=high_conf_count,
+                high_overlap_count=high_overlap_count,
                 computed_at=datetime.now(UTC),
                 duration_seconds=time.time() - start_time,
             )
@@ -234,6 +238,10 @@ def _store_candidates(
             )
             rows[(run_id, row["from_column_id"], row["to_column_id"], "candidate")] = row
 
+    # ``oriented_row`` omits ``judge_verdict``, so this upsert's all-columns SET
+    # resets it to NULL — a re-derive drops any prior judge annotation, and the
+    # semantic phase (which always runs AFTER relationships within a run)
+    # re-applies the verdict via ``_apply_judge_verdicts`` (DAT-824).
     upsert(
         session,
         RelationshipDB,

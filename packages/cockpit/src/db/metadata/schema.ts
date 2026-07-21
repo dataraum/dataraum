@@ -423,10 +423,11 @@ export const currentRelationships = pgView("current_relationships", {
 	confidence: doublePrecision(),
 	detectionMethod: varchar("detection_method"),
 	evidence: json(),
+	judgeVerdict: varchar("judge_verdict"),
 	confirmationSource: varchar("confirmation_source"),
 	detectedAt: timestamp("detected_at"),
 }).as(
-	sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, confirmation_source, detected_at FROM engine.relationships r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, judge_verdict, confirmation_source, detected_at FROM engine.relationships r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentSemanticAnnotations = pgView(

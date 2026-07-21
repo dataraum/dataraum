@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import duckdb
-from sqlalchemy import delete
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
@@ -160,6 +160,85 @@ def _build_candidate_metrics_lookup(
                 lookup[(table2, col2, table1, col1)] = swap_directional_evidence(metrics)
 
     return lookup
+
+
+def _candidate_rows_for_pair(
+    session: Session, from_col_id: str, to_col_id: str, run_id: str | None
+) -> list[RelationshipModel]:
+    """This run's structural ``candidate`` rows for a pair, matched UNDIRECTED.
+
+    The judge may name the pair either way while the stored candidate is oriented
+    many→one (DAT-777), so both orientations are matched. One row per undirected
+    pair per run in practice (single candidate writer, oriented dedup); returns a
+    list so the caller reconciles every match deterministically.
+    """
+    stmt = select(RelationshipModel).where(
+        RelationshipModel.detection_method == "candidate",
+        or_(
+            and_(
+                RelationshipModel.from_column_id == from_col_id,
+                RelationshipModel.to_column_id == to_col_id,
+            ),
+            and_(
+                RelationshipModel.from_column_id == to_col_id,
+                RelationshipModel.to_column_id == from_col_id,
+            ),
+        ),
+    )
+    if run_id is not None:
+        stmt = stmt.where(RelationshipModel.run_id == run_id)
+    return list(session.execute(stmt).scalars())
+
+
+def _apply_judge_verdicts(
+    session: Session,
+    *,
+    declined: list[tuple[str, str, str | None]],
+    confirmed: list[tuple[str, str]],
+    run_id: str | None,
+) -> None:
+    """Reconcile each adjudicated pair's ``candidate`` row with the judge's verdict.
+
+    A judge verdict is recorded WITHOUT clobbering the measured value-overlap
+    evidence (DAT-824): the pair's existing ``candidate`` row (written by the
+    structural detector in the relationships phase) keeps its
+    ``confidence``/``evidence``.
+
+    - A DECLINE sets ``judge_verdict='declined'`` and merges the judge's reasoning
+      into ``evidence['reasoning']`` (measured keys untouched).
+    - A CONFIRM CLEARS any prior ``judge_verdict`` — the confirmation lives in the
+      sibling ``llm`` row, so a candidate carrying a stale ``'declined'`` would
+      contradict the model. Applied AFTER the declines so a pair the LLM emitted
+      both ways lands NULL (its ``llm`` row is the truth).
+
+    Clearing on confirm makes a Temporal at-least-once retry that FLIPS the verdict
+    across attempts (decline on attempt 1, confirm on attempt 2 — the LLM is
+    re-called, not cached) converge to the last attempt rather than stranding a
+    contradictory ``'declined'`` beside the new ``llm`` row.
+
+    A pair with no candidate row (never structurally proposed — a hallucinated
+    pair or a column-map miss) has no measurement to reconcile: declines are
+    dropped+logged, never fabricated into a confidence-less row.
+    """
+    for from_col_id, to_col_id, reasoning in declined:
+        rows = _candidate_rows_for_pair(session, from_col_id, to_col_id, run_id)
+        if not rows:
+            logger.debug(
+                "declined_pair_no_candidate_row",
+                from_column_id=from_col_id,
+                to_column_id=to_col_id,
+            )
+            continue
+        for row in rows:
+            row.judge_verdict = "declined"
+            if reasoning:
+                # Reassign so SQLAlchemy tracks the JSON mutation; PRESERVE the
+                # measured keys, only ADD the judge's reasoning (never a clobber).
+                row.evidence = {**(row.evidence or {}), "reasoning": reasoning}
+
+    for from_col_id, to_col_id in confirmed:
+        for row in _candidate_rows_for_pair(session, from_col_id, to_col_id, run_id):
+            row.judge_verdict = None
 
 
 def persist_column_annotations(
@@ -832,6 +911,8 @@ def synthesize_and_store_tables(
 
     rel_rows: list[dict[str, Any]] = []
     intent_rows: list[dict[str, Any]] = []
+    declined_pairs: list[tuple[str, str, str | None]] = []
+    confirmed_pairs: list[tuple[str, str]] = []
     for rel in enrichment.relationships:
         from_col_id = column_map.get((rel.from_table, rel.from_column))
         to_col_id = column_map.get((rel.to_table, rel.to_column))
@@ -845,10 +926,9 @@ def synthesize_and_store_tables(
         # the mint phase, never as a plain llm row — the single-column anchor is a
         # half-key and would fan out at every consumer. A composite the judge did
         # NOT confirm (confidence below REL_CONFIRM_MIN) is a decline like any
-        # other — it falls through to the gated single-column persist (→
-        # ``candidate``), so no write path routes a declined verdict into the
-        # "defined" catalog (DAT-722). An unbuildable/non-collapsing intent also
-        # falls through.
+        # other — it falls through to the single-column DECLINE path below, so no
+        # write path routes a declined verdict into the "defined" catalog (DAT-722).
+        # An unbuildable/non-collapsing intent also falls through.
         if rel.key_columns and rel.confidence >= REL_CONFIRM_MIN:
             intent = _build_surrogate_intent(
                 rel=rel,
@@ -863,6 +943,20 @@ def synthesize_and_store_tables(
             if intent is not None:
                 intent_rows.append(intent)
                 continue
+
+        # A judge DECLINE is a SEPARATE FACT from the structural measurement
+        # (DAT-824). The old path rebuilt a ``candidate`` row here and upserted it
+        # on the SAME key the structural detector used, so the LLM's low confidence
+        # and its sparse ``{source, reasoning}`` evidence CLOBBERED the detector's
+        # measured join_confidence/algorithm/statistical_confidence — the run's
+        # overlap evidence destroyed. Instead, record the verdict by ANNOTATING the
+        # pair's existing candidate row (``_record_declined_verdicts``): its measured
+        # evidence survives intact, the decline is typed+queryable via
+        # ``judge_verdict='declined'``, and it stays ``detection_method='candidate'``
+        # so it is excluded from every reference-serving consumer for free.
+        if rel.confidence < REL_CONFIRM_MIN:
+            declined_pairs.append((from_col_id, to_col_id, (rel.evidence or {}).get("reasoning")))
+            continue
 
         evidence = dict(rel.evidence) if rel.evidence else {}
         candidate_key = (rel.from_table, rel.from_column, rel.to_table, rel.to_column)
@@ -919,12 +1013,8 @@ def synthesize_and_store_tables(
                     error=str(e),
                 )
 
-        # Confirmed only at or above the judge's own decision boundary; a declined
-        # verdict stays a ``candidate`` (evidence kept) so it never reaches the
-        # "defined" catalog. See REL_CONFIRM_MIN (DAT-722). The confirmation source
-        # (DAT-776) tracks it: a confirmed row is vouched for by the ``judge``, a
-        # declined one is ``unconfirmed`` like a structural candidate.
-        confirmed = rel.confidence >= REL_CONFIRM_MIN
+        # Reached only for a CONFIRMED verdict (declines exited above) — persist as
+        # a vouched-for ``llm`` row. See REL_CONFIRM_MIN (DAT-722).
         # DAT-777: build through the model's single orientation chokepoint. It
         # orients to the FK convention (many→one, child→parent) from the measured
         # cardinality — every consumer assumes from = the many/fact side
@@ -946,11 +1036,14 @@ def synthesize_and_store_tables(
                 relationship_type=rel.relationship_type.value,
                 cardinality=cardinality,
                 confidence=rel.confidence,
-                detection_method="llm" if confirmed else "candidate",
-                confirmation_source="judge" if confirmed else "unconfirmed",
+                detection_method="llm",
+                confirmation_source="judge",
                 evidence=evidence,
             )
         )
+        # Clear any stale decline verdict on the pair's candidate row (DAT-824):
+        # this confirmation's ``llm`` row is the truth (undirected match below).
+        confirmed_pairs.append((from_col_id, to_col_id))
 
     # Run-versioned + idempotent (DAT-408): this run's llm relationships are stamped
     # with ``run_id`` and coexist with prior runs; the upsert keys on the run-grain
@@ -974,6 +1067,15 @@ def synthesize_and_store_tables(
             "to_column_id",
             "detection_method",
         ],
+    )
+
+    # Reconcile the run's judge verdicts onto the pairs' structural candidate rows,
+    # preserving their measured evidence (DAT-824): a decline annotates
+    # ``judge_verdict='declined'`` + reasoning, a confirm clears any prior verdict
+    # (its ``llm`` row is the truth). Done AFTER the llm upsert so the llm rows the
+    # confirm-clear reconciles against exist.
+    _apply_judge_verdicts(
+        session, declined=declined_pairs, confirmed=confirmed_pairs, run_id=run_id
     )
 
     # Surrogate-key intents (DAT-277 / DAT-697): the run's composite VERDICTS —

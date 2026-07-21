@@ -17,6 +17,10 @@ vi.mock("#/temporal/progress", () => ({
 	// terminalRunStatus is exercised by the progress poll + smoke.
 	terminalRunStatus: (p: { status?: string }) =>
 		p.status === "FAILED" ? "failed" : "completed",
+	// Mirror the real terminalRunOutcome: the OM `nothing_declared` terminal phase
+	// yields that outcome (DAT-845); every other DONE phase yields null.
+	terminalRunOutcome: (p: { phase?: string }) =>
+		p.phase === "nothing_declared" ? "nothing_declared" : null,
 	// Mirror the real sentinel: describe-NotFound surfaces as status "PENDING".
 	isWorkflowAbsent: (p: { status?: string }) => p.status === "PENDING",
 }));
@@ -51,8 +55,9 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-// biome-ignore lint/suspicious/noExplicitAny: the test feeds minimal progress shapes
-const prog = (done: boolean, status: string) => ({ done, status }) as any;
+const prog = (done: boolean, status: string, phase?: string) =>
+	// biome-ignore lint/suspicious/noExplicitAny: the test feeds minimal progress shapes
+	({ done, status, phase }) as any;
 
 describe("reconcileActiveRuns", () => {
 	it("marks DONE runs terminal and leaves still-running ones", async () => {
@@ -74,6 +79,35 @@ describe("reconcileActiveRuns", () => {
 		await reconcileActiveRuns("conv-1");
 
 		expect(mark).toHaveBeenCalledWith("wf-9", "r-9", "failed");
+	});
+
+	it("persists a nothing_declared OM outcome from the terminal phase (DAT-845)", async () => {
+		// The fallback path: an OM run finished nothing_declared while no chat stream
+		// was open. Its terminal progress phase names the disposition; the sweep marks
+		// it completed AND carries the outcome so the briefing renders it.
+		list.mockResolvedValue([run("operatingmodel-ws", "r-om")]);
+		progress.mockResolvedValue(prog(true, "COMPLETED", "nothing_declared"));
+
+		await reconcileActiveRuns("conv-1");
+
+		expect(mark).toHaveBeenCalledWith(
+			"operatingmodel-ws",
+			"r-om",
+			"completed",
+			"nothing_declared",
+		);
+	});
+
+	it("a plain DONE run marks status-only (3-arg, no outcome)", async () => {
+		// A promoted/other DONE phase can't be told apart here, so no outcome rides —
+		// the briefing's head check covers promoted; nothing_declared is the only
+		// outcome this sweep persists.
+		list.mockResolvedValue([run("wf-3", "r-3")]);
+		progress.mockResolvedValue(prog(true, "COMPLETED", "done"));
+
+		await reconcileActiveRuns("conv-1");
+
+		expect(mark).toHaveBeenCalledWith("wf-3", "r-3", "completed");
 	});
 
 	it("swallows a per-run query error and still reconciles the others", async () => {

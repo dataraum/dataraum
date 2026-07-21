@@ -12,6 +12,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { markRunStatus } from "../../db/cockpit/runs";
 import {
 	getWorkflowProgress,
+	terminalRunOutcome,
 	terminalRunStatus,
 	WorkflowProgressInputSchema,
 } from "../../temporal/progress";
@@ -54,12 +55,28 @@ export const Route = createFileRoute("/api/workflow-progress")({
 					// progress the widget renders.
 					if (result.done) {
 						// Classify + mark terminal via the shared helper so the poll and
-						// the reload reconcile never disagree on a run's outcome.
-						await markRunStatus(
-							parsed.data.workflow_id,
-							parsed.data.run_id,
-							terminalRunStatus(result),
-						);
+						// the reload reconcile never disagree on a run's outcome. DAT-845:
+						// this poll can win the race to flip the row `completed` before the
+						// completion-watcher/reconcile (both of which only scan
+						// `status='running'`), so it MUST also persist a `nothing_declared`
+						// operating_model outcome from the terminal phase — otherwise the
+						// column would be stranded NULL and the briefing would miss the
+						// state. Every other DONE run marks status-only (outcome NULL).
+						const outcome = terminalRunOutcome(result);
+						if (outcome !== null) {
+							await markRunStatus(
+								parsed.data.workflow_id,
+								parsed.data.run_id,
+								terminalRunStatus(result),
+								outcome,
+							);
+						} else {
+							await markRunStatus(
+								parsed.data.workflow_id,
+								parsed.data.run_id,
+								terminalRunStatus(result),
+							);
+						}
 					}
 					return Response.json(result);
 				} catch (err) {

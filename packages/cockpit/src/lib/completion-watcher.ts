@@ -37,6 +37,7 @@ import {
 	listRunningStages,
 	listWatchableRuns,
 	markRunStatus,
+	type RunOutcome,
 	type WatchableRun,
 } from "#/db/cockpit/runs";
 import { linkedAbortController } from "#/lib/abort";
@@ -62,6 +63,22 @@ const WATCH_LIMIT = 20;
 
 const runKey = (r: { workflowId: string; runId: string }) =>
 	`${r.workflowId}:${r.runId}`;
+
+/**
+ * Narrow a completed workflow's `result()` to the operating_model terminal outcome
+ * (DAT-845). The `getHandle` result is `unknown` at the boundary (react idiom 11):
+ * only the two mirrored `OperatingModelResult.outcome` values pass; anything else (a
+ * non-OM result shape, a missing field from an older engine) is `null`, so the run
+ * row's outcome column simply stays unset. Called only for a completed OM run.
+ */
+function readOutcome(result: unknown): RunOutcome | null {
+	if (result !== null && typeof result === "object" && "outcome" in result) {
+		const outcome = (result as { outcome: unknown }).outcome;
+		if (outcome === "promoted" || outcome === "nothing_declared")
+			return outcome;
+	}
+	return null;
+}
 
 /** A live watcher: the loop's abort handle + a refcount of the open streams
  * keeping it alive (one conversation can have several — a dev remount, multi-tab). */
@@ -184,11 +201,14 @@ export async function awaitCompletion(
 	signal: AbortSignal,
 ): Promise<void> {
 	let status: "completed" | "failed";
+	// The run's terminal RESULT value (DAT-615) — read off `result()` on the clean
+	// edge; `unknown` at the boundary (react idiom 11), narrowed by `readOutcome`.
+	let result: unknown;
 	try {
 		const client = await getTemporalClient();
 		const handle = client.workflow.getHandle(run.workflowId, run.runId);
 		try {
-			await handle.result();
+			result = await handle.result();
 			status = "completed";
 		} catch (err) {
 			if (!(err instanceof WorkflowFailedError)) throw err; // infra → re-discover
@@ -215,7 +235,19 @@ export async function awaitCompletion(
 
 	// markRunStatus BEFORE narrate: a completed run drops out of `listWatchableRuns`
 	// (status='running'), so a stream reopen never re-narrates it (the once-only).
-	await markRunStatus(run.workflowId, run.runId, status);
+	// DAT-845: for a completed operating_model run, thread its terminal outcome onto
+	// the row so the briefing can render a `nothing_declared` end state. This fires
+	// for BOTH OM paths — the manual direct start AND a session-cascade OM child
+	// (which records with the cascade's conversation id, so this watcher sees it when
+	// a stream is open). A cascade OM child is ALSO marked by the engine `_run_stage`
+	// bracket; both read the SAME completed child's result, so the outcome they write
+	// is identical (and `markRunStatus` never nulls a stored outcome on a 3-arg
+	// re-mark), so the double write is safe. Other stages / failed runs stay 3-arg.
+	if (status === "completed" && run.stage === "operating_model") {
+		await markRunStatus(run.workflowId, run.runId, status, readOutcome(result));
+	} else {
+		await markRunStatus(run.workflowId, run.runId, status);
+	}
 
 	// Import (onboarding add_source) is NOT narrated into the chat (DAT-597): its
 	// progress + outcome live in the staging hub widget + the "Needs you" inbox. A

@@ -28,6 +28,7 @@ const h = vi.hoisted(() => {
 			workflowId: string;
 			runId: string;
 			status: string;
+			outcome?: string | null;
 		}>,
 		// handle.result() — resolves (completed) by default; a test can reject it.
 		result: vi.fn(async () => ({})),
@@ -57,8 +58,16 @@ vi.mock("#/db/cockpit/runs", () => ({
 	),
 	listRunningStages: vi.fn(async () => []),
 	markRunStatus: vi.fn(
-		async (workflowId: string, runId: string, status: string) => {
-			h.markStatus.push({ workflowId, runId, status });
+		async (
+			workflowId: string,
+			runId: string,
+			status: string,
+			outcome?: string | null,
+		) => {
+			// `outcome` is undefined for the 3-arg (non-OM / failed) calls — `toEqual`
+			// ignores an undefined-valued key, so the existing status-only assertions
+			// stay green while the DAT-845 OM test can read the captured outcome.
+			h.markStatus.push({ workflowId, runId, status, outcome });
 		},
 	),
 }));
@@ -149,6 +158,56 @@ describe("awaitCompletion — push completion via result() (DAT-615)", () => {
 			{ workflowId: "wf-A", runId: "r-A", status: "completed" },
 		]);
 		expect(h.narrated).toEqual(["A"]); // routed into A
+	});
+
+	it("persists a completed operating_model run's nothing_declared outcome (DAT-845)", async () => {
+		// The direct-start OM path: `result()` carries the typed outcome; the watcher
+		// threads it onto the run row so the briefing can render the terminal state.
+		h.result.mockResolvedValueOnce({
+			run_id: "r",
+			validation_summary: "",
+			outcome: "nothing_declared",
+		});
+		await awaitCompletion(
+			"A",
+			{
+				workflowId: "operatingmodel-ws",
+				runId: "r-om",
+				stage: "operating_model",
+				kind: "begin_session",
+			},
+			liveSignal(),
+		);
+		expect(h.markStatus).toEqual([
+			{
+				workflowId: "operatingmodel-ws",
+				runId: "r-om",
+				status: "completed",
+				outcome: "nothing_declared",
+			},
+		]);
+	});
+
+	it("persists a promoted operating_model outcome the same way", async () => {
+		h.result.mockResolvedValueOnce({
+			run_id: "r",
+			validation_summary: "",
+			outcome: "promoted",
+		});
+		await awaitCompletion(
+			"A",
+			{
+				workflowId: "operatingmodel-ws",
+				runId: "r-om2",
+				stage: "operating_model",
+				kind: "begin_session",
+			},
+			liveSignal(),
+		);
+		expect(h.markStatus[0]).toMatchObject({
+			status: "completed",
+			outcome: "promoted",
+		});
 	});
 
 	it("marks FAILED when result() throws WorkflowFailedError (still narrates)", async () => {

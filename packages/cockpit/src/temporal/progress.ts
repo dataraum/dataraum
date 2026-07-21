@@ -18,12 +18,13 @@
 
 import { inArray } from "drizzle-orm";
 import { z } from "zod";
-
+import type { RunOutcome } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import { tables as tablesTable } from "../db/metadata/schema";
 import { getTemporalClient } from "./client";
 import {
 	PROGRESS_DONE_PHASE,
+	PROGRESS_NOTHING_DECLARED_PHASE,
 	type ProgressFailure,
 	type ProgressSnapshot,
 	type TableProgress,
@@ -144,6 +145,26 @@ export function terminalRunStatus(
 		progress.status === "CONTINUED_AS_NEW"
 		? "completed"
 		: "failed";
+}
+
+/**
+ * The operating_model terminal DISPOSITION for a DONE run (DAT-845), read off the
+ * terminal progress `phase` — the engine sets phase `"nothing_declared"` (instead of
+ * `"done"`) when a framed vertical declared no validations/cycles/metrics: the run
+ * COMPLETES without flipping the head. That phase value is OM-specific and
+ * unambiguous, so the reconcile (which has only the progress snapshot, not the typed
+ * workflow result nor the run's stage) can persist the run's outcome from it. Every
+ * other terminal phase reads `null` — a plain `"done"` can't be told from a non-OM
+ * run's `"done"` here, and the briefing needs only the `nothing_declared` distinction
+ * (a promoted run flips the head, which the briefing checks first). Sibling of
+ * `terminalRunStatus` — the two share the progress→terminal mapping.
+ */
+export function terminalRunOutcome(
+	progress: WorkflowProgress,
+): RunOutcome | null {
+	return progress.phase === PROGRESS_NOTHING_DECLARED_PHASE
+		? "nothing_declared"
+		: null;
 }
 
 /**

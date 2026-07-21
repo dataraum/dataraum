@@ -31,7 +31,10 @@ import { Check, X } from "lucide-react";
 import { displayTableName, stripSrcDigests } from "#/lib/display-names";
 import { progressQueryKey } from "#/lib/workflow-progress-event";
 import type { TableStep, WorkflowProgress } from "#/temporal/progress";
-import { PROGRESS_DONE_PHASE } from "#/temporal/types";
+import {
+	PROGRESS_DONE_PHASE,
+	PROGRESS_NOTHING_DECLARED_PHASE,
+} from "#/temporal/types";
 
 /** One badge in the pipeline, covering 1–N raw engine phases. A single-phase
  * group renders exactly like the ungrouped add_source pipeline; a multi-phase
@@ -70,6 +73,11 @@ export interface WorkflowProgressDisplay {
 	startingLabel: string;
 	// The success-alert line, derived from the terminal snapshot.
 	doneMessage: (data: WorkflowProgress) => string;
+	// The terminal-alert line for a run that COMPLETED at the `nothing_declared`
+	// phase (DAT-845) — an honest, non-success end state, NOT green. Only the
+	// operating_model widget sets this (only its workflow reaches that phase); a
+	// workflow that never sets the phase never renders this branch.
+	nothingDeclaredMessage?: (data: WorkflowProgress) => string;
 }
 
 /** The group a raw phase renders under, or undefined for a forward-compat
@@ -202,12 +210,19 @@ export function WorkflowProgressView({
 	}
 
 	const activeIdx = groupIndex(display, data.phase);
+	// DAT-845: the operating_model run COMPLETED (describe() = COMPLETED) but at the
+	// `nothing_declared` phase — a handled-but-INVALID misconfiguration, NOT a
+	// success. It must not read as green `succeeded` (the `status === "COMPLETED"`
+	// arm would otherwise claim it); it gets its own honest terminal alert below.
+	const nothingDeclared = data.phase === PROGRESS_NOTHING_DECLARED_PHASE;
 	const failed =
 		data.done &&
+		!nothingDeclared &&
 		data.phase !== PROGRESS_DONE_PHASE &&
 		data.status !== "COMPLETED";
 	const succeeded =
-		data.phase === PROGRESS_DONE_PHASE || data.status === "COMPLETED";
+		!nothingDeclared &&
+		(data.phase === PROGRESS_DONE_PHASE || data.status === "COMPLETED");
 
 	// During a per-table fan-out, surface the tally as a determinate bar.
 	const showTally =
@@ -301,6 +316,12 @@ export function WorkflowProgressView({
 			{succeeded && (
 				<Alert color="green" data-testid={`${p}-progress-done`}>
 					{display.doneMessage(data)}
+				</Alert>
+			)}
+
+			{nothingDeclared && display.nothingDeclaredMessage && (
+				<Alert color="orange" data-testid={`${p}-progress-nothing-declared`}>
+					{display.nothingDeclaredMessage(data)}
 				</Alert>
 			)}
 

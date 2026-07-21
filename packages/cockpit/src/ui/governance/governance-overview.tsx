@@ -49,6 +49,8 @@ const STAGE_STATUS_TONE: Record<StageStatus, string> = {
 	in_progress: "blue",
 	ready: "green",
 	needs_attention: "yellow",
+	// DAT-845 terminal state — orange, distinct from needs_attention's yellow.
+	nothing_declared: "orange",
 };
 
 const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
@@ -56,6 +58,7 @@ const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
 	in_progress: "Running",
 	ready: "Ready",
 	needs_attention: "Needs attention",
+	nothing_declared: "No operating model",
 };
 
 // Friendly singular/plural per artifact type for the operating-model summary.

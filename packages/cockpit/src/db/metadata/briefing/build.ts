@@ -5,7 +5,11 @@
 
 import { eq } from "drizzle-orm";
 import { resolveActiveWorkspaceRow } from "#/db/cockpit/registry";
-import { hasRunningRun, listAwaitingInput } from "#/db/cockpit/runs";
+import {
+	hasRunningRun,
+	latestOperatingModelNothingDeclared,
+	listAwaitingInput,
+} from "#/db/cockpit/runs";
 import { displayTableName } from "#/lib/display-names";
 import { metadataDb } from "../client";
 import { getPendingOverlays } from "../pending-overlays";
@@ -41,6 +45,7 @@ export async function buildWorkspaceBriefing(): Promise<WorkspaceBriefing> {
 		addSourceRunning,
 		beginSessionRunning,
 		operatingModelRunning,
+		operatingModelNothingDeclared,
 	] = await Promise.all([
 		metadataDb
 			.select({
@@ -79,6 +84,7 @@ export async function buildWorkspaceBriefing(): Promise<WorkspaceBriefing> {
 		hasRunningRun(workspace.id, "add_source"),
 		hasRunningRun(workspace.id, "begin_session"),
 		hasRunningRun(workspace.id, "operating_model"),
+		latestOperatingModelNothingDeclared(workspace.id),
 	]);
 
 	// tableId → { source, de-prefixed name }, over every run's tableId. The
@@ -105,6 +111,7 @@ export async function buildWorkspaceBriefing(): Promise<WorkspaceBriefing> {
 		addSourceRunning,
 		beginSessionRunning,
 		operatingModelRunning,
+		operatingModelNothingDeclared,
 	};
 
 	return assembleBriefing({

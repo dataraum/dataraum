@@ -390,16 +390,40 @@ class TestSynthesizeAndStoreTables:
         assert len(rels) == 1 and rels[0].cardinality is None  # no duckdb → unresolved
         assert anns == []  # per-table synthesis never writes column annotations
 
-    def test_declined_relationship_persists_as_candidate_not_llm(self, session) -> None:
-        """DAT-699 follow-up: a judge-DECLINED relationship (confidence below the
-        judge's own decision boundary, REL_CONFIRM_MIN) is persisted as
-        ``candidate`` with its evidence/reasoning kept — NOT as ``llm`` — so it
-        never enters the "defined" catalog (``detection_method != 'candidate'``)
-        that every downstream consumer reads. Cuts declines at the source instead
-        of making each consumer re-weigh confidence.
+    def test_declined_relationship_annotates_candidate_not_llm(self, session) -> None:
+        """A judge-DECLINED relationship (confidence below REL_CONFIRM_MIN) never
+        becomes ``llm`` (DAT-722) and never clobbers the structural measurement
+        (DAT-824): its pair's ``candidate`` row keeps its measured value-overlap
+        evidence and is annotated ``judge_verdict='declined'`` with the reasoning,
+        so it stays out of the "defined" catalog (``detection_method != 'candidate'``)
+        that every downstream consumer reads.
         """
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])
+        order_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "order_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        # The structural detector's candidate row for the pair the judge declines.
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=order_col.column_id,
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.8,  # the measured value-overlap statistic
+                detection_method="candidate",
+                evidence={"source": "value_overlap", "join_confidence": 0.8},
+            )
+        )
+        session.flush()
 
         agent = MagicMock()
         agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
@@ -458,23 +482,49 @@ class TestSynthesizeAndStoreTables:
             .scalars()
             .all()
         )
-        # Only the accepted FK is "defined" (llm); the declined one is a candidate.
+        # Only the accepted FK is "defined" (llm); the declined one stays a
+        # candidate with its measurement intact and the verdict annotated.
         assert len(llm_rels) == 1 and llm_rels[0].confidence == 0.9
-        assert len(cand_rels) == 1 and cand_rels[0].confidence == 0.3
-        # The judge's reasoning is preserved on the candidate row.
+        assert len(cand_rels) == 1
+        assert cand_rels[0].confidence == 0.8  # measured overlap NOT clobbered to 0.3
+        assert cand_rels[0].judge_verdict == "declined"
+        assert (cand_rels[0].evidence or {}).get("join_confidence") == 0.8  # measurement kept
         assert (cand_rels[0].evidence or {}).get("reasoning") == "coincidental overlap; decline"
 
     def test_declined_composite_does_not_become_confirmed_intent(self, session) -> None:
         """A composite (``key_columns``) the judge did NOT confirm (confidence below
         REL_CONFIRM_MIN) must not slip into the "defined" catalog via the surrogate-
-        intent → mint path (DAT-722). It falls through to the gated single-column
-        persist (→ ``candidate``), like any other declined verdict — no confirmed
-        intent, no ``llm`` row.
+        intent → mint path (DAT-722). It falls through to the single-column DECLINE
+        path, annotating the anchor pair's candidate row (DAT-824) — no confirmed
+        intent, no ``llm`` row, measured evidence preserved.
         """
         from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
 
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])
+        cust_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=cust_col.column_id,
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.9,
+                detection_method="candidate",
+                evidence={"source": "value_overlap", "join_confidence": 0.9},
+            )
+        )
+        session.flush()
 
         agent = MagicMock()
         agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
@@ -527,12 +577,15 @@ class TestSynthesizeAndStoreTables:
         )
         assert confirmed_intents == []
         assert llm_rels == []
-        assert len(cand_rels) == 1 and cand_rels[0].confidence == 0.3
+        assert len(cand_rels) == 1
+        assert cand_rels[0].judge_verdict == "declined"
+        assert cand_rels[0].confidence == 0.9  # measured overlap preserved, not clobbered
 
-    def test_declined_relationship_merges_onto_structural_candidate(self, session) -> None:
-        """A declined semantic rel upserts onto the PRE-EXISTING structural
-        ``candidate`` row for the same oriented pair (DAT-722) — replacing it with
-        the judge's confidence/reasoning, one row not two, still not "defined".
+    def test_declined_verdict_preserves_structural_candidate_evidence(self, session) -> None:
+        """A judge DECLINE annotates the pair's PRE-EXISTING structural candidate
+        row (DAT-824) — it keeps its measured confidence/evidence intact and gains
+        ``judge_verdict='declined'`` + the reasoning, never a clobbering re-write.
+        One row, still ``candidate`` (not defined), no ``llm`` row.
         """
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])
@@ -544,7 +597,8 @@ class TestSynthesizeAndStoreTables:
         id_col = session.execute(
             select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
         ).scalar_one()
-        # The structural detector's prior candidate row for this pair.
+        # The structural detector's prior candidate row for this pair, carrying its
+        # measured value-overlap evidence.
         session.add(
             RelationshipDB(
                 run_id=baseline_run_id(),
@@ -553,10 +607,10 @@ class TestSynthesizeAndStoreTables:
                 to_table_id=customers.table_id,
                 to_column_id=id_col.column_id,
                 relationship_type="candidate",
-                cardinality=None,
-                confidence=1.0,
+                cardinality="many-to-one",
+                confidence=1.0,  # the measured value-overlap statistic
                 detection_method="candidate",
-                evidence={"source": "structural"},
+                evidence={"source": "value_overlap", "join_confidence": 0.62, "algorithm": "exact"},
             )
         )
         session.flush()
@@ -599,10 +653,14 @@ class TestSynthesizeAndStoreTables:
             .scalars()
             .all()
         )
-        # One merged candidate row (not two), now carrying the judge's verdict.
+        # One candidate row (not two); measured evidence PRESERVED, decline typed.
         assert len(cand_rels) == 1
-        assert cand_rels[0].confidence == 0.3
-        assert (cand_rels[0].evidence or {}).get("reasoning") == "coincidental"
+        row = cand_rels[0]
+        assert row.confidence == 1.0  # measured overlap survives, NOT clobbered to 0.3
+        assert row.judge_verdict == "declined"
+        assert (row.evidence or {}).get("join_confidence") == 0.62  # measurement intact
+        assert (row.evidence or {}).get("source") == "value_overlap"
+        assert (row.evidence or {}).get("reasoning") == "coincidental"  # reasoning merged
         assert (
             session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
             .scalars()

@@ -44,6 +44,16 @@ class Relationship(Base):
       the user never rejected it) — materialized from a ``keep`` overlay (DAT-409).
     The "defined" catalog the downstream stages read is ``detection_method != 'candidate'``.
 
+    A judge DECLINE is a SEPARATE FACT from the structural measurement (DAT-824):
+    it is recorded as ``judge_verdict='declined'`` ANNOTATED onto the pair's
+    existing ``candidate`` row — never a clobbering re-write that would destroy
+    the measured value-overlap evidence, and never a new ``detection_method`` that
+    would leak into the ``!= 'candidate'`` defined catalog and become a reference.
+    A declined candidate stays ``detection_method='candidate'`` (excluded from every
+    reference-serving consumer for free) and keeps its measured
+    ``confidence``/``evidence`` intact; the judge's reasoning is merged into
+    ``evidence['reasoning']``.
+
     Run-versioned (DAT-408): every row carries the producing ``run_id`` and rows
     coexist across runs (non-destructive; deletes are run_id-scoped, retry-only).
     The durable methods (manual/keeper) are re-materialized into each run from
@@ -106,6 +116,18 @@ class Relationship(Base):
             "('candidate', 'llm', 'manual', 'keeper')",
             name="detection_method",
         ),
+        # Judge-verdict vocabulary (DAT-824): a single-column decline is recorded
+        # by ANNOTATING the pair's ``candidate`` row rather than clobbering its
+        # measured evidence with the LLM's low confidence. ``NULL`` = the judge
+        # did not decline this candidate (never adjudicated, or confirmed → see the
+        # sibling ``llm`` row); ``'declined'`` = the judge ruled the pair not a real
+        # relationship (reasoning kept in ``evidence['reasoning']``). Only ever set
+        # on a ``candidate`` row — a confirm becomes a distinct ``llm`` row, so
+        # 'confirmed' is deliberately absent from the vocabulary.
+        CheckConstraint(
+            "judge_verdict IS NULL OR judge_verdict IN ('declined')",
+            name="judge_verdict",
+        ),
         # Orientation invariant (DAT-777, upgraded DAT-802): a persisted FK is
         # stored many→one, child→parent — so ``from`` is always the many/fact side
         # every downstream consumer assumes (og_references, the conformed-dim
@@ -145,10 +167,26 @@ class Relationship(Base):
         String
     )  # 'one-to-one', 'one-to-many', 'many-to-one', 'many-to-many'
 
-    # Confidence and evidence
+    # Confidence and evidence.
+    #
+    # ``confidence`` is METHOD-DEPENDENT and NOT a cross-method posterior (DAT-839):
+    #   - 'llm'      → the judge's existence confidence (0-1) for the pair.
+    #   - 'manual'   → the user's assertion (1.0) or the copied llm confidence.
+    #   - 'keeper'   → the retained prior-run llm confidence.
+    #   - 'candidate'→ the raw VALUE-OVERLAP statistic max(Jaccard, containment),
+    #     the SAME number as ``evidence['join_confidence']`` — a measurement, not a
+    #     judgement. An unconfirmed candidate reaches 1.0 while a judge-confirmed FK
+    #     sits at ~0.95, so candidate and non-candidate values are NOT comparable.
+    # Never rank/filter/gate across methods on this column as if it were a posterior;
+    # the entropy adjudicator reads the overlap from ``evidence['join_confidence']``
+    # and the judge/user confidence from this column PER METHOD, never mixing them.
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     detection_method: Mapped[str | None] = mapped_column(String)  # 'candidate', 'llm', 'manual'
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # The judge's single-column decline verdict (DAT-824), annotated onto a
+    # ``candidate`` row without disturbing its measured evidence. NULL | 'declined'
+    # (see ``ck_relationships_judge_verdict``).
+    judge_verdict: Mapped[str | None] = mapped_column(String)
 
     # Verification source (DAT-776): WHO/WHAT vouches for this edge. Set EXPLICITLY
     # by every writer via :meth:`oriented_row` (see ``ck_relationships_confirmation_source``):

@@ -71,11 +71,15 @@ SELECT * FROM __WS__.columns;
 
 DROP VIEW IF EXISTS __READ__.concept_edges;
 CREATE VIEW __READ__.concept_edges AS
-SELECT * FROM __WS__.concept_edges;
+SELECT * FROM __WS__.concept_edges
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
 DROP VIEW IF EXISTS __READ__.concepts;
 CREATE VIEW __READ__.concepts AS
-SELECT * FROM __WS__.concepts;
+SELECT * FROM __WS__.concepts
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
 DROP VIEW IF EXISTS __READ__.config_overlay;
 CREATE VIEW __READ__.config_overlay AS
@@ -394,6 +398,10 @@ WHERE EXISTS (
     AND h.stage = 'operating_model'
     AND h.run_id = r.run_id
 );
+
+DROP VIEW IF EXISTS __READ__.workspace_settings;
+CREATE VIEW __READ__.workspace_settings AS
+SELECT * FROM __WS__.workspace_settings;
 
 DROP VIEW IF EXISTS __READ__.current_tables;
 CREATE VIEW __READ__.current_tables AS

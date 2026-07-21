@@ -311,6 +311,16 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{vid}', '{fact}', {view_tid}, '{vname}', '{RUN}', "
             f"'{dims}'::json, true, '{TS}')"
         )
+    # Bind the workspace's active vertical (DAT-848): the concept read views
+    # (og_concepts / og_concept_edges read __READ__.concepts / .concept_edges) scope
+    # to workspace_settings.active_vertical, falling back to '_adhoc' when unbound —
+    # so an unbound workspace would serve only its '_adhoc' vocabulary (none exists in
+    # this seed). Every concept/edge below is 'finance' — bind it so the vocabulary
+    # graph is populated.
+    stmts.append(
+        "INSERT INTO workspace_settings (pin, active_vertical, bound_at) "
+        f"VALUES (true, 'finance', '{TS}')"
+    )
     # Concept vertices + a disjoint_with concept edge (DAT-729): the vocabulary graph.
     # Concepts/edges are workspace-persistent (NOT run-versioned) — plain active rows,
     # no head to promote. The og_concept_edges view resolves the edge's (vertical, name)

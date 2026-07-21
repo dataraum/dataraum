@@ -155,9 +155,13 @@ class TestResolveOperatingModelScope:
 
     def test_typod_vertical_fails_born_loud(self, session_factory):
         """A typo'd / never-framed vertical raises at run entry (DAT-480) — before
-        any catalog/table resolution turns it into a benign no_declared_*."""
-        with pytest.raises(RuntimeError, match="Unknown vertical 'finanace'"):
+        any catalog/table resolution turns it into a benign no_declared_*. Surfaced
+        as a non-retryable PhaseFailed like every other pre-flight refusal (DAT-848):
+        a typo never fixes itself on retry."""
+        with pytest.raises(ApplicationError, match="Unknown vertical 'finanace'") as exc:
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY, "finanace")
+        assert exc.value.type == "PhaseFailed"
+        assert exc.value.non_retryable is True
 
     # DAT-505: the per-activity workspace-mismatch guard was removed — the
     # per-workspace task queue + the single boot assertion enforce isolation, so

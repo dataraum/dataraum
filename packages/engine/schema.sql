@@ -495,7 +495,9 @@ CREATE TABLE entropy_objects (
 	table_id VARCHAR, 
 	column_id VARCHAR, 
 	run_id VARCHAR NOT NULL, 
-	score FLOAT NOT NULL, 
+	score FLOAT, 
+	status VARCHAR NOT NULL, 
+	abstain_reason VARCHAR, 
 	evidence JSONB, 
 	detector_id VARCHAR NOT NULL, 
 	source_analysis_ids JSONB, 
@@ -504,6 +506,9 @@ CREATE TABLE entropy_objects (
 	CONSTRAINT ck_entropy_objects_layer CHECK (layer IN ('computational', 'semantic', 'structural', 'value')), 
 	CONSTRAINT ck_entropy_objects_dimension CHECK (dimension IN ('business_meaning', 'coverage', 'derived_values', 'dimensional', 'distribution', 'nulls', 'reconciliation', 'relations', 'temporal', 'types', 'units', 'variance')), 
 	CONSTRAINT ck_entropy_objects_sub_dimension CHECK (sub_dimension IN ('benford_compliance', 'cross_column_patterns', 'cross_table_consistency', 'dimension_coverage', 'formula_match', 'join_path_determinism', 'naming_clarity', 'null_ratio', 'null_semantics', 'relationship_discovery', 'relationship_quality', 'slice_conditional_null', 'slice_stability', 'temporal_behavior', 'time_role', 'type_fidelity', 'unit_declaration', 'unit_source')), 
+	CONSTRAINT ck_entropy_objects_status CHECK (status IN ('abstained', 'measured')), 
+	CONSTRAINT ck_entropy_objects_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('detector_error', 'insufficient_data', 'missing_inputs', 'not_applicable')), 
+	CONSTRAINT ck_entropy_objects_status_score_reason CHECK ((status = 'measured' AND score IS NOT NULL AND abstain_reason IS NULL) OR (status = 'abstained' AND score IS NULL AND abstain_reason IS NOT NULL)), 
 	CONSTRAINT fk_entropy_objects_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_entropy_objects_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
@@ -526,11 +531,14 @@ CREATE TABLE entropy_readiness (
 	run_id VARCHAR NOT NULL, 
 	band VARCHAR NOT NULL, 
 	worst_intent_risk FLOAT NOT NULL, 
+	coverage VARCHAR NOT NULL, 
+	abstentions JSONB, 
 	intents JSONB, 
 	top_drivers JSONB, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_entropy_readiness PRIMARY KEY (readiness_id), 
 	CONSTRAINT ck_entropy_readiness_band CHECK (band IN ('ready', 'investigate', 'blocked')), 
+	CONSTRAINT ck_entropy_readiness_coverage CHECK (coverage IN ('measured', 'partial', 'unmeasured')), 
 	CONSTRAINT fk_entropy_readiness_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_entropy_readiness_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
@@ -701,6 +709,7 @@ CREATE TABLE statistical_quality_metrics (
 	column_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	benford_status VARCHAR, 
 	benford_compliant INTEGER, 
 	has_outliers INTEGER, 
 	iqr_outlier_ratio FLOAT, 
@@ -708,6 +717,7 @@ CREATE TABLE statistical_quality_metrics (
 	quality_data JSON NOT NULL, 
 	CONSTRAINT pk_statistical_quality_metrics PRIMARY KEY (metric_id), 
 	CONSTRAINT uq_statistical_quality_metrics_column_run UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_statistical_quality_metrics_benford_status CHECK (benford_status IS NULL OR benford_status IN ('compliant', 'not_applicable', 'violating')), 
 	CONSTRAINT fk_statistical_quality_metrics_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 

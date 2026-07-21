@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from dataraum.core.duckdb_naming import (
-    is_reserved_schema,
     qualified_table,
     sanitize_identifier,
     schema_for_layer,
@@ -72,15 +71,3 @@ class TestQualifiedTable:
     def test_view_like_layer_falls_back_to_typed_schema(self):
         # Slice 1 keeps enriched/slicing_view artifacts under the typed schema.
         assert qualified_table("enriched", "orders") == "typed.orders"
-
-
-class TestIsReservedSchema:
-    @pytest.mark.parametrize("schema", ["session_abc", "archive_xyz"])
-    def test_reserved_prefixes(self, schema):
-        assert is_reserved_schema(schema) is True
-
-    @pytest.mark.parametrize("schema", ["raw", "typed", "quarantine", "session"])
-    def test_non_reserved_passes(self, schema):
-        # Bare "session" (no underscore-suffix) is NOT reserved — only
-        # the prefix form ``session_*`` is.
-        assert is_reserved_schema(schema) is False

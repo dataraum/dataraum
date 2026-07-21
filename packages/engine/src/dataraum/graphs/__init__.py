@@ -24,13 +24,6 @@ from .context import (
     build_execution_context,
     format_served_context,
 )
-from .entropy_behavior import (
-    BehaviorMode,
-    DimensionBehavior,
-    EntropyAction,
-    EntropyBehaviorConfig,
-    get_default_config,
-)
 from .loader import GraphLoader, GraphLoadError
 from .models import (
     AssumptionBasis,
@@ -67,12 +60,6 @@ __all__ = [
     "RelationshipContext",
     "build_execution_context",
     "format_served_context",
-    # Entropy behavior
-    "BehaviorMode",
-    "EntropyAction",
-    "EntropyBehaviorConfig",
-    "DimensionBehavior",
-    "get_default_config",
     # Enums
     "GraphSource",
     "StepType",

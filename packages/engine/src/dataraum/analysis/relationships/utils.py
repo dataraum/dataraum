@@ -180,11 +180,19 @@ def load_relationship_candidates_for_semantic(
                         "right_referential_integrity": 85.0,
                         "left_orphan_count": 5,
                         "cardinality_verified": True,
+                        "column1_role": "timestamp",
+                        "column1_entity_type": "fiscal_period",
+                        "column2_role": "key",
                     }
                 ]
             }
         ]
     """
+    # Local import: relationships/__init__ imports this module at package init,
+    # and semantic/__init__ imports agent.py which imports
+    # relationships.graph_topology — a module-level import here would close
+    # that cycle.
+    from dataraum.analysis.semantic.db_models import SemanticAnnotation
     # Build query — scoped to the current run's catalog (DAT-408) when ``run_id`` is
     # given, so coexisting prior-run rows aren't fed to the LLM twice.
     stmt = select(Relationship).where(Relationship.detection_method == detection_method)
@@ -235,6 +243,30 @@ def load_relationship_candidates_for_semantic(
             if col:
                 column_cache[rel.to_column_id] = col.column_name
 
+    # Established per-column annotations (DAT-723): each candidate side's
+    # semantic_role / entity_type ride along as EVIDENCE, so the judge weighs
+    # e.g. "period identifier × containment" itself — the candidates stay
+    # unfiltered (evidence, never a pre-filter). Annotations are object-grain
+    # (written under an add_source run), so the catalogue ``run_id`` scoping the
+    # candidates above cannot scope them; mirroring load_persisted_annotations'
+    # unit merge, take the MOST RECENT annotation per column (confidence as the
+    # deterministic tiebreak).
+    annotation_cache: dict[str, tuple[str | None, str | None]] = {}
+    candidate_column_ids = {rel.from_column_id for rel in relationships} | {
+        rel.to_column_id for rel in relationships
+    }
+    annotation_rows = session.execute(
+        select(
+            SemanticAnnotation.column_id,
+            SemanticAnnotation.semantic_role,
+            SemanticAnnotation.entity_type,
+        )
+        .where(SemanticAnnotation.column_id.in_(candidate_column_ids))
+        .order_by(SemanticAnnotation.annotated_at.desc(), SemanticAnnotation.confidence.desc())
+    ).all()
+    for column_id, semantic_role, entity_type in annotation_rows:
+        annotation_cache.setdefault(column_id, (semantic_role, entity_type))
+
     # Group by table pair
     # Key: (from_table_id, to_table_id) -> list of relationships
     grouped: dict[tuple[str, str], list[Relationship]] = {}
@@ -268,6 +300,21 @@ def load_relationship_candidates_for_semantic(
                 "confidence": rel.confidence,
                 "cardinality": rel.cardinality or "unknown",
             }
+
+            # Established annotations per side (DAT-723). Keyed off the STORED
+            # from/to column ids, so they are direction-true through the DAT-777
+            # orientation swap by construction. A column without an annotation
+            # (or with a null field) serves NO key — absence, never a default.
+            role1, entity1 = annotation_cache.get(rel.from_column_id, (None, None))
+            role2, entity2 = annotation_cache.get(rel.to_column_id, (None, None))
+            if role1 is not None:
+                jc["column1_role"] = role1
+            if entity1 is not None:
+                jc["column1_entity_type"] = entity1
+            if role2 is not None:
+                jc["column2_role"] = role2
+            if entity2 is not None:
+                jc["column2_entity_type"] = entity2
 
             # Orientation evidence (DAT-725): the per-side uniqueness the detector
             # measured (finder.py) rides from the evidence JSON into the served

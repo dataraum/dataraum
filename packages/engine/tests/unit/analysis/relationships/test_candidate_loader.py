@@ -114,6 +114,131 @@ def test_oriented_candidate_serves_uniqueness_in_stored_orientation(session) -> 
     assert jc["right_uniqueness"] == 1.0
 
 
+def _candidate_row(run_id: str, from_table, from_col, to_table, to_col) -> RelationshipDB:
+    return RelationshipDB(
+        run_id=run_id,
+        from_table_id=from_table.table_id,
+        from_column_id=from_col.column_id,
+        to_table_id=to_table.table_id,
+        to_column_id=to_col.column_id,
+        relationship_type="candidate",
+        cardinality="many-to-one",
+        confidence=0.9,
+        detection_method="candidate",
+        evidence={},
+    )
+
+
+def test_loader_serves_established_column_annotations(session) -> None:
+    """DAT-723: each side's per-column annotation rides the candidate as evidence.
+
+    Annotations are object-grain — written under an add_source run, not the
+    catalogue run that scopes the candidates — so the loader must serve them
+    without run_id agreement. A null field serves NO key (absence, never a
+    default).
+    """
+    from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
+    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+
+    facts, period_col = _table_with_column(session, "fact_lines", "fiscal_period")
+    invoices, invoice_pk = _table_with_column(session, "invoices", "invoice_id")
+
+    session.add_all(
+        [
+            SemanticAnnotation(
+                column_id=period_col.column_id,
+                run_id="object-grain-run",
+                semantic_role="timestamp",
+                entity_type="fiscal_period",
+                confidence=0.9,
+            ),
+            SemanticAnnotation(
+                column_id=invoice_pk.column_id,
+                run_id="object-grain-run",
+                semantic_role="key",
+                entity_type=None,
+                confidence=0.95,
+            ),
+        ]
+    )
+    session.add(_candidate_row(baseline_run_id(), facts, period_col, invoices, invoice_pk))
+    session.flush()
+
+    candidates = load_relationship_candidates_for_semantic(
+        session, [facts.table_id, invoices.table_id], run_id=baseline_run_id()
+    )
+
+    (jc,) = candidates[0]["join_columns"]
+    assert jc["column1_role"] == "timestamp"
+    assert jc["column1_entity_type"] == "fiscal_period"
+    assert jc["column2_role"] == "key"
+    assert "column2_entity_type" not in jc
+
+
+def test_loader_omits_annotation_fields_when_no_annotation_exists(session) -> None:
+    """An unannotated column serves no role fields — absent, not defaulted."""
+    from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
+
+    lines, ref_col = _table_with_column(session, "lines3", "doc_ref")
+    docs, doc_pk = _table_with_column(session, "docs3", "doc_id")
+
+    session.add(_candidate_row(baseline_run_id(), lines, ref_col, docs, doc_pk))
+    session.flush()
+
+    candidates = load_relationship_candidates_for_semantic(
+        session, [lines.table_id, docs.table_id], run_id=baseline_run_id()
+    )
+
+    (jc,) = candidates[0]["join_columns"]
+    assert "column1_role" not in jc
+    assert "column1_entity_type" not in jc
+    assert "column2_role" not in jc
+    assert "column2_entity_type" not in jc
+
+
+def test_loader_serves_most_recent_annotation_per_column(session) -> None:
+    """Coexisting runs' annotations resolve to the most recent row (DAT-413 axis)."""
+    from datetime import UTC, datetime
+
+    from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
+    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+
+    lines, period_col = _table_with_column(session, "lines4", "period")
+    docs, doc_pk = _table_with_column(session, "docs4", "doc_id")
+
+    session.add_all(
+        [
+            SemanticAnnotation(
+                column_id=period_col.column_id,
+                run_id="stale-run",
+                semantic_role="dimension",
+                entity_type="category",
+                confidence=0.99,
+                annotated_at=datetime(2024, 1, 1, tzinfo=UTC),
+            ),
+            SemanticAnnotation(
+                column_id=period_col.column_id,
+                run_id="fresh-run",
+                semantic_role="timestamp",
+                entity_type="fiscal_period",
+                confidence=0.7,
+                annotated_at=datetime(2025, 1, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    session.add(_candidate_row(baseline_run_id(), lines, period_col, docs, doc_pk))
+    session.flush()
+
+    candidates = load_relationship_candidates_for_semantic(
+        session, [lines.table_id, docs.table_id], run_id=baseline_run_id()
+    )
+
+    (jc,) = candidates[0]["join_columns"]
+    # The fresh run's read wins despite the stale run's higher confidence.
+    assert jc["column1_role"] == "timestamp"
+    assert jc["column1_entity_type"] == "fiscal_period"
+
+
 def test_loader_omits_uniqueness_when_evidence_lacks_it(session) -> None:
     """Evidence without uniqueness (e.g. an old row) serves no fabricated keys."""
     from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic

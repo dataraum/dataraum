@@ -200,14 +200,22 @@ def build_cycle_detection_context(
     columns_by_table: dict[str, set[str]] = {
         t.table_name: {c.column_name for c in t.columns} for t in tables
     }
+    served_identity: dict[str, list[dict[str, Any]]] = {
+        ent_table_name: _served_identity_columns(
+            ent.identity_columns, columns_by_table.get(ent_table_name, set())
+        )
+        for ent, ent_table_name in entities
+    }
     entity_flow_columns: set[tuple[str, str]] = set()
     for r in rel_list:
         entity_flow_columns.add((r["from_table"], r["from_column"]))
         entity_flow_columns.add((r["to_table"], r["to_column"]))
-    for ent, ent_table_name in entities:
-        for ic in _served_identity_columns(
-            ent.identity_columns, columns_by_table.get(ent_table_name, set())
-        ):
+    # Join keys — the endpoints alone: excluded from the chain-conditioned
+    # labels below (their values are the information-free IDs the flat
+    # endpoint samples already carry).
+    endpoint_columns = set(entity_flow_columns)
+    for ent_table_name, identity_cols in served_identity.items():
+        for ic in identity_cols:
             entity_flow_columns.add((ent_table_name, ic["column"]))
 
     # Row counts from DuckDB
@@ -221,6 +229,49 @@ def build_cycle_detection_context(
             row_counts[t.table_name] = None
 
     sampler = DataSampler(privacy) if privacy is not None else None
+
+    # Chain-conditioned label samples on the reference lines (DAT-853): for
+    # each A.fk -> B.key, the from-side identity labels aggregated over ONLY
+    # the rows that ride the join. The flat samples served per column below
+    # blur populations sharing a table (counterparty at 37% vendors flat vs
+    # 100% vendors on payment-linked rows — the AP mislabel); the conditioned
+    # distribution is the direction evidence. Additional serving — the flat
+    # samples stay. Privacy follows this builder's convention: a sensitive
+    # label serves NOTHING (absence, never a placeholder).
+    for r in rel_list:
+        from_tbl = table_by_id.get(r["from_table_id"])
+        to_tbl = table_by_id.get(r["to_table_id"])
+        if from_tbl is None or to_tbl is None:
+            continue
+        if not from_tbl.duckdb_path or not to_tbl.duckdb_path:
+            continue
+        conditioned: list[dict[str, Any]] = []
+        for ic in served_identity.get(r["from_table"], []):
+            label_name = ic["column"]
+            if (r["from_table"], label_name) in endpoint_columns:
+                continue
+            if sampler is not None and sampler.is_sensitive(label_name):
+                continue
+            top = _conditioned_top_values(
+                duckdb_conn,
+                from_path=from_tbl.duckdb_path,
+                to_path=to_tbl.duckdb_path,
+                fk=r["from_column"],
+                key=r["to_column"],
+                label_column=label_name,
+                limit=_ENTITY_FLOW_SAMPLE_BUDGET,
+            )
+            if top:
+                conditioned.append(
+                    {
+                        "column": label_name,
+                        "samples": [
+                            f"{_truncate_sample_value(value)} ({pct:.0f}%)" for value, pct in top
+                        ],
+                    }
+                )
+        if conditioned:
+            r["conditioned_label_samples"] = conditioned
 
     # Build table info with columns and semantic annotations
     table_info = []
@@ -289,10 +340,10 @@ def build_cycle_detection_context(
             "grain_columns": ent.grain_columns,
             # Recurring identity columns (DAT-565) with their authored notes —
             # the columns entity flows ride on; rendered so the agent sees WHY
-            # a column carries samples. Existence-filtered (see the helper).
-            "identity_columns": _served_identity_columns(
-                ent.identity_columns, columns_by_table.get(table_name, set())
-            ),
+            # a column carries samples. Existence-filtered once above
+            # (``served_identity``), shared with the entity-flow gate and the
+            # chain-conditioned label serve.
+            "identity_columns": served_identity.get(table_name, []),
         }
         for ent, table_name in entities
     ]
@@ -507,6 +558,60 @@ def _truncate_sample_value(value: Any) -> str:
     if len(text) > _SAMPLE_VALUE_MAX_CHARS:
         return text[:_SAMPLE_VALUE_MAX_CHARS] + "..."
     return text
+
+
+def _qident(name: str) -> str:
+    """Double-quote one DuckDB identifier (embedded quotes doubled)."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _conditioned_top_values(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    from_path: str,
+    to_path: str,
+    fk: str,
+    key: str,
+    label_column: str,
+    limit: int,
+) -> list[tuple[str, float]]:
+    """One DuckDB aggregate: a label's top (value, pct) over rows riding the join.
+
+    Twin of the catalogue builder's helper (analysis/catalogue/context.py) —
+    same semantics, this builder's own rendering. The restriction is a
+    semi-join (the fk RESOLVES into the key), not just ``fk IS NOT NULL``: an
+    orphaned fk claims a link that never resolves, and evidence labeled
+    "joined rows" must describe the population that actually joins.
+    Percentage denominator = ALL joined rows (NULL labels included, the
+    stored profile's top_values convention); ordering count DESC then value
+    keeps the serve deterministic. Fail-soft: a missing typed table logs and
+    serves nothing — the context build must survive it.
+    """
+    query = f"""
+        SELECT value, pct FROM (
+            SELECT CAST({_qident(label_column)} AS VARCHAR) AS value,
+                   COUNT(*) AS cnt,
+                   COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS pct
+            FROM {_qident(from_path)} src
+            WHERE src.{_qident(fk)} IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM {_qident(to_path)} tgt
+                  WHERE tgt.{_qident(key)} = src.{_qident(fk)}
+              )
+            GROUP BY 1
+        )
+        WHERE value IS NOT NULL
+        ORDER BY cnt DESC, value
+        LIMIT {int(limit)}
+    """
+    try:
+        rows = duckdb_conn.execute(query).fetchall()
+    except Exception as e:
+        logger.warning(
+            "conditioned_samples_failed", table=from_path, column=label_column, error=str(e)
+        )
+        return []
+    return [(value, float(pct)) for value, pct in rows]
 
 
 def _load_pinned_annotations(
@@ -750,6 +855,16 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             f"{rel['to_table']}.{rel['to_column']} "
             f"({rel['relationship_type']}, {rel['cardinality']}, conf={rel['confidence']:.0%})"
         )
+        # Chain-conditioned label samples (DAT-853): the from-side labels on
+        # ONLY the rows that ride this join — where these differ from a
+        # column's flat samples, they are the evidence for what the chain
+        # itself carries (e.g. which party the linked rows involve).
+        for cls_entry in rel.get("conditioned_label_samples", []):
+            lines.append(
+                f"    {rel['from_table']}.{cls_entry['column']} "
+                f"({rel['from_column']}-joined rows only): "
+                + ", ".join(cls_entry["samples"])
+            )
     lines.append("")
 
     # Conformed-dimension meetings (DAT-850): confirmed edges whose measured

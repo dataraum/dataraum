@@ -226,3 +226,42 @@ class TestReadinessCoveragePersistence:
         assert rec.coverage == "measured"
         assert rec.abstentions is None
         assert rec.band == "blocked"  # 0.9 × 0.7 aggregation = 0.63
+
+    def test_temporal_behavior_abstention_degrades_coverage(self, session: Session) -> None:
+        """A temporal_behavior abstention (DAT-847 — a NEW loss-path abstention producer)
+        routes through the rollup to coverage='unmeasured' + a trace entry, WITHOUT
+        reaching the loss/risk computation (which raises on an abstention). Proves the
+        undetermined-measure gap is visible, not silent, on the readiness surface."""
+        table_id, column_id = _seed_table(session)
+        session.add(
+            EntropyObjectRecord(
+                layer="semantic",
+                dimension="temporal",
+                sub_dimension="temporal_behavior",
+                target="column:orders.amount",
+                table_id=table_id,
+                column_id=column_id,
+                run_id=baseline_run_id(),
+                detector_id="temporal_behavior",
+                score=None,
+                status="abstained",
+                abstain_reason="insufficient_data",
+                evidence=[{"ignorance": 1.0}],
+            )
+        )
+        session.flush()
+
+        rows = persist_readiness(session, [table_id], run_id=baseline_run_id())  # must not raise
+        session.flush()
+
+        assert rows == 1
+        rec = session.execute(select(EntropyReadinessRecord)).scalar_one()
+        assert rec.coverage == "unmeasured"
+        assert rec.band == "ready"  # frozen vocabulary — vacuous, coverage says so
+        assert rec.abstentions == [
+            {
+                "detector": "temporal_behavior",
+                "reason": "insufficient_data",
+                "intents": ["aggregation_intent", "query_intent", "reporting_intent"],
+            }
+        ]

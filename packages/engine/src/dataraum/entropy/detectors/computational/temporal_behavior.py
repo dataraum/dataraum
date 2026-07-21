@@ -5,12 +5,15 @@ stock/flow claim (produced in ``semantic_per_column``) against the data-grounded
 structural reconciliation (DAT-491). Stock/flow is data-determined — the ontology no
 longer votes (DAT-657): the same concept materializes as flow or stock, a format the
 ontology can't declare. High conflict = the LLM read and the reconciliation disagree;
-high ignorance = the behaviour is undetermined. Emits one witnessed ``EntropyObject``
-per column carrying the resolved behaviour and the conflict — and NO teach suggestion:
-stock/flow is data-determined, so the structural witness already wins; there is no
-format for a human to teach here. A genuinely mis-grounded column is corrected on the
-grounding path (bind/relationship), which owns that teach — not manufactured into a
-second, misplaced ``rebind`` button off a temporal conflict.
+high ignorance = the behaviour is undetermined. A resolved verdict emits one witnessed
+``EntropyObject`` carrying the behaviour and the conflict; a measure the pool could NOT
+determine (total ignorance — no opinionated witness) emits a wave-2 ``abstained`` object
+(``insufficient_data``, DAT-847) instead of a silent skip, so the undetermined column is
+visible in the coverage/abstention trace and never reads as measured-clean. Neither path
+carries a teach suggestion: stock/flow is data-determined, so the structural witness
+already wins; there is no format for a human to teach here. A genuinely mis-grounded
+column is corrected on the grounding path (bind/relationship), which owns that teach —
+not manufactured into a second, misplaced ``rebind`` button off a temporal conflict.
 
 No data-trajectory witness: the DAT-459 spike falsified the time-series statistic,
 and the DAT-445 kill-gate showed an LLM reading a column's own trajectory is
@@ -31,7 +34,7 @@ from dataraum.entropy.measurements.temporal_behavior import (
     measure_temporal_behavior,
     resolved_behaviour,
 )
-from dataraum.entropy.models import EntropyObject, WitnessClaim
+from dataraum.entropy.models import ABSTAIN_INSUFFICIENT_DATA, EntropyObject, WitnessClaim
 
 
 class TemporalBehaviorDetector(EntropyDetector):
@@ -76,26 +79,65 @@ class TemporalBehaviorDetector(EntropyDetector):
             context.analysis_results["structural"] = structural
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
-        """Pool the LLM claim vs the reconciliation; emit one object when a witness opines."""
+        """Pool the LLM claim vs the reconciliation; emit a measurement or an abstention.
+
+        A resolved stock/flow label → one measured object carrying the posterior and the
+        pooled conflict/ignorance. Total ignorance — no opinionated witness, or a zero-
+        reliability wash, so the pool resolved NO trustworthy label — is a wave-2
+        ABSTENTION for a column the per-column agent read as a MEASURE
+        (``semantic_role='measure'``): persisted as ``insufficient_data`` so the
+        undetermined measure is visible in the coverage/abstention trace and never reads
+        as measured-clean (DAT-847/DAT-853). A non-measure column (any other role) is not
+        a stock/flow question → stay silent (no abstention flood over identifiers /
+        dimensions — every column carries a mandatory ``unsure`` claim, so claim presence
+        cannot discriminate; the role does).
+        """
         semantic = context.get_analysis("semantic")
         if not semantic:
             return []
         reliabilities = context.get_analysis("reliabilities", None) or None
         structural = context.get_analysis("structural", None) or {}
 
+        claim = semantic.get("temporal_behavior_claim")
         adj = measure_temporal_behavior(
             context.table_name,
             context.column_name,
-            llm_claim=semantic.get("temporal_behavior_claim"),
+            llm_claim=claim,
             llm_confidence=semantic.get("temporal_behavior_claim_confidence"),
             structural_pattern=structural.get("pattern"),
             structural_match_rate=structural.get("match_rate"),
             reliabilities=reliabilities,
         )
-        if not adj.witnesses:
-            return []  # neither the claim nor the reconciliation opined → nothing to say
 
         label, contested = resolved_behaviour(adj)
+        if label is None:
+            # The pool determined nothing this run. Abstain ONLY for a column the
+            # per-column agent read as a MEASURE, so the undetermined stock/flow gap is
+            # loud (DAT-847). Every column carries a mandatory ``temporal_behavior_claim``
+            # (a required field — ``unsure`` for non-measures, models.py), so the claim's
+            # presence cannot discriminate; ``semantic_role`` is the measure signal. A
+            # non-measure is not a stock/flow question → no row, so identifiers /
+            # dimensions never wallpaper the coverage trace with insufficient_data.
+            if semantic.get("semantic_role") != "measure":
+                return []
+            return [
+                self.create_abstention(
+                    context,
+                    ABSTAIN_INSUFFICIENT_DATA,
+                    evidence=[
+                        {
+                            "claim_field": adj.claim_field,
+                            "ignorance": adj.result.ignorance,
+                            "llm_claim": claim,
+                            "structural_pattern": structural.get("pattern"),
+                            "reason": (
+                                "no opinionated stock/flow witness — behaviour undetermined "
+                                "this run (lone name-read insufficient without data grounding)"
+                            ),
+                        }
+                    ],
+                )
+            ]
         posterior = dict(zip(CLAIM_SPACE, adj.result.posterior, strict=True))
         # No teach_suggestion (DAT-657): stock/flow is data-determined, so the
         # structural witness already wins — nothing for a human to teach. A wrong

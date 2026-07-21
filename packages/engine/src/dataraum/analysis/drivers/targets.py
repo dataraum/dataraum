@@ -44,11 +44,12 @@ _BASELINE_REL_EPS = 1e-6
 def _baseline_comparable(baseline: float, values: np.ndarray) -> bool:
     """Is ``baseline`` far enough from zero, relative to ``values``' own spread, to divide by?
 
-    ``values`` is the same array the ``baseline`` was averaged from (the group_effects
-    caller's supported subset) — its population std is the measure's natural scale at
-    this node. A zero-variance ``values`` (every supported value identical) has no scale
-    to judge against, so it is never comparable — including the degenerate
-    ``baseline == 0`` case the old ``if baseline else 0.0`` guard special-cased.
+    ``values`` is the same supported subset the ``baseline`` was pooled from (a plain
+    mean for Flow/EntityMean, the volume-weighted Σnum/Σden pool for Ratio) — its
+    population std is the measure's natural scale at this node. A zero-variance
+    ``values`` (every supported value identical) has no scale to judge against, so it is
+    never comparable — including the degenerate ``baseline == 0`` case the old
+    ``if baseline else 0.0`` guard special-cased.
     """
     scale = float(values.std())
     return scale > 0.0 and abs(baseline) >= _BASELINE_REL_EPS * scale

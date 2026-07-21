@@ -931,7 +931,11 @@ def synthesize_and_store_tables(
         # (og_references binds it verbatim, the conformed-dim slice identity resolves
         # from_column → to_table, and the enrichment prompt's grain-safe marker
         # decides whether the join is offered at all; a reversed one-to-many FK is
-        # shown NOT grain-safe and the dim join is lost).
+        # shown NOT grain-safe and the dim join is lost). The same chokepoint
+        # resolves the edge KIND (DAT-850): the LLM's foreign_key/hierarchy claim
+        # refuted by a measured many-to-many persists as 'conformed_dimension' —
+        # two facts meeting at a shared axis, never served downstream as a
+        # genuine reference.
         rel_rows.append(
             RelationshipModel.oriented_row(
                 run_id=run_id,

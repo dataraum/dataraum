@@ -303,19 +303,24 @@ def _element_view_sql(name: str) -> str:
             f"WHERE e.superseded_at IS NULL;"
         )
     if name == "og_references":
-        # refs edge (table → table): the detected FK topology. relationship_id is
-        # per-run and unique within one head-resolved view — a fine LOCAL edge key
+        # refs edge (table → table): the detected REFERENCE topology. relationship_id
+        # is per-run and unique within one head-resolved view — a fine LOCAL edge key
         # inside one promoted state (never keyed on across runs). Self-referential
         # and multi-hop chains here are what the recursive-CTE closure walks.
         #
-        # Conformed-dimension exclusion (DAT-756, rebuilding DAT-729 on identity): a
-        # relationship whose BOTH endpoints are fact SLICE columns resolving the SAME
-        # dimension_table_id is not an FK — it is two facts sharing a dimension (the
-        # DAT-723 fan trap), typed as the og_conformed_dimension edge below and dropped
-        # here. Keyed on the resolved dimension IDENTITY, never column names (the wrong
-        # signal the revert removed). A genuine fact→dim FK survives: a dimension's key
-        # is never a fact slice column, so at most one endpoint matches a slice row and
-        # the NOT EXISTS cannot fire.
+        # Membership consumes the edge-kind owner (DAT-850): the row's
+        # relationship_type, resolved at the write site (oriented_row) and enforced
+        # by ck_relationships_reference_not_many_to_many, so a conformed-dimension
+        # meeting (two facts at a shared axis, the DAT-723 fan trap) is typed on the
+        # row and simply not a reference kind here. This replaces the DAT-756
+        # slice-identity NOT-EXISTS — the same fact re-derived from a second basis;
+        # the shared-axis reading of a pair stays first-class as the
+        # og_conformed_dimension edge below. Defined catalog only: the same
+        # detection_method != 'candidate' contract every downstream stage reads
+        # (structural candidates and judge-DECLINED rows share the catalog head's
+        # run_id and used to leak into this view as FK edges). NULL-method rows
+        # drop here too, deliberately (SQL three-valued !=) — same semantics as
+        # load_defined_relationships; no writer produces NULL.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_references AS\n"
             f"SELECT relationship_id::text AS relationship_id,\n"
@@ -323,13 +328,8 @@ def _element_view_sql(name: str) -> str:
             f"       from_column_id, to_column_id, cardinality, relationship_type,\n"
             f"       confidence, confirmation_source\n"
             f"FROM {READ_TOKEN}.current_relationships r\n"
-            f"WHERE NOT EXISTS (\n"
-            f"  SELECT 1 FROM {READ_TOKEN}.current_slice_definitions s1\n"
-            f"  JOIN {READ_TOKEN}.current_slice_definitions s2\n"
-            f"    ON s1.dimension_table_id = s2.dimension_table_id\n"
-            f"  WHERE s1.column_id = r.from_column_id AND s2.column_id = r.to_column_id\n"
-            f"    AND s1.table_id <> s2.table_id AND s1.dimension_table_id IS NOT NULL\n"
-            f");"
+            f"WHERE r.relationship_type IN ('foreign_key', 'hierarchy')\n"
+            f"  AND r.detection_method != 'candidate';"
         )
     if name == "og_has_dimension":
         # has_dimension edge (table → column): a fact table's slice (dimension)
@@ -383,8 +383,10 @@ def _element_view_sql(name: str) -> str:
         # identity — (dimension_table_id, dimension_attribute), NEVER column names —
         # of DIFFERENT tables.
         #
-        # ATTRIBUTE grain, and deliberately DECOUPLED from the og_references fan-trap
-        # exclusion (which is TABLE grain) — they serve different consumers:
+        # ATTRIBUTE grain, and deliberately a DIFFERENT question from the edge-kind
+        # owner (DAT-850: a relationship row's relationship_type, resolved at the
+        # write site) — this edge derives from the dimension-identity home
+        # (SliceDefinition.dimension_table_id/attribute), not from relationship rows:
         #   - This edge exists to hand a SQL author an ALIGNABLE drill-across axis. Both
         #     agents (engine GraphAgent, cockpit answer agent) author SQL over COLUMNS,
         #     GROUP BY-ing slice columns — you cannot GROUP BY a table. The actionable
@@ -392,13 +394,15 @@ def _element_view_sql(name: str) -> str:
         #     = a shared (dim table, attribute); that is exactly the within-fact `alias`
         #     hierarchy ("region ≡ region_code") lifted across facts. So two facts
         #     conform iff they expose the same axis at the same level.
-        #   - The refs exclusion hides a fan trap, defined by two fact FKs sharing a dim
-        #     TABLE regardless of how each is sliced — a table-grain fact.
-        # A cross-level fan trap (fact-A-by-type ↔ fact-B-by-region) is thus excluded
-        # from refs (correct — not an FK) AND has no conformed edge (correct — no common
-        # axis to drill across); the facts' shared dimension is still visible via their
-        # genuine fact→dim FKs, and this edge only asserts the stronger, actionable
-        # "drill these across THIS axis." COALESCE pairs the slice-by-FK-key case (NULL
+        #   - A relationship row typed 'conformed_dimension' (a measured m2m meeting)
+        #     is dropped from og_references by its KIND; it gets an edge HERE only
+        #     when slicing resolved the shared axis — an unresolved meeting has no
+        #     axis to assert, and this edge only asserts the stronger, actionable
+        #     "drill these across THIS axis."
+        # A cross-level fan trap (fact-A-by-type ↔ fact-B-by-region) is thus typed out
+        # of refs (correct — not a reference) AND has no conformed edge (correct — no
+        # common axis to drill across); the facts' shared dimension is still visible
+        # via their genuine fact→dim FKs. COALESCE pairs the slice-by-FK-key case (NULL
         # attribute) with itself. Folded slices (NULL dimension_table_id) have no dim
         # table to conform over and are excluded. Symmetric — both directions emitted
         # (edge_key = the ordered slice-id pair, '_'-joined, NOT ':' a bind-param sigil

@@ -26,28 +26,33 @@ relevant_cycles: []
 check_type: aggregate
 
 parameters:
-  # Maximum acceptable orphan rate per relationship
-  max_orphan_rate: 0.02
+  # The judged pass threshold per relationship leg (the ADR-0017 judgement
+  # reads `tolerance`; the former `max_orphan_rate` name was never read by the
+  # judge, which silently fell back to the 0.01 default).
+  tolerance: 0.02
 
 sql_hints: >
-  Use the confirmed relationships provided in the schema context to
-  identify foreign key links between fact and dimension tables. For each
-  relationship, count how many rows in the fact table have a foreign key
-  value that does not appear in the dimension table's primary key column.
+  Use the confirmed relationships provided in the schema context to identify
+  the foreign-key legs to check: ONLY entries whose type is 'foreign_key'. A
+  'conformed_dimension' entry is two fact tables meeting at a shared dimension
+  axis — its value mismatches are not orphans and it must never be counted
+  here. 'hierarchy' entries (parent links within one entity) are out of scope
+  for this check.
 
-  Only check relationships where both tables are available. Exclude NULL
-  foreign keys (those are missing data, not orphans).
+  Only check legs where both tables are available. Exclude NULL foreign keys
+  (those are missing data, not orphans).
 
-  Generate SQL that returns one row per relationship checked:
-  - from_table (VARCHAR): fact table name
-  - from_column (VARCHAR): foreign key column
-  - to_table (VARCHAR): dimension table name
-  - to_column (VARCHAR): primary key column
-  - total_rows (INTEGER): non-NULL FK rows in fact table
-  - orphan_count (INTEGER): FK values with no match in dimension
-  - orphan_rate (DOUBLE): orphan_count / total_rows
+  Per the output contract, return ONE ROW PER LEG:
+  - leg (VARCHAR): 'fact_table.fk_column->dim_table.key_column'
+  - deviation (DOUBLE): that leg's orphan rate — rows whose FK value has no
+    match in the dimension key column, divided by the leg's non-NULL FK rows
+  - magnitude (DOUBLE): 1.0
+
+  Never pool legs into one number: SUM(orphans) / SUM(rows) across
+  heterogeneous relationships dilutes a broken leg below tolerance and hides
+  which relationship failed.
 
 expected_outcome: >
-  Orphan rate should be below the max_orphan_rate threshold (2%) for
-  each relationship. Zero orphans is ideal. Any orphans should be
-  investigated for missing dimension loads or stale references.
+  Every leg's orphan rate stays at or below the tolerance (2%). Zero orphans
+  is ideal. Any orphans should be investigated for missing dimension loads or
+  stale references.

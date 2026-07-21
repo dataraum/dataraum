@@ -154,12 +154,18 @@ def build_cycle_detection_context(
         )
 
     # 3. The defined relationships (not candidate) within the selection — run-scoped,
-    # fail-closed above (empty when the session's run is unresolved).
+    # fail-closed above (empty when the session's run is unresolved). Split by the
+    # edge-kind owner (DAT-850, the row's relationship_type): REFERENCE kinds
+    # (foreign_key/hierarchy) are the edges entity flows ride on and feed the
+    # graph topology below; a 'conformed_dimension' row is two facts meeting at a
+    # shared axis — no entity flows through it — served to the LLM in its own
+    # explicitly-labelled block (loud absence-from-references, never a silent drop).
     relationships = (
         load_defined_relationships(session, table_ids, run_id=run_id) if run_id is not None else []
     )
 
     rel_list: list[dict[str, Any]] = []
+    conformed_list: list[dict[str, Any]] = []
     for rel in relationships:
         from_col = column_by_id.get(rel.from_column_id)
         to_col = column_by_id.get(rel.to_column_id)
@@ -167,19 +173,21 @@ def build_cycle_detection_context(
         to_table = table_by_id.get(rel.to_table_id)
 
         if from_col and to_col and from_table and to_table:
-            rel_list.append(
-                {
-                    "from_table_id": rel.from_table_id,
-                    "from_table": from_table.table_name,
-                    "from_column": from_col.column_name,
-                    "to_table_id": rel.to_table_id,
-                    "to_table": to_table.table_name,
-                    "to_column": to_col.column_name,
-                    "relationship_type": rel.relationship_type,
-                    "cardinality": rel.cardinality,
-                    "confidence": rel.confidence,
-                }
-            )
+            entry = {
+                "from_table_id": rel.from_table_id,
+                "from_table": from_table.table_name,
+                "from_column": from_col.column_name,
+                "to_table_id": rel.to_table_id,
+                "to_table": to_table.table_name,
+                "to_column": to_col.column_name,
+                "relationship_type": rel.relationship_type,
+                "cardinality": rel.cardinality,
+                "confidence": rel.confidence,
+            }
+            if rel.relationship_type == "conformed_dimension":
+                conformed_list.append(entry)
+            else:
+                rel_list.append(entry)
 
     # Entity-flow candidate columns: the columns cycles' entity flows ride on —
     # confirmed-relationship endpoints plus each table's recurring identity
@@ -290,6 +298,7 @@ def build_cycle_detection_context(
     ]
 
     context["relationships"] = rel_list
+    context["conformed_meetings"] = conformed_list
 
     # 4. Graph topology
     table_name_map = {t.table_id: t.table_name for t in tables}
@@ -449,6 +458,7 @@ def build_cycle_detection_context(
         "total_tables": len(tables),
         "total_columns": sum(len(t.columns) for t in tables),
         "total_relationships": len(rel_list),
+        "conformed_meetings_found": len(conformed_list),
         "slice_dimensions_found": len(slice_list),
         "derived_relationships_found": len(derived_list),
         "temporal_columns": len(context["temporal_profiles"]),
@@ -728,7 +738,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 lines.append(f"  Added columns: {cols}")
         lines.append("")
 
-    # Relationships
+    # Relationships (REFERENCE kinds only — the edges entity flows ride on)
     lines.append("## CONFIRMED RELATIONSHIPS")
     for rel in context.get("relationships", []):
         lines.append(
@@ -737,6 +747,23 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             f"({rel['relationship_type']}, {rel['cardinality']}, conf={rel['confidence']:.0%})"
         )
     lines.append("")
+
+    # Conformed-dimension meetings (DAT-850): confirmed edges whose measured
+    # cardinality refuted the reference claim — two facts sharing an axis. Served
+    # under their own heading so their absence from the references above is loud,
+    # and the LLM never routes an entity flow through a shared-axis join.
+    conformed = context.get("conformed_meetings", [])
+    if conformed:
+        lines.append("## CONFORMED DIMENSION MEETINGS (shared axes — NOT references)")
+        lines.append("These column pairs join two fact tables on a shared dimension axis.")
+        lines.append("No entity flows through them; joining on one fans out both ways.")
+        for rel in conformed:
+            lines.append(
+                f"- {rel['from_table']}.{rel['from_column']} ↔ "
+                f"{rel['to_table']}.{rel['to_column']} "
+                f"(shared axis, {rel['cardinality']}, conf={rel['confidence']:.0%})"
+            )
+        lines.append("")
 
     # Graph topology
     graph_topology = context.get("graph_topology")

@@ -482,11 +482,14 @@ def discover_aggregation_lineage(
 
     # Key/identifier columns are not quantities: a SUM over a key has no
     # meaning, and identical key sets reconcile trivially (identity noise).
-    # Grounded in the catalog: every endpoint of a defined relationship is a key
-    # — excluded from measure columns AND convention terms. "Defined" is now
-    # judge-CONFIRMED at the source (DAT-722: a declined verdict is persisted as a
-    # ``candidate``, never ``llm``), so this consumer trusts the catalog and does
-    # NOT re-weigh confidence — one threshold lives at the source, not mirrored here.
+    # Grounded in the catalog: every endpoint of a defined relationship is an
+    # identity/axis column — excluded from measure columns AND convention terms.
+    # Deliberately ALL defined kinds (DAT-850): a 'conformed_dimension' row's
+    # endpoints are shared-axis columns, equally not quantities — the exclusion
+    # wants them too, so no edge-kind filter here. "Defined" is judge-CONFIRMED
+    # at the source (DAT-722: a declined verdict is persisted as a ``candidate``,
+    # never ``llm``), so this consumer trusts the catalog and does NOT re-weigh
+    # confidence — one threshold lives at the source, not mirrored here.
     key_columns_by_table: dict[str, set[str]] = {}
     for rel in load_defined_relationships(
         session, table_ids, run_id=run_id, both_tables=False, eager_columns=True

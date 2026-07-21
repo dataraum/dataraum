@@ -5,8 +5,10 @@ its ``ColumnConcept`` row: ``temporal_behavior`` becomes the pooled-resolved val
 (the LLM claim reconciled with the data-grounded structural witness — the ontology
 prior was dropped, DAT-657). This verdict is authoritative on its own — DAT-786
 removed the parallel ``temporal_behavior_contested`` column; a disagreement between
-the witnesses is only logged, never persisted. Total ignorance (no witness) leaves
-any prior value untouched. In-memory SQLite, FKs off so we skip parent rows — same
+the witnesses is only logged, never persisted. Total ignorance (the run resolved no
+trustworthy label, or a wave-2 abstention) CLEARS the prior value to NULL (DAT-847) —
+absence falls loud, so a stale confident label never survives a run that could not
+determine the behaviour. In-memory SQLite, FKs off so we skip parent rows — same
 pattern as the loader tests.
 """
 
@@ -128,14 +130,44 @@ def test_uncontested_agreement_writes_behaviour_quietly(real_session: Session) -
     assert row.temporal_behavior == "point_in_time"
 
 
-def test_total_ignorance_leaves_prior_value_untouched(real_session: Session) -> None:
-    """resolved=None (no witness opined) → any prior value is preserved, no write."""
+def test_total_ignorance_clears_prior_value(real_session: Session) -> None:
+    """resolved=None (the run resolved to ignorance) → the prior value is CLEARED to
+    NULL, not retained (DAT-847). A stale 'point_in_time' must never survive a run
+    whose pool could not determine the behaviour: the resolved column becomes NULL so
+    the absence falls loud and the additivity / temporalGate consumers fail closed."""
     _seed_annotation(real_session, "col-c", behaviour="point_in_time")
     _seed_object(real_session, "col-c", resolved=None, contested=False)
 
-    assert resolve_temporal_behavior(real_session, _RUN) == 0
+    assert resolve_temporal_behavior(real_session, _RUN) == 1  # the clear is a real write
     row = _read(real_session, "col-c")
-    assert row.temporal_behavior == "point_in_time"  # unchanged
+    assert row.temporal_behavior is None  # stale prior cleared, not preserved
+
+
+def test_abstention_row_clears_prior_value(real_session: Session) -> None:
+    """A wave-2 ``abstained`` temporal_behavior row carries no ``resolved`` in its
+    evidence → resolve clears the prior to NULL, identically to an explicit
+    resolved=None (DAT-847/DAT-853). An undetermined measure never keeps a stale label."""
+    _seed_annotation(real_session, "col-e", behaviour="additive")
+    real_session.add(
+        EntropyObjectRecord(
+            object_id=str(uuid4()),
+            layer="semantic",
+            dimension="temporal",
+            sub_dimension="temporal_behavior",
+            target="column:t.col-e",
+            column_id="col-e",
+            run_id=_RUN,
+            score=None,
+            status="abstained",
+            abstain_reason="insufficient_data",
+            detector_id="temporal_behavior",
+            evidence=[{"ignorance": 1.0, "reason": "no opinionated witness"}],
+        )
+    )
+    real_session.flush()
+
+    assert resolve_temporal_behavior(real_session, _RUN) == 1
+    assert _read(real_session, "col-e").temporal_behavior is None
 
 
 def test_only_this_runs_objects_resolve(real_session: Session) -> None:

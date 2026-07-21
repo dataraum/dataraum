@@ -73,17 +73,30 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
     """Write the adjudicated stock/flow behaviour onto this run's annotations.
 
     Reads the ``temporal_behavior`` EntropyObject rows written this run (ADR-0009 /
-    DAT-445) and, for each column whose adjudication resolved to a behaviour, UPDATEs
-    the matching ``(column_id, run_id)`` annotation: ``temporal_behavior`` becomes the
-    pooled-resolved value (the LLM stock/flow claim reconciled with the data-grounded
-    structural witness — the ontology prior was dropped, DAT-657). This verdict is
-    authoritative on its own — DAT-786 removed the parallel ``temporal_behavior_contested``
-    column: propagating a doubt-flag downstream second-guessed a resolution that is
-    already deterministic and correct. A disagreement between the LLM claim and the
-    structural witness is logged here for observability, not persisted. Columns that
-    resolved to total ignorance (no witness) are left untouched, preserving any prior
-    value. Idempotent on retry (same run_id → same UPDATE). Returns the number of
-    annotations updated.
+    DAT-445) and, for EACH such column, UPDATEs the matching ``(column_id, run_id)``
+    ``ColumnConcept.temporal_behavior`` to the run's pooled-resolved value (the LLM
+    stock/flow claim reconciled with the data-grounded structural witness — the
+    ontology prior was dropped, DAT-657). This verdict is authoritative on its own —
+    DAT-786 removed the parallel ``temporal_behavior_contested`` column: propagating a
+    doubt-flag downstream second-guessed a resolution that is already deterministic and
+    correct. A disagreement between the LLM claim and the structural witness is logged
+    here for observability, not persisted.
+
+    Total ignorance (DAT-847): a column that resolved to NO trustworthy label this run
+    — no opinionated witness, a zero-reliability wash, or ANY ``temporal_behavior``
+    row that carries no ``resolved`` (a wave-2 ``insufficient_data`` abstention, or a
+    harness ``detector_error``/``missing_inputs`` abstention from a transient re-detect
+    failure) — is written as NULL, NOT skipped. Clearing on a harness blip is
+    deliberate: fail closed to loud absence, never leave a stale label. Leaving a prior
+    value in place let a stale ``point_in_time`` from an earlier state survive a run
+    whose pool regressed to ignorance and be served as a confident answer; clearing to
+    NULL makes the absence fall loud, so the additivity / cockpit temporalGate consumers
+    fail closed (unknown ≠ flow) instead of trusting a stale label. The pooled ignorance
+    itself stays visible on the readiness path (loss weights) and, for a measure the
+    pool could not determine, in the wave-2 coverage/abstention trace.
+
+    Idempotent on retry (same run_id → same UPDATE). Returns the number of annotations
+    updated (a clear-to-NULL counts — it is a real write, not a skip).
     """
     # temporal_behavior is catalogue-grain (DAT-637): on ColumnConcept, authored by
     # the table agent and resolved here at session_detect (the run that holds
@@ -104,12 +117,12 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
             continue
         evidence: list[Any] = record.evidence if isinstance(record.evidence, list) else []
         first = evidence[0] if evidence and isinstance(evidence[0], dict) else None
-        if first is None:
-            continue
-        resolved = first.get("resolved")
-        if resolved is None:
-            continue  # total ignorance — leave any prior value in place
-        if first.get("contested"):
+        # The run's pooled-resolved label, or None when the run resolved to ignorance /
+        # abstained (no ``resolved`` in evidence). None is written through, not skipped
+        # (DAT-847) — a stale prior must never survive a run that could not determine
+        # the behaviour.
+        resolved = first.get("resolved") if first else None
+        if first and first.get("contested"):
             # Diagnostic only (DAT-786) — the resolved value below still wins.
             # debug, not info: per-item log inside a loop (entropy/ convention).
             logger.debug(
@@ -124,7 +137,7 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
                 ColumnConcept.column_id == record.column_id,
                 ColumnConcept.run_id == run_id,
             )
-            .values(temporal_behavior=resolved)
+            .values(temporal_behavior=resolved)  # resolved may be None → clears a stale label
         )
         updated += int(result.rowcount or 0)  # see resolve_null_tokens — no-ops stay visible
     return updated

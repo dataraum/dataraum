@@ -185,6 +185,14 @@ CREATE TABLE validation_results (
 
 CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
 
+CREATE TABLE workspace_settings (
+	pin BOOLEAN NOT NULL, 
+	active_vertical VARCHAR NOT NULL, 
+	bound_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_workspace_settings PRIMARY KEY (pin), 
+	CONSTRAINT ck_workspace_settings_pin CHECK (pin = TRUE)
+);
+
 CREATE TABLE tables (
 	table_id VARCHAR NOT NULL, 
 	source_id VARCHAR NOT NULL, 

@@ -36,7 +36,7 @@ export const conceptEdges = pgView("concept_edges", {
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT edge_id, vertical, predicate, from_concept, to_concept, tolerance, source, created_at, superseded_at FROM engine.concept_edges`,
+	sql`SELECT edge_id, vertical, predicate, from_concept, to_concept, tolerance, source, created_at, superseded_at FROM engine.concept_edges WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const concepts = pgView("concepts", {
@@ -52,7 +52,7 @@ export const concepts = pgView("concepts", {
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM engine.concepts`,
+	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const configOverlay = pgView("config_overlay", {
@@ -698,4 +698,12 @@ export const tables = pgView("tables", {
 	lastProfiledAt: timestamp("last_profiled_at"),
 }).as(
 	sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM engine.tables`,
+);
+
+export const workspaceSettings = pgView("workspace_settings", {
+	pin: boolean(),
+	activeVertical: varchar("active_vertical"),
+	boundAt: timestamp("bound_at"),
+}).as(
+	sql`SELECT pin, active_vertical, bound_at FROM engine.workspace_settings`,
 );

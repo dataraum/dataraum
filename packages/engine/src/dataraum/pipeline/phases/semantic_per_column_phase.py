@@ -20,10 +20,10 @@ from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_s
 from dataraum.analysis.semantic.concept_store import (
     ensure_concepts_seeded,
     load_workspace_concepts,
+    require_active_vertical,
 )
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
-from dataraum.core.vertical import VerticalKind, available_verticals, resolve_vertical
 from dataraum.investigation.queries import tables_for_run
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -139,17 +139,17 @@ class SemanticPerColumnPhase(BasePhase):
                 "No vertical configured. Set 'vertical' in config/phases/semantic.yaml."
             )
 
-        # Born-loud on an UNKNOWN vertical (DAT-480): a typo'd or never-framed
-        # name would otherwise resolve to zero concepts and look identical to a
-        # legitimately-empty framed vertical below. Distinguish it up front and
-        # name what DOES exist, so the user fixes the name rather than the data.
-        if resolve_vertical(ontology) is VerticalKind.UNKNOWN:
-            available = available_verticals()
-            return PhaseResult.failed(
-                f"Unknown vertical '{ontology}'. Available verticals: "
-                f"{', '.join(available) if available else '(none — frame one first)'}. "
-                "Frame this vertical (cockpit `frame`) or pick an existing one."
-            )
+        # Bind-or-check the workspace's active vertical (DAT-848): this is the sole
+        # seeder, so it is where a workspace's concept vocabulary commits to ONE
+        # vertical. require_active_vertical binds the first non-placeholder vertical
+        # and fails loud if a later run's --vertical differs (a wrong vertical must
+        # not seed beside the bound one). It also subsumes the DAT-480 born-loud on an
+        # UNKNOWN vertical (a typo would otherwise resolve to zero concepts and look
+        # identical to a legitimately-empty framed vertical below).
+        try:
+            require_active_vertical(ctx.session, ontology)
+        except RuntimeError as e:
+            return PhaseResult.failed(str(e))
 
         # Config→DB (DAT-728): seed the shipped vertical's concepts into the typed
         # `concepts` table (idempotent — a re-run or a frame edit is never

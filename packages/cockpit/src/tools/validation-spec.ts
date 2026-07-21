@@ -10,11 +10,11 @@
 // `validation` overlay row carries a full spec, which `core/overlay.py`
 // `_apply_validation` upsert-replaces by `validation_id` into the vertical's
 // declared set. A teach declares a new INSTANCE or overrides a shipped one —
-// NEVER a new TYPE: `check_type` is closed here to the four values the engine's
-// `ValidationSpec.check_type` enumerates (models.py), so the user's words shape
-// WHAT gets grounded, never HOW results get scored (the Goodhart line) — scoring
-// is check_type-independent anyway (ADR-0017: one `deviation <= tolerance`
-// judgement for every type).
+// NEVER a new TYPE: `check_type` is closed here to the four values used by the
+// shipped validation YAMLs. The engine's `ValidationSpec.check_type` is a plain
+// `str` (no runtime validation today), and the evaluator does not branch on it —
+// the user's words shape WHAT gets grounded, never HOW results get scored
+// (ADR-0017: one `deviation <= tolerance` judgement for every type).
 
 import { z } from "zod";
 

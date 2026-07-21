@@ -288,7 +288,12 @@ def _format_structural_tables(
             numeric = (profile.profile_data or {}).get("numeric_stats") if profile else None
             if not numeric:
                 continue
-            min_v, max_v = numeric.get("min"), numeric.get("max")
+            # The writer's key shape: analysis/statistics persists
+            # ``ColumnProfile.model_dump()`` whose NumericStats serializes as
+            # ``min_value``/``max_value`` — NOT ``min``/``max``. Reading the
+            # wrong keys rendered ``min=None max=None`` and silently dropped
+            # the sign line for every measure (DAT-853 forensics).
+            min_v, max_v = numeric.get("min_value"), numeric.get("max_value")
             sign = ""
             if isinstance(min_v, (int, float)):
                 sign = (

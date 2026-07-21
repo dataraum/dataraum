@@ -167,7 +167,7 @@ class TestStructuralTables:
         _profile(
             session,
             _col_id(session, orders, "amount"),
-            numeric={"min": -500.0, "max": 9000.0, "mean": 100.0},
+            numeric={"min_value": -500.0, "max_value": 9000.0, "mean": 100.0},
         )
         session.add(
             SemanticAnnotation(
@@ -187,6 +187,57 @@ class TestStructuralTables:
         assert "'ACME' (40%)" in text  # identity samples (not a relationship endpoint)
         assert "amount: min=-500.0 max=9000.0" in text
         assert "negative values present" in text
+
+    def test_sign_line_renders_from_the_writers_real_profile_shape(self, session) -> None:
+        """The measure sign line must survive the WRITER's serialization.
+
+        ``profile_data`` is persisted as ``ColumnProfile.model_dump(mode="json")``
+        (analysis/statistics/profiler.py), whose NumericStats keys are
+        ``min_value``/``max_value``. The reader once assumed ``min``/``max`` and
+        the fixtures mirrored the reader instead of the writer, so the sign line
+        silently never rendered in production while tests stayed green
+        (DAT-853). This test builds profile_data through the writer's own
+        models — if either side's key shape drifts, it fails here."""
+        from datetime import UTC, datetime
+
+        from dataraum.analysis.statistics.models import ColumnProfile, NumericStats
+        from dataraum.core.models.base import ColumnRef
+
+        ledger = _mk_table(session, "ledger", ["net_amount"])
+        _promote(session, ledger)
+        column_id = _col_id(session, ledger, "net_amount")
+        writer_profile = ColumnProfile(
+            column_id=column_id,
+            column_ref=ColumnRef(table_name="ledger", column_name="net_amount"),
+            profiled_at=datetime.now(UTC),
+            total_count=100,
+            null_count=0,
+            distinct_count=90,
+            null_ratio=0.0,
+            cardinality_ratio=0.9,
+            numeric_stats=NumericStats(
+                min_value=-250.5, max_value=1200.0, mean=10.0, stddev=5.0
+            ),
+        )
+        session.add(
+            StatisticalProfile(
+                column_id=column_id,
+                run_id=_GEN_RUN,
+                layer="typed",
+                total_count=100,
+                null_count=0,
+                profile_data=writer_profile.model_dump(mode="json"),
+            )
+        )
+        session.add(
+            SemanticAnnotation(column_id=column_id, run_id=_GEN_RUN, semantic_role="measure")
+        )
+        session.flush()
+
+        out = _build(session, [ledger])
+        assert "net_amount: min=-250.5 max=1200.0 — negative values present" in out[
+            "structural_tables"
+        ]
 
     def test_missing_generation_head_serves_no_samples_or_ranges(self, session) -> None:
         """Fail-closed: no promoted head → no profile reads, never an arbitrary run's."""

@@ -432,7 +432,7 @@ class ColumnConcept(Base):
         # deterministic offline DDL dump).
         CheckConstraint(
             "meaning_status IS NULL OR meaning_status IN ("
-            + ", ".join(f"'{v}'" for v in MEANING_STATUSES)
+            + ", ".join(f"'{v}'" for v in sorted(MEANING_STATUSES))
             + ")",
             name="meaning_status",
         ),

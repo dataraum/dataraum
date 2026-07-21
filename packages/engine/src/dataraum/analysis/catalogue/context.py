@@ -67,22 +67,28 @@ def _load_profiles(
     """Typed-layer profiles pinned at each table's generation head, by column_id.
 
     Fail-closed: a table with no promoted head contributes no profiles (its
-    columns simply render without samples / ranges).
+    columns simply render without samples / ranges). One batched query (the
+    ``graphs/context.py`` pattern, not per-table round trips): fetch rows for
+    any pinned run, then keep exactly the row whose ``run_id`` matches ITS
+    table's pin — the over-fetch is bounded to the pinned runs.
     """
-    profiles: dict[str, StatisticalProfile] = {}
+    head_by_column: dict[str, str] = {}
     for table_id, columns in columns_by_table.items():
         run_id = heads.get(table_id)
-        if run_id is None or not columns:
+        if run_id is None:
             continue
-        rows = session.execute(
-            select(StatisticalProfile).where(
-                StatisticalProfile.column_id.in_([c.column_id for c in columns]),
-                StatisticalProfile.run_id == run_id,
-                StatisticalProfile.layer == "typed",
-            )
-        ).scalars()
-        profiles.update({p.column_id: p for p in rows})
-    return profiles
+        for column in columns:
+            head_by_column[column.column_id] = run_id
+    if not head_by_column:
+        return {}
+    rows = session.execute(
+        select(StatisticalProfile).where(
+            StatisticalProfile.column_id.in_(list(head_by_column)),
+            StatisticalProfile.run_id.in_(sorted(set(head_by_column.values()))),
+            StatisticalProfile.layer == "typed",
+        )
+    ).scalars()
+    return {p.column_id: p for p in rows if p.run_id == head_by_column.get(p.column_id)}
 
 
 def _sample_line(
@@ -124,17 +130,19 @@ def _load_annotation_rows(
     ``detected_unit`` rides along (DAT-647): the value-carried unit the typing
     phase parsed, the evidence unit_source resolution leans on.
     """
+    pinned = {tid: run_id for tid, run_id in heads.items() if run_id is not None}
     rows_out: list[dict[str, Any]] = []
     column_ids: list[str] = []
-    for table_id in table_ids:
-        run_id = heads.get(table_id)
-        if run_id is None:
-            continue
+    if pinned:
+        # One batched query (the graphs/context.py pattern): fetch any pinned
+        # run's rows, keep exactly those matching THEIR table's pin.
         rows = session.execute(
             select(
+                Table.table_id,
                 Table.table_name,
                 Column.column_name,
                 Column.column_id,
+                SemanticAnnotation.run_id,
                 SemanticAnnotation.semantic_role,
                 SemanticAnnotation.entity_type,
                 SemanticAnnotation.business_name,
@@ -143,10 +151,15 @@ def _load_annotation_rows(
             )
             .join(Column, SemanticAnnotation.column_id == Column.column_id)
             .join(Table, Column.table_id == Table.table_id)
-            .where(Table.table_id == table_id, SemanticAnnotation.run_id == run_id)
+            .where(
+                Table.table_id.in_(list(pinned)),
+                SemanticAnnotation.run_id.in_(sorted(set(pinned.values()))),
+            )
             .order_by(Table.table_name, Column.column_position)
         ).all()
         for row in rows:
+            if row.run_id != pinned.get(row.table_id):
+                continue
             rows_out.append(
                 {
                     "table_name": row.table_name,
@@ -381,6 +394,8 @@ def _format_enriched_views(
 def _format_shared_axes(
     slices: list[SliceDefinition],
     table_names: dict[str, str],
+    *,
+    scope: set[str],
 ) -> str:
     """The resolved slice axes + the deterministic shared-axis pairing, as facts.
 
@@ -389,34 +404,59 @@ def _format_shared_axes(
     dimension_attribute)`` identity (folded slices, NULL dimension, excluded).
     Served as measured facts, deliberately NOT waiting for the
     dimension_hierarchies conform judge, which runs after this phase.
+
+    ``slices`` is the WHOLE session's inventory: a pair needs aggregation
+    across rows, so a scope pre-filter would silently drop the out-of-scope
+    partner a scoped retry still needs to see. Scope filters only the
+    RENDERING — per-fact axis lines for in-scope facts, pairing lines when any
+    member touches the scope. Every ordering is keyed on resolved NAMES, never
+    ids: a uuid sort key reshuffles identical catalogues between runs, the
+    exact instability class DAT-725 fixed in the candidate serving.
     """
     dim_slices = [s for s in slices if s.dimension_table_id is not None]
-    if not dim_slices:
-        return "No dimension-resolved slice axes in this catalogue."
-    lines: list[str] = ["Resolved dimension axes:"]
+
+    def _fact(s: SliceDefinition) -> str:
+        return table_names.get(s.table_id, s.table_id)
+
+    axis_lines: list[str] = []
     by_axis: dict[tuple[str, str], list[SliceDefinition]] = {}
-    for s in sorted(dim_slices, key=lambda s: (s.table_id, s.column_name)):
+    for s in sorted(dim_slices, key=lambda s: (_fact(s), s.column_name)):
+        key = (s.dimension_table_id or "", s.dimension_attribute or "")
+        by_axis.setdefault(key, []).append(s)
+        if s.table_id not in scope and s.dimension_table_id not in scope:
+            continue
         dim = table_names.get(s.dimension_table_id or "", s.dimension_table_id or "")
         attr = f".{s.dimension_attribute}" if s.dimension_attribute else " (by its key)"
         via = f" via {s.fk_role}" if s.fk_role else ""
-        fact = table_names.get(s.table_id, s.table_id)
-        lines.append(f"- {fact} slices by {dim}{attr}{via}")
-        key = (s.dimension_table_id or "", s.dimension_attribute or "")
-        by_axis.setdefault(key, []).append(s)
+        axis_lines.append(f"- {_fact(s)} slices by {dim}{attr}{via}")
+
+    if not axis_lines and not dim_slices:
+        return "No dimension-resolved slice axes in this catalogue."
 
     pair_lines: list[str] = []
-    for (dim_table_id, attr), members in sorted(by_axis.items()):
-        facts = sorted({(s.table_id, s.fk_role or s.column_name) for s in members})
-        if len({t for t, _ in facts}) < 2:
+    for (dim_table_id, attr), members in sorted(
+        by_axis.items(), key=lambda kv: (table_names.get(kv[0][0], kv[0][0]), kv[0][1])
+    ):
+        facts = sorted({(_fact(s), s.fk_role or s.column_name) for s in members})
+        if len({name for name, _ in facts}) < 2:
+            continue
+        if not any(s.table_id in scope or s.dimension_table_id in scope for s in members):
             continue
         dim = table_names.get(dim_table_id, dim_table_id)
         axis = f"{dim}.{attr}" if attr else f"{dim} (key)"
-        member_strs = [f"{table_names.get(t, t)} (via {role})" for t, role in facts]
+        member_strs = [f"{name} (via {role})" for name, role in facts]
         pair_lines.append(f"- {axis}: {' <-> '.join(member_strs)}")
+
+    lines: list[str] = []
+    if axis_lines:
+        lines.append("Resolved dimension axes:")
+        lines.extend(axis_lines)
     if pair_lines:
-        lines.append("\nShared axes (facts aligned on the same dimension attribute):")
+        if lines:
+            lines.append("")
+        lines.append("Shared axes (facts aligned on the same dimension attribute):")
         lines.extend(pair_lines)
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else "No dimension-resolved slice axes in this catalogue."
 
 
 def build_catalogue_inputs(
@@ -509,16 +549,18 @@ def build_catalogue_inputs(
         ).scalars()
         if v.fact_table_id in scope or scope & set(v.dimension_table_ids or [])
     ]
-    slices = [
-        s
-        for s in session.execute(
+    # The WHOLE session's slice inventory — a shared-axis pair needs rows from
+    # BOTH facts, so a scope pre-filter here would drop the out-of-scope
+    # partner a scoped retry still needs; _format_shared_axes filters the
+    # RENDERING by scope instead.
+    slices = list(
+        session.execute(
             select(SliceDefinition).where(
                 SliceDefinition.table_id.in_(session_table_ids),
                 SliceDefinition.run_id == run_id,
             )
         ).scalars()
-        if s.table_id in scope or s.dimension_table_id in scope
-    ]
+    )
     missing_names = {
         tid
         for s in slices
@@ -550,7 +592,7 @@ def build_catalogue_inputs(
         "column_annotations": _format_annotations(annotation_rows),
         "relationship_catalogue": _format_relationships(relationships, profiles, sampler),
         "enriched_views": _format_enriched_views(views, all_table_names, rel_by_id),
-        "shared_axes": _format_shared_axes(slices, all_table_names),
+        "shared_axes": _format_shared_axes(slices, all_table_names, scope=scope),
     }
 
 

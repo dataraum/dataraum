@@ -389,6 +389,68 @@ class TestEnrichedViewsAndAxes:
         assert "Shared axes" in text
         assert "vendors.region: ap_ledger (via vendor_id) <-> ar_ledger (via customer_id)" in text
 
+    def test_pairing_order_is_name_keyed_not_uuid_keyed(self, session) -> None:
+        """Members sort by resolved table NAME, never by table_id — a uuid sort
+        key reshuffles identical catalogues between runs (the DAT-725
+        instability class; reproduced live as a flaky render before the fix)."""
+        # Created in reverse-alphabetical order so an insertion-order or
+        # id-based sort would have a 50/50 chance of exposing itself; the
+        # name-keyed sort renders alpha first every time.
+        zeta = _mk_table(session, "zeta_ledger", ["vendor_id"])
+        alpha = _mk_table(session, "alpha_ledger", ["vendor_id"])
+        vendors = _mk_table(session, "vendors", ["vendor_id", "region"])
+        for fact in (zeta, alpha):
+            session.add(
+                SliceDefinition(
+                    run_id=baseline_run_id(),
+                    table_id=fact.table_id,
+                    column_id=_col_id(session, fact, "vendor_id"),
+                    column_name="vendor_id__region",
+                    dimension_table_id=vendors.table_id,
+                    dimension_attribute="region",
+                    fk_role="vendor_id",
+                    slice_priority=5,
+                    slice_type="categorical",
+                )
+            )
+        session.flush()
+
+        out = _build(session, [zeta, alpha, vendors])
+        assert (
+            "vendors.region: alpha_ledger (via vendor_id) <-> zeta_ledger (via vendor_id)"
+            in out["shared_axes"]
+        )
+
+    def test_scoped_retry_still_sees_the_out_of_scope_pair_partner(self, session) -> None:
+        """A coverage retry narrowed to one fact must still see the shared-axis
+        pairing with the OUT-of-scope partner — a pair needs rows from both
+        facts, so the scope filters the rendering, never the load."""
+        ap = _mk_table(session, "ap_ledger", ["vendor_id"])
+        ar = _mk_table(session, "ar_ledger", ["customer_id"])
+        vendors = _mk_table(session, "vendors", ["vendor_id", "region"])
+        for fact, col in ((ap, "vendor_id"), (ar, "customer_id")):
+            session.add(
+                SliceDefinition(
+                    run_id=baseline_run_id(),
+                    table_id=fact.table_id,
+                    column_id=_col_id(session, fact, col),
+                    column_name=f"{col}__region",
+                    dimension_table_id=vendors.table_id,
+                    dimension_attribute="region",
+                    fk_role=col,
+                    slice_priority=5,
+                    slice_type="categorical",
+                )
+            )
+        session.flush()
+
+        out = _build(session, [ap, ar, vendors], scope=[ap.table_id])
+        text = out["shared_axes"]
+        assert "vendors.region: ap_ledger (via vendor_id) <-> ar_ledger (via customer_id)" in text
+        # The rendering is still scope-filtered: the out-of-scope fact's own
+        # per-fact axis line is not served.
+        assert "ar_ledger slices by" not in text
+
     def test_single_fact_axis_is_not_paired(self, session) -> None:
         ap = _mk_table(session, "ap_ledger", ["vendor_id"])
         vendors = _mk_table(session, "vendors", ["vendor_id", "region"])

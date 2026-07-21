@@ -608,6 +608,7 @@ CREATE TABLE relationships (
 	CONSTRAINT ck_relationships_confirmation_source CHECK (confirmation_source IN ('unconfirmed', 'judge', 'user', 'keeper')), 
 	CONSTRAINT ck_relationships_detection_method CHECK (detection_method IS NULL OR detection_method IN ('candidate', 'llm', 'manual', 'keeper')), 
 	CONSTRAINT ck_relationships_judge_verdict CHECK (judge_verdict IS NULL OR judge_verdict IN ('declined')), 
+	CONSTRAINT ck_relationships_judge_verdict_on_candidate CHECK (judge_verdict IS NULL OR detection_method = 'candidate'), 
 	CONSTRAINT ck_relationships_cardinality_oriented CHECK (cardinality IS NULL OR cardinality IN ('one-to-one', 'many-to-one', 'many-to-many')), 
 	CONSTRAINT fk_relationships_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_relationships_from_column_id_columns FOREIGN KEY(from_column_id) REFERENCES columns (column_id), 

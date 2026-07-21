@@ -128,6 +128,14 @@ class Relationship(Base):
             "judge_verdict IS NULL OR judge_verdict IN ('declined')",
             name="judge_verdict",
         ),
+        # A judge verdict is only ever ANNOTATED onto a structural ``candidate``
+        # row (DAT-824) — a confirm becomes a distinct ``llm`` row, never a verdict
+        # on an ``llm``/``manual``/``keeper`` row. DB backstop for a future writer
+        # that bypasses ``_apply_judge_verdicts``.
+        CheckConstraint(
+            "judge_verdict IS NULL OR detection_method = 'candidate'",
+            name="judge_verdict_on_candidate",
+        ),
         # Orientation invariant (DAT-777, upgraded DAT-802): a persisted FK is
         # stored many→one, child→parent — so ``from`` is always the many/fact side
         # every downstream consumer assumes (og_references, the conformed-dim

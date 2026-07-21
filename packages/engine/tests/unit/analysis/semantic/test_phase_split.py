@@ -668,6 +668,157 @@ class TestSynthesizeAndStoreTables:
             == []
         )
 
+    def test_declined_verdict_matches_reversed_orientation(self, session) -> None:
+        """The candidate is stored oriented (many→one, DAT-777) but the judge may
+        name the pair either way — the decline must still land on it. Store the
+        candidate customer_id→id, have the judge decline id→customer_id (reversed),
+        and assert the undirected match annotates the same row (DAT-824).
+        """
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+        cust_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=cust_col.column_id,  # stored many→one: customer_id → id
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.7,
+                detection_method="candidate",
+                evidence={"source": "value_overlap", "join_confidence": 0.7},
+            )
+        )
+        session.flush()
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    column_concepts=_MEANING_MIN,
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-decline",
+                            from_table="customers",  # REVERSED vs the stored candidate
+                            from_column="id",
+                            to_table="orders",
+                            to_column="customer_id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.3,  # < 0.7 → judge declined
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis", "reasoning": "reversed decline"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [orders.table_id, customers.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+        assert result.success
+
+        cand_rels = (
+            session.execute(
+                select(RelationshipDB).where(RelationshipDB.detection_method == "candidate")
+            )
+            .scalars()
+            .all()
+        )
+        assert len(cand_rels) == 1
+        assert cand_rels[0].judge_verdict == "declined"  # reversed pair still matched
+        assert cand_rels[0].confidence == 0.7  # measurement preserved
+        assert (cand_rels[0].evidence or {}).get("reasoning") == "reversed decline"
+
+    def test_confirm_clears_a_stale_decline_verdict(self, session) -> None:
+        """A Temporal at-least-once retry can FLIP the judge verdict across attempts
+        (the LLM is re-called, not cached). If a prior attempt declined the pair
+        (candidate row carries ``judge_verdict='declined'``) and this attempt
+        confirms it, the confirm must CLEAR the stale verdict — the ``llm`` row is
+        the truth and a candidate carrying 'declined' beside it would contradict the
+        model (DAT-824).
+        """
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+        cust_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        # Candidate row already annotated 'declined' by a prior (crashed) attempt.
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=cust_col.column_id,
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.9,
+                detection_method="candidate",
+                judge_verdict="declined",
+                evidence={"source": "value_overlap", "join_confidence": 0.9},
+            )
+        )
+        session.flush()
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    column_concepts=_MEANING_MIN,
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-confirm",
+                            from_table="orders",
+                            from_column="customer_id",
+                            to_table="customers",
+                            to_column="id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.9,  # >= 0.7 → judge confirmed this attempt
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis", "reasoning": "clean FK"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [orders.table_id, customers.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+        assert result.success
+
+        cand = session.execute(
+            select(RelationshipDB).where(RelationshipDB.detection_method == "candidate")
+        ).scalar_one()
+        assert cand.judge_verdict is None  # stale 'declined' cleared by the confirm
+        llm = session.execute(
+            select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
+        ).scalar_one()
+        assert llm.confidence == 0.9  # the confirmation is the truth
+
     def test_flipped_one_to_one_confirmation_persists_in_the_judges_direction(
         self, session
     ) -> None:

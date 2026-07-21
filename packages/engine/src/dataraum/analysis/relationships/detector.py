@@ -238,6 +238,10 @@ def _store_candidates(
             )
             rows[(run_id, row["from_column_id"], row["to_column_id"], "candidate")] = row
 
+    # ``oriented_row`` omits ``judge_verdict``, so this upsert's all-columns SET
+    # resets it to NULL — a re-derive drops any prior judge annotation, and the
+    # semantic phase (which always runs AFTER relationships within a run)
+    # re-applies the verdict via ``_apply_judge_verdicts`` (DAT-824).
     upsert(
         session,
         RelationshipDB,

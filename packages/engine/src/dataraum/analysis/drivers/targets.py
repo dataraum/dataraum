@@ -13,6 +13,12 @@ interesting slices). This is where flow/stock and ratio differ:
 
 ``observed`` is the array :func:`build_codes` reads for the (B) missingness gate —
 finite where the row contributes to the measure, NaN where it does not.
+
+``group_effects`` reports ``group / baseline − 1``, so a baseline indistinguishable
+from zero turns ordinary float noise into a ``±10^18``-scale "effect" (DAT-844) — most
+visibly for a within-entity de-meaned residual, whose baseline is ~0 BY CONSTRUCTION.
+:func:`_baseline_comparable` is the shared guard every ``group_effects`` below applies
+before dividing; see its docstring for the criterion.
 """
 
 from __future__ import annotations
@@ -22,6 +28,31 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from dataraum.analysis.drivers.criterion import variance_reduction, weighted_variance_reduction
+
+# A baseline must sit at least this fraction of the measure's OWN dispersion away from
+# zero to be treated as a real denominator (DAT-844). Relative, not absolute — an
+# absolute epsilon is meaningless across measures with different units/scales, so the
+# threshold is derived from the data: the population std of the same values the
+# baseline is drawn from. A within-entity de-meaned residual's baseline is ~0 by
+# construction, landing within float64 summation noise of zero — many orders of
+# magnitude (~1e-10 or tighter, even for large row counts) below this fraction of its
+# own std. A genuine small-but-real baseline (e.g. a margin averaging 0.1% of its own
+# std) clears it easily and is reported unchanged.
+_BASELINE_REL_EPS = 1e-6
+
+
+def _baseline_comparable(baseline: float, values: np.ndarray) -> bool:
+    """Is ``baseline`` far enough from zero, relative to ``values``' own spread, to divide by?
+
+    ``values`` is the same supported subset the ``baseline`` was pooled from (a plain
+    mean for Flow/EntityMean, the volume-weighted Σnum/Σden pool for Ratio) — its
+    population std is the measure's natural scale at this node. A zero-variance
+    ``values`` (every supported value identical) has no scale to judge against, so it is
+    never comparable — including the degenerate ``baseline == 0`` case the old
+    ``if baseline else 0.0`` guard special-cased.
+    """
+    scale = float(values.std())
+    return scale > 0.0 and abs(baseline) >= _BASELINE_REL_EPS * scale
 
 
 class Target(ABC):
@@ -47,7 +78,11 @@ class Target(ABC):
     def group_effects(
         self, codes: np.ndarray, n_codes: int, *, min_support: int
     ) -> list[tuple[int, float, int]]:
-        """``(code, effect, support)`` per supported group; effect = group/baseline − 1."""
+        """``(code, effect, support)`` per supported group; effect = group/baseline − 1.
+
+        Empty when the baseline itself is not comparable (near-zero relative to the
+        measure's own dispersion, DAT-844) — omitted entirely, never reported as 0.0.
+        """
 
 
 class FlowTarget(Target):
@@ -75,6 +110,12 @@ class FlowTarget(Target):
         if int(keep.sum()) < min_support or not self._measure[keep].size:
             return []
         baseline = float(self._measure[keep].mean())
+        # DAT-844: a baseline this close to zero (relative to the measure's own
+        # dispersion — e.g. a within-entity de-meaned residual, ~0 by construction)
+        # turns group/baseline into a float-noise-driven blow-up, not a real effect.
+        # Omit every slice rather than report or clamp a division-by-near-zero artifact.
+        if not _baseline_comparable(baseline, self._measure[keep]):
+            return []
         out: list[tuple[int, float, int]] = []
         for c in range(n_codes):
             in_group = (codes == c) & observed
@@ -82,7 +123,7 @@ class FlowTarget(Target):
             if support < min_support:
                 continue
             group_mean = float(self._measure[in_group].mean())
-            effect = (group_mean / baseline - 1.0) if baseline else 0.0
+            effect = group_mean / baseline - 1.0
             out.append((c, effect, support))
         return out
 
@@ -122,6 +163,10 @@ class RatioTarget(Target):
             return []
         den_total = float(self._den[valid].sum())
         baseline = float(self._num[valid].sum() / den_total) if den_total else 0.0
+        # DAT-844: same near-zero-baseline guard as FlowTarget, judged against the
+        # dispersion of the per-row ratios the baseline pools.
+        if not _baseline_comparable(baseline, self._ratio[valid]):
+            return []
         out: list[tuple[int, float, int]] = []
         for c in range(n_codes):
             in_group = (codes == c) & valid
@@ -130,7 +175,7 @@ class RatioTarget(Target):
                 continue
             den_g = float(self._den[in_group].sum())
             group_ratio = float(self._num[in_group].sum() / den_g) if den_g else 0.0
-            effect = (group_ratio / baseline - 1.0) if baseline else 0.0
+            effect = group_ratio / baseline - 1.0
             out.append((c, effect, support))
         return out
 
@@ -186,6 +231,10 @@ class EntityMeanTarget(Target):
         baseline = (
             float((self._means[keep] * self._sizes[keep]).sum() / w_total) if w_total else 0.0
         )
+        # DAT-844: same near-zero-baseline guard, judged against the dispersion of the
+        # entity means (the values the weighted baseline pools).
+        if not _baseline_comparable(baseline, self._means[keep]):
+            return []
         out: list[tuple[int, float, int]] = []
         for c in range(n_codes):
             in_group = codes == c
@@ -196,7 +245,7 @@ class EntityMeanTarget(Target):
             group_mean = (
                 float((self._means[in_group] * self._sizes[in_group]).sum() / w_g) if w_g else 0.0
             )
-            effect = (group_mean / baseline - 1.0) if baseline else 0.0
+            effect = group_mean / baseline - 1.0
             out.append((c, effect, n_entities))  # support = ENTITY count
         return out
 

@@ -74,6 +74,11 @@ export function verdictFromRows(
 
 	const judged: VerdictLeg[] = [];
 	for (const [index, row] of rows.entries()) {
+		// Finite-number guard: NaN/Infinity are reachable (DuckDB IEEE division
+		// returns NaN for a rate over zero rows) and a NaN would corrupt the
+		// worst-row selection below — inconclusive, mirroring the engine's
+		// math.isfinite guard. JSON vectors cannot pin these (no NaN in JSON);
+		// the per-side unit tests carry them.
 		const rawDeviation = asFiniteNumber(row.deviation);
 		if (rawDeviation === null) {
 			return {
@@ -81,7 +86,7 @@ export function verdictFromRows(
 				passed: false,
 				deviation: null,
 				magnitude: null,
-				message: `inconclusive: row ${index + 1} did not return the contracted 'deviation' column`,
+				message: `inconclusive: row ${index + 1} did not return a finite numeric 'deviation'`,
 			};
 		}
 		const deviation = Math.abs(rawDeviation);

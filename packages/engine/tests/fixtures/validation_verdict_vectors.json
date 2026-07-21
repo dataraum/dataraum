@@ -1,5 +1,5 @@
 {
-  "_comment": "ADR-0017 shared verdict truth table (per-leg since DAT-852). The single source of truth for the validation judgement, asserted by BOTH the engine (pytest: tests/unit/analysis/validation/test_evaluate.py) and the cockpit (vitest, the TS mirror). The judgement is uniform: one row per independently-judged subject (multi-leg checks label rows with 'leg'); EVERY row is judged passed = deviation <= tolerance and the WORST row decides; a missing/non-numeric deviation in ANY row (or no rows) is inconclusive (status 'error', never 'failed'). Keep the two consumers in lockstep — a divergence is a test failure, not a production surprise.",
+  "_comment": "ADR-0017 shared verdict truth table (per-leg since DAT-852). The single source of truth for the validation judgement, asserted by BOTH the engine (pytest: tests/unit/analysis/validation/test_evaluate.py) and the cockpit (vitest, the TS mirror). The judgement is uniform: one row per independently-judged subject (multi-leg checks label rows with 'leg'); EVERY row is judged passed = deviation <= tolerance and the WORST row decides; a missing/non-numeric/non-finite deviation in ANY row (or no rows) is inconclusive (status 'error', never 'failed'); a garbage magnitude degrades to the deviation-then-1 fallback, never an error. expected.deviation/expected.magnitude, when present, pin the WORST-row numbers both mirrors must serve. Non-finite (NaN/Infinity) cases live in per-side unit tests because JSON cannot encode them. Keep the two consumers in lockstep — a divergence is a test failure, not a production surprise.",
   "cases": [
     {
       "name": "balance_clean_passes",
@@ -86,7 +86,7 @@
         { "leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0 },
         { "leg": "txns.vendor_id->vendors.id", "deviation": 0.01, "magnitude": 1.0 }
       ],
-      "expected": { "status": "passed", "passed": true }
+      "expected": { "status": "passed", "passed": true, "deviation": 0.01, "magnitude": 1.0 }
     },
     {
       "name": "multi_leg_worst_leg_over_tolerance_fails",
@@ -96,14 +96,21 @@
         { "leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0 },
         { "leg": "txns.vendor_id->vendors.id", "deviation": 0.315, "magnitude": 1.0 }
       ],
-      "expected": { "status": "failed", "passed": false }
+      "expected": { "status": "failed", "passed": false, "deviation": 0.315, "magnitude": 1.0 }
     },
     {
       "name": "multi_leg_unlabelled_rows_still_judged_per_row",
       "check_type": "aggregate",
       "tolerance": 0.01,
       "rows": [{ "deviation": 0.0 }, { "deviation": 3.0, "magnitude": 100.0 }],
-      "expected": { "status": "failed", "passed": false }
+      "expected": { "status": "failed", "passed": false, "deviation": 3.0, "magnitude": 100.0 }
+    },
+    {
+      "name": "non_numeric_magnitude_degrades_to_fallback_not_error",
+      "check_type": "aggregate",
+      "tolerance": 10.0,
+      "rows": [{ "deviation": 5.0, "magnitude": "garbage" }],
+      "expected": { "status": "passed", "passed": true, "deviation": 5.0, "magnitude": 5.0 }
     },
     {
       "name": "multi_leg_missing_deviation_in_any_row_is_inconclusive",

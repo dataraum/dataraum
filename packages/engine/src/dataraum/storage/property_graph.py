@@ -318,7 +318,9 @@ def _element_view_sql(name: str) -> str:
         # og_conformed_dimension edge below. Defined catalog only: the same
         # detection_method != 'candidate' contract every downstream stage reads
         # (structural candidates and judge-DECLINED rows share the catalog head's
-        # run_id and used to leak into this view as FK edges).
+        # run_id and used to leak into this view as FK edges). NULL-method rows
+        # drop here too, deliberately (SQL three-valued !=) — same semantics as
+        # load_defined_relationships; no writer produces NULL.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_references AS\n"
             f"SELECT relationship_id::text AS relationship_id,\n"

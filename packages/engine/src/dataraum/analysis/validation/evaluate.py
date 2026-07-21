@@ -25,6 +25,7 @@ Entry points:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -188,10 +189,6 @@ def _judge(
             )
         try:
             deviation = abs(float(raw_deviation))
-            # magnitude falls back so the scorer's deviation/magnitude never
-            # divides by zero: a 0/absent magnitude falls to the deviation
-            # itself, then 1.0.
-            magnitude = abs(float(row.get("magnitude") or 0)) or deviation or 1.0
         except TypeError, ValueError:
             return (
                 ValidationStatus.ERROR,
@@ -199,6 +196,33 @@ def _judge(
                 f"{raw_deviation!r} (row {index + 1})",
                 {"check_type": check_type, "row": row},
             )
+        if not math.isfinite(deviation):
+            # NaN/inf are reachable, not theoretical: DuckDB's IEEE division
+            # returns NaN for an orphan-rate leg over an all-NULL FK column
+            # (0.0/0.0). A NaN in the worst-row max() below would make the
+            # verdict ORDER-DEPENDENT (NaN comparisons are always False), so a
+            # non-finite deviation is inconclusive — mirroring the TS mirror's
+            # Number.isFinite guard, which JSON vectors cannot pin (JSON has no
+            # NaN); the per-side unit tests carry these cases.
+            return (
+                ValidationStatus.ERROR,
+                f"{label} check inconclusive: non-finite deviation "
+                f"{raw_deviation!r} (row {index + 1})",
+                {"check_type": check_type, "row": row},
+            )
+        # magnitude falls back so the scorer's deviation/magnitude never
+        # divides by zero: a non-numeric/non-finite/0/absent magnitude falls
+        # to the deviation itself, then 1.0 — magnitude is severity garnish,
+        # never verdict-bearing, so garbage degrades instead of erroring
+        # (aligned with the TS mirror's asFiniteNumber ?? 0 fallback; Python
+        # used to ERROR the whole check on a non-numeric magnitude string).
+        try:
+            raw_magnitude = abs(float(row.get("magnitude") or 0))
+        except TypeError, ValueError:
+            raw_magnitude = 0.0
+        if not math.isfinite(raw_magnitude):
+            raw_magnitude = 0.0
+        magnitude = raw_magnitude or deviation or 1.0
         leg = row.get("leg")
         judged.append(
             {

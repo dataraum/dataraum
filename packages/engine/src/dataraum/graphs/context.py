@@ -934,7 +934,7 @@ def build_execution_context(
             # defect signal; heavy-tailed money columns naturally carry a high ratio).
             flags = _generate_column_flags(
                 null_ratio=null_ratio,
-                benford_compliant=quality.benford_compliant if quality else None,
+                benford_status=quality.benford_status if quality else None,
                 is_stale=temp_profile.is_stale if temp_profile else None,
                 cardinality_ratio=cardinality_ratio,
             )
@@ -1537,7 +1537,7 @@ def _load_graph_reads(
 
 def _generate_column_flags(
     null_ratio: float | None,
-    benford_compliant: bool | None,
+    benford_status: str | None,
     is_stale: bool | None,
     cardinality_ratio: float | None,
 ) -> list[str]:
@@ -1559,7 +1559,10 @@ def _generate_column_flags(
     elif null_ratio is not None and null_ratio > 0.1:
         flags.append("moderate_nulls")
 
-    if benford_compliant is False:
+    # Only a MEASURED violation flags (DAT-843): 'not_applicable' (values under
+    # one order of magnitude — Benford undefined) and NULL (not computed) must
+    # never read as a violation to the agent.
+    if benford_status == "violating":
         flags.append("benford_violation")
 
     if is_stale is True:

@@ -86,7 +86,7 @@ class TestLoadStatistics:
         qm.iqr_outlier_ratio = 0.02
         qm.zscore_outlier_ratio = 0.01
         qm.has_outliers = True
-        qm.benford_compliant = True
+        qm.benford_status = "compliant"
         qm.quality_data = {"outlier_detection": {"iqr_outlier_count": 2}}
 
         session.execute.return_value.scalars.return_value.first.side_effect = [sp, qm]
@@ -94,7 +94,7 @@ class TestLoadStatistics:
         result = load_statistics(session, "col1")
         assert result is not None
         assert result["null_ratio"] == 0.05
-        assert result["quality"]["benford_compliant"] is True
+        assert result["quality"]["benford_status"] == "compliant"
         assert "outlier_detection" in result["quality"]
 
     def test_excluded_column_omits_outlier_detection(self):
@@ -113,15 +113,15 @@ class TestLoadStatistics:
         qm.iqr_outlier_ratio = None
         qm.zscore_outlier_ratio = None
         qm.has_outliers = None
-        qm.benford_compliant = True
-        qm.quality_data = {"benford_analysis": {"is_compliant": True}}
+        qm.benford_status = "compliant"
+        qm.quality_data = {"benford_analysis": {"status": "compliant"}}
 
         session.execute.return_value.scalars.return_value.first.side_effect = [sp, qm]
 
         result = load_statistics(session, "col1")
         assert result is not None
         assert "outlier_detection" not in result["quality"]
-        assert result["quality"]["benford_compliant"] is True
+        assert result["quality"]["benford_status"] == "compliant"
 
 
 class TestLoadSemantic:

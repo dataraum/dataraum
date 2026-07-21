@@ -193,6 +193,7 @@ def load_relationship_candidates_for_semantic(
     # relationships.graph_topology — a module-level import here would close
     # that cycle.
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
+
     # Build query — scoped to the current run's catalog (DAT-408) when ``run_id`` is
     # given, so coexisting prior-run rows aren't fed to the LLM twice.
     stmt = select(Relationship).where(Relationship.detection_method == detection_method)

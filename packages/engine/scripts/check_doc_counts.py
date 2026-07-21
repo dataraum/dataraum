@@ -10,9 +10,10 @@ We scan a fixed set of doc files for numbered claims like
 fail if the number disagrees with the truth.
 (The MCP tool count check died with the MCP surface — DAT-487.)
 
-Missing files are skipped silently, so keep DOC_FILES pointing at files that
-exist — a stale path checks nothing. The user-facing docs live at the
-WORKSPACE root (`docs/`, published via Zensical), not in this package.
+A missing DOC_FILES entry is a HARD FAILURE, not a skip: a stale path checks
+nothing while still reading as covered, which is the exact drift this script
+exists to catch. Delete the entry when you delete the doc. The user-facing docs
+live at the WORKSPACE root (`docs/`, published via Zensical), not in this package.
 
 Run locally:  uv run python scripts/check_doc_counts.py
 Used in CI by .github/workflows/release.yml (preflight job).
@@ -32,7 +33,6 @@ DOC_FILES = [
     "../../README.md",
     "../cockpit/README.md",
     "../../docs/index.md",
-    "../../docs/getting-started/overview.md",
     "../../docs/concepts/pipeline.md",
     "../../docs/concepts/measurement.md",
     "../../docs/platform/architecture.md",
@@ -132,11 +132,17 @@ def check() -> int:
     print(f"source of truth: {t.phase} phases, {t.detector} detectors")
 
     mismatches: list[tuple[Claim, int]] = []
+    missing = [rel for rel in DOC_FILES if not (ROOT / rel).exists()]
+    if missing:
+        print("DOC_FILES points at files that no longer exist:")
+        for rel in missing:
+            print(f"  {rel}")
+        print("Remove the entry — a stale path silently checks nothing.")
+        return 1
+
     scanned = 0
     for rel in DOC_FILES:
         path = ROOT / rel
-        if not path.exists():
-            continue
         scanned += 1
         for claim in find_claims(path):
             want = expected[claim.kind]

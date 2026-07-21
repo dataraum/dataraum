@@ -1,7 +1,8 @@
 # The pipeline & phases
 
 Under the journey's analysis stages is a pipeline of focused **phases** — nineteen of them —
-run by the engine. Each phase does one job with the right [method](approach.md), and
+run by the engine. Each phase does one job with the right method — deterministic,
+statistical, or LLM — and
 after each, the relevant [detectors](measurement.md) update the entropy scores. This page is
 the map of those phases.
 

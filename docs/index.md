@@ -46,9 +46,14 @@ in business terms. Two constraints bound its role:
 
 ## How it gets there
 
-DataRaum doesn't index schemas, and it doesn't hand everything to the LLM. It runs the data
-through a **pipeline of analysis phases**, each using the right method for the job, and
-blends three kinds of evidence:
+Each available method has a boundary it cannot cross on its own. Column names are
+abbreviated, misleading, or mean different things in different sources. A model asked to
+interpret a field asserts a meaning with no check against the data and no calibrated
+statement of its own confidence. Statistics can establish that two columns correlate, but
+not that one is a price and the other a discount.
+
+So DataRaum runs the data through a **pipeline of analysis phases**, each using the right
+method for the job, and blends three kinds of evidence:
 
 - **Deterministic** — exact structure: types, keys, the joins between tables.
 - **Statistical** — what the shape of the data reveals: distributions, outliers, drift.
@@ -111,13 +116,12 @@ navigable graph over your columns), **Governance** (the workspace's overall stat
 **Runs** (work in flight, and what needs your input), and **Reports** (saved answers whose
 SQL re-runs on open, flagged when the data has changed since the summary was written).
 
-See the [Overview](getting-started/overview.md) for the whole arc, and
+See [the journey](concepts/the-journey.md) for the whole arc, and
 [Running the stack](getting-started/running-the-stack.md) to bring it up.
 
 ## Where to go next
 
-- **The concept, in depth** — [The approach](concepts/approach.md) (how the methods
-  combine), [the journey](concepts/the-journey.md), the
+- **The concept, in depth** — [the journey](concepts/the-journey.md), the
   [operating model](concepts/operating-model.md) (the deliverable itself),
   [frame, ground, teach](concepts/frame-ground-teach.md) (how knowledge enters and
   improves), the [learnable surface](concepts/learnable-surface.md) (the closed
@@ -125,8 +129,7 @@ See the [Overview](getting-started/overview.md) for the whole arc, and
   calibration), and
   [relationships & aggregation](concepts/relationships-and-aggregation.md) (joins,
   stock vs. flow).
-- **Using it** — [Overview](getting-started/overview.md) and
-  [Running the stack](getting-started/running-the-stack.md).
+- **Using it** — [Running the stack](getting-started/running-the-stack.md).
 - **Under the hood** — the [platform architecture](platform/architecture.md), the
   [pipeline & phases](concepts/pipeline.md), the
   [decision records](adr/README.md), and [Deployment](operations/deployment.md) for

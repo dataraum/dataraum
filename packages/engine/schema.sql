@@ -379,7 +379,7 @@ CREATE TABLE table_entities (
 	entity_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
-	detected_entity_type VARCHAR NOT NULL, 
+	detected_entity_type VARCHAR, 
 	description TEXT, 
 	grain_columns JSON, 
 	table_role VARCHAR, 
@@ -423,6 +423,7 @@ CREATE TABLE column_concepts (
 	column_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	meaning TEXT, 
+	meaning_status VARCHAR, 
 	temporal_behavior VARCHAR, 
 	unit_source_column VARCHAR, 
 	derived_formula_hypothesis VARCHAR, 
@@ -434,6 +435,7 @@ CREATE TABLE column_concepts (
 	CONSTRAINT pk_column_concepts PRIMARY KEY (concept_id), 
 	CONSTRAINT uq_column_concept UNIQUE (column_id, run_id), 
 	CONSTRAINT ck_column_concepts_annotation_source CHECK (annotation_source IS NULL OR annotation_source IN ('llm')), 
+	CONSTRAINT ck_column_concepts_meaning_status CHECK (meaning_status IS NULL OR meaning_status IN ('ambiguous', 'determined')), 
 	CONSTRAINT fk_column_concepts_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 

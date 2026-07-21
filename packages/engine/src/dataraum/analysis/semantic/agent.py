@@ -65,13 +65,15 @@ logger = get_logger(__name__)
 
 
 class SemanticAgent(LLMFeature):
-    """LLM-powered semantic analysis agent.
+    """LLM-powered per-table synthesis agent (structural tier).
 
-    Analyzes tables and columns to determine:
-    - Semantic roles (measure, dimension, key, etc.)
-    - Entity types (customer, product, transaction, etc.)
-    - Business names and descriptions
-    - Relationships between tables
+    Analyzes tables to determine:
+    - Structural table classification (fact/dimension role, grain,
+      time and identity columns)
+    - Relationships between tables (confirming structural candidates)
+
+    Business semantics — entity types, descriptions, column meanings — are
+    authored downstream by the catalogue_semantics phase (DAT-823).
 
     This agent follows the same pattern as GraphAgent:
     - Extends LLMFeature for LLM infrastructure access
@@ -107,10 +109,11 @@ class SemanticAgent(LLMFeature):
     ) -> Result[SemanticEnrichmentResult]:
         """Classify tables + confirm relationships over persisted column annotations.
 
-        The per-table synthesis tier (DAT-362 Option B). Reads the already-persisted
-        per-column annotations (post-teach) as read-only context and produces only
-        table entity classifications + cross-table relationships — it does NOT
-        re-emit per-column annotations.
+        The per-table synthesis tier (DAT-362 Option B, structural since
+        DAT-823). Reads the already-persisted per-column annotations
+        (post-teach) as read-only context and produces only structural table
+        classifications + cross-table relationships — it does NOT re-emit
+        per-column annotations and does NOT author business semantics.
 
         Args:
             session: Database session.
@@ -194,10 +197,6 @@ class SemanticAgent(LLMFeature):
         result = self._converse_and_validate(request)
         if not result.success:
             return Result.fail(result.error or "Table synthesis failed")
-        # column_concepts is a REQUIRED field on the output schema (DAT-768), so
-        # constrained decoding cannot crowd it out; a still-EMPTY surface is caught
-        # loud downstream by synthesize_and_store_tables' emptiness gate (DAT-769:
-        # blanket — every column carries a meaning by contract).
         return self._build_enrichment_result(result.unwrap())
 
     def _converse_and_validate(
@@ -256,8 +255,6 @@ class SemanticAgent(LLMFeature):
             EntityDetection(
                 table_id="",  # Filled by caller
                 table_name=table.table_name,
-                entity_type=table.entity_type,
-                description=table.description,
                 grain_columns=table.grain,
                 table_role=derive_table_role(
                     table.is_fact_table,
@@ -303,7 +300,6 @@ class SemanticAgent(LLMFeature):
                 annotations=[],
                 entity_detections=entity_detections,
                 relationships=relationships,
-                column_concepts=synthesis.column_concepts,
                 source="llm",
             )
         )

@@ -5,7 +5,6 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -33,9 +32,6 @@ from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCa
 from dataraum.analysis.relationships.surrogate import composite_intent_digest
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
-    ColumnConcept as ConceptModel,
-)
-from dataraum.analysis.semantic.db_models import (
     SemanticAnnotation as AnnotationModel,
 )
 from dataraum.analysis.semantic.db_models import (
@@ -43,7 +39,6 @@ from dataraum.analysis.semantic.db_models import (
 )
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
-    ColumnConceptOutput,
     SemanticEnrichmentResult,
 )
 from dataraum.analysis.semantic.models import (
@@ -301,102 +296,6 @@ def persist_column_annotations(
     # which would make the head-resolved loaders' scalar_one_or_none() raise.
     upsert(session, AnnotationModel, rows, index_elements=["column_id", "run_id"])
     return len(rows)
-
-
-@dataclass(frozen=True)
-class ConceptPersistCounts:
-    """Emitted vs resolved vs dropped for a ``column_concepts`` persist (DAT-768).
-
-    ``emitted`` = concepts the table agent produced; ``resolved`` = rows actually
-    written (name matched a column, after the same-column dedup); ``dropped_unresolved``
-    = concepts whose ``(table, column)`` name matched no column in the batch. A
-    silently-empty load-bearing surface is now a visible count, not indistinguishable
-    from "no concepts to bind".
-    """
-
-    emitted: int
-    resolved: int
-    dropped_unresolved: int
-    with_meaning: int  # resolved rows carrying a non-empty meaning (the load-bearing field)
-
-
-def persist_column_concepts(
-    session: Session,
-    column_concepts: list[ColumnConceptOutput],
-    table_ids: list[str],
-    *,
-    annotated_by: str,
-    run_id: str,
-) -> ConceptPersistCounts:
-    """Persist the table agent's catalogue-grain per-column semantics (DAT-637).
-
-    Writes ``ColumnConcept`` rows under the begin_session (catalogue head) run.
-    ``temporal_behavior`` is NOT seeded here (DAT-657): stock/flow is a data-format
-    property the ontology cannot declare, so it is left NULL at authoring and
-    written only by the data-grounded resolve pass (``entropy.resolve``). Run-scoped
-    upsert on ``(column_id, run_id)``; a column the table agent did not bind this
-    run has no row (absent = no concept), and run-scoped reads never see a prior
-    run's.
-
-    Returns:
-        A :class:`ConceptPersistCounts` breakdown. The counts are logged so a
-        name-resolution wipeout (every emitted concept dropped as unresolved,
-        DAT-768 path #2) is diagnosable rather than indistinguishable from an
-        empty emission; the caller gates begin_session on ``resolved``.
-    """
-    column_map = load_column_mappings(session, table_ids)
-
-    rows: list[dict[str, Any]] = []
-    dropped: list[tuple[str, str]] = []
-    for cc in column_concepts:
-        column_id = column_map.get((cc.table_name, cc.column_name))
-        if not column_id:
-            dropped.append((cc.table_name, cc.column_name))
-            continue
-        rows.append(
-            {
-                "column_id": column_id,
-                "run_id": run_id,
-                # Normalized like the formula hypothesis: an all-whitespace meaning
-                # is absence, so the gate below and the feed's IS NOT NULL read agree.
-                "meaning": (cc.meaning or "").strip() or None,
-                "unit_source_column": (cc.unit_source_column or "").strip() or None,
-                "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
-                "derived_formula_confidence": cc.derived_formula_confidence,
-                "annotation_source": DecisionSource.LLM.value,
-                "annotated_by": annotated_by,
-            }
-        )
-
-    # Dedup on the upsert key (column_id, run_id): the table agent can emit the same
-    # column twice in column_concepts, and Postgres ON CONFLICT cannot touch a row
-    # twice in one batch (CardinalityViolation). Last mention wins.
-    deduped: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in rows:
-        deduped[(row["column_id"], row["run_id"])] = row
-    rows = list(deduped.values())
-
-    upsert(session, ConceptModel, rows, index_elements=["column_id", "run_id"])
-
-    counts = ConceptPersistCounts(
-        emitted=len(column_concepts),
-        resolved=len(rows),
-        dropped_unresolved=len(dropped),
-        with_meaning=sum(1 for r in rows if r["meaning"]),
-    )
-    logger.info(
-        "column_concepts_persisted",
-        emitted=counts.emitted,
-        resolved=counts.resolved,
-        dropped_unresolved=counts.dropped_unresolved,
-        with_meaning=counts.with_meaning,
-    )
-    if dropped:
-        # The exact names the agent echoed that resolved to no column — the signal
-        # that distinguishes a naming drift (case, enriched prefix, display name)
-        # from a genuinely empty emission.
-        logger.debug("column_concepts_dropped_unresolved", dropped=dropped)
-    return counts
 
 
 def ground_columns(
@@ -733,92 +632,6 @@ def _build_surrogate_intent(
     }
 
 
-# Bounded re-prompts when the batched synthesis under-covers column_concepts
-# (DAT-725). The contract is a meaning for EVERY column, but one wide batched
-# call can truncate (observed: 9/62 on a run whose siblings hit 62/62 — output
-# jitter under the warn-only contract). Each retry serves the SAME prompt scoped
-# to the tables that still have uncovered columns, so it is cheap; warn-only
-# stays the terminal state when the attempts are exhausted.
-CONCEPT_COVERAGE_RETRIES = 2
-
-
-def _missing_concept_keys(
-    column_map: dict[tuple[str, str], str],
-    column_concepts: list[ColumnConceptOutput],
-) -> list[tuple[str, str]]:
-    """Catalogue columns not covered by a MEANINGFUL ``column_concepts`` entry.
-
-    Covered = an entry whose ``meaning`` is non-empty after stripping — the same
-    definition ``persist_column_concepts`` normalizes to (whitespace-only becomes
-    NULL at persist), so the retry loop and the terminal partial-coverage warning
-    agree with the persisted surface: a blank (re-)emission is still missing.
-    """
-    covered = {
-        (cc.table_name, cc.column_name) for cc in column_concepts if (cc.meaning or "").strip()
-    }
-    return sorted(k for k in column_map if k not in covered)
-
-
-def _retry_missing_column_concepts(
-    session: Session,
-    agent: SemanticAgent,
-    enrichment: SemanticEnrichmentResult,
-    *,
-    column_map: dict[tuple[str, str], str],
-    table_map: dict[str, str],
-    ontology: str,
-    relationship_candidates: list[dict[str, Any]] | None,
-) -> None:
-    """Fill column_concepts coverage gaps with bounded scoped re-prompts, in place.
-
-    Re-runs :meth:`SemanticAgent.synthesize_tables` for ONLY the tables that
-    still have uncovered columns and merges the retry's ``column_concepts``
-    entries for those still-missing columns into ``enrichment`` — the first
-    MEANINGFUL emission wins: a retry is only asked for columns still lacking a
-    non-empty meaning, so it never displaces one (a blank emission is absence
-    by the persist contract and a later meaningful re-emission replaces it via
-    ``persist_column_concepts``' last-mention-wins dedup, which also settles
-    duplicate mentions inside one response). The retry's tables/relationships
-    output is discarded: the full-catalogue first pass is authoritative for
-    those. Best-effort by contract — a failed retry logs and stops (the first
-    pass succeeded; coverage stays warn-only), and the caller persists ONCE
-    after the loop (idempotent writer, ADR-0010).
-    """
-    missing = _missing_concept_keys(column_map, enrichment.column_concepts)
-    for _attempt in range(CONCEPT_COVERAGE_RETRIES):
-        if not missing:
-            return
-        missing_tables = {t for t, _c in missing}
-        retry_table_ids = [tid for name, tid in table_map.items() if name in missing_tables]
-        if not retry_table_ids:
-            return
-        logger.info(
-            "column_meanings_coverage_retry",
-            missing=len(missing),
-            tables=sorted(missing_tables),
-        )
-        retry_result = agent.synthesize_tables(
-            session=session,
-            table_ids=retry_table_ids,
-            ontology=ontology,
-            relationship_candidates=[
-                c
-                for c in (relationship_candidates or [])
-                if c.get("table1") in missing_tables or c.get("table2") in missing_tables
-            ],
-        )
-        if not retry_result.success:
-            logger.warning("column_meanings_coverage_retry_failed", error=retry_result.error)
-            return
-        still_missing = set(missing)
-        enrichment.column_concepts.extend(
-            cc
-            for cc in retry_result.unwrap().column_concepts
-            if (cc.table_name, cc.column_name) in still_missing
-        )
-        missing = _missing_concept_keys(column_map, enrichment.column_concepts)
-
-
 # Confirm/decline threshold for the semantic judge's relationship verdict. The
 # judge encodes its verdict in ``confidence`` (there is no explicit accept/decline
 # field): the design intent is bimodal — declines ≤ 0.40 ("coincidental overlap;
@@ -897,8 +710,14 @@ def synthesize_and_store_tables(
             EntityModel(
                 run_id=run_id,
                 table_id=table_id,
-                detected_entity_type=entity.entity_type,
-                description=entity.description,
+                # Unclassified-stub pattern (DAT-823): the business reading —
+                # detected_entity_type + description — is authored by the
+                # catalogue_semantics phase, which UPDATEs this same
+                # (table_id, run_id) row later in the run. The NULL window is
+                # within-run only; nothing between the two phases reads either
+                # column (verified at the rebalance).
+                detected_entity_type=None,
+                description=None,
                 grain_columns=entity.grain_columns,
                 table_role=entity.table_role,
                 time_columns=[tc.model_dump() for tc in entity.time_columns],
@@ -1101,66 +920,8 @@ def synthesize_and_store_tables(
         index_elements=["run_id", "intent_digest"],
     )
 
-    # Catalogue-grain per-column semantics (DAT-637): the table agent is the sole
-    # author. Sealed under THIS (begin_session catalogue head) run. ``run_id`` is
-    # always stamped by the workflow before the phase; guard only for the
-    # type-checker / direct test callers.
-    if run_id is not None:
-        annotated_by = agent.provider.get_model_for_tier(
-            agent.config.features.semantic_analysis.model_tier
-        )
-        # Coverage retry (DAT-725): fill truncation gaps BEFORE the single
-        # persist — bounded scoped re-prompts for the tables whose columns are
-        # still uncovered; a retry that fails or under-produces leaves the
-        # warn-only terminal state below untouched. ``column_map``/``table_map``
-        # from the top of the function are still current — nothing between there
-        # and here adds columns or tables.
-        _retry_missing_column_concepts(
-            session,
-            agent,
-            enrichment,
-            column_map=column_map,
-            table_map=table_map,
-            ontology=ontology,
-            relationship_candidates=relationship_candidates,
-        )
-        counts = persist_column_concepts(
-            session,
-            enrichment.column_concepts,
-            table_ids,
-            annotated_by=annotated_by,
-            run_id=run_id,
-        )
-        # DAT-768/769: the column_concepts surface is load-bearing — the meaning
-        # context every downstream grounding prompt (metric graph agent, cycles,
-        # validation) transports. Every column carries a meaning by contract, so
-        # ZERO resolved entries is never a judgment; it is an emptied surface (the
-        # agent under-produced the whole field, or every name it echoed failed to
-        # resolve). Fail begin_session loud rather than ship it green. Gates on
-        # emptiness only — never on any content of a meaning or hint.
-        # Coverage visibility (DAT-769): the contract is a meaning for EVERY
-        # column, but a wide catalogue can exceed the output-token budget and the
-        # model may self-ration to the first N columns — partial coverage must be
-        # VISIBLE, never silent, and after the bounded retries it is the terminal
-        # state. No hard threshold (that would be a tuned knob and the eval's
-        # consumer oracles grade the outcome); the warning names the uncovered
-        # columns so a wide-data run is diagnosable from the log.
-        total_columns = len(column_map)
-        if counts.with_meaning < total_columns:
-            missing = _missing_concept_keys(column_map, enrichment.column_concepts)
-            logger.warning(
-                "column_meanings_partial_coverage",
-                with_meaning=counts.with_meaning,
-                total_columns=total_columns,
-                missing=missing[:40],
-            )
-        if counts.with_meaning == 0:
-            return Result.fail(
-                "column_concepts resolved to zero meaningful rows for a non-empty "
-                f"schema (emitted={counts.emitted}, resolved={counts.resolved}, "
-                f"with_meaning=0, dropped_unresolved={counts.dropped_unresolved}) — "
-                "the meaning context every grounding prompt transports would be "
-                "empty (DAT-768)."
-            )
-
+    # Column concepts are NOT persisted here (DAT-823): the catalogue_semantics
+    # phase — later in the same begin_session run, after enriched_views and
+    # slicing — is the sole ColumnConcept INSERT writer, authoring meanings over
+    # the composed catalogue this phase's verdicts feed.
     return Result.ok(enrichment)

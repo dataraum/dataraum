@@ -13,12 +13,10 @@ from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipDB
 from dataraum.analysis.semantic.agent import SemanticAgent
-from dataraum.analysis.semantic.db_models import ColumnConcept as ColumnConceptDB
 from dataraum.analysis.semantic.db_models import SemanticAnnotation as AnnotationDB
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
-    ColumnConceptOutput,
     ColumnSemanticOutput,
     EntityDetection,
     IdentityColumn,
@@ -30,26 +28,11 @@ from dataraum.analysis.semantic.models import (
 )
 from dataraum.analysis.semantic.processor import (
     persist_column_annotations,
-    persist_column_concepts,
     synthesize_and_store_tables,
 )
 from dataraum.core.models.base import RelationshipType, Result
 from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_run_id
-
-# A minimal resolvable meaning entry (orders.order_id exists in every relationship
-# fixture below) so the DAT-768/769 empty-surface gate — not under test in the
-# relationship flows — stays quiet.
-_MEANING_MIN = [
-    ColumnConceptOutput(
-        table_name="orders",
-        column_name="order_id",
-        meaning="test meaning",
-        unit_source_column="",
-        derived_formula_hypothesis="",
-        derived_formula_confidence=0.0,
-    )
-]
 
 
 def _table_with_columns(session, name: str, columns: list[str]) -> Table:
@@ -144,126 +127,6 @@ class TestPersistColumnAnnotations:
         assert count == 1
 
 
-class TestPersistColumnConcepts:
-    """The catalogue-grain authoring the table agent owns (DAT-637)."""
-
-    def test_persists_concept_unit_and_normalizes_formula(self, session) -> None:
-        """meaning / hints / unit source / derived-formula land on ColumnConcept.
-
-        Whitespace-only hypotheses normalize to None so the detector's
-        truthiness read ("no hypothesis → witness abstains") holds.
-        """
-        table = _table_with_columns(session, "orders", ["total", "discount"])
-        concepts = [
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="total",
-                meaning="Order total including tax",
-                unit_source_column="currency_code",
-                derived_formula_hypothesis="subtotal + tax",
-                derived_formula_confidence=0.85,
-            ),
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="discount",
-                meaning="Per-order discount amount",
-                derived_formula_hypothesis="   ",
-                unit_source_column="",
-                derived_formula_confidence=0.0,
-            ),
-        ]
-
-        result = persist_column_concepts(
-            session,
-            concepts,
-            [table.table_id],
-            annotated_by="m",
-            run_id=baseline_run_id(),
-        )
-        session.flush()
-
-        assert result.resolved == 2
-        assert result.emitted == 2
-        assert result.dropped_unresolved == 0
-        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
-        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
-        total = rows[cols["total"]]
-        assert total.meaning == "Order total including tax"
-        assert total.unit_source_column == "currency_code"
-        assert total.derived_formula_hypothesis == "subtotal + tax"
-        assert total.derived_formula_confidence == 0.85
-        # DAT-807: the output model states every attribute, so "not applicable"
-        # arrives as the "" sentinel — persist_column_concepts must normalize it
-        # back to NULL, or the nullable column starts holding empty strings and
-        # every `IS NOT NULL` reader silently changes meaning.
-        assert rows[cols["discount"]].derived_formula_hypothesis is None
-        assert rows[cols["discount"]].unit_source_column is None
-
-    def test_duplicate_column_concepts_collapse_to_one_row(self, session) -> None:
-        """The table agent can list the same column twice; the upsert batch must dedup.
-
-        Two ColumnConceptOutput for the same (table, column) share the (column_id,
-        run_id) upsert key — without dedup Postgres raises CardinalityViolation
-        ("ON CONFLICT cannot affect a row twice"). Last mention wins.
-        """
-        table = _table_with_columns(session, "orders", ["total"])
-        concepts = [
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="total",
-                meaning="gross",
-                unit_source_column="",
-                derived_formula_hypothesis="",
-                derived_formula_confidence=0.0,
-            ),
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="total",
-                meaning="net",
-                unit_source_column="",
-                derived_formula_hypothesis="",
-                derived_formula_confidence=0.0,
-            ),
-        ]
-
-        result = persist_column_concepts(
-            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.resolved == 1  # collapsed
-        assert result.emitted == 2  # both mentions counted as emitted
-        rows = list(session.execute(select(ColumnConceptDB)).scalars())
-        assert len(rows) == 1
-        assert rows[0].meaning == "net"  # last mention wins
-
-    def test_unresolvable_concept_dropped_and_counted(self, session) -> None:
-        """DAT-768 path #2: a concept whose (table, column) name resolves to no column
-        is dropped, and the breakdown surfaces it (resolved 0, dropped 1) instead of
-        being indistinguishable from an empty emission."""
-        table = _table_with_columns(session, "orders", ["total"])
-        concepts = [
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="ghost",
-                meaning="phantom",
-                unit_source_column="",
-                derived_formula_hypothesis="",
-                derived_formula_confidence=0.0,
-            )
-        ]
-
-        result = persist_column_concepts(
-            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.emitted == 1
-        assert result.resolved == 0
-        assert result.dropped_unresolved == 1
-        assert list(session.execute(select(ColumnConceptDB)).scalars()) == []
-
-
 class TestNearConstantFeed:
     """The per-table feed flags near-constant columns (DAT-637 quality fix) so the
     table agent refuses to bind a concept to a status flag."""
@@ -315,12 +178,10 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[
                         EntityDetection(
                             table_id="",
                             table_name="orders",
-                            entity_type="orders",
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[
@@ -431,7 +292,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -532,7 +392,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -621,7 +480,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -706,7 +564,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -785,7 +642,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -864,24 +720,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=[
-                        ColumnConceptOutput(
-                            table_name="invoices",
-                            column_name="entry_id",
-                            meaning="link",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                        ColumnConceptOutput(
-                            table_name="journal_entries",
-                            column_name="entry_id",
-                            meaning="key",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                    ],
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -964,24 +802,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=[
-                        ColumnConceptOutput(
-                            table_name="detail",
-                            column_name="link_id",
-                            meaning="link",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                        ColumnConceptOutput(
-                            table_name="master",
-                            column_name="link_id",
-                            meaning="key",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                    ],
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -1059,7 +879,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -1104,12 +923,10 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[
                         EntityDetection(
                             table_id="",
                             table_name="orders",
-                            entity_type="orders",
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[
@@ -1207,239 +1024,6 @@ class TestSynthesizeAndStoreTables:
         assert not result.success
         assert "LLM down" in (result.error or "")
 
-    @staticmethod
-    def _agent_returning_empty_concepts() -> MagicMock:
-        agent = MagicMock()
-        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
-        agent.synthesize_tables = MagicMock(
-            return_value=Result.ok(
-                SemanticEnrichmentResult(
-                    annotations=[], entity_detections=[], relationships=[], column_concepts=[]
-                )
-            )
-        )
-        return agent
-
-    @staticmethod
-    def _annotate(session, table, column: str, role: str) -> None:
-        persist_column_annotations(
-            session,
-            ColumnAnnotationOutput(
-                tables=[
-                    TableColumnAnnotation(table_name=table.table_name, columns=[_col(column, role)])
-                ]
-            ),
-            [table.table_id],
-            annotated_by="m",
-            run_id=baseline_run_id(),
-        )
-        session.flush()
-
-    def test_empty_concepts_fails_loud(self, session) -> None:
-        """DAT-768/769: zero resolved column_concepts for a non-empty schema is an
-        emptied grounding surface — every column carries a meaning by contract, so
-        emptiness is never a judgment. begin_session fails loud."""
-        tbl = _table_with_columns(session, "trial_balance", ["debit_balance"])
-        self._annotate(session, tbl, "debit_balance", "measure")
-
-        result = synthesize_and_store_tables(
-            session,
-            self._agent_returning_empty_concepts(),
-            [tbl.table_id],
-            run_id=baseline_run_id(),
-        )
-
-        assert not result.success
-        assert "zero meaningful rows" in (result.error or "")
-        assert "DAT-768" in (result.error or "")
-
-    def test_empty_concepts_fails_loud_without_measures_too(self, session) -> None:
-        """The gate is blanket under the meaning contract (DAT-769) — a
-        dimension-only batch still carries meanings, so emptiness fails there too
-        (the old gate was measure-conditional)."""
-        tbl = _table_with_columns(session, "regions", ["region_name"])
-        self._annotate(session, tbl, "region_name", "dimension")
-
-        result = synthesize_and_store_tables(
-            session,
-            self._agent_returning_empty_concepts(),
-            [tbl.table_id],
-            run_id=baseline_run_id(),
-        )
-
-        assert not result.success
-        assert "zero meaningful rows" in (result.error or "")
-
-
-class TestColumnConceptCoverageRetry:
-    """DAT-725: bounded scoped re-prompts fill column_concepts truncation gaps.
-
-    One batched call can emit meanings for a fraction of the catalogue (output
-    truncation jitter under the warn-only contract). The processor re-prompts —
-    same prompt, scoped to the tables with uncovered columns — up to
-    CONCEPT_COVERAGE_RETRIES times, merges only the still-missing columns'
-    entries (first emission wins), and persists ONCE. Warn-only stays the
-    terminal state when retries exhaust.
-    """
-
-    @staticmethod
-    def _cc(table: str, column: str, meaning: str) -> ColumnConceptOutput:
-        return ColumnConceptOutput(
-            table_name=table,
-            column_name=column,
-            meaning=meaning,
-            unit_source_column="",
-            derived_formula_hypothesis="",
-            derived_formula_confidence=0.0,
-        )
-
-    @staticmethod
-    def _enrichment(concepts: list[ColumnConceptOutput]) -> Result:
-        return Result.ok(
-            SemanticEnrichmentResult(
-                annotations=[], entity_detections=[], relationships=[], column_concepts=concepts
-            )
-        )
-
-    def _agent(self, results: list[Result]) -> MagicMock:
-        agent = MagicMock()
-        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
-        agent.synthesize_tables = MagicMock(side_effect=results)
-        return agent
-
-    def test_retry_is_scoped_to_missing_tables_and_merges(self, session) -> None:
-        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
-        beta = _table_with_columns(session, "beta", ["b1", "b2"])
-        agent = self._agent(
-            [
-                # First (full-catalogue) call truncated: alpha covered, beta absent.
-                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "m2")]),
-                # Scoped retry supplies beta.
-                self._enrichment([self._cc("beta", "b1", "m3"), self._cc("beta", "b2", "m4")]),
-            ]
-        )
-        candidates = [
-            {"table1": "alpha", "table2": "beta", "join_columns": []},
-            {"table1": "alpha", "table2": "alpha", "join_columns": []},
-        ]
-
-        result = synthesize_and_store_tables(
-            session,
-            agent,
-            [alpha.table_id, beta.table_id],
-            relationship_candidates=candidates,
-            run_id=baseline_run_id(),
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2
-        retry_kwargs = agent.synthesize_tables.call_args_list[1].kwargs
-        # Scoped to the uncovered table only — same prompt, smaller catalogue.
-        assert retry_kwargs["table_ids"] == [beta.table_id]
-        # Candidates filtered to those involving a retried table.
-        assert retry_kwargs["relationship_candidates"] == [candidates[0]]
-        rows = session.execute(select(ColumnConceptDB)).scalars().all()
-        assert len(rows) == 4
-
-    def test_retry_exhaustion_stays_warn_only(self, session) -> None:
-        """Retries that never fill the gap end in the warn-only terminal state."""
-        alpha = _table_with_columns(session, "alpha", ["a1"])
-        beta = _table_with_columns(session, "beta", ["b1"])
-        partial = [self._cc("alpha", "a1", "m1")]
-        agent = self._agent([self._enrichment(partial) for _ in range(3)])
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success  # partial coverage never fails the phase
-        # Initial call + CONCEPT_COVERAGE_RETRIES scoped retries, then stop.
-        assert agent.synthesize_tables.call_count == 3
-        rows = session.execute(select(ColumnConceptDB)).scalars().all()
-        assert len(rows) == 1
-
-    def test_retry_never_overwrites_the_first_emission(self, session) -> None:
-        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
-        agent = self._agent(
-            [
-                self._enrichment([self._cc("alpha", "a1", "first")]),
-                # Retry re-emits a1 (already covered) alongside the missing a2.
-                self._enrichment(
-                    [self._cc("alpha", "a1", "second"), self._cc("alpha", "a2", "filled")]
-                ),
-            ]
-        )
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2
-        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
-        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
-        assert rows[cols["a1"]].meaning == "first"
-        assert rows[cols["a2"]].meaning == "filled"
-
-    def test_blank_meaning_counts_as_missing_and_is_refilled(self, session) -> None:
-        """A whitespace-only meaning is absence by the persist contract (it
-        normalizes to NULL), so coverage must re-ask for that column — and the
-        meaningful re-emission wins over the blank one at persist."""
-        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
-        agent = self._agent(
-            [
-                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "   ")]),
-                self._enrichment([self._cc("alpha", "a2", "filled")]),
-            ]
-        )
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2
-        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
-        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
-        assert rows[cols["a2"]].meaning == "filled"
-
-    def test_full_coverage_triggers_no_retry(self, session) -> None:
-        alpha = _table_with_columns(session, "alpha", ["a1"])
-        agent = self._agent([self._enrichment([self._cc("alpha", "a1", "m1")])])
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 1
-
-    def test_failed_retry_is_best_effort(self, session) -> None:
-        """A failing retry never fails the phase — the first pass stands."""
-        alpha = _table_with_columns(session, "alpha", ["a1"])
-        beta = _table_with_columns(session, "beta", ["b1"])
-        agent = self._agent(
-            [
-                self._enrichment([self._cc("alpha", "a1", "m1")]),
-                Result.fail("LLM down"),
-            ]
-        )
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2  # stopped after the failure
-        rows = session.execute(select(ColumnConceptDB)).scalars().all()
-        assert len(rows) == 1
-
 
 # ---------------------------------------------------------------------------
 # per-table parse / format helpers
@@ -1456,8 +1040,6 @@ class TestTableSynthesisHelpers:
                 "tables": [
                     {
                         "table_name": "orders",
-                        "entity_type": "orders",
-                        "description": "orders",
                         "is_fact_table": True,
                         "grain": ["order_id"],
                         "time_columns": [],
@@ -1465,7 +1047,6 @@ class TestTableSynthesisHelpers:
                     }
                 ],
                 "relationships": [],
-                "column_concepts": [],
             }
         )
         result = agent._build_enrichment_result(synthesis)

@@ -25,6 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from dataraum.analysis.catalogue.models import MEANING_STATUSES
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
@@ -361,13 +362,15 @@ class SemanticAnnotation(Base):
 
 
 class ColumnConcept(Base):
-    """Catalogue-grain per-column semantics, owned by the table agent (DAT-637).
+    """Catalogue-grain per-column semantics, owned by the catalogue agent (DAT-637/823).
 
     The home for column attributes that CANNOT be decided from a single table —
     they need the composed catalogue (cross-cutting ontology concepts, the
-    confirmed relationship catalogue, the enriched fact×dimension views). They are
-    authored ONLY by ``semantic_per_table`` (begin_session) and sealed under the
-    workspace **catalogue head**, never by the object-grain per-column agent.
+    confirmed relationship catalogue, the enriched fact×dimension views, the
+    resolved slice axes). They are authored ONLY by ``catalogue_semantics``
+    (begin_session, after enriched_views + slicing — DAT-823 moved authoring off
+    the structural per-table judge) and sealed under the workspace **catalogue
+    head**, never by the object-grain per-column agent.
 
     Single ownership, no copy-forward: these fields were physically removed from
     ``SemanticAnnotation`` (object-grain, add_source generation head). A reader
@@ -387,6 +390,14 @@ class ColumnConcept(Base):
             Replaces the retired single-slot ``business_concept`` binding — the
             precise-word mapping was ill-posed for multi-facet columns and no
             consumer branched on it.
+        meaning_status: the agent's persisted determination (DAT-823, W2-A
+            persisted-status precedent): 'determined' = the composed evidence
+            settles the meaning; 'ambiguous' = declared ignorance WITH a meaning
+            present — the meaning text states what is undetermined and what
+            would settle it (the DAT-769 contract licenses this). NULL on rows
+            written before the column existed (no backfill) and on rows without
+            a meaning (a coverage gap is not a judgment). No consumer branches
+            on it — it is queryable state, not a decision surface.
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural
@@ -409,11 +420,21 @@ class ColumnConcept(Base):
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_column_concept"),
         # Closed-vocabulary enforcement (DAT-802): the ONLY value any writer
-        # produces today is 'llm' (``semantic_per_table``, the sole authoring
-        # path — this table's own docstring: "authored ONLY by semantic_per_table").
+        # produces today is 'llm' (``catalogue_semantics``, the sole authoring
+        # path — this table's own docstring: "authored ONLY by catalogue_semantics").
         CheckConstraint(
             "annotation_source IS NULL OR annotation_source IN ('llm')",
             name="annotation_source",
+        ),
+        # Persisted-determination vocabulary (DAT-823): NULL-or-IN, derived from
+        # its single home ``catalogue.models.MEANING_STATUSES`` (the W2-A
+        # ``abstain_reason`` pattern — explicit IS NULL arm, values sorted for a
+        # deterministic offline DDL dump).
+        CheckConstraint(
+            "meaning_status IS NULL OR meaning_status IN ("
+            + ", ".join(f"'{v}'" for v in MEANING_STATUSES)
+            + ")",
+            name="meaning_status",
         ),
     )
 
@@ -423,6 +444,8 @@ class ColumnConcept(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     meaning: Mapped[str | None] = mapped_column(Text)
+    # Closed vocab: see ck_column_concepts_meaning_status (DAT-823). Old runs NULL.
+    meaning_status: Mapped[str | None] = mapped_column(String)
     temporal_behavior: Mapped[str | None] = mapped_column(String)
     unit_source_column: Mapped[str | None] = mapped_column(String)
     derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
@@ -438,10 +461,17 @@ class ColumnConcept(Base):
 
 
 class TableEntity(Base):
-    """Entity detection at table level.
+    """Table classification — structural stub, then the business reading (DAT-823).
 
-    Identifies the type of entity represented by the table
-    and classifies it as fact/dimension table with grain analysis.
+    Written in two steps within one begin_session run: ``semantic_per_table``
+    INSERTs the STRUCTURAL stub (table_role, grain, time/identity columns) with
+    ``detected_entity_type``/``description`` NULL; ``catalogue_semantics``
+    UPDATEs the same ``(table_id, run_id)`` row with the business reading once
+    the composed catalogue (confirmed relationships, enriched views, slice
+    axes) exists to argue it from. The NULL window is within-run only — nothing
+    between the two phases reads either column (verified at the rebalance); a
+    NULL that survives the run is declared ignorance (the catalogue turn could
+    not name the entity), not an error.
     """
 
     __tablename__ = "table_entities"
@@ -473,9 +503,10 @@ class TableEntity(Base):
     # Snapshot version axis (DAT-413): the run that wrote this row.
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
-    detected_entity_type: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # 'customer', 'order', 'product', etc.
+    # 'customer', 'order', 'product', etc. Nullable (DAT-823): the structural
+    # stub has no business reading yet — the documented unclassified-stub
+    # nullability pattern (table_role / grain_columns below).
+    detected_entity_type: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
 
     # Grain analysis. A bare JSON list of column NAMES that uniquely identify

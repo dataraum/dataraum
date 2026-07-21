@@ -113,6 +113,9 @@ _DETECTOR_PHASES = (
 SESSION_DETECTOR_PHASES = (
     "relationships",
     "semantic_per_table",
+    # unit_source (DAT-647/823): reads ColumnConcept.unit_source_column, which
+    # catalogue_semantics authors under the begin_session run.
+    "catalogue_semantics",
     "aggregation_lineage",
     "enriched_views",
     "correlations",

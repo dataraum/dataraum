@@ -1,14 +1,17 @@
 # Per-table Semantic Synthesis Prompt (DAT-362 Option B, tier 2 of the split)
 #
-# Classifies tables (entity type, fact/dimension, grain) and confirms cross-table
-# relationships, reasoning OVER the already-decided per-column annotations. It
-# does NOT annotate columns — those are owned by the per-column phase and are
-# provided here as read-only context. Structured output via the
-# TableSynthesisOutput Pydantic schema.
+# Classifies tables STRUCTURALLY (fact/dimension role, grain, time and identity
+# columns) and confirms cross-table relationships, reasoning OVER the
+# already-decided per-column annotations. It does NOT annotate columns and does
+# NOT author business semantics — the per-column annotations are owned by the
+# per-column phase (read-only context here), and the business readings
+# (entity types, descriptions, column meanings) are authored downstream by the
+# catalogue_semantics phase once the structure this prompt settles is composed
+# (DAT-823). Structured output via the TableSynthesisOutput Pydantic schema.
 
 name: semantic_per_table
-version: "2.5.0"
-description: Per-table entity classification + relationship confirmation
+version: "3.0.0"
+description: Per-table structural classification + relationship confirmation
 
 temperature: 0.0
 
@@ -17,7 +20,6 @@ system_prompt: |
   relationships between them, to enable AI-driven data analytics.
 
   <role>
-  - Classify each table as the business entity it represents
   - Decide whether each table is a fact table (events/transactions/measurements)
     or a dimension table (reference/lookup data)
   - Identify the grain (the column set that uniquely identifies a row)
@@ -33,57 +35,29 @@ system_prompt: |
     ONE event column is_anchor=true (its primary trend axis) and every other
     time_column false; an attribute date can never be the anchor.
   - Identify recurring identity columns — high-cardinality columns that recur
-    across rows and identify a real entity (customer, account, vehicle), i.e.
-    would-be foreign keys. These are distinct from grain: an identity may be a
-    non-grain column, and the grain may be a surrogate row key that identifies
-    nothing. Emit each with a one-sentence note.
+    across rows and identify a real entity, i.e. would-be foreign keys. These
+    are distinct from grain: an identity may be a non-grain column, and the
+    grain may be a surrogate row key that identifies nothing. Emit each with a
+    one-sentence note. The note is a STRUCTURAL observation only — how the
+    column recurs, its cardinality, whether it looks like a cross-table
+    reference candidate. Do NOT name the business entity it identifies (not
+    "the customer being invoiced", not "the vendor account"): the business
+    reading is authored downstream at the catalogue horizon, and an entity
+    claim smuggled into a structural note would pre-empt it.
   - Confirm which relationships between tables are real
-  - Author the CATALOGUE-GRAIN per-column semantics (column_concepts): every
-    column's business MEANING in the composed catalogue, each measure's unit
-    source, and any cross-table derived-formula hypothesis. These need the whole composed
-    catalogue (the ontology, the confirmed relationships, the joined tables), so
-    only you can decide them — the per-column phase could not.
   </role>
 
-  <grain_split>
+  <scope>
   Per-column OBJECT-grain annotations (structural role, entity label, business
   term, the stock/flow CLAIM, confidence) were decided by an earlier per-column
-  phase from each table alone, and may have been corrected by a human via teach.
-  They are READ-ONLY context — do NOT re-emit them. But the CATALOGUE-grain
-  semantics below are YOURS to author, because they are properties of the composed
-  catalogue, not of any single table:
-  </grain_split>
-
-  <column_concepts>
-  Emit a column_concepts entry for EVERY column. Every column has a meaning — for
-  a noise-like or unidentifiable column the honest meaning is saying exactly that.
-  Returning an empty column_concepts for a non-empty schema is an error.
-
-  - meaning: the column's business-model characterization in the context of its
-    table and the composed catalogue — one to three sentences: what one row's
-    value represents (its grain), and the role it plays in the business process
-    or statement. Write MEANING, not classification: where a column genuinely
-    participates in more than one business notion, say so in plain words ("the
-    per-entity, per-period total of incoming movements — the inflow column of a
-    periodic statement") instead of forcing a single label. This prose is
-    transported as context to downstream analysts; honesty beats neatness, and
-    a hedged truthful characterization beats a confident wrong one.
-  - unit_source_column: the column defining a measure's unit. Set it for EVERY
-    measure (leave null only when genuinely undeterminable) — a measure with no
-    unit source is flagged as unsafe to aggregate. Resolve in this order:
-    (1) if the measure carries its OWN unit in its values (shown as
-    `value_unit=<unit>` in the annotations below), set it to the measure's own
-    column name — the unit is self-contained;
-    (2) else a sibling dimension column supplies it — a same-table name (e.g. a
-    `currency` column), or 'table.column' reachable via a CONFIRMED relationship.
-    An ontology concept marked "Unit from concept: <name>" (e.g. currency) tells
-    you which sibling to bind;
-    (3) 'dimensionless' if the measure is a pure ratio/count/rate with no unit.
-  - derived_formula_hypothesis: if a column reads as computed, the arithmetic it
-    should obey (two column names joined by + - * /). Operands MAY live in a JOINED
-    table reachable via a confirmed relationship (use 'table.column') — the
-    derived-value check runs over the enriched fact×dimension view.
-  </column_concepts>
+  phase from each table alone, and may have been corrected by a human via
+  teach. They are READ-ONLY context — do NOT re-emit them. Business semantics
+  (each table's entity type and description, each column's business meaning,
+  unit sources, derived-formula hypotheses) are NOT yours either: they are
+  authored downstream by the catalogue phase, after the structure you settle
+  here is composed. Your output is structural — roles, grains, time and
+  identity columns, and the relationship verdicts below.
+  </scope>
 
   <relationship_evaluation>
   Evaluate the pre-computed relationship candidates and determine:
@@ -237,10 +211,9 @@ system_prompt: |
 
 user_prompt: |
   <task>
-  Classify each table below, confirm the relationships between them, and author
-  the catalogue-grain column_concepts (meaning, unit source, derived formula)
-  for EVERY column. The OBJECT-grain per-column annotations are
-  shown for context only — do not re-emit them.
+  Classify each table below structurally (fact/dimension role, grain, time and
+  identity columns) and confirm the relationships between them. The OBJECT-grain
+  per-column annotations are shown for context only — do not re-emit them.
   </task>
 
   <schema>

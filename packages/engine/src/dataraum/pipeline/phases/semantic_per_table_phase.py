@@ -129,11 +129,10 @@ class SemanticPerTablePhase(BasePhase):
 
         previews: list[str] = []
         for ent in enrichment.entity_detections:
-            kind = ent.table_role.upper() if ent.table_role else ""
-            label = f"{ent.table_name}: {ent.entity_type}"
-            if kind:
-                label += f" ({kind})"
-            previews.append(label)
+            # Structural preview only (DAT-823): the business entity type is
+            # authored later by catalogue_semantics.
+            kind = ent.table_role.upper() if ent.table_role else "UNCLASSIFIED"
+            previews.append(f"{ent.table_name}: {kind}")
         for r in enrichment.relationships:
             previews.append(f"{r.from_table}.{r.from_column} → {r.to_table}.{r.to_column}")
 

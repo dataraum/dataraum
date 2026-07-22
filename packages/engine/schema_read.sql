@@ -399,6 +399,10 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
+DROP VIEW IF EXISTS __READ__.workspace_calendar;
+CREATE VIEW __READ__.workspace_calendar AS
+SELECT * FROM __WS__.workspace_calendar;
+
 DROP VIEW IF EXISTS __READ__.workspace_settings;
 CREATE VIEW __READ__.workspace_settings AS
 SELECT * FROM __WS__.workspace_settings;

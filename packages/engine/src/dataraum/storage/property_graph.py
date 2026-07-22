@@ -24,7 +24,9 @@ reification).** Vertices/edges:
                                             anchor_time_axis (witness axis ▸ declared anchor)
     table_node     (KEY table_id)    props: layer (typed | enriched), table_role
                                             (fact/periodic_snapshot/dimension)
-    concept_node   (KEY concept_id)  the typed vocabulary (DAT-728)
+    concept_node   (KEY concept_id)  the typed vocabulary (DAT-728); ``ordering``
+                                            (ordered | nominal | NULL) types a
+                                            dimension concept's axis (DAT-730)
     grounding_node (KEY snippet_id)  the reified grounding commitment (DAT-727):
                                             concept / relation / select_expr /
                                             where_predicates un-nested from the
@@ -32,6 +34,9 @@ reification).** Vertices/edges:
                                             (DAT-671) via current_groundings;
                                             ``failed`` discriminates a retained
                                             DAT-543 failure from knowledge
+    period_grain   (KEY grain)       the constant period ladder node (day/month/
+                                            quarter/year) carrying the workspace's
+                                            declared fiscal boundary (DAT-730)
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
@@ -39,6 +44,9 @@ reification).** Vertices/edges:
     conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (DAT-756)
     grounded_by        concept → grounding [current_groundings] a concept's groundings; >1 healthy = multi-grounding
     uses               grounding → column  [provenance contract v2] the columns a grounding touches
+    temporal_coverage  table → column    [temporal_column_profiles ▸ time_columns] observed window/grain/completeness per (relation × time col) (DAT-730)
+    rolls_up_to        column → column   [dimension_hierarchies] ordered drill level→level, finer→coarser (DAT-730)
+    period_rolls_up_to grain → grain     [constant + workspace_calendar] the calendar ladder day→month→quarter→year (DAT-730)
 
 One vertex label spans both layers (DAT-774): typed source tables AND enriched-view
 tables are ``table_node``, discriminated by the ``layer`` property (the DD types "Table
@@ -46,8 +54,17 @@ tables are ``table_node``, discriminated by the ``layer`` property (the DD types
 every ``derived_from`` edge — whose source is always an enriched-view table — dangled at
 its source endpoint and none ever instantiated in a MATCH. See ``og_tables`` below.
 
-``rolls_up_to`` (dimension_hierarchies' JSON members) is not bound here — it
-lands with the consumer that reads it. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
+``rolls_up_to`` (DAT-730) unnests ``dimension_hierarchies.members`` into ordered
+level→level column edges (``HierarchyMember.level`` is the SOLE direction carrier —
+level 0 coarsest, DAT-779 — never array position); the parallel ``period_rolls_up_to``
+constant ladder (day→month→quarter→year, fiscal boundaries from the declared
+``workspace_calendar``) is walkable by the SAME bounded recursive CTE the ``part_of``
+closure uses, so last-complete-quarter is derivable from last-complete-month.
+``temporal_coverage`` (DAT-730) exposes the persisted ``temporal_column_profiles``
+coverage per DECLARED time column (``table_entities.time_columns`` is the role home —
+event/attribute + single anchor); observed grain is ``detected_granularity`` (NEVER the
+``period_grain`` config echo), and an unmeasurable window stays NULL, never fabricated.
+The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
 ``part_of`` / ``disjoint_with`` / ``reconciles_with`` as a ``predicate`` property;
 its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 The ``uses`` edge un-nests the TYPED ``column_mappings_basis`` (provenance contract
@@ -104,6 +121,7 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_columns",
     "og_concepts",
     "og_grounding",
+    "og_period_grain",
     "og_references",
     "og_has_dimension",
     "og_derived_from",
@@ -111,6 +129,9 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_conformed_dimension",
     "og_grounded_by",
     "og_uses",
+    "og_temporal_coverage",
+    "og_rolls_up_to",
+    "og_period_rolls_up_to",
 )
 
 
@@ -253,7 +274,7 @@ def _element_view_sql(name: str) -> str:
         # `concept_edge` edge below (DAT-729) and `grounded_by` (DAT-727).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_concepts AS\n"
-            f"SELECT concept_id::text AS concept_id, vertical, name, kind\n"
+            f"SELECT concept_id::text AS concept_id, vertical, name, kind, ordering\n"
             f"FROM {READ_TOKEN}.concepts\n"
             f"WHERE superseded_at IS NULL;"
         )
@@ -515,6 +536,138 @@ def _element_view_sql(name: str) -> str:
             f"ORDER BY g.snippet_id, col.column_id,\n"
             f"         CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;"
         )
+    if name == "og_period_grain":
+        # period_grain vertex (DAT-730): the CONSTANT period-roll-up ladder nodes
+        # day/month/quarter/year, carrying the workspace's DECLARED fiscal-year start
+        # month so a consumer can place fiscal-quarter/year boundaries. The nodes are
+        # workspace-invariant; only ``fiscal_year_start_month`` varies, read from the
+        # singleton ``workspace_calendar`` (the ``pin`` CHECK keeps it one row, so the
+        # LEFT JOIN ON TRUE stays 1:1). Unset workspace ⇒ NO row ⇒ COALESCE to 1
+        # (January = calendar year) AND ``calendar_source='default'`` — the STAMPED,
+        # visible default (never a silent fallback), the structural analogue of
+        # ``period_resolver``'s flagged fallback. ``ordinal`` orders the ladder
+        # (day=0 finest .. year=3 coarsest) for a consumer that reads the nodes flat.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_period_grain AS\n"
+            f"SELECT g.grain::text AS grain, g.ordinal,\n"
+            f"       COALESCE(wc.fiscal_year_start_month, 1) AS fiscal_year_start_month,\n"
+            f"       CASE WHEN wc.fiscal_year_start_month IS NULL THEN 'default'\n"
+            f"            ELSE 'declared' END AS calendar_source\n"
+            f"FROM (VALUES ('day', 0), ('month', 1), ('quarter', 2), ('year', 3))\n"
+            f"       AS g(grain, ordinal)\n"
+            f"LEFT JOIN {READ_TOKEN}.workspace_calendar wc ON TRUE;"
+        )
+    if name == "og_temporal_coverage":
+        # temporal_coverage edge (table → column, DAT-730): one edge per (typed
+        # relation × DECLARED time column) exposing the PERSISTED
+        # ``temporal_column_profiles`` coverage as PGQ-queryable structure — parallel
+        # to og_has_dimension (table → column). The ROLE home is
+        # ``table_entities.time_columns`` (the event/attribute + single-anchor JSON,
+        # enforced at the LLM seam): unnested to name each declared time column with
+        # its ``role`` / ``aspect`` / ``declared_anchor``. The name resolves to its
+        # ``column_id`` in current_columns (INNER — a graph edge needs a real column
+        # vertex; an unresolvable name is honest under-coverage, no dangling edge, the
+        # og_concept_edges discipline). The observed facts LEFT-join
+        # current_temporal_column_profiles: a declared time column that was never
+        # temporally profiled (or an irregular/unknown grain) keeps its edge with NULL
+        # observed_* — absence falls loud, NEVER a fabricated window (DAT-853
+        # abstention discipline; completeness_ratio/last_period_complete already NULL
+        # at the source). The OBSERVED grain is ``detected_granularity`` — NEVER the
+        # ``measure_aggregation_lineage.period_grain`` config echo.
+        #
+        # ``declared_anchor`` is the time_columns ROLE flag — whether the LLM DECLARED
+        # this column the table's anchor — NOT the operating-model anchor. The ONE home
+        # of a measure's resolved anchor axis is ``og_columns.anchor_time_axis`` (witness
+        # ▸ declared precedence, DAT-780); a witness can override the declaration there,
+        # so declared_anchor here and anchor_time_axis there legitimately DIVERGE. Named
+        # ``declared_anchor`` (not ``is_anchor``) so the two are impossible to conflate.
+        #
+        # DISTINCT ON (table, column) guarantees the unique PGQ KEY even if a column were
+        # ever listed twice in the JSON; the tiebreak is TOTAL (declared_anchor DESC then
+        # role/aspect/name) so the retained row is deterministic — the anchor row wins.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_temporal_coverage AS\n"
+            f"SELECT DISTINCT ON (te.table_id, col.column_id)\n"
+            f"       (te.table_id || '_' || col.column_id)::text AS coverage_key,\n"
+            f"       te.table_id::text AS table_id, col.column_id::text AS column_id,\n"
+            f"       col.column_name, tc.role, tc.aspect, tc.declared_anchor,\n"
+            f"       tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,\n"
+            f"       tp.span_days, tp.detected_granularity AS observed_grain,\n"
+            f"       tp.completeness_ratio, tp.expected_periods, tp.actual_periods,\n"
+            f"       tp.gap_count, tp.is_stale, tp.last_period_complete\n"
+            f"FROM {READ_TOKEN}.current_table_entities te\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT elem->>'column' AS column_name, elem->>'role' AS role,\n"
+            f"           elem->>'aspect' AS aspect,\n"
+            f"           (elem->>'is_anchor')::boolean AS declared_anchor\n"
+            f"    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem\n"
+            f"  ) tc\n"
+            f"JOIN {READ_TOKEN}.current_columns col\n"
+            f"  ON col.table_id = te.table_id AND col.column_name = tc.column_name\n"
+            f"LEFT JOIN {READ_TOKEN}.current_temporal_column_profiles tp\n"
+            f"  ON tp.column_id = col.column_id\n"
+            f"ORDER BY te.table_id, col.column_id, tc.declared_anchor DESC NULLS LAST,\n"
+            f"         tc.role, tc.aspect, tc.column_name;"
+        )
+    if name == "og_rolls_up_to":
+        # rolls_up_to edge (column → column, DAT-730): the dimension drill-down
+        # hierarchy unnested into ordered level→level edges. ``HierarchyMember.level``
+        # is the SOLE direction carrier (level 0 coarsest, increasing = finer, DAT-779
+        # — array position is incidental and MUST NOT be read). "Rolls up to" is
+        # finer→coarser, so an edge goes from the level-N member (source) to the
+        # level-(N-1) member (destination): consecutive levels only (one drill step).
+        # kind='drilldown' ONLY — alias/role structures are peer sets with no
+        # coarse/fine axis (their ``level`` is a bare ordinal). members[].column_id is
+        # the catalog SliceDefinition's underlying column (og_columns vertex identity);
+        # a member with no catalog column ('' per HierarchyMember) is skipped — no
+        # dangling endpoint.
+        #
+        # edge_key = hierarchy_id + the two LEVELS ('_'-joined, NOT ':' a bind-param
+        # sigil). Keyed on LEVELS, not column ids: ``processor._validated_members``
+        # (DAT-779) asserts each drilldown's levels are a contiguous, UNIQUE ``0..n-1``
+        # at every write, so the (from_level, to_level) consecutive pair is unique within
+        # a hierarchy → the PGQ KEY is unique BY CONSTRUCTION. Column-uniqueness across
+        # levels is NOT enforced there, so a column id repeated at two consecutive levels
+        # would collide a column-keyed edge — keying on the validated levels sidesteps it
+        # without relying on an unenforced convention (the og_derived_from KEY-on-the-view
+        # discipline). Reads current_dimension_hierarchies (the promoted catalog head,
+        # DAT-537).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_rolls_up_to AS\n"
+            f"SELECT (h.hierarchy_id || '_' || fine.lvl || '_' || coarse.lvl)::text\n"
+            f"         AS edge_key,\n"
+            f"       fine.col_id::text AS from_column_id,\n"
+            f"       coarse.col_id::text AS to_column_id,\n"
+            f"       h.hierarchy_id::text AS hierarchy_id,\n"
+            f"       fine.lvl AS from_level, coarse.lvl AS to_level\n"
+            f"FROM {READ_TOKEN}.current_dimension_hierarchies h\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl\n"
+            f"    FROM json_array_elements(h.members) AS m\n"
+            f"  ) fine\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl\n"
+            f"    FROM json_array_elements(h.members) AS m\n"
+            f"  ) coarse\n"
+            f"WHERE h.kind = 'drilldown'\n"
+            f"  AND coarse.lvl = fine.lvl - 1\n"
+            f"  AND fine.col_id <> '' AND coarse.col_id <> '';"
+        )
+    if name == "og_period_rolls_up_to":
+        # period_rolls_up_to edge (period_grain → period_grain, DAT-730): the CONSTANT
+        # calendar ladder day→month→quarter→year. Workspace-invariant structure (the
+        # fiscal boundary rides the period_grain VERTEX, read from workspace_calendar);
+        # here the three roll-up steps are literal. Walkable by the SAME bounded
+        # recursive CTE the part_of closure uses, so last-complete-quarter follows from
+        # last-complete-month. ``::text`` keys for the PGQ varchar-equality rule; '_'
+        # delimiter (not ':' — a bind-param sigil to text()).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_period_rolls_up_to AS\n"
+            f"SELECT (l.from_grain || '_' || l.to_grain)::text AS edge_key,\n"
+            f"       l.from_grain::text AS from_grain, l.to_grain::text AS to_grain\n"
+            f"FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))\n"
+            f"       AS l(from_grain, to_grain);"
+        )
     raise AssertionError(f"unreachable: {name} not an element view")
 
 
@@ -537,10 +690,12 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,\n"
         f"                  anchor_time_axis),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
-        f"      PROPERTIES (concept_id, vertical, name, kind),\n"
+        f"      PROPERTIES (concept_id, vertical, name, kind, ordering),\n"
         f"    {READ_TOKEN}.og_grounding KEY (snippet_id) LABEL grounding_node\n"
         f"      PROPERTIES (snippet_id, concept, statement, aggregation,\n"
-        f"                  relation, select_expr, where_predicates, description, failed)\n"
+        f"                  relation, select_expr, where_predicates, description, failed),\n"
+        f"    {READ_TOKEN}.og_period_grain KEY (grain) LABEL period_grain\n"
+        f"      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"
@@ -579,7 +734,25 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"
         f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
         f"      LABEL uses\n"
-        f"      PROPERTIES (role)\n"
+        f"      PROPERTIES (role),\n"
+        f"    {READ_TOKEN}.og_temporal_coverage KEY (coverage_key)\n"
+        f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
+        f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
+        f"      LABEL temporal_coverage\n"
+        f"      PROPERTIES (column_name, role, aspect, declared_anchor, observed_min,\n"
+        f"                  observed_max, span_days, observed_grain, completeness_ratio,\n"
+        f"                  expected_periods, actual_periods, gap_count, is_stale,\n"
+        f"                  last_period_complete),\n"
+        f"    {READ_TOKEN}.og_rolls_up_to KEY (edge_key)\n"
+        f"      SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)\n"
+        f"      DESTINATION KEY (to_column_id) REFERENCES og_columns (column_id)\n"
+        f"      LABEL rolls_up_to\n"
+        f"      PROPERTIES (hierarchy_id, from_level, to_level),\n"
+        f"    {READ_TOKEN}.og_period_rolls_up_to KEY (edge_key)\n"
+        f"      SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)\n"
+        f"      DESTINATION KEY (to_grain) REFERENCES og_period_grain (grain)\n"
+        f"      LABEL period_rolls_up_to\n"
+        f"      PROPERTIES (from_grain, to_grain)\n"
         f"  );"
     )
 

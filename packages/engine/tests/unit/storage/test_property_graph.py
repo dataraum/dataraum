@@ -41,10 +41,11 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Seven edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
-    # conformed_dimension (DAT-756), grounded_by + uses (DAT-727).
-    assert graph_sql.count("SOURCE KEY") == 7
-    assert graph_sql.count("DESTINATION KEY") == 7
+    # Ten edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
+    # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), and the three
+    # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to.
+    assert graph_sql.count("SOURCE KEY") == 10
+    assert graph_sql.count("DESTINATION KEY") == 10
     # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -70,6 +71,22 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "DESTINATION KEY (column_id) REFERENCES og_columns (column_id)" in graph_sql
     assert "LABEL uses" in graph_sql
     assert "PROPERTIES (role)" in graph_sql
+    # DAT-730 — the concept vertex carries the dimension-ordering fact.
+    assert "PROPERTIES (concept_id, vertical, name, kind, ordering)" in graph_sql
+    # DAT-730 — the constant period-grain ladder vertex.
+    assert "KEY (grain) LABEL period_grain" in graph_sql
+    assert "PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source)" in graph_sql
+    # DAT-730 — temporal_coverage binds table → column with the observed coverage facts.
+    assert "SOURCE KEY (table_id) REFERENCES og_tables (table_id)" in graph_sql
+    assert "LABEL temporal_coverage" in graph_sql
+    assert "observed_grain, completeness_ratio" in graph_sql
+    assert "last_period_complete" in graph_sql
+    # DAT-730 — rolls_up_to binds column → column (dimension drill levels).
+    assert "SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "LABEL rolls_up_to" in graph_sql
+    # DAT-730 — the calendar ladder binds grain → grain.
+    assert "SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)" in graph_sql
+    assert "LABEL period_rolls_up_to" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

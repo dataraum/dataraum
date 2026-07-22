@@ -263,6 +263,7 @@ def _profile_row(
         "actual_periods": comp.actual_periods if comp else None,
         "gap_count": comp.gap_count if comp else None,
         "largest_gap_days": comp.largest_gap_days if comp else None,
+        "last_period_complete": comp.last_period_complete if comp else None,
         "gaps": [g.model_dump(mode="json") for g in gaps],
     }
 

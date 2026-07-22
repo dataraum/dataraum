@@ -20,7 +20,12 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.semantic.db_models import Concept, ConceptKind, WorkspaceSettings
+from dataraum.analysis.semantic.db_models import (
+    Concept,
+    ConceptKind,
+    DimensionOrdering,
+    WorkspaceSettings,
+)
 from dataraum.analysis.semantic.ontology import (
     OntologyConcept,
     OntologyDefinition,
@@ -33,6 +38,7 @@ from dataraum.storage.upsert import insert_if_absent
 logger = get_logger(__name__)
 
 _VALID_KINDS: frozenset[str] = frozenset(k.value for k in ConceptKind)
+_VALID_ORDERINGS: frozenset[str] = frozenset(o.value for o in DimensionOrdering)
 
 
 def _active_vertical(session: Session) -> str | None:
@@ -129,6 +135,14 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 f"concept '{c.name}' in vertical '{vertical}' declares no valid kind "
                 f"(got {c.kind!r}); one of {sorted(_VALID_KINDS)} is required to seed."
             )
+        # ordering (DAT-730): OPTIONAL, and if present must be a valid DimensionOrdering
+        # value — born-loud (the config is wrong, not the data), the same discipline as
+        # ``kind``. None ⇒ NULL ⇒ nominal (windows withheld); never inferred here.
+        if c.ordering is not None and c.ordering not in _VALID_ORDERINGS:
+            raise ValueError(
+                f"concept '{c.name}' in vertical '{vertical}' declares an invalid ordering "
+                f"(got {c.ordering!r}); one of {sorted(_VALID_ORDERINGS)} or omit it."
+            )
         rows.append(
             {
                 "vertical": vertical,
@@ -138,6 +152,7 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 "indicators": c.indicators or None,
                 "exclude_patterns": c.exclude_patterns or None,
                 "unit_from_concept": c.unit_from_concept,
+                "ordering": c.ordering,
                 "source": "seed",
             }
         )
@@ -191,6 +206,7 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
             indicators=list(r.indicators or []),
             exclude_patterns=list(r.exclude_patterns or []),
             unit_from_concept=r.unit_from_concept,
+            ordering=r.ordering,
         )
         for r in rows
     ]

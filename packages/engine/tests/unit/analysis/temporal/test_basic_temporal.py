@@ -316,6 +316,64 @@ def test_single_distinct_timestamp_is_not_stale() -> None:
     assert v["is_stale"] is False
 
 
+# Last day of each 2023 month — for month-END-stamped period-aggregated series.
+_MONTH_END_2023 = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+
+def test_last_period_complete_true_for_consistently_stamped_months() -> None:
+    """A period-aggregated monthly series reads its final period COMPLETE (DAT-730).
+
+    Twelve month-END stamps: every bucket fills the same fraction of its period
+    (~0.96, month-length aside), so the final bucket is as full as a typical prior
+    one — complete. Robust to month length: Feb (28d) and Jan (31d) both round to a
+    full period, so the number never depends on which month the series ends in.
+    """
+    conn = duckdb.connect()
+    _table(conn, [datetime(2023, m, _MONTH_END_2023[m - 1]) for m in range(1, 13)])
+
+    v = analyze_basic_temporal(conn, "t", "ts", config=_CONFIG).unwrap()
+
+    assert v["granularity"] == "month"
+    assert v["completeness"].last_period_complete is True
+
+
+def test_last_period_incomplete_for_partial_trailing_month() -> None:
+    """The AR-NULL-at-MAX-period bug class: a partial FINAL month flags incomplete.
+
+    Eleven months stamped at month-END (each fills its period), the twelfth at
+    month-START — a partial/early close. The whole-column ``completeness_ratio`` stays
+    ~1.0 (every month bucket is present) and the data is RECENT-shaped so staleness
+    would not fire either; only ``last_period_complete`` isolates the truncated tail.
+    """
+    conn = duckdb.connect()
+    dates = [datetime(2023, m, _MONTH_END_2023[m - 1]) for m in range(1, 12)]
+    dates.append(datetime(2023, 12, 1))  # December: an early, partial close
+    _table(conn, dates)
+
+    v = analyze_basic_temporal(conn, "t", "ts", config=_CONFIG).unwrap()
+    c = v["completeness"]
+
+    assert v["granularity"] == "month"
+    assert c.last_period_complete is False
+    # The signal the whole-column ratio misses: every month bucket IS present.
+    assert c.completeness_ratio == 1.0
+
+
+def test_last_period_complete_is_none_without_a_grain() -> None:
+    """No bucket (irregular) or no prior period ⇒ NULL, never a fabricated True."""
+    conn = duckdb.connect()
+    base = datetime(2024, 1, 1)
+    _table(conn, [base + timedelta(days=5 * i) for i in range(10)])  # ~5-day → irregular
+    v = analyze_basic_temporal(conn, "t", "ts", config=_CONFIG).unwrap()
+    assert v["granularity"] == "irregular"
+    assert v["completeness"].last_period_complete is None
+
+    conn2 = duckdb.connect()
+    _table(conn2, [datetime(2024, 6, 30) for _ in range(50)])  # one bucket → unknown
+    v2 = analyze_basic_temporal(conn2, "t", "ts", config=_CONFIG).unwrap()
+    assert v2["completeness"].last_period_complete is None
+
+
 def test_date_trunc_grains_match_the_real_config_definitions() -> None:
     """DAT-810 contract: ``DATE_TRUNC_GRAINS`` is a hand-typed frozenset, but its whole
     premise is that it equals ``granularity.definitions`` in the REAL

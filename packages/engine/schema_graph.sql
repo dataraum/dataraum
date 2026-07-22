@@ -10,6 +10,7 @@ DROP VIEW IF EXISTS __READ__.og_tables;
 DROP VIEW IF EXISTS __READ__.og_columns;
 DROP VIEW IF EXISTS __READ__.og_concepts;
 DROP VIEW IF EXISTS __READ__.og_grounding;
+DROP VIEW IF EXISTS __READ__.og_period_grain;
 DROP VIEW IF EXISTS __READ__.og_references;
 DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
@@ -17,6 +18,9 @@ DROP VIEW IF EXISTS __READ__.og_concept_edges;
 DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
 DROP VIEW IF EXISTS __READ__.og_grounded_by;
 DROP VIEW IF EXISTS __READ__.og_uses;
+DROP VIEW IF EXISTS __READ__.og_temporal_coverage;
+DROP VIEW IF EXISTS __READ__.og_rolls_up_to;
+DROP VIEW IF EXISTS __READ__.og_period_rolls_up_to;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -74,7 +78,7 @@ LEFT JOIN LATERAL (
   ) declared_anchor ON TRUE;
 
 CREATE VIEW __READ__.og_concepts AS
-SELECT concept_id::text AS concept_id, vertical, name, kind
+SELECT concept_id::text AS concept_id, vertical, name, kind, ordering
 FROM __READ__.concepts
 WHERE superseded_at IS NULL;
 
@@ -83,6 +87,15 @@ SELECT g.snippet_id::text AS snippet_id,
        g.concept, g.statement, g.aggregation, g.description,
        g.relation, g.select_expr, g.where_predicates, g.failed
 FROM __READ__.current_groundings g;
+
+CREATE VIEW __READ__.og_period_grain AS
+SELECT g.grain::text AS grain, g.ordinal,
+       COALESCE(wc.fiscal_year_start_month, 1) AS fiscal_year_start_month,
+       CASE WHEN wc.fiscal_year_start_month IS NULL THEN 'default'
+            ELSE 'declared' END AS calendar_source
+FROM (VALUES ('day', 0), ('month', 1), ('quarter', 2), ('year', 3))
+       AS g(grain, ordinal)
+LEFT JOIN __READ__.workspace_calendar wc ON TRUE;
 
 CREATE VIEW __READ__.og_references AS
 SELECT relationship_id::text AS relationship_id,
@@ -189,6 +202,55 @@ WHERE NOT g.failed
 ORDER BY g.snippet_id, col.column_id,
          CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;
 
+CREATE VIEW __READ__.og_temporal_coverage AS
+SELECT DISTINCT ON (te.table_id, col.column_id)
+       (te.table_id || '_' || col.column_id)::text AS coverage_key,
+       te.table_id::text AS table_id, col.column_id::text AS column_id,
+       col.column_name, tc.role, tc.aspect, tc.declared_anchor,
+       tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,
+       tp.span_days, tp.detected_granularity AS observed_grain,
+       tp.completeness_ratio, tp.expected_periods, tp.actual_periods,
+       tp.gap_count, tp.is_stale, tp.last_period_complete
+FROM __READ__.current_table_entities te
+CROSS JOIN LATERAL (
+    SELECT elem->>'column' AS column_name, elem->>'role' AS role,
+           elem->>'aspect' AS aspect,
+           (elem->>'is_anchor')::boolean AS declared_anchor
+    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem
+  ) tc
+JOIN __READ__.current_columns col
+  ON col.table_id = te.table_id AND col.column_name = tc.column_name
+LEFT JOIN __READ__.current_temporal_column_profiles tp
+  ON tp.column_id = col.column_id
+ORDER BY te.table_id, col.column_id, tc.declared_anchor DESC NULLS LAST,
+         tc.role, tc.aspect, tc.column_name;
+
+CREATE VIEW __READ__.og_rolls_up_to AS
+SELECT (h.hierarchy_id || '_' || fine.lvl || '_' || coarse.lvl)::text
+         AS edge_key,
+       fine.col_id::text AS from_column_id,
+       coarse.col_id::text AS to_column_id,
+       h.hierarchy_id::text AS hierarchy_id,
+       fine.lvl AS from_level, coarse.lvl AS to_level
+FROM __READ__.current_dimension_hierarchies h
+CROSS JOIN LATERAL (
+    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl
+    FROM json_array_elements(h.members) AS m
+  ) fine
+CROSS JOIN LATERAL (
+    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl
+    FROM json_array_elements(h.members) AS m
+  ) coarse
+WHERE h.kind = 'drilldown'
+  AND coarse.lvl = fine.lvl - 1
+  AND fine.col_id <> '' AND coarse.col_id <> '';
+
+CREATE VIEW __READ__.og_period_rolls_up_to AS
+SELECT (l.from_grain || '_' || l.to_grain)::text AS edge_key,
+       l.from_grain::text AS from_grain, l.to_grain::text AS to_grain
+FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))
+       AS l(from_grain, to_grain);
+
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
@@ -197,10 +259,12 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
                   anchor_time_axis),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
-      PROPERTIES (concept_id, vertical, name, kind),
+      PROPERTIES (concept_id, vertical, name, kind, ordering),
     __READ__.og_grounding KEY (snippet_id) LABEL grounding_node
       PROPERTIES (snippet_id, concept, statement, aggregation,
-                  relation, select_expr, where_predicates, description, failed)
+                  relation, select_expr, where_predicates, description, failed),
+    __READ__.og_period_grain KEY (grain) LABEL period_grain
+      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -239,5 +303,23 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)
       DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
       LABEL uses
-      PROPERTIES (role)
+      PROPERTIES (role),
+    __READ__.og_temporal_coverage KEY (coverage_key)
+      SOURCE KEY (table_id) REFERENCES og_tables (table_id)
+      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
+      LABEL temporal_coverage
+      PROPERTIES (column_name, role, aspect, declared_anchor, observed_min,
+                  observed_max, span_days, observed_grain, completeness_ratio,
+                  expected_periods, actual_periods, gap_count, is_stale,
+                  last_period_complete),
+    __READ__.og_rolls_up_to KEY (edge_key)
+      SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)
+      DESTINATION KEY (to_column_id) REFERENCES og_columns (column_id)
+      LABEL rolls_up_to
+      PROPERTIES (hierarchy_id, from_level, to_level),
+    __READ__.og_period_rolls_up_to KEY (edge_key)
+      SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)
+      DESTINATION KEY (to_grain) REFERENCES og_period_grain (grain)
+      LABEL period_rolls_up_to
+      PROPERTIES (from_grain, to_grain)
   );

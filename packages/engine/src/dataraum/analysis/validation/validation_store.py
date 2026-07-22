@@ -98,21 +98,34 @@ def ensure_validations_seeded(session: Session, vertical: str) -> int:
     ``tolerance``/``guidance`` fields), so the seed rows carry the typed check
     definition. A framed vertical (no on-disk YAML) seeds nothing. Returns the number
     of rows actually inserted (conflicts skipped).
+
+    **Per-doc fault isolation** (the ``ensure_metrics_seeded`` pattern): each doc is
+    parsed AND written on its own, inside its OWN ``begin_nested`` savepoint, so one
+    malformed doc rolls back only THAT row — never the whole batch, and never the
+    concept/convention/edge/metric seeds this phase already wrote to the same
+    uncommitted session. One bad validation must not non-retryably fail the add_source
+    grounding phase (a permanent failure Temporal would retry forever).
     """
     base = VerticalLoader(vertical).shipped_base(Family.VALIDATIONS)
-    rows = [
-        _row_values(vertical, ValidationSpec.model_validate(doc), source="seed")
-        for doc in (base.get("validations") or [])
-    ]
-    if not rows:
-        return 0
-    seeded = insert_if_absent(
-        session,
-        Validation,
-        rows,
-        index_elements=["vertical", "validation_id"],
-        index_where=text("superseded_at IS NULL"),
-    )
+    seeded = 0
+    for doc in base.get("validations") or []:
+        try:
+            spec = ValidationSpec.model_validate(doc)
+        except Exception as exc:  # noqa: BLE001 - one malformed doc must not sink the seed
+            logger.warning("validation_seed_parse_skip", error=str(exc))
+            continue
+        try:
+            with session.begin_nested():
+                seeded += insert_if_absent(
+                    session,
+                    Validation,
+                    [_row_values(vertical, spec, source="seed")],
+                    index_elements=["vertical", "validation_id"],
+                    index_where=text("superseded_at IS NULL"),
+                )
+        except Exception as exc:  # noqa: BLE001 - the savepoint rolled back only this row
+            logger.warning("validation_seed_write_skip", error=str(exc))
+            continue
     if seeded:
         logger.info("validations_seeded", vertical=vertical, count=seeded)
     return seeded

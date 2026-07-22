@@ -10,7 +10,9 @@ phase moved onto, off the raw YAML directory walk. The check LOGIC is typed:
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.validation.db_models import Validation
@@ -138,3 +140,41 @@ def test_empty_generated_set_supersedes_prior(session: Session) -> None:
     persist_generated_validations(session, VERTICAL, [_gen_spec("induced_a")])
     assert persist_generated_validations(session, VERTICAL, []) == 0
     assert "induced_a" not in _active(session)
+
+
+def _raw_row(**overrides) -> dict:
+    row = {
+        "vertical": VERTICAL,
+        "validation_id": "raw_check",
+        "name": "Raw",
+        "description": "d",
+        "category": "data_quality",
+        "severity": "warning",
+        "check_type": "constraint",
+        "source": "seed",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_source_check_rejects_unknown_vocab(session: Session) -> None:
+    """The DB enforces ck_validations_source — only live-writer sources are admitted."""
+    session.add(Validation(**_raw_row(source="teach")))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_severity_check_rejects_unknown_vocab(session: Session) -> None:
+    """The DB enforces ck_validations_severity (derived from ValidationSeverity)."""
+    session.add(Validation(**_raw_row(severity="fatal")))
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_active_partial_unique_blocks_two_active_rows(session: Session) -> None:
+    """uq_validation_active permits at most one ACTIVE row per (vertical, validation_id)."""
+    session.add(Validation(**_raw_row()))
+    session.flush()
+    session.add(Validation(**_raw_row()))  # second ACTIVE row, same (vertical, validation_id)
+    with pytest.raises(IntegrityError):
+        session.flush()

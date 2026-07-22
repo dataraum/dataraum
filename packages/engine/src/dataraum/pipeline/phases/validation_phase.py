@@ -18,9 +18,12 @@ lifecycle:
 
 A re-run supersedes: everything is re-declared and re-flowed under the fresh
 ``run_id`` (no skip-if-already-ran — the prior run's rows coexist untouched,
-and the promoted head names the current run). The engine induces no
-validations: with no vertical or no declared specs the phase succeeds loudly
-with an explicit ``no_declared_validations`` outcome.
+and the promoted head names the current run). The declared set is the typed
+``validations`` home (shipped seed ``⊕`` agentic-induction generated rows, DAT-735)
+``⊕`` the ``validation`` teach overlay: induction runs in the prior
+``validation_induction`` phase and lands ``source='generated'`` rows this phase then
+reads. With no vertical or an empty declared set the phase succeeds loudly with an
+explicit ``no_declared_validations`` outcome.
 """
 
 from __future__ import annotations
@@ -107,10 +110,11 @@ class ValidationPhase(BasePhase):
                 "session's typed table selection (ctx.table_ids)."
             )
 
-        # Declared set: shipped vertical YAML ⊕ validation overlay teach rows.
-        # No vertical / no specs is a LOUD explicit outcome, not a silent skip:
-        # the engine induces no validations (declares come from the vertical
-        # now; user declares arrive via frame-2 teach rows, DAT-441).
+        # Declared set: the typed `validations` home (shipped seed ⊕ agentic-induction
+        # generated rows, DAT-735) ⊕ the `validation` teach overlay. Induction (the
+        # prior `validation_induction` phase) already landed this run's generated rows;
+        # user declares arrive via frame-2 teach rows (DAT-441). No vertical / empty
+        # declared set is a LOUD explicit outcome, not a silent skip.
         vertical = ctx.config.get("vertical")
         specs = load_all_validation_specs(vertical, ctx.session) if vertical else {}
         if not specs:

@@ -18,10 +18,13 @@ keys on the validation/cycles/metrics DECLARED counts only, so zero generated
 validations on a thin graph cannot flip a workspace into ``nothing_declared`` (the
 generated count and the declared count are different facts).
 
-**Fault isolation.** A degraded induction (render/parse failure) logs and succeeds
-with ``generated=0`` rather than sinking the whole operating_model run — the seed
-validations still validate. Only a transient provider error propagates (it rides the
-exception to the durable boundary for retry).
+**Fault isolation.** A degraded induction — the ``induce()`` LLM call's render/parse
+failure — logs and succeeds with ``generated=0`` rather than sinking the whole
+operating_model run; the seed validations still validate. Only a transient provider
+error propagates (it rides the exception to the durable boundary for retry). This
+isolation is scoped to the induction turn: a missing LLM config / vertical /
+workspace_id is a WIRING failure and still fails the phase loud (as every LLM phase
+does), never a degrade.
 """
 
 from __future__ import annotations

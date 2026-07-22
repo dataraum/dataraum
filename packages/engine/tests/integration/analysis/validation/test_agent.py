@@ -536,7 +536,12 @@ class TestValidationAgentBindExecute:
         assert generated is None
         assert bind_failure is not None
         assert bind_failure.status == ValidationStatus.ERROR
-        assert "Generated SQL is invalid" in bind_failure.message
+        # Pin the actual parse reason, not just "some EXPLAIN failure" (which
+        # the sibling missing-table test already covers) — DuckDB 1.5.4's
+        # parser names the offending token. If a future DuckDB unreserves
+        # NATURAL this assertion fails loud, which is the correct signal to
+        # revisit the fix, not a flake to silence.
+        assert 'syntax error at or near "natural"' in bind_failure.message
 
     def test_execute_inconclusive_result_is_error(
         self, session, duckdb_conn, validation_agent, mock_provider, table_with_data

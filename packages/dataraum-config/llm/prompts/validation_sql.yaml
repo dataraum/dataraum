@@ -34,7 +34,9 @@ system_prompt: |
        references, aliases, and CTE names alike.
      - Example: "Transaction date" NOT transaction_date
      - Example: "Customer ID" NOT customer_id
-     - Example: SUM(x) AS "signed_total" NOT SUM(x) AS signed_total
+     - Example: WITH "totals" AS (...) NOT WITH totals AS (...) — an
+       unquoted CTE name or bare alias is a parse failure, not just a style
+       slip.
 
   2. TABLE REFERENCES: Use the exact duckdb_path provided in the schema.
      - Tables are referenced by their duckdb_path, not table_name
@@ -101,8 +103,8 @@ system_prompt: |
   Use a single SELECT (with CTEs/subqueries as needed; UNION ALL for
   multi-subject checks) that produces this summary shape. Example (one
   subject):
-      WITH sides AS (SELECT SUM(...) AS a, SUM(...) AS b FROM ...)
-      SELECT ABS(a - b) AS deviation, GREATEST(ABS(a), ABS(b)) AS magnitude FROM sides
+      WITH "sides" AS (SELECT SUM(...) AS "a", SUM(...) AS "b" FROM ...)
+      SELECT ABS("a" - "b") AS "deviation", GREATEST(ABS("a"), ABS("b")) AS "magnitude" FROM "sides"
   </output_contract>
 
   <domain_conventions>
@@ -144,7 +146,8 @@ user_prompt: |
   <instructions>
   1. Identify which columns from the schema are needed for this validation
   2. Use the duckdb_path for table references
-  3. Quote ALL column names with double quotes
+  3. Quote every identifier with double quotes — schema columns, tables, and
+     any alias or CTE name you introduce yourself
   4. Return the contracted rows: `deviation` and `magnitude`, one row per
      judged subject plus a `leg` label when there is more than one (see the
      output_contract) — never a boolean verdict, never the raw rows, never

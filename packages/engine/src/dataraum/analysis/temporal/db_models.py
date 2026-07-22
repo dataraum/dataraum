@@ -97,6 +97,13 @@ class TemporalColumnProfile(Base):
     actual_periods: Mapped[int | None] = mapped_column(Integer)
     gap_count: Mapped[int | None] = mapped_column(Integer)
     largest_gap_days: Mapped[float | None] = mapped_column(Float)
+    # Trailing-bucket completeness (DAT-730): is the FINAL grain bucket as full as a
+    # typical prior one? The AR-NULL-at-MAX-period signal the whole-column ratio
+    # dilutes and staleness misses on recent data. NULL when the grain has no bucket
+    # (irregular/unknown) or there is no prior period to compare — never a fabricated
+    # True (mirrors ``completeness_ratio``'s NULL discipline). Exposed on the
+    # ``og_temporal_coverage`` graph edge.
+    last_period_complete: Mapped[bool | None] = mapped_column(Boolean)
 
     # Staleness: freshest observation old relative to the detected cadence.
     is_stale: Mapped[bool | None] = mapped_column(Boolean)

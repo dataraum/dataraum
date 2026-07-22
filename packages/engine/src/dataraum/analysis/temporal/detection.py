@@ -130,6 +130,88 @@ def count_grain_periods(
     return int(row[0]), int(row[1])
 
 
+# Grain → the interval that advances one bucket to the next, for the period-length
+# denominator in :func:`analyze_last_period_completeness`. Keyed on the validated
+# ``DATE_TRUNC_GRAINS`` (never caller input), so inlining the literal is injection-safe.
+# quarter has no base interval unit — 3 months IS a fiscal-neutral calendar quarter.
+_GRAIN_STEP_INTERVAL: dict[str, str] = {
+    "second": "INTERVAL 1 SECOND",
+    "minute": "INTERVAL 1 MINUTE",
+    "hour": "INTERVAL 1 HOUR",
+    "day": "INTERVAL 1 DAY",
+    "week": "INTERVAL 7 DAY",
+    "month": "INTERVAL 1 MONTH",
+    "quarter": "INTERVAL 3 MONTH",
+    "year": "INTERVAL 1 YEAR",
+}
+
+
+def analyze_last_period_completeness(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    column_name: str,
+    granularity: str,
+) -> bool | None:
+    """Is the FINAL grain bucket as full as a typical prior bucket? (DAT-730)
+
+    The trailing-partial-period signal the whole-column ``completeness_ratio``
+    dilutes away: one partial final bucket (the AR-NULL-at-MAX-period bug class)
+    barely moves the ratio, and with recent data is not ``is_stale`` either. This
+    isolates it — **data-relative, no wall-clock**.
+
+    For each present grain bucket the *fill fraction* is how far into the period the
+    data reaches over the period's own length: ``(max(ts) − bucket_start) /
+    (next_bucket_start − bucket_start)``. The final bucket (the one holding the
+    column max) is COMPLETE iff its fill fraction, rounded to a whole period, is at
+    least the rounded median fill fraction of every prior bucket. Rounding the
+    fraction — not the raw seconds — is what makes it robust: a period-aggregated
+    series stamped at a fixed within-period offset reads complete regardless of
+    month length (Feb's 28 days and Jan's 31 both round to a full period), while a
+    genuinely partial trailing month (data stops a third of the way in) rounds to
+    zero and reads incomplete. Independent of month-start vs month-end stamping,
+    which any fixed within-bucket-position test would misread.
+
+    Returns ``None`` — never a fabricated ``True`` — when ``granularity`` has no
+    ``date_trunc`` bucket (the irregular/unknown sentinels) or there is only ONE
+    bucket (no prior period to define "typical"), matching ``count_grain_periods``'s
+    and ``completeness_ratio``'s NULL discipline.
+    """
+    interval = _GRAIN_STEP_INTERVAL.get(granularity)
+    if interval is None:
+        return None
+    # `granularity` gates the interval lookup above and is a closed-set member;
+    # table/column are internal catalog identifiers.
+    bucket = f"date_trunc('{granularity}', \"{column_name}\"::TIMESTAMP)"
+    row = duckdb_conn.execute(
+        f"""
+        WITH per_ts AS (
+            SELECT {bucket} AS b, "{column_name}"::TIMESTAMP AS ts
+            FROM {table_name}
+            WHERE "{column_name}" IS NOT NULL
+        ),
+        buckets AS (
+            SELECT b, MAX(ts) AS bmax FROM per_ts GROUP BY b
+        ),
+        frac AS (
+            SELECT
+                date_diff('second', b, bmax)::DOUBLE
+                    / NULLIF(date_diff('second', b, b + {interval}), 0) AS f,
+                b = (SELECT MAX(b) FROM buckets) AS is_last
+            FROM buckets
+        )
+        SELECT
+            round((SELECT f FROM frac WHERE is_last)) AS last_full,
+            round(percentile_cont(0.5) WITHIN GROUP (ORDER BY f)
+                  FILTER (WHERE NOT is_last)) AS typical_full
+        FROM frac
+    """  # noqa: S608 - identifiers are internal catalog names, grain is closed-set
+    ).fetchone()
+    if not row or row[0] is None or row[1] is None:
+        return None
+    last_full, typical_full = row
+    return bool(last_full >= typical_full)
+
+
 def analyze_basic_temporal(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_name: str,
@@ -289,12 +371,20 @@ def analyze_basic_temporal(
         # Build completeness analysis
         largest_gap_days = max((g.gap_length_days for g in gaps), default=None) if gaps else None
 
+        # Trailing-bucket completeness (DAT-730): the final period's fill vs a typical
+        # prior period — the signal the whole-column ratio dilutes. NULL when the grain
+        # has no bucket or there is only one period (no fabrication).
+        last_period_complete = analyze_last_period_completeness(
+            duckdb_conn, table_name, column_name, granularity
+        )
+
         completeness = TemporalCompletenessAnalysis(
             completeness_ratio=completeness_ratio,
             expected_periods=expected_periods,
             actual_periods=actual_periods,
             gap_count=len(gaps),
             largest_gap_days=largest_gap_days,
+            last_period_complete=last_period_complete,
             gaps=gaps,
         )
 
@@ -334,5 +424,6 @@ def analyze_basic_temporal(
 __all__ = [
     "infer_granularity",
     "count_grain_periods",
+    "analyze_last_period_completeness",
     "analyze_basic_temporal",
 ]

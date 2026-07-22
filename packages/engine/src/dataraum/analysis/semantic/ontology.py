@@ -34,6 +34,11 @@ class OntologyConcept(BaseModel):
     indicators: list[str] = Field(default_factory=list)
     exclude_patterns: list[str] = Field(default_factory=list)
     unit_from_concept: str | None = None  # Which concept provides this measure's unit
+    # Ordered vs nominal dimension axis (DAT-730): OPTIONAL seed declaration on a
+    # ``kind=dimension`` concept — 'ordered' | 'nominal' | None. Passed through to
+    # ``Concept.ordering`` at seed (never inferred); absent ⇒ NULL ⇒ nominal (windows
+    # withheld). The cockpit ``frame`` authoring path is a later lane.
+    ordering: str | None = None
 
 
 class OntologyConvention(BaseModel):

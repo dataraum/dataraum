@@ -28,12 +28,14 @@ CREATE TABLE concepts (
 	indicators JSON, 
 	exclude_patterns JSON, 
 	unit_from_concept VARCHAR, 
+	ordering VARCHAR, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_concepts PRIMARY KEY (concept_id), 
 	CONSTRAINT ck_concepts_kind CHECK (kind IN ('dimension', 'entity', 'measure', 'unit')), 
-	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame'))
+	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame')), 
+	CONSTRAINT ck_concepts_ordering CHECK (ordering IS NULL OR ordering IN ('nominal', 'ordered'))
 );
 
 CREATE UNIQUE INDEX uq_concept_active ON concepts (vertical, name) WHERE superseded_at IS NULL;
@@ -184,6 +186,15 @@ CREATE TABLE validation_results (
 );
 
 CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
+
+CREATE TABLE workspace_calendar (
+	pin BOOLEAN NOT NULL, 
+	fiscal_year_start_month INTEGER NOT NULL, 
+	declared_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_workspace_calendar PRIMARY KEY (pin), 
+	CONSTRAINT ck_workspace_calendar_pin CHECK (pin = TRUE), 
+	CONSTRAINT ck_workspace_calendar_fiscal_year_start_month CHECK (fiscal_year_start_month BETWEEN 1 AND 12)
+);
 
 CREATE TABLE workspace_settings (
 	pin BOOLEAN NOT NULL, 
@@ -754,6 +765,7 @@ CREATE TABLE temporal_column_profiles (
 	actual_periods INTEGER, 
 	gap_count INTEGER, 
 	largest_gap_days FLOAT, 
+	last_period_complete BOOLEAN, 
 	is_stale BOOLEAN, 
 	gaps JSON NOT NULL, 
 	CONSTRAINT pk_temporal_column_profiles PRIMARY KEY (profile_id), 

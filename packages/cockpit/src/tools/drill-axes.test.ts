@@ -394,9 +394,21 @@ describe("describeEngineTimeVerdict (DAT-731 — the engine verdict's richer rea
 describe("unitGate (DAT-731 — cross-unit aggregation flag)", () => {
 	it("flags a measure whose unit column carries more than one distinct unit", () => {
 		const offending = unitGate(
-			new Set(["amount"]),
-			new Map([["amount", "currency"]]),
-			new Map([["currency", 4]]),
+			[{ tableId: "f1", column: "amount" }],
+			[
+				{
+					tableId: "f1",
+					column: "amount",
+					unitSource: "currency",
+					distinctCount: null,
+				},
+				{
+					tableId: "f1",
+					column: "currency",
+					unitSource: null,
+					distinctCount: 4,
+				},
+			],
 		);
 		expect(offending).toEqual([
 			{ measure: "amount", unitColumn: "currency", unitCount: 4 },
@@ -406,42 +418,111 @@ describe("unitGate (DAT-731 — cross-unit aggregation flag)", () => {
 	it("stays silent for a single-unit column — the clean finance corpus (all USD)", () => {
 		expect(
 			unitGate(
-				new Set(["amount"]),
-				new Map([["amount", "currency"]]),
-				new Map([["currency", 1]]),
+				[{ tableId: "f1", column: "amount" }],
+				[
+					{
+						tableId: "f1",
+						column: "amount",
+						unitSource: "currency",
+						distinctCount: null,
+					},
+					{
+						tableId: "f1",
+						column: "currency",
+						unitSource: null,
+						distinctCount: 1,
+					},
+				],
 			),
 		).toEqual([]);
 	});
 
-	it("does not gate a dimensionless measure, or one whose unit column can't be resolved", () => {
+	it("resolves each measure's unit column IN ITS OWN FACT — one fact's clean unit column cannot mask another's mixed one (the multi-fact masking fix)", () => {
+		// f1.amount is measured_in a SINGLE-currency f1.currency; f2.cost is
+		// measured_in a 5-currency f2.currency. Both unit columns are named
+		// `currency` — a bare-name fold would let f1's clean count shadow f2's and
+		// MASK the real mixing. Per-fact resolution flags exactly f2.cost.
+		const offending = unitGate(
+			[
+				{ tableId: "f1", column: "amount" },
+				{ tableId: "f2", column: "cost" },
+			],
+			[
+				{
+					tableId: "f1",
+					column: "amount",
+					unitSource: "currency",
+					distinctCount: null,
+				},
+				{
+					tableId: "f1",
+					column: "currency",
+					unitSource: null,
+					distinctCount: 1,
+				},
+				{
+					tableId: "f2",
+					column: "cost",
+					unitSource: "currency",
+					distinctCount: null,
+				},
+				{
+					tableId: "f2",
+					column: "currency",
+					unitSource: null,
+					distinctCount: 5,
+				},
+			],
+		);
+		expect(offending).toEqual([
+			{ measure: "cost", unitColumn: "currency", unitCount: 5 },
+		]);
+	});
+
+	it("does not gate a dimensionless measure, or a qualified cross-table pointer (deferred to the engine edge)", () => {
 		// dimensionless → never a unit to mix.
 		expect(
 			unitGate(
-				new Set(["ratio"]),
-				new Map([["ratio", "dimensionless"]]),
-				new Map([["currency", 4]]),
+				[{ tableId: "f1", column: "ratio" }],
+				[
+					{
+						tableId: "f1",
+						column: "ratio",
+						unitSource: "dimensionless",
+						distinctCount: null,
+					},
+					{
+						tableId: "f1",
+						column: "currency",
+						unitSource: null,
+						distinctCount: 4,
+					},
+				],
 			),
 		).toEqual([]);
-		// A qualified pointer whose unit column is outside the node's facts (no
-		// cardinality) → conservative: no FALSE flag.
+		// A qualified `table.column` pointer resolves in another table — the cockpit
+		// defers cross-table resolution to the engine's measured_in edge (v1 flags
+		// same-table units only), so it does NOT gate even when a same-named unit
+		// column happens to sit on the measure's own fact.
 		expect(
 			unitGate(
-				new Set(["fee"]),
-				new Map([["fee", "other_table.ccy"]]),
-				new Map([["currency", 4]]),
+				[{ tableId: "f1", column: "fee" }],
+				[
+					{
+						tableId: "f1",
+						column: "fee",
+						unitSource: "book.currency",
+						distinctCount: null,
+					},
+					{
+						tableId: "f1",
+						column: "currency",
+						unitSource: null,
+						distinctCount: 4,
+					},
+				],
 			),
 		).toEqual([]);
-	});
-
-	it("resolves the column part of a qualified table.column unit pointer", () => {
-		const offending = unitGate(
-			new Set(["fee"]),
-			new Map([["fee", "book.currency"]]),
-			new Map([["currency", 3]]),
-		);
-		expect(offending).toEqual([
-			{ measure: "fee", unitColumn: "currency", unitCount: 3 },
-		]);
 	});
 
 	it("describeUnitGate names the measure, the count, and the unit column", () => {
@@ -979,6 +1060,67 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		]);
 		const res = await resolveDrillAxes({ standardField: "revenue" });
 		expect(res.unitGateReason).toBeUndefined();
+	});
+
+	it("UNIT GATE (DAT-731): a MULTI-FACT metric flags the mixed-currency fact — one fact's clean `currency` does NOT mask another's (the masking regression)", async () => {
+		seed();
+		// gross_margin = revenue(fact1) − cogs(fact2), BOTH grounded. fact1.amount is
+		// measured_in a single-currency fact1.currency; fact2.cost is measured_in a
+		// 5-currency fact2.currency. Both unit columns are named `currency`. A
+		// bare-name fold would let fact1's clean count shadow fact2's and return
+		// undefined; per-fact resolution flags exactly cost.
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(amount)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+			{
+				standardField: "cogs",
+				parts: {
+					select: [{ expr: "SUM(cost)", alias: "value" }],
+					from: ["enriched_purchases"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		rowsByTable.set(columns, [
+			{
+				tableId: "fact1",
+				columnName: "amount",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "additive",
+				unitSourceColumn: "currency",
+			},
+			{
+				tableId: "fact1",
+				columnName: "currency",
+				resolvedType: "VARCHAR",
+				distinctCount: 1,
+			},
+			{
+				tableId: "fact2",
+				columnName: "cost",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "additive",
+				unitSourceColumn: "currency",
+			},
+			{
+				tableId: "fact2",
+				columnName: "currency",
+				resolvedType: "VARCHAR",
+				distinctCount: 5,
+			},
+		]);
+		const res = await resolveDrillAxes({ metricKey: "gross_margin" });
+		expect(res.unitGateReason).toBeDefined();
+		expect(res.unitGateReason).toContain("cost");
+		expect(res.unitGateReason).toContain("5");
 	});
 });
 

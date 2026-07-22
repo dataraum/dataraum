@@ -325,14 +325,16 @@ export function describeTemporalGate(
 		)}. Only a summable flow can be bucketed by period without double-counting.`;
 }
 
-/** The engine's persisted 2-axis additivity verdict for one drill target
- *  (`metric_additivity`, DAT-716) — the DAG-aware classification the drill now
- *  CONSUMES instead of re-deriving. `null` reasons mean the axis reconciles. */
+/** The engine's persisted additivity verdict for one drill target, as the drill's
+ *  TIME gate consumes it (`metric_additivity`, DAT-716). Only the time axis is read
+ *  here: the drill AXES resolver decides whether to offer a time grain, and the
+ *  engine's DAG-aware `time_additive` replaces the local re-derivation. The
+ *  CATEGORICAL axis of the verdict (whether a breakdown reconciles vs shows the
+ *  honest dash) is a drill-RESULTS rendering concern, not an axes-resolution one —
+ *  deliberately not read here; wiring it is the drill-results surface (DAT-715). */
 export interface PersistedAdditivity {
 	timeAdditive: boolean;
 	timeReason: string | null;
-	categoricalAdditive: boolean;
-	categoricalReason: string | null;
 }
 
 /**
@@ -394,8 +396,6 @@ async function resolveTargetAdditivity(
 		.select({
 			timeAdditive: currentMetricAdditivity.timeAdditive,
 			timeReason: currentMetricAdditivity.timeReason,
-			categoricalAdditive: currentMetricAdditivity.categoricalAdditive,
-			categoricalReason: currentMetricAdditivity.categoricalReason,
 		})
 		.from(currentMetricAdditivity)
 		.where(
@@ -405,15 +405,11 @@ async function resolveTargetAdditivity(
 			),
 		)
 		.limit(1);
-	if (!row || row.timeAdditive === null || row.categoricalAdditive === null) {
-		return null;
-	}
-	return {
-		timeAdditive: row.timeAdditive,
-		timeReason: row.timeReason,
-		categoricalAdditive: row.categoricalAdditive,
-		categoricalReason: row.categoricalReason,
-	};
+	// `timeAdditive` is NOT NULL on the base table; the null-check narrows the
+	// view's nullable column type AND doubles as the "no row" guard (absent verdict
+	// → null → fail open to the local heuristic).
+	if (!row || row.timeAdditive === null) return null;
+	return { timeAdditive: row.timeAdditive, timeReason: row.timeReason };
 }
 
 /** One measure whose aggregation crosses units (DAT-731): the measure column and
@@ -424,35 +420,74 @@ export interface CrossUnitColumn {
 	unitCount: number;
 }
 
+/** An aggregated base measure column with the FACT it belongs to (DAT-731). Table
+ *  identity is load-bearing: a multi-fact node (e.g. `gross_margin` = revenue −
+ *  cogs) can hold two facts with a same-NAMED unit column at different
+ *  cardinalities, so the unit gate must resolve per (table, column), not by bare
+ *  name — a bare-name fold would let one fact's clean `currency` shadow another's
+ *  mixed one and MASK a real cross-unit issue. */
+export interface AggMeasure {
+	tableId: string;
+	column: string;
+}
+
+/** A fact column's unit facts as the unit gate reads them (DAT-731): its authored
+ *  `unit_source_column` (the measure case) and its distinct-value count (the unit
+ *  case), both scoped to the column's own table. */
+export interface ColumnUnitFacts {
+	tableId: string;
+	column: string;
+	unitSource: string | null;
+	distinctCount: number | null;
+}
+
+const _unitKey = (tableId: string, column: string): string =>
+	`${tableId} ${column}`;
+
 /**
  * The UNIT GATE (DAT-731): a measure aggregated across a unit column that holds
  * MORE THAN ONE distinct unit mixes units — a cross-currency total is arithmetic
  * without meaning until a conversion is applied. Pure over the node's aggregated
- * base columns, each measure's authored `unit_source_column`, and the distinct
- * count of the resolved unit column. `dimensionless` / absent unit → not gated
- * (nothing to mix). A unit column whose cardinality can't be resolved — a
- * qualified `table.column` pointer to a column outside the node's facts — is NOT
- * gated (conservative: never a FALSE cross-unit flag; the graph's measured_in
- * edge still represents the dependence). A single-unit column (count 1, the clean
- * finance corpus) is silent — the flag fires only on real mixing. The conversion
- * GROUNDING that would UNBLOCK the SUM (an fx-rate table) is not a structural edge
- * in v1; this gate names the block, the unblock is future work.
+ * measure columns (WITH their fact identity) and the per-fact column facts.
+ * Resolution is keyed by (table, column), NOT bare name — the multi-fact masking
+ * fix: a measure resolves its unit column IN ITS OWN FACT, so one fact's
+ * single-unit `currency` can never shadow another fact's mixed one.
+ * `dimensionless` / absent unit → not gated (nothing to mix). A QUALIFIED
+ * `table.column` pointer names a unit column in ANOTHER table; the cockpit can't
+ * resolve a cross-table unit's cardinality here (the engine's `og_measured_in`
+ * edge carries that resolution for graph consumers), so v1 flags SAME-TABLE (bare)
+ * units only — conservative, never a FALSE flag. A single-unit column (count 1,
+ * the clean finance corpus) is silent — the flag fires only on real mixing. The
+ * conversion GROUNDING that would UNBLOCK the SUM (an fx-rate table) is not a
+ * structural edge in v1; this gate names the block, the unblock is future work.
  */
 export function unitGate(
-	aggregatedCols: ReadonlySet<string>,
-	unitSourceByColumn: ReadonlyMap<string, string>,
-	distinctByColumn: ReadonlyMap<string, number>,
+	measures: readonly AggMeasure[],
+	columnFacts: readonly ColumnUnitFacts[],
 ): CrossUnitColumn[] {
+	const unitSource = new Map<string, string>();
+	const distinct = new Map<string, number>();
+	for (const f of columnFacts) {
+		const k = _unitKey(f.tableId, f.column);
+		if (f.unitSource && !unitSource.has(k)) unitSource.set(k, f.unitSource);
+		if (f.distinctCount != null && !distinct.has(k))
+			distinct.set(k, f.distinctCount);
+	}
 	const out: CrossUnitColumn[] = [];
-	for (const measure of aggregatedCols) {
-		const src = unitSourceByColumn.get(measure);
+	const seen = new Set<string>();
+	for (const { tableId, column } of measures) {
+		const src = unitSource.get(_unitKey(tableId, column));
 		if (!src || src === "dimensionless") continue;
-		// A bare sibling name, or the column part of a qualified table.column pointer.
-		const dot = src.indexOf(".");
-		const unitColumn = dot >= 0 ? src.slice(dot + 1) : src;
-		const unitCount = distinctByColumn.get(unitColumn);
-		if (unitCount !== undefined && unitCount > 1) {
-			out.push({ measure, unitColumn, unitCount });
+		// A qualified table.column pointer resolves in another table — deferred to
+		// the engine's measured_in edge; the cockpit v1 flags same-table units only.
+		if (src.includes(".")) continue;
+		// The unit column is a sibling in the measure's OWN fact — scope the lookup
+		// there so a same-named unit column on a different fact can't answer for it.
+		const unitCount = distinct.get(_unitKey(tableId, src));
+		const dedup = _unitKey(tableId, column);
+		if (unitCount !== undefined && unitCount > 1 && !seen.has(dedup)) {
+			seen.add(dedup);
+			out.push({ measure: column, unitColumn: src, unitCount });
 		}
 	}
 	return out;
@@ -721,6 +756,9 @@ export async function resolveDrillAxes(
 	// slip through), while the unit gate simply has no column to check for that expr.
 	const factIdSet = new Set(factIds);
 	const aggCols = new Set<string>();
+	// The aggregated measures WITH their fact id (the unit gate keys per fact, so a
+	// same-named unit column on a different fact can't answer for this measure).
+	const aggMeasures: AggMeasure[] = [];
 	let couldNotDetermine = false;
 	for (const { relation, selectExpr } of acceptedExprs) {
 		const factId = viewByName.get(relation)?.factTableId;
@@ -730,7 +768,10 @@ export async function resolveDrillAxes(
 			couldNotDetermine = true;
 			continue;
 		}
-		for (const c of cols) aggCols.add(c);
+		for (const c of cols) {
+			aggCols.add(c);
+			aggMeasures.push({ tableId: factId, column: c });
+		}
 	}
 
 	// TIME GATE (DAT-673 → DAT-731): only when a temporal axis is offered. The
@@ -791,20 +832,20 @@ export async function resolveDrillAxes(
 	// unit_source_column is a column carrying MORE THAN ONE distinct unit — is
 	// flagged loudly (representable as blocked, never silently produced). Runs
 	// regardless of whether a time axis was offered: mixing units is meaningless for
-	// ANY aggregation. Reads the node's aggregated measure columns' unit sources and
-	// the resolved unit column's distinct count off the SAME fact-scoped column read.
-	const unitSourceByColumn = new Map<string, string>();
-	const distinctByColumn = new Map<string, number>();
+	// ANY aggregation. The per-(fact, column) facts feed unitGate, which resolves
+	// each measure's unit column IN ITS OWN FACT — so on a multi-fact node one
+	// fact's clean unit column can't mask another fact's mixed one.
+	const columnFacts: ColumnUnitFacts[] = [];
 	for (const r of columnRows) {
 		if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
-		if (r.unitSourceColumn && !unitSourceByColumn.has(r.columnName)) {
-			unitSourceByColumn.set(r.columnName, r.unitSourceColumn);
-		}
-		if (r.distinctCount != null && !distinctByColumn.has(r.columnName)) {
-			distinctByColumn.set(r.columnName, r.distinctCount);
-		}
+		columnFacts.push({
+			tableId: r.tableId,
+			column: r.columnName,
+			unitSource: r.unitSourceColumn ?? null,
+			distinctCount: r.distinctCount ?? null,
+		});
 	}
-	const crossUnit = unitGate(aggCols, unitSourceByColumn, distinctByColumn);
+	const crossUnit = unitGate(aggMeasures, columnFacts);
 	if (crossUnit.length > 0) {
 		result.unitGateReason = describeUnitGate(crossUnit);
 	}

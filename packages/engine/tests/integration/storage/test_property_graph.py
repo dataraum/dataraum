@@ -457,17 +457,25 @@ def _units_and_additivity_stmts() -> list[str]:
       c_amt3 on t2 (accounts). c_amt already carries unit_source_column='currency'
       (a bare sibling name → same-table resolution, the finance headline), c_amt3
       carries 'journal.currency' (a QUALIFIED table.column → the split_part cross-table
-      branch, resolving t1's c_ccy), and c_amt2 (amount_declared) carries
-      'dimensionless' (the exclusion — NO edge). No semantic_annotation on c_ccy /
-      c_amt3, so the measure→materialization MATCH (semantic_role='measure') is
-      untouched — og_measured_in fires purely off column_concepts.unit_source_column.
+      branch, resolving t1's c_ccy), c_self (price_usd) carries its OWN name (a
+      self-denominated value → a self-loop, self_denominated=true), and c_amt2
+      (amount_declared) carries 'dimensionless' (the exclusion — NO edge). No
+      semantic_annotation on c_ccy / c_amt3 / c_self, so the measure→materialization
+      MATCH (semantic_role='measure') is untouched — og_measured_in fires purely off
+      column_concepts.unit_source_column.
     - Two ``metric_additivity`` verdicts under a fresh operating_model head: a MEASURE
       verdict keyed by the concept name 'revenue' (→ a has_additivity edge from the
       revenue concept) and a METRIC verdict keyed by a formula graph_id 'mk_margin'
       (no concept → vertex only, reachable by property, never by has_additivity).
     """
     stmts: list[str] = []
-    for cid, tid, name, pos in [("c_ccy", "t1", "currency", 20), ("c_amt3", "t2", "fee", 3)]:
+    for cid, tid, name, pos in [
+        ("c_ccy", "t1", "currency", 20),
+        ("c_amt3", "t2", "fee", 3),
+        # A self-denominated measure (a Pint-style "100 USD" value carrying its own
+        # unit): unit_source_column names its OWN column → a self-loop edge.
+        ("c_self", "t1", "price_usd", 21),
+    ]:
         stmts.append(
             "INSERT INTO columns (column_id, table_id, column_name, column_position) "
             f"VALUES ('{cid}', '{tid}', '{name}', {pos})"
@@ -485,6 +493,13 @@ def _units_and_additivity_stmts() -> list[str]:
         "INSERT INTO column_concepts "
         "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
         f"VALUES ('cc_amt3', 'c_amt3', '{RUN}', 'journal.currency', '{TS}')"
+    )
+    # c_self (price_usd): its unit_source_column is its OWN name → a self-loop edge
+    # c_self → c_self with self_denominated=true (the measure carries its own unit).
+    stmts.append(
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
+        f"VALUES ('cc_self', 'c_self', '{RUN}', 'price_usd', '{TS}')"
     )
     # The operating_model head that promotes metric_additivity (read_views _CATALOG_GRAIN
     # maps it to (catalog, 'operating_model')). The existing seed only has (catalog,
@@ -1491,8 +1506,9 @@ def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None
     projecting ColumnConcept.unit_source_column. c_amt (amount) carries a BARE sibling
     name 'currency' → its own table's currency column; c_amt3 (fee) carries a QUALIFIED
     'journal.currency' → the split_part cross-table resolution to the SAME currency
-    column. c_amt2 (amount_declared) is 'dimensionless' → NO edge (nothing to point at).
-    self_denominated is false for both (measure != unit column)."""
+    column; c_self (price_usd) carries its OWN name → a self-loop with
+    self_denominated=true (a value that carries its own unit). c_amt2 (amount_declared)
+    is 'dimensionless' → NO edge (nothing to point at)."""
     sql = (
         f"SELECT mname, uname, usrc, selfd FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (m IS column_node)-[e IS measured_in]->(u IS column_node) "
@@ -1504,6 +1520,8 @@ def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None
     assert rows == {
         ("amount", "currency", "currency", False),
         ("fee", "currency", "journal.currency", False),
+        # A self-denominated value: the measure IS its own unit column (self-loop).
+        ("price_usd", "price_usd", "price_usd", True),
     }
     # The dimensionless measure contributes nothing — an explicit no-edge assertion.
     assert not any(m == "amount_declared" for m, *_ in rows)

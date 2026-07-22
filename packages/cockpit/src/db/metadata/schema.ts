@@ -647,6 +647,50 @@ export const metadataSnapshotHead = pgView("metadata_snapshot_head", {
 	sql`SELECT head_id, target, stage, run_id, promoted_at FROM engine.metadata_snapshot_head`,
 );
 
+export const metricDerivesFrom = pgView("metric_derives_from", {
+	edgeId: varchar("edge_id"),
+	vertical: varchar(),
+	graphId: varchar("graph_id"),
+	conceptName: varchar("concept_name"),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT edge_id, vertical, graph_id, concept_name, created_at, superseded_at FROM engine.metric_derives_from WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
+export const metricParameters = pgView("metric_parameters", {
+	parameterId: varchar("parameter_id"),
+	vertical: varchar(),
+	graphId: varchar("graph_id"),
+	name: varchar(),
+	paramType: varchar("param_type"),
+	defaultValue: json("default_value"),
+	options: json(),
+	description: text(),
+	derivation: varchar(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT parameter_id, vertical, graph_id, name, param_type, default_value, options, description, derivation, source, created_at, superseded_at FROM engine.metric_parameters WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
+export const metrics = pgView("metrics", {
+	metricId: varchar("metric_id"),
+	vertical: varchar(),
+	graphId: varchar("graph_id"),
+	name: varchar(),
+	category: varchar(),
+	unit: varchar(),
+	outputType: varchar("output_type"),
+	version: varchar(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
 export const runTables = pgView("run_tables", {
 	runId: varchar("run_id"),
 	tableId: varchar("table_id"),

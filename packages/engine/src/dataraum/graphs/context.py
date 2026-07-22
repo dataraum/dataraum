@@ -172,12 +172,20 @@ class DriverContext:
     high-signal HINT for which values carry data, NOT the complete value-set (recall<1;
     the value-set is `top_values`). `target_type` grounds the aggregation (flow→SUM,
     stock→end-of-period, ratio). Mirrors the cockpit `projectDriverRanking`.
+
+    `status`/`abstain_reason` (DAT-859) carry the persisted abstention pair verbatim
+    (plain strings — the DB row's own vocabulary, not the drivers module's enum):
+    `_append_drivers` is the ONE read-side convention point that skips a non-
+    "measured" ranking, so it never renders as prompt content; this dataclass still
+    carries it (loaded from every row) for that check to read.
     """
 
     measure_label: str
-    target_type: str  # flow | stock | ratio
+    target_type: str  # flow | stock | ratio; "" when abstained with no resolved type
     grain: str  # row | entity
     entity: str | None = None
+    status: str = "measured"  # measured | abstained (DAT-859)
+    abstain_reason: str | None = None
     ranked_dimensions: list[dict[str, Any]] = field(default_factory=list)  # [{dimension, gain}]
     interesting_slices: list[dict[str, Any]] = field(
         default_factory=list
@@ -643,9 +651,14 @@ def build_execution_context(
             driver_contexts.append(
                 DriverContext(
                     measure_label=art.measure_label,
-                    target_type=art.target_type,
+                    # NULL only on an abstained ranking with no resolved type
+                    # (DAT-859); "" is the honest placeholder, never rendered
+                    # (_append_drivers skips non-"measured" rows outright).
+                    target_type=art.target_type or "",
                     grain=art.grain,
                     entity=art.entity,
+                    status=art.status,
+                    abstain_reason=art.abstain_reason,
                     ranked_dimensions=art.ranked_dimensions or [],
                     interesting_slices=art.interesting_slices or [],
                     secondary_dimensions=art.secondary_dimensions or [],
@@ -2069,8 +2082,22 @@ def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
     dimensions/values move each measure. `interesting_slices` carry the actual
     dimension VALUES with signed effect + support — a HINT for which values carry
     data, never the complete value-set (that's the per-column Value sets).
+
+    The ONE read-side convention (DAT-859): a ranking renders only when it is
+    `status == "measured"` AND actually carries content. An abstained ranking
+    (temporal_behavior undetermined, no enriched view, too few candidates, no
+    usable measure value) must never surface as a driver — and neither should a
+    measured-but-empty one (no significant driver found): both would otherwise
+    emit a content-free "### measure (type)" heading with nothing under it. The
+    raw artifact stays honest either way — this filter is prompt-rendering only.
     """
-    if not context.drivers:
+    rendered = [
+        d
+        for d in context.drivers
+        if d.status == "measured"
+        and (d.ranked_dimensions or d.interesting_slices or d.secondary_dimensions)
+    ]
+    if not rendered:
         return
 
     lines.append("")
@@ -2081,7 +2108,7 @@ def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
         "aggregation: flow→SUM across periods, stock→latest-period only, ratio→Σnum/Σden. "
         "`interesting_slices` are values that MOVE the measure — a hint, NOT the value-set."
     )
-    for d in context.drivers:
+    for d in rendered:
         grain_note = f", grain {d.grain}" + (f"/{d.entity}" if d.entity else "")
         lines.append(f"\n### {d.measure_label} ({d.target_type}{grain_note})")
         if d.ranked_dimensions:

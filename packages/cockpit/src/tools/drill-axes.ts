@@ -180,6 +180,11 @@ export function applyTemporalKinds(
 /** One `current_driver_rankings` row as the resolver reads it
  *  (`ranked_dimensions` is engine JSON: `[{dimension, gain}, ...]`). */
 export interface DriverRankingInput {
+	// DAT-859: "measured" | "abstained". An abstained ranking carries no
+	// ranked_dimensions by construction (the engine's DriverRanking invariant), so
+	// this filter is defense in depth — align with the same read-side convention
+	// as look_drivers/formatDrivers rather than rely on that invariant implicitly.
+	status: string | null;
 	rankedDimensions: unknown;
 }
 
@@ -188,6 +193,7 @@ export interface DriverRankingInput {
 export function driverGains(rows: DriverRankingInput[]): Map<string, number> {
 	const gains = new Map<string, number>();
 	for (const row of rows) {
+		if (row.status !== "measured") continue;
 		if (!Array.isArray(row.rankedDimensions)) continue;
 		for (const entry of row.rankedDimensions) {
 			if (typeof entry !== "object" || entry === null) continue;
@@ -475,7 +481,10 @@ export async function resolveDrillAxes(
 			.where(inArray(currentSliceDefinitions.tableId, factIds))
 			.orderBy(asc(currentSliceDefinitions.slicePriority)),
 		metadataDb
-			.select({ rankedDimensions: currentDriverRankings.rankedDimensions })
+			.select({
+				status: currentDriverRankings.status,
+				rankedDimensions: currentDriverRankings.rankedDimensions,
+			})
 			.from(currentDriverRankings)
 			.where(inArray(currentDriverRankings.measureTableId, factIds)),
 		metadataDb

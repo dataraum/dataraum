@@ -477,7 +477,9 @@ CREATE TABLE driver_rankings (
 	measure_table_id VARCHAR NOT NULL, 
 	measure_column_id VARCHAR NOT NULL, 
 	measure_label VARCHAR NOT NULL, 
-	target_type VARCHAR NOT NULL, 
+	target_type VARCHAR, 
+	status VARCHAR NOT NULL, 
+	abstain_reason VARCHAR, 
 	grain VARCHAR NOT NULL, 
 	entity VARCHAR, 
 	n_rows INTEGER NOT NULL, 
@@ -488,6 +490,9 @@ CREATE TABLE driver_rankings (
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	CONSTRAINT pk_driver_rankings PRIMARY KEY (ranking_id), 
 	CONSTRAINT uq_driver_rankings_column_run UNIQUE (measure_column_id, run_id), 
+	CONSTRAINT ck_driver_rankings_status CHECK (status IN ('abstained', 'measured')), 
+	CONSTRAINT ck_driver_rankings_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('insufficient_candidates', 'insufficient_data', 'missing_inputs')), 
+	CONSTRAINT ck_driver_rankings_status_abstain_reason CHECK ((status = 'measured' AND abstain_reason IS NULL) OR (status = 'abstained' AND abstain_reason IS NOT NULL)), 
 	CONSTRAINT fk_driver_rankings_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_driver_rankings_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id)
 );

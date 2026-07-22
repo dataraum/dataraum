@@ -1,10 +1,10 @@
 """Persist driver rankings as a run-versioned begin_session artifact (DAT-546).
 
 Bridges the pure engine (:func:`discover_drivers`) to the durable store: enumerate
-the session's measure-role fact columns, run the validated discovery over each, and
-write one run-versioned :class:`DriverRankingArtifact` per ``(measure_column_id,
-run_id)``. The engine and ``resolve_target_type`` are NOT touched here — this module
-only orchestrates + serializes.
+the session's measure-role fact columns, resolve each's target type, run the
+validated discovery over each RESOLVED measure, and write one run-versioned
+:class:`DriverRankingArtifact` per ``(measure_column_id, run_id)``. This module only
+orchestrates + serializes; ``discover_drivers`` itself is untouched.
 
 Run-scoping follows the shipped begin_session convention (``slicing_phase``): the
 measure role + temporal behavior are read by ``column_id`` without a run filter —
@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from dataraum.analysis.drivers.db_models import DriverRankingArtifact
-from dataraum.analysis.drivers.models import DriverRanking, Measure
-from dataraum.analysis.drivers.processor import discover_drivers
+from dataraum.analysis.drivers.models import DriverRanking, Measure, RankingStatus
+from dataraum.analysis.drivers.processor import discover_drivers, resolve_target_type_for_behavior
 from dataraum.analysis.semantic.db_models import (
     ColumnConcept,
     SemanticAnnotation,
@@ -39,12 +39,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# temporal_behavior → driver target type (mirrors processor.resolve_target_type's
-# mapping; inlined so the validated module stays untouched). Anything else → flow,
-# the additive reading. Ratio measures are not enumerated here (v1 = measure-role
-# columns); they arrive via the deferred on-demand path.
-_TEMPORAL_TO_TARGET = {"additive": "flow", "point_in_time": "stock"}
-
 
 def ranking_to_row(
     ranking: DriverRanking, *, run_id: str, measure_table_id: str, measure_column_id: str
@@ -54,6 +48,7 @@ def ranking_to_row(
     Grain labels are preserved verbatim: the primary family's ``grain``/``entity``
     plus every ``SecondaryDriver``'s own ``grain``/``entity`` — never flattened into
     one ranking. The PK + ``created_at`` are omitted so their model defaults apply.
+    ``status``/``abstain_reason`` (DAT-859) round-trip as their enum ``.value``.
     """
     return {
         "run_id": run_id,
@@ -61,6 +56,8 @@ def ranking_to_row(
         "measure_column_id": measure_column_id,
         "measure_label": ranking.measure,
         "target_type": ranking.target_type,
+        "status": ranking.status.value,
+        "abstain_reason": ranking.abstain_reason.value if ranking.abstain_reason else None,
         "grain": ranking.grain,
         "entity": ranking.entity,
         "n_rows": ranking.n_rows,
@@ -149,8 +146,11 @@ def persist_driver_rankings(
     Idempotent per run — one row per ``(measure_column_id, run_id)`` UPSERTed on
     ``uq_driver_rankings_column_run``; a Temporal success-redelivery converges in place
     (the engine is deterministic per ``(seed, candidate set)``). EVERY measure-role
-    column gets a row, including an empty ranking (``n_rows`` records the power) —
-    born loud, never silently absent.
+    column gets a row, including an abstained one (DAT-859) — born loud, never
+    silently absent. A column whose ``temporal_behavior`` is NULL/unmapped never
+    reaches :func:`discover_drivers` at all: its row is persisted as an explicit
+    abstention (``status='abstained'``, no ``target_type``) rather than guessing
+    ``flow``.
 
     Returns:
         The number of driver-ranking rows persisted.
@@ -164,15 +164,27 @@ def persist_driver_rankings(
 
     rows: list[dict[str, Any]] = []
     for column_id, table_id, column_name, behavior in measures:
-        target_type = _TEMPORAL_TO_TARGET.get(behavior or "", "flow")
-        measure = Measure(target_type=target_type, column=column_name)
-        ranking = discover_drivers(
-            session,
-            duckdb_conn=duckdb_conn,
-            fact_table_id=table_id,
-            run_id=run_id,
-            measure=measure,
-        )
+        resolution = resolve_target_type_for_behavior(behavior)
+        if resolution.status == RankingStatus.ABSTAINED:
+            # No target type resolved — never construct a Measure to guess one;
+            # persist the abstention directly (DAT-859).
+            ranking = DriverRanking(
+                measure=column_name,
+                target_type=None,
+                n_rows=0,
+                status=resolution.status,
+                abstain_reason=resolution.abstain_reason,
+            )
+        else:
+            assert resolution.target_type is not None  # guaranteed by TargetTypeResolution
+            measure = Measure(target_type=resolution.target_type, column=column_name)
+            ranking = discover_drivers(
+                session,
+                duckdb_conn=duckdb_conn,
+                fact_table_id=table_id,
+                run_id=run_id,
+                measure=measure,
+            )
         rows.append(
             ranking_to_row(
                 ranking,
@@ -184,7 +196,9 @@ def persist_driver_rankings(
         logger.info(
             "driver_ranking_persisted",
             measure=column_name,
-            target_type=target_type,
+            target_type=ranking.target_type,
+            status=ranking.status.value,
+            abstain_reason=ranking.abstain_reason.value if ranking.abstain_reason else None,
             grain=ranking.grain,
             entity=ranking.entity,
             n_rows=ranking.n_rows,

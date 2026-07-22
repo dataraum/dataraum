@@ -372,6 +372,7 @@ describe("driver ordering", () => {
 	it("takes the max gain per dimension across rankings, ignoring malformed entries", () => {
 		const gains = driverGains([
 			{
+				status: "measured",
 				rankedDimensions: [
 					{ dimension: "region", gain: 0.2 },
 					{ dimension: "channel", gain: 0.5 },
@@ -379,13 +380,33 @@ describe("driver ordering", () => {
 					"junk",
 				],
 			},
-			{ rankedDimensions: [{ dimension: "region", gain: 0.4 }] },
-			{ rankedDimensions: null },
+			{
+				status: "measured",
+				rankedDimensions: [{ dimension: "region", gain: 0.4 }],
+			},
+			{ status: "measured", rankedDimensions: null },
 		]);
 		expect([...gains.entries()]).toEqual([
 			["region", 0.4],
 			["channel", 0.5],
 		]);
+	});
+
+	// DAT-859: an abstained ranking's rankedDimensions never contributes, even if
+	// it somehow carried entries — align with the same read-side convention as
+	// look_drivers/formatDrivers (defense in depth over the engine's own invariant).
+	it("ignores an abstained ranking's dimensions regardless of content", () => {
+		const gains = driverGains([
+			{
+				status: "abstained",
+				rankedDimensions: [{ dimension: "region", gain: 0.9 }],
+			},
+			{
+				status: "measured",
+				rankedDimensions: [{ dimension: "channel", gain: 0.3 }],
+			},
+		]);
+		expect([...gains.entries()]).toEqual([["channel", 0.3]]);
 	});
 
 	it("puts measured drivers first by gain and keeps the rest in incoming order", () => {
@@ -534,6 +555,7 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		seed();
 		rowsByTable.set(currentDriverRankings, [
 			{
+				status: "measured",
 				rankedDimensions: [{ dimension: "customer__segment", gain: 0.31 }],
 			},
 		]);

@@ -252,8 +252,10 @@ class TestAliasAndEmptyHeadline:
 
     def test_all_dims_alias_yields_empty_ranking_not_crash(self) -> None:
         """Every candidate an alias → no families at all; the honest empty
-        ranking comes back instead of an IndexError (DAT-695 review)."""
-        from dataraum.analysis.drivers.models import Measure
+        ranking comes back instead of an IndexError (DAT-695 review). DAT-859:
+        that empty ranking is now a typed ABSTENTION (insufficient_candidates),
+        not a silent measured zero."""
+        from dataraum.analysis.drivers.models import AbstainReason, Measure, RankingStatus
         from dataraum.analysis.drivers.processor import (
             DEFAULT_ICC_THRESHOLD,
             DEFAULT_MIN_ENTITIES,
@@ -278,3 +280,77 @@ class TestAliasAndEmptyHeadline:
         assert rank.ranked_dimensions == []
         assert rank.secondary_dimensions == []
         assert rank.n_rows == df.height
+        assert rank.status == RankingStatus.ABSTAINED
+        assert rank.abstain_reason == AbstainReason.INSUFFICIENT_CANDIDATES
+
+
+class TestEntityGrainAbstains:
+    """DAT-859: ``_entity_grain_ranking``'s honest-empty construction site."""
+
+    def test_every_entity_missing_measure_abstains(self) -> None:
+        """Every entity has no usable measure value (all-NaN) → a typed
+        ABSTENTION (insufficient_data), not a silent measured zero."""
+        from dataraum.analysis.drivers.models import AbstainReason, Measure, RankingStatus
+        from dataraum.analysis.drivers.processor import _entity_grain_ranking
+
+        n_ent = 10
+        df = pl.DataFrame(
+            {
+                "entity": [f"e{i}" for i in range(n_ent) for _ in range(5)],
+                "dim": [f"g{i % 2}" for i in range(n_ent) for _ in range(5)],
+                "measure": [None] * (n_ent * 5),
+            }
+        )
+        rank = _entity_grain_ranking(
+            df,
+            ["dim"],
+            Measure(target_type="flow", column="measure"),
+            "entity",
+            seed=0,
+            alpha=0.05,
+            n_perm=50,
+            min_entities=2,
+        )
+        assert rank.status == RankingStatus.ABSTAINED
+        assert rank.abstain_reason == AbstainReason.INSUFFICIENT_DATA
+        assert rank.grain == "entity"
+        assert rank.n_rows == 0
+        assert rank.ranked_dimensions == []
+        assert rank.root is None
+
+    def test_abstained_family_survives_routed_rankings_secondary_attach(self) -> None:
+        """Regression (found in DAT-859 self-review): ``_routed_ranking`` can pick
+        an ABSTAINED entity family as ``primary`` via its index-0 fallback (every
+        bucket-0/1 family empty) and then ``dataclasses.replace(primary,
+        secondary_dimensions=...)`` to attach a DIFFERENT, non-empty family's
+        findings — a pre-existing, correct shape (DAT-695) that DAT-859 must not
+        break. An early draft of the abstention invariant forbade ANY content
+        (including secondary_dimensions) on an abstained ranking, which made this
+        exact ``replace()`` raise; the invariant now exempts secondary_dimensions
+        (see the DriverRanking docstring) precisely so this keeps working."""
+        from dataclasses import replace
+
+        from dataraum.analysis.drivers.models import (
+            AbstainReason,
+            DriverRanking,
+            RankingStatus,
+            SecondaryDriver,
+        )
+
+        primary = DriverRanking(
+            measure="measure",
+            target_type="flow",
+            n_rows=0,
+            grain="entity",
+            status=RankingStatus.ABSTAINED,
+            abstain_reason=AbstainReason.INSUFFICIENT_DATA,
+        )
+        secondary = [
+            SecondaryDriver(dimension="prod_attr", gain=0.31, grain="entity", entity="prod")
+        ]
+
+        out = replace(primary, secondary_dimensions=secondary, entity="cust")
+
+        assert out.status == RankingStatus.ABSTAINED  # still honestly abstained
+        assert out.secondary_dimensions == secondary  # the demoted family's finding survives
+        assert out.ranked_dimensions == []  # the primary's OWN story stays empty

@@ -50,7 +50,7 @@ const Secondary = z.object({
 const DriverRanking = z.object({
 	// The measure the ranking explains (the column / ratio label).
 	measure: z.string(),
-	target_type: z.string(), // flow | stock | ratio
+	target_type: z.string(), // flow | stock | ratio; "" when abstained with no resolved type
 	// The PRIMARY family's exchangeable grain: "row", or "entity" when the measure
 	// clusters within an identity; `entity` then names WHICH identity (else null).
 	grain: z.string(),
@@ -58,6 +58,15 @@ const DriverRanking = z.object({
 	// Effective sample size the power scales with (rows, or entities at entity grain)
 	// — so "no significant driver" on few entities is honestly attributable.
 	n_rows: z.number(),
+	// DAT-859: "measured" (the engine actually ranked it) or "abstained" (a measure
+	// whose temporal_behavior was NULL/undetermined, or one of the honest-empty
+	// construction sites — no enriched view, too few candidates, no usable measure
+	// value). Surfaced honestly here — this raw tool never drops it — even though
+	// the answer-agent's `<drivers>` context filters abstained rankings out.
+	status: z.string(),
+	// Closed vocabulary (missing_inputs | insufficient_candidates | insufficient_data);
+	// null exactly when status is "measured".
+	abstain_reason: z.string().nullable(),
 	// The primary family's significant dims, strongest first.
 	ranked_dimensions: z.array(RankedDim),
 	// Surviving drill vectors (e.g. ["region","channel"]) of the primary tree.
@@ -85,6 +94,8 @@ export interface DriverRankingRow {
 	grain: string | null;
 	entity: string | null;
 	nRows: number | null;
+	status: string | null;
+	abstainReason: string | null;
 	rankedDimensions: unknown;
 	driverPaths: unknown;
 	interestingSlices: unknown;
@@ -110,6 +121,11 @@ export function projectDriverRanking(row: DriverRankingRow): DriverRanking {
 		grain: row.grain ?? "row",
 		entity: row.entity === null ? null : stripSrcDigests(row.entity),
 		n_rows: row.nRows ?? 0,
+		// The DB column is NOT NULL (CHECK-enforced); the view mirror types it
+		// nullable regardless (view-column nullability isn't introspected) — this
+		// default is defensive, not a real fallback path.
+		status: row.status ?? "measured",
+		abstain_reason: row.abstainReason ?? null,
 		ranked_dimensions: ranked.success
 			? ranked.data.map((d) => ({
 					dimension: stripSrcDigests(d.dimension),
@@ -171,6 +187,8 @@ export async function lookDrivers(input: {
 			grain: currentDriverRankings.grain,
 			entity: currentDriverRankings.entity,
 			nRows: currentDriverRankings.nRows,
+			status: currentDriverRankings.status,
+			abstainReason: currentDriverRankings.abstainReason,
 			rankedDimensions: currentDriverRankings.rankedDimensions,
 			driverPaths: currentDriverRankings.driverPaths,
 			interestingSlices: currentDriverRankings.interestingSlices,
@@ -197,8 +215,13 @@ export const lookDriversTool = toolDefinition({
 		"level the story holds (row-level, or clustered within an identity like customer); " +
 		"n_rows is the effective sample size. secondary_dimensions are drivers found at a " +
 		"DIFFERENT grain (e.g. a second identity) — kept separate, not comparable to the " +
-		"primary ranking. Pass `measure` to filter to one (substring match); omit it for " +
-		"all. Read-only; reflects the promoted begin_session run (run begin_session first).",
+		"primary ranking. status is 'measured' or 'abstained' — an abstained ranking " +
+		"(its measure's temporal behavior was undetermined, or it had no enriched " +
+		"view/too few candidates/no usable value) carries no ranked content; say so " +
+		"plainly rather than reporting 'no driver found', which implies a ranking was " +
+		"actually attempted. abstain_reason names why. Pass `measure` to filter to one " +
+		"(substring match); omit it for all. Read-only; reflects the promoted " +
+		"begin_session run (run begin_session first).",
 	inputSchema: z.object({
 		measure: z.string().optional().meta({
 			description:

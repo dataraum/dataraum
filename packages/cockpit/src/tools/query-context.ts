@@ -887,11 +887,16 @@ function grainLabel(grain: string, entity: string | null): string {
  * one row per measure column): the ranked dimensions (gain, strongest first), the
  * surviving drill paths, a few sharp slices, and any other-grain (secondary) drivers
  * kept labeled with their own grain. Measures with no driver are dropped; an entirely
- * empty set → a one-line note.
+ * empty set → a one-line note. An abstained ranking (DAT-859 — temporal_behavior
+ * undetermined, no enriched view, too few candidates, no usable value) is dropped
+ * the same way as a content-free one: this context block only ever asserts what the
+ * engine actually measured.
  */
 export function formatDrivers(rankings: DriverRanking[]): string {
 	const withDrivers = rankings.filter(
-		(r) => r.ranked_dimensions.length > 0 || r.driver_paths.length > 0,
+		(r) =>
+			r.status === "measured" &&
+			(r.ranked_dimensions.length > 0 || r.driver_paths.length > 0),
 	);
 	if (withDrivers.length === 0) {
 		return "<drivers>\n(No driver rankings yet.)\n</drivers>";

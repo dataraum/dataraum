@@ -28,6 +28,8 @@ const ranking = (over: Partial<DriverRanking> = {}): DriverRanking => ({
 	grain: "row",
 	entity: null,
 	n_rows: 50000,
+	status: "measured",
+	abstain_reason: null,
 	ranked_dimensions: [
 		{ dimension: "supplier_region", gain: 0.4 },
 		{ dimension: "product_category", gain: 0.2 },

@@ -25,6 +25,8 @@ describe("projectDriverRanking (DAT-546)", () => {
 			grain: "entity",
 			entity: "customer",
 			nRows: 200,
+			status: "measured",
+			abstainReason: null,
 			rankedDimensions: [
 				{ dimension: "region", gain: 0.42 },
 				{ dimension: "channel", gain: 0.19 },
@@ -44,6 +46,8 @@ describe("projectDriverRanking (DAT-546)", () => {
 			grain: "entity",
 			entity: "customer",
 			n_rows: 200,
+			status: "measured",
+			abstain_reason: null,
 			ranked_dimensions: [
 				{ dimension: "region", gain: 0.42 },
 				{ dimension: "channel", gain: 0.19 },
@@ -68,6 +72,8 @@ describe("projectDriverRanking (DAT-546)", () => {
 			grain: "row",
 			entity: null,
 			nRows: 10_000,
+			status: "measured",
+			abstainReason: null,
 			rankedDimensions: [{ dimension: `region`, gain: 0.3 }],
 			driverPaths: [[`region`, "channel"]],
 			interestingSlices: [
@@ -93,6 +99,8 @@ describe("projectDriverRanking (DAT-546)", () => {
 			grain: "row",
 			entity: null,
 			nRows: 0, // no power / no enriched view — an honest empty ranking
+			status: "measured",
+			abstainReason: null,
 			rankedDimensions: null, // malformed JSON blob
 			driverPaths: "not-an-array",
 			interestingSlices: undefined,
@@ -107,5 +115,29 @@ describe("projectDriverRanking (DAT-546)", () => {
 			interesting_slices: [],
 			secondary_dimensions: [],
 		});
+	});
+
+	// DAT-859: an abstained ranking (e.g. temporal_behavior undetermined) is a
+	// HONEST raw output for this tool — status/abstain_reason surface verbatim,
+	// never silently dropped, even though the answer-agent's <drivers> context
+	// (formatDrivers) filters it out for narration.
+	it("surfaces an abstained ranking's status + reason verbatim (DAT-859)", () => {
+		const row: DriverRankingRow = {
+			measureLabel: "unclassified_amount",
+			targetType: null, // unresolved — never a silent "flow" default
+			grain: "row",
+			entity: null,
+			nRows: 0,
+			status: "abstained",
+			abstainReason: "missing_inputs",
+			rankedDimensions: [],
+			driverPaths: [],
+			interestingSlices: [],
+			secondaryDimensions: [],
+		};
+		const out = projectDriverRanking(row);
+		expect(out.status).toBe("abstained");
+		expect(out.abstain_reason).toBe("missing_inputs");
+		expect(out.target_type).toBe(""); // the honest placeholder, per row.targetType ?? ""
 	});
 });

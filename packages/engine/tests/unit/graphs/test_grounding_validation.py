@@ -357,3 +357,59 @@ def test_member_value_must_appear_in_where(conn) -> None:
     served = {"account_type": {"asset", "liability"}}
     violations = validate_grounding_basis(out, _SCHEMA, conn, served)
     assert any("'asset'" in v and "no where predicate references it" in v for v in violations)
+
+
+def test_member_value_substring_of_another_served_value_is_not_referenced(conn) -> None:
+    """The lexical cross-check is boundary-aware: a served value that is a
+    SUBSTRING of the one the predicate actually selects ('an' inside 'urban')
+    must not spuriously satisfy the check and mislabel a member (senior review)."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="an")],
+        ["account_type IN ('urban')"],
+    )
+    served = {"account_type": {"an", "urban"}}  # both genuinely served
+    violations = validate_grounding_basis(out, _SCHEMA, conn, served)
+    assert any("'an'" in v and "no where predicate references it" in v for v in violations)
+
+
+def test_quoted_and_numeric_values_are_referenced_at_token_boundaries(conn) -> None:
+    """A whole-token match still accepts the real cases: a quoted string literal
+    and a bare numeric, each flanked by non-identifier characters."""
+    quoted = _member_output(
+        [FilterMember(column="account_type", value="urban")],
+        ["account_type IN ('urban')"],
+    )
+    assert validate_grounding_basis(quoted, _SCHEMA, conn, {"account_type": {"urban"}}) == []
+
+
+def test_served_value_sets_keeps_only_complete_categoricals() -> None:
+    """_served_value_sets (the member value reference) keeps a column ONLY when its
+    served top_values are the COMPLETE enumeration (distinct_count <= len); high-card
+    and unprofiled columns are omitted → honest under-coverage, not false rejection."""
+    from types import SimpleNamespace
+
+    from dataraum.graphs.agent import _served_value_sets
+
+    def col(name: str, dc: int | None, values: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(
+            column_name=name,
+            distinct_count=dc,
+            top_values=[{"value": v} for v in values],
+        )
+
+    ctx = SimpleNamespace(
+        rich_context=SimpleNamespace(
+            tables=[
+                SimpleNamespace(
+                    columns=[
+                        col("status", 2, ["posted", "void"]),  # complete → kept
+                        col("customer", 500, ["acme"]),  # high-card → omitted
+                        col("notes", None, []),  # unprofiled → omitted
+                    ]
+                )
+            ]
+        )
+    )
+    assert _served_value_sets(ctx) == {"status": {"posted", "void"}}
+    # No rich context → empty reference (validation skips value-membership entirely).
+    assert _served_value_sets(SimpleNamespace(rich_context=None)) == {}

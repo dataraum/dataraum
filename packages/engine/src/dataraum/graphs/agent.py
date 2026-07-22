@@ -206,8 +206,12 @@ def _served_value_sets(context: ExecutionContext) -> dict[str, set[str]]:
     """Column name → its COMPLETE served value-set (the DAT-787 member reference).
 
     Only columns whose ``top_values`` are the COMPLETE enumeration
-    (``distinct_count <= len(top_values)``) — the same "complete" gate the
-    prompt's Value sets render on (``_build_value_sets``). High-cardinality
+    (``distinct_count <= len(top_values)``) — the completeness half of the gate the
+    prompt's Value sets render on (``_build_value_sets``). It deliberately does NOT
+    replicate that renderer's near-constant EXCLUSION: a near-constant categorical
+    stays in this reference, so a member on it is still validated against its served
+    values (stricter, not looser — and harmless, since the prompt already tells the
+    model never to filter on such a column). High-cardinality
     (``search_values``-resolved) and unprofiled columns are omitted, so
     ``validate_grounding_basis`` treats a member on them as honest under-coverage
     rather than a false rejection. Keyed by bare column name; a name that collides

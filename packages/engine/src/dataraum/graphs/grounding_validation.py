@@ -156,12 +156,13 @@ def _member_violations(
        representation IS the equality anchor (``'posted'`` ≠ ``'Posted'``);
        nothing is folded. Columns without a complete set are honest
        under-coverage (skipped), never a false rejection of a searched value.
-    3. **value appears in the where predicates** — a coarse LEXICAL cross-check
-       (substring over the rendered predicate texts), a VALIDATOR only: it
-       confirms the declared member reflects an actual predicate, never a source
-       of the value. This is what keeps the engine-appended validity scope
-       (DAT-733, composed AFTER this runs) out of ``filter_members`` — a member
-       the LLM did not declare against its OWN predicates simply is not one.
+    3. **value appears in the where predicates** — a boundary-aware LEXICAL
+       cross-check (``_value_referenced``: the value as a whole token in the
+       rendered predicate texts), a VALIDATOR only: it confirms the declared
+       member reflects an actual predicate, never a source of the value. This is
+       what keeps the engine-appended validity scope (DAT-733, composed AFTER this
+       runs) out of ``filter_members`` — a member the LLM did not declare against
+       its OWN predicates simply is not one.
     """
     where_text = [p for p in output.where if p and p.strip()]
     violations: list[str] = []
@@ -181,13 +182,29 @@ def _member_violations(
                     f"'{member.column}', which is not a served value of that column "
                     f"({sorted(served)}) — name a served value verbatim"
                 )
-            if not any(member.value in pred for pred in where_text):
+            if not _value_referenced(member.value, where_text):
                 violations.append(
                     f"filter_members['{entry.concept}'] declares '{member.value}' but no "
                     "where predicate references it — declare exactly the values the "
                     "predicates select"
                 )
     return violations
+
+
+def _value_referenced(value: str, where_text: list[str]) -> bool:
+    """Does ``value`` appear as a WHOLE token in any where predicate?
+
+    A boundary-aware check, not a bare substring: the value must be flanked by
+    non-identifier characters (quotes, whitespace, parens, operators) so a served
+    value that is a substring of another (``'an'`` inside ``'urban'``, ``'0'`` inside
+    ``100``) does not spuriously satisfy the cross-check and mislabel a DimMember.
+    Still a VALIDATOR over the rendered predicate text (never a source of the value);
+    an empty value has nothing to locate (the column + served-value checks govern it).
+    """
+    if not value:
+        return True
+    token = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(value) + r"(?![A-Za-z0-9_])")
+    return any(token.search(pred) for pred in where_text)
 
 
 def where_filter_columns(

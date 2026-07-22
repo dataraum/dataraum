@@ -808,6 +808,32 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
         },
         False,
     ),
+    # DAT-787 the "one home" fold: a SECOND grounding selecting the SAME member as
+    # sn_billto (bill-to region='north'). og_dim_members must fold both references to
+    # ONE vertex (DISTINCT ON the key); og_filtered_by keeps BOTH edges. COUNT(*) + a
+    # non-enriched filter column → no uses edge (nothing else perturbed).
+    (
+        "sn_billto2",
+        "regional_billed_again",
+        "billed_by_region_again",
+        "enriched_journal",
+        "COUNT(*)",
+        ["billto_acct__region = 'north'"],
+        {
+            "column_mappings_basis": {
+                "regional_billed_again": {
+                    "measure_columns": [],
+                    "filter_columns": ["billto_acct__region"],
+                    "filter": "north",
+                    "filter_members": [
+                        {"column": "billto_acct__region", "value": "north"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
 ]
 
 
@@ -1307,6 +1333,7 @@ def test_current_groundings_is_graph_authored_extracts_only(graph_engine: Engine
         "sn_nul",
         "sn_billto",
         "sn_shipto",
+        "sn_billto2",
     }
     assert rows["sn_tb"].concept == "account_balance"
     assert rows["sn_tb"].relation == "enriched_journal"
@@ -1334,6 +1361,7 @@ def test_grounding_vertices_carry_the_failed_discriminator(graph_engine: Engine)
         "sn_nul": False,
         "sn_billto": False,
         "sn_shipto": False,
+        "sn_billto2": False,
     }
 
 
@@ -1364,6 +1392,7 @@ def test_grounding_parts_round_trip_vs_compose_extract_sql(graph_engine: Engine)
         "sn_fail",
         "sn_billto",
         "sn_shipto",
+        "sn_billto2",
     }
     for sid, row in props.items():
         rendered = compose_extract_sql(
@@ -1473,16 +1502,29 @@ def test_filtered_by_projects_the_referenced_dimension_members(graph_engine: Eng
         ("sn_tb", "ref:t2:account_id", "account_type", "liability", "account_balance"),
         ("sn_billto", "ref:t2:billto_acct", "region", "north", "regional_billed"),
         ("sn_shipto", "ref:t2:shipto_acct", "region", "north", "regional_shipped"),
+        # sn_billto2 selects the SAME member as sn_billto — a SECOND edge to it.
+        ("sn_billto2", "ref:t2:billto_acct", "region", "north", "regional_billed_again"),
     }
     # No non-dimension / scope value ever leaks in as a member (posted / true).
     assert not {(sid, val) for sid, _, _, val, _ in rows if val in ("posted", "true")}
+    # The "one home" fold: bill-to region='north' is selected by TWO groundings but
+    # remains ONE member (the vertex-side fold is asserted in the vertex test).
+    billto_north = {
+        sid for sid, cg, _, val, _ in rows if cg == "ref:t2:billto_acct" and val == "north"
+    }
+    assert billto_north == {"sn_billto", "sn_billto2"}
 
 
 def test_dim_member_vertices_are_distinct_per_role(graph_engine: Engine) -> None:
     """DAT-787 dim_member vertices: one node per (DAT-788 role-separated axis
     identity × served value). The two region='north' members are SEPARATE vertices
     (distinct dim_member_key) because bill-to and ship-to are unmerged role axes —
-    the content-derived key never folds them, and never carries a per-run component."""
+    the content-derived key never folds them, and never carries a per-run component.
+
+    Conversely, the "one home" fold: sn_billto and sn_billto2 BOTH select bill-to
+    region='north', yet it is ONE vertex — the DISTINCT ON the key collapses the two
+    references (were it not, the duplicate key would fail graph materialization). The
+    exactly-4 unique keys below prove the fold held."""
     sql = (
         f"SELECT mkey, cg, attr, val FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (m IS dim_member) "

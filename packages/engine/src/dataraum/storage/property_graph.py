@@ -1083,7 +1083,10 @@ def _element_view_sql(name: str) -> str:
         # (snippet, member) collapses a member two of the grounding's concepts both
         # select into ONE edge, keeping the first ``concept`` (the tiebreak is TOTAL);
         # ``concept`` rides as the edge property (which concept's filter selected the
-        # member). edge_key = snippet + the member key ('_'-joined, NOT ':' a
+        # member). Consumer caveat (the og_uses role-collision parallel): when two of a
+        # grounding's concepts select the SAME member, the surviving edge names only the
+        # alphabetically-first concept — a consumer keying strictly on the other concept
+        # can under-report it. edge_key = snippet + the member key ('_'-joined, NOT ':' a
         # bind-param sigil to text()). Failed groundings carry no basis and are
         # excluded (the WHERE in the shared source).
         return (

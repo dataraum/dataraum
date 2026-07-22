@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.cycles import cycle_family_store
 from dataraum.analysis.cycles.cycle_family_store import (
     ensure_cycle_families_seeded,
+    format_cycle_families_for_context,
     load_workspace_cycle_families,
 )
 from dataraum.analysis.cycles.db_models import CycleFamily
@@ -135,3 +136,20 @@ def test_born_loud_family_name_collides_with_cycle_type(
     )
     with pytest.raises(ValueError, match="collides with a cycle type"):
         ensure_cycle_families_seeded(session, "finance")
+
+
+def test_format_families_for_context_is_generic_and_carries_the_declaration() -> None:
+    block = format_cycle_families_for_context(
+        {"settlement": {"incoming": "accounts_receivable", "outgoing": "accounts_payable"}}
+    )
+    # Generic mechanism header + the vertical's DECLARED data (family + member names).
+    assert "CYCLE FAMILIES (direction axis)" in block
+    assert "### settlement" in block
+    assert "incoming → accounts_receivable" in block
+    assert "outgoing → accounts_payable" in block
+    # The honest-answer instruction rides along, domain-free.
+    assert "undetermined" in block
+
+
+def test_format_families_empty_is_empty() -> None:
+    assert format_cycle_families_for_context({}) == ""

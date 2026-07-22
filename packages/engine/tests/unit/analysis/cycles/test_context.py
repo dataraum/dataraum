@@ -23,6 +23,7 @@ from dataraum.analysis.cycles.context import (
     build_cycle_detection_context,
     format_context_for_prompt,
 )
+from dataraum.analysis.cycles.cycle_family_store import ensure_cycle_families_seeded
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -127,6 +128,30 @@ def _build(session, table_ids, *, base_runs: BaseRunMap, **kwargs):
         base_runs=base_runs,
         **kwargs,
     )
+
+
+def test_cycle_families_served_and_threaded(session) -> None:
+    """The seeded family declaration (DAT-856) reaches the judge as DOMAIN KNOWLEDGE
+    data AND is threaded into the context for the save-time direction resolution."""
+    ensure_cycle_families_seeded(session, "finance")
+    ctx = _build(session, [], base_runs=BaseRunMap())
+    # Threaded for _parse_output's resolve_cycle_identity.
+    assert ctx["cycle_families"] == {
+        "settlement": {"incoming": "accounts_receivable", "outgoing": "accounts_payable"}
+    }
+    # Served as data (the family + member names come from the declaration, never
+    # hardcoded in the generic prompt — the tripwire pins that boundary).
+    vocab = ctx["domain_vocabulary"]
+    assert "CYCLE FAMILIES" in vocab
+    assert "settlement" in vocab
+    assert "incoming → accounts_receivable" in vocab
+
+
+def test_no_families_leaves_domain_vocabulary_unchanged(session) -> None:
+    """A vertical with no declared families serves no family block (empty ⇒ omitted)."""
+    ctx = _build(session, [], base_runs=BaseRunMap())
+    assert ctx["cycle_families"] == {}
+    assert "CYCLE FAMILIES" not in ctx["domain_vocabulary"]
 
 
 def test_unpinned_run_reads_no_run_versioned_data(session, two_tables_two_runs) -> None:

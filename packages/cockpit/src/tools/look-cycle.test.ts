@@ -29,6 +29,8 @@ describe("projectCycleOverview (DAT-465)", () => {
 			cycleName: "Order-to-Cash Cycle",
 			businessValue: "high",
 			isKnownType: true,
+			family: null,
+			direction: null,
 			confidence: 0.92,
 			completionRate: 0.82,
 			completedCycles: 41,
@@ -42,11 +44,37 @@ describe("projectCycleOverview (DAT-465)", () => {
 			state_reason: null,
 			business_value: "high",
 			is_known_type: true,
+			family: null,
+			direction: null,
 			confidence: 0.92,
 			completion_rate: 0.82,
 			completed_cycles: 41,
 			total_records: 50,
 		});
+	});
+
+	it("surfaces a family cycle's undetermined direction verbatim (DAT-856)", () => {
+		const artifact: LifecycleArtifactRow = {
+			artifactKey: "settlement",
+			state: "executed",
+			stateReason: null,
+		};
+		const detected: CycleDetectionRow = {
+			cycleName: "Settlement Cycle",
+			businessValue: "high",
+			isKnownType: true,
+			family: "settlement",
+			direction: "undetermined",
+			confidence: 0.6,
+			completionRate: 0.5,
+			completedCycles: 5,
+			totalRecords: 10,
+		};
+
+		const projected = projectCycleOverview(artifact, detected);
+		// The detected-but-undirected state is surfaced as exactly that.
+		expect(projected.family).toBe("settlement");
+		expect(projected.direction).toBe("undetermined");
 	});
 
 	it("keeps a not-detected cycle's state_reason first-class (visibly impossible)", () => {
@@ -66,6 +94,8 @@ describe("projectCycleOverview (DAT-465)", () => {
 		expect(projected.completed_cycles).toBeNull();
 		expect(projected.total_records).toBeNull();
 		expect(projected.is_known_type).toBeNull();
+		expect(projected.family).toBeNull();
+		expect(projected.direction).toBeNull();
 	});
 
 	it("renders the grounded-but-unmeasured case (completion_rate null, reason set)", () => {
@@ -78,6 +108,8 @@ describe("projectCycleOverview (DAT-465)", () => {
 			cycleName: "Bank Reconciliation",
 			businessValue: "high",
 			isKnownType: true,
+			family: null,
+			direction: null,
 			confidence: 0.7,
 			completionRate: null,
 			completedCycles: null,
@@ -104,6 +136,8 @@ describe("projectCycleOverview (DAT-465)", () => {
 			cycleName: `Flow over inventory`,
 			businessValue: "medium",
 			isKnownType: false,
+			family: null,
+			direction: null,
 			confidence: 0.4,
 			completionRate: 0.3,
 			completedCycles: 3,

@@ -128,6 +128,18 @@ export function CycleListWidget({
 												{c.cycle_name}
 											</Text>
 										)}
+										{/* Direction axis (DAT-856): a family cycle names its
+										    direction — "undetermined" reads as the honest
+										    detected-but-undirected state, never a guessed label. */}
+										{c.direction && (
+											<Text
+												size="xs"
+												c="dimmed"
+												data-testid={`cycle-direction-${c.canonical_type}`}
+											>
+												direction {c.direction}
+											</Text>
+										)}
 									</Table.Td>
 									<Table.Td>
 										<LifecycleStateBadge state={c.state} />

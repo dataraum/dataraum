@@ -30,6 +30,8 @@ const EXECUTED: WhyCycleResult = {
 	strictness: 0.8,
 	grounded_against: JSON.stringify({ detect: "run-7" }),
 	is_known_type: true,
+	family: null,
+	direction: null,
 	business_value: "high",
 	confidence: 0.92,
 	description: "Revenue cycle from order through collection.",
@@ -73,6 +75,24 @@ describe("CycleWhyWidget (DAT-465)", () => {
 	it("renders the not-found state", () => {
 		renderWidget({ ...EXECUTED, found: false });
 		expect(screen.getByTestId("canvas-cycle-why-notfound")).toBeTruthy();
+	});
+
+	it("renders a family cycle's undetermined direction honestly (DAT-856)", () => {
+		renderWidget({
+			...EXECUTED,
+			canonical_type: "settlement",
+			cycle_name: "Settlement Cycle",
+			family: "settlement",
+			direction: "undetermined",
+		});
+		expect(
+			screen.getByTestId("canvas-cycle-why-direction").textContent,
+		).toContain("direction undetermined");
+	});
+
+	it("renders no direction line for a non-family cycle", () => {
+		renderWidget(EXECUTED);
+		expect(screen.queryByTestId("canvas-cycle-why-direction")).toBeNull();
 	});
 
 	it("renders the not-detected reason as a first-class alert (visibly impossible)", () => {

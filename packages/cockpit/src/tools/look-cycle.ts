@@ -48,6 +48,11 @@ const CycleOverview = z.object({
 	// Detection facts, joined by canonical_type — null when not detected.
 	business_value: z.string().nullable(),
 	is_known_type: z.boolean().nullable(),
+	// Direction axis (DAT-856): the declared family + resolved direction. Both null
+	// for a non-family cycle; for a family cycle, `direction` is a declared label or
+	// "undetermined" — the honest detected-but-undirected state, surfaced verbatim.
+	family: z.string().nullable(),
+	direction: z.string().nullable(),
 	confidence: z.number().nullable(),
 	// The structural completion measurement: rate (0–1), completed count, total
 	// records considered. null when not measured.
@@ -72,6 +77,8 @@ export interface CycleDetectionRow {
 	cycleName: string | null;
 	businessValue: string | null;
 	isKnownType: boolean | null;
+	family: string | null;
+	direction: string | null;
 	confidence: number | null;
 	completionRate: number | null;
 	completedCycles: number | null;
@@ -100,6 +107,8 @@ export function projectCycleOverview(
 				: stripSrcDigests(artifact.stateReason),
 		business_value: detected?.businessValue ?? null,
 		is_known_type: detected?.isKnownType ?? null,
+		family: detected?.family ?? null,
+		direction: detected?.direction ?? null,
 		confidence: detected?.confidence ?? null,
 		completion_rate: detected?.completionRate ?? null,
 		completed_cycles: detected?.completedCycles ?? null,
@@ -133,6 +142,8 @@ export async function lookCycle(): Promise<LookCycleResult> {
 			cycleName: currentDetectedBusinessCycles.cycleName,
 			businessValue: currentDetectedBusinessCycles.businessValue,
 			isKnownType: currentDetectedBusinessCycles.isKnownType,
+			family: currentDetectedBusinessCycles.family,
+			direction: currentDetectedBusinessCycles.direction,
 			confidence: currentDetectedBusinessCycles.confidence,
 			completionRate: currentDetectedBusinessCycles.completionRate,
 			completedCycles: currentDetectedBusinessCycles.completedCycles,
@@ -146,6 +157,8 @@ export async function lookCycle(): Promise<LookCycleResult> {
 				cycleName: d.cycleName,
 				businessValue: d.businessValue,
 				isKnownType: d.isKnownType,
+				family: d.family,
+				direction: d.direction,
 				confidence: d.confidence,
 				completionRate: d.completionRate,
 				completedCycles: d.completedCycles,

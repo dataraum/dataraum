@@ -37,6 +37,8 @@ const EXECUTED = {
 	state_reason: null,
 	business_value: "high",
 	is_known_type: true,
+	family: null,
+	direction: null,
 	confidence: 0.92,
 	completion_rate: 0.82,
 	completed_cycles: 41,
@@ -50,10 +52,29 @@ const NOT_DETECTED = {
 	state_reason: "not detected in this workspace",
 	business_value: null,
 	is_known_type: null,
+	family: null,
+	direction: null,
 	confidence: null,
 	completion_rate: null,
 	completed_cycles: null,
 	total_records: null,
+};
+
+// A detected-but-undirected family cycle (DAT-856): the honest state the list must
+// surface as exactly that, never a guessed member label.
+const UNDIRECTED = {
+	canonical_type: "settlement",
+	cycle_name: "Settlement Cycle",
+	state: "executed",
+	state_reason: null,
+	business_value: "high",
+	is_known_type: true,
+	family: "settlement",
+	direction: "undetermined",
+	confidence: 0.6,
+	completion_rate: 0.5,
+	completed_cycles: 5,
+	total_records: 10,
 };
 
 const analyzed: LookCycleResult = {
@@ -88,6 +109,13 @@ describe("CycleListWidget (DAT-465)", () => {
 	it("keeps a not-detected cycle's reason readable IN the row (visibly impossible)", () => {
 		renderWidget(analyzed);
 		expect(screen.getByText("not detected in this workspace")).toBeTruthy();
+	});
+
+	it("surfaces a family cycle's undetermined direction in its row (DAT-856)", () => {
+		renderWidget({ ...analyzed, cycles: [UNDIRECTED] });
+		expect(
+			screen.getByTestId("cycle-direction-settlement").textContent,
+		).toContain("direction undetermined");
 	});
 
 	it("renders the not-run state pointing at the operating-model stage", () => {

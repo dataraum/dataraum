@@ -19,6 +19,7 @@ from dataraum.analysis.semantic.concept_store import (
     ensure_concepts_seeded,
     load_workspace_concepts,
 )
+from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
 from dataraum.analysis.semantic.db_models import Concept
 from dataraum.analysis.semantic.ontology import OntologyConcept, OntologyDefinition
 
@@ -149,12 +150,26 @@ def test_seed_born_loud_on_invalid_ordering(
 
 def test_load_workspace_concepts_reads_typed_rows(session: Session) -> None:
     ensure_concepts_seeded(session, "finance")
+    ensure_conventions_seeded(session, "finance")
     definition = load_workspace_concepts(session, "finance")
     by_name = {c.name: c for c in definition.concepts}
     assert len(by_name) == 22
     assert by_name["revenue"].kind == "measure"
-    # Conventions still come from YAML (not config→DB in this phase).
+    # Conventions ALSO come from the typed home now (DAT-789), carried on the same
+    # OntologyDefinition — read from the DB, not the YAML.
     assert any(conv.id == "sign_natural_balance" for conv in definition.conventions)
+
+
+def test_load_workspace_concepts_conventions_empty_without_convention_seed(
+    session: Session,
+) -> None:
+    """Conventions come ONLY from the typed home now (DAT-789).
+
+    Concepts seeded but conventions NOT — the definition carries no conventions until
+    they are seeded into the ``conventions`` table (the YAML is no longer a runtime read).
+    """
+    ensure_concepts_seeded(session, "finance")
+    assert load_workspace_concepts(session, "finance").conventions == []
 
 
 def test_load_excludes_superseded_rows(session: Session) -> None:

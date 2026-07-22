@@ -7,6 +7,7 @@
 //   sources         — register a data source before addSourceWorkflow
 //   config_overlay  — the teach vocabulary IS overlay rows
 //   concepts        — the typed concept vocabulary `frame` declares/edits (DAT-728)
+//   conventions     — the typed domain-convention home `frame` declares/edits (DAT-789)
 //   sql_snippets    — save-on-clean grows the snippet library (DAT-486)
 //
 // (DAT-506 removed `investigation_sessions` — the engine dropped the table + its
@@ -71,6 +72,29 @@ export const conceptsWrite = pgTable("concepts", {
 	indicators: json("indicators").$type<string[]>(),
 	excludePatterns: json("exclude_patterns").$type<string[]>(),
 	unitFromConcept: varchar("unit_from_concept"),
+	// Dimension-ordering fact (DAT-730): "ordered" | "nominal" | NULL (⇒ nominal).
+	// `frame` authors it on a dimension concept; NULL for the common case. Mirrors the
+	// engine `Concept.ordering` column (ck_concepts_ordering).
+	ordering: varchar("ordering"),
+	source: varchar("source"),
+	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+	supersededAt: timestamp("superseded_at", { mode: "date" }),
+});
+
+/** Raw `conventions` — the typed domain-convention home (DAT-789, config→DB). `frame`
+ * declares/edits conventions as an edit = supersede active (UPDATE superseded_at) +
+ * INSERT a new active row, exactly like `concepts`. Only the columns the cockpit
+ * writes/reads — the engine SQLAlchemy `Convention` model owns the full shape (identity
+ * `convention_id` minted here as a uuid; `source='frame'`). `statement` is served
+ * verbatim (declared human judgment, never interpreted); `targets` / `concept_groups`
+ * are engine `JSON` (not JSONB). */
+export const conventionsWrite = pgTable("conventions", {
+	conventionId: varchar("convention_id").primaryKey(),
+	vertical: varchar("vertical").notNull(),
+	name: varchar("name").notNull(),
+	statement: text("statement").notNull(),
+	targets: json("targets").$type<string[]>(),
+	conceptGroups: json("concept_groups").$type<Record<string, string[]>>(),
 	source: varchar("source"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 	supersededAt: timestamp("superseded_at", { mode: "date" }),

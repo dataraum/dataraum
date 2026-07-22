@@ -22,6 +22,7 @@ from dataraum.analysis.semantic.concept_store import (
     load_workspace_concepts,
     require_active_vertical,
 )
+from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
 from dataraum.graphs.metric_store import ensure_metrics_seeded
@@ -158,6 +159,11 @@ class SemanticPerColumnPhase(BasePhase):
         # finance seeds from its shipped ontology; a framed vertical seeds nothing
         # here and relies on frame's typed writes.
         ensure_concepts_seeded(ctx.session, ontology)
+        # Conventions (DAT-789): seed the vertical's domain conventions into the typed
+        # `conventions` home right after the concepts their `concept_groups` name — same
+        # idempotent config→DB seed. All three SQL authors (extraction, validation, the
+        # cockpit Q&A agent) now read this table, not the YAML; `frame` writes here too.
+        ensure_conventions_seeded(ctx.session, ontology)
         # Concept edges (DAT-729): seed the vertical's typed vocabulary edges
         # (disjoint_with from the convention partitions) into `concept_edges` right
         # after the concepts they reference — same idempotent config→DB seed.

@@ -11,13 +11,10 @@ vi.mock("#/config", () => ({
 // Mode-shared base config (DAT-819) — reached transitively via the
 // registry/db seam; parsing the real one needs env this test does not set.
 vi.mock("#/config.base", () => ({ baseConfig: {} }));
+// Conventions now read the mirrored `conventions` view via this client (DAT-789);
+// the empty stub makes buildConventionsBlock's read fail closed to "" (best-effort),
+// which is fine here — this file exercises reuse/band/assembly, not conventions.
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
-// query.ts reads the workspace vertical (for DAT-645 conventions) via the cockpit
-// registry, which transitively pulls the bun-SQL client — stub it so the unit
-// import stays node-resolvable.
-vi.mock("#/db/cockpit/registry", () => ({
-	resolveActiveWorkspaceRow: async () => ({ vertical: "finance" }),
-}));
 
 // findById drives reuse classification; the other library exports exist only so
 // snippet-search (pulled via query.ts) imports cleanly.

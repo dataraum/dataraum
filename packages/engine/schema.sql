@@ -51,6 +51,22 @@ CREATE TABLE config_overlay (
 
 CREATE INDEX idx_config_overlay_active ON config_overlay (superseded_at, type);
 
+CREATE TABLE conventions (
+	convention_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	statement TEXT NOT NULL, 
+	targets JSON, 
+	concept_groups JSON, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_conventions PRIMARY KEY (convention_id), 
+	CONSTRAINT ck_conventions_source CHECK (source IS NULL OR source IN ('frame', 'seed'))
+);
+
+CREATE UNIQUE INDEX uq_convention_active ON conventions (vertical, name) WHERE superseded_at IS NULL;
+
 CREATE TABLE detected_business_cycles (
 	cycle_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 

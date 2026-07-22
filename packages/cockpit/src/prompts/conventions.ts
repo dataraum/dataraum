@@ -1,23 +1,28 @@
-// Vertical conventions for the cockpit Q&A agent (DAT-645).
+// Vertical conventions for the cockpit Q&A agent (DAT-645 → DAT-789).
 //
 // The TS mirror of the engine's `OntologyLoader.format_conventions_for_prompt`
 // (`packages/engine/.../analysis/semantic/ontology.py`). The engine pipes a
 // vertical's conventions verbatim into its two SQL-authoring agents (extraction +
 // validation); the cockpit Q&A agent is the third SQL author (`targets: [..., qa]`)
-// and gets the same rule here. The cockpit NEVER interprets the content — it reads
-// the bind-mounted `verticals/<v>/ontology.yaml`, routes by the generic `target`
-// label, and emits the `statement` + `concept_groups` as-is for the LLM. The
-// finance-specific sign/credit/debit vocabulary lives only in the YAML.
+// and gets the same rule here. The cockpit NEVER interprets the content — it routes by
+// the generic `target` label and emits the `statement` + `concept_groups` as-is.
+//
+// Conventions moved config→DB (DAT-789): the source is no longer the bind-mounted
+// `verticals/<v>/ontology.yaml` — it is the mirrored `conventions` read view (the
+// reader role's promoted-read surface, already scoped to the workspace's bound active
+// vertical), so a `frame`-authored convention reaches Q&A exactly as it reaches
+// extraction + validation. The finance-specific sign/credit/debit vocabulary lives in
+// the vertical seed, never in this code.
 //
 // Q&A only ever uses the BROAD `qa` target (no per-spec qualifier), so the match is
 // a plain membership test — unlike validation, which routes per spec.
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isNull } from "drizzle-orm";
 
-import { config } from "../config";
+import { conventions as conventionsView } from "#/db/metadata/schema";
 
-// Untrusted shape off disk (rule 11) — narrowed below, never trusted.
+// Untrusted shape (rule 11) — narrowed below, never trusted. The DB read is typed, but
+// `formatConventionsBlock` stays defensive so it also serves raw callers + tests.
 type ConventionDoc = {
 	targets?: unknown;
 	statement?: unknown;
@@ -63,30 +68,29 @@ export function formatConventionsBlock(
 }
 
 /**
- * Read the vertical's conventions and render those targeting `target` (default
- * `qa`) for the Q&A agent's user turn. "" when the vertical is null, the ontology
- * is missing/unparseable, or none target this consumer — best-effort, never throws
- * (a config-read blip must not fail an answer). The cockpit never interprets the
- * content; it routes by label and emits the YAML's statement + groups as-is.
+ * Read the workspace's active-vertical conventions from the mirrored `conventions`
+ * view and render those targeting `target` (default `qa`) for the Q&A agent's user
+ * turn. "" when none target this consumer — best-effort, never throws (a metadata-read
+ * blip must not fail an answer). The reader-role view is ALREADY scoped to the
+ * workspace's bound active vertical (DAT-848), so no vertical argument is needed; this
+ * function only filters out superseded rows and routes by label. The cockpit never
+ * interprets the content; it emits the DB's statement + groups as-is.
  */
-export async function buildConventionsBlock(
-	vertical: string | null,
-	target = "qa",
-): Promise<string> {
-	// `_adhoc` (and any framed `_…` vertical) ships no conventions — skip the read
-	// entirely, mirroring list-verticals.ts's `startsWith("_")` guard.
-	if (!vertical || vertical.startsWith("_")) return "";
+export async function buildConventionsBlock(target = "qa"): Promise<string> {
 	try {
-		const text = await readFile(
-			join(config.dataraumConfigPath, "verticals", vertical, "ontology.yaml"),
-			"utf8",
-		);
-		// Bun's YAML, imported lazily (mirrors list-verticals.ts): a static import
-		// of "bun" would make merely importing this module pull "bun", which the
-		// node-run vitest workers can't resolve.
-		const { YAML } = await import("bun");
-		const doc = (YAML.parse(text) ?? null) as { conventions?: unknown } | null;
-		return formatConventionsBlock(doc?.conventions, target);
+		// The metadata client is imported lazily (it constructs the reader-role SQL
+		// client at module scope): a static import would pull it into every consumer of
+		// this module + the node-run vitest workers. Mirrors the old lazy `bun` import.
+		const { metadataDb } = await import("#/db/metadata/client");
+		const rows = await metadataDb
+			.select({
+				targets: conventionsView.targets,
+				statement: conventionsView.statement,
+				concept_groups: conventionsView.conceptGroups,
+			})
+			.from(conventionsView)
+			.where(isNull(conventionsView.supersededAt));
+		return formatConventionsBlock(rows, target);
 	} catch {
 		return "";
 	}

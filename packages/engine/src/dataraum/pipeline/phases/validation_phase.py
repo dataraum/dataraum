@@ -30,7 +30,8 @@ from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
-from dataraum.analysis.semantic.ontology import OntologyLoader
+from dataraum.analysis.semantic.convention_store import load_workspace_conventions
+from dataraum.analysis.semantic.ontology import OntologyDefinition, OntologyLoader
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.config import load_all_validation_specs
 from dataraum.analysis.validation.db_models import ValidationResultRecord
@@ -190,14 +191,25 @@ class ValidationPhase(BasePhase):
             )
         table_names = ", ".join(t["table_name"] for t in schema.get("tables", []))
 
-        # DAT-645: the vertical's conventions, piped verbatim into the SQL
-        # generation of the validations they target. A convention is routed
-        # PER-SPEC (qualifier = the validation id), so a sign rule reaches only the
-        # validations that name it (e.g. `validation:sign_conventions`) and stays
-        # out of unrelated checks. Same source of truth the graph agent uses for
-        # extraction. Empty when the vertical declares none.
+        # DAT-645 → DAT-789: the vertical's conventions, piped verbatim into the SQL
+        # generation of the validations they target. A convention is routed PER-SPEC
+        # (qualifier = the validation id), so a sign rule reaches only the validations
+        # that name it (e.g. `validation:sign_conventions`) and stays out of unrelated
+        # checks. This phase was the LAST convention consumer still doing a raw
+        # `OntologyLoader.load(vertical)` (YAML-only) — it now reads the typed
+        # `conventions` home, the same source extraction + Q&A read, so a
+        # `frame`-authored convention finally reaches validation prompts (the asymmetry
+        # DAT-789 fixes). model_construct skips the concept↔group lint: a stale-but-served
+        # convention must never crash the read. Empty when the vertical declares none.
         ontology_loader = OntologyLoader()
-        ontology = ontology_loader.load(vertical) if vertical else None
+        ontology = (
+            OntologyDefinition.model_construct(
+                name=vertical,
+                conventions=load_workspace_conventions(ctx.session, vertical),
+            )
+            if vertical
+            else None
+        )
 
         # bind → execute per declared spec, parallelized (DAT-651). The per-spec
         # work is PURE compute — one LLM bind + EXPLAIN, then a pure-DuckDB

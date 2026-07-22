@@ -304,15 +304,17 @@ def test_current_tables_returns_promoted_typed_representative_only() -> None:
 
 
 def test_concept_views_are_vertical_scoped() -> None:
-    """DAT-848: the concept vocabulary views scope to the workspace's active vertical.
+    """DAT-848: the vertical-scoped vocabulary views scope to the active vertical.
 
-    ``concepts`` / ``concept_edges`` are un-versioned but must NOT be plain
-    pass-throughs — each filters to ``workspace_settings.active_vertical`` (with the
-    ``_adhoc`` placeholder fallback for an unbound workspace) so a row left under a
-    wrong vertical is never served (``og_concepts`` and the cockpit mirror read these
-    views)."""
+    ``concepts`` / ``concept_edges`` / ``conventions`` are un-versioned but must NOT be
+    plain pass-throughs — each filters to ``workspace_settings.active_vertical`` (with
+    the ``_adhoc`` placeholder fallback for an unbound workspace) so a row left under a
+    wrong vertical is never served (``og_concepts``, the convention renderers, and the
+    cockpit mirror read these views). Pins that ``conventions`` (DAT-789) stays in
+    ``_VERTICAL_SCOPED`` — the schema-drift CI job only catches DDL text drift, not the
+    semantic loss of scoping if a table silently drops off the tuple."""
     statements = dict(read_view_statements())
-    for name in ("concepts", "concept_edges"):
+    for name in ("concepts", "concept_edges", "conventions"):
         sql = statements[name]
         assert f"SELECT active_vertical FROM {WS_TOKEN}.workspace_settings" in sql, name
         assert "COALESCE(" in sql and "'_adhoc'" in sql, name

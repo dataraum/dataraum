@@ -85,6 +85,12 @@ DROP VIEW IF EXISTS __READ__.config_overlay;
 CREATE VIEW __READ__.config_overlay AS
 SELECT * FROM __WS__.config_overlay;
 
+DROP VIEW IF EXISTS __READ__.conventions;
+CREATE VIEW __READ__.conventions AS
+SELECT * FROM __WS__.conventions
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
 DROP VIEW IF EXISTS __READ__.current_derived_columns;
 CREATE VIEW __READ__.current_derived_columns AS
 SELECT r.* FROM __WS__.derived_columns r

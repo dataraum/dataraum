@@ -146,6 +146,14 @@ _VERTICAL_SCOPED: tuple[str, ...] = (
     # the cockpit teach path writes config_overlay (the ``⊕`` layer), not this table,
     # and the frame validation-write + Drizzle mirror are a later lane.
     "validations",
+    # The cycle-family declaration (DAT-856) is likewise declaration-versioned and PER
+    # VERTICAL (keyed ``(vertical, family)``, ``superseded_at`` the only lifecycle
+    # axis), so it scopes the same way — cross-vertical rows from a wrong ``--vertical``
+    # never leak into any ``__READ__.cycle_families`` reader. Engine-internal today (the
+    # store reads the base table with an active-vertical filter; the cockpit surfaces
+    # family/direction off the detected-cycle columns, not this table). No control-plane
+    # WRITE grant: 'seed' is the only writer until a frame-family path lands.
+    "cycle_families",
 )
 
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the

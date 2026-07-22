@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from dataraum.analysis.cycles.config import (
+    UNDETERMINED_DIRECTION,
     format_cycle_vocabulary_for_context,
     get_cycle_types,
     map_to_canonical_type,
+    resolve_cycle_identity,
 )
+
+# The finance settlement family, as the seed loads it — the declaration the save-time
+# resolution validates the emitted direction against.
+_FINANCE_FAMILIES = {
+    "settlement": {"incoming": "accounts_receivable", "outgoing": "accounts_payable"}
+}
 
 
 class TestGetCycleTypes:
@@ -152,3 +160,104 @@ class TestFormatCycleVocabulary:
         # EMPTY config, never raises — "no declared cycles" is a loud phase-tier
         # outcome, not a loader crash.
         assert format_cycle_vocabulary_for_context(vertical="nonexistent") == ""
+
+
+class TestResolveCycleIdentity:
+    """The direction-axis resolution (DAT-856) — the sole producer of (family, direction)."""
+
+    def test_decided_direction_resolves_to_the_member(self) -> None:
+        r = resolve_cycle_identity(
+            cycle_type="settlement",
+            family="settlement",
+            direction="outgoing",
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        # A decided direction resolves to its declared member — canonical is the member,
+        # keeping the vocabulary is_known_type and the validation-health linkage on it.
+        assert r.canonical_type == "accounts_payable"
+        assert r.is_known_type is True
+        assert r.family == "settlement"
+        assert r.direction == "outgoing"
+
+    def test_incoming_resolves_to_receivable(self) -> None:
+        r = resolve_cycle_identity(
+            cycle_type="settlement",
+            family="settlement",
+            direction="incoming",
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        assert r.canonical_type == "accounts_receivable"
+        assert r.direction == "incoming"
+
+    def test_undetermined_keeps_the_family_as_canonical(self) -> None:
+        r = resolve_cycle_identity(
+            cycle_type="settlement",
+            family="settlement",
+            direction=UNDETERMINED_DIRECTION,
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        # The detected-but-undirected state: canonical is the FAMILY, never a coerced
+        # member; is_known because the family is declared.
+        assert r.canonical_type == "settlement"
+        assert r.is_known_type is True
+        assert r.family == "settlement"
+        assert r.direction == UNDETERMINED_DIRECTION
+
+    def test_off_vocab_direction_degrades_to_undetermined(self) -> None:
+        # A direction the family does not declare: keep the family detection, leave the
+        # axis honestly undetermined rather than guess a member (recall over coercion).
+        r = resolve_cycle_identity(
+            cycle_type="settlement",
+            family="settlement",
+            direction="sideways",
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        assert r.canonical_type == "settlement"
+        assert r.family == "settlement"
+        assert r.direction == UNDETERMINED_DIRECTION
+
+    def test_undeclared_family_falls_to_the_cycle_type_path(self) -> None:
+        # The judge named a family the vertical does not declare → resolve by cycle_type,
+        # family/direction NULL (a non-family cycle).
+        r = resolve_cycle_identity(
+            cycle_type="order_to_cash",
+            family="not_a_family",
+            direction="incoming",
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        assert r.canonical_type == "order_to_cash"
+        assert r.is_known_type is True
+        assert r.family is None
+        assert r.direction is None
+
+    def test_non_family_cycle_keeps_todays_behavior(self) -> None:
+        r = resolve_cycle_identity(
+            cycle_type="order_to_cash",
+            family="",
+            direction="",
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        assert r.canonical_type == "order_to_cash"
+        assert r.is_known_type is True
+        assert r.family is None
+        assert r.direction is None
+
+    def test_non_family_off_vocab_cycle_preserved(self) -> None:
+        # The existing off-vocab fallback is untouched for the non-family path.
+        r = resolve_cycle_identity(
+            cycle_type="incident_resolution",
+            family="",
+            direction="",
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        assert r.canonical_type == "incident_resolution"
+        assert r.is_known_type is False
+        assert r.family is None
+        assert r.direction is None

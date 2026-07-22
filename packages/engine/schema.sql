@@ -67,6 +67,20 @@ CREATE TABLE conventions (
 
 CREATE UNIQUE INDEX uq_convention_active ON conventions (vertical, name) WHERE superseded_at IS NULL;
 
+CREATE TABLE cycle_families (
+	family_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	family VARCHAR NOT NULL, 
+	directions JSON NOT NULL, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_cycle_families PRIMARY KEY (family_id), 
+	CONSTRAINT ck_cycle_families_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_cycle_family_active ON cycle_families (vertical, family) WHERE superseded_at IS NULL;
+
 CREATE TABLE detected_business_cycles (
 	cycle_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
@@ -74,6 +88,8 @@ CREATE TABLE detected_business_cycles (
 	cycle_type VARCHAR NOT NULL, 
 	canonical_type VARCHAR NOT NULL, 
 	is_known_type BOOLEAN NOT NULL, 
+	family VARCHAR, 
+	direction VARCHAR, 
 	description TEXT, 
 	business_value VARCHAR NOT NULL, 
 	confidence FLOAT NOT NULL, 
@@ -89,7 +105,8 @@ CREATE TABLE detected_business_cycles (
 	evidence JSON NOT NULL, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_detected_business_cycles PRIMARY KEY (cycle_id), 
-	CONSTRAINT uq_detected_cycle_run UNIQUE (canonical_type, run_id)
+	CONSTRAINT uq_detected_cycle_run UNIQUE (canonical_type, run_id), 
+	CONSTRAINT ck_detected_business_cycles_family_direction CHECK ((family IS NULL AND direction IS NULL) OR (family IS NOT NULL AND direction IS NOT NULL))
 );
 
 CREATE TABLE lifecycle_artifacts (

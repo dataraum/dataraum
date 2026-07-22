@@ -22,6 +22,7 @@ from dataraum.analysis.semantic.concept_store import (
     load_workspace_concepts,
     require_active_vertical,
 )
+from dataraum.analysis.cycles.cycle_family_store import ensure_cycle_families_seeded
 from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.analysis.validation.validation_store import ensure_validations_seeded
@@ -181,6 +182,11 @@ class SemanticPerColumnPhase(BasePhase):
         # (seed ⊕ generated) instead of the YAML directory walk. Agentic induction adds
         # `source='generated'` rows in the operating_model stage.
         ensure_validations_seeded(ctx.session, ontology)
+        # Cycle families (DAT-856): seed the vertical's direction-axis declaration into
+        # the typed `cycle_families` home — same idempotent config→DB seed. Committed in
+        # add_source so the operating_model cycles phase serves the families to the judge
+        # and resolves the emitted direction against them at save.
+        ensure_cycle_families_seeded(ctx.session, ontology)
         # Cold-start fail-loud (DAT-382, generalized): grounding against zero
         # concepts is a silent no-op. Refuse it, naming the missing step.
         if not load_workspace_concepts(ctx.session, ontology).concepts:

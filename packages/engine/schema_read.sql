@@ -91,6 +91,12 @@ SELECT * FROM __WS__.conventions
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
+DROP VIEW IF EXISTS __READ__.cycle_families;
+CREATE VIEW __READ__.cycle_families AS
+SELECT * FROM __WS__.cycle_families
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
 DROP VIEW IF EXISTS __READ__.current_derived_columns;
 CREATE VIEW __READ__.current_derived_columns AS
 SELECT r.* FROM __WS__.derived_columns r

@@ -118,9 +118,7 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
 
     # DAT-733: the validity-filter vertex + the table→filter scoped_by edge.
     assert "KEY (filter_id) LABEL validity_filter" in graph_sql
-    assert (
-        "PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)" in graph_sql
-    )
+    assert "PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)" in graph_sql
     assert "SOURCE KEY (table_id) REFERENCES og_tables (table_id)" in graph_sql
     assert "DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)" in graph_sql
     assert "LABEL scoped_by" in graph_sql

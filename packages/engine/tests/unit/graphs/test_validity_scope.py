@@ -80,9 +80,7 @@ def test_measured_cycle_on_typed_relation_yields_the_scope() -> None:
 
 def test_enriched_view_over_the_status_table_resolves_through_its_fact() -> None:
     view = EnrichedViewContext(view_name="enriched_journal", fact_table="journal")
-    scopes = resolve_validity_scopes(
-        [_cycle()], "enriched_journal", {"amount", "status"}, [view]
-    )
+    scopes = resolve_validity_scopes([_cycle()], "enriched_journal", {"amount", "status"}, [view])
     assert scopes == [ValidityScope("status", "=", "posted")]
 
 

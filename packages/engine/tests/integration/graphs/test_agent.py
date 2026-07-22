@@ -392,9 +392,7 @@ class TestGraphAgentIntegration:
         assert execution.graph_id == "test_metric"
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
 
-    def test_validity_scope_appended_by_default_and_persisted(
-        self, session: Session, sample_graph
-    ):
+    def test_validity_scope_appended_by_default_and_persisted(self, session: Session, sample_graph):
         """DAT-733 default branch, end to end: a measured status cycle in the served
         context ⇒ the engine appends the posted-only scope, and the persisted snippet
         SQL + clause parts carry it. The LLM output has NO status filter."""
@@ -405,9 +403,7 @@ class TestGraphAgentIntegration:
         conn, context = _context_with_validity_cycle()
         try:
             agent = _agent_over_status_data(where=[], filters_status=False)
-            result = agent.execute(
-                session, sample_graph, context, workspace_id=baseline_run_id()
-            )
+            result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
             assert result.success
             snippet = session.execute(
                 select(SQLSnippetRecord).where(SQLSnippetRecord.snippet_type == "extract")
@@ -435,9 +431,7 @@ class TestGraphAgentIntegration:
         conn, context = _context_with_validity_cycle()
         try:
             agent = _agent_over_status_data(where=["status = 'draft'"], filters_status=True)
-            result = agent.execute(
-                session, sample_graph, context, workspace_id=baseline_run_id()
-            )
+            result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
             assert result.success
             snippet = session.execute(
                 select(SQLSnippetRecord).where(SQLSnippetRecord.snippet_type == "extract")

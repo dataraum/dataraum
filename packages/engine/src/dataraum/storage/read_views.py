@@ -124,7 +124,18 @@ _ALWAYS_PASSTHROUGH: tuple[str, ...] = ("metadata_snapshot_head", "run_tables")
 # (they read ``__READ__.concepts`` / ``__READ__.concept_edges``) and the cockpit
 # mirror never surface cross-vertical rows. Scoped here in ONE place instead of on
 # each downstream view.
-_VERTICAL_SCOPED: tuple[str, ...] = ("concepts", "concept_edges")
+# The metric-DAG typed home (DAT-732) is declared PER VERTICAL, keyed the same way
+# (declaration-versioned, ``superseded_at`` the only lifecycle axis) — so it scopes to
+# the workspace's bound active vertical exactly like the concept vocabulary. The
+# ``og_metrics`` / ``og_metric_parameters`` / ``og_derives_from`` element views read
+# ``__READ__.metrics`` / ``.metric_parameters`` / ``.metric_derives_from``.
+_VERTICAL_SCOPED: tuple[str, ...] = (
+    "concepts",
+    "concept_edges",
+    "metrics",
+    "metric_parameters",
+    "metric_derives_from",
+)
 
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the
 # failure contract's exempt list (DAT-502 / ADR-0010). The contract: Postgres

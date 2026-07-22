@@ -23,6 +23,7 @@ from dataraum.analysis.semantic.concept_store import (
     require_active_vertical,
 )
 from dataraum.analysis.semantic.processor import ground_columns
+from dataraum.graphs.metric_store import ensure_metrics_seeded
 from dataraum.core.logging import get_logger
 from dataraum.investigation.queries import tables_for_run
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
@@ -161,6 +162,12 @@ class SemanticPerColumnPhase(BasePhase):
         # (disjoint_with from the convention partitions) into `concept_edges` right
         # after the concepts they reference — same idempotent config→DB seed.
         ensure_concept_edges_seeded(ctx.session, ontology)
+        # Metric DAG (DAT-732): seed the declared metric graphs' typed home
+        # (nodes / parameters / derives_from edges) right after the concepts their
+        # extracts derive from — same idempotent config→DB seed. Committed in
+        # add_source, so the operating_model metrics phase's parallel dispatch and the
+        # property graph's og_metrics/og_derives_from views both see it.
+        ensure_metrics_seeded(ctx.session, ontology)
         # Cold-start fail-loud (DAT-382, generalized): grounding against zero
         # concepts is a silent no-op. Refuse it, naming the missing step.
         if not load_workspace_concepts(ctx.session, ontology).concepts:

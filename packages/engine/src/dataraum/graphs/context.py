@@ -228,7 +228,12 @@ class BusinessCycleContext:
     confidence: float = 0.0
     stages: list[CycleStageContext] = field(default_factory=list)
     entity_flows: list[EntityFlowContext] = field(default_factory=list)
-    status_column: str | None = None  # "invoices.status"
+    # Bare parts (DAT-733): the status column + its table kept SEPARATE, not
+    # pre-combined — the default validity-scope resolver renders a bare-column
+    # predicate over the grounding's relation, and the narrative re-qualifies for
+    # reading. e.g. status_table="invoices", status_column="status".
+    status_table: str | None = None
+    status_column: str | None = None
     completion_value: str | None = None  # "paid"
 
     # Volume metrics (from DetectedBusinessCycle)
@@ -722,13 +727,6 @@ def build_execution_context(
             )
             for ef in (cycle.entity_flows or [])
         ]
-        # Combine status_table + status_column for concise reference
-        status_col = None
-        if cycle.status_table and cycle.status_column:
-            status_col = f"{cycle.status_table}.{cycle.status_column}"
-        elif cycle.status_column:
-            status_col = cycle.status_column
-
         business_cycle_contexts.append(
             BusinessCycleContext(
                 cycle_name=cycle.cycle_name,
@@ -740,7 +738,9 @@ def build_execution_context(
                 confidence=cycle.confidence,
                 stages=stages,
                 entity_flows=entity_flows,
-                status_column=status_col,
+                # Bare parts (DAT-733) — the resolver + narrative re-combine as needed.
+                status_table=cycle.status_table,
+                status_column=cycle.status_column,
                 completion_value=cycle.completion_value,
                 total_records=cycle.total_records,
                 completed_cycles=cycle.completed_cycles,
@@ -1896,6 +1896,13 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
         if concept.indicators:
             lines.append(f"  - indicators: {', '.join(concept.indicators)}")
         if concept.exclude_patterns:
+            # exclude_patterns are column-NAME match exclusions consumed HERE (the
+            # grounding prompt tells the model to honor them when matching a concept
+            # to a column, and NOT to improvise a substring row filter). DAT-733
+            # evaluated them as a second source for the canonical validity SCOPE and
+            # rejected it: they are not row predicates, so no faithful (column_id,
+            # operator, value) triple exists and fabricating one is forbidden. The
+            # validity scope sources solely from a measured cycle's completion status.
             lines.append(f"  - exclude: {', '.join(concept.exclude_patterns)}")
         if concept.part_of_parents:
             part_of = ", ".join(concept.part_of_parents)
@@ -2202,10 +2209,16 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
                 )
                 lines.append(f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}")
 
-        # Completion tracking
+        # Completion tracking (narrative — status_column is bare since DAT-733, so
+        # re-qualify with its table for a precise, readable reference).
         if cycle.status_column and cycle.completion_value:
+            status_ref = (
+                f"{cycle.status_table}.{cycle.status_column}"
+                if cycle.status_table
+                else cycle.status_column
+            )
             lines.append(
-                f'Completion: {cycle.status_column} = "{cycle.completion_value}"'
+                f'Completion: {status_ref} = "{cycle.completion_value}"'
                 + (
                     f", {cycle.completion_rate:.0%} complete"
                     if cycle.completion_rate is not None
@@ -2219,6 +2232,17 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
         # detection-confirmed value→concept binding the engine already has (≈ the cut
         # DAT-620 binding shape). The narrative above is for reading; THIS is for
         # grounding a filter. Covers lifecycle/status concepts, not P&L partitions.
+        #
+        # DAT-733: the status_column = completion_value binding is DELIBERATELY NOT
+        # emitted here anymore. That IS the canonical validity scope, and the engine
+        # now composes it deterministically by default (graphs/agent grounding path).
+        # With the imperative binding present, the LLM would author the predicate on
+        # every grounding, the engine's defer-on-existing-constraint bypass would
+        # always fire, and the typed default would never be the actual mechanism.
+        # Withholding it makes the deterministic guarantee the real path and a
+        # LLM-authored status constraint a GENUINE judgment (→ a visible bypass
+        # assumption). The stage bindings below are legitimate per-concept filters,
+        # not the validity scope, so they stay.
         binding_lines: list[str] = []
         for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
             if stage.indicator_column and stage.indicator_values:
@@ -2226,11 +2250,6 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
                 binding_lines.append(
                     f'  - "{stage.stage_name}" = WHERE {stage.indicator_column} IN ({vals})'
                 )
-        if cycle.status_column and cycle.completion_value:
-            binding_lines.append(
-                f'  - "{cycle.cycle_type} completed" = '
-                f"WHERE {cycle.status_column} = '{cycle.completion_value}'"
-            )
         if binding_lines:
             lines.append("Concept bindings (confirmed — use as the filter, do not improvise):")
             lines.extend(binding_lines)

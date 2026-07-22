@@ -383,11 +383,20 @@ class TestDrivers:
 
 
 class TestBusinessProcesses:
-    def test_concept_bindings_rendered_as_filters(self) -> None:
+    def test_stage_bindings_render_but_status_scope_is_not_an_imperative_binding(self) -> None:
+        """DAT-733: stage bindings stay; the status=completion binding is withheld.
+
+        The status_column = completion_value pair IS the canonical validity scope,
+        now composed deterministically by the engine — so it is no longer emitted as
+        a "use as the filter" imperative (which would make the LLM always author it
+        and the typed default never fire). It still appears in the READING narrative,
+        re-qualified from the bare parts.
+        """
         cycle = BusinessCycleContext(
             cycle_name="Order to Cash",
             cycle_type="order_to_cash",
-            status_column="invoices.status",
+            status_table="invoices",
+            status_column="status",
             completion_value="paid",
             stages=[
                 CycleStageContext(
@@ -400,9 +409,14 @@ class TestBusinessProcesses:
         )
         out = format_served_context(GraphExecutionContext(business_cycles=[cycle]))
         assert "## Business Processes" in out
+        # Stage bindings remain — legitimate per-concept filters.
         assert "Concept bindings (confirmed — use as the filter, do not improvise):" in out
         assert "\"Invoiced\" = WHERE status IN ('open', 'sent')" in out
-        assert "\"order_to_cash completed\" = WHERE invoices.status = 'paid'" in out
+        # The status/completion scope is NOT an imperative binding anymore.
+        assert "order_to_cash completed" not in out
+        assert "WHERE status = 'paid'" not in out
+        # It still reads in the narrative, re-qualified from the bare parts.
+        assert 'Completion: invoices.status = "paid"' in out
 
 
 class TestValidations:

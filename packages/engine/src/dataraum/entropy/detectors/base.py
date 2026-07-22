@@ -222,11 +222,10 @@ class EntropyDetector(ABC):
         Returns:
             Abstained EntropyObject with detector metadata.
         """
-        enriched_evidence = evidence or []
+        enriched_evidence = [dict(ev) for ev in (evidence or [])]
         for ev in enriched_evidence:
-            ev["_column_name"] = context.column_name
-            ev["_table_name"] = context.table_name
-
+            ev.setdefault("_column_name", context.column_name)
+            ev.setdefault("_table_name", context.table_name)
         return EntropyObject(
             layer=self.layer,
             dimension=self.dimension,

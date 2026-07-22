@@ -30,6 +30,14 @@ export const CONCEPT_KINDS = [
 ] as const;
 export type ConceptKind = (typeof CONCEPT_KINDS)[number];
 
+// Whether a dimension concept's axis carries an order — mirrors the engine's
+// DimensionOrdering (packages/engine/.../analysis/semantic/db_models.py, DAT-730).
+// Meaningful only on `kind=dimension`: "ordered" (an ordinal axis where range/window
+// logic applies) vs "nominal" (an unordered categorical). NULL ⇒ nominal (the safe
+// default, windows withheld), so `frame` writes it only for an ORDERED dimension.
+export const DIMENSION_ORDERINGS = ["ordered", "nominal"] as const;
+export type DimensionOrdering = (typeof DIMENSION_ORDERINGS)[number];
+
 // The fields the cockpit supplies for one concept (snake_case to mirror the
 // engine's OntologyConcept / the old `concept` teach payload). Identity
 // (`concept_id`), `source`, and the lifecycle timestamps are set on write.
@@ -41,6 +49,8 @@ export interface ConceptWriteInput {
 	indicators?: string[];
 	exclude_patterns?: string[];
 	unit_from_concept?: string;
+	// The dimension-ordering fact (DAT-730 P5 handoff). Omitted ⇒ NULL ⇒ nominal.
+	ordering?: DimensionOrdering;
 }
 
 /**
@@ -81,6 +91,7 @@ export async function writeConcept(
 			indicators: input.indicators,
 			excludePatterns: input.exclude_patterns,
 			unitFromConcept: input.unit_from_concept,
+			ordering: input.ordering,
 			source: "frame",
 			createdAt: new Date(),
 			supersededAt: null,

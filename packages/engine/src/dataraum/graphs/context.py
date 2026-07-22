@@ -846,8 +846,10 @@ def build_execution_context(
             from dataraum.analysis.semantic.concept_store import load_workspace_concepts
             from dataraum.analysis.semantic.ontology import OntologyLoader
 
-            # Concepts from the typed vocabulary table (DAT-728, config→DB);
-            # conventions still come from YAML (not config→DB in this phase).
+            # Concepts AND conventions from the typed vocabulary tables (DAT-728 /
+            # DAT-789, config→DB): load_workspace_concepts now carries the DB
+            # conventions on its OntologyDefinition, so the extraction render reads the
+            # typed `conventions` home, not the YAML.
             ontology_obj = load_workspace_concepts(session, vertical)
             conventions = OntologyLoader().format_conventions_for_prompt(ontology_obj, "extraction")
         except Exception as e:

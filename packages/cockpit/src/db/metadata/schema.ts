@@ -66,6 +66,20 @@ export const configOverlay = pgView("config_overlay", {
 	sql`SELECT overlay_id, type, payload, created_at, superseded_at FROM engine.config_overlay`,
 );
 
+export const conventions = pgView("conventions", {
+	conventionId: varchar("convention_id"),
+	vertical: varchar(),
+	name: varchar(),
+	statement: text(),
+	targets: json(),
+	conceptGroups: json("concept_groups"),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT convention_id, vertical, name, statement, targets, concept_groups, source, created_at, superseded_at FROM engine.conventions WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
 export const currentBusMatrix = pgView("current_bus_matrix", {
 	entryId: varchar("entry_id"),
 	runId: varchar("run_id"),

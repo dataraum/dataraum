@@ -7,9 +7,9 @@
 // + samples (DAT-381's `ConnectSchema`) via the TanStack AI SDK +
 // `@tanstack/ai-anthropic`, co-designs the user's model with them, and writes the
 // declared model to the engine-owned ws_<id> schema (Drizzle metadata client).
-// Concepts go to the typed `concepts` table (DAT-728, config→DB — a supersede +
-// insert per concept); validations/cycles/metrics still write `config_overlay`
-// rows through the `teach` seam.
+// Concepts go to the typed `concepts` table and conventions to the typed
+// `conventions` table (DAT-728 / DAT-789, config→DB — a supersede + insert per row);
+// validations/cycles/metrics still write `config_overlay` rows through the `teach` seam.
 //
 // `frame` frames the WHOLE model in ONE call: the business
 // `concepts` AND the executable knowledge over them — `validations` (DAT-469),
@@ -39,7 +39,12 @@ import {
 	getFrameValidationsInstructions,
 } from "../prompts";
 import { AgentActionableError } from "./agent-error";
-import { CONCEPT_KINDS, writeConcept } from "./concept-write";
+import {
+	CONCEPT_KINDS,
+	DIMENSION_ORDERINGS,
+	writeConcept,
+} from "./concept-write";
+import { writeConvention } from "./convention-write";
 import {
 	CYCLE_FIELDS,
 	CycleSpecSchema,
@@ -104,11 +109,12 @@ function resolveVertical(name?: string | null): string {
 // there is no second authoring contract to keep permissive — this schema is only
 // ever filled by the induction call or echoed back by the ModelFrame widget — so
 // the disposition applies directly rather than through a model-facing variant.
-// All four descriptive fields are consumed downstream (`graphs/context.py` serves
+// The descriptive fields are consumed downstream (`graphs/context.py` serves
 // description/indicators/exclude_patterns to the SQL agent; `unit_from_concept`
 // resolves a measure's unit in `ontology.py` and the unit-source detector), so
 // each is required with a documented ""/[] sentinel for "none", which `frame`
-// folds back to NULL at the write.
+// folds back to NULL at the write. `ordering` (DAT-730 P5 handoff) follows the
+// same shape: a required enum whose "nominal" default folds back to NULL (⇒ nominal).
 export const ProposedConcept = z.object({
 	name: z
 		.string()
@@ -139,6 +145,18 @@ export const ProposedConcept = z.object({
 		.describe(
 			"name of the concept providing this measure's unit; empty string when " +
 				"the concept is not a measure or carries no unit",
+		),
+	// The dimension-ordering fact (DAT-730 P5 handoff). REQUIRED (constrained decoding
+	// rejects an optional enum — same discipline as the other required fields), with
+	// "nominal" as the safe default the write folds back to NULL (⇒ nominal). Only an
+	// ORDERED categorical dimension carries "ordered".
+	ordering: z
+		.enum(DIMENSION_ORDERINGS)
+		.describe(
+			'whether a "dimension" concept\'s axis is ordered: "ordered" for an ordinal ' +
+				"axis where ranges/windows apply (a severity ladder, a size scale), " +
+				'"nominal" for an unordered categorical (region, colour) or ANY ' +
+				"non-dimension concept (the safe default)",
 		),
 });
 export type ProposedConcept = z.infer<typeof ProposedConcept>;
@@ -204,6 +222,43 @@ export const InducedCycles = z.object({
 export const ProposedMetric = MetricSpecSchema.omit({ vertical: true });
 export type ProposedMetric = z.infer<typeof ProposedMetric>;
 
+// One declared domain convention (DAT-789). Mirrors the engine's `OntologyConvention`
+// (packages/engine/.../analysis/semantic/ontology.py) MINUS the vertical, which `frame`
+// fixes on write — its `id` is this schema's `name` (the typed home's column). A
+// convention is DECLARED human judgment, not induced: `frame` writes it VERBATIM (the
+// engine never interprets the `statement`), so unlike the concept/validation/cycle/metric
+// families there is no induction call for it — this is a plain authoring contract (never
+// compiled into a constrained-decoding grammar), so `z.record` + permissive shapes are
+// fine here. All three SQL authors read the resulting `conventions` row.
+export const ProposedConvention = z.object({
+	name: z
+		.string()
+		.min(1)
+		.describe(
+			"lowercase_snake_case identifier for the rule, e.g. rounding_policy",
+		),
+	statement: z
+		.string()
+		.min(1)
+		.describe(
+			"the verbatim domain rule an SQL author applies — served as-is, never " +
+				"interpreted by the engine",
+		),
+	targets: z
+		.array(z.string())
+		.describe(
+			'consumer labels this convention reaches: "extraction", "validation" (all ' +
+				'validations) or "validation:<id>" (one spec), "qa" (the cockpit Q&A agent)',
+		),
+	concept_groups: z
+		.record(z.string(), z.array(z.string()))
+		.describe(
+			"a partition of concept names into named, mutually-exclusive groups the " +
+				"statement refers to (label -> concept names); {} when it needs no groups",
+		),
+});
+export type ProposedConvention = z.infer<typeof ProposedConvention>;
+
 // One written concept + the typed `concepts` row id it landed as (DAT-728 — a
 // concept_id, not an overlay_id, now that concepts are typed rows).
 const FrameConceptResult = ProposedConcept.extend({
@@ -229,6 +284,13 @@ const FrameMetricResult = ProposedMetric.extend({
 });
 export type FrameMetricResult = z.infer<typeof FrameMetricResult>;
 
+// One written convention + the typed `conventions` row id it landed as (DAT-789 — a
+// convention_id, a typed row, not an overlay_id: conventions are a typed home).
+const FrameConventionResult = ProposedConvention.extend({
+	convention_id: z.string(),
+});
+export type FrameConventionResult = z.infer<typeof FrameConventionResult>;
+
 export const FrameResult = z.object({
 	vertical: z.string(),
 	concepts: z.array(FrameConceptResult),
@@ -243,6 +305,10 @@ export const FrameResult = z.object({
 	// dependencies; born-loud after execution absorbs a malformed one (never a
 	// frame-time gate).
 	metrics: z.array(FrameMetricResult),
+	// The conventions declared for this vertical (DAT-789). Empty unless the caller
+	// passed an edited set — conventions are DECLARED human judgment, never induced, so
+	// there is no induce-from-schema path that would populate them.
+	conventions: z.array(FrameConventionResult),
 });
 export type FrameResult = z.infer<typeof FrameResult>;
 
@@ -261,6 +327,11 @@ export interface FrameInput {
 	// A user-reviewed / edited metric set. Same verbatim-declare semantics as
 	// `concepts`; absent → metric DAGs are induced over the framed concepts.
 	metrics?: ProposedMetric[];
+	// A user-declared convention set (DAT-789), written VERBATIM as typed `conventions`
+	// rows. DECLARE-ONLY: conventions are authored human judgment, never induced — an
+	// absent/empty set writes nothing (unlike the other families, which induce when
+	// absent).
+	conventions?: ProposedConvention[];
 	// The vertical to declare the model under (a NEW, framed vertical). The agent
 	// proposes a name that fits the data; the user can rename. Omitted → `_adhoc`
 	// (the unnamed cold-start fallback). Pass the SAME name to `select`.
@@ -441,12 +512,13 @@ export async function induceMetrics(
 /**
  * Run the frame stage: resolve the user's whole model — concepts AND the
  * executable knowledge over them (validations + cycles + metric DAGs) — then
- * write each member as a `config_overlay` row via the shared teach seam. Each
- * family independently induces (from the schema) or declares verbatim (a
- * user-edited set), so one `frame` call frames the model.
- * Validations, cycles, and metrics all induce OVER the same-call concepts.
- * Returns the written concepts + validations + cycles + metrics (with overlay
- * ids) for the ModelFrame widget.
+ * write each member (concepts + conventions to their typed homes, DAT-728/789;
+ * validations/cycles/metrics as `config_overlay` rows via the shared teach seam).
+ * Each executable family independently induces (from the schema) or declares verbatim
+ * (a user-edited set); conventions are DECLARE-ONLY (authored human judgment, never
+ * induced). Validations, cycles, and metrics all induce OVER the same-call concepts.
+ * Returns the written concepts + validations + cycles + metrics + conventions (with
+ * their row ids) for the ModelFrame widget.
  */
 export async function frame(
 	input: FrameInput,
@@ -486,6 +558,9 @@ export async function frame(
 			exclude_patterns:
 				c.exclude_patterns.length > 0 ? c.exclude_patterns : undefined,
 			unit_from_concept: c.unit_from_concept || undefined,
+			// "nominal" is the safe-default sentinel (NULL ⇒ nominal), folded to absent
+			// like the others; only an "ordered" dimension carries a stored fact (DAT-730).
+			ordering: c.ordering === "nominal" ? undefined : c.ordering,
 		});
 		writtenConcepts.push({ ...c, concept_id });
 	}
@@ -504,6 +579,30 @@ export async function frame(
 	// throws on failure rather than silently desyncing the workspace.
 	if (vertical !== DEFAULT_VERTICAL) {
 		await setActiveWorkspaceVertical(vertical);
+	}
+
+	// Conventions (DAT-789): DECLARED human judgment, written VERBATIM as typed
+	// `conventions` rows (a supersede + insert per convention) through the same write
+	// surface concepts use — NOT `config_overlay` teaches (DAT-728 retired that route
+	// for typed homes). Declare-only: there is no induce-from-schema path (a domain
+	// sign/normalization rule is authored, not guessed), so an absent set writes nothing.
+	// The engine seeds a builtin vertical's conventions itself; this is the framed /
+	// edited path. Written after the vertical binds (so the rows land under the real
+	// vertical) and before the executable families, grouped with the concept vocabulary.
+	const writtenConventions: FrameConventionResult[] = [];
+	for (const raw of input.conventions ?? []) {
+		const c = ProposedConvention.parse(raw);
+		const { convention_id } = await writeConvention({
+			vertical,
+			name: c.name,
+			statement: c.statement,
+			// Fold the "none" sentinels ([] / {}) back to absent, so the typed row keeps
+			// NULL for "not declared" — the same conversion boundary the concept family uses.
+			targets: c.targets.length > 0 ? c.targets : undefined,
+			concept_groups:
+				Object.keys(c.concept_groups).length > 0 ? c.concept_groups : undefined,
+		});
+		writtenConventions.push({ ...c, convention_id });
 	}
 
 	// Validations are framed over the just-resolved concepts and written as
@@ -552,5 +651,6 @@ export async function frame(
 		validations: validations.written,
 		cycles: cycles.written,
 		metrics: metrics.written,
+		conventions: writtenConventions,
 	};
 }

@@ -334,6 +334,96 @@ class ConceptEdge(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class Convention(Base):
+    """The workspace's typed domain conventions — one home (DAT-789).
+
+    A convention is vertical-specific guidance piped VERBATIM to the SQL-authoring
+    agents (the ``statement`` prose), routed to consumers by ``targets`` and carrying
+    an optional ``concept_groups`` partition. Config→DB, the same cut :class:`Concept`
+    took (DAT-728): the shipped vertical YAML is the *seed*, normalized into typed rows
+    at connect (:func:`~dataraum.analysis.semantic.convention_store.ensure_conventions_seeded`);
+    all THREE SQL authors — extraction (``graphs/context.py``), validation
+    (``validation_phase``), and the cockpit Q&A agent (``prompts/conventions.ts``, via
+    the Drizzle mirror) — read these rows, never the YAML, so a *framed* vertical whose
+    conventions exist only as rows is served identically to a builtin. ``frame`` writes
+    declared/edited rows through the same table (the cockpit's write surface).
+
+    **The engine never interprets the content (DAT-789 keeps conventions PROSE).**
+    ``statement`` is opaque, LLM-facing, declared human judgment served verbatim — it is
+    NOT linted for content; the engine only ROUTES by the generic ``targets`` label and
+    renders the ``concept_groups`` labels. Mirrors
+    :class:`~dataraum.analysis.semantic.ontology.OntologyConvention`, the YAML-load
+    envelope, whose ``id`` is this row's ``name``.
+
+    **Identity contract — NOT run-versioned (the DAT-728 pattern).** A convention is a
+    stable node keyed by ``(vertical, name)`` (``name`` = the YAML ``id``);
+    ``convention_id`` is a workspace-stable surrogate minted once at seed, NOT a per-run
+    uuid. Edits supersede rather than collide: the ``uq_convention_active`` partial-unique
+    index keeps at most one *active* row per ``(vertical, name)`` so a head-free read is
+    unambiguous. Workspace identity IS the ``ws_<id>`` schema (no ``workspace_id`` column);
+    the read surface scopes to the workspace's bound ``active_vertical``
+    (``_VERTICAL_SCOPED`` in ``storage/read_views.py``).
+
+    The ``concept_groups`` partition is ALSO consumed at seed time by
+    ``concept_edge_store`` to derive ``disjoint_with`` edges — off the shared YAML
+    envelope, not this row; this table is the runtime home the renderers read.
+    """
+
+    __tablename__ = "conventions"
+    __table_args__ = (
+        # At most one ACTIVE row per (vertical, name); superseded history rows are
+        # exempt. The deterministic single-active-row guarantee the head-free reads and
+        # the seed's ON CONFLICT DO NOTHING rely on — the same shape as
+        # Concept.uq_concept_active.
+        Index(
+            "uq_convention_active",
+            "vertical",
+            "name",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+        # Lifecycle-source vocabulary (DAT-802, the two-layer standard): every admitted
+        # value has a LIVE writer — 'seed'
+        # (``convention_store.ensure_conventions_seeded``, engine) and 'frame' (cockpit
+        # ``convention-write.ts``'s ``writeConvention()``, a real Drizzle supersede+insert
+        # exercised by ``convention-write.integration.test.ts``). NOT 'teach': conventions
+        # never had a teach type and DAT-728 retired that route for typed homes — a CHECK
+        # admitting a value no writer produces is the exact DAT-802 defect. Mirrors
+        # :class:`Concept`'s source set exactly (two live writers, seed + frame).
+        CheckConstraint("source IS NULL OR source IN ('frame', 'seed')", name="source"),
+    )
+
+    convention_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    # The convention's stable identifier within `vertical` (the YAML `id`).
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Verbatim LLM-facing guidance — the engine NEVER interprets it (served as-is to the
+    # SQL authors). Declared human judgment; not content-linted (DAT-789).
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    # Per-consumer routing labels (extraction | validation[:<id>] | qa) — the generic
+    # envelope the engine routes by; a broad label ("validation") or a per-spec qualifier
+    # ("validation:sign_conventions"). JSON list; NULL == none (reaches no consumer). Kept
+    # typed at every writer via the OntologyConvention / ProposedConvention submodels — the
+    # engine stores the validated list, never a free dict.
+    targets: Mapped[list[str] | None] = mapped_column(JSON)
+    # label -> concept names: the disjoint partition the renderer appends after the
+    # statement (and the shared YAML envelope concept_edge_store derives disjoint_with
+    # from). JSON object; NULL == none (a statement-only convention). Typed via the same
+    # submodels.
+    concept_groups: Mapped[dict[str, list[str]] | None] = mapped_column(JSON)
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    # Closed vocab: see ck_conventions_source — 'seed' | 'frame' are the two live writers.
+    source: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class WorkspaceSettings(Base):
     """The workspace's bound active vertical — the one home DAT-848 was missing.
 
@@ -698,6 +788,7 @@ __all__ = [
     "ConceptEdge",
     "ConceptEdgePredicate",
     "ConceptKind",
+    "Convention",
     "DimensionOrdering",
     "SemanticAnnotation",
     "TableEntity",

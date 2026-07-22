@@ -33,7 +33,6 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { z } from "zod";
 
 import { config } from "../config";
-import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { findById } from "../db/metadata/snippet-library";
 import { saveQuerySnippet } from "../db/metadata/snippet-writer";
 import {
@@ -592,7 +591,7 @@ export async function querySubAgent(
 		grainBlock,
 		vocabularyBlock,
 		nearUniqueColumns,
-		workspace,
+		conventionsBlock,
 	] = await Promise.all([
 		buildSchemaBlock(),
 		buildEntitiesBlock(),
@@ -602,20 +601,18 @@ export async function querySubAgent(
 		buildGrainBlock(),
 		buildVocabularyBlock(),
 		loadNearUniqueColumns(),
-		resolveActiveWorkspaceRow(),
+		// DAT-645 → DAT-789: the vertical's conventions (e.g. the sign / natural-balance
+		// rule), piped verbatim — the same typed `conventions` home the engine's
+		// extraction/validation agents read, now reaching the third SQL author. Reused
+		// snippets are already sign-correct from extraction; this steers NEW SQL composed
+		// for a concept that has no snippet yet. The reader-role view self-scopes to the
+		// workspace's active vertical, so it joins the parallel batch (no workspace row to
+		// thread in). Empty (section omitted) when none target `qa`.
+		buildConventionsBlock(),
 	]);
 
-	// DAT-645: the vertical's conventions (e.g. the sign / natural-balance rule),
-	// piped verbatim — the same source of truth the engine's extraction/validation
-	// agents use, now reaching the third SQL author. Empty (section omitted) when
-	// the vertical declares none or none target `qa`. Reused snippets are already
-	// sign-correct from extraction; this steers NEW SQL composed for a concept that
-	// has no snippet yet. Sequenced after the Promise.all: it needs workspace.vertical
-	// from that batch (cheap local file read, not worth threading into the parallel set).
-	const conventionsBlock = await buildConventionsBlock(workspace.vertical);
-
 	// DAT-660: the workspace context is session-stable (all blocks read from the
-	// promoted surface; conventions from the vertical's on-disk YAML), so it rides
+	// promoted surface; conventions from the typed `conventions` home), so it rides
 	// as a CACHED second system block below — identical bytes across every answer
 	// in a session AND across this loop's own iterations. Only the question is
 	// volatile, and it rides alone in the user message, past the cache breakpoint.

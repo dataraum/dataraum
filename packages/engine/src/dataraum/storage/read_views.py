@@ -129,9 +129,14 @@ _ALWAYS_PASSTHROUGH: tuple[str, ...] = ("metadata_snapshot_head", "run_tables")
 # the workspace's bound active vertical exactly like the concept vocabulary. The
 # ``og_metrics`` / ``og_metric_parameters`` / ``og_derives_from`` element views read
 # ``__READ__.metrics`` / ``.metric_parameters`` / ``.metric_derives_from``.
+# The convention typed home (DAT-789) is likewise declaration-versioned and PER VERTICAL
+# (keyed ``(vertical, name)``, ``superseded_at`` the only lifecycle axis), so it scopes
+# the same way — the cockpit Q&A agent reads ``__READ__.conventions`` via the Drizzle
+# mirror, seeing only the workspace's bound active vertical's conventions.
 _VERTICAL_SCOPED: tuple[str, ...] = (
     "concepts",
     "concept_edges",
+    "conventions",
     "metrics",
     "metric_parameters",
     "metric_derives_from",
@@ -634,6 +639,12 @@ _CONTROL_WRITE_GRANTS: dict[str, str] = {
     # (concept_id) and the seed's rows are written engine-side; the cockpit's writes
     # ride the same narrow surface as config_overlay did before the cut.
     "concepts": "SELECT, INSERT, UPDATE",
+    # conventions (DAT-789, config→DB): the typed domain-convention home. `frame`
+    # declares/edits conventions as an edit = supersede active (UPDATE superseded_at)
+    # + INSERT a new active row — the same narrow surface as concepts. Identity
+    # (convention_id) is minted cockpit-side (uuid); `source='frame'` marks the
+    # user-declared rows (vs the engine seed's `source='seed'`).
+    "conventions": "SELECT, INSERT, UPDATE",
     # save-on-clean (DAT-486): the cockpit query tool saves learned `query:`
     # snippets. SELECT for the IS-NULL-aware key lookup (the unique key has
     # nullable columns and Postgres is NULLS DISTINCT, so dedup is app-level,

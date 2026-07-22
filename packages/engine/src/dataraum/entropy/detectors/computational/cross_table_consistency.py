@@ -114,7 +114,7 @@ def _load_run_specs(context: DetectorContext) -> dict[str, Any]:
         .first()
     )
     vertical = (artifact.teaches or {}).get("vertical") if artifact else None
-    return load_all_validation_specs(vertical) if vertical else {}
+    return load_all_validation_specs(vertical, context.session) if vertical else {}
 
 
 class CrossTableConsistencyDetector(EntropyDetector):
@@ -184,8 +184,8 @@ class CrossTableConsistencyDetector(EntropyDetector):
         for result in results:
             spec = specs.get(result.validation_id)
             tolerance = (
-                float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE))
-                if spec is not None
+                spec.tolerance
+                if spec is not None and spec.tolerance is not None
                 else DEFAULT_TOLERANCE
             )
             severity = spec.severity.value if spec is not None else "info"

@@ -68,6 +68,15 @@ async def _resolve(_payload: object) -> OperatingModelScope:
     return OperatingModelScope(relationship_run_id="run-bs", semantic_runs={}, table_ids=["tbl-1"])
 
 
+@activity.defn(name="validation_induction")
+async def _validation_induction(_payload: object) -> PhaseOutcome:
+    # DAT-735: generates validations over the served graph BEFORE the validation
+    # family. It carries NO declared signal (declared defaults to None) — the
+    # nothing_declared gate keys only on validation/business_cycles/metrics, so a
+    # generated count (even zero) can never flip a workspace into nothing_declared.
+    return PhaseOutcome(status="completed", summary="induced")
+
+
 @activity.defn(name="validation")
 async def _validation(_payload: object) -> PhaseOutcome:
     return PhaseOutcome(
@@ -97,7 +106,15 @@ async def _promote(run: RunRef) -> PhaseOutcome:
     return PhaseOutcome(status="completed", summary="promoted 1 operating_model head(s)")
 
 
-_MOCK_ACTIVITIES = [_resolve, _validation, _detect, _cycles, _metrics, _promote]
+_MOCK_ACTIVITIES = [
+    _resolve,
+    _validation_induction,
+    _validation,
+    _detect,
+    _cycles,
+    _metrics,
+    _promote,
+]
 
 
 def _worker(client: Client) -> Worker:

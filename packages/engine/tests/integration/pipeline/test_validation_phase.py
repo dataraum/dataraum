@@ -22,6 +22,7 @@ from dataraum.analysis.validation.models import (
     ValidationSpec,
     ValidationStatus,
 )
+from dataraum.analysis.validation.validation_store import ensure_validations_seeded
 from dataraum.lifecycle import ArtifactState, LifecycleArtifact
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.validation_phase import ValidationPhase
@@ -177,6 +178,9 @@ class TestValidationPhaseOutcomes:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, workspace_table: Table
     ) -> None:
         """No per-phase head resolution (ADR-0008): an unthreaded pin is a wiring bug."""
+        # Seed the typed home so the declared set is non-empty (DAT-735) — the phase
+        # must reach the base_runs check, not short-circuit on "no_declared_validations".
+        ensure_validations_seeded(session, "finance")
         ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
         ctx.config = {"vertical": "finance"}  # no base_runs
 

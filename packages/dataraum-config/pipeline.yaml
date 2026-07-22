@@ -123,6 +123,12 @@ phases:
     description: Expert LLM cycle detection
     detectors: []  # business_cycle_health cut (DAT-442); the cycle analysis stays
 
+  validation_induction:
+    description: Generate validations over the served graph (DAT-735)
+    # No detectors: this phase serves the promoted graph to an induction LLM and
+    # persists the proposed validations as source='generated' rows BEFORE the
+    # validation family declares. Its output feeds the validation phase's declared set.
+
   validation:
     description: LLM-powered validation checks
     detectors: [cross_table_consistency]

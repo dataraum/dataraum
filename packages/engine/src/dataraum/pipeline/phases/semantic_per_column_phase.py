@@ -24,6 +24,7 @@ from dataraum.analysis.semantic.concept_store import (
 )
 from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
 from dataraum.analysis.semantic.processor import ground_columns
+from dataraum.analysis.validation.validation_store import ensure_validations_seeded
 from dataraum.core.logging import get_logger
 from dataraum.graphs.metric_store import ensure_metrics_seeded
 from dataraum.investigation.queries import tables_for_run
@@ -174,6 +175,12 @@ class SemanticPerColumnPhase(BasePhase):
         # add_source, so the operating_model metrics phase's parallel dispatch and the
         # property graph's og_metrics/og_derives_from views both see it.
         ensure_metrics_seeded(ctx.session, ontology)
+        # Validation vocabulary (DAT-735): seed the shipped vertical's validations into
+        # the typed `validations` home — same idempotent config→DB seed. Committed in
+        # add_source so the operating_model validation phase reads the typed rows
+        # (seed ⊕ generated) instead of the YAML directory walk. Agentic induction adds
+        # `source='generated'` rows in the operating_model stage.
+        ensure_validations_seeded(ctx.session, ontology)
         # Cold-start fail-loud (DAT-382, generalized): grounding against zero
         # concepts is a silent no-op. Refuse it, naming the missing step.
         if not load_workspace_concepts(ctx.session, ontology).concepts:

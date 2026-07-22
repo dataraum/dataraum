@@ -98,11 +98,13 @@ def worker_activities(phase_activities: PhaseActivities) -> list[object]:
         phase_activities.run_session_detect,
         phase_activities.run_session_write_keepers,
         phase_activities.run_session_promote_to_latest,
-        # DAT-438/455/456 operating_model spine — resolve (pins) →
-        # validation → terminal detect (DAT-432: cross_table_consistency
-        # bands) → business_cycles → metrics lifecycle families → promote
-        # the stage head.
+        # DAT-438/455/456/735 operating_model spine — resolve (pins) →
+        # validation_induction (DAT-735: generate validations over the served
+        # graph) → validation → terminal detect (DAT-432:
+        # cross_table_consistency bands) → business_cycles → metrics lifecycle
+        # families → promote the stage head.
         phase_activities.run_operating_model_resolve,
+        phase_activities.run_validation_induction,
         phase_activities.run_validation,
         phase_activities.run_operating_model_detect,
         phase_activities.run_business_cycles,

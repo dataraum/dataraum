@@ -517,6 +517,31 @@ class PhaseActivities:
         """
         return resolve_operating_model_scope(self._manager, payload.run, payload.vertical)
 
+    @activity.defn(name="validation_induction")
+    def run_validation_induction(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
+        """Validation-induction activity — generate validations over the served graph (DAT-735).
+
+        Runs BEFORE ``validation`` so the validation phase reads the rows it writes.
+        Threads the resolved scope's base-run pin AND ``workspace_id`` into the phase
+        config: the served graph reads the workspace's operating-model property graph by
+        schema (like the metrics phase), and the induction reads the PROMOTED
+        operating_model head (om_run_id=None) — this run's cycles/additivity are not yet
+        written. Makes real Anthropic calls (one induction call + at most one repair).
+        """
+        return self._run_session_or_raise(
+            "validation_induction",
+            payload.run,
+            payload.scope.table_ids,
+            payload.vertical,
+            extra_config={
+                "base_runs": {
+                    "relationship_run_id": payload.scope.relationship_run_id,
+                    "semantic_runs": payload.scope.semantic_runs,
+                },
+                "workspace_id": payload.run.workspace_id,
+            },
+        )
+
     @activity.defn(name="validation")
     def run_validation(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
         """Validation activity — the lifecycle family: declare → bind → execute.

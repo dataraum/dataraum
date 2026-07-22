@@ -5,11 +5,12 @@ Contains data structures for validation specs and results.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _utc_now() -> datetime:
@@ -35,11 +36,43 @@ class ValidationStatus(StrEnum):
     ERROR = "error"
 
 
-class ValidationSpec(BaseModel):
-    """Specification for a validation check.
+class ValidationCheckType(StrEnum):
+    """The generic check SHAPE — a cross-package VOCABULARY contract (DAT-735).
 
-    Loaded from YAML configuration files. The LLM interprets the schema
-    and description to identify relevant columns - no pre-resolution needed.
+    CLOSED to the four values the shipped validation YAMLs use, mirrored EXACTLY by the
+    cockpit's ``validation-spec.ts`` ``CHECK_TYPES`` zod enum — a new value is engine
+    evolution, NEVER a teach (the cockpit rejects an unlisted value at spec parse). The
+    single home the typed ``validations`` CHECK and the induction contract's Literal
+    both derive from. ``check_type`` is a LABEL the ADR-0017 evaluator never branches on
+    — it names the shape, not the logic (``deviation <= tolerance`` is uniform).
+
+    (A ``referential`` value was cut here: referential-integrity checks are
+    ``constraint``-shaped by the enum's own "zero violating rows" definition — the
+    shipped ``orphan_transactions`` shape — and the fifth value would break the
+    cockpit's closed enum.)
+    """
+
+    BALANCE = "balance"
+    COMPARISON = "comparison"
+    CONSTRAINT = "constraint"
+    AGGREGATE = "aggregate"
+
+
+class ValidationSpec(BaseModel):
+    """Specification for a validation check — a TYPED check definition (DAT-735).
+
+    The check LOGIC is typed: ``check_type`` + ``tolerance`` (the ADR-0017 verdict
+    param, ``deviation <= tolerance``). ``guidance`` is advisory prose for the
+    SQL-binding agent — the former free-text ``sql_hints``, which is NO LONGER the
+    check's definition. The LLM interprets the description + guidance to identify
+    relevant columns; no pre-resolution needed.
+
+    Read from the typed ``validations`` home (:class:`~dataraum.analysis.validation.
+    db_models.Validation`) ``⊕`` the ``validation`` teach overlay. The
+    ``mode="before"`` normalizer maps the LEGACY wire shape — YAML seed files and
+    the cockpit's ``validation`` config_overlay teach rows, both of which carry
+    ``parameters`` + ``sql_hints`` — onto the typed fields, so a live cross-package
+    teach contract keeps working without a schema change on the cockpit side.
     """
 
     validation_id: str
@@ -48,13 +81,18 @@ class ValidationSpec(BaseModel):
     category: str  # 'financial', 'data_quality', 'business_rule'
     severity: ValidationSeverity = ValidationSeverity.ERROR
 
-    # Check definition
-    check_type: str  # 'balance', 'comparison', 'constraint', 'aggregate'
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    # Typed check definition (DAT-735). ``check_type`` is a plain ``str`` (not the
+    # ValidationCheckType enum) because the DAT-447 ``expected_formula`` teach overlay
+    # rides this field with a value OUTSIDE the four-value contract; the typed
+    # ``validations`` home CHECK-enforces ValidationCheckType (balance | comparison |
+    # constraint | aggregate — the cockpit CHECK_TYPES contract), the overlay layer does
+    # not. It is a LABEL the ADR-0017 evaluator never branches on.
+    check_type: str
+    tolerance: float | None = None  # ADR-0017 pass threshold; None ⇒ DEFAULT_TOLERANCE
 
-    # SQL generation hints for LLM
-    sql_hints: str | None = None  # Free-form hints for SQL generation
-    expected_outcome: str | None = None  # What a passing result looks like
+    # Advisory SQL-binding hint prose (the former sql_hints) + what a pass looks like.
+    guidance: str | None = None
+    expected_outcome: str | None = None
 
     # Metadata
     tags: list[str] = Field(default_factory=list)
@@ -63,6 +101,39 @@ class ValidationSpec(BaseModel):
     )  # cycle types this applies to; empty = universal
     version: str = "1.0"
     source: str = "config"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_check_fields(cls, data: Any) -> Any:
+        """Map the legacy ``parameters`` + ``sql_hints`` wire shape onto typed fields.
+
+        The YAML seed files and the cockpit ``validation`` teach overlay both carry
+        the pre-DAT-735 shape. Rather than break that live contract, normalize on
+        read: ``parameters.tolerance`` → ``tolerance``; ``sql_hints`` → ``guidance``,
+        with any NON-tolerance ``parameters`` folded into ``guidance`` (they only ever
+        reached the SQL-binding prompt as a JSON blob — keep the binding agent equally
+        informed). Explicit typed fields always win over the legacy inference.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        params = data.pop("parameters", None)
+        sql_hints = data.pop("sql_hints", None)
+        if data.get("tolerance") is None and isinstance(params, dict) and "tolerance" in params:
+            data["tolerance"] = params["tolerance"]
+        if data.get("guidance") is None:
+            parts: list[str] = []
+            if sql_hints:
+                parts.append(str(sql_hints))
+            extra = (
+                {k: v for k, v in params.items() if k != "tolerance"}
+                if isinstance(params, dict)
+                else {}
+            )
+            if extra:
+                parts.append("Parameters: " + json.dumps(extra))
+            data["guidance"] = "\n\n".join(parts) if parts else None
+        return data
 
 
 class ValidationSQLOutput(BaseModel):
@@ -210,6 +281,7 @@ class ValidationRunResult(BaseModel):
 
 
 __all__ = [
+    "ValidationCheckType",
     "ValidationSeverity",
     "ValidationStatus",
     "ValidationSpec",

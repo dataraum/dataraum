@@ -305,8 +305,12 @@ class ValidationAgent(LLMFeature):
         # Format schema for prompt with emphasis on exact column names
         schema_text = format_multi_table_schema_for_prompt(schema)
 
-        # Build context for template
-        sql_hints = f"<sql_hints>{spec.sql_hints}</sql_hints>" if spec.sql_hints else ""
+        # Build context for template. ``guidance`` is the advisory binding hint
+        # (the former sql_hints); it fills the ``sql_hints`` prompt slot unchanged.
+        # ``parameters`` now carries ONLY the typed tolerance (the check's other
+        # params folded into guidance at load, DAT-735), keeping the prompt
+        # structure identical to minimize bind drift.
+        sql_hints = f"<sql_hints>{spec.guidance}</sql_hints>" if spec.guidance else ""
         expected = (
             f"<expected_outcome>{spec.expected_outcome}</expected_outcome>"
             if spec.expected_outcome
@@ -317,7 +321,9 @@ class ValidationAgent(LLMFeature):
             "spec_name": spec.name,
             "spec_description": spec.description,
             "check_type": spec.check_type,
-            "parameters": json.dumps(spec.parameters) if spec.parameters else "None",
+            "parameters": (
+                json.dumps({"tolerance": spec.tolerance}) if spec.tolerance is not None else "None"
+            ),
             "sql_hints": sql_hints,
             "expected_outcome": expected,
             "schema": schema_text,

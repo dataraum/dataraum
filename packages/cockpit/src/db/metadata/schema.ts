@@ -48,11 +48,12 @@ export const concepts = pgView("concepts", {
 	indicators: json(),
 	excludePatterns: json("exclude_patterns"),
 	unitFromConcept: varchar("unit_from_concept"),
+	ordering: varchar(),
 	source: varchar(),
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, ordering, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const configOverlay = pgView("config_overlay", {
@@ -583,11 +584,12 @@ export const currentTemporalColumnProfiles = pgView(
 		actualPeriods: integer("actual_periods"),
 		gapCount: integer("gap_count"),
 		largestGapDays: doublePrecision("largest_gap_days"),
+		lastPeriodComplete: boolean("last_period_complete"),
 		isStale: boolean("is_stale"),
 		gaps: json(),
 	},
 ).as(
-	sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, detected_granularity, granularity_confidence, completeness_ratio, expected_periods, actual_periods, gap_count, largest_gap_days, is_stale, gaps FROM engine.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM engine.columns c JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, detected_granularity, granularity_confidence, completeness_ratio, expected_periods, actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps FROM engine.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM engine.columns c JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentTypeCandidates = pgView("current_type_candidates", {
@@ -700,6 +702,14 @@ export const tables = pgView("tables", {
 	lastProfiledAt: timestamp("last_profiled_at"),
 }).as(
 	sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM engine.tables`,
+);
+
+export const workspaceCalendar = pgView("workspace_calendar", {
+	pin: boolean(),
+	fiscalYearStartMonth: integer("fiscal_year_start_month"),
+	declaredAt: timestamp("declared_at"),
+}).as(
+	sql`SELECT pin, fiscal_year_start_month, declared_at FROM engine.workspace_calendar`,
 );
 
 export const workspaceSettings = pgView("workspace_settings", {

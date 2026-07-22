@@ -92,7 +92,12 @@ _V2_PROVENANCE = {
     "column_mappings_basis": [
         {
             "concept": "test_field",
-            "basis": {"measure_columns": ["amount"], "filter_columns": [], "filter": ""},
+            "basis": {
+                "measure_columns": ["amount"],
+                "filter_columns": [],
+                "filter": "",
+                "filter_members": [],
+            },
         }
     ],
 }
@@ -222,6 +227,9 @@ def _agent_over_status_data(*, where: list[str], filters_status: bool) -> GraphA
                             "measure_columns": ["amount"],
                             "filter_columns": ["status"] if filters_status else [],
                             "filter": "status = 'draft'" if filters_status else "",
+                            # status is a validity-scope column, not a dimension axis
+                            # → no DimMember is declared (the filtered_by gate).
+                            "filter_members": [],
                         },
                     }
                 ],
@@ -482,6 +490,7 @@ def _agent_with_parts(
                             "measure_columns": ["amount"],
                             "filter_columns": ["id"] if where else [],
                             "filter": "",
+                            "filter_members": [],
                         },
                     }
                 ],

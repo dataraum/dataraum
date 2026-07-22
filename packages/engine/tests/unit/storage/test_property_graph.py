@@ -131,7 +131,9 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
         in graph_sql
     )
     assert "SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)" in graph_sql
-    assert "DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)" in graph_sql
+    assert (
+        "DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)" in graph_sql
+    )
     assert "LABEL filtered_by" in graph_sql
     assert "PROPERTIES (concept)" in graph_sql
 

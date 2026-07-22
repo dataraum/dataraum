@@ -342,15 +342,10 @@ def _seed(engine: Engine) -> None:
     #     PGQ KEY).
     #  v_3 ABSENCE — paylog's view was never materialized (view_table_id NULL); the WHERE
     #     view_table_id IS NOT NULL guard drops it: no vertex, no edge.
-    #  v_4 DAT-787 — enriched_statement over the statement fact (t4). view_table_id
-    #     NULL (inert to og_tables / og_derived_from, like v_3), but current_enriched_views
-    #     still resolves its view_name → fact t4, which og_filtered_by needs to reach t4's
-    #     shipto_acct__region slice for the role-played DimMember test.
     for vid, fact, view_tid, vname, dims in [
         ("v_1", "t1", "'t_enr'", "enriched_journal", '["t2"]'),
         ("v_2", "t7", "'t_enr2'", "enriched_ledger", '["t2", "t2"]'),
         ("v_3", "t8", "NULL", "enriched_paylog", '["t2"]'),
-        ("v_4", "t4", "NULL", "enriched_statement", '["t2"]'),
     ]:
         stmts.append(
             "INSERT INTO enriched_views "
@@ -784,22 +779,24 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
         },
         False,
     ),
-    # DAT-787 role-play (ship-to, t4 via the inert enriched_statement view) + the P8
-    # scope pin: where[] carries an engine-appended-style scope predicate (status =
-    # 'posted') that is DELIBERATELY absent from filter_members — so it fabricates no
-    # member. Only shipto_acct__region='north' becomes a member: group ref:t2:shipto_acct
-    # — the SAME value 'north' as sn_billto but a DISTINCT member (role-separated axis).
+    # DAT-787 role-play (ship-to, the TYPED statement fact t4 — no enriched view needed;
+    # the slice resolves by column_name) + the P8 scope pin: where[] carries an
+    # engine-appended-style scope predicate (status = 'posted') that is DELIBERATELY
+    # absent from filter_members — so it fabricates no member. Only shipto_acct__region=
+    # 'north' becomes a member: group ref:t2:shipto_acct — the SAME value 'north' as
+    # sn_billto but a DISTINCT member (role-separated axis). COUNT(*) reads no column, so
+    # this contrived grounding adds no uses edge (t4 has no amount column).
     (
         "sn_shipto",
         "regional_shipped",
         "shipped_by_region",
-        "enriched_statement",
-        "SUM(amount)",
+        "statement",
+        "COUNT(*)",
         ["shipto_acct__region = 'north'", "status = 'posted'"],
         {
             "column_mappings_basis": {
                 "regional_shipped": {
-                    "measure_columns": ["amount"],
+                    "measure_columns": [],
                     "filter_columns": ["shipto_acct__region"],
                     "filter": "north",
                     "filter_members": [

@@ -47,10 +47,12 @@ logger = get_logger(__name__)
 
 INDUCTION_TEMPLATE_NAME = "validation_induction"
 
-# Generic check SHAPES (not domain terms) — the induced check_type vocabulary. The
-# ADR-0017 judge does not branch on check_type (it is a label carried into the
-# verdict message), so this is a closed vocab for clean output, not check logic.
-CheckTypeLiteral = Literal["balance", "comparison", "constraint", "aggregate", "referential"]
+# Generic check SHAPES (not domain terms) — the induced check_type vocabulary. Mirrors
+# :class:`ValidationCheckType` (the cockpit CHECK_TYPES contract, four values) as an
+# inline Literal for constrained decoding; the drift guard test pins Literal == enum.
+# A referential-integrity check is `constraint`-shaped (zero violating rows), so there
+# is no fifth `referential` value — it would break the cockpit's closed enum.
+CheckTypeLiteral = Literal["balance", "comparison", "constraint", "aggregate"]
 SeverityLiteral = Literal["info", "warning", "error", "critical"]
 
 

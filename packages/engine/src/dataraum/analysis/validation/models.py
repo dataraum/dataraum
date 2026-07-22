@@ -36,6 +36,28 @@ class ValidationStatus(StrEnum):
     ERROR = "error"
 
 
+class ValidationCheckType(StrEnum):
+    """The generic check SHAPE — a cross-package VOCABULARY contract (DAT-735).
+
+    CLOSED to the four values the shipped validation YAMLs use, mirrored EXACTLY by the
+    cockpit's ``validation-spec.ts`` ``CHECK_TYPES`` zod enum — a new value is engine
+    evolution, NEVER a teach (the cockpit rejects an unlisted value at spec parse). The
+    single home the typed ``validations`` CHECK and the induction contract's Literal
+    both derive from. ``check_type`` is a LABEL the ADR-0017 evaluator never branches on
+    — it names the shape, not the logic (``deviation <= tolerance`` is uniform).
+
+    (A ``referential`` value was cut here: referential-integrity checks are
+    ``constraint``-shaped by the enum's own "zero violating rows" definition — the
+    shipped ``orphan_transactions`` shape — and the fifth value would break the
+    cockpit's closed enum.)
+    """
+
+    BALANCE = "balance"
+    COMPARISON = "comparison"
+    CONSTRAINT = "constraint"
+    AGGREGATE = "aggregate"
+
+
 class ValidationSpec(BaseModel):
     """Specification for a validation check — a TYPED check definition (DAT-735).
 
@@ -59,8 +81,13 @@ class ValidationSpec(BaseModel):
     category: str  # 'financial', 'data_quality', 'business_rule'
     severity: ValidationSeverity = ValidationSeverity.ERROR
 
-    # Typed check definition (DAT-735).
-    check_type: str  # 'balance', 'comparison', 'constraint', 'aggregate', 'referential'
+    # Typed check definition (DAT-735). ``check_type`` is a plain ``str`` (not the
+    # ValidationCheckType enum) because the DAT-447 ``expected_formula`` teach overlay
+    # rides this field with a value OUTSIDE the four-value contract; the typed
+    # ``validations`` home CHECK-enforces ValidationCheckType (balance | comparison |
+    # constraint | aggregate — the cockpit CHECK_TYPES contract), the overlay layer does
+    # not. It is a LABEL the ADR-0017 evaluator never branches on.
+    check_type: str
     tolerance: float | None = None  # ADR-0017 pass threshold; None ⇒ DEFAULT_TOLERANCE
 
     # Advisory SQL-binding hint prose (the former sql_hints) + what a pass looks like.
@@ -254,6 +281,7 @@ class ValidationRunResult(BaseModel):
 
 
 __all__ = [
+    "ValidationCheckType",
     "ValidationSeverity",
     "ValidationStatus",
     "ValidationSpec",

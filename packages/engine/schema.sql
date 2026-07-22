@@ -273,7 +273,8 @@ CREATE TABLE validations (
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_validations PRIMARY KEY (row_id), 
 	CONSTRAINT ck_validations_source CHECK (source IS NULL OR source IN ('generated', 'seed')), 
-	CONSTRAINT ck_validations_severity CHECK (severity IN ('critical', 'error', 'info', 'warning'))
+	CONSTRAINT ck_validations_severity CHECK (severity IN ('critical', 'error', 'info', 'warning')), 
+	CONSTRAINT ck_validations_check_type CHECK (check_type IN ('aggregate', 'balance', 'comparison', 'constraint'))
 );
 
 CREATE UNIQUE INDEX uq_validation_active ON validations (vertical, validation_id) WHERE superseded_at IS NULL;

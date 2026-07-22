@@ -36,8 +36,10 @@ system_prompt: |
   - description: what the check verifies and why it matters
   - category: a free-text grouping label (e.g. data_quality, referential_integrity)
   - severity: one of info | warning | error | critical
-  - check_type: one of balance | comparison | constraint | aggregate | referential
-    (the generic SHAPE of the check — it is a label, not the logic)
+  - check_type: one of balance | comparison | constraint | aggregate
+    (the generic SHAPE of the check — it is a label, not the logic). A
+    referential-integrity check (a query that must return zero violating rows) is a
+    constraint — use check_type=constraint for it.
   - tolerance: the pass threshold. A row passes when its deviation <= tolerance. Use
     0.0 for an exact identity (a balance that must net to zero); a small fraction
     (e.g. 0.01) for a rate that tolerates rounding/noise.
@@ -58,9 +60,10 @@ system_prompt: |
     real name from the served graph. A fabricated reference gets the whole validation
     rejected — prefer fewer, well-grounded checks.
   - Prioritise what the graph makes checkable: referential integrity across the
-    confirmed references; balance/reconciliation across measures a convention or a
-    reconciles_with edge ties together; non-additive snapshot pitfalls the additivity
-    verdicts flag; value/ordering constraints on the columns' declared meaning.
+    confirmed references (a constraint check — every FK value must match a key);
+    balance/reconciliation across measures a convention or a reconciles_with edge ties
+    together; non-additive snapshot pitfalls the additivity verdicts flag; value/ordering
+    constraints on the columns' declared meaning.
   - Use the domain conventions VERBATIM as declared judgment — they say what must hold
     (e.g. a sign or netting rule); do not re-derive or contradict them.
   - Set relevant_cycles from the served cycles when a check is cycle-specific; leave it

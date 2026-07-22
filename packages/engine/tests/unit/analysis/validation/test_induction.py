@@ -126,6 +126,25 @@ def test_contract_is_constrained_decoding_safe() -> None:
         assert "oneOf" not in prop
         assert "anyOf" not in prop
     assert schema["properties"]["severity"]["enum"] == ["info", "warning", "error", "critical"]
+    # check_type is the four-value contract — NO `referential` (would break the
+    # cockpit's closed CHECK_TYPES enum).
+    assert schema["properties"]["check_type"]["enum"] == [
+        "balance",
+        "comparison",
+        "constraint",
+        "aggregate",
+    ]
+
+
+def test_check_type_literal_matches_the_single_home_enum() -> None:
+    """The induction Literal cannot drift from ValidationCheckType (the DB CHECK's home)."""
+    from typing import get_args
+
+    from dataraum.analysis.validation.induction import CheckTypeLiteral
+    from dataraum.analysis.validation.models import ValidationCheckType
+
+    assert set(get_args(CheckTypeLiteral)) == {v.value for v in ValidationCheckType}
+    assert "referential" not in get_args(CheckTypeLiteral)
 
 
 # --- the agent: membership + repair + drop -----------------------------------

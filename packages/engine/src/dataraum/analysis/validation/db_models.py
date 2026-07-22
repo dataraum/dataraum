@@ -29,13 +29,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from dataraum.analysis.validation.models import ValidationSeverity
+from dataraum.analysis.validation.models import ValidationCheckType, ValidationSeverity
 from dataraum.storage import Base
 
-# Closed-vocabulary CHECK values (DAT-802 enum-standard sweep): the severity
-# vocabulary derives from its single-home enum so the CHECK and the enum can
-# never drift (the DAT-784 pattern). Sorted for a deterministic offline DDL dump.
+# Closed-vocabulary CHECK values (DAT-802 enum-standard sweep): each vocabulary
+# derives from its single-home enum so the CHECK and the enum can never drift (the
+# DAT-784 pattern). Sorted for a deterministic offline DDL dump.
 _VALIDATION_SEVERITY_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in ValidationSeverity))
+_VALIDATION_CHECK_TYPE_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in ValidationCheckType))
 
 
 class Validation(Base):
@@ -99,6 +100,17 @@ class Validation(Base):
             "severity IN (" + ", ".join(f"'{v}'" for v in _VALIDATION_SEVERITY_VALUES) + ")",
             name="severity",
         ),
+        # Check-type vocabulary (DAT-735, DAT-802 two-layer standard): derived from
+        # :class:`ValidationCheckType`, the single home the cockpit's `validation-spec.ts`
+        # CHECK_TYPES zod enum mirrors — a cross-package VOCABULARY contract. Enforced on
+        # the typed home because only seed (the shipped four-value YAMLs) and generated
+        # (the induction contract's four-value Literal) land here; the DAT-447
+        # `expected_formula` teach rides the config_overlay ⊕ layer, never this table, so
+        # it is deliberately NOT admitted by this CHECK.
+        CheckConstraint(
+            "check_type IN (" + ", ".join(f"'{v}'" for v in _VALIDATION_CHECK_TYPE_VALUES) + ")",
+            name="check_type",
+        ),
     )
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -112,6 +124,8 @@ class Validation(Base):
     category: Mapped[str] = mapped_column(String, nullable=False)
     # Closed vocab: see ck_validations_severity (ValidationSeverity).
     severity: Mapped[str] = mapped_column(String, nullable=False)
+    # Closed vocab: see ck_validations_check_type (ValidationCheckType, the cockpit
+    # CHECK_TYPES contract).
     check_type: Mapped[str] = mapped_column(String, nullable=False)
 
     # The TYPED check definition (DAT-735). ``tolerance`` is the ADR-0017 verdict

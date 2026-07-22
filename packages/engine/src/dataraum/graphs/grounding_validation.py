@@ -124,6 +124,22 @@ def validate_grounding_basis(
     return violations
 
 
+def where_filter_columns(
+    output: ExtractGroundingOutput,
+    relation_columns: set[str],
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+) -> set[str]:
+    """The relation columns the grounding's WHERE predicates already constrain.
+
+    Reuses the same catalog-free parse as contract validation, so a status column
+    the LLM deliberately filtered on is detected precisely — never by a lexical
+    coincidence inside a string literal. DAT-733's default-scope opt-out reads this
+    to defer the canonical validity scope to the grounding's own constraint.
+    """
+    _, where_used, _ = _used_columns(output, relation_columns, duckdb_conn)
+    return where_used
+
+
 def _used_columns(
     output: ExtractGroundingOutput,
     relation_columns: set[str],

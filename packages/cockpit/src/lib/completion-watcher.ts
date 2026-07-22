@@ -203,7 +203,7 @@ export async function awaitCompletion(
 	let status: "completed" | "failed";
 	// The run's terminal RESULT value (DAT-615) — read off `result()` on the clean
 	// edge; `unknown` at the boundary (react idiom 11), narrowed by `readOutcome`.
-	let result: unknown;
+	let result: unknown = null;
 	try {
 		const client = await getTemporalClient();
 		const handle = client.workflow.getHandle(run.workflowId, run.runId);

@@ -43,6 +43,12 @@ reification).** Vertices/edges:
                                             time additive + reason, per drill target
                                             (a ``metric`` graph_id or a ``measure``
                                             standard_field)
+    metric_node    (KEY graph_id)    a declared metric (DAT-732); props: name /
+                                            category / unit / output_type — the metric
+                                            DAG's typed home (metrics table)
+    parameter_node (KEY parameter_id) a metric's user-configurable parameter (DAT-732):
+                                            declared default + a ``derivation`` marker
+                                            (``period_grain`` for days_in_period)
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
@@ -55,6 +61,8 @@ reification).** Vertices/edges:
     period_rolls_up_to grain → grain     [constant + workspace_calendar] the calendar ladder day→month→quarter→year (DAT-730)
     has_additivity     concept → additivity_verdict [current_metric_additivity] a MEASURE concept's 2-axis verdict (DAT-731)
     measured_in        column → column   [column_concepts.unit_source_column] a measure column → the column that defines its unit (DAT-731)
+    derives_from       metric → concept   [metric_derives_from] a metric's extract leaves → the concepts they ground (DAT-732)
+    has_parameter      metric → parameter [metric_parameters]   a metric's user-configurable parameters (DAT-732)
 
 One vertex label spans both layers (DAT-774): typed source tables AND enriched-view
 tables are ``table_node``, discriminated by the ``layer`` property (the DD types "Table
@@ -164,6 +172,11 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_additivity",
     "og_has_additivity",
     "og_measured_in",
+    # Metric DAG (DAT-732) — the declared-metric vertices + their edges.
+    "og_metrics",
+    "og_metric_parameters",
+    "og_derives_from",
+    "og_has_parameter",
 )
 
 
@@ -787,6 +800,76 @@ def _element_view_sql(name: str) -> str:
             f"  AND cc.unit_source_column <> ''\n"
             f"  AND cc.unit_source_column <> 'dimensionless';"
         )
+    if name == "og_metrics":
+        # metric_node vertex (DAT-732): one node per DECLARED metric, over the typed
+        # home (metrics table). Active rows only (superseded_at IS NULL) of the
+        # workspace's bound vertical (the __READ__.metrics view is _VERTICAL_SCOPED),
+        # so graph_id is unique among them → a valid KEY. Carries the declared output
+        # metadata so a graph consumer reads the node's shape without re-parsing YAML.
+        # graph_id (NOT the metric_id surrogate) is the vertex KEY: it is the metric's
+        # stable identity AND the key the derives_from / has_parameter edges carry.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_metrics AS\n"
+            f"SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type\n"
+            f"FROM {READ_TOKEN}.metrics\n"
+            f"WHERE superseded_at IS NULL;"
+        )
+    if name == "og_metric_parameters":
+        # parameter_node vertex (DAT-732): a metric's user-configurable parameter node.
+        # parameter_id (the surrogate PK) is the KEY — unique among active rows. Carries
+        # the DECLARED default (typed metadata) + the ``derivation`` marker naming the
+        # rule that overrides it at runtime (``period_grain`` for days_in_period; NULL
+        # for a plain constant). default_value/options are JSON in the base table; cast
+        # ::text so they are PGQ-safe scalar properties (the reader sees the declared
+        # default as text, e.g. '30'), mirroring og_grounding's where_predicates::text.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_metric_parameters AS\n"
+            f"SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id, name,\n"
+            f"       param_type, default_value::text AS default_value,\n"
+            f"       options::text AS options, derivation, description\n"
+            f"FROM {READ_TOKEN}.metric_parameters\n"
+            f"WHERE superseded_at IS NULL;"
+        )
+    if name == "og_derives_from":
+        # derives_from edge (metric → concept, DAT-732): the metric's extract leaves
+        # reified at concept grain. concept_name is the extract's standard_field (the
+        # stable (vertical, name) concept key); resolve it to the ACTIVE Concept for the
+        # PGQ vertex binding — the SAME (vertical, name) INNER-JOIN discipline
+        # og_grounded_by / og_concept_edges use, so an edge whose concept is
+        # superseded/absent drops (the graph never dangles). Both the edge and the
+        # concept views are _VERTICAL_SCOPED to the one bound vertical, and the join
+        # pins vertical explicitly (belt-and-braces). This makes the walk
+        # ``metric → concept → grounded_by → grounding → uses → column`` one MATCH.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_derives_from AS\n"
+            f"SELECT df.edge_id::text AS edge_id,\n"
+            f"       df.graph_id::text AS from_graph_id,\n"
+            f"       c.concept_id::text AS to_concept_id,\n"
+            f"       df.concept_name\n"
+            f"FROM {READ_TOKEN}.metric_derives_from df\n"
+            f"JOIN {READ_TOKEN}.concepts c\n"
+            f"  ON c.vertical = df.vertical AND c.name = df.concept_name\n"
+            f" AND c.superseded_at IS NULL\n"
+            f"WHERE df.superseded_at IS NULL;"
+        )
+    if name == "og_has_parameter":
+        # has_parameter edge (metric → parameter, DAT-732): connects each parameter
+        # vertex to its metric. parameter_id is unique per parameter (one parameter
+        # belongs to one metric), so it doubles as the edge KEY and the destination
+        # endpoint key; graph_id is the source endpoint (resolves to the og_metrics
+        # vertex). Active rows of the bound vertical only (the __READ__ view is scoped).
+        # No explicit JOIN to og_metrics (unlike og_derives_from's dangling guard): a
+        # parameter is seeded in the SAME savepoint as its metric node with no
+        # independent supersession, so its graph_id always resolves to a metric vertex.
+        # Once a ``frame`` editor can supersede a Metric without its parameters, this
+        # should gain the same INNER-JOIN discipline (a source endpoint resolving to no
+        # vertex simply won't traverse in a MATCH, so the graph stays honest meanwhile).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_has_parameter AS\n"
+            f"SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id\n"
+            f"FROM {READ_TOKEN}.metric_parameters\n"
+            f"WHERE superseded_at IS NULL;"
+        )
     raise AssertionError(f"unreachable: {name} not an element view")
 
 
@@ -817,7 +900,12 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),\n"
         f"    {READ_TOKEN}.og_additivity KEY (additivity_id) LABEL additivity_verdict\n"
         f"      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,\n"
-        f"                  time_additive, categorical_reason, time_reason)\n"
+        f"                  time_additive, categorical_reason, time_reason),\n"
+        f"    {READ_TOKEN}.og_metrics KEY (graph_id) LABEL metric_node\n"
+        f"      PROPERTIES (graph_id, vertical, name, category, unit, output_type),\n"
+        f"    {READ_TOKEN}.og_metric_parameters KEY (parameter_id) LABEL parameter_node\n"
+        f"      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,\n"
+        f"                  options, derivation, description)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"
@@ -884,7 +972,17 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)\n"
         f"      DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)\n"
         f"      LABEL measured_in\n"
-        f"      PROPERTIES (unit_source, self_denominated)\n"
+        f"      PROPERTIES (unit_source, self_denominated),\n"
+        f"    {READ_TOKEN}.og_derives_from KEY (edge_id)\n"
+        f"      SOURCE KEY (from_graph_id) REFERENCES og_metrics (graph_id)\n"
+        f"      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)\n"
+        f"      LABEL derives_from\n"
+        f"      PROPERTIES (concept_name),\n"
+        f"    {READ_TOKEN}.og_has_parameter KEY (parameter_id)\n"
+        f"      SOURCE KEY (graph_id) REFERENCES og_metrics (graph_id)\n"
+        f"      DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)\n"
+        f"      LABEL has_parameter\n"
+        f"      PROPERTIES (graph_id)\n"
         f"  );"
     )
 

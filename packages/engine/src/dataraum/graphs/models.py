@@ -72,6 +72,13 @@ class ParameterDef:
     default: Any
     description: str | None = None
     options: list[Any] | None = None  # For enum-like parameters
+    # A DECLARED marker naming the rule a parameter's value belongs to (DAT-732):
+    # ``period_grain`` for ``days_in_period``, NULL for a plain constant. Declared in the
+    # vertical YAML (a DATA marker, never inferred by name in engine code) and persisted
+    # to the ``metric_parameters`` typed home / ``og_metric_parameters`` as graph
+    # structure. It is NOT read by the resolver at runtime — ``period_resolver`` keys its
+    # override on the parameter NAME today, not this marker (see MetricParameterDerivation).
+    derivation: str | None = None  # MetricParameterDerivation value, or None
 
 
 @dataclass

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy.orm import Session
+
 from dataraum.graphs.agent import ExecutionContext, GraphAgent
 from dataraum.graphs.models import (
     GraphMetadata,
@@ -54,7 +56,9 @@ def _bare_agent(provider: MagicMock) -> GraphAgent:
     return agent
 
 
-def test_assemble_honest_fails_on_ungroundable_dep_without_llm() -> None:
+def test_assemble_honest_fails_on_ungroundable_dep_without_llm(session: Session) -> None:
+    # A real (empty) session so _resolve_parameters exercises its typed-home read
+    # (DAT-732) — an unseeded metric_parameters table resolves to no defaults.
     cogs = _extract("cost_of_goods_sold", "cost_of_goods_sold")
     graph = _graph("gross_profit", {"cost_of_goods_sold": cogs})
     bindings = {
@@ -65,7 +69,7 @@ def test_assemble_honest_fails_on_ungroundable_dep_without_llm() -> None:
     provider = MagicMock()
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")
 
-    result = _bare_agent(provider).assemble(MagicMock(), graph, ctx, bindings, workspace_id="ws")
+    result = _bare_agent(provider).assemble(session, graph, ctx, bindings, workspace_id="ws")
 
     assert result.success is False
     assert "cost_of_goods_sold" in (result.error or "")
@@ -75,7 +79,7 @@ def test_assemble_honest_fails_on_ungroundable_dep_without_llm() -> None:
     provider.converse.assert_not_called()
 
 
-def test_assemble_honest_fails_on_empty_binding_map() -> None:
+def test_assemble_honest_fails_on_empty_binding_map(session: Session) -> None:
     """An empty binding map (cyclic/empty authoring pass) → every keyable dep is
     'not authored' → honest-fail born-loud at the dependency loop, no LLM."""
     rev = _extract("revenue", "revenue")
@@ -83,7 +87,7 @@ def test_assemble_honest_fails_on_empty_binding_map() -> None:
     provider = MagicMock()
     ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")
 
-    result = _bare_agent(provider).assemble(MagicMock(), graph, ctx, {}, workspace_id="ws")
+    result = _bare_agent(provider).assemble(session, graph, ctx, {}, workspace_id="ws")
 
     assert result.success is False
     assert "revenue" in (result.error or "")

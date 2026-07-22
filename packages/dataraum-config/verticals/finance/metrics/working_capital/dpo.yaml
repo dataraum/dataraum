@@ -23,6 +23,7 @@ parameters:
     - 90
     - 365
     description: Analysis period length
+    derivation: period_grain
 dependencies:
   accounts_payable:
     level: 1

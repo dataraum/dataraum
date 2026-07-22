@@ -21,6 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .metric_graph_db_models import MetricParameterDerivation
 from .models import (
     GraphMetadata,
     GraphSource,
@@ -94,7 +95,7 @@ class GraphLoader:
 
         metadata = self._parse_metadata(path, data.get("metadata", {}))
         output = self._parse_output(path, data.get("output", {}))
-        parameters = self._parse_parameters(data.get("parameters", {}))
+        parameters = self._parse_parameters(path, data.get("parameters", {}))
         steps = self._parse_steps(path, data.get("dependencies", {}))
         interpretation = self._parse_interpretation(data.get("interpretation"))
 
@@ -147,10 +148,15 @@ class GraphLoader:
             decimal_places=data.get("decimal_places"),
         )
 
-    def _parse_parameters(self, data: dict[str, Any] | list[Any]) -> list[ParameterDef]:
+    def _parse_parameters(self, path: Path, data: dict[str, Any] | list[Any]) -> list[ParameterDef]:
         """Parse parameter definitions.
 
         Supports both dict format (name as key) and list format (name as field).
+        A ``derivation`` marker is validated against :class:`MetricParameterDerivation`
+        the same way ``output.type`` / ``metadata.source`` are — a bad value (reachable
+        via a user-authored ``metric`` teach row) raises a clean ``GraphLoadError`` named
+        by field, which the per-metric seed isolation catches, rather than surfacing
+        later as a raw CHECK-constraint ``IntegrityError``.
         """
         parameters = []
 
@@ -164,6 +170,7 @@ class GraphLoader:
                             default=param_data.get("default"),
                             description=param_data.get("description"),
                             options=param_data.get("options"),
+                            derivation=self._parse_derivation(path, param_data.get("derivation")),
                         )
                     )
             return parameters
@@ -177,9 +184,20 @@ class GraphLoader:
                         default=param_data.get("default"),
                         description=param_data.get("description"),
                         options=param_data.get("options"),
+                        derivation=self._parse_derivation(path, param_data.get("derivation")),
                     )
                 )
         return parameters
+
+    @staticmethod
+    def _parse_derivation(path: Path, value: Any) -> str | None:
+        """Validate a parameter's ``derivation`` marker against the closed vocab."""
+        if value is None:
+            return None
+        try:
+            return MetricParameterDerivation(value).value
+        except ValueError as e:
+            raise GraphLoadError(path, f"Invalid parameter derivation: {value}") from e
 
     def _parse_steps(self, path: Path, data: dict[str, Any]) -> dict[str, GraphStep]:
         """Parse graph steps from dependencies section."""

@@ -21,9 +21,10 @@ DROP VIEW IF EXISTS __READ__.og_uses;
 DROP VIEW IF EXISTS __READ__.og_temporal_coverage;
 DROP VIEW IF EXISTS __READ__.og_rolls_up_to;
 DROP VIEW IF EXISTS __READ__.og_period_rolls_up_to;
-DROP VIEW IF EXISTS __READ__.og_additivity;
-DROP VIEW IF EXISTS __READ__.og_has_additivity;
-DROP VIEW IF EXISTS __READ__.og_measured_in;
+DROP VIEW IF EXISTS __READ__.og_metrics;
+DROP VIEW IF EXISTS __READ__.og_metric_parameters;
+DROP VIEW IF EXISTS __READ__.og_derives_from;
+DROP VIEW IF EXISTS __READ__.og_has_parameter;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -254,45 +255,33 @@ SELECT (l.from_grain || '_' || l.to_grain)::text AS edge_key,
 FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))
        AS l(from_grain, to_grain);
 
-CREATE VIEW __READ__.og_additivity AS
-SELECT additivity_id::text AS additivity_id, target_kind, target_key,
-       categorical_additive, time_additive, categorical_reason, time_reason
-FROM __READ__.current_metric_additivity;
+CREATE VIEW __READ__.og_metrics AS
+SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type
+FROM __READ__.metrics
+WHERE superseded_at IS NULL;
 
-CREATE VIEW __READ__.og_has_additivity AS
-SELECT (c.concept_id || '_' || a.additivity_id)::text AS edge_key,
-       c.concept_id::text AS concept_id,
-       a.additivity_id::text AS additivity_id,
-       a.target_key
-FROM __READ__.current_metric_additivity a
+CREATE VIEW __READ__.og_metric_parameters AS
+SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id, name,
+       param_type, default_value::text AS default_value,
+       options::text AS options, derivation, description
+FROM __READ__.metric_parameters
+WHERE superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_derives_from AS
+SELECT df.edge_id::text AS edge_id,
+       df.graph_id::text AS from_graph_id,
+       c.concept_id::text AS to_concept_id,
+       df.concept_name
+FROM __READ__.metric_derives_from df
 JOIN __READ__.concepts c
-  ON c.name = a.target_key AND c.superseded_at IS NULL
-WHERE a.target_kind = 'measure';
+  ON c.vertical = df.vertical AND c.name = df.concept_name
+ AND c.superseded_at IS NULL
+WHERE df.superseded_at IS NULL;
 
-CREATE VIEW __READ__.og_measured_in AS
-SELECT (cc.column_id || '_' || unit_col.column_id)::text AS edge_key,
-       cc.column_id::text AS measure_column_id,
-       unit_col.column_id::text AS unit_column_id,
-       cc.unit_source_column AS unit_source,
-       (cc.column_id = unit_col.column_id) AS self_denominated
-FROM __READ__.current_column_concepts cc
-JOIN __READ__.current_columns mc ON mc.column_id = cc.column_id
-JOIN __READ__.current_tables mt ON mt.table_id = mc.table_id
-CROSS JOIN LATERAL (
-    SELECT
-      CASE WHEN position('.' in cc.unit_source_column) > 0
-           THEN split_part(cc.unit_source_column, '.', 1)
-           ELSE mt.table_name END AS tbl,
-      CASE WHEN position('.' in cc.unit_source_column) > 0
-           THEN split_part(cc.unit_source_column, '.', 2)
-           ELSE cc.unit_source_column END AS col
-  ) ref
-JOIN __READ__.current_tables ut ON ut.table_name = ref.tbl
-JOIN __READ__.current_columns unit_col
-  ON unit_col.table_id = ut.table_id AND unit_col.column_name = ref.col
-WHERE cc.unit_source_column IS NOT NULL
-  AND cc.unit_source_column <> ''
-  AND cc.unit_source_column <> 'dimensionless';
+CREATE VIEW __READ__.og_has_parameter AS
+SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id
+FROM __READ__.metric_parameters
+WHERE superseded_at IS NULL;
 
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
@@ -308,9 +297,11 @@ CREATE PROPERTY GRAPH __READ__.operating_model
                   relation, select_expr, where_predicates, description, failed),
     __READ__.og_period_grain KEY (grain) LABEL period_grain
       PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),
-    __READ__.og_additivity KEY (additivity_id) LABEL additivity_verdict
-      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,
-                  time_additive, categorical_reason, time_reason)
+    __READ__.og_metrics KEY (graph_id) LABEL metric_node
+      PROPERTIES (graph_id, vertical, name, category, unit, output_type),
+    __READ__.og_metric_parameters KEY (parameter_id) LABEL parameter_node
+      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,
+                  options, derivation, description)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -368,14 +359,14 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       DESTINATION KEY (to_grain) REFERENCES og_period_grain (grain)
       LABEL period_rolls_up_to
       PROPERTIES (from_grain, to_grain),
-    __READ__.og_has_additivity KEY (edge_key)
-      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)
-      DESTINATION KEY (additivity_id) REFERENCES og_additivity (additivity_id)
-      LABEL has_additivity
-      PROPERTIES (target_key),
-    __READ__.og_measured_in KEY (edge_key)
-      SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)
-      DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)
-      LABEL measured_in
-      PROPERTIES (unit_source, self_denominated)
+    __READ__.og_derives_from KEY (edge_id)
+      SOURCE KEY (from_graph_id) REFERENCES og_metrics (graph_id)
+      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)
+      LABEL derives_from
+      PROPERTIES (concept_name),
+    __READ__.og_has_parameter KEY (parameter_id)
+      SOURCE KEY (graph_id) REFERENCES og_metrics (graph_id)
+      DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)
+      LABEL has_parameter
+      PROPERTIES (graph_id)
   );

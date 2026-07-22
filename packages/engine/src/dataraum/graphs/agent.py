@@ -248,8 +248,8 @@ class GraphAgent(LLMFeature):
         """
         parameters = parameters or {}
 
-        # Resolve parameters with defaults
-        resolved_params = self._resolve_parameters(graph, parameters)
+        # Resolve parameters against the typed home (declared defaults), provided wins.
+        resolved_params = self._resolve_parameters(session, graph, parameters)
 
         schema_mapping_id = context.schema_mapping_id or "default"
 
@@ -410,7 +410,7 @@ class GraphAgent(LLMFeature):
         """
         from dataraum.graphs.node_warming import node_key
 
-        resolved_params = self._resolve_parameters(graph, parameters or {})
+        resolved_params = self._resolve_parameters(session, graph, parameters or {})
         schema_mapping_id = context.schema_mapping_id or "default"
 
         # Collect EVERY ungroundable dependency — born-loud, no re-authoring. A
@@ -1341,13 +1341,30 @@ class GraphAgent(LLMFeature):
         return yaml.dump(graph_dict, default_flow_style=False, allow_unicode=True)
 
     def _resolve_parameters(
-        self, graph: TransformationGraph, provided: dict[str, Any]
+        self, session: Session, graph: TransformationGraph, provided: dict[str, Any]
     ) -> dict[str, Any]:
-        """Merge provided parameters with graph defaults."""
-        resolved = {}
+        """Merge provided parameters with the DECLARED defaults from the typed home.
+
+        The parameter DEFAULT is read from the ``metric_parameters`` typed home
+        (DAT-732) — the authority — not the raw parsed graph. A provided value (e.g. the
+        DAT-785 ``period_resolver``'s data-derived ``days_in_period``) always wins over
+        the declared default. When the typed home has no row for a parameter (an
+        unseeded substrate, or a metric declared but not yet seeded), fall back to the
+        parsed graph's declared default: YAML is the SEED, the DB is the authority once
+        seeded. In every real pipeline run the seed committed in add_source, so the DB
+        row exists and wins; the fallback is the load-bearing path only for an
+        as-yet-unseeded graph (a new parameter added to YAML between deploys) and for
+        ad-hoc graphs built directly in tests.
+        """
+        from dataraum.graphs.metric_store import metric_parameter_defaults
+
+        db_defaults = metric_parameter_defaults(session, graph.graph_id)
+        resolved: dict[str, Any] = {}
         for param in graph.parameters:
             if param.name in provided:
                 resolved[param.name] = provided[param.name]
+            elif db_defaults.get(param.name) is not None:
+                resolved[param.name] = db_defaults[param.name]
             elif param.default is not None:
                 resolved[param.name] = param.default
         return resolved

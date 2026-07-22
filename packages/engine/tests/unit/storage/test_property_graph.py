@@ -41,12 +41,13 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Twelve edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
+    # Fourteen edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
     # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), the three
     # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to — and
-    # the two DAT-731 additions — has_additivity, measured_in.
-    assert graph_sql.count("SOURCE KEY") == 12
-    assert graph_sql.count("DESTINATION KEY") == 12
+    # the two DAT-731 additions (has_additivity, measured_in) and the two
+    # DAT-732 metric-DAG edges (derives_from, has_parameter).
+    assert graph_sql.count("SOURCE KEY") == 14
+    assert graph_sql.count("DESTINATION KEY") == 14
     # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -98,6 +99,22 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)" in graph_sql
     assert "LABEL measured_in" in graph_sql
     assert "PROPERTIES (unit_source, self_denominated)" in graph_sql
+    # DAT-732 — the metric node + its parameter node (declared default + derivation).
+    assert "KEY (graph_id) LABEL metric_node" in graph_sql
+    assert "PROPERTIES (graph_id, vertical, name, category, unit, output_type)" in graph_sql
+    assert "KEY (parameter_id) LABEL parameter_node" in graph_sql
+    assert (
+        "param_type, default_value,\n                  options, derivation, description"
+        in graph_sql
+    )
+    # DAT-732 — derives_from binds metric → concept; has_parameter binds metric → parameter.
+    assert "SOURCE KEY (from_graph_id) REFERENCES og_metrics (graph_id)" in graph_sql
+    assert "DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)" in graph_sql
+    assert "LABEL derives_from" in graph_sql
+    assert (
+        "DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)" in graph_sql
+    )
+    assert "LABEL has_parameter" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

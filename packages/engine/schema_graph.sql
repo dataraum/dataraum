@@ -18,6 +18,8 @@ DROP VIEW IF EXISTS __READ__.og_concept_edges;
 DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
 DROP VIEW IF EXISTS __READ__.og_grounded_by;
 DROP VIEW IF EXISTS __READ__.og_uses;
+DROP VIEW IF EXISTS __READ__.og_validity_filter;
+DROP VIEW IF EXISTS __READ__.og_scoped_by;
 DROP VIEW IF EXISTS __READ__.og_temporal_coverage;
 DROP VIEW IF EXISTS __READ__.og_rolls_up_to;
 DROP VIEW IF EXISTS __READ__.og_period_rolls_up_to;
@@ -209,6 +211,36 @@ WHERE NOT g.failed
 ORDER BY g.snippet_id, col.column_id,
          CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;
 
+CREATE VIEW __READ__.og_validity_filter AS
+SELECT c.cycle_id::text AS filter_id,
+       col.table_id::text AS table_id,
+       col.column_id::text AS column_id,
+       col.column_name AS column_name,
+       '=' AS operator,
+       c.completion_value AS value
+FROM __READ__.current_detected_business_cycles c
+JOIN __READ__.current_tables t
+  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)
+JOIN __READ__.current_columns col
+  ON col.table_id = t.table_id AND col.column_name = c.status_column
+WHERE c.status_column IS NOT NULL
+  AND c.completion_value IS NOT NULL
+  AND c.completion_rate IS NOT NULL;
+
+CREATE VIEW __READ__.og_scoped_by AS
+SELECT (col.table_id || '_' || c.cycle_id)::text AS edge_key,
+       col.table_id::text AS table_id,
+       c.cycle_id::text AS filter_id,
+       col.column_id::text AS column_id
+FROM __READ__.current_detected_business_cycles c
+JOIN __READ__.current_tables t
+  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)
+JOIN __READ__.current_columns col
+  ON col.table_id = t.table_id AND col.column_name = c.status_column
+WHERE c.status_column IS NOT NULL
+  AND c.completion_value IS NOT NULL
+  AND c.completion_rate IS NOT NULL;
+
 CREATE VIEW __READ__.og_temporal_coverage AS
 SELECT DISTINCT ON (te.table_id, col.column_id)
        (te.table_id || '_' || col.column_id)::text AS coverage_key,
@@ -347,7 +379,9 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (graph_id, vertical, name, category, unit, output_type),
     __READ__.og_metric_parameters KEY (parameter_id) LABEL parameter_node
       PROPERTIES (parameter_id, graph_id, name, param_type, default_value,
-                  options, derivation, description)
+                  options, derivation, description),
+    __READ__.og_validity_filter KEY (filter_id) LABEL validity_filter
+      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -424,5 +458,10 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (graph_id) REFERENCES og_metrics (graph_id)
       DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)
       LABEL has_parameter
-      PROPERTIES (graph_id)
+      PROPERTIES (graph_id),
+    __READ__.og_scoped_by KEY (edge_key)
+      SOURCE KEY (table_id) REFERENCES og_tables (table_id)
+      DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)
+      LABEL scoped_by
+      PROPERTIES (column_id)
   );

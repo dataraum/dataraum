@@ -37,6 +37,12 @@ reification).** Vertices/edges:
     period_grain   (KEY grain)       the constant period ladder node (day/month/
                                             quarter/year) carrying the workspace's
                                             declared fiscal boundary (DAT-730)
+    additivity_verdict (KEY additivity_id) the 2-axis drill additivity verdict
+                                            (DAT-731) projected from
+                                            current_metric_additivity: categorical /
+                                            time additive + reason, per drill target
+                                            (a ``metric`` graph_id or a ``measure``
+                                            standard_field)
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
@@ -47,6 +53,8 @@ reification).** Vertices/edges:
     temporal_coverage  table → column    [temporal_column_profiles ▸ time_columns] observed window/grain/completeness per (relation × time col) (DAT-730)
     rolls_up_to        column → column   [dimension_hierarchies] ordered drill level→level, finer→coarser (DAT-730)
     period_rolls_up_to grain → grain     [constant + workspace_calendar] the calendar ladder day→month→quarter→year (DAT-730)
+    has_additivity     concept → additivity_verdict [current_metric_additivity] a MEASURE concept's 2-axis verdict (DAT-731)
+    measured_in        column → column   [column_concepts.unit_source_column] a measure column → the column that defines its unit (DAT-731)
 
 One vertex label spans both layers (DAT-774): typed source tables AND enriched-view
 tables are ``table_node``, discriminated by the ``layer`` property (the DD types "Table
@@ -78,6 +86,27 @@ ATTRIBUTE grain (the actionable unit for SQL is a shared axis, not a shared tabl
 deliberately DECOUPLED from the table-grain ``refs`` fan-trap exclusion below — the two
 serve different consumers, so a cross-level fan trap is excluded from ``refs`` yet
 correctly has no conformed edge (see the edge's own note).
+
+**Additivity + units (DAT-731).** ``additivity_verdict`` is a small VERTEX projecting
+``current_metric_additivity`` — the deterministic 2-axis drill verdict (categorical /
+time additive + reason) the metrics phase persists per drill target (a ``metric``
+graph_id or a ``measure`` standard_field). A vertex (not a property on an existing
+node) because the two target kinds have NO common home: a ``measure`` target_key is a
+concept name, but a ``metric`` target_key is a formula ``graph_id`` with no vertex at
+all (metrics are not in the graph). One uniform vertex covers both and stays MATCH-able
+by property for the metric case; ``has_additivity`` (concept → verdict) makes the
+MEASURE case a traversal — ``MATCH (c:concept_node)-[:has_additivity]->(a)`` answers
+"can I sum concept X over time?". ``measured_in`` (column → column) projects the
+semantic-layer authored ``ColumnConcept.unit_source_column`` — a measure column → the
+column that defines its unit (a sibling ``currency`` dimension, or a ``table.column``
+across a confirmed FK, or the measure's OWN column for a self-denominated value). The
+authored pointer is the ONE home for a measure's unit: the typing-layer Pint
+``detected_unit`` (analysis/typing/units.py) is EVIDENCE the catalogue author already
+sees, never a second edge source — the two are not fused. ``dimensionless`` / NULL /
+'' carry no edge (no unit column to point at). Together they make a cross-unit
+aggregation REPRESENTABLE (a measure ``measured_in`` a multi-valued unit column cannot
+be summed raw without a conversion) — the conversion GROUNDING itself (an fx-rate
+table) is not a clean structural edge today and is left to the consumer's flag.
 
 **Bootstrap ordering is load-bearing.** A property graph *depends on* its element
 views, and an element view depends on the ``current_*`` views. Postgres refuses to
@@ -132,6 +161,9 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_temporal_coverage",
     "og_rolls_up_to",
     "og_period_rolls_up_to",
+    "og_additivity",
+    "og_has_additivity",
+    "og_measured_in",
 )
 
 
@@ -668,6 +700,93 @@ def _element_view_sql(name: str) -> str:
             f"FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))\n"
             f"       AS l(from_grain, to_grain);"
         )
+    if name == "og_additivity":
+        # additivity_verdict vertex (DAT-731): the 2-axis drill additivity verdict, a
+        # ::text projection of current_metric_additivity (read_views.py, the
+        # operating_model metrics-phase head). One row per drill TARGET — a `metric`
+        # (target_key = the formula graph_id / lifecycle artifact_key) or a `measure`
+        # (target_key = the concept standard_field). categorical_/time_additive say
+        # whether a breakdown by that axis class reconciles to the unsliced total;
+        # the *_reason names the cause when it does not (stock / average /
+        # distinct_count / snapshot_count / min_max / ratio / unknown_*), NULL when it
+        # reconciles. additivity_id is a per-run uuid4 but UNIQUE within one promoted
+        # state (the current view resolves one run), so it is a valid LOCAL vertex KEY
+        # — the og_references relationship_id discipline ("a fine local edge key inside
+        # one promoted state"). target_kind discriminates the two kinds for a consumer
+        # that MATCHes the metric case by property (no metric vertex to traverse from).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_additivity AS\n"
+            f"SELECT additivity_id::text AS additivity_id, target_kind, target_key,\n"
+            f"       categorical_additive, time_additive, categorical_reason, time_reason\n"
+            f"FROM {READ_TOKEN}.current_metric_additivity;"
+        )
+    if name == "og_has_additivity":
+        # has_additivity edge (concept → additivity_verdict, DAT-731): a MEASURE
+        # verdict's target_key IS a concept name (the standard_field), so the edge
+        # resolves it to the ACTIVE concept row — the same (name, superseded_at IS
+        # NULL) resolution og_grounded_by uses, and the same INNER-JOIN discipline
+        # (the graph never dangles: a verdict whose target_key names no active concept
+        # simply has no edge). METRIC-kind verdicts are excluded here — a formula
+        # graph_id is not a concept, so a metric verdict is reachable only by property
+        # on the vertex, never by this traversal (honest under-coverage, documented).
+        # concepts is the vertical-scoped read view (read_views.py _VERTICAL_SCOPED),
+        # so cross-vertical names never bind. edge_key = (concept_id, additivity_id) —
+        # unique because a measure verdict resolves to at most one active concept per
+        # name under the vertical scope; '_'-joined, NOT ':' (a bind-param sigil).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_has_additivity AS\n"
+            f"SELECT (c.concept_id || '_' || a.additivity_id)::text AS edge_key,\n"
+            f"       c.concept_id::text AS concept_id,\n"
+            f"       a.additivity_id::text AS additivity_id,\n"
+            f"       a.target_key\n"
+            f"FROM {READ_TOKEN}.current_metric_additivity a\n"
+            f"JOIN {READ_TOKEN}.concepts c\n"
+            f"  ON c.name = a.target_key AND c.superseded_at IS NULL\n"
+            f"WHERE a.target_kind = 'measure';"
+        )
+    if name == "og_measured_in":
+        # measured_in edge (column → column, DAT-731): a measure column → the column
+        # that DEFINES its unit, projecting the semantic-layer authored
+        # ColumnConcept.unit_source_column (catalogue_semantics writes it; this is its
+        # ONE home — the typing-layer Pint detected_unit is evidence the author saw,
+        # never a second edge source). The pointer's value shapes (catalogue_semantics
+        # prompt): a bare sibling column name in the measure's OWN table (e.g.
+        # `currency`), a 'table.column' reachable via a confirmed FK, or the measure's
+        # own column name (a self-denominated value → a self-loop, honest). NULL / ''
+        # / 'dimensionless' carry NO edge (nothing to point at). Name → column_id
+        # resolution is INNER (the og_uses / og_temporal_coverage discipline: an
+        # unresolvable name is honest under-coverage, never a dangling edge). A bare
+        # name resolves in the measure column's own table; a qualified name splits on
+        # '.' and resolves the table by name (typed tables — current_tables is
+        # layer='typed'). edge_key = (measure_column_id, unit_column_id), unique per
+        # pair; '_'-joined, NOT ':'. self_denominated flags the measure==unit self-loop
+        # so a consumer can tell "carries its own unit" from "points at a sibling".
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_measured_in AS\n"
+            f"SELECT (cc.column_id || '_' || unit_col.column_id)::text AS edge_key,\n"
+            f"       cc.column_id::text AS measure_column_id,\n"
+            f"       unit_col.column_id::text AS unit_column_id,\n"
+            f"       cc.unit_source_column AS unit_source,\n"
+            f"       (cc.column_id = unit_col.column_id) AS self_denominated\n"
+            f"FROM {READ_TOKEN}.current_column_concepts cc\n"
+            f"JOIN {READ_TOKEN}.current_columns mc ON mc.column_id = cc.column_id\n"
+            f"JOIN {READ_TOKEN}.current_tables mt ON mt.table_id = mc.table_id\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT\n"
+            f"      CASE WHEN position('.' in cc.unit_source_column) > 0\n"
+            f"           THEN split_part(cc.unit_source_column, '.', 1)\n"
+            f"           ELSE mt.table_name END AS tbl,\n"
+            f"      CASE WHEN position('.' in cc.unit_source_column) > 0\n"
+            f"           THEN split_part(cc.unit_source_column, '.', 2)\n"
+            f"           ELSE cc.unit_source_column END AS col\n"
+            f"  ) ref\n"
+            f"JOIN {READ_TOKEN}.current_tables ut ON ut.table_name = ref.tbl\n"
+            f"JOIN {READ_TOKEN}.current_columns unit_col\n"
+            f"  ON unit_col.table_id = ut.table_id AND unit_col.column_name = ref.col\n"
+            f"WHERE cc.unit_source_column IS NOT NULL\n"
+            f"  AND cc.unit_source_column <> ''\n"
+            f"  AND cc.unit_source_column <> 'dimensionless';"
+        )
     raise AssertionError(f"unreachable: {name} not an element view")
 
 
@@ -695,7 +814,10 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (snippet_id, concept, statement, aggregation,\n"
         f"                  relation, select_expr, where_predicates, description, failed),\n"
         f"    {READ_TOKEN}.og_period_grain KEY (grain) LABEL period_grain\n"
-        f"      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source)\n"
+        f"      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),\n"
+        f"    {READ_TOKEN}.og_additivity KEY (additivity_id) LABEL additivity_verdict\n"
+        f"      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,\n"
+        f"                  time_additive, categorical_reason, time_reason)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"
@@ -752,7 +874,17 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)\n"
         f"      DESTINATION KEY (to_grain) REFERENCES og_period_grain (grain)\n"
         f"      LABEL period_rolls_up_to\n"
-        f"      PROPERTIES (from_grain, to_grain)\n"
+        f"      PROPERTIES (from_grain, to_grain),\n"
+        f"    {READ_TOKEN}.og_has_additivity KEY (edge_key)\n"
+        f"      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)\n"
+        f"      DESTINATION KEY (additivity_id) REFERENCES og_additivity (additivity_id)\n"
+        f"      LABEL has_additivity\n"
+        f"      PROPERTIES (target_key),\n"
+        f"    {READ_TOKEN}.og_measured_in KEY (edge_key)\n"
+        f"      SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)\n"
+        f"      DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)\n"
+        f"      LABEL measured_in\n"
+        f"      PROPERTIES (unit_source, self_denominated)\n"
         f"  );"
     )
 

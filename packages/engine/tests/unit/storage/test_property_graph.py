@@ -41,11 +41,12 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Ten edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
-    # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), and the three
-    # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to.
-    assert graph_sql.count("SOURCE KEY") == 10
-    assert graph_sql.count("DESTINATION KEY") == 10
+    # Twelve edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
+    # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), the three
+    # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to — and
+    # the two DAT-731 additions — has_additivity, measured_in.
+    assert graph_sql.count("SOURCE KEY") == 12
+    assert graph_sql.count("DESTINATION KEY") == 12
     # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -87,6 +88,16 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # DAT-730 — the calendar ladder binds grain → grain.
     assert "SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)" in graph_sql
     assert "LABEL period_rolls_up_to" in graph_sql
+    # DAT-731 — the additivity_verdict vertex + its two edges.
+    assert "KEY (additivity_id) LABEL additivity_verdict" in graph_sql
+    assert "PROPERTIES (additivity_id, target_kind, target_key, categorical_additive," in graph_sql
+    # has_additivity binds concept → verdict; measured_in binds column → column.
+    assert "DESTINATION KEY (additivity_id) REFERENCES og_additivity (additivity_id)" in graph_sql
+    assert "LABEL has_additivity" in graph_sql
+    assert "SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "LABEL measured_in" in graph_sql
+    assert "PROPERTIES (unit_source, self_denominated)" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

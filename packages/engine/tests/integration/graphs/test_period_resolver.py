@@ -1087,15 +1087,9 @@ def test_single_filtered_period_falls_loud(
     )
     # Only ONE COGS row → the filtered window is a single period; the OTHER rows (a
     # different account_type, other quarters) are excluded by the flow's WHERE.
-    duckdb_conn.execute(
-        "INSERT INTO income_stmt VALUES (?, ?, ?)", [100.0, _Q_DATES[0], "COGS"]
-    )
-    duckdb_conn.execute(
-        "INSERT INTO income_stmt VALUES (?, ?, ?)", [200.0, _Q_DATES[1], "OTHER"]
-    )
-    duckdb_conn.execute(
-        "INSERT INTO income_stmt VALUES (?, ?, ?)", [300.0, _Q_DATES[2], "OTHER"]
-    )
+    duckdb_conn.execute("INSERT INTO income_stmt VALUES (?, ?, ?)", [100.0, _Q_DATES[0], "COGS"])
+    duckdb_conn.execute("INSERT INTO income_stmt VALUES (?, ?, ?)", [200.0, _Q_DATES[1], "OTHER"])
+    duckdb_conn.execute("INSERT INTO income_stmt VALUES (?, ?, ?)", [300.0, _Q_DATES[2], "OTHER"])
     _boot(integration_engine)
     resolution = resolve_days_in_period(
         pg_session, duckdb_conn, graph=_dpo_graph(), workspace_id=WS_ID

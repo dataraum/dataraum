@@ -59,6 +59,7 @@ import {
 	buildCatalogBlock,
 	buildDriversBlock,
 	buildEntitiesBlock,
+	buildGrainBlock,
 	buildRelationshipsBlock,
 	buildSchemaBlock,
 } from "./query-context";
@@ -588,6 +589,7 @@ export async function querySubAgent(
 		catalogBlock,
 		relationshipsBlock,
 		driversBlock,
+		grainBlock,
 		vocabularyBlock,
 		nearUniqueColumns,
 		workspace,
@@ -597,6 +599,7 @@ export async function querySubAgent(
 		buildCatalogBlock(),
 		buildRelationshipsBlock(),
 		buildDriversBlock(),
+		buildGrainBlock(),
 		buildVocabularyBlock(),
 		loadNearUniqueColumns(),
 		resolveActiveWorkspaceRow(),
@@ -618,7 +621,9 @@ export async function querySubAgent(
 	// volatile, and it rides alone in the user message, past the cache breakpoint.
 	// (The previous shape — question first, context after, all uncached in the
 	// user message — inverted the shared-prefix pattern: nothing ever cached.)
-	const stableContext = `${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${
+	const stableContext = `${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}${
+		grainBlock ? `\n\n${grainBlock}` : ""
+	}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${
 		conventionsBlock ? `\n\n${conventionsBlock}` : ""
 	}`;
 

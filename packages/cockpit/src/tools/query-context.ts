@@ -43,6 +43,7 @@ import {
 } from "../db/metadata/schema";
 import { LAKE_ALIAS, withLakeConnection } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
+import { loadNearUniqueColumns } from "./grain-note";
 import { type DriverRanking, lookDrivers } from "./look-drivers";
 import { projectTableEntity, type TableEntity } from "./look-table";
 
@@ -975,5 +976,136 @@ export async function buildDriversBlock(): Promise<string> {
 			`[cockpit] buildDriversBlock failed — omitting drivers context: ${err}`,
 		);
 		return "<drivers>\n(No driver rankings yet.)\n</drivers>";
+	}
+}
+
+// --- Grain guardrails (DAT-793) --------------------------------------------------
+//
+// grain-note.ts (DAT-538) catches a near-unique GROUP BY AFTER the SQL already ran
+// — a caveat computed from the composed query's OWN parse tree, once it's already
+// been run. This block serves the SAME near-unique signal (loadNearUniqueColumns'
+// cardinality_ratio check, NEAR_UNIQUE_RATIO=0.9) at COMPOSE time instead: the
+// agent sees, per table, which columns are per-row keys BEFORE it drafts a GROUP
+// BY, so an ambiguous "per X" question gets a coarser axis up front rather than a
+// caveat learned after the fact. Inform-don't-block, same as the check it
+// complements — NOT a gate, and grain-note.ts stays wired as the backstop for
+// whatever slips past this context (a model that ignores the block, or a column
+// whose stats postdate this read).
+
+/** One in-scope table's near-unique (per-row-key) columns, addressed for the prompt. */
+export interface GrainTableRow {
+	address: string;
+	columnNames: string[];
+}
+
+/**
+ * Format the near-unique columns per table as the sub-agent's `<grain>` block
+ * (pure). A table with no near-unique column is omitted — nothing actionable to
+ * warn about. Empty-artifact convention (DAT-793, mirrors
+ * `formatConventionsBlock`): when NO in-scope table has one, returns "" — no
+ * content-free heading — so the caller omits the section entirely, unlike the
+ * other context blocks above (schema, entities, …) which render a one-line note
+ * instead.
+ */
+export function formatGrainBlock(rows: GrainTableRow[]): string {
+	const withColumns = rows.filter((r) => r.columnNames.length > 0);
+	if (withColumns.length === 0) return "";
+
+	const stanzas = [...withColumns]
+		.sort((a, b) => a.address.localeCompare(b.address))
+		.map((r) => {
+			const cols = [...r.columnNames]
+				.sort()
+				.map((c) => `"${c}"`)
+				.join(", ");
+			return `Table ${r.address}: ${cols}`;
+		});
+
+	return (
+		"<grain>\n" +
+		"These columns are near-unique (about one row per value — an id or other " +
+		"per-row key). GROUP BY any of them returns a per-row dump masquerading as " +
+		"an aggregate, not a real summary. Before composing that GROUP BY, pick a " +
+		"coarser dimension instead (see <dimensions>) or aggregate differently; " +
+		"only group by one of these when the question genuinely asks for a per-row " +
+		"listing.\n\n" +
+		`${stanzas.join("\n")}\n` +
+		"</grain>"
+	);
+}
+
+/**
+ * Read the near-unique columns for each in-scope table (the current, non-archived
+ * typed tables) and format them as the sub-agent's `<grain>` block. Reuses
+ * `loadNearUniqueColumns` — the exact `cardinality_ratio >= NEAR_UNIQUE_RATIO`
+ * check grain-note.ts runs post-hoc — and attributes it to the table(s) each
+ * column belongs to; `loadNearUniqueColumns` itself returns a flat, table-less
+ * column-name set (conservative toward the post-hoc caveat: a name shared across
+ * tables is near-unique if ANY same-named column is), so that same conservatism
+ * carries into this block — with a real asymmetry vs its post-hoc use: there, a
+ * false-positive only over-annotates an already-correct result; HERE it can steer
+ * the agent away from grouping by an unrelated, genuinely-coarse column of the
+ * same name on another table. Accepted anyway: the block is explicitly
+ * non-binding ("only group by one of these when the question genuinely asks for
+ * a per-row listing"), and disambiguating per `column_id` would need SQL
+ * parsing this lane doesn't add. These columns apply to an enriched view built
+ * from the table too (mirrors <dimensions>'s treatment in buildCatalogBlock —
+ * also typed-addressed, also no explicit reconciliation clause), so no
+ * prefer-enriched branching is needed here. Soft-fail: grain grounding is
+ * degradable context — the agent still writes valid SQL without it, and the
+ * post-hoc grain-note.ts caveat still catches what this block misses — so a
+ * metadata read failure must not fail the whole answer (returns "" on failure,
+ * same as the empty case).
+ *
+ * Calls `loadNearUniqueColumns` itself rather than taking it as a param (a
+ * second call alongside `querySubAgent`'s own direct one, which needs the same
+ * set for the post-hoc grain-note check): both calls run inside the SAME
+ * `Promise.all`, so the duplicate read adds no latency, only load, and keeping
+ * this function self-contained/no-arg matches every other `build*Block` in this
+ * file (buildSchemaBlock and buildEntitiesBlock also both independently
+ * re-query current_tables/sources). Splitting the query out to share the read
+ * would mean threading an extra argument through a call site that every other
+ * context block here deliberately keeps parameterless — not worth it for one
+ * cheap join.
+ */
+export async function buildGrainBlock(): Promise<string> {
+	try {
+		const nearUnique = await loadNearUniqueColumns();
+		if (nearUnique.size === 0) return "";
+
+		const rows = await metadataDb
+			.select({
+				columnName: currentColumns.columnName,
+				physicalName: currentTables.tableName,
+			})
+			.from(currentColumns)
+			.innerJoin(
+				currentTables,
+				eq(currentTables.tableId, currentColumns.tableId),
+			)
+			.innerJoin(sources, eq(sources.sourceId, currentTables.sourceId))
+			.where(isNull(sources.archivedAt));
+
+		const byAddress = new Map<string, string[]>();
+		for (const r of rows) {
+			if (!r.columnName || !r.physicalName) continue;
+			if (!nearUnique.has(r.columnName.toLowerCase())) continue;
+			const address = `${LAKE_ALIAS}.${schemaForLayer(TYPED_LAYER)}.${r.physicalName}`;
+			const list = byAddress.get(address);
+			if (list) list.push(r.columnName);
+			else byAddress.set(address, [r.columnName]);
+		}
+
+		return formatGrainBlock(
+			[...byAddress.entries()].map(([address, columnNames]) => ({
+				address,
+				columnNames,
+			})),
+		);
+	} catch (err) {
+		console.warn(
+			`[cockpit] buildGrainBlock failed — omitting grain context: ${err}`,
+		);
+		return "";
 	}
 }

@@ -13,14 +13,17 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 import type { DriverRanking } from "./look-drivers";
 import type { TableEntity } from "./look-table";
 import {
+	buildGrainBlock,
 	type CatalogAxisRow,
 	type CatalogHierarchyRow,
 	type EntityBlockRow,
 	formatCatalog,
 	formatDrivers,
 	formatEntities,
+	formatGrainBlock,
 	formatRelationships,
 	formatSchema,
+	type GrainTableRow,
 	preferEnriched,
 	type RelationshipBlockRow,
 	type SchemaColumnRow,
@@ -716,5 +719,60 @@ describe("formatEntities (DAT-607)", () => {
 			{ address: entAddr("wwi_recent_orders"), entity: entity() },
 		]);
 		expect(out).toContain("When the <schema> block shows an enriched view");
+	});
+});
+
+// --- <grain> block (DAT-793: compose-time near-unique guardrail) -----------------
+
+describe("formatGrainBlock (DAT-793)", () => {
+	it("lists the near-unique columns per table, sorted, with the composing-time instruction", () => {
+		const rows: GrainTableRow[] = [
+			{
+				address: "lake.typed.journal_lines",
+				columnNames: ["transaction_id", "line_id"],
+			},
+		];
+		const block = formatGrainBlock(rows);
+		expect(block).toContain("<grain>");
+		expect(block).toContain(
+			'Table lake.typed.journal_lines: "line_id", "transaction_id"',
+		);
+		// The composing-time steer: prevent, don't just note after the fact.
+		expect(block).toContain("per-row dump masquerading as");
+		expect(block).toContain("pick a coarser dimension");
+	});
+
+	it("sorts tables by address (deterministic prompt)", () => {
+		const rows: GrainTableRow[] = [
+			{ address: "lake.typed.zebra", columnNames: ["id"] },
+			{ address: "lake.typed.alpha", columnNames: ["id"] },
+		];
+		const block = formatGrainBlock(rows);
+		expect(block.indexOf("lake.typed.alpha")).toBeLessThan(
+			block.indexOf("lake.typed.zebra"),
+		);
+	});
+
+	it("drops a table with no near-unique column", () => {
+		const rows: GrainTableRow[] = [
+			{ address: "lake.typed.orders", columnNames: [] },
+		];
+		expect(formatGrainBlock(rows)).toBe("");
+	});
+
+	it("empty-artifact convention: no table with a near-unique column → '' (no content-free heading, mirrors formatConventionsBlock)", () => {
+		expect(formatGrainBlock([])).toBe("");
+		expect(
+			formatGrainBlock([{ address: "lake.typed.orders", columnNames: [] }]),
+		).toBe("");
+	});
+});
+
+describe("buildGrainBlock (DAT-793) — soft-fail", () => {
+	it("resolves to '' rather than throwing when the metadata read fails", async () => {
+		// metadataDb is stubbed to {} at the top of this file (the pure-formatter
+		// boundary stub) — any Drizzle call off it throws, exercising the same
+		// soft-fail contract as buildDriversBlock without a bespoke DB mock.
+		await expect(buildGrainBlock()).resolves.toBe("");
 	});
 });

@@ -152,14 +152,15 @@ class TestConceptEdges:
 class TestStructuralEdges:
     """conformed-dimension / derived_from / materializes_as served as structure."""
 
-    def test_conformed_dimension_axis_deduped_to_one_pair(self, ctx: GraphExecutionContext) -> None:
-        """journal and statement share the accounts.account_type axis — served as
-        ONE unordered pair; the cross-level (region) slice does not conform."""
-        assert len(ctx.conformed_dimensions) == 1
-        cd = ctx.conformed_dimensions[0]
-        assert {cd.table_a, cd.table_b} == {"journal", "statement"}
-        assert cd.dimension_table == "accounts"
-        assert cd.attribute == "account_type"
+    def test_conformed_dimension_axes_deduped_per_pair(self, ctx: GraphExecutionContext) -> None:
+        """journal and statement share TWO accounts axes (DAT-788): account_type via
+        the SAME account_id role, and segment via differently-named roles the judge
+        CONFORMED. Each is served as ONE unordered pair (deduped from both directions +
+        role multiplicity); the bill-to/ship-to region slices do NOT conform."""
+        axes = sorted((cd.dimension_table, cd.attribute) for cd in ctx.conformed_dimensions)
+        assert axes == [("accounts", "account_type"), ("accounts", "segment")]
+        for cd in ctx.conformed_dimensions:
+            assert {cd.table_a, cd.table_b} == {"journal", "statement"}
 
     def test_materialization_and_anchor_on_columns(self, ctx: GraphExecutionContext) -> None:
         """og_columns semantics land on the column contexts: witness posterior
@@ -229,6 +230,21 @@ class TestEndpointMissesDropLoudNotCrash:
             " slice_priority, slice_type, detection_source, created_at) "
             f"VALUES ('sl_9b', '{run}', 't4', 'c_k4', 'ghost__region', 't9', 'region9', "
             f"'account_id', 2, 'categorical', 'llm', '{ts}')",
+            # DAT-788: referenced cells so the t9 conformed edge FORMS (same account_id
+            # role → one group) — it must then drop on the unresolvable t9 endpoint,
+            # not silently vanish for want of a cell.
+            "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
+            " concept_label, dimension_table_id, roles, attributes, confirmation_source, "
+            " conformed_group, needs_confirmation, signature, created_at) "
+            f"VALUES ('bm_9', '{run}', 't1', 'referenced', 'ghost', 't9', "
+            f"'[\"account_id\"]', '[]', 'unconfirmed', 'ref:t9:account_id', false, "
+            f"'bus:referenced:t1:t9:account_id', '{ts}')",
+            "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
+            " concept_label, dimension_table_id, roles, attributes, confirmation_source, "
+            " conformed_group, needs_confirmation, signature, created_at) "
+            f"VALUES ('bm_9b', '{run}', 't4', 'referenced', 'ghost', 't9', "
+            f"'[\"account_id\"]', '[]', 'unconfirmed', 'ref:t9:account_id', false, "
+            f"'bus:referenced:t4:t9:account_id', '{ts}')",
             # An enriched view deriving from the unresolvable t9 dimension base.
             # Fact t4 — one enriched view per fact (uq_enriched_view_fact_table),
             # and t1 already carries the seed's enriched_journal.
@@ -256,9 +272,11 @@ class TestEndpointMissesDropLoudNotCrash:
         assert ("journal", "accounts") in pairs
         assert not any("ghost" in p for pair in pairs for p in pair)
 
-        # Conformed: only the resolvable accounts axis; the t9 axis dropped.
+        # Conformed: only the resolvable accounts axes (account_type + the judge-merged
+        # segment); the t9 axis formed an edge but dropped on its unresolvable endpoint.
         assert [(c.dimension_table, c.attribute) for c in ctx.conformed_dimensions] == [
-            ("accounts", "account_type")
+            ("accounts", "account_type"),
+            ("accounts", "segment"),
         ]
 
         # Derived: the view serves, its unresolvable base dropped (empty bases).

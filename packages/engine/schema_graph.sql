@@ -157,11 +157,24 @@ SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,
        s1.dimension_table_id::text AS dimension_table_id,
        s1.dimension_attribute AS dimension_attribute
 FROM __READ__.current_slice_definitions s1
+JOIN __READ__.current_bus_matrix b1
+  ON b1.attachment = 'referenced'
+ AND b1.fact_table_id = s1.table_id
+ AND b1.dimension_table_id = s1.dimension_table_id
+ AND EXISTS (SELECT 1 FROM json_array_elements_text(b1.roles) AS r(role)
+             WHERE r.role = COALESCE(NULLIF(s1.fk_role, ''), s1.column_name))
 JOIN __READ__.current_slice_definitions s2
-  ON s1.dimension_table_id = s2.dimension_table_id
- AND COALESCE(s1.dimension_attribute, '') = COALESCE(s2.dimension_attribute, '')
- AND s1.table_id <> s2.table_id
-WHERE s1.dimension_table_id IS NOT NULL;
+  ON s2.dimension_table_id = s1.dimension_table_id
+ AND COALESCE(s2.dimension_attribute, '') = COALESCE(s1.dimension_attribute, '')
+ AND s2.table_id <> s1.table_id
+JOIN __READ__.current_bus_matrix b2
+  ON b2.attachment = 'referenced'
+ AND b2.fact_table_id = s2.table_id
+ AND b2.dimension_table_id = s2.dimension_table_id
+ AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)
+             WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))
+WHERE s1.dimension_table_id IS NOT NULL
+ AND b1.conformed_group = b2.conformed_group;
 
 CREATE VIEW __READ__.og_grounded_by AS
 SELECT (c.concept_id || '_' || g.snippet_id)::text AS edge_key,

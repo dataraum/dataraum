@@ -640,8 +640,11 @@ class TestEnrichedViewsAndAxes:
         assert "joins orders.vendor_id -> vendors.vendor_id" in text
 
     def test_shared_axis_pairing_pairs_different_tables_only(self, session) -> None:
+        # Same FK ROLE name across facts → one structural axis (DAT-788): the
+        # pairing fires between DIFFERENT tables, never self, and folded slices
+        # (no dim identity) never pair.
         ap = _mk_table(session, "ap_ledger", ["vendor_id"])
-        ar = _mk_table(session, "ar_ledger", ["customer_id"])
+        ar = _mk_table(session, "ar_ledger", ["vendor_id"])
         vendors = _mk_table(session, "vendors", ["vendor_id", "region"])
 
         def _slice(fact: Table, col: str, dim: Table | None, attr: str | None) -> None:
@@ -661,14 +664,42 @@ class TestEnrichedViewsAndAxes:
             session.flush()
 
         _slice(ap, "vendor_id", vendors, "region")
-        _slice(ar, "customer_id", vendors, "region")  # same axis, different fact
+        _slice(ar, "vendor_id", vendors, "region")  # same axis + role, different fact
         _slice(ap, "vendor_id", None, None)  # folded — no dimension identity
 
         out = _build(session, [ap, ar, vendors])
         text = out["shared_axes"]
         assert "ap_ledger slices by vendors.region via vendor_id" in text
         assert "Shared axes" in text
-        assert "vendors.region: ap_ledger (via vendor_id) <-> ar_ledger (via customer_id)" in text
+        assert "vendors.region: ap_ledger (via vendor_id) <-> ar_ledger (via vendor_id)" in text
+
+    def test_role_playing_fks_do_not_pair_structurally(self, session) -> None:
+        # DAT-788 safe default: differently-named FK roles to one axis (vendor_id
+        # vs customer_id → vendors.region) are SEPARATE pre-judge — this served
+        # context runs before the conform judge, so it never merges cross-role.
+        ap = _mk_table(session, "ap_ledger", ["vendor_id"])
+        ar = _mk_table(session, "ar_ledger", ["customer_id"])
+        vendors = _mk_table(session, "vendors", ["vendor_id", "region"])
+        for fact, col in ((ap, "vendor_id"), (ar, "customer_id")):
+            session.add(
+                SliceDefinition(
+                    run_id=baseline_run_id(),
+                    table_id=fact.table_id,
+                    column_id=_col_id(session, fact, col),
+                    column_name=f"{col}__region",
+                    dimension_table_id=vendors.table_id,
+                    dimension_attribute="region",
+                    fk_role=col,
+                    slice_priority=5,
+                    slice_type="categorical",
+                )
+            )
+        session.flush()
+
+        text = _build(session, [ap, ar, vendors])["shared_axes"]
+        assert "ap_ledger slices by vendors.region via vendor_id" in text
+        assert "ar_ledger slices by vendors.region via customer_id" in text
+        assert "Shared axes" not in text  # separate roles, never paired pre-judge
 
     def test_pairing_order_is_name_keyed_not_uuid_keyed(self, session) -> None:
         """Members sort by resolved table NAME, never by table_id — a uuid sort
@@ -707,18 +738,18 @@ class TestEnrichedViewsAndAxes:
         pairing with the OUT-of-scope partner — a pair needs rows from both
         facts, so the scope filters the rendering, never the load."""
         ap = _mk_table(session, "ap_ledger", ["vendor_id"])
-        ar = _mk_table(session, "ar_ledger", ["customer_id"])
+        ar = _mk_table(session, "ar_ledger", ["vendor_id"])
         vendors = _mk_table(session, "vendors", ["vendor_id", "region"])
-        for fact, col in ((ap, "vendor_id"), (ar, "customer_id")):
+        for fact in (ap, ar):
             session.add(
                 SliceDefinition(
                     run_id=baseline_run_id(),
                     table_id=fact.table_id,
-                    column_id=_col_id(session, fact, col),
-                    column_name=f"{col}__region",
+                    column_id=_col_id(session, fact, "vendor_id"),
+                    column_name="vendor_id__region",
                     dimension_table_id=vendors.table_id,
                     dimension_attribute="region",
-                    fk_role=col,
+                    fk_role="vendor_id",
                     slice_priority=5,
                     slice_type="categorical",
                 )
@@ -727,7 +758,7 @@ class TestEnrichedViewsAndAxes:
 
         out = _build(session, [ap, ar, vendors], scope=[ap.table_id])
         text = out["shared_axes"]
-        assert "vendors.region: ap_ledger (via vendor_id) <-> ar_ledger (via customer_id)" in text
+        assert "vendors.region: ap_ledger (via vendor_id) <-> ar_ledger (via vendor_id)" in text
         # The rendering is still scope-filtered: the out-of-scope fact's own
         # per-fact axis line is not served.
         assert "ar_ledger slices by" not in text

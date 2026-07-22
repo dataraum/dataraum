@@ -326,22 +326,27 @@ def _better(challenger: _Best, incumbent: _Best) -> bool:
 
 def _shared_dimension_groups(
     defs: Sequence[SliceDefinition],
-    conformed_cells: Sequence[BusMatrixEntry],
+    cells: Sequence[BusMatrixEntry],
 ) -> tuple[
-    dict[tuple[str, str], dict[str, list[SliceDefinition]]],
-    dict[tuple[str, str], str],
+    dict[tuple[str, str, str], dict[str, list[SliceDefinition]]],
+    dict[tuple[str, str, str], str],
 ]:
     """Group this run's slices into cross-table dimension identities.
 
-    REFERENCED identities (DAT-756): group by the slice's referenced identity,
-    not its ``column_name``. Two facts share a dimension iff they reference the
-    SAME dim table at the SAME attribute — so the same conformed dimension
-    reached via differently-named FK columns is paired (the false-negative that
-    silently disabled this witness), and two unrelated same-named FOLDED
-    columns are not (the false-positive). ``{table -> [slices]}`` per identity:
-    one fact can carry MULTIPLE slices at the same identity — role-playing FKs
-    to one dim. Keep them all (a list, not last-write-wins): each is a distinct
-    bucketing lens the search competes.
+    The identity key is ``(dimension_table_id, dimension_attribute, role_identity)``.
+
+    REFERENCED identities (DAT-756 + DAT-788): group by the slice's referenced
+    identity, not its ``column_name`` — two facts share a dimension iff they
+    reference the SAME dim table at the SAME attribute in the SAME ROLE. The role
+    component closes the DAT-756 residual: role-playing FKs to one dim (bill-to vs
+    ship-to) are SEPARATE identities unless the conform judge merged their roles.
+    ``role_identity`` is the ``conformed_group`` the bus-matrix referenced cell
+    carries (the DAT-788 decision layer): same-named FK roles across facts share
+    it structurally, a judge ``conform`` verdict merges differently-named roles,
+    and ``role`` / ``distinct`` / ``abstain`` / unjudged keep them apart — the safe
+    default, never inventing conformance. ``{table -> [slices]}`` per identity:
+    one fact can still carry MULTIPLE slices at one identity (several attributes of
+    one role) — keep them all as competing lenses.
 
     FOLDED identities (DAT-800): a folded slice has no referenced identity, but
     the run's conform judge may have asserted its CROSS-FACT identity — folded
@@ -358,22 +363,38 @@ def _shared_dimension_groups(
     applies the >=2-tables filter); ``folded_labels`` maps each folded identity
     to the judge's concept label for the persisted ``slice_dimension``.
     """
-    defs_by_dim: dict[tuple[str, str], dict[str, list[SliceDefinition]]] = {}
+    # (fact, dim, fk_role) -> the conformed role group the bus matrix resolved.
+    # The referenced cell carries the DAT-788 role identity; a slice whose cell is
+    # absent (should not happen — bus_matrix runs over the same facts) falls back
+    # to the structural singleton signature, matching a same-name-only component.
+    role_group: dict[tuple[str, str, str], str] = {}
+    for cell in cells:
+        if cell.attachment == "referenced" and cell.conformed_group and cell.dimension_table_id:
+            for role in cell.roles:
+                role_group[(cell.fact_table_id, cell.dimension_table_id, role)] = (
+                    cell.conformed_group
+                )
+
+    defs_by_dim: dict[tuple[str, str, str], dict[str, list[SliceDefinition]]] = {}
     for sd in defs:
         if not sd.dimension_table_id:
             continue
-        identity = (sd.dimension_table_id, sd.dimension_attribute or "")
+        role = sd.fk_role or sd.column_name or ""
+        role_identity = role_group.get(
+            (sd.table_id, sd.dimension_table_id, role), f"ref:{sd.dimension_table_id}:{role}"
+        )
+        identity = (sd.dimension_table_id, sd.dimension_attribute or "", role_identity)
         defs_by_dim.setdefault(identity, {}).setdefault(sd.table_id, []).append(sd)
 
     folded_slice = {(sd.table_id, sd.column_name): sd for sd in defs if not sd.dimension_table_id}
-    folded_labels: dict[tuple[str, str], str] = {}
+    folded_labels: dict[tuple[str, str, str], str] = {}
     cells_by_group: dict[str, list[BusMatrixEntry]] = {}
-    for cell in conformed_cells:
-        if cell.conformed_group:
+    for cell in cells:
+        if cell.attachment == "folded" and cell.conformed_group:
             cells_by_group.setdefault(cell.conformed_group, []).append(cell)
-    for group, cells in sorted(cells_by_group.items()):
-        identity = (f"folded:{group}", "")
-        for cell in cells:
+    for group, group_cells in sorted(cells_by_group.items()):
+        identity = (f"folded:{group}", "", "")
+        for cell in group_cells:
             key_col = cell.roles[0] if cell.roles else None
             lens = folded_slice.get((cell.fact_table_id, key_col))
             if lens is None:
@@ -387,7 +408,7 @@ def _shared_dimension_groups(
             defs_by_dim.setdefault(identity, {}).setdefault(cell.fact_table_id, []).append(lens)
         if identity in defs_by_dim:
             # One label per group (the conform pass canonicalizes) — display only.
-            folded_labels[identity] = cells[0].concept_label
+            folded_labels[identity] = group_cells[0].concept_label
     return defs_by_dim, folded_labels
 
 
@@ -432,29 +453,28 @@ def discover_aggregation_lineage(
         .scalars()
         .all()
     )
-    # Conformed identities the run's cross-fact judge asserted on FOLDED axes
-    # (DAT-800): the bus matrix — derived by ``dimension_hierarchies``, which
-    # runs before this phase — carries them; on a denormalized corpus these are
-    # the ONLY shared dimensions (the flat-shape inertness this closes).
-    # ``conformed_group`` (not ``confirmation_source``) is the filter: who
-    # asserted the underlying STRUCTURE (user teach vs stats) is orthogonal to
-    # whether the judge conformed its cross-fact IDENTITY — a user-taught fold
-    # the judge conformed participates.
-    conformed_cells = (
+    # The run's bus matrix — derived by ``dimension_hierarchies``, which runs
+    # before this phase — carries the identity decision layer both legs read:
+    # REFERENCED cells hold the DAT-788 role identity (``conformed_group`` per
+    # FK-role group), FOLDED cells hold the DAT-800 cross-fact fold identity. On a
+    # denormalized corpus the folded cells are the ONLY shared dimensions (the
+    # flat-shape inertness this closes). ``conformed_group`` (not
+    # ``confirmation_source``) is the identity filter inside the grouper: who
+    # asserted the underlying STRUCTURE (user teach vs stats vs FK) is orthogonal
+    # to whether the judge conformed the cross-fact/cross-role IDENTITY.
+    bus_cells = (
         session.execute(
             select(BusMatrixEntry)
             .where(
                 BusMatrixEntry.run_id == run_id,
                 BusMatrixEntry.fact_table_id.in_(table_ids),
-                BusMatrixEntry.attachment == "folded",
-                BusMatrixEntry.conformed_group.is_not(None),
             )
             .order_by(BusMatrixEntry.signature)
         )
         .scalars()
         .all()
     )
-    defs_by_dim, folded_labels = _shared_dimension_groups(defs, conformed_cells)
+    defs_by_dim, folded_labels = _shared_dimension_groups(defs, bus_cells)
     shared_dims = {ident: by_table for ident, by_table in defs_by_dim.items() if len(by_table) >= 2}
     if not shared_dims:
         logger.info("lineage_no_shared_dimension", identities=sorted(defs_by_dim))

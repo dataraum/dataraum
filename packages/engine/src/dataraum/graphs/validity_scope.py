@@ -29,7 +29,11 @@ from dataraum.graphs.models import AssumptionBasis, GraphAssumptionOutput
 if TYPE_CHECKING:
     import duckdb
 
-    from dataraum.graphs.context import BusinessCycleContext, EnrichedViewContext
+    from dataraum.graphs.context import (
+        BusinessCycleContext,
+        EnrichedViewContext,
+        TableContext,
+    )
     from dataraum.graphs.models import ExtractGroundingOutput
 
 
@@ -47,11 +51,28 @@ class ValidityScope:
         return f"{self.column} {self.operator} '{escaped}'"
 
 
+def _name_forms(name: str, tables: list[TableContext]) -> set[str]:
+    """Both name forms (``table_name`` and ``duckdb_name``) of the table ``name`` names.
+
+    So a cycle's ``status_table`` matches whichever namespace it was stored in —
+    the Python mirror of the element views' ``table_name OR duckdb_path`` match (the
+    two can legitimately diverge; nothing enforces they don't).
+    """
+    forms = {name}
+    for table in tables:
+        if name in (table.table_name, table.duckdb_name):
+            forms.add(table.table_name)
+            if table.duckdb_name:
+                forms.add(table.duckdb_name)
+    return forms
+
+
 def resolve_validity_scopes(
     business_cycles: list[BusinessCycleContext],
     relation: str,
     served_columns: set[str],
     enriched_views: list[EnrichedViewContext],
+    tables: list[TableContext],
 ) -> list[ValidityScope]:
     """The validity scopes that apply to a grounding reading ``relation``.
 
@@ -61,23 +82,27 @@ def resolve_validity_scopes(
       cycles contract's ``measured`` discriminator (an unmeasured cycle NULLs its
       three metrics; DAT-807). An unmeasured cycle contributes NO filter;
     * it carries both a bare ``status_column`` and a ``completion_value``;
-    * ``relation`` resolves to the cycle's ``status_table`` — the typed table itself,
-      or an enriched view whose fact base IS that table;
+    * ``relation`` resolves to the cycle's ``status_table`` — the typed table itself
+      (matched on EITHER name form via ``tables``), or an enriched view whose fact
+      base IS that table;
     * the bare status column is present among the relation's served columns — the
       honest presence test, so the appended predicate can only reference a column
       that actually exists on what the grounding queries.
 
+    Duplicate scopes (two cycles sharing a status column + value) collapse to one.
     Absence falls loud: no qualifying cycle ⇒ ``[]`` ⇒ no predicate, never a
     fabricated default-true scope.
     """
-    # relation → the base tables it reads: itself, plus the fact base of an enriched
-    # view of that name (an enriched view carries its fact's status column).
-    scope_tables = {relation}
+    # relation → the base tables it reads, in BOTH name forms: itself, plus the fact
+    # base of an enriched view of that name (an enriched view carries its fact's
+    # status column).
+    scope_tables = _name_forms(relation, tables)
     for view in enriched_views:
         if view.view_name == relation and view.fact_table:
-            scope_tables.add(view.fact_table)
+            scope_tables |= _name_forms(view.fact_table, tables)
 
     scopes: list[ValidityScope] = []
+    seen: set[tuple[str, str]] = set()
     for cycle in business_cycles:
         if cycle.completion_rate is None:  # unmeasured → no filter
             continue
@@ -92,6 +117,9 @@ def resolve_validity_scopes(
             continue
         if column not in served_columns:  # honest presence test — no fabrication
             continue
+        if (column, value) in seen:  # two cycles, same predicate → one part
+            continue
+        seen.add((column, value))
         scopes.append(ValidityScope(column=column, operator="=", value=value))
     return scopes
 
@@ -102,6 +130,7 @@ def compose_scoped_where(
     served_columns: set[str],
     business_cycles: list[BusinessCycleContext],
     enriched_views: list[EnrichedViewContext],
+    tables: list[TableContext],
     duckdb_conn: duckdb.DuckDBPyConnection | None,
 ) -> tuple[list[str], list[GraphAssumptionOutput]]:
     """Compose the default validity scope onto a grounding's WHERE parts (DAT-733).
@@ -123,7 +152,9 @@ def compose_scoped_where(
     scope_assumptions: list[GraphAssumptionOutput] = []
     if relation is None:
         return where_parts, scope_assumptions
-    scopes = resolve_validity_scopes(business_cycles, relation, served_columns, enriched_views)
+    scopes = resolve_validity_scopes(
+        business_cycles, relation, served_columns, enriched_views, tables
+    )
     if not scopes:
         return where_parts, scope_assumptions
     constrained = where_filter_columns(output, served_columns, duckdb_conn)

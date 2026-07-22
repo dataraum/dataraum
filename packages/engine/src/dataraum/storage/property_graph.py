@@ -187,6 +187,23 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
 )
 
 
+# Shared FROM/JOIN/WHERE of the two DAT-733 validity-scope element views. They stay
+# INDEPENDENT views (no view-to-view dependency — the dump drops them in list order),
+# but re-derive the SAME rows: keeping the name resolution + measured gate in ONE
+# string stops the vertex and its edge silently drifting apart on a future edit
+# (e.g. tightening the measured gate must touch both).
+_VALIDITY_FILTER_SOURCE = (
+    f"FROM {READ_TOKEN}.current_detected_business_cycles c\n"
+    f"JOIN {READ_TOKEN}.current_tables t\n"
+    f"  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)\n"
+    f"JOIN {READ_TOKEN}.current_columns col\n"
+    f"  ON col.table_id = t.table_id AND col.column_name = c.status_column\n"
+    f"WHERE c.status_column IS NOT NULL\n"
+    f"  AND c.completion_value IS NOT NULL\n"
+    f"  AND c.completion_rate IS NOT NULL;"
+)
+
+
 def _element_view_sql(name: str) -> str:
     """The tokenized body for one ``og_*`` element view over the read surface.
 
@@ -622,15 +639,7 @@ def _element_view_sql(name: str) -> str:
             f"       col.column_id::text AS column_id,\n"
             f"       col.column_name AS column_name,\n"
             f"       '=' AS operator,\n"
-            f"       c.completion_value AS value\n"
-            f"FROM {READ_TOKEN}.current_detected_business_cycles c\n"
-            f"JOIN {READ_TOKEN}.current_tables t\n"
-            f"  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)\n"
-            f"JOIN {READ_TOKEN}.current_columns col\n"
-            f"  ON col.table_id = t.table_id AND col.column_name = c.status_column\n"
-            f"WHERE c.status_column IS NOT NULL\n"
-            f"  AND c.completion_value IS NOT NULL\n"
-            f"  AND c.completion_rate IS NOT NULL;"
+            f"       c.completion_value AS value\n" + _VALIDITY_FILTER_SOURCE
         )
     if name == "og_scoped_by":
         # scoped_by edge (table -> validity_filter, DAT-733): the table whose rows
@@ -646,15 +655,7 @@ def _element_view_sql(name: str) -> str:
             f"SELECT (col.table_id || '_' || c.cycle_id)::text AS edge_key,\n"
             f"       col.table_id::text AS table_id,\n"
             f"       c.cycle_id::text AS filter_id,\n"
-            f"       col.column_id::text AS column_id\n"
-            f"FROM {READ_TOKEN}.current_detected_business_cycles c\n"
-            f"JOIN {READ_TOKEN}.current_tables t\n"
-            f"  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)\n"
-            f"JOIN {READ_TOKEN}.current_columns col\n"
-            f"  ON col.table_id = t.table_id AND col.column_name = c.status_column\n"
-            f"WHERE c.status_column IS NOT NULL\n"
-            f"  AND c.completion_value IS NOT NULL\n"
-            f"  AND c.completion_rate IS NOT NULL;"
+            f"       col.column_id::text AS column_id\n" + _VALIDITY_FILTER_SOURCE
         )
     if name == "og_period_grain":
         # period_grain vertex (DAT-730): the CONSTANT period-roll-up ladder nodes

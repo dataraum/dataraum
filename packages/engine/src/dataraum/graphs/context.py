@@ -230,11 +230,12 @@ class BusinessCycleContext:
     entity_flows: list[EntityFlowContext] = field(default_factory=list)
     # Bare parts (DAT-733): the status column + its table kept SEPARATE, not
     # pre-combined — the default validity-scope resolver renders a bare-column
-    # predicate over the grounding's relation, and the narrative re-qualifies for
-    # reading. e.g. status_table="invoices", status_column="status".
+    # predicate over the grounding's relation, and the narrative re-qualifies it
+    # (``<status_table>.<status_column>``) for reading.
     status_table: str | None = None
     status_column: str | None = None
-    completion_value: str | None = None  # "paid"
+    # The served value that marks a cycle complete (the scope's right-hand side).
+    completion_value: str | None = None
 
     # Volume metrics (from DetectedBusinessCycle)
     total_records: int | None = None

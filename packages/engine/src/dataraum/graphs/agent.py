@@ -993,6 +993,7 @@ class GraphAgent(LLMFeature):
             schema_tables.get(relation, set()) if relation is not None else set(),
             context.rich_context.business_cycles,
             context.rich_context.enriched_views,
+            context.rich_context.tables,
             context.duckdb_conn,
         )
 

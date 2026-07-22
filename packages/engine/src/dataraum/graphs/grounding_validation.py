@@ -129,15 +129,29 @@ def where_filter_columns(
     relation_columns: set[str],
     duckdb_conn: duckdb.DuckDBPyConnection | None,
 ) -> set[str]:
-    """The relation columns the grounding's WHERE predicates already constrain.
+    """The relation columns the grounding's WHERE predicates PROVABLY constrain.
 
-    Reuses the same catalog-free parse as contract validation, so a status column
-    the LLM deliberately filtered on is detected precisely — never by a lexical
-    coincidence inside a string literal. DAT-733's default-scope opt-out reads this
-    to defer the canonical validity scope to the grounding's own constraint.
+    DAT-733's default-scope opt-out reads this to DECIDE whether to skip the
+    canonical validity scope — so, unlike the validation reference set, it must NOT
+    over-collect. A column counts only when the fragment referencing it PARSED
+    (DuckDB's catalog-free parse — identifier-precise, string literals and
+    subquery-internal names excluded). A fragment that fails to parse contributes
+    NOTHING: its lexical over-collection (a status-shaped token inside a string
+    literal) must never justify skipping the scope and silently dropping the filter.
+    No connection ⇒ no parser ⇒ no confident constraint ⇒ never a bypass.
     """
-    _, where_used, _ = _used_columns(output, relation_columns, duckdb_conn)
-    return where_used
+    if duckdb_conn is None:
+        return set()
+    constrained: set[str] = set()
+    for predicate in output.where:
+        if not predicate or not predicate.strip():
+            continue
+        try:
+            refs = _parsed_column_refs(predicate, duckdb_conn)
+        except ValueError:
+            continue  # unparsed → not confident → contributes nothing to the bypass
+        constrained |= refs & relation_columns
+    return constrained
 
 
 def _used_columns(

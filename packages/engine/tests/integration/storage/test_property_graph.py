@@ -361,9 +361,49 @@ def _seed(engine: Engine) -> None:
         )
     stmts.extend(_coverage_and_rollup_stmts())
     stmts.extend(_grounding_stmts())
+    stmts.extend(_metric_dag_stmts())
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
+
+
+def _metric_dag_stmts() -> list[str]:
+    """DAT-732 fixture rows: the metric DAG typed home (nodes / params / edges).
+
+    One declared metric ``working_capital_metric`` that:
+
+    * derives_from TWO concepts that hold healthy groundings — ``account_balance``
+      (con_bal, grounded by sn_tb + sn_bs) and ``revenue`` (con_rev, grounded by
+      sn_rev + the retained-failure sn_fail) — so the full walk
+      ``metric → concept → grounded_by → grounding (→ uses → column)`` returns rows;
+    * plus a derives_from row naming a concept with NO active row
+      (``ghost_concept``) — the og_derives_from INNER JOIN must DROP it (the graph
+      never dangles, the og_grounded_by discipline);
+    * carries a ``days_in_period`` parameter whose ``derivation`` marker is
+      ``period_grain`` and whose declared default (30) round-trips as a property.
+
+    All rows are ``vertical='finance'`` so the _VERTICAL_SCOPED read views (bound to
+    finance in this seed) surface them.
+    """
+    return [
+        "INSERT INTO metrics (metric_id, vertical, graph_id, name, category, unit, "
+        " output_type, version, source, created_at) "
+        f"VALUES ('m_wc', 'finance', 'working_capital_metric', 'Working Capital Metric', "
+        f"'working_capital', 'days', 'scalar', '1.0', 'seed', '{TS}')",
+        "INSERT INTO metric_parameters (parameter_id, vertical, graph_id, name, param_type, "
+        " default_value, options, description, derivation, source, created_at) "
+        f"VALUES ('mp_dip', 'finance', 'working_capital_metric', 'days_in_period', 'integer', "
+        f"'30'::json, '[30, 90, 365]'::json, 'Analysis period length', 'period_grain', "
+        f"'seed', '{TS}')",
+        "INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name, created_at) "
+        f"VALUES ('mdf_bal', 'finance', 'working_capital_metric', 'account_balance', '{TS}')",
+        "INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name, created_at) "
+        f"VALUES ('mdf_rev', 'finance', 'working_capital_metric', 'revenue', '{TS}')",
+        # No active concept named 'ghost_concept' → the INNER-JOIN og_derives_from view
+        # drops this edge (honest under-coverage, never a dangling edge).
+        "INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name, created_at) "
+        f"VALUES ('mdf_ghost', 'finance', 'working_capital_metric', 'ghost_concept', '{TS}')",
+    ]
 
 
 def _coverage_and_rollup_stmts() -> list[str]:
@@ -1375,3 +1415,89 @@ def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
     assert rows["severity"] == "ordered"
     # A measure concept carries no ordering fact.
     assert rows["accounts_payable"] is None
+
+
+# --- Metric DAG (DAT-732): metric_node + derives_from + has_parameter ---
+
+
+def test_metric_node_carries_its_declared_metadata(graph_engine: Engine) -> None:
+    """metric_node: one vertex per declared metric, over the typed home."""
+    sql = (
+        f"SELECT gid, name, unit, otype FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node) "
+        "COLUMNS (m.graph_id AS gid, m.name AS name, m.unit AS unit, "
+        "m.output_type AS otype))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.name, r.unit, r.otype) for r in conn.execute(text(sql))}
+    assert rows == {("working_capital_metric", "Working Capital Metric", "days", "scalar")}
+
+
+def test_derives_from_binds_metric_to_its_extracted_concepts(graph_engine: Engine) -> None:
+    """derives_from: metric → concept, resolved on the ACTIVE concept name. The
+    edge naming a concept with no active row (ghost_concept) is DROPPED by the
+    INNER JOIN — the graph never dangles."""
+    sql = (
+        f"SELECT gid, cname FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[d IS derives_from]->(c IS concept_node) "
+        "COLUMNS (m.graph_id AS gid, c.name AS cname))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.cname) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "account_balance"),
+        ("working_capital_metric", "revenue"),
+    }
+
+
+def test_has_parameter_edge_carries_declared_default_and_derivation(
+    graph_engine: Engine,
+) -> None:
+    """has_parameter: metric → parameter. The parameter node carries the DECLARED
+    default (as a property) and the ``derivation`` marker pointing at the
+    period-grain rule (DAT-732 — days_in_period is the first instance)."""
+    sql = (
+        f"SELECT pname, dflt, deriv FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[h IS has_parameter]->(p IS parameter_node) "
+        "COLUMNS (p.name AS pname, p.default_value AS dflt, p.derivation AS deriv))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.pname, r.dflt, r.deriv) for r in conn.execute(text(sql))}
+    assert rows == {("days_in_period", "30", "period_grain")}
+
+
+def test_metric_dag_walks_to_its_healthy_groundings(graph_engine: Engine) -> None:
+    """The DAT-732 acceptance walk: metric → extracts (derives_from) → concepts →
+    groundings, one PGQ MATCH. Filtering healthy groundings surfaces the concrete
+    groundings each extracted concept resolves to (revenue's retained-FAILURE sn_fail
+    is excluded by the vertex filter)."""
+    sql = (
+        f"SELECT gid, cname, sid FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[d IS derives_from]->(c IS concept_node)"
+        "-[gb IS grounded_by]->(g IS grounding_node WHERE NOT g.failed) "
+        "COLUMNS (m.graph_id AS gid, c.name AS cname, g.snippet_id AS sid))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.cname, r.sid) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "account_balance", "sn_tb"),
+        ("working_capital_metric", "account_balance", "sn_bs"),
+        ("working_capital_metric", "revenue", "sn_rev"),
+    }
+
+
+def test_metric_dag_walks_all_the_way_to_columns(graph_engine: Engine) -> None:
+    """The full metric → concept → grounding → column chain in one MATCH: the metric
+    DAG is walkable end-to-end onto the served relation's column vertices (og_uses)."""
+    sql = (
+        f"SELECT gid, colname, role FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[d IS derives_from]->(c IS concept_node)"
+        "-[gb IS grounded_by]->(g IS grounding_node)-[u IS uses]->(col IS column_node) "
+        "COLUMNS (m.graph_id AS gid, col.column_name AS colname, u.role AS role))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.colname, r.role) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "amount", "measure"),  # sn_tb + sn_bs + sn_rev
+        ("working_capital_metric", "account_id__account_type", "filter"),  # sn_tb
+    }

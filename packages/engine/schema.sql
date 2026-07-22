@@ -123,6 +123,56 @@ CREATE INDEX ix_metric_additivity_run_id ON metric_additivity (run_id);
 
 CREATE INDEX ix_metric_additivity_target_key ON metric_additivity (target_key);
 
+CREATE TABLE metric_derives_from (
+	edge_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	graph_id VARCHAR NOT NULL, 
+	concept_name VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_metric_derives_from PRIMARY KEY (edge_id)
+);
+
+CREATE UNIQUE INDEX uq_metric_derives_from_active ON metric_derives_from (vertical, graph_id, concept_name) WHERE superseded_at IS NULL;
+
+CREATE TABLE metric_parameters (
+	parameter_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	graph_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	param_type VARCHAR NOT NULL, 
+	default_value JSON, 
+	options JSON, 
+	description TEXT, 
+	derivation VARCHAR, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_metric_parameters PRIMARY KEY (parameter_id), 
+	CONSTRAINT ck_metric_parameters_derivation CHECK (derivation IS NULL OR derivation IN ('period_grain')), 
+	CONSTRAINT ck_metric_parameters_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_metric_parameter_active ON metric_parameters (vertical, graph_id, name) WHERE superseded_at IS NULL;
+
+CREATE TABLE metrics (
+	metric_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	graph_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	category VARCHAR, 
+	unit VARCHAR, 
+	output_type VARCHAR, 
+	version VARCHAR, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_metrics PRIMARY KEY (metric_id), 
+	CONSTRAINT ck_metrics_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_metric_active ON metrics (vertical, graph_id) WHERE superseded_at IS NULL;
+
 CREATE TABLE sources (
 	source_id VARCHAR NOT NULL, 
 	name VARCHAR NOT NULL, 

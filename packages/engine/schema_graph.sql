@@ -21,6 +21,10 @@ DROP VIEW IF EXISTS __READ__.og_uses;
 DROP VIEW IF EXISTS __READ__.og_temporal_coverage;
 DROP VIEW IF EXISTS __READ__.og_rolls_up_to;
 DROP VIEW IF EXISTS __READ__.og_period_rolls_up_to;
+DROP VIEW IF EXISTS __READ__.og_metrics;
+DROP VIEW IF EXISTS __READ__.og_metric_parameters;
+DROP VIEW IF EXISTS __READ__.og_derives_from;
+DROP VIEW IF EXISTS __READ__.og_has_parameter;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -251,6 +255,34 @@ SELECT (l.from_grain || '_' || l.to_grain)::text AS edge_key,
 FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))
        AS l(from_grain, to_grain);
 
+CREATE VIEW __READ__.og_metrics AS
+SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type
+FROM __READ__.metrics
+WHERE superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_metric_parameters AS
+SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id, name,
+       param_type, default_value::text AS default_value,
+       options::text AS options, derivation, description
+FROM __READ__.metric_parameters
+WHERE superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_derives_from AS
+SELECT df.edge_id::text AS edge_id,
+       df.graph_id::text AS from_graph_id,
+       c.concept_id::text AS to_concept_id,
+       df.concept_name
+FROM __READ__.metric_derives_from df
+JOIN __READ__.concepts c
+  ON c.vertical = df.vertical AND c.name = df.concept_name
+ AND c.superseded_at IS NULL
+WHERE df.superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_has_parameter AS
+SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id
+FROM __READ__.metric_parameters
+WHERE superseded_at IS NULL;
+
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
@@ -264,7 +296,12 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (snippet_id, concept, statement, aggregation,
                   relation, select_expr, where_predicates, description, failed),
     __READ__.og_period_grain KEY (grain) LABEL period_grain
-      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source)
+      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),
+    __READ__.og_metrics KEY (graph_id) LABEL metric_node
+      PROPERTIES (graph_id, vertical, name, category, unit, output_type),
+    __READ__.og_metric_parameters KEY (parameter_id) LABEL parameter_node
+      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,
+                  options, derivation, description)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -321,5 +358,15 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)
       DESTINATION KEY (to_grain) REFERENCES og_period_grain (grain)
       LABEL period_rolls_up_to
-      PROPERTIES (from_grain, to_grain)
+      PROPERTIES (from_grain, to_grain),
+    __READ__.og_derives_from KEY (edge_id)
+      SOURCE KEY (from_graph_id) REFERENCES og_metrics (graph_id)
+      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)
+      LABEL derives_from
+      PROPERTIES (concept_name),
+    __READ__.og_has_parameter KEY (parameter_id)
+      SOURCE KEY (graph_id) REFERENCES og_metrics (graph_id)
+      DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)
+      LABEL has_parameter
+      PROPERTIES (graph_id)
   );

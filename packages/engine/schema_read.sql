@@ -261,6 +261,24 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
+DROP VIEW IF EXISTS __READ__.metric_derives_from;
+CREATE VIEW __READ__.metric_derives_from AS
+SELECT * FROM __WS__.metric_derives_from
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
+DROP VIEW IF EXISTS __READ__.metric_parameters;
+CREATE VIEW __READ__.metric_parameters AS
+SELECT * FROM __WS__.metric_parameters
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
+DROP VIEW IF EXISTS __READ__.metrics;
+CREATE VIEW __READ__.metrics AS
+SELECT * FROM __WS__.metrics
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
 DROP VIEW IF EXISTS __READ__.current_relationships;
 CREATE VIEW __READ__.current_relationships AS
 SELECT r.* FROM __WS__.relationships r

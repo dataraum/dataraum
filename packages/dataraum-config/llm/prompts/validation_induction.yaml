@@ -1,86 +1,93 @@
-# Validation Induction Prompt
+# Validation Induction Prompt (DAT-735)
 #
-# Proposes data validation checks from semantic annotations, relationships,
-# and data profiles. Used on cold start when no validation specs exist —
-# the LLM proposes business rules and data quality checks.
+# Proposes data-validation checks by inducing over the WHOLE served operating-model
+# graph — concepts + part_of composition, references topology, additivity verdicts,
+# conventions, cycles, units, the metric DAG. The engine binds each proposal to SQL
+# in a later phase; here the model proposes TYPED checks (check_type + tolerance +
+# advisory guidance) grounded in the real graph, declaring every entity it references
+# so the engine can reject fabricated tables/columns/concepts.
 
 name: validation_induction
-version: "1.0.0"
-description: Propose validation checks from data schema and annotations
+version: "2.0.0"
+description: Induce typed validation checks from the served operating-model graph
 temperature: 0.0
 
 system_prompt: |
-  You are a data quality analyst. Given database tables with semantic
-  annotations, relationships, and statistical profiles, you propose
-  validation checks — business rules and data integrity constraints
-  that should hold true for this data.
+  You are a data-quality analyst. Given the served operating-model graph — the
+  physical tables and columns, the concept vocabulary and its part_of composition,
+  the confirmed references, additivity verdicts, business cycles, units, and the
+  domain conventions — you PROPOSE validation checks: business rules and data-integrity
+  constraints that should hold true for this data.
 
   <goal>
-  Propose validation specs that can be executed as SQL checks against the
-  data. Each validation is a named rule with SQL hints for generation,
-  expected outcome, and severity. Focus on checks that are grounded in
-  the actual data structure — not generic best practices.
+  Propose validations that another agent can later bind to a single SQL check. Each
+  validation is a named rule with a TYPED check definition: a check_type (the generic
+  shape), a numeric tolerance (the pass threshold), advisory guidance for the SQL
+  author, and the exact tables/columns/concepts it reasons over. Ground every check in
+  the ACTUAL served graph — never a generic best practice, never an entity you cannot
+  see in the graph below.
   </goal>
 
-  <validation_fields>
-  Each validation has:
-  - validation_id: lowercase_snake_case identifier
+  <output_contract>
+  Return an object {"validations": [ ... ]}. Each validation has EVERY field (use the
+  documented empty sentinel — "" or [] — when a field does not apply):
+  - validation_id: lowercase_snake_case identifier, unique in this vertical
   - name: human-readable name
   - description: what the check verifies and why it matters
-  - category: "financial", "data_quality", "business_rule", or "referential_integrity"
-  - severity: "critical", "error", "warning", or "info"
-  - check_type: "balance", "comparison", "constraint", "aggregate", or "referential"
-  - parameters: optional dict (e.g. tolerance thresholds)
-  - sql_hints: instructions for generating the SQL check — reference actual column
-    names and table names from the schema
-  - expected_outcome: what a passing result looks like
-  - tags: list of descriptive tags
-  - relevant_cycles: list of cycle types this validation applies to (empty = universal)
-  </validation_fields>
+  - category: a free-text grouping label (e.g. data_quality, referential_integrity)
+  - severity: one of info | warning | error | critical
+  - check_type: one of balance | comparison | constraint | aggregate | referential
+    (the generic SHAPE of the check — it is a label, not the logic)
+  - tolerance: the pass threshold. A row passes when its deviation <= tolerance. Use
+    0.0 for an exact identity (a balance that must net to zero); a small fraction
+    (e.g. 0.01) for a rate that tolerates rounding/noise.
+  - guidance: advisory prose for the SQL-binding agent — name the real tables and
+    columns and describe how to compute the check. This is a HINT, never the check's
+    definition. "" when none.
+  - expected_outcome: what a passing result looks like; "" when none.
+  - relevant_cycles: cycle types this applies to; [] means universal
+  - referenced_tables: the served tables this check reads; [] when none
+  - referenced_columns: the served columns (table.column) this check reads; [] when none
+  - referenced_concepts: the served concept names this check reasons over; [] when none
+  </output_contract>
 
   <guidelines>
-  - Propose 3-8 validations depending on data complexity
-  - Ground every check in actual tables and columns — reference real names
-  - Prioritize: referential integrity (FK consistency), balance checks (paired
-    movement columns that must net out), temporal ordering (a later process
-    stage's date after its earlier stage's), and value constraints
-  - Use semantic annotations to understand what columns mean
-  - Use relationships to identify FK constraints worth checking
-  - If the domain vocabulary declares paired movement columns, check they net out
-  - Severity: "critical" for fundamental domain identities, "error" for FK integrity,
-    "warning" for business rules, "info" for data quality observations
+  - Propose as many checks as the graph GENUINELY supports — a rich graph yields more,
+    a thin graph yields few or NONE. Do not pad; an empty list is a valid answer.
+  - Every referenced_tables / referenced_columns / referenced_concepts entry MUST be a
+    real name from the served graph. A fabricated reference gets the whole validation
+    rejected — prefer fewer, well-grounded checks.
+  - Prioritise what the graph makes checkable: referential integrity across the
+    confirmed references; balance/reconciliation across measures a convention or a
+    reconciles_with edge ties together; non-additive snapshot pitfalls the additivity
+    verdicts flag; value/ordering constraints on the columns' declared meaning.
+  - Use the domain conventions VERBATIM as declared judgment — they say what must hold
+    (e.g. a sign or netting rule); do not re-derive or contradict them.
+  - Set relevant_cycles from the served cycles when a check is cycle-specific; leave it
+    [] for a universal structural check.
   </guidelines>
-
-  Use the induce_validations tool to provide your analysis.
 
 user_prompt: |
   <task>
-  Analyze the following data schema with semantic annotations and
-  relationships. Propose validation checks — business rules and data
-  quality constraints that should hold true for this data.
+  Analyse the served operating-model graph and propose validation checks — business
+  rules and data-integrity constraints that should hold true for this data. Ground
+  every check in the real tables, columns, and concepts below.
   </task>
 
-  <schema>
-  {tables_json}
-  </schema>
+  <served_graph>
+  {served_graph}
+  </served_graph>
 
-  <semantic_annotations>
-  {annotations_summary}
-  </semantic_annotations>
+  <domain_conventions>
+  {conventions}
+  </domain_conventions>
 
-  <relationships>
-  {relationships_summary}
-  </relationships>
-
-  Propose validations using the induce_validations tool.
+  Return the {"validations": [...]} object per the output contract.
 
 inputs:
-  tables_json:
-    description: JSON array of tables with columns and statistics
+  served_graph:
+    description: The rendered operating-model graph (tables, concepts, references, cycles, units)
     required: true
-  annotations_summary:
-    description: Summary of semantic annotations
-    required: true
-  relationships_summary:
-    description: Summary of detected relationships
+  conventions:
+    description: The vertical's domain conventions, served verbatim
     required: true

@@ -41,13 +41,14 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Fifteen edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
+    # Sixteen edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
     # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), the three
     # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to — the
     # two DAT-731 additions (has_additivity, measured_in), the two DAT-732
-    # metric-DAG edges (derives_from, has_parameter), and the DAT-733 scoped_by.
-    assert graph_sql.count("SOURCE KEY") == 15
-    assert graph_sql.count("DESTINATION KEY") == 15
+    # metric-DAG edges (derives_from, has_parameter), the DAT-733 scoped_by, and the
+    # DAT-787 filtered_by (grounding → dim_member).
+    assert graph_sql.count("SOURCE KEY") == 16
+    assert graph_sql.count("DESTINATION KEY") == 16
     # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -122,6 +123,35 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "SOURCE KEY (table_id) REFERENCES og_tables (table_id)" in graph_sql
     assert "DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)" in graph_sql
     assert "LABEL scoped_by" in graph_sql
+
+    # DAT-787: the dim_member vertex + the grounding→dim_member filtered_by edge.
+    assert "KEY (dim_member_key) LABEL dim_member" in graph_sql
+    assert (
+        "PROPERTIES (dim_member_key, conformed_group, dimension_attribute, member_value)"
+        in graph_sql
+    )
+    assert "SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)" in graph_sql
+    assert "DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)" in graph_sql
+    assert "LABEL filtered_by" in graph_sql
+    assert "PROPERTIES (concept)" in graph_sql
+
+
+def test_filtered_by_is_additive_where_stays_on_the_grounding_node() -> None:
+    """DAT-787: the filtered_by edge is an ADDITIVE projection — where_predicates
+    remains a property on the grounding vertex (never moved onto the edge)."""
+    graph_sql = dict(graph_statements())[PROPERTY_GRAPH_NAME]
+    assert "where_predicates" in graph_sql  # still a grounding_node property
+    dim_members_sql = dict(graph_statements())["og_dim_members"]
+    filtered_by_sql = dict(graph_statements())["og_filtered_by"]
+    # Members un-nest the TYPED filter_members, never parse where[] text.
+    assert "filter_members" in dim_members_sql
+    assert "filter_members" in filtered_by_sql
+    # The dimension-axis-only gate: a referenced slice identity is required.
+    assert "current_bus_matrix" in dim_members_sql
+    assert "dimension_table_id IS NOT NULL" in dim_members_sql
+    # Vertex KEY and edge destination KEY are the SAME expression (no drift).
+    assert "json_build_array(bm.conformed_group" in dim_members_sql
+    assert "json_build_array(bm.conformed_group" in filtered_by_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

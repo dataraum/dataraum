@@ -391,13 +391,10 @@ class OperatingModelResult(BaseModel):
     nothing, so there is nothing to retry) but deliberately does NOT flip the head.
     A misconfiguration signal, not a benign variant: a workspace with no
     validations/cycles/metrics is never a valid end state (the collaborative path
-    that makes frame-generated verticals acquire them is DAT-855). CROSS-PACKAGE:
-    ``OperatingModelResult`` is hand-mirrored in the cockpit's
-    ``src/temporal/types.ts``; this ``outcome`` field is NOT yet mirrored there —
-    the separate briefing lane that renders the terminal state adds the matching
-    ``outcome: "promoted" | "nothing_declared"`` in lockstep (DAT-845 fans the
-    engine gate and the cockpit rendering into distinct lanes). Until it lands the
-    field simply crosses as an extra JSON key the cockpit structurally ignores.
+    (DAT-855). CROSS-PACKAGE: ``OperatingModelResult`` (including this ``outcome``
+    field) is hand-mirrored in the cockpit's ``src/temporal/types.ts`` and persisted
+    to cockpit_db ``runs.outcome`` for rendering. Keep the type and semantics in
+    lockstep across engine + cockpit.
     """
 
     run_id: str

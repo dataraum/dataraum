@@ -41,15 +41,16 @@ sql_hints: >
   1. Join journal lines to chart of accounts on account_id; GROUP BY account_id,
      account_type.
   2. Classify each account_type as credit-normal or debit-normal using the convention.
-  3. Compute the NATURAL balance per account: SUM(credit) - SUM(debit) for credit-normal
-     accounts, SUM(debit) - SUM(credit) for debit-normal accounts.
-  4. Flag accounts whose natural balance is NEGATIVE — that is a sign violation.
+  3. Compute each account's signed balance under its sign convention — alias it
+     "natural_balance" (always double-quoted): SUM(credit) - SUM(debit) for
+     credit-normal accounts, SUM(debit) - SUM(credit) for debit-normal accounts.
+  4. Flag accounts whose "natural_balance" is NEGATIVE — that is a sign violation.
   5. Exclude contra accounts (names containing 'accumulated', 'allowance', 'contra',
      or 'reserve') — they legitimately invert.
 
   Return violating accounts with: account_id, account_name, account_type,
-  natural_balance. Also return a total_rows column with the total number of accounts
-  checked (for proportional scoring).
+  "natural_balance". Also return a total_rows column with the total number of
+  accounts checked (for proportional scoring).
 
 expected_outcome: >
   Most accounts should have a positive natural balance. A small number of violations

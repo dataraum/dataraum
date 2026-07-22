@@ -489,6 +489,60 @@ class TestValidationAgentBindExecute:
         assert bind_failure.status == ValidationStatus.ERROR
         assert "Generated SQL is invalid" in bind_failure.message
 
+    def test_bind_reserved_word_identifier_fails_explain(
+        self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
+    ):
+        """DAT-858: a bare reserved-word identifier (DuckDB's ``natural``,
+        contextually reserved for ``NATURAL JOIN``) used unquoted as a CTE
+        name fails to parse. There is NO repair turn on this path — bind
+        must still fail loud with ERROR, the same fail-closed contract as
+        any other unplannable SQL, never a crash and never a silent rewrite
+        of the LLM's emitted text."""
+        table = table_with_data
+
+        spec = ValidationSpec(
+            validation_id="reserved_word_check",
+            name="Reserved Word Check",
+            description="LLM emits an unquoted reserved-word identifier",
+            category="test",
+            check_type="balance",
+        )
+
+        from dataraum.analysis.validation.resolver import (
+            get_multi_table_schema_for_llm,
+        )
+
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
+
+        # `natural` is unquoted here — DuckDB reserves it for NATURAL JOIN
+        # grammar, so an unquoted CTE/alias named `natural` fails to parse
+        # even though it reads like an ordinary identifier.
+        tool_input = {
+            "sql": (
+                "WITH natural AS ("
+                "SELECT SUM(debit) - SUM(credit) AS total FROM typed_journal_entries"
+                ") SELECT ABS(total) AS deviation, ABS(total) AS magnitude FROM natural"
+            ),
+            "columns_used": ["debit", "credit"],
+            "can_validate": True,
+            "skip_reason": "",
+        }
+        mock_provider.converse.return_value = Result.ok(_make_output_response(tool_input))
+
+        generated, bind_failure = validation_agent.bind_validation(
+            duckdb_conn, [table.table_id], spec, schema
+        )
+
+        assert generated is None
+        assert bind_failure is not None
+        assert bind_failure.status == ValidationStatus.ERROR
+        # Pin the actual parse reason, not just "some EXPLAIN failure" (which
+        # the sibling missing-table test already covers) — DuckDB 1.5.4's
+        # parser names the offending token. If a future DuckDB unreserves
+        # NATURAL this assertion fails loud, which is the correct signal to
+        # revisit the fix, not a flake to silence.
+        assert 'syntax error at or near "natural"' in bind_failure.message
+
     def test_execute_inconclusive_result_is_error(
         self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
     ):

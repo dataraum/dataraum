@@ -221,6 +221,11 @@ class BusinessCycleContext:
 
     cycle_name: str
     cycle_type: str  # e.g., "order_to_cash", "procure_to_pay"
+    # Direction axis (DAT-856): the declared family + resolved direction. Both None for
+    # a non-family cycle; both set for a family cycle (a decided label, or 'undetermined'
+    # — the honest detected-but-undirected state, rendered as such, never a guessed label).
+    family: str | None = None
+    direction: str | None = None
     tables_involved: list[str] = field(default_factory=list)
     completion_rate: float | None = None  # What % of cycles complete
     description: str | None = None
@@ -732,6 +737,8 @@ def build_execution_context(
             BusinessCycleContext(
                 cycle_name=cycle.cycle_name,
                 cycle_type=cycle.canonical_type or cycle.cycle_type,
+                family=cycle.family,
+                direction=cycle.direction,
                 tables_involved=cycle.tables_involved,
                 completion_rate=cycle.completion_rate,
                 description=cycle.description,
@@ -2174,7 +2181,14 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
             status = "UNVERIFIED"
             val_info = ""
 
-        lines.append(f"\n### {cycle.cycle_name} ({cycle.cycle_type}) — {status} {val_info}")
+        # A family cycle names its direction honestly (DAT-856): a decided direction
+        # reads as e.g. "accounts_payable, direction outgoing"; an undirected one reads
+        # as "settlement, direction undetermined" — the detected-but-undirected state
+        # served as exactly that, never a guessed label. A non-family cycle is unchanged.
+        type_label = cycle.cycle_type
+        if cycle.direction is not None:
+            type_label = f"{cycle.cycle_type}, direction {cycle.direction}"
+        lines.append(f"\n### {cycle.cycle_name} ({type_label}) — {status} {val_info}")
         lines.append("")
 
         if cycle.description:

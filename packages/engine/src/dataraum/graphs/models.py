@@ -72,6 +72,12 @@ class ParameterDef:
     default: Any
     description: str | None = None
     options: list[Any] | None = None  # For enum-like parameters
+    # The rule that DERIVES this parameter's runtime value when the caller provides
+    # none (DAT-732): ``period_grain`` for ``days_in_period`` (the flow's observed
+    # window, resolved by ``period_resolver``), NULL for a plain constant. Declared in
+    # the vertical YAML — a DATA marker, never inferred by name in engine code — and
+    # persisted to the ``metric_parameters`` typed home / ``og_metric_parameters``.
+    derivation: str | None = None  # MetricParameterDerivation value, or None
 
 
 @dataclass

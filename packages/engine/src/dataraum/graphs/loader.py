@@ -164,6 +164,7 @@ class GraphLoader:
                             default=param_data.get("default"),
                             description=param_data.get("description"),
                             options=param_data.get("options"),
+                            derivation=param_data.get("derivation"),
                         )
                     )
             return parameters
@@ -177,6 +178,7 @@ class GraphLoader:
                         default=param_data.get("default"),
                         description=param_data.get("description"),
                         options=param_data.get("options"),
+                        derivation=param_data.get("derivation"),
                     )
                 )
         return parameters

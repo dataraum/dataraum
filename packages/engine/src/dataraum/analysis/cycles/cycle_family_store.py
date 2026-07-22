@@ -132,4 +132,41 @@ def load_workspace_cycle_families(session: Session, vertical: str) -> dict[str, 
     return {r.family: dict(r.directions or {}) for r in rows}
 
 
-__all__ = ["ensure_cycle_families_seeded", "load_workspace_cycle_families"]
+def format_cycle_families_for_context(cycle_families: dict[str, dict[str, str]]) -> str:
+    """Render the cycle-family declaration as a DOMAIN KNOWLEDGE block for the judge.
+
+    Served as CONTEXT data (DAT-856), NOT as generic-prompt text — the mechanism prose
+    is domain-free (family / direction / undetermined), and the family + member names are
+    the vertical's DECLARED data (each member's own prose already sits in KNOWN BUSINESS
+    CYCLE TYPES above). Empty declaration → empty block (the caller omits it). This keeps
+    the de-leak tripwire green: no who-owes-whom vocabulary is hardcoded anywhere generic.
+    """
+    if not cycle_families:
+        return ""
+    lines = [
+        "## CYCLE FAMILIES (direction axis)",
+        "",
+        "Some cycle types differ ONLY in direction — the same shape of flow read from "
+        "opposite sides. They are grouped into families below. When you detect a cycle "
+        "in one of these families, set `family` to the family name and `direction` to "
+        "the direction the served evidence decides. When the served evidence does NOT "
+        'decide the direction, set `direction` to "undetermined": detecting the family '
+        "without directing it is the honest answer, never a failure — do NOT guess a "
+        "direction to fill the field.",
+        "",
+    ]
+    for family_name in sorted(cycle_families):
+        directions = cycle_families[family_name]
+        lines.append(f"### {family_name}")
+        lines.append("Directions (label → the cycle type it resolves to):")
+        for label in sorted(directions):
+            lines.append(f"  - {label} → {directions[label]}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+__all__ = [
+    "ensure_cycle_families_seeded",
+    "format_cycle_families_for_context",
+    "load_workspace_cycle_families",
+]

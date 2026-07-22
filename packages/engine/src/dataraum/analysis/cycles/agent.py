@@ -20,7 +20,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from dataraum.analysis.cycles.config import map_to_canonical_type
+from dataraum.analysis.cycles.config import resolve_cycle_identity
 from dataraum.analysis.cycles.context import (
     build_cycle_detection_context,
     format_context_for_prompt,
@@ -191,6 +191,11 @@ class BusinessCycleAgent(LLMFeature):
         cycles = []
         cycle_data_list = [c.model_dump() for c in output.cycles]
 
+        # The direction-axis declaration (DAT-856), loaded into the context by the
+        # builder (config→DB). {} for a vertical with no declared families — every
+        # cycle then resolves the non-family way.
+        cycle_families: dict[str, dict[str, str]] = context.get("cycle_families", {})
+
         for cd in cycle_data_list:
             cname = cd.get("cycle_name", "Unknown Cycle")
 
@@ -235,7 +240,17 @@ class BusinessCycleAgent(LLMFeature):
             ]
 
             raw_cycle_type = cd.get("cycle_type", "unknown")
-            canonical_type, is_known_type = map_to_canonical_type(raw_cycle_type, vertical)
+            # Direction-axis resolution (DAT-856): a family cycle resolves to its
+            # directed member (decided) or the family itself (undetermined — the honest
+            # detected-but-undirected state, never coerced); a non-family cycle keeps
+            # the cycle_type → canonical mapping. The sole producer of (family, direction).
+            identity = resolve_cycle_identity(
+                cycle_type=raw_cycle_type,
+                family=cd.get("family", ""),
+                direction=cd.get("direction", ""),
+                cycle_families=cycle_families,
+                vertical=vertical,
+            )
 
             # The completion measurement is tri-state, carried by an EXPLICIT
             # ``measured`` flag on the wire (DAT-807) rather than by absence: a
@@ -250,8 +265,10 @@ class BusinessCycleAgent(LLMFeature):
                 cycle_id=str(uuid4()),
                 cycle_name=cname,
                 cycle_type=raw_cycle_type,
-                canonical_type=canonical_type,
-                is_known_type=is_known_type,
+                canonical_type=identity.canonical_type,
+                is_known_type=identity.is_known_type,
+                family=identity.family,
+                direction=identity.direction,
                 description=cd.get("description", ""),
                 business_value=cd["business_value"],
                 stages=stages,

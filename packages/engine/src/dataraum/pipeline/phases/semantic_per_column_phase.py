@@ -16,13 +16,13 @@ from types import ModuleType
 
 from sqlalchemy import func, select
 
+from dataraum.analysis.cycles.cycle_family_store import ensure_cycle_families_seeded
 from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_seeded
 from dataraum.analysis.semantic.concept_store import (
     ensure_concepts_seeded,
     load_workspace_concepts,
     require_active_vertical,
 )
-from dataraum.analysis.cycles.cycle_family_store import ensure_cycle_families_seeded
 from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.analysis.validation.validation_store import ensure_validations_seeded

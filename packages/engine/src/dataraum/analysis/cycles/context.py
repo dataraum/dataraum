@@ -26,6 +26,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.cycles.config import format_cycle_vocabulary_for_context
+from dataraum.analysis.cycles.cycle_family_store import (
+    format_cycle_families_for_context,
+    load_workspace_cycle_families,
+)
 from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
     format_graph_structure_for_context,
@@ -564,9 +568,16 @@ def build_cycle_detection_context(
         "graph_pattern": graph_structure.pattern,
     }
 
-    # 10. Domain vocabulary
+    # 10. Domain vocabulary + the cycle-family direction axis (DAT-856), read from the
+    # typed home (config→DB). The families are threaded into the context for BOTH the
+    # DOMAIN KNOWLEDGE serving (a family block appended below, format_context_for_prompt
+    # renders it) and the save-time direction resolution (_parse_output reads them off
+    # the context). {} for a vertical with no declared families.
+    cycle_families = load_workspace_cycle_families(session, vertical)
+    context["cycle_families"] = cycle_families
     vocabulary = format_cycle_vocabulary_for_context(vertical=vertical)
-    context["domain_vocabulary"] = vocabulary
+    family_block = format_cycle_families_for_context(cycle_families)
+    context["domain_vocabulary"] = f"{vocabulary}\n\n{family_block}" if family_block else vocabulary
 
     return context
 

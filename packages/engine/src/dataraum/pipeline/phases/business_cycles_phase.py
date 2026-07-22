@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from dataraum.analysis.cycles import BusinessCycleAgent
 from dataraum.analysis.cycles.config import get_cycle_types
+from dataraum.analysis.cycles.cycle_family_store import load_workspace_cycle_families
 from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 from dataraum.analysis.cycles.models import DetectedCycle
 from dataraum.core.logging import get_logger
@@ -163,6 +164,29 @@ class BusinessCyclesPhase(BasePhase):
                 },
             )
 
+        # declare a FAMILY artifact per declared cycle family (DAT-856): the identity a
+        # detected-but-undirected cycle grounds against. A family cycle resolves either
+        # to a directed member (an existing per-type artifact above) OR — when the
+        # served evidence does not decide — to the family itself, whose canonical_type
+        # is the family name. Without this artifact that honest undetermined detection
+        # would be dropped by the not-declared guard below and miss the cockpit's
+        # artifact_key join. Family names never collide with cycle-type names (seed
+        # born-loud), so this only ADDS keys.
+        cycle_families = load_workspace_cycle_families(ctx.session, vertical)
+        for family_name in cycle_families:
+            artifacts[family_name] = declare_artifact(
+                ctx.session,
+                artifact_type="cycle",
+                artifact_key=family_name,
+                run_id=run_id,
+                stage=_STAGE,
+                teaches={
+                    "canonical_type": family_name,
+                    "vertical": vertical,
+                    "family": True,
+                },
+            )
+
         # bind: ONE synthesis call grounds the declared vocabulary against the
         # workspace. A hard synthesis failure (no tool call / LLM error) fails
         # the phase — distinct from a declared cycle that simply did not ground.
@@ -261,11 +285,14 @@ class BusinessCyclesPhase(BasePhase):
             1 for a in artifacts.values() if a.state == "executed" and a.state_reason is not None
         )
 
-        # Surface detected cycles + data-quality observations as preview lines.
+        # Surface detected cycles + data-quality observations as preview lines. A family
+        # cycle carries its direction honestly — "undetermined" reads as exactly that, a
+        # detected-but-undirected cycle, never a silent guess (DAT-856).
         previews: list[str] = []
         for c in persisted:
             rate = f", {c.completion_rate:.0%} complete" if c.completion_rate is not None else ""
-            previews.append(f"{c.cycle_name} ({c.canonical_type}{rate})")
+            direction = f", direction {c.direction}" if c.direction is not None else ""
+            previews.append(f"{c.cycle_name} ({c.canonical_type}{direction}{rate})")
         previews.extend(analysis.data_quality_observations)
 
         return PhaseResult.success(
@@ -329,6 +356,10 @@ def _persist_cycles(
             "cycle_type": cycle.cycle_type,
             "canonical_type": cycle.canonical_type,
             "is_known_type": cycle.is_known_type,
+            # Direction axis (DAT-856): both NULL or both set (resolve_cycle_identity is
+            # the sole producer), satisfying the co-occurrence CHECK.
+            "family": cycle.family,
+            "direction": cycle.direction,
             "description": cycle.description,
             "business_value": cycle.business_value,
             "confidence": cycle.confidence,

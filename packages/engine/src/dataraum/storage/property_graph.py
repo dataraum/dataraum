@@ -53,6 +53,10 @@ reification).** Vertices/edges:
                                             (DAT-733): a MEASURED cycle's typed
                                             (column_id, operator, value) status scope
                                             groundings compose by default
+    dim_member  (KEY dim_member_key) a referenced dimension member (DAT-788
+                                            role-separated axis identity × served
+                                            value) a grounding's predicates select
+                                            (DAT-787), un-nested from filter_members
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
@@ -60,6 +64,7 @@ reification).** Vertices/edges:
     conformed_dimension table → table    [slice_definitions ▸ bus_matrix] two facts sharing a dimension AXIS in the SAME role (DAT-756/788)
     grounded_by        concept → grounding [current_groundings] a concept's groundings; >1 healthy = multi-grounding
     uses               grounding → column  [provenance contract v2] the columns a grounding touches
+    filtered_by        grounding → dim_member [provenance contract v2 ▸ filter_members] the referenced dimension members a grounding's predicates select (DAT-787)
     scoped_by          table → validity_filter [detected_business_cycles] the table's default validity scope (DAT-733)
     temporal_coverage  table → column    [temporal_column_profiles ▸ time_columns] observed window/grain/completeness per (relation × time col) (DAT-730)
     rolls_up_to        column → column   [dimension_hierarchies] ordered drill level→level, finer→coarser (DAT-730)
@@ -90,8 +95,9 @@ The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
 its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 The ``uses`` edge un-nests the TYPED ``column_mappings_basis`` (provenance contract
 v2, DAT-727) — enforced at authoring, never parsed out of SQL; ``filtered_by →
-DimMember`` is deferred to DAT-787, with ``where[]`` carried losslessly on the
-grounding vertex meanwhile.
+dim_member`` (DAT-787) un-nests the sibling TYPED ``filter_members`` the SAME way —
+one edge per referenced dimension member the grounding's predicates select, an
+ADDITIVE projection (``where[]`` STAYS lossless on the grounding vertex).
 ``conformed_dimension`` (DAT-756/788) types two facts sharing a dimension AXIS — the
 same resolved ``(dimension_table_id, attribute)`` identity in the SAME ROLE, NOT a
 column name — as a drill-across path (an alignable GROUP BY the SQL agents can author
@@ -175,6 +181,8 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_conformed_dimension",
     "og_grounded_by",
     "og_uses",
+    "og_dim_members",
+    "og_filtered_by",
     "og_validity_filter",
     "og_scoped_by",
     "og_temporal_coverage",
@@ -205,6 +213,68 @@ _VALIDITY_FILTER_SOURCE = (
     f"WHERE c.status_column IS NOT NULL\n"
     f"  AND c.completion_value IS NOT NULL\n"
     f"  AND c.completion_rate IS NOT NULL;"
+)
+
+
+# The DimMember key (DAT-787): the DAT-788 role-separated axis identity ×
+# the served value. ``conformed_group`` (the referenced role-group signature,
+# ``ref:{dim_table}:{roles}``) already carries the dim table + role; the level is
+# ``dimension_attribute`` (COALESCEd so a NULL FK-key level keys deterministically);
+# the value is the grounding's declared member value. ``json_build_array(...)::text``
+# is a collision-free, unambiguous composite (every component is JSON-escaped — no
+# delimiter a value could forge) and ``::text`` for the PGQ varchar-equality rule.
+# CONTENT-derived only: no per-run component (the relationship_id bug class). The
+# vertex KEY and the edge DESTINATION KEY inline this SAME expression, so they can
+# never drift.
+_DIM_MEMBER_KEY = (
+    "json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''),"
+    " fm.elem->>'value')::text"
+)
+
+# Shared FROM/JOIN/WHERE the DimMember vertex and the filtered_by edge re-derive
+# (INDEPENDENT views — the dump drops them in list order — but keyed identically via
+# _DIM_MEMBER_KEY, so a future edit to the resolution touches ONE string). Un-nests
+# the TYPED provenance ``filter_members`` (contract v2 / DAT-787) — one {column,
+# value} per selected member, ENFORCED at authoring (validate_grounding_basis),
+# never parsed out of SQL — exactly the og_uses discipline one grain finer (VALUE,
+# not just column). The member's column resolves to a slice on the grounding's
+# relation, and the DIMENSION-AXIS-ONLY gate stands: only a slice with a resolved
+# REFERENCED identity (``dimension_table_id IS NOT NULL``, then the DAT-788 bus-matrix
+# ``conformed_group`` via the role EXISTS — the SAME join og_conformed_dimension uses)
+# yields a member. A folded slice (no referenced identity — DAT-757) or a
+# non-dimension column contributes NO member/edge; ``where[]`` stays lossless on the
+# grounding node regardless. The engine-appended validity scope (DAT-733) is composed
+# AFTER authoring and never enters filter_members, so it never fabricates a member.
+_DIM_MEMBER_SOURCE = (
+    f"FROM {READ_TOKEN}.current_groundings g\n"
+    f"CROSS JOIN LATERAL json_each(\n"
+    f"     COALESCE(g.provenance->'column_mappings_basis', '{{}}'::json)\n"
+    f"     ) AS b(concept, entry)\n"
+    f"CROSS JOIN LATERAL json_array_elements(\n"
+    f"     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)\n"
+    f"CROSS JOIN LATERAL (\n"
+    f"  SELECT ev.fact_table_id AS fact_table_id\n"
+    f"  FROM {READ_TOKEN}.current_enriched_views ev\n"
+    f"  WHERE ev.view_name = g.relation\n"
+    f"  UNION ALL\n"
+    f"  SELECT t.table_id\n"
+    f"  FROM {READ_TOKEN}.current_tables t\n"
+    f"  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)\n"
+    f"    AND NOT EXISTS (\n"
+    f"      SELECT 1 FROM {READ_TOKEN}.current_enriched_views ev2\n"
+    f"      WHERE ev2.view_name = g.relation)\n"
+    f") rel\n"
+    f"JOIN {READ_TOKEN}.current_slice_definitions s\n"
+    f"  ON s.table_id = rel.fact_table_id\n"
+    f" AND s.column_name = fm.elem->>'column'\n"
+    f" AND s.dimension_table_id IS NOT NULL\n"
+    f"JOIN {READ_TOKEN}.current_bus_matrix bm\n"
+    f"  ON bm.attachment = 'referenced'\n"
+    f" AND bm.fact_table_id = s.table_id\n"
+    f" AND bm.dimension_table_id = s.dimension_table_id\n"
+    f" AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)\n"
+    f"             WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))\n"
+    f"WHERE NOT g.failed"
 )
 
 
@@ -362,8 +432,9 @@ def _element_view_sql(name: str) -> str:
         # `failed` property — "why is this concept ungrounded?" is a graph question
         # — but only healthy nodes get `uses` edges (a failed row's provenance
         # carries failure keys, no basis). where_predicates is the where[] JSON
-        # carried LOSSLESSLY on the node; its DimMember decomposition (filtered_by)
-        # is DAT-787. sql_snippets is workspace-persistent, so snippet_id is a
+        # carried LOSSLESSLY on the node — its DimMember decomposition (the
+        # filtered_by edge, DAT-787) is an ADDITIVE projection off the sibling typed
+        # filter_members, never a move. sql_snippets is workspace-persistent, so snippet_id is a
         # valid KEY as-is. Parity: relation/select_expr/where re-render through
         # compose_extract_sql to exactly the snippet's persisted sql (tested).
         return (
@@ -979,6 +1050,58 @@ def _element_view_sql(name: str) -> str:
             f"FROM {READ_TOKEN}.metric_parameters\n"
             f"WHERE superseded_at IS NULL;"
         )
+    if name == "og_dim_members":
+        # dim_member vertex (DAT-787): one node per (DAT-788 role-separated
+        # referenced axis identity × served value) any current grounding's
+        # predicates SELECT — un-nested from the TYPED provenance ``filter_members``
+        # (never from parsing SQL). DISTINCT ON the key over ALL groundings folds a
+        # member referenced by many groundings into ONE vertex; the properties are
+        # functionally determined by the key, so the tiebreak is irrelevant but
+        # TOTAL (deterministic dump). ``conformed_group`` is the referenced
+        # role-group signature (bus_matrix, ``ref:{dim_table}:{roles}``);
+        # ``dimension_attribute`` is the level (NULL = the FK key itself);
+        # ``member_value`` is the served value — the equality anchor, exact string
+        # equality, no casing/whitespace folding (validate_grounding_basis pins the
+        # value to a served representation at authoring). See _DIM_MEMBER_SOURCE for
+        # the resolution + the dimension-axis-only gate.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_dim_members AS\n"
+            f"SELECT DISTINCT ON ({_DIM_MEMBER_KEY})\n"
+            f"       {_DIM_MEMBER_KEY} AS dim_member_key,\n"
+            f"       bm.conformed_group AS conformed_group,\n"
+            f"       s.dimension_attribute AS dimension_attribute,\n"
+            f"       fm.elem->>'value' AS member_value\n"
+            + _DIM_MEMBER_SOURCE
+            + f"\nORDER BY {_DIM_MEMBER_KEY};"
+        )
+    if name == "og_filtered_by":
+        # filtered_by edge (grounding → dim_member, DAT-787): one edge per
+        # (grounding, member) pair the grounding's predicates reference — an ADDITIVE
+        # projection, never a move (``where[]`` stays lossless on og_grounding). Same
+        # un-nest + resolution as og_dim_members (shared _DIM_MEMBER_SOURCE / key), so
+        # the DESTINATION KEY matches the vertex KEY by construction. DISTINCT ON
+        # (snippet, member) collapses a member two of the grounding's concepts both
+        # select into ONE edge, keeping the first ``concept`` (the tiebreak is TOTAL);
+        # ``concept`` rides as the edge property (which concept's filter selected the
+        # member). Consumer caveat (the og_uses role-collision parallel): when two of a
+        # grounding's concepts select the SAME member, the surviving edge names only the
+        # alphabetically-first concept — a consumer keying strictly on the other concept
+        # can under-report it. edge_key = snippet + the member key ('_'-joined, NOT ':' a
+        # bind-param sigil to text()). Failed groundings carry no basis and are
+        # excluded (the WHERE in the shared source).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_filtered_by AS\n"
+            f"SELECT DISTINCT ON (g.snippet_id, {_DIM_MEMBER_KEY})\n"
+            f"       (g.snippet_id || '_' || {_DIM_MEMBER_KEY})::text AS edge_key,\n"
+            f"       g.snippet_id::text AS snippet_id,\n"
+            f"       {_DIM_MEMBER_KEY} AS dim_member_key,\n"
+            # ``concept`` is a shared PGQ property (og_grounding / og_grounded_by carry
+            # it as varchar); json_each's key is text, so cast to match — PGQ requires a
+            # property of one name to have one type across every label.
+            f"       (b.concept)::varchar AS concept\n"
+            + _DIM_MEMBER_SOURCE
+            + f"\nORDER BY g.snippet_id, {_DIM_MEMBER_KEY}, b.concept;"
+        )
     raise AssertionError(f"unreachable: {name} not an element view")
 
 
@@ -1016,7 +1139,9 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,\n"
         f"                  options, derivation, description),\n"
         f"    {READ_TOKEN}.og_validity_filter KEY (filter_id) LABEL validity_filter\n"
-        f"      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)\n"
+        f"      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value),\n"
+        f"    {READ_TOKEN}.og_dim_members KEY (dim_member_key) LABEL dim_member\n"
+        f"      PROPERTIES (dim_member_key, conformed_group, dimension_attribute, member_value)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"
@@ -1098,7 +1223,12 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)\n"
         f"      LABEL scoped_by\n"
-        f"      PROPERTIES (column_id)\n"
+        f"      PROPERTIES (column_id),\n"
+        f"    {READ_TOKEN}.og_filtered_by KEY (edge_key)\n"
+        f"      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"
+        f"      DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)\n"
+        f"      LABEL filtered_by\n"
+        f"      PROPERTIES (concept)\n"
         f"  );"
     )
 

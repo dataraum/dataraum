@@ -18,6 +18,8 @@ DROP VIEW IF EXISTS __READ__.og_concept_edges;
 DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
 DROP VIEW IF EXISTS __READ__.og_grounded_by;
 DROP VIEW IF EXISTS __READ__.og_uses;
+DROP VIEW IF EXISTS __READ__.og_dim_members;
+DROP VIEW IF EXISTS __READ__.og_filtered_by;
 DROP VIEW IF EXISTS __READ__.og_validity_filter;
 DROP VIEW IF EXISTS __READ__.og_scoped_by;
 DROP VIEW IF EXISTS __READ__.og_temporal_coverage;
@@ -224,6 +226,80 @@ WHERE NOT g.failed
 ORDER BY g.snippet_id, col.column_id,
          CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;
 
+CREATE VIEW __READ__.og_dim_members AS
+SELECT DISTINCT ON (json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text)
+       json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text AS dim_member_key,
+       bm.conformed_group AS conformed_group,
+       s.dimension_attribute AS dimension_attribute,
+       fm.elem->>'value' AS member_value
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+JOIN __READ__.current_slice_definitions s
+  ON s.table_id = rel.fact_table_id
+ AND s.column_name = fm.elem->>'column'
+ AND s.dimension_table_id IS NOT NULL
+JOIN __READ__.current_bus_matrix bm
+  ON bm.attachment = 'referenced'
+ AND bm.fact_table_id = s.table_id
+ AND bm.dimension_table_id = s.dimension_table_id
+ AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+             WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
+WHERE NOT g.failed
+ORDER BY json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text;
+
+CREATE VIEW __READ__.og_filtered_by AS
+SELECT DISTINCT ON (g.snippet_id, json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text)
+       (g.snippet_id || '_' || json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text)::text AS edge_key,
+       g.snippet_id::text AS snippet_id,
+       json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text AS dim_member_key,
+       (b.concept)::varchar AS concept
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+JOIN __READ__.current_slice_definitions s
+  ON s.table_id = rel.fact_table_id
+ AND s.column_name = fm.elem->>'column'
+ AND s.dimension_table_id IS NOT NULL
+JOIN __READ__.current_bus_matrix bm
+  ON bm.attachment = 'referenced'
+ AND bm.fact_table_id = s.table_id
+ AND bm.dimension_table_id = s.dimension_table_id
+ AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+             WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
+WHERE NOT g.failed
+ORDER BY g.snippet_id, json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text, b.concept;
+
 CREATE VIEW __READ__.og_validity_filter AS
 SELECT c.cycle_id::text AS filter_id,
        col.table_id::text AS table_id,
@@ -394,7 +470,9 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (parameter_id, graph_id, name, param_type, default_value,
                   options, derivation, description),
     __READ__.og_validity_filter KEY (filter_id) LABEL validity_filter
-      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)
+      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value),
+    __READ__.og_dim_members KEY (dim_member_key) LABEL dim_member
+      PROPERTIES (dim_member_key, conformed_group, dimension_attribute, member_value)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -476,5 +554,10 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)
       LABEL scoped_by
-      PROPERTIES (column_id)
+      PROPERTIES (column_id),
+    __READ__.og_filtered_by KEY (edge_key)
+      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)
+      DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)
+      LABEL filtered_by
+      PROPERTIES (concept)
   );

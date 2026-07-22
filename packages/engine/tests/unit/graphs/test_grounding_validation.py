@@ -22,6 +22,7 @@ from dataraum.graphs.models import (
     ConceptGroundingBasis,
     ConceptGroundingEntry,
     ExtractGroundingOutput,
+    FilterMember,
     GraphProvenanceOutput,
 )
 
@@ -54,13 +55,19 @@ def _output(
 
 
 def _basis(
-    concept: str, measure: list[str], filters: list[str] | None = None
+    concept: str,
+    measure: list[str],
+    filters: list[str] | None = None,
+    members: list[FilterMember] | None = None,
 ) -> list[ConceptGroundingEntry]:
     return [
         ConceptGroundingEntry(
             concept=concept,
             basis=ConceptGroundingBasis(
-                measure_columns=measure, filter_columns=filters or [], filter=""
+                measure_columns=measure,
+                filter_columns=filters or [],
+                filter="",
+                filter_members=members or [],
             ),
         )
     ]
@@ -171,7 +178,10 @@ def test_dual_role_column_enumerated_under_both_roles_is_clean(conn) -> None:
             ConceptGroundingEntry(
                 concept="revenue",
                 basis=ConceptGroundingBasis(
-                    measure_columns=["amount"], filter_columns=["amount"], filter=""
+                    measure_columns=["amount"],
+                    filter_columns=["amount"],
+                    filter="",
+                    filter_members=[],
                 ),
             )
         ],
@@ -268,3 +278,138 @@ def test_distinct_concepts_are_fine() -> None:
         column_mappings_basis=[*_basis("revenue", ["credit"]), *_basis("cost", ["debit"])]
     )
     assert len(prov.column_mappings_basis) == 2
+
+
+# --- filter_members enforcement (DAT-787) -------------------------------------
+
+
+def test_filter_member_shape_requires_column_and_value() -> None:
+    """FilterMember is a strict typed pair — both fields, no extras."""
+    import pytest
+    from pydantic import ValidationError
+
+    assert FilterMember(column="account_type", value="asset").model_dump() == {
+        "column": "account_type",
+        "value": "asset",
+    }
+    with pytest.raises(ValidationError):
+        FilterMember(column="account_type")  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        FilterMember(column="account_type", value="asset", extra="x")  # type: ignore[call-arg]
+
+
+def _member_output(members: list[FilterMember], where: list[str]) -> ExtractGroundingOutput:
+    return _output(
+        select_expr="SUM(credit)",
+        where=where,
+        basis=_basis("account_balance", ["credit"], ["account_type"], members),
+    )
+
+
+def test_clean_member_passes(conn) -> None:
+    """Column ∈ filter_columns, value served, value in the where predicates."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="asset")],
+        ["account_type IN ('asset')"],
+    )
+    served = {"account_type": {"asset", "liability", "equity"}}
+    assert validate_grounding_basis(out, _SCHEMA, conn, served) == []
+
+
+def test_member_column_must_be_in_filter_columns(conn) -> None:
+    """A member on a column the concept does not filter on is rejected."""
+    out = _member_output(
+        [FilterMember(column="posted", value="asset")],
+        ["account_type IN ('asset')"],
+    )
+    violations = validate_grounding_basis(out, _SCHEMA, conn, {})
+    assert any("'posted'" in v and "not in filter_columns" in v for v in violations)
+
+
+def test_member_value_must_be_served(conn) -> None:
+    """A fabricated value (not in the complete served set) is caught."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="revenue")],
+        ["account_type IN ('revenue')"],
+    )
+    served = {"account_type": {"asset", "liability", "equity"}}
+    violations = validate_grounding_basis(out, _SCHEMA, conn, served)
+    assert any("'revenue'" in v and "not a served value" in v for v in violations)
+
+
+def test_member_value_membership_skipped_without_served_set(conn) -> None:
+    """No complete served set for the column ⇒ honest under-coverage, no reject."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="whatever")],
+        ["account_type IN ('whatever')"],
+    )
+    # served_values empty for account_type → value-membership not enforced.
+    assert validate_grounding_basis(out, _SCHEMA, conn, {}) == []
+
+
+def test_member_value_must_appear_in_where(conn) -> None:
+    """A member whose value no predicate references is rejected — this is the
+    lexical cross-check that keeps engine-appended scope values out of members."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="asset")],
+        ["account_type IN ('liability')"],
+    )
+    served = {"account_type": {"asset", "liability"}}
+    violations = validate_grounding_basis(out, _SCHEMA, conn, served)
+    assert any("'asset'" in v and "no where predicate references it" in v for v in violations)
+
+
+def test_member_value_substring_of_another_served_value_is_not_referenced(conn) -> None:
+    """The lexical cross-check is boundary-aware: a served value that is a
+    SUBSTRING of the one the predicate actually selects ('an' inside 'urban')
+    must not spuriously satisfy the check and mislabel a member (senior review)."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="an")],
+        ["account_type IN ('urban')"],
+    )
+    served = {"account_type": {"an", "urban"}}  # both genuinely served
+    violations = validate_grounding_basis(out, _SCHEMA, conn, served)
+    assert any("'an'" in v and "no where predicate references it" in v for v in violations)
+
+
+def test_quoted_and_numeric_values_are_referenced_at_token_boundaries(conn) -> None:
+    """A whole-token match still accepts the real cases: a quoted string literal
+    and a bare numeric, each flanked by non-identifier characters."""
+    quoted = _member_output(
+        [FilterMember(column="account_type", value="urban")],
+        ["account_type IN ('urban')"],
+    )
+    assert validate_grounding_basis(quoted, _SCHEMA, conn, {"account_type": {"urban"}}) == []
+
+
+def test_served_value_sets_keeps_only_complete_categoricals() -> None:
+    """_served_value_sets (the member value reference) keeps a column ONLY when its
+    served top_values are the COMPLETE enumeration (distinct_count <= len); high-card
+    and unprofiled columns are omitted → honest under-coverage, not false rejection."""
+    from types import SimpleNamespace
+
+    from dataraum.graphs.agent import _served_value_sets
+
+    def col(name: str, dc: int | None, values: list[str]) -> SimpleNamespace:
+        return SimpleNamespace(
+            column_name=name,
+            distinct_count=dc,
+            top_values=[{"value": v} for v in values],
+        )
+
+    ctx = SimpleNamespace(
+        rich_context=SimpleNamespace(
+            tables=[
+                SimpleNamespace(
+                    columns=[
+                        col("status", 2, ["posted", "void"]),  # complete → kept
+                        col("customer", 500, ["acme"]),  # high-card → omitted
+                        col("notes", None, []),  # unprofiled → omitted
+                    ]
+                )
+            ]
+        )
+    )
+    assert _served_value_sets(ctx) == {"status": {"posted", "void"}}
+    # No rich context → empty reference (validation skips value-membership entirely).
+    assert _served_value_sets(SimpleNamespace(rich_context=None)) == {}

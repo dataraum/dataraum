@@ -26,6 +26,13 @@ SQL as a *source* of typed data is forbidden. This module is the enforcement:
    touch is a violation too, but only when every fragment parsed (the lexical
    fallback over-collects — a string literal containing a column name would
    make an honest enumeration look phantom, so the check stays parse-gated).
+4. **filter_members, PER VALUE (DAT-787)** — the same discipline one grain
+   finer: each declared ``(column, value)`` member's column is one of the
+   concept's ``filter_columns``, its value is a SERVED value (where a complete
+   value-set exists — else honest under-coverage), and it appears in the where
+   predicates (a lexical cross-check, VALIDATOR only). The value is the
+   ``filtered_by`` edge's DimMember key, so it is enforced here, never parsed
+   out of SQL later.
 
 The fall-loud grounding shape (``relation: ""`` / ``select_expr: "NULL"``)
 carries no columns and is exempt.
@@ -54,6 +61,7 @@ def validate_grounding_basis(
     output: ExtractGroundingOutput,
     schema_tables: dict[str, set[str]],
     duckdb_conn: duckdb.DuckDBPyConnection | None,
+    served_values: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """Contract-v2 violations of one grounding output, empty when clean.
 
@@ -63,6 +71,13 @@ def validate_grounding_basis(
             exactly as the prompt's schema block described them.
         duckdb_conn: Connection for the catalog-free parse (validator only);
             ``None`` degrades to the lexical fallback for every fragment.
+        served_values: ``{column_name: {served value, …}}`` for the columns whose
+            served value-set is COMPLETE (the DAT-787 ``filter_members`` value
+            reference). Omitted/empty ⇒ value-membership is skipped (only the
+            column + lexical checks run). A column absent here (an enriched
+            attribute served under a joined name, a high-cardinality search
+            column, or an unprofiled one) is honest under-coverage, never a false
+            rejection of a legitimately searched value.
 
     Returns:
         Human-readable violation lines for the repair turn; ``[]`` when the
@@ -121,7 +136,75 @@ def validate_grounding_basis(
                 "the where predicates never touch it — enumerate exactly the columns "
                 "each role's SQL touches"
             )
+    violations.extend(_member_violations(output, served_values or {}))
     return violations
+
+
+def _member_violations(
+    output: ExtractGroundingOutput,
+    served_values: dict[str, set[str]],
+) -> list[str]:
+    """DAT-787 ``filter_members`` violations for the repair turn.
+
+    Three checks, mirroring the column contract one grain finer (the VALUE side):
+
+    1. **column ∈ filter_columns** — a member's column must be one the where
+       predicates filter on (which is itself already membership-checked against
+       the served relation), so a member can never name a phantom column.
+    2. **value is served** — when a COMPLETE served value-set exists for the
+       column (``served_values``), the value must be one of it. The served
+       representation IS the equality anchor (``'posted'`` ≠ ``'Posted'``);
+       nothing is folded. Columns without a complete set are honest
+       under-coverage (skipped), never a false rejection of a searched value.
+    3. **value appears in the where predicates** — a boundary-aware LEXICAL
+       cross-check (``_value_referenced``: the value as a whole token in the
+       rendered predicate texts), a VALIDATOR only: it confirms the declared
+       member reflects an actual predicate, never a source of the value. This is
+       what keeps the engine-appended validity scope (DAT-733, composed AFTER this
+       runs) out of ``filter_members`` — a member the LLM did not declare against
+       its OWN predicates simply is not one.
+    """
+    where_text = [p for p in output.where if p and p.strip()]
+    violations: list[str] = []
+    for entry in output.provenance.column_mappings_basis:
+        filter_cols = set(entry.basis.filter_columns)
+        for member in entry.basis.filter_members:
+            if member.column not in filter_cols:
+                violations.append(
+                    f"filter_members['{entry.concept}'] names column '{member.column}', "
+                    "which is not in filter_columns — a member's column must be one the "
+                    "where predicates filter on"
+                )
+            served = served_values.get(member.column)
+            if served is not None and member.value not in served:
+                violations.append(
+                    f"filter_members['{entry.concept}'] selects '{member.value}' on "
+                    f"'{member.column}', which is not a served value of that column "
+                    f"({sorted(served)}) — name a served value verbatim"
+                )
+            if not _value_referenced(member.value, where_text):
+                violations.append(
+                    f"filter_members['{entry.concept}'] declares '{member.value}' but no "
+                    "where predicate references it — declare exactly the values the "
+                    "predicates select"
+                )
+    return violations
+
+
+def _value_referenced(value: str, where_text: list[str]) -> bool:
+    """Does ``value`` appear as a WHOLE token in any where predicate?
+
+    A boundary-aware check, not a bare substring: the value must be flanked by
+    non-identifier characters (quotes, whitespace, parens, operators) so a served
+    value that is a substring of another (``'an'`` inside ``'urban'``, ``'0'`` inside
+    ``100``) does not spuriously satisfy the cross-check and mislabel a DimMember.
+    Still a VALIDATOR over the rendered predicate text (never a source of the value);
+    an empty value has nothing to locate (the column + served-value checks govern it).
+    """
+    if not value:
+        return True
+    token = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(value) + r"(?![A-Za-z0-9_])")
+    return any(token.search(pred) for pred in where_text)
 
 
 def where_filter_columns(

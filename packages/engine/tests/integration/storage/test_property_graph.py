@@ -690,6 +690,12 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
                     "measure_columns": ["amount"],
                     "filter_columns": ["account_id__account_type"],
                     "filter": "asset, liability",
+                    # DAT-787: two typed members on the account_type axis (group
+                    # ref:t2:account_id) — the multi-member case.
+                    "filter_members": [
+                        {"column": "account_id__account_type", "value": "asset"},
+                        {"column": "account_id__account_type", "value": "liability"},
+                    ],
                 }
             },
             "assumptions": [],
@@ -744,6 +750,89 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
         # Retained DAT-543 failure: the typed failed payload — no basis.
         {"failure_mode": "verifier_rejected", "failure_reason": "no support"},
         True,
+    ),
+    # DAT-787 role-play (bill-to, t1). Non-active concept name → no grounded_by /
+    # concept perturbation. where[] carries a NON-dimension predicate (posted) whose
+    # member must NOT resolve (posted is no referenced slice) — the dimension-axis-only
+    # gate. Only billto_acct__region='north' becomes a member: group ref:t2:billto_acct.
+    (
+        "sn_billto",
+        "regional_billed",
+        "billed_by_region",
+        "enriched_journal",
+        "SUM(amount)",
+        ["billto_acct__region = 'north'", "posted = true"],
+        {
+            "column_mappings_basis": {
+                "regional_billed": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": ["billto_acct__region", "posted"],
+                    "filter": "north",
+                    "filter_members": [
+                        {"column": "billto_acct__region", "value": "north"},
+                        # Non-dimension column (no referenced slice) — must yield NO edge.
+                        {"column": "posted", "value": "true"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    # DAT-787 role-play (ship-to, the TYPED statement fact t4 — no enriched view needed;
+    # the slice resolves by column_name) + the P8 scope pin: where[] carries an
+    # engine-appended-style scope predicate (status = 'posted') that is DELIBERATELY
+    # absent from filter_members — so it fabricates no member. Only shipto_acct__region=
+    # 'north' becomes a member: group ref:t2:shipto_acct — the SAME value 'north' as
+    # sn_billto but a DISTINCT member (role-separated axis). COUNT(*) reads no column, so
+    # this contrived grounding adds no uses edge (t4 has no amount column).
+    (
+        "sn_shipto",
+        "regional_shipped",
+        "shipped_by_region",
+        "statement",
+        "COUNT(*)",
+        ["shipto_acct__region = 'north'", "status = 'posted'"],
+        {
+            "column_mappings_basis": {
+                "regional_shipped": {
+                    "measure_columns": [],
+                    "filter_columns": ["shipto_acct__region"],
+                    "filter": "north",
+                    "filter_members": [
+                        {"column": "shipto_acct__region", "value": "north"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    # DAT-787 the "one home" fold: a SECOND grounding selecting the SAME member as
+    # sn_billto (bill-to region='north'). og_dim_members must fold both references to
+    # ONE vertex (DISTINCT ON the key); og_filtered_by keeps BOTH edges. COUNT(*) + a
+    # non-enriched filter column → no uses edge (nothing else perturbed).
+    (
+        "sn_billto2",
+        "regional_billed_again",
+        "billed_by_region_again",
+        "enriched_journal",
+        "COUNT(*)",
+        ["billto_acct__region = 'north'"],
+        {
+            "column_mappings_basis": {
+                "regional_billed_again": {
+                    "measure_columns": [],
+                    "filter_columns": ["billto_acct__region"],
+                    "filter": "north",
+                    "filter_members": [
+                        {"column": "billto_acct__region", "value": "north"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
     ),
 ]
 
@@ -1235,7 +1324,17 @@ def test_current_groundings_is_graph_authored_extracts_only(graph_engine: Engine
     sql = f'SELECT snippet_id, concept, relation, failed FROM "{_read_schema()}".current_groundings'
     with graph_engine.connect() as conn:
         rows = {r.snippet_id: r for r in conn.execute(text(sql))}
-    assert set(rows) == {"sn_tb", "sn_bs", "sn_rev", "sn_old", "sn_fail", "sn_nul"}
+    assert set(rows) == {
+        "sn_tb",
+        "sn_bs",
+        "sn_rev",
+        "sn_old",
+        "sn_fail",
+        "sn_nul",
+        "sn_billto",
+        "sn_shipto",
+        "sn_billto2",
+    }
     assert rows["sn_tb"].concept == "account_balance"
     assert rows["sn_tb"].relation == "enriched_journal"
     assert rows["sn_rev"].relation == "journal"
@@ -1260,6 +1359,9 @@ def test_grounding_vertices_carry_the_failed_discriminator(graph_engine: Engine)
         "sn_old": False,
         "sn_fail": True,
         "sn_nul": False,
+        "sn_billto": False,
+        "sn_shipto": False,
+        "sn_billto2": False,
     }
 
 
@@ -1282,7 +1384,16 @@ def test_grounding_parts_round_trip_vs_compose_extract_sql(graph_engine: Engine)
         persisted = dict(
             conn.execute(text(f'SELECT snippet_id, sql FROM "{_read_schema()}".sql_snippets')).all()
         )
-    assert set(props) == {"sn_tb", "sn_bs", "sn_rev", "sn_old", "sn_fail"}
+    assert set(props) == {
+        "sn_tb",
+        "sn_bs",
+        "sn_rev",
+        "sn_old",
+        "sn_fail",
+        "sn_billto",
+        "sn_shipto",
+        "sn_billto2",
+    }
     for sid, row in props.items():
         rendered = compose_extract_sql(
             row.select_expr, row.relation, json.loads(row.where_predicates)
@@ -1355,7 +1466,87 @@ def test_uses_edges_land_on_the_served_relations_columns(graph_engine: Engine) -
         ("sn_tb", "ec_at", "account_id__account_type", "filter"),
         ("sn_bs", "ec_amt", "amount", "measure"),
         ("sn_rev", "c_amt", "amount", "measure"),
+        # sn_billto reads amount too (enriched_journal); its dimension/non-dimension
+        # filter names are not served enriched columns → no filter uses-edges.
+        ("sn_billto", "ec_amt", "amount", "measure"),
     }
+
+
+def test_filtered_by_projects_the_referenced_dimension_members(graph_engine: Engine) -> None:
+    """DAT-787 filtered_by (grounding → dim_member): one edge per referenced
+    member a grounding's predicates SELECT, un-nested from the TYPED filter_members.
+
+    The exact edge set proves the whole contract at once:
+    * MULTI-MEMBER — sn_tb's IN ('asset','liability') on the account_type axis is
+      two members (group ref:t2:account_id);
+    * ROLE SEPARATION (DAT-788) — sn_billto and sn_shipto both select region='north',
+      but bill-to (ref:t2:billto_acct) and ship-to (ref:t2:shipto_acct) are DISTINCT
+      members — the same value on different role identities never collapses;
+    * DIMENSION-AXIS-ONLY GATE — sn_billto also declares a member on ``posted`` (a
+      non-dimension column, no referenced slice): it yields NO edge;
+    * P8 SCOPE PIN — sn_shipto's where[] carries ``status = 'posted'`` (an
+      engine-appended-style validity scope) that is absent from filter_members, so
+      it fabricates NO member. The edges reflect the model's dimensional selections
+      only; where[] stays lossless on the grounding node regardless.
+    """
+    sql = (
+        f"SELECT sid, cg, attr, val, concept FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS grounding_node)-[e IS filtered_by]->(m IS dim_member) "
+        "COLUMNS (g.snippet_id AS sid, m.conformed_group AS cg, "
+        "m.dimension_attribute AS attr, m.member_value AS val, e.concept AS concept))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.sid, r.cg, r.attr, r.val, r.concept) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("sn_tb", "ref:t2:account_id", "account_type", "asset", "account_balance"),
+        ("sn_tb", "ref:t2:account_id", "account_type", "liability", "account_balance"),
+        ("sn_billto", "ref:t2:billto_acct", "region", "north", "regional_billed"),
+        ("sn_shipto", "ref:t2:shipto_acct", "region", "north", "regional_shipped"),
+        # sn_billto2 selects the SAME member as sn_billto — a SECOND edge to it.
+        ("sn_billto2", "ref:t2:billto_acct", "region", "north", "regional_billed_again"),
+    }
+    # No non-dimension / scope value ever leaks in as a member (posted / true).
+    assert not {(sid, val) for sid, _, _, val, _ in rows if val in ("posted", "true")}
+    # The "one home" fold: bill-to region='north' is selected by TWO groundings but
+    # remains ONE member (the vertex-side fold is asserted in the vertex test).
+    billto_north = {
+        sid for sid, cg, _, val, _ in rows if cg == "ref:t2:billto_acct" and val == "north"
+    }
+    assert billto_north == {"sn_billto", "sn_billto2"}
+
+
+def test_dim_member_vertices_are_distinct_per_role(graph_engine: Engine) -> None:
+    """DAT-787 dim_member vertices: one node per (DAT-788 role-separated axis
+    identity × served value). The two region='north' members are SEPARATE vertices
+    (distinct dim_member_key) because bill-to and ship-to are unmerged role axes —
+    the content-derived key never folds them, and never carries a per-run component.
+
+    Conversely, the "one home" fold: sn_billto and sn_billto2 BOTH select bill-to
+    region='north', yet it is ONE vertex — the DISTINCT ON the key collapses the two
+    references (were it not, the duplicate key would fail graph materialization). The
+    exactly-4 unique keys below prove the fold held."""
+    sql = (
+        f"SELECT mkey, cg, attr, val FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS dim_member) "
+        "COLUMNS (m.dim_member_key AS mkey, m.conformed_group AS cg, "
+        "m.dimension_attribute AS attr, m.member_value AS val))"
+    )
+    with graph_engine.connect() as conn:
+        rows = list(conn.execute(text(sql)))
+    members = {(r.cg, r.attr, r.val) for r in rows}
+    assert members == {
+        ("ref:t2:account_id", "account_type", "asset"),
+        ("ref:t2:account_id", "account_type", "liability"),
+        ("ref:t2:billto_acct", "region", "north"),
+        ("ref:t2:shipto_acct", "region", "north"),
+    }
+    # Keys are unique (a valid PGQ vertex KEY) and content-derived (no run id).
+    keys = [r.mkey for r in rows]
+    assert len(keys) == len(set(keys)) == 4
+    assert all(RUN not in k for k in keys)
+    # Same value 'north', different role → DISTINCT keys (the DAT-788 guarantee).
+    north = {r.cg: r.mkey for r in rows if r.val == "north"}
+    assert north["ref:t2:billto_acct"] != north["ref:t2:shipto_acct"]
 
 
 def test_derived_reconciles_with_self_loop_resolves_in_the_graph(graph_engine: Engine) -> None:

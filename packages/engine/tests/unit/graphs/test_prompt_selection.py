@@ -270,6 +270,7 @@ def test_generated_sql_binds_to_the_graphs_own_leaf_id(monkeypatch) -> None:
                         "measure_columns": ["amount"],
                         "filter_columns": [],
                         "filter": "",
+                        "filter_members": [],
                     },
                 }
             ]

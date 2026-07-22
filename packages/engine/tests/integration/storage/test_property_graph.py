@@ -176,9 +176,13 @@ def _seed(engine: Engine) -> None:
     # is the data-reconciled posterior and outranks the concept claim 'point_in_time'
     # (→ stock); the view normalizes both and the COALESCE prefers the posterior, so
     # materialization = 'flow'. (Neither raw value is ever 'flow'/'stock' in the DB.)
+    # unit_source_column='currency' (DAT-731): the headline finance case — a measure
+    # whose unit is a sibling `currency` dimension in its OWN table → a measured_in
+    # edge c_amt → c_ccy (both seeded in _units_and_additivity_stmts).
     stmts.append(
-        "INSERT INTO column_concepts (concept_id, column_id, run_id, temporal_behavior, annotated_at) "
-        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', '{TS}')"
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, temporal_behavior, unit_source_column, annotated_at) "
+        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', 'currency', '{TS}')"
     )
     # measure_time_axis_column_id / event_time_axis_column_id are left NULL — this
     # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
@@ -360,6 +364,7 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{eid}', 'finance', 'part_of', '{frm}', '{to}', 'seed', '{TS}')"
         )
     stmts.extend(_coverage_and_rollup_stmts())
+    stmts.extend(_units_and_additivity_stmts())
     stmts.extend(_grounding_stmts())
     with engine.begin() as conn:
         for s in stmts:
@@ -442,6 +447,67 @@ def _coverage_and_rollup_stmts() -> list[str]:
         "INSERT INTO concepts (concept_id, vertical, name, kind, ordering, created_at) "
         f"VALUES ('con_sev', 'finance', 'severity', 'dimension', 'ordered', '{TS}')"
     )
+    return stmts
+
+
+def _units_and_additivity_stmts() -> list[str]:
+    """DAT-731 fixture rows: measured_in edges + additivity_verdict vertices.
+
+    - A ``currency`` unit column c_ccy on t1 (journal) and a ``fee`` measure column
+      c_amt3 on t2 (accounts). c_amt already carries unit_source_column='currency'
+      (a bare sibling name → same-table resolution, the finance headline), c_amt3
+      carries 'journal.currency' (a QUALIFIED table.column → the split_part cross-table
+      branch, resolving t1's c_ccy), and c_amt2 (amount_declared) carries
+      'dimensionless' (the exclusion — NO edge). No semantic_annotation on c_ccy /
+      c_amt3, so the measure→materialization MATCH (semantic_role='measure') is
+      untouched — og_measured_in fires purely off column_concepts.unit_source_column.
+    - Two ``metric_additivity`` verdicts under a fresh operating_model head: a MEASURE
+      verdict keyed by the concept name 'revenue' (→ a has_additivity edge from the
+      revenue concept) and a METRIC verdict keyed by a formula graph_id 'mk_margin'
+      (no concept → vertex only, reachable by property, never by has_additivity).
+    """
+    stmts: list[str] = []
+    for cid, tid, name, pos in [("c_ccy", "t1", "currency", 20), ("c_amt3", "t2", "fee", 3)]:
+        stmts.append(
+            "INSERT INTO columns (column_id, table_id, column_name, column_position) "
+            f"VALUES ('{cid}', '{tid}', '{name}', {pos})"
+        )
+    # c_amt2 (amount_declared): dimensionless → excluded from measured_in. temporal_behavior
+    # stays NULL so its materialization MATCH result (amount_declared → None) is unchanged.
+    stmts.append(
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
+        f"VALUES ('cc_amt2', 'c_amt2', '{RUN}', 'dimensionless', '{TS}')"
+    )
+    # c_amt3 (fee on accounts): a QUALIFIED 'journal.currency' pointer → split_part
+    # resolves the journal (t1) table by name, then its currency column (c_ccy).
+    stmts.append(
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
+        f"VALUES ('cc_amt3', 'c_amt3', '{RUN}', 'journal.currency', '{TS}')"
+    )
+    # The operating_model head that promotes metric_additivity (read_views _CATALOG_GRAIN
+    # maps it to (catalog, 'operating_model')). The existing seed only has (catalog,
+    # 'catalog') — without this head current_metric_additivity resolves zero rows.
+    stmts.append(
+        "INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at) "
+        f"VALUES ('h_om', 'catalog', 'operating_model', '{RUN}', '{TS}')"
+    )
+    for aid, kind, key, cat_add, time_add, cat_reason, time_reason in [
+        # revenue: an active finance concept → gets a has_additivity edge. A summed
+        # balance reconciles across categories but not across time (STOCK).
+        ("ma_rev", "measure", "revenue", "true", "false", "NULL", "'stock'"),
+        # mk_margin: a formula graph_id (no concept) → vertex only, no has_additivity.
+        # A ratio reconciles on NEITHER axis.
+        ("ma_margin", "metric", "mk_margin", "false", "false", "'ratio'", "'ratio'"),
+    ]:
+        stmts.append(
+            "INSERT INTO metric_additivity "
+            "(additivity_id, run_id, target_kind, target_key, categorical_additive, "
+            " time_additive, categorical_reason, time_reason, created_at) "
+            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', {cat_add}, {time_add}, "
+            f"{cat_reason}, {time_reason}, '{TS}')"
+        )
     return stmts
 
 
@@ -1375,3 +1441,69 @@ def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
     assert rows["severity"] == "ordered"
     # A measure concept carries no ordering fact.
     assert rows["accounts_payable"] is None
+
+
+# --- DAT-731: additivity projection + measured_in units ---------------------------
+
+
+def test_additivity_verdict_vertices_carry_the_two_axis_verdict(graph_engine: Engine) -> None:
+    """additivity_verdict (DAT-731): both drill-target kinds project as one uniform
+    vertex — a MEASURE (target_key = a concept name) and a METRIC (target_key = a
+    formula graph_id with no vertex of its own) — each carrying the 2-axis verdict
+    (categorical / time additive + reason), MATCH-able by property."""
+    sql = (
+        f"SELECT kind, key, cadd, tadd, creason, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS additivity_verdict) "
+        "COLUMNS (a.target_kind AS kind, a.target_key AS key, a.categorical_additive AS cadd, "
+        "a.time_additive AS tadd, a.categorical_reason AS creason, a.time_reason AS treason))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {
+            (r.kind, r.key, r.cadd, r.tadd, r.creason, r.treason) for r in conn.execute(text(sql))
+        }
+    assert rows == {
+        # revenue: a summed balance reconciles across categories, not across time (stock).
+        ("measure", "revenue", True, False, None, "stock"),
+        # mk_margin: a ratio reconciles on neither axis.
+        ("metric", "mk_margin", False, False, "ratio", "ratio"),
+    }
+
+
+def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Engine) -> None:
+    """has_additivity (DAT-731): the headline consumer traversal — "can I sum concept X
+    over time?" resolves concept → verdict for a MEASURE. Only the measure verdict links
+    (its target_key 'revenue' names an active concept); the metric verdict (mk_margin, a
+    formula graph_id) names no concept and is reachable only by property on the vertex —
+    the graph never dangles (the og_grounded_by INNER-join discipline)."""
+    sql = (
+        f"SELECT cname, tadd, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node)-[e IS has_additivity]->(a IS additivity_verdict) "
+        "COLUMNS (c.name AS cname, a.time_additive AS tadd, a.time_reason AS treason))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.cname, r.tadd, r.treason) for r in conn.execute(text(sql))}
+    # revenue is the only measure verdict; mk_margin (metric) never surfaces here.
+    assert rows == {("revenue", False, "stock")}
+
+
+def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None:
+    """measured_in (DAT-731): a measure column → the column that defines its unit,
+    projecting ColumnConcept.unit_source_column. c_amt (amount) carries a BARE sibling
+    name 'currency' → its own table's currency column; c_amt3 (fee) carries a QUALIFIED
+    'journal.currency' → the split_part cross-table resolution to the SAME currency
+    column. c_amt2 (amount_declared) is 'dimensionless' → NO edge (nothing to point at).
+    self_denominated is false for both (measure != unit column)."""
+    sql = (
+        f"SELECT mname, uname, usrc, selfd FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS column_node)-[e IS measured_in]->(u IS column_node) "
+        "COLUMNS (m.column_name AS mname, u.column_name AS uname, "
+        "e.unit_source AS usrc, e.self_denominated AS selfd))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.mname, r.uname, r.usrc, r.selfd) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("amount", "currency", "currency", False),
+        ("fee", "currency", "journal.currency", False),
+    }
+    # The dimensionless measure contributes nothing — an explicit no-edge assertion.
+    assert not any(m == "amount_declared" for m, *_ in rows)

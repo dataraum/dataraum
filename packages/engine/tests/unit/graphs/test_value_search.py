@@ -137,6 +137,7 @@ _VALID_OUTPUT = {
                     "measure_columns": ["amount"],
                     "filter_columns": ["account_name"],
                     "filter": "Depreciation",
+                    "filter_members": [{"column": "account_name", "value": "Depreciation"}],
                 },
             }
         ],

@@ -50,6 +50,7 @@ _VALID_OUTPUT = {
                     "measure_columns": ["amount"],
                     "filter_columns": ["account_type"],
                     "filter": "Income",
+                    "filter_members": [{"column": "account_type", "value": "Income"}],
                 },
             }
         ],
@@ -217,6 +218,7 @@ _BAD_MEMBERSHIP = _with_basis(
                 "measure_columns": ["amout"],
                 "filter_columns": ["account_type"],
                 "filter": "Income",
+                "filter_members": [{"column": "account_type", "value": "Income"}],
             },
         }
     ]
@@ -225,7 +227,12 @@ _INCOMPLETE = _with_basis(
     [
         {
             "concept": "revenue",
-            "basis": {"measure_columns": ["amount"], "filter_columns": [], "filter": ""},
+            "basis": {
+                "measure_columns": ["amount"],
+                "filter_columns": [],
+                "filter": "",
+                "filter_members": [],
+            },
         }
     ]
 )

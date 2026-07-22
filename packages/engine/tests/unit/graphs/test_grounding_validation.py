@@ -22,6 +22,7 @@ from dataraum.graphs.models import (
     ConceptGroundingBasis,
     ConceptGroundingEntry,
     ExtractGroundingOutput,
+    FilterMember,
     GraphProvenanceOutput,
 )
 
@@ -54,13 +55,19 @@ def _output(
 
 
 def _basis(
-    concept: str, measure: list[str], filters: list[str] | None = None
+    concept: str,
+    measure: list[str],
+    filters: list[str] | None = None,
+    members: list[FilterMember] | None = None,
 ) -> list[ConceptGroundingEntry]:
     return [
         ConceptGroundingEntry(
             concept=concept,
             basis=ConceptGroundingBasis(
-                measure_columns=measure, filter_columns=filters or [], filter=""
+                measure_columns=measure,
+                filter_columns=filters or [],
+                filter="",
+                filter_members=members or [],
             ),
         )
     ]
@@ -171,7 +178,10 @@ def test_dual_role_column_enumerated_under_both_roles_is_clean(conn) -> None:
             ConceptGroundingEntry(
                 concept="revenue",
                 basis=ConceptGroundingBasis(
-                    measure_columns=["amount"], filter_columns=["amount"], filter=""
+                    measure_columns=["amount"],
+                    filter_columns=["amount"],
+                    filter="",
+                    filter_members=[],
                 ),
             )
         ],

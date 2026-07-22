@@ -762,6 +762,28 @@ export const tables = pgView("tables", {
 	sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM engine.tables`,
 );
 
+export const validations = pgView("validations", {
+	rowId: varchar("row_id"),
+	vertical: varchar(),
+	validationId: varchar("validation_id"),
+	name: varchar(),
+	description: text(),
+	category: varchar(),
+	severity: varchar(),
+	checkType: varchar("check_type"),
+	tolerance: doublePrecision(),
+	guidance: text(),
+	expectedOutcome: text("expected_outcome"),
+	relevantCycles: json("relevant_cycles"),
+	tags: json(),
+	version: varchar(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT row_id, vertical, validation_id, name, description, category, severity, check_type, tolerance, guidance, expected_outcome, relevant_cycles, tags, version, source, created_at, superseded_at FROM engine.validations WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
 export const workspaceCalendar = pgView("workspace_calendar", {
 	pin: boolean(),
 	fiscalYearStartMonth: integer("fiscal_year_start_month"),

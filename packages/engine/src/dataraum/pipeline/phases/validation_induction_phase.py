@@ -8,9 +8,17 @@ downstream ``validation`` phase then declares/binds/executes the seed ``⊕`` ge
 ``⊕`` teach set uniformly — induction just populates the typed home first.
 
 Placement (spine): ``operating_model_resolve → validation_induction → validation``.
-Induction precedes validation because the validation phase reads the rows it writes;
-it therefore sees the PRIOR operating_model head's cycles/additivity (empty on a first
-run), never this run's — which are written by the later cycles/metrics phases.
+Induction precedes validation because the validation phase reads the rows it writes.
+
+**First-run limitation (recorded for sweep interpretation).** Induction runs BEFORE
+the cycles and metrics phases in the spine, so the run-versioned cycles / additivity
+it serves come from the PRIOR promoted operating_model head, never this run's. On the
+VERY FIRST operating_model run of a workspace no head has promoted yet, so those two
+sections are simply ABSENT from the served graph — induction proposes from the
+structural substrate alone (concepts + part_of, references, conventions, units, and
+the metric DAG, which is declaration-versioned and always present). This is graceful
+degradation, not a gap; a re-run, once a head exists, serves the prior model's
+cycles/additivity.
 
 **nothing_declared invariant (DAT-845).** This phase reports a ``generated`` count,
 NEVER a ``declared`` count — the OperatingModelWorkflow's ``nothing_declared`` gate

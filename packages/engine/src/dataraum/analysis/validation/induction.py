@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
+from dataraum.analysis.semantic.db_models import WorkspaceSettings
 from dataraum.analysis.validation.models import ValidationSeverity, ValidationSpec
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -35,6 +37,7 @@ from dataraum.llm.contract_repair import repair_tool_contract
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message
 from dataraum.llm.structured_output import parse_structured_output
+from dataraum.storage.snapshot_head import catalog_head_target, head_run_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -193,6 +196,99 @@ def _to_spec(validation: InducedValidation) -> ValidationSpec:
     )
 
 
+def _render_additivity(session: Session, om_head_run_id: str | None) -> str:
+    """The additivity verdicts at the promoted operating_model head (DAT-716/735).
+
+    Whether a breakdown by an axis class reconciles to the unsliced total. A
+    NON-additive target must not be summed across that axis, so the balance-check
+    class the induction proposes needs this explicitly: a Σ-of-parts check over a
+    non-additive target is a false positive. Run-versioned — read at the promoted
+    head (``om_head_run_id``); empty on a first run (no operating_model promoted yet).
+    """
+    if om_head_run_id is None:
+        return ""
+    from dataraum.graphs.additivity_db_models import MetricAdditivity
+
+    rows = (
+        session.execute(
+            select(MetricAdditivity)
+            .where(MetricAdditivity.run_id == om_head_run_id)
+            .order_by(MetricAdditivity.target_kind, MetricAdditivity.target_key)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return ""
+    lines = ["", "## Additivity Verdicts"]
+    for r in rows:
+        cat = (
+            "categorical:additive"
+            if r.categorical_additive
+            else f"categorical:NON-additive ({r.categorical_reason or 'n/a'})"
+        )
+        tim = (
+            "time:additive" if r.time_additive else f"time:NON-additive ({r.time_reason or 'n/a'})"
+        )
+        lines.append(f"- {r.target_kind} {r.target_key}: {cat}; {tim}")
+    return "\n".join(lines)
+
+
+def _render_metric_dag(session: Session, vertical: str) -> str:
+    """The declared metric DAG for a vertical (DAT-732/735).
+
+    Each metric, the concepts it derives_from (its ``part_of``-style inputs), and its
+    declared parameters. Vertical-scoped and always-current (declaration-versioned),
+    so it is served regardless of the operating_model head. Gives the induction the
+    rollup structure (metric = Σ over derived concepts) the raw-column schema hides —
+    the substrate for the new balance/reconciliation checks the shipped YAML lacked.
+    """
+    from dataraum.graphs.metric_graph_db_models import (
+        Metric,
+        MetricDerivesFrom,
+        MetricParameter,
+    )
+
+    metrics = (
+        session.execute(
+            select(Metric)
+            .where(Metric.vertical == vertical, Metric.superseded_at.is_(None))
+            .order_by(Metric.graph_id)
+        )
+        .scalars()
+        .all()
+    )
+    if not metrics:
+        return ""
+    derives: dict[str, list[str]] = {}
+    for edge in session.execute(
+        select(MetricDerivesFrom).where(
+            MetricDerivesFrom.vertical == vertical, MetricDerivesFrom.superseded_at.is_(None)
+        )
+    ).scalars():
+        derives.setdefault(edge.graph_id, []).append(edge.concept_name)
+    params: dict[str, list[MetricParameter]] = {}
+    for param in session.execute(
+        select(MetricParameter).where(
+            MetricParameter.vertical == vertical, MetricParameter.superseded_at.is_(None)
+        )
+    ).scalars():
+        params.setdefault(param.graph_id, []).append(param)
+
+    lines = ["", "## Metric DAG"]
+    for metric in metrics:
+        unit = f", unit={metric.unit}" if metric.unit else ""
+        lines.append(f"### {metric.graph_id} ({metric.name}) — {metric.output_type or '?'}{unit}")
+        froms = derives.get(metric.graph_id)
+        if froms:
+            lines.append(f"derives_from: {', '.join(sorted(froms))}")
+        declared = params.get(metric.graph_id)
+        if declared:
+            rendered = ", ".join(f"{p.name}={p.default_value!r} ({p.param_type})" for p in declared)
+            lines.append(f"parameters: {rendered}")
+    return "\n".join(lines)
+
+
 def build_served_context(
     session: Session,
     table_ids: list[str],
@@ -206,10 +302,16 @@ def build_served_context(
     """Serve the promoted graph: (rendered context, conventions, membership vocab).
 
     Reuses the shared graph assembler (``build_execution_context`` +
-    ``format_served_context``) — the SAME served graph the metric grounding agent
-    reads. This-run cycles/additivity are not yet promoted when induction runs (it
-    precedes them in the spine), so those sections reflect the PRIOR operating_model
-    head (empty on a first run) — the induction degrades gracefully.
+    ``format_served_context`` — the SAME served graph the metric grounding agent
+    reads: concepts + part_of, references, conventions, cycles, per-column
+    materialization = the additivity signal, reconciles_with), then APPENDS two
+    induction-specific sections the balance-check class needs made explicit (DAT-735):
+    the additivity verdicts and the metric DAG.
+
+    This-run cycles/additivity are not yet promoted when induction runs (it precedes
+    them in the spine), so those reflect the PRIOR operating_model head — **empty on a
+    first run**, when no operating_model has ever promoted. The metric DAG is
+    declaration-versioned (always current). The induction degrades gracefully.
     """
     context = build_execution_context(
         session,
@@ -220,7 +322,17 @@ def build_served_context(
         catalogue_run_id=catalogue_run_id,
         workspace_id=workspace_id,
     )
-    return format_served_context(context), context.conventions, served_membership(context)
+    served = format_served_context(context)
+
+    # The promoted operating_model head for the run-versioned additivity read (DAT-848
+    # scoping mirrors the concept reads: active_vertical wins, the run's vertical is
+    # the unbound fallback). om_head is None on a first run ⇒ additivity section empty.
+    om_head = head_run_id(session, catalog_head_target(), "operating_model")
+    effective_vertical = (
+        session.execute(select(WorkspaceSettings.active_vertical)).scalar_one_or_none() or vertical
+    )
+    served += _render_additivity(session, om_head) + _render_metric_dag(session, effective_vertical)
+    return served, context.conventions, served_membership(context)
 
 
 class ValidationInductionAgent(LLMFeature):
@@ -237,9 +349,9 @@ class ValidationInductionAgent(LLMFeature):
         the durable boundary to retry; a parse failure is a hard failure (no rescue,
         mirroring the validation-SQL path).
         """
-        feature_config = self.config.features.validation
+        feature_config = self.config.features.validation_induction
         if not feature_config or not feature_config.enabled:
-            return Result.fail("Validation feature is disabled in config")
+            return Result.fail("Validation induction feature is disabled in config")
 
         context = {"served_graph": served_graph, "conventions": conventions or "None"}
         try:

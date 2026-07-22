@@ -157,9 +157,10 @@ class _FakeProvider:
 
 def _agent(provider: _FakeProvider) -> ValidationInductionAgent:
     config = MagicMock()
-    config.features.validation.enabled = True
-    config.features.validation.model_tier = "default"
-    config.features.validation.effort = "medium"
+    # DAT-735: induction reads its OWN feature config key, not `validation`.
+    config.features.validation_induction.enabled = True
+    config.features.validation_induction.model_tier = "balanced"
+    config.features.validation_induction.effort = "low"
     config.limits.max_output_tokens_per_request = 8000
     renderer = MagicMock()
     renderer.render_split.return_value = ("system", "user", 0.0)
@@ -211,3 +212,79 @@ def test_induce_empty_is_legitimate() -> None:
     result = _agent(provider).induce("<graph>", "conv", served_membership(_context()))
     assert result.success
     assert result.unwrap() == []
+
+
+# --- served-graph enrichment: metric DAG + additivity (DAT-735 owner ruling) ------
+
+
+def test_render_metric_dag_serves_declared_metrics(session) -> None:
+    """The metric DAG section names each metric, its derives_from concepts + params."""
+    from dataraum.analysis.validation.induction import _render_metric_dag
+    from dataraum.graphs.metric_graph_db_models import Metric, MetricDerivesFrom, MetricParameter
+
+    session.add(
+        Metric(
+            vertical="finance",
+            graph_id="current_ratio",
+            name="Current Ratio",
+            output_type="ratio",
+            source="seed",
+        )
+    )
+    session.add(
+        MetricDerivesFrom(
+            vertical="finance",
+            graph_id="current_ratio",
+            concept_name="current_assets",
+        )
+    )
+    session.add(
+        MetricParameter(
+            vertical="finance",
+            graph_id="current_ratio",
+            name="period",
+            param_type="string",
+            default_value="month",
+            source="seed",
+        )
+    )
+    session.flush()
+
+    rendered = _render_metric_dag(session, "finance")
+    assert "## Metric DAG" in rendered
+    assert "current_ratio" in rendered
+    assert "derives_from: current_assets" in rendered
+    assert "period=" in rendered
+    # A different vertical sees none of it.
+    assert _render_metric_dag(session, "marketing") == ""
+
+
+def test_render_additivity_serves_verdicts_at_head(session) -> None:
+    """The additivity section renders the verdicts + reasons at the promoted head."""
+    from dataraum.analysis.validation.induction import _render_additivity
+    from dataraum.graphs.additivity_db_models import MetricAdditivity
+
+    session.add(
+        MetricAdditivity(
+            run_id="om-run-1",
+            target_kind="metric",
+            target_key="current_liabilities",
+            categorical_additive=True,
+            time_additive=False,
+            time_reason="stock",
+        )
+    )
+    session.flush()
+
+    rendered = _render_additivity(session, "om-run-1")
+    assert "## Additivity Verdicts" in rendered
+    assert "current_liabilities" in rendered
+    assert "categorical:additive" in rendered
+    assert "time:NON-additive (stock)" in rendered
+
+
+def test_render_additivity_empty_on_first_run(session) -> None:
+    """No promoted operating_model head (first run) ⇒ the section is absent."""
+    from dataraum.analysis.validation.induction import _render_additivity
+
+    assert _render_additivity(session, None) == ""

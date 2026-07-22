@@ -62,6 +62,11 @@ class LLMFeatures(BaseModel):
     column_annotation: FeatureConfig | None = None
     slicing_analysis: FeatureConfig | None = None
     validation: FeatureConfig | None = None
+    # Validation induction (DAT-735): the agentic generation of validations over the
+    # served graph. Its OWN one-home config (defaulting to `validation`'s balanced
+    # tier today) so the induction call — reasoning over the whole graph — can be
+    # tuned independently of the mechanical SQL-binding `validation` call later.
+    validation_induction: FeatureConfig | None = None
     business_cycles: FeatureConfig | None = None
     entropy_query_interpretation: FeatureConfig | None = None
     enrichment_analysis: FeatureConfig | None = None

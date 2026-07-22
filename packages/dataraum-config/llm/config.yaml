@@ -51,6 +51,14 @@ features:
     model_tier: balanced
     effort: low
 
+  # DAT-735: agentic validation induction over the served graph. One dedicated home
+  # (mirrors `validation`'s balanced tier today — zero behaviour change; the induction
+  # reasons over the whole graph, so effort/thinking can be raised here independently).
+  validation_induction:
+    enabled: true
+    model_tier: balanced
+    effort: low
+
   # DAT-491: events→measure aggregation-lineage proposals (one batched call per
   # begin_session run; the deterministic reconciliation disposes the candidates).
   business_cycles:

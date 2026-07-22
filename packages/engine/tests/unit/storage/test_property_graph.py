@@ -41,13 +41,13 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Fourteen edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
+    # Fifteen edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
     # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), the three
-    # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to — and
-    # the two DAT-731 additions (has_additivity, measured_in) and the two
-    # DAT-732 metric-DAG edges (derives_from, has_parameter).
-    assert graph_sql.count("SOURCE KEY") == 14
-    assert graph_sql.count("DESTINATION KEY") == 14
+    # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to — the
+    # two DAT-731 additions (has_additivity, measured_in), the two DAT-732
+    # metric-DAG edges (derives_from, has_parameter), and the DAT-733 scoped_by.
+    assert graph_sql.count("SOURCE KEY") == 15
+    assert graph_sql.count("DESTINATION KEY") == 15
     # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -115,6 +115,13 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
         "DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)" in graph_sql
     )
     assert "LABEL has_parameter" in graph_sql
+
+    # DAT-733: the validity-filter vertex + the table→filter scoped_by edge.
+    assert "KEY (filter_id) LABEL validity_filter" in graph_sql
+    assert "PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)" in graph_sql
+    assert "SOURCE KEY (table_id) REFERENCES og_tables (table_id)" in graph_sql
+    assert "DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)" in graph_sql
+    assert "LABEL scoped_by" in graph_sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

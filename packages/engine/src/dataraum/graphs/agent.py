@@ -947,6 +947,7 @@ class GraphAgent(LLMFeature):
             schema_tables_from_info,
             validate_grounding_basis,
         )
+        from dataraum.graphs.validity_scope import compose_scoped_where
         from dataraum.llm.contract_repair import repair_tool_contract
 
         schema_tables = schema_tables_from_info(schema_info)
@@ -977,7 +978,26 @@ class GraphAgent(LLMFeature):
         # relation="" rather than an omitted/None key. Normalize the sentinel back to
         # None here so the PERSISTED parts keep their existing shape.
         relation = output.relation or None
-        rendered_sql = compose_extract_sql(output.select_expr, relation, output.where)
+
+        # DAT-733: compose the canonical validity scope BY DEFAULT. The composer
+        # resolves the measured-cycle status predicate(s) applicable to this relation
+        # (run-scoped from the served context) and appends them as additional typed
+        # WHERE parts, so they ride the SAME parts/where_predicates substrate every
+        # consumer reads. Explicit, VISIBLE opt-out: when the grounding already
+        # constrains the status column (the LLM's own judgment), the scope defers and
+        # is recorded as a typed assumption instead of silently double-filtering.
+        # Absence falls loud — no applicable cycle appends nothing.
+        where_parts, scope_assumptions = compose_scoped_where(
+            output,
+            relation,
+            schema_tables.get(relation, set()) if relation is not None else set(),
+            context.rich_context.business_cycles,
+            context.rich_context.enriched_views,
+            context.rich_context.tables,
+            context.duckdb_conn,
+        )
+
+        rendered_sql = compose_extract_sql(output.select_expr, relation, where_parts)
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
@@ -987,12 +1007,12 @@ class GraphAgent(LLMFeature):
                     "step_id": leaf.step_id,
                     "sql": rendered_sql,
                     "description": output.description,
-                    "parts": extract_parts_dict(output.select_expr, relation, output.where),
+                    "parts": extract_parts_dict(output.select_expr, relation, where_parts),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
             provenance=output.provenance,
-            assumptions=output.assumptions or [],
+            assumptions=(output.assumptions or []) + scope_assumptions,
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),

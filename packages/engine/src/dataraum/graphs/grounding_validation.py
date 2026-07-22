@@ -124,6 +124,36 @@ def validate_grounding_basis(
     return violations
 
 
+def where_filter_columns(
+    output: ExtractGroundingOutput,
+    relation_columns: set[str],
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+) -> set[str]:
+    """The relation columns the grounding's WHERE predicates PROVABLY constrain.
+
+    DAT-733's default-scope opt-out reads this to DECIDE whether to skip the
+    canonical validity scope — so, unlike the validation reference set, it must NOT
+    over-collect. A column counts only when the fragment referencing it PARSED
+    (DuckDB's catalog-free parse — identifier-precise, string literals and
+    subquery-internal names excluded). A fragment that fails to parse contributes
+    NOTHING: its lexical over-collection (a status-shaped token inside a string
+    literal) must never justify skipping the scope and silently dropping the filter.
+    No connection ⇒ no parser ⇒ no confident constraint ⇒ never a bypass.
+    """
+    if duckdb_conn is None:
+        return set()
+    constrained: set[str] = set()
+    for predicate in output.where:
+        if not predicate or not predicate.strip():
+            continue
+        try:
+            refs = _parsed_column_refs(predicate, duckdb_conn)
+        except ValueError:
+            continue  # unparsed → not confident → contributes nothing to the bypass
+        constrained |= refs & relation_columns
+    return constrained
+
+
 def _used_columns(
     output: ExtractGroundingOutput,
     relation_columns: set[str],

@@ -367,6 +367,7 @@ def _seed(engine: Engine) -> None:
     stmts.extend(_units_and_additivity_stmts())
     stmts.extend(_grounding_stmts())
     stmts.extend(_metric_dag_stmts())
+    stmts.extend(_validity_scope_stmts())
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
@@ -408,6 +409,54 @@ def _metric_dag_stmts() -> list[str]:
         # drops this edge (honest under-coverage, never a dangling edge).
         "INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name, created_at) "
         f"VALUES ('mdf_ghost', 'finance', 'working_capital_metric', 'ghost_concept', '{TS}')",
+    ]
+
+
+def _validity_scope_stmts() -> list[str]:
+    """DAT-733 fixture rows: the canonical validity-scope surface (og_validity_filter).
+
+    Three cycles, one edge:
+      * cyc_post  — MEASURED (completion_rate non-NULL), status_column resolves on
+        ``journal`` (t1) → ONE og_validity_filter row + ONE scoped_by edge:
+        journal.status = 'posted'.
+      * cyc_recon — UNMEASURED (completion_rate NULL): its status column
+        ``ledger.recon_status`` exists and would resolve, so the ONLY thing
+        withholding the edge is the measured gate — proving an unmeasured cycle
+        contributes NO filter, not a coincidental non-resolution.
+      * cyc_ghost — MEASURED but names ``paylog.missing_col`` which no column row
+        backs → the INNER JOIN drops it (honest under-coverage, no dangling edge).
+    ``accounts`` (t2) carries no cycle at all → enumerable absence (no edge).
+    """
+    return [
+        # A real status column on journal + a recon status on ledger.
+        "INSERT INTO columns (column_id, table_id, column_name, column_position) "
+        "VALUES ('c_status', 't1', 'status', 4)",
+        "INSERT INTO columns (column_id, table_id, column_name, column_position) "
+        "VALUES ('c_recon', 't7', 'recon_status', 2)",
+        # cyc_post: measured, resolves → the one validity filter.
+        "INSERT INTO detected_business_cycles "
+        "(cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, "
+        " business_value, confidence, tables_involved, stages, entity_flows, evidence, "
+        " status_table, status_column, completion_value, completion_rate, total_records, "
+        " completed_cycles, detected_at) "
+        f"VALUES ('cyc_post', '{RUN}', 'Posting Cycle', 'posting_cycle', 'posting', false, "
+        f"'medium', 0.9, '[]', '[]', '[]', '[]', 'journal', 'status', 'posted', 0.9, 100, 90, "
+        f"'{TS}')",
+        # cyc_recon: UNMEASURED (completion_rate NULL) → contributes no filter.
+        "INSERT INTO detected_business_cycles "
+        "(cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, "
+        " business_value, confidence, tables_involved, stages, entity_flows, evidence, "
+        " status_table, status_column, completion_value, completion_rate, detected_at) "
+        f"VALUES ('cyc_recon', '{RUN}', 'Reconciliation', 'recon_cycle', 'reconciliation', "
+        f"false, 'medium', 0.5, '[]', '[]', '[]', '[]', 'ledger', 'recon_status', "
+        f"'reconciled', NULL, '{TS}')",
+        # cyc_ghost: measured but its status column does not resolve → no row/edge.
+        "INSERT INTO detected_business_cycles "
+        "(cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, "
+        " business_value, confidence, tables_involved, stages, entity_flows, evidence, "
+        " status_table, status_column, completion_value, completion_rate, detected_at) "
+        f"VALUES ('cyc_ghost', '{RUN}', 'Ghost', 'ghost_cycle', 'ghost', false, 'medium', "
+        f"0.5, '[]', '[]', '[]', '[]', 'paylog', 'missing_col', 'done', 0.5, '{TS}')",
     ]
 
 
@@ -942,6 +991,43 @@ def test_has_dimension_edge(graph_engine: Engine) -> None:
         ("statement", "account_id", "t2"),
         ("account_group", "account_id", "t2"),
     }
+
+
+def test_scoped_by_enumerates_the_default_validity_scope(graph_engine: Engine) -> None:
+    """scoped_by: a table points at its canonical validity filter (DAT-733).
+
+    Only the MEASURED, resolvable cycle instantiates — journal.status = 'posted'.
+    The unmeasured recon cycle (completion_rate NULL) and the ghost cycle (a status
+    column no row backs) yield no filter; accounts carries no cycle at all. So the
+    edge set proves BOTH the default scope AND its enumerable absence — a table
+    without a measured status cycle is never a default-true 'scoped'.
+    """
+    sql = (
+        f"SELECT tname, cname, op, val FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[e IS scoped_by]->(v IS validity_filter) "
+        "COLUMNS (t.table_name AS tname, v.column_name AS cname, "
+        "v.operator AS op, v.value AS val))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.tname, r.cname, r.op, r.val) for r in conn.execute(text(sql))}
+    assert rows == {("journal", "status", "=", "posted")}
+
+
+def test_validity_filter_vertex_resolves_the_status_column_id(graph_engine: Engine) -> None:
+    """The validity_filter vertex resolves the cycle's status column to a real column_id.
+
+    A MATCH over the bare vertex (not the edge) proves the node instantiates: the
+    measured gate admits exactly cyc_post, and the status_table/status_column NAMES
+    resolved to the seeded c_status column vertex under journal.
+    """
+    sql = (
+        f"SELECT cid, colname, tid FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (v IS validity_filter) "
+        "COLUMNS (v.column_id AS cid, v.column_name AS colname, v.table_id AS tid))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.cid, r.colname, r.tid) for r in conn.execute(text(sql))}
+    assert rows == {("c_status", "status", "t1")}
 
 
 def test_conformed_dimension_is_attribute_grain(graph_engine: Engine) -> None:

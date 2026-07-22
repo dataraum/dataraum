@@ -144,6 +144,94 @@ def _make_execution_context(
     )
 
 
+def _context_with_validity_cycle() -> tuple[duckdb.DuckDBPyConnection, ExecutionContext]:
+    """A served context whose ``test_data`` relation carries a status column and a
+    MEASURED posting cycle (status='posted') — the DAT-733 default-scope setup.
+
+    Rows: two posted (100 + 200), one draft (300), so the appended posted-only scope
+    is observable in the metric value.
+    """
+    from dataraum.graphs.context import (
+        BusinessCycleContext,
+        GraphExecutionContext,
+        TableContext,
+    )
+    from dataraum.graphs.field_mapping import ColumnMeaning
+
+    conn = duckdb.connect(":memory:")
+    conn.execute("CREATE TABLE test_data (id INT, amount DECIMAL(10,2), status VARCHAR)")
+    conn.execute(
+        "INSERT INTO test_data VALUES "
+        "(1, 100.00, 'posted'), (2, 200.00, 'posted'), (3, 300.00, 'draft')"
+    )
+    rich_context = GraphExecutionContext(
+        tables=[TableContext(table_id="t1", table_name="test_data", duckdb_name="test_data")],
+        field_mappings=[
+            ColumnMeaning(
+                column_id="c1",
+                column_name="amount",
+                table_name="test_data",
+                meaning="Transaction amount for the test fixture",
+            )
+        ],
+        business_cycles=[
+            BusinessCycleContext(
+                cycle_name="Posting Cycle",
+                cycle_type="posting",
+                status_table="test_data",
+                status_column="status",
+                completion_value="posted",
+                completion_rate=0.9,
+            )
+        ],
+    )
+    context = ExecutionContext(
+        duckdb_conn=conn,
+        schema_mapping_id="test-mapping",
+        rich_context=rich_context,
+    )
+    return conn, context
+
+
+def _agent_over_status_data(*, where: list[str], filters_status: bool) -> GraphAgent:
+    """A GraphAgent whose mocked LLM grounds SUM(amount) over ``test_data``.
+
+    ``filters_status`` enumerates ``status`` under filter_columns so a where that
+    constrains it passes contract-v2 validation (the bypass-branch setup)."""
+    mock_config = MagicMock()
+    mock_config.limits.max_output_tokens_per_request = 4000
+    mock_config.limits.cache_ttl_seconds = 3600
+    mock_config.features.graph_sql_generation = None
+    mock_renderer = MagicMock()
+    mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+    agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
+    agent.provider.get_model_for_tier.return_value = "test-model"
+    response = _grounding_response(
+        {
+            "grounding": "verified served values",
+            "relation": "test_data",
+            "where": where,
+            "select_expr": "SUM(amount)",
+            "description": "Sum amounts from test data",
+            "assumptions": [],
+            "provenance": {
+                "column_mappings_basis": [
+                    {
+                        "concept": "test_field",
+                        "basis": {
+                            "measure_columns": ["amount"],
+                            "filter_columns": ["status"] if filters_status else [],
+                            "filter": "status = 'draft'" if filters_status else "",
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    agent.provider.converse = MagicMock(return_value=Result.ok(response))
+    return agent
+
+
 class TestGeneratedCode:
     """Tests for GeneratedCode dataclass."""
 
@@ -303,6 +391,62 @@ class TestGraphAgentIntegration:
         execution = result.value
         assert execution.graph_id == "test_metric"
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
+
+    def test_validity_scope_appended_by_default_and_persisted(self, session: Session, sample_graph):
+        """DAT-733 default branch, end to end: a measured status cycle in the served
+        context ⇒ the engine appends the posted-only scope, and the persisted snippet
+        SQL + clause parts carry it. The LLM output has NO status filter."""
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        conn, context = _context_with_validity_cycle()
+        try:
+            agent = _agent_over_status_data(where=[], filters_status=False)
+            result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
+            assert result.success
+            snippet = session.execute(
+                select(SQLSnippetRecord).where(SQLSnippetRecord.snippet_type == "extract")
+            ).scalar_one()
+            # The scope rides both the rendered SQL and the persisted where[] parts.
+            assert "status = 'posted'" in snippet.sql
+            assert "status = 'posted'" in snippet.parts["where"]
+            # Default branch: applied, not deferred — no bypass assumption.
+            assert (snippet.provenance or {}).get("assumptions", []) == []
+            # Only the 2 posted rows count (100 + 200), never the draft row.
+            assert result.value.output_value == 300.0
+        finally:
+            conn.close()
+
+    def test_validity_scope_bypassed_when_grounding_constrains_status(
+        self, session: Session, sample_graph
+    ):
+        """DAT-733 bypass branch, end to end: the LLM already constrains ``status`` ⇒
+        the engine does NOT append its own scope (no double-filter) and records a
+        typed, visible assumption on the persisted provenance."""
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        conn, context = _context_with_validity_cycle()
+        try:
+            agent = _agent_over_status_data(where=["status = 'draft'"], filters_status=True)
+            result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
+            assert result.success
+            snippet = session.execute(
+                select(SQLSnippetRecord).where(SQLSnippetRecord.snippet_type == "extract")
+            ).scalar_one()
+            # The grounding's own constraint stands; the default posted-only scope is
+            # NOT also appended.
+            assert snippet.parts["where"] == ["status = 'draft'"]
+            assert "status = 'posted'" not in snippet.sql
+            # The opt-out is recorded VISIBLY as a typed assumption.
+            assumptions = (snippet.provenance or {}).get("assumptions", [])
+            assert len(assumptions) == 1
+            assert assumptions[0]["basis"] == "inferred"
+            assert "not applied" in assumptions[0]["assumption"]
+        finally:
+            conn.close()
 
 
 def _agent_with_parts(

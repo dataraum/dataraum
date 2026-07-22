@@ -49,6 +49,10 @@ reification).** Vertices/edges:
     parameter_node (KEY parameter_id) a metric's user-configurable parameter (DAT-732):
                                             declared default + a ``derivation`` marker
                                             (``period_grain`` for days_in_period)
+    validity_filter (KEY filter_id)  the canonical analytical-universe predicate
+                                            (DAT-733): a MEASURED cycle's typed
+                                            (column_id, operator, value) status scope
+                                            groundings compose by default
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
@@ -56,6 +60,7 @@ reification).** Vertices/edges:
     conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (DAT-756)
     grounded_by        concept → grounding [current_groundings] a concept's groundings; >1 healthy = multi-grounding
     uses               grounding → column  [provenance contract v2] the columns a grounding touches
+    scoped_by          table → validity_filter [detected_business_cycles] the table's default validity scope (DAT-733)
     temporal_coverage  table → column    [temporal_column_profiles ▸ time_columns] observed window/grain/completeness per (relation × time col) (DAT-730)
     rolls_up_to        column → column   [dimension_hierarchies] ordered drill level→level, finer→coarser (DAT-730)
     period_rolls_up_to grain → grain     [constant + workspace_calendar] the calendar ladder day→month→quarter→year (DAT-730)
@@ -166,6 +171,8 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_conformed_dimension",
     "og_grounded_by",
     "og_uses",
+    "og_validity_filter",
+    "og_scoped_by",
     "og_temporal_coverage",
     "og_rolls_up_to",
     "og_period_rolls_up_to",
@@ -177,6 +184,23 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_metric_parameters",
     "og_derives_from",
     "og_has_parameter",
+)
+
+
+# Shared FROM/JOIN/WHERE of the two DAT-733 validity-scope element views. They stay
+# INDEPENDENT views (no view-to-view dependency — the dump drops them in list order),
+# but re-derive the SAME rows: keeping the name resolution + measured gate in ONE
+# string stops the vertex and its edge silently drifting apart on a future edit
+# (e.g. tightening the measured gate must touch both).
+_VALIDITY_FILTER_SOURCE = (
+    f"FROM {READ_TOKEN}.current_detected_business_cycles c\n"
+    f"JOIN {READ_TOKEN}.current_tables t\n"
+    f"  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)\n"
+    f"JOIN {READ_TOKEN}.current_columns col\n"
+    f"  ON col.table_id = t.table_id AND col.column_name = c.status_column\n"
+    f"WHERE c.status_column IS NOT NULL\n"
+    f"  AND c.completion_value IS NOT NULL\n"
+    f"  AND c.completion_rate IS NOT NULL;"
 )
 
 
@@ -581,6 +605,58 @@ def _element_view_sql(name: str) -> str:
             f"ORDER BY g.snippet_id, col.column_id,\n"
             f"         CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;"
         )
+    if name == "og_validity_filter":
+        # validity_filter vertex (DAT-733): the canonical analytical-universe
+        # predicate reified as typed structure — the posted-/reconciled-/active-only
+        # scope a grounding composes BY DEFAULT. Sourced SOLELY from a detected
+        # business cycle's ``status_column = completion_value`` (analysis/cycles):
+        # a TYPED (column_id, operator, value) triple, never free text. Concept
+        # ``exclude_patterns`` were evaluated as a second source and rejected —
+        # they are column-NAME match exclusions consumed at the grounding-matching
+        # layer, not row predicates (see graphs/context.py), so no faithful triple
+        # exists and fabricating one is forbidden.
+        #
+        # ONE row per MEASURED cycle carrying both a status column and a completion
+        # value: ``completion_rate IS NOT NULL`` is the persisted proxy for the
+        # cycles contract's ``measured`` discriminator (unmeasured ⇒ the three
+        # metrics are NULL; _parse_output), and an unmeasured cycle contributes NO
+        # filter. The status_table/status_column NAMES resolve to a column_id via
+        # current_tables/current_columns (table_name OR duckdb_path, mirroring
+        # og_uses); the INNER JOINs drop a cycle whose names don't resolve —
+        # honest under-coverage, never a wrong edge, never a fabricated scope.
+        #
+        # HEAD/RUN ASYMMETRY (inherent to the run-versioned model): this element
+        # projects the PROMOTED operating_model head (current_*), the post-run read
+        # surface — like every og_* view. The DEFAULT-composition consumer
+        # (graphs/agent grounding) reads the SAME cycles RUN-SCOPED from
+        # rich_context instead, because mid-run the head is not yet promoted
+        # (metrics_phase passes om_run_id for exactly this). Two projections of one
+        # source (detected_business_cycles) at the two correct scopes.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_validity_filter AS\n"
+            f"SELECT c.cycle_id::text AS filter_id,\n"
+            f"       col.table_id::text AS table_id,\n"
+            f"       col.column_id::text AS column_id,\n"
+            f"       col.column_name AS column_name,\n"
+            f"       '=' AS operator,\n"
+            f"       c.completion_value AS value\n" + _VALIDITY_FILTER_SOURCE
+        )
+    if name == "og_scoped_by":
+        # scoped_by edge (table -> validity_filter, DAT-733): the table whose rows
+        # the validity predicate narrows. filter_id == cycle_id, so the edge
+        # re-derives the SAME resolution as og_validity_filter directly off the
+        # current_* surface rather than reading that element view — element views
+        # stay INDEPENDENT thin shapers (the dump drops them in list order, so a
+        # view depending on a sibling would fail to drop). One edge per measured,
+        # resolvable cycle. Absence is enumerable and loud: a table with no such
+        # cycle has NO scoped_by edge — never a default-true "scoped".
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_scoped_by AS\n"
+            f"SELECT (col.table_id || '_' || c.cycle_id)::text AS edge_key,\n"
+            f"       col.table_id::text AS table_id,\n"
+            f"       c.cycle_id::text AS filter_id,\n"
+            f"       col.column_id::text AS column_id\n" + _VALIDITY_FILTER_SOURCE
+        )
     if name == "og_period_grain":
         # period_grain vertex (DAT-730): the CONSTANT period-roll-up ladder nodes
         # day/month/quarter/year, carrying the workspace's DECLARED fiscal-year start
@@ -905,7 +981,9 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (graph_id, vertical, name, category, unit, output_type),\n"
         f"    {READ_TOKEN}.og_metric_parameters KEY (parameter_id) LABEL parameter_node\n"
         f"      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,\n"
-        f"                  options, derivation, description)\n"
+        f"                  options, derivation, description),\n"
+        f"    {READ_TOKEN}.og_validity_filter KEY (filter_id) LABEL validity_filter\n"
+        f"      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"
@@ -982,7 +1060,12 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (graph_id) REFERENCES og_metrics (graph_id)\n"
         f"      DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)\n"
         f"      LABEL has_parameter\n"
-        f"      PROPERTIES (graph_id)\n"
+        f"      PROPERTIES (graph_id),\n"
+        f"    {READ_TOKEN}.og_scoped_by KEY (edge_key)\n"
+        f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
+        f"      DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)\n"
+        f"      LABEL scoped_by\n"
+        f"      PROPERTIES (column_id)\n"
         f"  );"
     )
 

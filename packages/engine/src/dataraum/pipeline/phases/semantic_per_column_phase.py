@@ -23,8 +23,8 @@ from dataraum.analysis.semantic.concept_store import (
     require_active_vertical,
 )
 from dataraum.analysis.semantic.processor import ground_columns
-from dataraum.graphs.metric_store import ensure_metrics_seeded
 from dataraum.core.logging import get_logger
+from dataraum.graphs.metric_store import ensure_metrics_seeded
 from dataraum.investigation.queries import tables_for_run
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult

@@ -133,11 +133,19 @@ class _MeasureAxis:
     both ``None`` when the measure has no declared anchor (DAT-801) or the axis was
     never temporally profiled, in which case a ``flow`` measure falls loud (its window
     can't be observed) while a non-``flow`` measure is simply excluded.
+
+    ``persisted_span_days`` / ``persisted_actual_periods`` are the axis's WHOLE-COLUMN
+    coverage from ``temporal_column_profiles`` (DAT-812): the exact window an
+    UNFILTERED (empty-WHERE) flow would live-scan, so it is read off the persisted
+    profile instead — ``None`` when the axis had no profile. Filtered flows ignore
+    these and scan live over their own rows (see :func:`_observe_flow_step`).
     """
 
     materialization: str | None
     axis: str | None
     grain: str | None
+    persisted_span_days: float | None
+    persisted_actual_periods: int | None
 
 
 def resolve_days_in_period(
@@ -301,11 +309,56 @@ def _observe_flow_step(
                 f"flow '{field_name}' has no observable anchor-axis span "
                 f"(null anchor time axis or no temporal profile)"
             )
-        window = _observe_window(duckdb_conn, relation, measure.axis, measure.grain, where_clause)
+        # DAT-812 profile-read collapse: an UNFILTERED flow's window IS the axis's
+        # whole-column span, which ``temporal_column_profiles`` already persisted — no
+        # need to re-scan DuckDB. A FILTERED flow keeps scanning live over exactly the
+        # rows its SUM touches (the whole-column span would be wrong for it). Falls back
+        # to the live empty-WHERE scan only if the persisted profile is absent, so
+        # correctness is unchanged either way.
+        collapsible = (
+            where_clause is None
+            and measure.persisted_span_days is not None
+            and measure.persisted_actual_periods is not None
+        )
+        if collapsible:
+            window = _window_from_profile(measure)
+        else:
+            window = _observe_window(
+                duckdb_conn, relation, measure.axis, measure.grain, where_clause
+            )
         if isinstance(window, str):
             return f"flow '{field_name}': {window}"
         windows.append(window)
     return windows
+
+
+def _window_from_profile(measure: _MeasureAxis) -> _AxisWindow | str:
+    """An unfiltered flow's window from the persisted whole-column profile (DAT-812).
+
+    The empty-WHERE collapse: for a flow with no filter, the SUM scans the whole
+    relation, so its accumulation window equals the axis's persisted whole-column span
+    — identical to what :func:`_observe_window` would live-scan with no ``WHERE``, but
+    read straight off ``temporal_column_profiles``. Applies the SAME fencepost
+    correction as the live path (so a caller can't tell which source produced the
+    number) and falls loud on the same degenerate cases (no clean grain bucket, a
+    single-or-zero period). Only ever called after the caller has confirmed the
+    persisted span and period count are present.
+    """
+    if measure.grain not in DATE_TRUNC_GRAINS:
+        return f"anchor axis {measure.axis!r} cadence {measure.grain!r} has no clean period"
+    span_days = measure.persisted_span_days
+    periods = measure.persisted_actual_periods
+    if span_days is None or periods is None:  # defensive; the caller already checked
+        return "persisted temporal profile has no span/period count for the unfiltered window"
+    corrected = _apply_fencepost(span_days, periods)
+    if corrected is None:
+        return "single-period or degenerate unfiltered window (cannot fencepost-correct)"
+    return _AxisWindow(
+        corrected_days=corrected,
+        axis=str(measure.axis),
+        filtered_span_days=span_days,
+        actual_periods=int(periods),
+    )
 
 
 def _observe_window(
@@ -456,10 +509,13 @@ def _read_measure_axes(
     the extract is excluded like any non-flow; the metric then falls loud only if NO
     extract in the graph yields a flow window (:func:`_derive_period`).
 
-    The span itself is deliberately NOT read here: ``span_days`` is a whole-column
-    MIN/MAX, but the executed flow SUM is WHERE-filtered, so the window must be measured
-    live over the filtered rows (:func:`_observe_window`). Only the flow/stock verdict,
-    the axis identity, and its cadence come from the read surface.
+    The persisted whole-column ``span_days`` + ``actual_periods`` ARE read here (DAT-812)
+    — but consumed ONLY for an UNFILTERED flow, whose window IS the whole-column span
+    (:func:`_window_from_profile`). A WHERE-FILTERED flow ignores them and measures its
+    window live over exactly the rows its SUM touches (:func:`_observe_window`), because
+    the whole-column span is wrong for a filtered SUM. Verdict, axis identity, cadence,
+    and the whole-column span all come from the read surface; only the filtered scan
+    touches DuckDB.
 
     Runs inside the caller's SAVEPOINT (:func:`resolve_days_in_period`), so a read
     failure rolls back the nested transaction and degrades to the flagged default.
@@ -477,7 +533,10 @@ def _read_measure_axes(
         f'  FROM "{read_schema}".og_columns m'
         f"  WHERE m.table_id = :view_id AND m.column_name IN :measure_cols"
         f") SELECT DISTINCT measure.materialization, axis_col.column_name AS axis,"
-        f"       tp.detected_granularity AS grain"
+        f"       tp.detected_granularity AS grain,"
+        # DAT-812: the axis's WHOLE-COLUMN span + present-period count — the exact
+        # window an UNFILTERED flow would live-scan, so it can be read here instead.
+        f"       tp.span_days AS span_days, tp.actual_periods AS actual_periods"
         f" FROM measure"
         f'  LEFT JOIN "{read_schema}".current_enriched_columns axis_col'
         f"         ON axis_col.table_id = :view_id"
@@ -494,6 +553,8 @@ def _read_measure_axes(
             materialization=str(mat) if mat is not None else None,
             axis=str(axis) if axis is not None else None,
             grain=str(grain) if grain is not None else None,
+            persisted_span_days=float(span) if span is not None else None,
+            persisted_actual_periods=int(periods) if periods is not None else None,
         )
-        for mat, axis, grain in rows
+        for mat, axis, grain, span, periods in rows
     ]

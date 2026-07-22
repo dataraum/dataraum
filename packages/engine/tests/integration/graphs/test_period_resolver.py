@@ -183,9 +183,11 @@ def _seed(
                 column_id=posting_col.column_id,
                 run_id=RUN,
                 profiled_at=TS,
-                # min/max/span here are the WHOLE-COLUMN profile — deliberately NOT what
-                # the resolver reads for the window (it measures the filtered rows live);
-                # only detected_granularity is consumed, as the period bucket.
+                # The WHOLE-COLUMN profile. For a FILTERED flow the resolver ignores
+                # span/period and measures the filtered rows live (only the grain is
+                # consumed, as the period bucket). For an UNFILTERED flow (DAT-812) it
+                # reads span_days + actual_periods HERE — the whole-column span IS the
+                # unfiltered window — and skips the live scan.
                 min_timestamp=MIN_TS,
                 max_timestamp=MAX_TS,
                 span_days=profile_span,
@@ -1072,11 +1074,28 @@ def test_single_filtered_period_falls_loud(
     pg_session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:
-    """A filtered window that collapses to a single posting date gives no inter-period
-    gap to fencepost-correct against — abstain, never a fabricated span."""
-    _seed(pg_session)
-    duckdb_conn.execute("CREATE TABLE income_stmt (cogs DOUBLE, posting_date TIMESTAMP)")
-    duckdb_conn.execute("INSERT INTO income_stmt VALUES (?, ?)", [100.0, _Q_DATES[0]])
+    """A FILTERED window that collapses to a single posting date gives no inter-period
+    gap to fencepost-correct against — abstain, never a fabricated span.
+
+    Genuinely filtered (``WHERE account_type = 'COGS'``), so the resolver measures the
+    FILTERED rows live (the DAT-812 collapse applies only to UNFILTERED flows). Only one
+    row matches the filter → a single filtered period → fall loud, even though the
+    whole-column profile carries four."""
+    _seed(pg_session, cogs_where=["account_type = 'COGS'"])
+    duckdb_conn.execute(
+        "CREATE TABLE income_stmt (cogs DOUBLE, posting_date TIMESTAMP, account_type VARCHAR)"
+    )
+    # Only ONE COGS row → the filtered window is a single period; the OTHER rows (a
+    # different account_type, other quarters) are excluded by the flow's WHERE.
+    duckdb_conn.execute(
+        "INSERT INTO income_stmt VALUES (?, ?, ?)", [100.0, _Q_DATES[0], "COGS"]
+    )
+    duckdb_conn.execute(
+        "INSERT INTO income_stmt VALUES (?, ?, ?)", [200.0, _Q_DATES[1], "OTHER"]
+    )
+    duckdb_conn.execute(
+        "INSERT INTO income_stmt VALUES (?, ?, ?)", [300.0, _Q_DATES[2], "OTHER"]
+    )
     _boot(integration_engine)
     resolution = resolve_days_in_period(
         pg_session, duckdb_conn, graph=_dpo_graph(), workspace_id=WS_ID
@@ -1084,6 +1103,33 @@ def test_single_filtered_period_falls_loud(
     assert resolution is not None
     assert resolution.days == 30.0
     assert "single-period or degenerate" in (resolution.flag or "")
+
+
+def test_unfiltered_flow_collapses_to_the_persisted_span(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """DAT-812: an UNFILTERED flow derives its window from the persisted whole-column
+    profile, NOT a live scan — so the persisted span/period, not the DuckDB rows, drive
+    it.
+
+    The proof: the persisted profile carries the 273-day / 4-period whole-column window,
+    but the live ``income_stmt`` is seeded with a SINGLE row. A live scan would collapse
+    to one period and fall loud; instead the resolver reads the profile and derives the
+    fencepost-corrected 364 days — demonstrating the live scan was skipped."""
+    _seed(pg_session)  # unfiltered flow (cogs_where=None), profile span=273 / 4 periods
+    duckdb_conn.execute("CREATE TABLE income_stmt (cogs DOUBLE, posting_date TIMESTAMP)")
+    duckdb_conn.execute("INSERT INTO income_stmt VALUES (?, ?)", [100.0, _Q_DATES[0]])
+    _boot(integration_engine)
+    resolution = resolve_days_in_period(
+        pg_session, duckdb_conn, graph=_dpo_graph(), workspace_id=WS_ID
+    )
+    assert resolution is not None
+    assert resolution.derived is True
+    assert resolution.days == pytest.approx(CORRECTED_DAYS)  # from the profile, not the 1-row scan
+    assert resolution.evidence["actual_periods"] == 4
+    assert resolution.evidence["filtered_span_days"] == pytest.approx(SPAN_DAYS)
 
 
 def test_empty_filtered_window_falls_loud(

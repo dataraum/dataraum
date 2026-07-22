@@ -57,7 +57,7 @@ reification).** Vertices/edges:
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
     concept_edge       concept → concept [concept_edges]      part_of/disjoint/reconciles
-    conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (DAT-756)
+    conformed_dimension table → table    [slice_definitions ▸ bus_matrix] two facts sharing a dimension AXIS in the SAME role (DAT-756/788)
     grounded_by        concept → grounding [current_groundings] a concept's groundings; >1 healthy = multi-grounding
     uses               grounding → column  [provenance contract v2] the columns a grounding touches
     scoped_by          table → validity_filter [detected_business_cycles] the table's default validity scope (DAT-733)
@@ -92,13 +92,17 @@ The ``uses`` edge un-nests the TYPED ``column_mappings_basis`` (provenance contr
 v2, DAT-727) — enforced at authoring, never parsed out of SQL; ``filtered_by →
 DimMember`` is deferred to DAT-787, with ``where[]`` carried losslessly on the
 grounding vertex meanwhile.
-``conformed_dimension`` (DAT-756) types two facts sharing a dimension AXIS — the same
-resolved ``(dimension_table_id, attribute)`` identity, NOT a column name — as a
-drill-across path (an alignable GROUP BY the SQL agents can author over). It is
-ATTRIBUTE grain (the actionable unit for SQL is a shared axis, not a shared table),
-deliberately DECOUPLED from the table-grain ``refs`` fan-trap exclusion below — the two
-serve different consumers, so a cross-level fan trap is excluded from ``refs`` yet
-correctly has no conformed edge (see the edge's own note).
+``conformed_dimension`` (DAT-756/788) types two facts sharing a dimension AXIS — the
+same resolved ``(dimension_table_id, attribute)`` identity in the SAME ROLE, NOT a
+column name — as a drill-across path (an alignable GROUP BY the SQL agents can author
+over). It is ATTRIBUTE grain (the actionable unit for SQL is a shared axis, not a
+shared table), deliberately DECOUPLED from the table-grain ``refs`` fan-trap exclusion
+below — the two serve different consumers, so a cross-level fan trap is excluded from
+``refs`` yet correctly has no conformed edge (see the edge's own note). The role gate
+(DAT-788) resolves each slice through its referenced ``bus_matrix`` cell to the
+conform judge's role identity, so role-playing FKs (bill-to vs ship-to) are distinct
+axes unless the judge conformed them — the SAME LLM-authored decision layer the lineage
+witness reads, keeping the two post-judge consumers on one identity.
 
 **Additivity + units (DAT-731).** ``additivity_verdict`` is a small VERTEX projecting
 ``current_metric_additivity`` — the deterministic 2-axis drill verdict (categorical /
@@ -471,7 +475,7 @@ def _element_view_sql(name: str) -> str:
         # (DAT-756, rebuilding the reverted DAT-729 edge on referenced identity).
         # Derived by self-joining slice (has_dimension) rows on the SAME resolved
         # identity — (dimension_table_id, dimension_attribute), NEVER column names —
-        # of DIFFERENT tables.
+        # of DIFFERENT tables, THEN gated on the DAT-788 ROLE identity.
         #
         # ATTRIBUTE grain, and deliberately a DIFFERENT question from the edge-kind
         # owner (DAT-850: a relationship row's relationship_type, resolved at the
@@ -494,10 +498,23 @@ def _element_view_sql(name: str) -> str:
         # common axis to drill across); the facts' shared dimension is still visible
         # via their genuine fact→dim FKs. COALESCE pairs the slice-by-FK-key case (NULL
         # attribute) with itself. Folded slices (NULL dimension_table_id) have no dim
-        # table to conform over and are excluded. Symmetric — both directions emitted
-        # (edge_key = the ordered slice-id pair, '_'-joined, NOT ':' a bind-param sigil
-        # to text()). A fact with multiple role-playing FKs at one axis yields one edge
-        # per slice-row pair, so a table pair can carry several conformed edges.
+        # table to conform over and are excluded.
+        #
+        # ROLE identity (DAT-788): matching (dim table, attribute) is NOT enough — two
+        # role-playing FKs to one dim (bill-to vs ship-to) share the axis but are
+        # SEPARATE conformed dimensions unless the conform judge merged their roles.
+        # Each slice resolves through its referenced bus-matrix cell (fk_role ∈ the
+        # cell's role list) to the DAT-788 ``conformed_group``; two slices conform only
+        # when their groups match. Same-named FK roles across facts share a group
+        # structurally (the DAT-756 common case still fires), a judge ``conform``
+        # verdict merges differently-named roles, and ``role`` / ``distinct`` / abstain /
+        # unjudged keep them apart — the graph under-connects rather than inventing a
+        # cross-role conformance (absence-falls-loud). The bus matrix
+        # (``dimension_hierarchies`` phase) is the SAME LLM-authored decision layer the
+        # lineage witness reads, so the two post-judge consumers carry ONE identity.
+        # Symmetric — both directions emitted (edge_key = the ordered slice-id pair,
+        # '_'-joined, NOT ':' a bind-param sigil to text()). A fact with role-playing
+        # FKs at one axis yields at most one edge per conforming slice-row pair.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_conformed_dimension AS\n"
             f"SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,\n"
@@ -505,11 +522,24 @@ def _element_view_sql(name: str) -> str:
             f"       s1.dimension_table_id::text AS dimension_table_id,\n"
             f"       s1.dimension_attribute AS dimension_attribute\n"
             f"FROM {READ_TOKEN}.current_slice_definitions s1\n"
+            f"JOIN {READ_TOKEN}.current_bus_matrix b1\n"
+            f"  ON b1.attachment = 'referenced'\n"
+            f" AND b1.fact_table_id = s1.table_id\n"
+            f" AND b1.dimension_table_id = s1.dimension_table_id\n"
+            f" AND EXISTS (SELECT 1 FROM json_array_elements_text(b1.roles) AS r(role)\n"
+            f"             WHERE r.role = s1.fk_role)\n"
             f"JOIN {READ_TOKEN}.current_slice_definitions s2\n"
-            f"  ON s1.dimension_table_id = s2.dimension_table_id\n"
-            f" AND COALESCE(s1.dimension_attribute, '') = COALESCE(s2.dimension_attribute, '')\n"
-            f" AND s1.table_id <> s2.table_id\n"
-            f"WHERE s1.dimension_table_id IS NOT NULL;"
+            f"  ON s2.dimension_table_id = s1.dimension_table_id\n"
+            f" AND COALESCE(s2.dimension_attribute, '') = COALESCE(s1.dimension_attribute, '')\n"
+            f" AND s2.table_id <> s1.table_id\n"
+            f"JOIN {READ_TOKEN}.current_bus_matrix b2\n"
+            f"  ON b2.attachment = 'referenced'\n"
+            f" AND b2.fact_table_id = s2.table_id\n"
+            f" AND b2.dimension_table_id = s2.dimension_table_id\n"
+            f" AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)\n"
+            f"             WHERE r.role = s2.fk_role)\n"
+            f"WHERE s1.dimension_table_id IS NOT NULL\n"
+            f" AND b1.conformed_group = b2.conformed_group;"
         )
     if name == "og_grounded_by":
         # grounded_by edge (concept → grounding, DAT-727): a grounding's `concept`

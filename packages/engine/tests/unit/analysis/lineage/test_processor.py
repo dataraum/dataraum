@@ -22,6 +22,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from dataraum.analysis.hierarchies.db_models import BusMatrixEntry
 from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.lineage.processor import discover_aggregation_lineage
 from dataraum.analysis.semantic.db_models import TableEntity
@@ -337,6 +338,40 @@ def _discover(session: Session, duck: duckdb.DuckDBPyConnection, ids: dict[str, 
         run_id=_RUN,
         period_grain="monthly",
     )
+
+
+def _seed_ref_cells(
+    session: Session,
+    ids: dict[str, str],
+    per_fact_roles: dict[str, list[str]],
+    group: str,
+    *,
+    dim: str = "chart_of_accounts",
+) -> None:
+    """Seed referenced bus-matrix cells assigning FK roles a shared role identity.
+
+    The DAT-788 conform decision the lineage witness reads: giving several facts'
+    FK roles the SAME ``group`` (as the conform judge would after a ``conform``
+    verdict) makes those roles ONE identity. Without a cell a referenced slice
+    falls back to the structural per-role signature — the safe default.
+    """
+    for fact, roles in per_fact_roles.items():
+        session.add(
+            BusMatrixEntry(
+                run_id=_RUN,
+                fact_table_id=ids[fact],
+                attachment="referenced",
+                concept_label=dim,
+                dimension_table_id=ids[dim],
+                roles=sorted(roles),
+                attributes=[],
+                confirmation_source="unconfirmed",
+                conformed_group=group,
+                needs_confirmation=False,
+                signature=f"bus:referenced:{ids[fact]}:{ids[dim]}:" + "|".join(sorted(roles)),
+            )
+        )
+    session.flush()
 
 
 def _row_for(session: Session, column_id: str) -> MeasureAggregationLineage | None:
@@ -781,16 +816,23 @@ class TestDiscoverAggregationLineage:
         ids = _seed(real_session, duck, shared_dimension=False)
         assert _discover(real_session, duck, ids) == 0
 
-    def test_differently_named_fks_pair_via_dim_identity(
+    def test_differently_named_fks_pair_only_when_conformed(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        """False-negative closes (DAT-756): two facts joining ONE dim table through
-        DIFFERENTLY-NAMED FK columns (``gl_account__type`` / ``account_no__type``)
-        share the dimension by referenced identity (chart_of_accounts.type), so the
-        stock/flow witness runs. Under the old ``column_name`` grouping the pair was
-        never formed and the witness was silently inert."""
+        """DAT-788: two facts joining ONE dim table through DIFFERENTLY-NAMED FK
+        columns (``gl_account__type`` / ``account_no__type``) pair ONLY when the
+        conform judge merged their roles — the bus-matrix referenced cell gives both
+        roles one ``conformed_group``. This is how the DAT-756 false-negative closes
+        now: not blindly by (dim, attr), but through the judge's cross-role verdict."""
         ids = _seed(
             real_session, duck, tb_dim_col="gl_account__type", jl_dim_col="account_no__type"
+        )
+        dim = ids["chart_of_accounts"]
+        _seed_ref_cells(
+            real_session,
+            ids,
+            {"trial_balance": ["gl_account"], "journal_lines": ["account_no"]},
+            group=f"ref:{dim}:account_no|gl_account",
         )
         assert _discover(real_session, duck, ids) > 0
         row = _row_for(real_session, ids["trial_balance.balance"])
@@ -798,6 +840,18 @@ class TestDiscoverAggregationLineage:
         assert row.pattern == "cumulative"
         assert row.event_table_id == ids["journal_lines"]
         assert row.slice_dimension == "chart_of_accounts.type"
+
+    def test_differently_named_fks_without_conform_stay_separate(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-788 safe default (separate-until-conformed): the SAME differently-named
+        FKs, with NO conform verdict, fall back to per-role structural identities and
+        do NOT pair. Withholding cross-role conformance, never inventing it — the
+        witness stays silent rather than aligning two roles the judge never merged."""
+        ids = _seed(
+            real_session, duck, tb_dim_col="gl_account__type", jl_dim_col="account_no__type"
+        )
+        assert _discover(real_session, duck, ids) == 0
 
     def test_folded_same_named_columns_do_not_pair(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
@@ -809,43 +863,55 @@ class TestDiscoverAggregationLineage:
         ids = _seed(real_session, duck, tb_dim_col="status", jl_dim_col="status", folded=True)
         assert _discover(real_session, duck, ids) == 0
 
-    def test_role_playing_slices_are_all_kept(
+    def test_role_playing_fks_are_separate_axes(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        """DAT-756: a fact carrying TWO slices at the SAME identity (role-playing FKs
-        to one dim — ``account_id__account_type`` + ``counter_account_id__account_type``)
-        must keep BOTH as bucketing lenses, never collapse to one. The role-play slice
-        here is degenerate (values outside _VALUES); the witness must still fire off the
-        primary. A last-write-wins grouping could drop the primary and silence it."""
+        """DAT-788: role-playing FKs to one dim (``account_id__account_type`` +
+        ``counter_account_id__account_type``) are SEPARATE identities, not one merged
+        axis. Only the primary ``account_id`` role is shared with journal_lines, so
+        the witness fires off it; the degenerate ``counter_account_id`` role is its own
+        singleton identity (no partner) and correctly stays silent — it never gets
+        collapsed onto the primary (which would corrupt the pairing) nor spuriously
+        pairs on the shared (dim, attribute)."""
         ids = _seed(real_session, duck, tb_role_play_col="counter_account_id__account_type")
         assert _discover(real_session, duck, ids) > 0
         row = _row_for(real_session, ids["trial_balance.balance"])
         assert row is not None
         assert row.pattern == "cumulative"
         assert row.event_table_id == ids["journal_lines"]
-        # DAT-778: the degenerate role-play slice contributes no series, so the
-        # primary's physical column is the (only possible) persisted winner.
+        # The winning slice is the primary account_id role's (its column_id is the
+        # balance column in this fixture), NEVER the degenerate counter role's.
         assert row.measure_slice_column_id == ids["trial_balance.balance"]
+        assert row.measure_slice_column_id != ids["trial_balance.counter_account_id__account_type"]
 
-    def test_winning_role_playing_slice_column_persists(
+    def test_winning_slice_column_persists_among_conformed_roles(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        """DAT-778: when TWO role-playing slices at the same identity BOTH fire,
-        the persisted ``measure_slice_column_id`` is the competition WINNER's,
-        never the first-enumerated slice's. The primary slice (priority 1, tried
-        first, incumbent) covers only 2 of the 4 catalog values (support
-        LCB(2,2) ≈ 0.34); the role-play column labels all 4 truthfully
-        (LCB(4,4) ≈ 0.51) and strictly wins on support — so a persist path that
-        kept the first (or an arbitrary) slice's column_id fails here, which the
-        all-degenerate role-play fixture above cannot detect (its losing slice
-        never produces a live candidate at all).
-        """
+        """DAT-778 × DAT-788: when the judge CONFORMS two FK roles into one identity,
+        the fact's two role slices compete WITHIN it, and the persisted
+        ``measure_slice_column_id`` is the WINNER's — never the first-enumerated. The
+        primary ``account_id`` slice covers only 2 of 4 catalog values (support
+        LCB(2,2) ≈ 0.34); the ``counter_account_id`` role labels all 4 truthfully
+        (LCB(4,4) ≈ 0.51) and strictly wins on support. Only because the referenced
+        cell conforms the two roles into ONE group do they land in the same identity
+        and compete — the DAT-788 replacement for the old cross-role collapse."""
         ids = _seed(
             real_session,
             duck,
             tb_role_play_col="counter_account_id__account_type",
             role_play_wins=True,
             values=("assets", "liabilities", "equity", "revenue"),
+        )
+        dim = ids["chart_of_accounts"]
+        group = f"ref:{dim}:account_id|counter_account_id"
+        _seed_ref_cells(
+            real_session,
+            ids,
+            {
+                "trial_balance": ["account_id", "counter_account_id"],
+                "journal_lines": ["account_id"],
+            },
+            group=group,
         )
         assert _discover(real_session, duck, ids) > 0
         row = _row_for(real_session, ids["trial_balance.balance"])

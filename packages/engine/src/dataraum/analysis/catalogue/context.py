@@ -660,11 +660,16 @@ def _format_shared_axes(
 ) -> str:
     """The resolved slice axes + the deterministic shared-axis pairing, as facts.
 
-    Same pairing the ``og_conformed_dimension`` element view derives — two
-    DIFFERENT tables slicing by the SAME resolved ``(dimension_table_id,
-    dimension_attribute)`` identity (folded slices, NULL dimension, excluded).
-    Served as measured facts, deliberately NOT waiting for the
-    dimension_hierarchies conform judge, which runs after this phase.
+    The pairing the ``og_conformed_dimension`` element view derives — two DIFFERENT
+    tables slicing by the SAME resolved dimension identity (folded slices, NULL
+    dimension, excluded). Role-separated (DAT-788): the identity includes the FK
+    ROLE, so role-playing FKs to one dim (bill-to vs ship-to) pair only within the
+    SAME role — the STRUCTURAL default. This phase runs BEFORE the
+    dimension_hierarchies conform judge, so it separates by role NAME only and never
+    merges differently-named roles: the safe floor. The post-judge consumers (the
+    lineage witness + the ``og_conformed_dimension`` graph edge) additionally apply
+    the judge's cross-role conform verdicts; this served context deliberately does
+    not wait for them.
 
     ``slices`` is the WHOLE session's inventory: a pair needs aggregation
     across rows, so a scope pre-filter would silently drop the out-of-scope
@@ -679,10 +684,15 @@ def _format_shared_axes(
     def _fact(s: SliceDefinition) -> str:
         return table_names.get(s.table_id, s.table_id)
 
+    def _role(s: SliceDefinition) -> str:
+        return s.fk_role or s.column_name or ""
+
     axis_lines: list[str] = []
-    by_axis: dict[tuple[str, str], list[SliceDefinition]] = {}
+    # Keyed (dim, attribute, FK-role name): role-playing FKs are separate axes
+    # (DAT-788 structural default). Same role name across facts still pairs.
+    by_axis: dict[tuple[str, str, str], list[SliceDefinition]] = {}
     for s in sorted(dim_slices, key=lambda s: (_fact(s), s.column_name)):
-        key = (s.dimension_table_id or "", s.dimension_attribute or "")
+        key = (s.dimension_table_id or "", s.dimension_attribute or "", _role(s))
         by_axis.setdefault(key, []).append(s)
         if s.table_id not in scope and s.dimension_table_id not in scope:
             continue
@@ -695,10 +705,10 @@ def _format_shared_axes(
         return "No dimension-resolved slice axes in this catalogue."
 
     pair_lines: list[str] = []
-    for (dim_table_id, attr), members in sorted(
-        by_axis.items(), key=lambda kv: (table_names.get(kv[0][0], kv[0][0]), kv[0][1])
+    for (dim_table_id, attr, _role_name), members in sorted(
+        by_axis.items(), key=lambda kv: (table_names.get(kv[0][0], kv[0][0]), kv[0][1], kv[0][2])
     ):
-        facts = sorted({(_fact(s), s.fk_role or s.column_name) for s in members})
+        facts = sorted({(_fact(s), _role(s)) for s in members})
         if len({name for name, _ in facts}) < 2:
             continue
         if not any(s.table_id in scope or s.dimension_table_id in scope for s in members):

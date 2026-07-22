@@ -22,7 +22,7 @@ from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.models.base import Result
-from dataraum.storage import Column
+from dataraum.storage import Column, Table
 
 from .conftest import RUN, seed_view
 
@@ -97,77 +97,222 @@ def _seed_fold_fact(
     return tid
 
 
+def _seed_ref_fact(
+    session: Session,
+    duck: duckdb.DuckDBPyConnection,
+    view: str,
+    dim_tid: str,
+    dim_key: str,
+    roles: list[tuple[str, str]],
+) -> str:
+    """A fact whose FK ROLE columns each reference ``dim_tid`` (DAT-788).
+
+    ``roles`` is ``(role_column, confirmation_source)``; each becomes an FK
+    Relationship + a referenced SliceDefinition. The enriched view carries the
+    relationship ids so the referenced provenance floor resolves.
+    """
+    tid = seed_view(session, duck, view, {role: ["x", "y"] for role, _ in roles})
+    ids = _col_ids(session, tid)
+    dim_key_id = _col_ids(session, dim_tid)[dim_key]
+    rel_ids: list[str] = []
+    for role, source in roles:
+        rel = Relationship(
+            run_id=RUN,
+            from_table_id=tid,
+            from_column_id=ids[role],
+            to_table_id=dim_tid,
+            to_column_id=dim_key_id,
+            relationship_type="foreign_key",
+            confidence=1.0,
+            confirmation_source=source,
+        )
+        session.add(rel)
+        session.flush()
+        rel_ids.append(rel.relationship_id)
+    ev = session.execute(select(EnrichedView).where(EnrichedView.fact_table_id == tid)).scalar_one()
+    ev.relationship_ids = rel_ids
+    for role, _ in roles:
+        session.add(
+            SliceDefinition(
+                run_id=RUN,
+                table_id=tid,
+                column_id=ids[role],
+                column_name=role,
+                dimension_table_id=dim_tid,
+                dimension_attribute=None,
+                fk_role=role,
+                slice_priority=1,
+                slice_type="categorical",
+                detection_source="llm",
+            )
+        )
+    session.flush()
+    return tid
+
+
+def _referenced(session: Session) -> list[BusMatrixEntry]:
+    return [c for c in _cells(session) if c.attachment == "referenced"]
+
+
 class TestReferencedLeg:
-    def test_role_multiplicity_and_provenance_floor(
+    def test_role_playing_fks_split_into_per_role_cells(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        tid = seed_view(
+        """DAT-788: two role-playing FKs on ONE fact to one dim (bill-to vs pay-to)
+        are SEPARATE cells with distinct role identities — never merged — and each
+        carries its OWN provenance floor. Within-fact roles are never judged."""
+        dim_tid = seed_view(real_session, duck, "dim_party", {"party_id": ["x", "y"]})
+        tid = _seed_ref_fact(
             real_session,
             duck,
             "fact_a",
-            {"billto_id": ["x", "y"], "payto_id": ["x", "y"]},
+            dim_tid,
+            "party_id",
+            [("billto_id", "user"), ("payto_id", "unconfirmed")],
         )
-        dim_tid = seed_view(real_session, duck, "dim_party", {"party_id": ["x", "y"]})
-        ids = _col_ids(real_session, tid)
-        rel_confirmed = Relationship(
-            run_id=RUN,
-            from_table_id=tid,
-            from_column_id=ids["billto_id"],
-            to_table_id=dim_tid,
-            to_column_id=_col_ids(real_session, dim_tid)["party_id"],
-            relationship_type="foreign_key",
-            confidence=1.0,
-            confirmation_source="user",
+        judge = _conform_judge()
+
+        _, stats = derive_bus_matrix(
+            real_session, table_ids=[tid, dim_tid], run_id=RUN, judge=judge
         )
-        rel_unconfirmed = Relationship(
-            run_id=RUN,
-            from_table_id=tid,
-            from_column_id=ids["payto_id"],
-            to_table_id=dim_tid,
-            to_column_id=_col_ids(real_session, dim_tid)["party_id"],
-            relationship_type="foreign_key",
-            confidence=0.9,
-            confirmation_source="unconfirmed",
-        )
-        real_session.add_all([rel_confirmed, rel_unconfirmed])
-        real_session.flush()
-        ev = real_session.execute(
-            select(EnrichedView).where(EnrichedView.fact_table_id == tid)
-        ).scalar_one()
-        ev.relationship_ids = [rel_confirmed.relationship_id, rel_unconfirmed.relationship_id]
-        for role, col in (("billto_id", "billto_id"), ("payto_id", "payto_id")):
-            real_session.add(
-                SliceDefinition(
-                    run_id=RUN,
-                    table_id=tid,
-                    column_id=ids[col],
-                    column_name=col,
-                    dimension_table_id=dim_tid,
-                    dimension_attribute=None,
-                    fk_role=role,
-                    slice_priority=1,
-                    slice_type="categorical",
-                    detection_source="llm",
+
+        referenced = _referenced(real_session)
+        assert stats.referenced == len(referenced) == 2
+        by_role = {tuple(c.roles): c for c in referenced}
+        assert set(by_role) == {("billto_id",), ("payto_id",)}
+        assert all(c.dimension_table_id == dim_tid for c in referenced)
+        # Per-role provenance floor (more precise than the old collapsed cell).
+        assert by_role[("billto_id",)].confirmation_source == "user"
+        assert by_role[("payto_id",)].confirmation_source == "unconfirmed"
+        # Distinct content-derived role identities — bill-to != pay-to.
+        assert by_role[("billto_id",)].conformed_group != by_role[("payto_id",)].conformed_group
+        # Within-fact pair is never judged.
+        judge.conform.assert_not_called()
+        assert stats.ref_conform_pairs == 0
+
+
+class TestReferencedConform:
+    """DAT-788 role-conform overlay: same-name auto-conforms, the judge decides
+    differently-named cross-fact pairs, and role/distinct/abstain keep roles apart."""
+
+    def _two_facts(
+        self,
+        session: Session,
+        duck: duckdb.DuckDBPyConnection,
+        role_a: str,
+        role_b: str,
+    ) -> tuple[str, str, str]:
+        dim_tid = seed_view(session, duck, "dim_party", {"party_id": ["x", "y"]})
+        a = _seed_ref_fact(session, duck, "fact_a", dim_tid, "party_id", [(role_a, "unconfirmed")])
+        b = _seed_ref_fact(session, duck, "fact_b", dim_tid, "party_id", [(role_b, "unconfirmed")])
+        return a, b, dim_tid
+
+    def test_same_named_roles_auto_conform_without_llm(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        a, b, dim = self._two_facts(real_session, duck, "party_id", "party_id")
+        judge = _conform_judge()
+
+        _, stats = derive_bus_matrix(real_session, table_ids=[a, b, dim], run_id=RUN, judge=judge)
+
+        referenced = _referenced(real_session)
+        assert len(referenced) == 2
+        # One shared identity — the DAT-756 common case, no judgment spent.
+        assert len({c.conformed_group for c in referenced}) == 1
+        judge.conform.assert_not_called()
+        assert stats.ref_conform_pairs == 0
+
+    def test_differently_named_roles_conform_via_judge(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        a, b, dim = self._two_facts(real_session, duck, "billto_id", "invoice_id")
+        judge = _conform_judge(
+            [
+                ConformVerdict(
+                    pair_ref="pair:0:1", verdict="conform", concept_label="party", reason="same"
                 )
-            )
-        real_session.flush()
-
-        n, stats = derive_bus_matrix(
-            real_session,
-            table_ids=[tid, dim_tid],
-            run_id=RUN,
-            judge=_conform_judge(),
+            ]
         )
 
-        referenced = [c for c in _cells(real_session) if c.attachment == "referenced"]
-        assert stats.referenced == len(referenced) == 1
-        cell = referenced[0]
-        assert cell.fact_table_id == tid
-        assert cell.dimension_table_id == dim_tid
-        assert cell.concept_label == "dim_party"
-        assert cell.roles == ["billto_id", "payto_id"]  # one cell, both roles
-        # weakest-link floor: user + unconfirmed -> unconfirmed
-        assert cell.confirmation_source == "unconfirmed"
+        _, stats = derive_bus_matrix(real_session, table_ids=[a, b, dim], run_id=RUN, judge=judge)
+
+        referenced = _referenced(real_session)
+        assert len(referenced) == 2
+        assert len({c.conformed_group for c in referenced}) == 1  # merged into one identity
+        assert stats.ref_conform_pairs == 1
+        assert stats.ref_conformed == 1
+
+    def test_role_verdict_keeps_roles_separate(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        a, b, dim = self._two_facts(real_session, duck, "billto_id", "shipto_id")
+        judge = _conform_judge(
+            [
+                ConformVerdict(
+                    pair_ref="pair:0:1", verdict="role", concept_label="", reason="origin/dest"
+                )
+            ]
+        )
+
+        _, stats = derive_bus_matrix(real_session, table_ids=[a, b, dim], run_id=RUN, judge=judge)
+
+        referenced = _referenced(real_session)
+        assert len({c.conformed_group for c in referenced}) == 2  # two distinct axes
+        assert stats.ref_conformed == 0
+        assert all(c.needs_confirmation is False for c in referenced)
+
+    def test_abstain_surfaces_needs_confirmation(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        a, b, dim = self._two_facts(real_session, duck, "acct_no", "gl_account")
+        judge = _conform_judge(
+            [
+                ConformVerdict(
+                    pair_ref="pair:0:1", verdict="abstain", concept_label="", reason="unsure"
+                )
+            ]
+        )
+
+        _, stats = derive_bus_matrix(real_session, table_ids=[a, b, dim], run_id=RUN, judge=judge)
+
+        referenced = _referenced(real_session)
+        assert len({c.conformed_group for c in referenced}) == 2  # separate — never merged
+        assert all(c.needs_confirmation is True for c in referenced)  # the abstain is visible
+        assert stats.ref_abstained == 1
+
+    def test_conform_failure_keeps_structural_floor_and_is_observable(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        a, b, dim = self._two_facts(real_session, duck, "acct_no", "gl_account")
+        judge = MagicMock(spec=DimensionIdentityJudge)
+        judge.conform.return_value = Result.fail("api down")
+
+        _, stats = derive_bus_matrix(real_session, table_ids=[a, b, dim], run_id=RUN, judge=judge)
+
+        referenced = _referenced(real_session)
+        # Cells still emit with the structural (separate) floor — never nothing.
+        assert len(referenced) == 2
+        assert len({c.conformed_group for c in referenced}) == 2
+        assert stats.status == "failed"
+
+    def test_ref_conform_candidates_are_chunked(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """9 differently-named roles across facts -> 36 cross-fact pairs -> 32 + 4."""
+        dim_tid = seed_view(real_session, duck, "dim_party", {"party_id": ["x", "y"]})
+        for i in range(9):
+            _seed_ref_fact(
+                real_session, duck, f"fact_{i}", dim_tid, "party_id", [(f"role_{i}", "unconfirmed")]
+            )
+        judge = _conform_judge()
+        tids = [t.table_id for t in real_session.execute(select(Table)).scalars()]
+
+        _, stats = derive_bus_matrix(real_session, table_ids=tids, run_id=RUN, judge=judge)
+
+        assert stats.ref_conform_pairs == 36
+        assert judge.conform.call_count == 2
+        sizes = [len(c.kwargs["candidates"]) for c in judge.conform.call_args_list]
+        assert sizes == [32, 4]
 
 
 class TestFoldedLeg:

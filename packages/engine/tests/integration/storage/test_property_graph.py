@@ -102,6 +102,10 @@ _COLUMNS = [
     ("c_k4b", "t4", "account_id", 2),  # t4's own account_id — a 2nd fact→accounts slice
     ("c_k5", "t5", "division_id", 1),
     ("c_k6", "t6", "root_id", 1),
+    # DAT-788 role-playing FKs to accounts (t2): journal bills-to, statement ships-to.
+    # Same dim + attribute (region), DIFFERENTLY-NAMED roles the judge never merged.
+    ("c_billto", "t1", "billto_acct", 4),
+    ("c_shipto", "t4", "shipto_acct", 3),
 ]
 # (relationship_id, from_table, from_col, to_table, to_col)
 _REFS = [
@@ -220,17 +224,41 @@ def _seed(engine: Engine) -> None:
     # (region) → shares the dim TABLE but NOT the axis, so it does NOT conform (the
     # conformed edge is ATTRIBUTE grain). fk_role is the FK column name, carried but not
     # a Phase-A identity key.
-    for sid, tid, cid, colname, attr in [
-        ("sl_1", "t1", "c_k1", "account_id__account_type", "account_type"),
-        ("sl_2", "t4", "c_k4b", "account_id__account_type", "account_type"),
-        ("sl_3", "t3", "c_k3b", "account_id__region", "region"),
+    for sid, tid, cid, colname, attr, role in [
+        ("sl_1", "t1", "c_k1", "account_id__account_type", "account_type", "account_id"),
+        ("sl_2", "t4", "c_k4b", "account_id__account_type", "account_type", "account_id"),
+        ("sl_3", "t3", "c_k3b", "account_id__region", "region", "account_id"),
+        # DAT-788 role-playing FKs at accounts.region — bill-to vs ship-to.
+        ("sl_4", "t1", "c_billto", "billto_acct__region", "region", "billto_acct"),
+        ("sl_5", "t4", "c_shipto", "shipto_acct__region", "region", "shipto_acct"),
     ]:
         stmts.append(
             "INSERT INTO slice_definitions "
             "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
             " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', '{colname}', 't2', "
-            f"'{attr}', 'account_id', 1, 'categorical', 'llm', '{TS}')"
+            f"'{attr}', '{role}', 1, 'categorical', 'llm', '{TS}')"
+        )
+    # Referenced bus-matrix cells carry the DAT-788 role identity the graph joins on
+    # (og_conformed_dimension). Same-named FK roles across facts auto-conform to one
+    # group (account_id → 'ref:t2:account_id'), so journal↔statement still conform on
+    # account_type; the differently-named bill-to/ship-to roles get SEPARATE groups,
+    # so no conformed edge forms across them on region — role-separated axes.
+    for eid, tid, role in [
+        ("bm_1", "t1", "account_id"),
+        ("bm_2", "t4", "account_id"),
+        ("bm_3", "t3", "account_id"),
+        ("bm_4", "t1", "billto_acct"),
+        ("bm_5", "t4", "shipto_acct"),
+    ]:
+        stmts.append(
+            "INSERT INTO bus_matrix "
+            "(entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, "
+            " roles, attributes, confirmation_source, conformed_group, needs_confirmation, "
+            " signature, created_at) "
+            f"VALUES ('{eid}', '{RUN}', '{tid}', 'referenced', 'accounts', 't2', "
+            f"'[\"{role}\"]', '[]', 'unconfirmed', 'ref:t2:{role}', false, "
+            f"'bus:referenced:{tid}:t2:{role}', '{TS}')"
         )
     # Fact↔fact MEETINGS between account_id slice columns (the DAT-723 fan trap),
     # persisted the way the write site now produces them (DAT-850): the judge's fk
@@ -985,11 +1013,14 @@ def test_has_dimension_edge(graph_engine: Engine) -> None:
     )
     with graph_engine.connect() as conn:
         rows = {(r.tname, r.cname, r.dim) for r in conn.execute(text(sql))}
-    # All three facts slice their own account_id, each bound to the accounts dim (t2).
+    # All three facts slice their own account_id, each bound to the accounts dim (t2);
+    # journal + statement additionally carry a role-playing bill-to/ship-to FK (DAT-788).
     assert rows == {
         ("journal", "account_id", "t2"),
         ("statement", "account_id", "t2"),
         ("account_group", "account_id", "t2"),
+        ("journal", "billto_acct", "t2"),
+        ("statement", "shipto_acct", "t2"),
     }
 
 
@@ -1049,6 +1080,28 @@ def test_conformed_dimension_is_attribute_grain(graph_engine: Engine) -> None:
         ("journal", "statement", "t2", "account_type"),
         ("statement", "journal", "t2", "account_type"),
     }
+
+
+def test_conformed_dimension_gates_on_role_identity(graph_engine: Engine) -> None:
+    """DAT-788: role-playing FKs to one dim are DISTINCT axes unless the judge
+    conformed them. journal (bill-to) and statement (ship-to) both slice
+    accounts.region, but through DIFFERENTLY-NAMED FK roles that landed in SEPARATE
+    conformed_groups — so NO conformed edge forms on region, even though the (dim,
+    attribute) match. The SAME-role account_id pairing still conforms on
+    account_type: the role gate separates axes, it does not disable them. Before
+    DAT-788 the (dim, attribute)-only join emitted a spurious region edge here."""
+    sql = (
+        f"SELECT src, dst, attr FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst, e.dimension_attribute AS attr))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst, r.attr) for r in conn.execute(text(sql))}
+    # Same-role account_id → conformed on account_type (both directions).
+    assert ("journal", "statement", "account_type") in rows
+    assert ("statement", "journal", "account_type") in rows
+    # Bill-to vs ship-to on accounts.region → separate roles, NEVER a conformed edge.
+    assert not any(attr == "region" for _, _, attr in rows), "role-playing FKs conformed spuriously"
 
 
 def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:

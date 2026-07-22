@@ -398,6 +398,8 @@ const ranking = (over: Partial<DriverRanking> = {}): DriverRanking => ({
 	grain: "row",
 	entity: null,
 	n_rows: 12000,
+	status: "measured",
+	abstain_reason: null,
 	ranked_dimensions: [
 		{ dimension: "region", gain: 0.421 },
 		{ dimension: "channel", gain: 0.18 },
@@ -480,6 +482,23 @@ describe("formatDrivers", () => {
 		]);
 		expect(empty).toContain("No driver rankings yet");
 		expect(empty).toContain("<drivers>");
+	});
+
+	// DAT-859: an abstained ranking must never narrate as content, even if it
+	// somehow carried ranked dims (defense in depth — the engine invariant should
+	// already make this impossible, but this filter must not rely on that alone).
+	it("drops an abstained ranking regardless of content", () => {
+		const block = formatDrivers([
+			ranking({ measure: "kept" }),
+			ranking({
+				measure: "undetermined_amount",
+				status: "abstained",
+				abstain_reason: "missing_inputs",
+				ranked_dimensions: [{ dimension: "region", gain: 0.9 }],
+			}),
+		]);
+		expect(block).toContain('Measure "kept"');
+		expect(block).not.toContain("undetermined_amount");
 	});
 
 	it("carries the inform-don't-block usage guidance", () => {

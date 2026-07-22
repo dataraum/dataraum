@@ -332,6 +332,55 @@ class TestDrivers:
     def test_no_drivers_section_when_empty(self) -> None:
         assert "## Drivers" not in format_served_context(GraphExecutionContext())
 
+    def test_abstained_ranking_never_renders(self) -> None:
+        """DAT-859: an abstained ranking must never surface as a driver, even if
+        it somehow carried content (defense in depth — the engine's own
+        DriverRanking invariant should already make that impossible)."""
+        abstained = DriverContext(
+            measure_label="unclassified_amount",
+            target_type="",
+            grain="row",
+            status="abstained",
+            abstain_reason="missing_inputs",
+            ranked_dimensions=[{"dimension": "region", "gain": 0.9}],
+        )
+        out = format_served_context(GraphExecutionContext(drivers=[abstained]))
+        assert "## Drivers" not in out
+        assert "unclassified_amount" not in out
+
+    def test_measured_but_content_free_ranking_renders_explicit_absence(self) -> None:
+        """A measured ranking with no ranked dims/slices/secondaries (a real "no
+        significant driver found" answer) still renders its heading — status
+        gates ONLY on "measured" (never on content, which would silently change
+        measured-ranking behavior) — with an explicit absence line, so "analyzed,
+        nothing significant" stays a visible grounding signal distinct from both
+        abstention (skipped entirely) and never-analyzed (no ## Drivers section
+        at all, DAT-859 review)."""
+        barren = DriverContext(measure_label="flat_amount", target_type="flow", grain="row")
+        out = format_served_context(GraphExecutionContext(drivers=[barren]))
+        assert "## Drivers" in out
+        assert "### flat_amount (flow, grain row)" in out
+        assert "- No significant driver found." in out
+
+    def test_measured_and_abstained_mix_only_renders_the_measured_one(self) -> None:
+        measured = DriverContext(
+            measure_label="revenue",
+            target_type="flow",
+            grain="row",
+            ranked_dimensions=[{"dimension": "region", "gain": 0.42}],
+        )
+        abstained = DriverContext(
+            measure_label="unclassified_amount",
+            target_type="",
+            grain="row",
+            status="abstained",
+            abstain_reason="missing_inputs",
+        )
+        out = format_served_context(GraphExecutionContext(drivers=[measured, abstained]))
+        assert "## Drivers" in out
+        assert "### revenue" in out
+        assert "unclassified_amount" not in out
+
 
 class TestBusinessProcesses:
     def test_concept_bindings_rendered_as_filters(self) -> None:

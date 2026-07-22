@@ -21,7 +21,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
-from dataraum.analysis.drivers.models import Measure
+from dataraum.analysis.drivers.models import AbstainReason, Measure, RankingStatus
 from dataraum.analysis.drivers.processor import (
     _candidate_dims,
     discover_drivers,
@@ -117,22 +117,33 @@ class TestResolveTargetType:
     ) -> None:
         tid = _seed(real_session, duck, temporal_behavior="point_in_time")
         col = real_session.query(Column).filter_by(table_id=tid, column_name="measure").one()
-        assert resolve_target_type(real_session, column_id=col.column_id, run_id=RUN) == "stock"
+        resolution = resolve_target_type(real_session, column_id=col.column_id, run_id=RUN)
+        assert resolution.status == RankingStatus.MEASURED
+        assert resolution.target_type == "stock"
+        assert resolution.abstain_reason is None
 
-    def test_defaults_to_flow_when_unknown(
+    def test_no_annotation_abstains(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
+        # DAT-859: a column with no ColumnConcept row at all (temporal_behavior
+        # undetermined) must NEVER silently default to "flow" — it abstains.
         _seed(real_session, duck, temporal_behavior="")
-        assert resolve_target_type(real_session, column_id="nope", run_id=RUN) == "flow"
+        resolution = resolve_target_type(real_session, column_id="nope", run_id=RUN)
+        assert resolution.status == RankingStatus.ABSTAINED
+        assert resolution.target_type is None
+        assert resolution.abstain_reason == AbstainReason.MISSING_INPUTS
 
-    def test_unrecognised_behavior_defaults_to_flow(
+    def test_unrecognised_behavior_abstains(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        # An annotation present but with a value outside {additive, point_in_time}
-        # falls back to flow (logged), not an error.
+        # DAT-859: an annotation present but with a value outside {additive,
+        # point_in_time} ABSTAINS (logged) — never a silent "flow" default.
         tid = _seed(real_session, duck, temporal_behavior="periodic")
         col = real_session.query(Column).filter_by(table_id=tid, column_name="measure").one()
-        assert resolve_target_type(real_session, column_id=col.column_id, run_id=RUN) == "flow"
+        resolution = resolve_target_type(real_session, column_id=col.column_id, run_id=RUN)
+        assert resolution.status == RankingStatus.ABSTAINED
+        assert resolution.target_type is None
+        assert resolution.abstain_reason == AbstainReason.MISSING_INPUTS
 
 
 class TestDiscoverDrivers:
@@ -315,9 +326,11 @@ class TestDiscoverDrivers:
         # No raise; the sentinel rows are kept as NaN (n_rows == full frame length).
         assert ranking.n_rows == 20_000
 
-    def test_no_enriched_view_returns_empty(
+    def test_no_enriched_view_abstains(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
+        # DAT-859: no grain-verified enriched view is a construction-site
+        # abstention (missing_inputs), not a silently empty "measured" ranking.
         tid = _seed(real_session, duck)
         real_session.execute(EnrichedView.__table__.update().values(is_grain_verified=False))
         real_session.flush()
@@ -331,6 +344,71 @@ class TestDiscoverDrivers:
         )
         assert ranking.root is None
         assert ranking.n_rows == 0
+        assert ranking.status == RankingStatus.ABSTAINED
+        assert ranking.abstain_reason == AbstainReason.MISSING_INPUTS
+        assert ranking.target_type == "flow"  # known from the Measure; still abstained
+
+    def test_too_few_candidates_abstains(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # DAT-859: fewer than two grain-safe candidate dims survive → abstain
+        # (insufficient_candidates), not a silent empty "measured" ranking.
+        tid = _seed(real_session, duck)
+        real_session.execute(
+            SliceDefinition.__table__.delete().where(
+                SliceDefinition.table_id == tid, SliceDefinition.column_name != "D_e60"
+            )
+        )
+        real_session.flush()
+        ranking = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=Measure(target_type="flow", column="measure"),
+            n_perm=50,
+        )
+        assert ranking.status == RankingStatus.ABSTAINED
+        assert ranking.abstain_reason == AbstainReason.INSUFFICIENT_CANDIDATES
+
+    def test_view_skew_missing_measure_column_abstains(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # DAT-859: the catalog names dims that survive, but the view itself is
+        # missing the MEASURE column (a catalog/view skew) → missing_inputs.
+        tid = _seed(real_session, duck)
+        duck.execute(f'ALTER TABLE "{VIEW}" DROP COLUMN measure')
+        ranking = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=Measure(target_type="flow", column="measure"),
+            n_perm=50,
+        )
+        assert ranking.status == RankingStatus.ABSTAINED
+        assert ranking.abstain_reason == AbstainReason.MISSING_INPUTS
+
+    def test_view_skew_too_few_dims_abstains(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # DAT-859: the view itself only carries one candidate dim (the rest never
+        # made it into the enriched view) → insufficient_candidates.
+        tid = _seed(real_session, duck)
+        keep = {"D_e60", "measure"}
+        drop = [c for c in [*ALL_DIMS, ALIAS] if c not in keep]
+        for col in drop:
+            duck.execute(f'ALTER TABLE "{VIEW}" DROP COLUMN "{col}"')
+        ranking = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=Measure(target_type="flow", column="measure"),
+            n_perm=50,
+        )
+        assert ranking.status == RankingStatus.ABSTAINED
+        assert ranking.abstain_reason == AbstainReason.INSUFFICIENT_CANDIDATES
 
 
 class TestRowCountGate:

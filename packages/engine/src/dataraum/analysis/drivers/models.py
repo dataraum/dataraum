@@ -7,6 +7,75 @@ DAT-546). ``Measure`` is the engine's input value object; the rest is its output
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class RankingStatus(Enum):
+    """Whether a :class:`DriverRanking` was actually ranked, or abstained (DAT-859).
+
+    A measure whose ``temporal_behavior`` is NULL/undetermined (the upstream fails
+    closed post-DAT-847) must never be silently ranked as a flow — that was the
+    landed-contract breach this closes. MEASURED/ABSTAINED is a loud, typed pair
+    carried on every :class:`DriverRanking` and its persisted
+    ``DriverRankingArtifact``, honored at every read site. It is NOT inferred from
+    an empty ``ranked_dimensions``: a MEASURED ranking legitimately has an empty
+    ``ranked_dimensions`` too (the tree ran and found no significant driver — a
+    real answer, not an abstention).
+    """
+
+    MEASURED = "measured"
+    ABSTAINED = "abstained"
+
+
+class AbstainReason(Enum):
+    """Closed vocabulary for why a :class:`DriverRanking` abstained (DAT-859).
+
+    Names align with ``entropy.models.ABSTAIN_REASONS`` where the shape matches
+    (``missing_inputs``) — a naming convention only; this module imports none of
+    that module's machinery (a driver ranking is not an entropy object).
+    """
+
+    # A required upstream signal is absent: the measure's temporal_behavior is
+    # NULL/unmapped (resolve_target_type), the fact has no grain-verified
+    # enriched view, or the enriched view is missing a column discovery needs
+    # (a catalog/view skew).
+    MISSING_INPUTS = "missing_inputs"
+    # Fewer than two usable candidate dimensions survived — too few catalog
+    # slice dims, or every candidate was dropped as an entity-key alias during
+    # cluster-aware routing — so there is nothing to rank against.
+    INSUFFICIENT_CANDIDATES = "insufficient_candidates"
+    # Candidates and a target type exist, but no ranking unit (row or entity)
+    # carried a usable measure value.
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+@dataclass(frozen=True)
+class TargetTypeResolution:
+    """The outcome of mapping a measure's catalog ``temporal_behavior`` (DAT-859).
+
+    MEASURED carries the resolved ``target_type`` (``flow``/``stock``); ABSTAINED
+    carries none — the caller must never invent one (the bug this closes: NULL/
+    unmapped ``temporal_behavior`` silently defaulting to ``"flow"``). Produced by
+    :func:`dataraum.analysis.drivers.processor.resolve_target_type_for_behavior`,
+    one level up from a :class:`DriverRanking` — before a :class:`Measure` can
+    even be constructed.
+    """
+
+    status: RankingStatus
+    target_type: str | None = None
+    abstain_reason: AbstainReason | None = None
+
+    def __post_init__(self) -> None:
+        if self.status == RankingStatus.MEASURED:
+            if self.target_type is None:
+                raise ValueError("measured TargetTypeResolution requires target_type")
+            if self.abstain_reason is not None:
+                raise ValueError("measured TargetTypeResolution must not carry abstain_reason")
+        else:
+            if self.target_type is not None:
+                raise ValueError("abstained TargetTypeResolution must not carry target_type")
+            if self.abstain_reason is None:
+                raise ValueError("abstained TargetTypeResolution requires abstain_reason")
 
 
 @dataclass(frozen=True)
@@ -128,11 +197,34 @@ class DriverRanking:
     ``SecondaryDriver`` labeled with its ``grain`` and ``entity`` — never mixed into
     ``ranked_dimensions``/``root`` (the grains are not cross-comparable). With N=1 this is
     exactly DAT-561's primary/secondary split.
+
+    ``status``/``abstain_reason`` (DAT-859) are the typed abstention pair: MEASURED
+    is the default (every ranking the engine actually computed, including a
+    legitimate "no significant driver" empty ``ranked_dimensions``); ABSTAINED marks
+    the honest-empty construction sites (no enriched view, too few candidates, no
+    usable measure value) AND an unresolved ``temporal_behavior`` upstream of
+    :class:`Measure` — the caller must persist an abstention rather than guess a
+    target type. An abstained ranking's OWN primary story never carries content —
+    ``root``/``ranked_dimensions``/``driver_paths``/``interesting_slices`` are left
+    at their empty defaults by every construction site (a discipline, not a
+    ``__post_init__``-enforced invariant — see below for why) — but
+    ``secondary_dimensions`` is deliberately not even part of that discipline:
+    ``processor._routed_ranking`` can
+    attach a NON-primary grain's real findings to an abstained primary (the
+    fallback-primary case — every bucket-0/1 family is empty, an abstained
+    entity-grain family is picked, and a demoted low-ICC family still found
+    something), which is a pre-existing, correct shape (unchanged by DAT-859). Every
+    read site gates on ``status`` alone (never on emptiness), so an abstained
+    ranking's ``secondary_dimensions`` is inert at every consumer regardless —
+    "abstained rankings never render as content" already holds without needing to
+    forbid this field too.
     """
 
     measure: str
-    target_type: str
+    target_type: str | None  # None only when status is ABSTAINED and the type itself is unknown
     n_rows: int
+    status: RankingStatus = RankingStatus.MEASURED
+    abstain_reason: AbstainReason | None = None
     grain: str = "row"
     entity: str | None = None  # which identity the primary entity grain belongs to (DAT-563)
     ranked_dimensions: list[tuple[str, float]] = field(default_factory=list)
@@ -140,3 +232,21 @@ class DriverRanking:
     driver_paths: list[list[str]] = field(default_factory=list)
     interesting_slices: list[DriverSlice] = field(default_factory=list)
     secondary_dimensions: list[SecondaryDriver] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Enforce the status/abstain_reason pairing at construction (fail loud).
+
+        Mirrors ``entropy.models.EntropyObject.__post_init__``: this dataclass is
+        the single creation chokepoint (every construction site in ``processor.py``
+        + ``persistence.py`` goes through it), so an invalid combination — a
+        measured ranking carrying a reason, or an abstention with none — never
+        reaches persistence or a read site. Does NOT forbid ranked content on an
+        abstained ranking's ``secondary_dimensions`` — see the class docstring.
+        """
+        if self.status == RankingStatus.MEASURED:
+            if self.abstain_reason is not None:
+                raise ValueError(
+                    f"measured DriverRanking must not carry abstain_reason ({self.measure})"
+                )
+        elif self.abstain_reason is None:  # ABSTAINED
+            raise ValueError(f"abstained DriverRanking requires abstain_reason ({self.measure})")

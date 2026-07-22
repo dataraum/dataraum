@@ -8,15 +8,24 @@ statistical behavior of the engine itself is proven in ``test_grain_e2e``.
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 import duckdb
 import numpy as np
+import pytest
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.drivers.db_models import DriverRankingArtifact
-from dataraum.analysis.drivers.models import DriverRanking, DriverSlice, SecondaryDriver
+from dataraum.analysis.drivers.models import (
+    AbstainReason,
+    DriverRanking,
+    DriverSlice,
+    RankingStatus,
+    SecondaryDriver,
+)
 from dataraum.analysis.drivers.persistence import (
     _measure_columns,
     persist_driver_rankings,
@@ -137,18 +146,6 @@ def _write_view(duck: duckdb.DuckDBPyConnection, df, view_name: str = VIEW) -> N
     duck.unregister("seed_df")
 
 
-# --- target-type mapping is pinned to the validated engine's --------------------
-
-
-def test_temporal_to_target_matches_processor() -> None:
-    # persistence inlines the temporal_behavior→target map so the validated processor
-    # stays untouched; pin it to processor's so a future vocabulary change can't
-    # silently diverge the two (the only thing this duplication risks).
-    from dataraum.analysis.drivers import persistence, processor
-
-    assert persistence._TEMPORAL_TO_TARGET == processor._TEMPORAL_TO_TARGET
-
-
 # --- the serializer: grain labels preserved, never flattened ----------------------
 
 
@@ -169,6 +166,8 @@ def test_ranking_to_row_preserves_per_item_grain_labels() -> None:
     )
     row = ranking_to_row(ranking, run_id=RUN, measure_table_id="t1", measure_column_id="c1")
 
+    assert row["status"] == "measured"
+    assert row["abstain_reason"] is None
     assert row["grain"] == "entity"
     assert row["entity"] == "customer"
     assert row["n_rows"] == 200
@@ -186,6 +185,25 @@ def test_ranking_to_row_preserves_per_item_grain_labels() -> None:
         {"dimension": "sku", "gain": 0.22, "grain": "entity", "entity": "product"},
         {"dimension": "hour", "gain": 0.11, "grain": "row", "entity": None},
     ]
+
+
+def test_ranking_to_row_serializes_abstention() -> None:
+    ranking = DriverRanking(
+        measure="unclassified_amount",
+        target_type=None,
+        n_rows=0,
+        status=RankingStatus.ABSTAINED,
+        abstain_reason=AbstainReason.MISSING_INPUTS,
+    )
+    row = ranking_to_row(ranking, run_id=RUN, measure_table_id="t1", measure_column_id="c1")
+
+    assert row["status"] == "abstained"
+    assert row["abstain_reason"] == "missing_inputs"
+    assert row["target_type"] is None
+    assert row["ranked_dimensions"] == []
+    assert row["driver_paths"] == []
+    assert row["interesting_slices"] == []
+    assert row["secondary_dimensions"] == []
 
 
 # --- the orchestrator over a seeded session ---------------------------------------
@@ -222,6 +240,33 @@ def test_persist_writes_one_grain_labeled_row_per_measure(
     assert any(s["dimension"] == TE_PROD_DRIVER for s in prod)
     assert all(s["grain"] == "entity" for s in prod)
     assert TE_PROD_DRIVER not in primary
+
+
+def test_persist_abstains_when_temporal_behavior_unresolved(
+    real_session: Session, duck: duckdb.DuckDBPyConnection
+) -> None:
+    """DAT-859: NULL/unmapped ``temporal_behavior`` persists ABSTAINED, never a
+    silent "flow" default — the column still gets a row (born loud), never a
+    ``discover_drivers`` call with a guessed target type."""
+    tid, measure_col_id = _seed(real_session, dims=CL_DIMS, behavior="")
+    _write_view(duck, make_clustered_corpus(np.random.default_rng(0)))
+
+    n = persist_driver_rankings(real_session, duckdb_conn=duck, table_ids=[tid], run_id=RUN)
+    assert n == 1
+
+    row = real_session.execute(
+        select(DriverRankingArtifact).where(
+            DriverRankingArtifact.measure_column_id == measure_col_id
+        )
+    ).scalar_one()
+    assert row.status == "abstained"
+    assert row.abstain_reason == "missing_inputs"
+    assert row.target_type is None
+    assert row.n_rows == 0
+    assert row.ranked_dimensions == []
+    assert row.driver_paths == []
+    assert row.interesting_slices == []
+    assert row.secondary_dimensions == []
 
 
 def test_persist_is_idempotent_on_rerun(
@@ -377,3 +422,68 @@ def test_temporal_behavior_pinned_to_run_under_coexisting_concepts(
     measures = _measure_columns(real_session, [tid], run_id=RUN)
     behaviours = {col_id: beh for col_id, _tid, _name, beh in measures}
     assert behaviours[measure_col] == "additive"  # THIS run's, not the stale row's
+
+
+# --- the status/abstain_reason two-layer standard (DAT-859/781) -------------------
+
+
+def _bare_artifact(**overrides: Any) -> DriverRankingArtifact:
+    """A minimal, otherwise-valid row — only the overridden field(s) break the contract."""
+    fields: dict[str, Any] = {
+        "run_id": RUN,
+        "measure_table_id": "t1",
+        "measure_column_id": "c1",
+        "measure_label": "measure",
+        "target_type": "flow",
+        "status": "measured",
+        "abstain_reason": None,
+        "grain": "row",
+        "n_rows": 0,
+    }
+    fields.update(overrides)
+    return DriverRankingArtifact(**fields)
+
+
+class TestPersistenceContract:
+    """The DriverRanking dataclass's status/abstain_reason pairing is backstopped
+    by a DB CheckConstraint (the DAT-781 two-layer standard) — a bypass write
+    straight through the ORM (never through the validated dataclass) is still
+    rejected, not just a Python-side convention."""
+
+    def test_unknown_status_rejected(self, real_session: Session) -> None:
+        real_session.add(_bare_artifact(status="bogus"))
+        with pytest.raises(IntegrityError):
+            real_session.flush()
+
+    def test_unknown_abstain_reason_rejected(self, real_session: Session) -> None:
+        real_session.add(_bare_artifact(status="abstained", abstain_reason="not_a_real_reason"))
+        with pytest.raises(IntegrityError):
+            real_session.flush()
+
+    def test_measured_with_abstain_reason_rejected(self, real_session: Session) -> None:
+        real_session.add(_bare_artifact(status="measured", abstain_reason="missing_inputs"))
+        with pytest.raises(IntegrityError):
+            real_session.flush()
+
+    def test_abstained_without_reason_rejected(self, real_session: Session) -> None:
+        real_session.add(_bare_artifact(status="abstained", abstain_reason=None))
+        with pytest.raises(IntegrityError):
+            real_session.flush()
+
+    def test_measured_without_target_type_rejected(self, real_session: Session) -> None:
+        """The measured-side guard (DAT-859 review): mirrors entropy/db_models.py's
+        status_score_reason CHECK in full — a measured row must know its
+        target_type (a Measure's own __post_init__ never admits a blank one), so a
+        bypass write with NULL target_type is rejected at the DB layer too."""
+        real_session.add(_bare_artifact(status="measured", target_type=None))
+        with pytest.raises(IntegrityError):
+            real_session.flush()
+
+    def test_abstained_without_target_type_still_accepted(self, real_session: Session) -> None:
+        """The abstained side keeps its flexibility: target_type nullability is
+        independent of status (only 1 of the 4 abstention sites has no resolved
+        type), so this must NOT be rejected."""
+        real_session.add(
+            _bare_artifact(status="abstained", abstain_reason="missing_inputs", target_type=None)
+        )
+        real_session.flush()  # no raise

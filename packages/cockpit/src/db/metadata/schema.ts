@@ -227,6 +227,8 @@ export const currentDriverRankings = pgView("current_driver_rankings", {
 	measureColumnId: varchar("measure_column_id"),
 	measureLabel: varchar("measure_label"),
 	targetType: varchar("target_type"),
+	status: varchar(),
+	abstainReason: varchar("abstain_reason"),
 	grain: varchar(),
 	entity: varchar(),
 	nRows: integer("n_rows"),
@@ -236,7 +238,7 @@ export const currentDriverRankings = pgView("current_driver_rankings", {
 	secondaryDimensions: json("secondary_dimensions"),
 	createdAt: timestamp("created_at", { withTimezone: true }),
 }).as(
-	sql`SELECT ranking_id, run_id, measure_table_id, measure_column_id, measure_label, target_type, grain, entity, n_rows, ranked_dimensions, driver_paths, interesting_slices, secondary_dimensions, created_at FROM engine.driver_rankings r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT ranking_id, run_id, measure_table_id, measure_column_id, measure_label, target_type, status, abstain_reason, grain, entity, n_rows, ranked_dimensions, driver_paths, interesting_slices, secondary_dimensions, created_at FROM engine.driver_rankings r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentEnrichedColumns = pgView("current_enriched_columns", {

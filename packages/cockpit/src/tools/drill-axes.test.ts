@@ -61,6 +61,7 @@ import {
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
+	currentMetricAdditivity,
 	currentSliceDefinitions,
 	sqlSnippets,
 } from "#/db/metadata/schema";
@@ -68,7 +69,9 @@ import type { DrillAxis } from "#/duckdb/drill";
 import {
 	applyTemporalKinds,
 	axesFromSliceRows,
+	describeEngineTimeVerdict,
 	describeTemporalGate,
+	describeUnitGate,
 	driverGains,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
@@ -77,6 +80,7 @@ import {
 	temporalGate,
 	temporalKindsFromColumns,
 	unionSubstrateAxes,
+	unitGate,
 } from "./drill-axes";
 
 describe("measureFieldsFromDag", () => {
@@ -365,6 +369,89 @@ describe("describeTemporalGate (DAT-673)", () => {
 		expect(msg).toContain("a");
 		expect(msg).toContain("b");
 		expect(describeTemporalGate([])).toContain("couldn't confirm");
+	});
+});
+
+describe("describeEngineTimeVerdict (DAT-731 — the engine verdict's richer reasons)", () => {
+	it("phrases each engine reason distinctly — the DAG-aware causes the local gate can't see", () => {
+		expect(describeEngineTimeVerdict("stock")).toContain("balance");
+		expect(describeEngineTimeVerdict("snapshot_count")).toContain("snapshot");
+		expect(describeEngineTimeVerdict("ratio")).toContain("ratio");
+		expect(describeEngineTimeVerdict("average")).toContain("average");
+		expect(describeEngineTimeVerdict("distinct_count")).toContain("distinct");
+		expect(describeEngineTimeVerdict("min_max")).toContain("min/max");
+		expect(describeEngineTimeVerdict("unknown_temporal")).toContain(
+			"no stock/flow classification",
+		);
+	});
+
+	it("falls back to the honest 'couldn't confirm' for a null / unrecognized reason", () => {
+		expect(describeEngineTimeVerdict(null)).toContain("couldn't");
+		expect(describeEngineTimeVerdict("some_future_code")).toContain("couldn't");
+	});
+});
+
+describe("unitGate (DAT-731 — cross-unit aggregation flag)", () => {
+	it("flags a measure whose unit column carries more than one distinct unit", () => {
+		const offending = unitGate(
+			new Set(["amount"]),
+			new Map([["amount", "currency"]]),
+			new Map([["currency", 4]]),
+		);
+		expect(offending).toEqual([
+			{ measure: "amount", unitColumn: "currency", unitCount: 4 },
+		]);
+	});
+
+	it("stays silent for a single-unit column — the clean finance corpus (all USD)", () => {
+		expect(
+			unitGate(
+				new Set(["amount"]),
+				new Map([["amount", "currency"]]),
+				new Map([["currency", 1]]),
+			),
+		).toEqual([]);
+	});
+
+	it("does not gate a dimensionless measure, or one whose unit column can't be resolved", () => {
+		// dimensionless → never a unit to mix.
+		expect(
+			unitGate(
+				new Set(["ratio"]),
+				new Map([["ratio", "dimensionless"]]),
+				new Map([["currency", 4]]),
+			),
+		).toEqual([]);
+		// A qualified pointer whose unit column is outside the node's facts (no
+		// cardinality) → conservative: no FALSE flag.
+		expect(
+			unitGate(
+				new Set(["fee"]),
+				new Map([["fee", "other_table.ccy"]]),
+				new Map([["currency", 4]]),
+			),
+		).toEqual([]);
+	});
+
+	it("resolves the column part of a qualified table.column unit pointer", () => {
+		const offending = unitGate(
+			new Set(["fee"]),
+			new Map([["fee", "book.currency"]]),
+			new Map([["currency", 3]]),
+		);
+		expect(offending).toEqual([
+			{ measure: "fee", unitColumn: "currency", unitCount: 3 },
+		]);
+	});
+
+	it("describeUnitGate names the measure, the count, and the unit column", () => {
+		const msg = describeUnitGate([
+			{ measure: "amount", unitColumn: "currency", unitCount: 4 },
+		]);
+		expect(msg).toContain("amount");
+		expect(msg).toContain("4");
+		expect(msg).toContain("currency");
+		expect(msg).toContain("conversion");
 	});
 });
 
@@ -769,6 +856,129 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect(dateAxis).toBeDefined();
 		expect(dateAxis?.temporal).toBeNull();
 		expect(res.temporalGateReason).toContain("couldn't confirm");
+	});
+
+	it("ENGINE VERDICT (DAT-731): a persisted time_additive=false strips grain — and WINS over an additive-flow sibling", async () => {
+		seed();
+		// The local heuristic would PASS (seed's `amount` is additive), but the
+		// engine's DAG-aware verdict says the metric is a RATIO (non-additive on
+		// every axis) — the engine verdict is authoritative and strips the grain.
+		rowsByTable.set(currentMetricAdditivity, [
+			{
+				timeAdditive: false,
+				timeReason: "ratio",
+				categoricalAdditive: false,
+				categoricalReason: "ratio",
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		expect(dateAxis).toBeDefined();
+		expect(dateAxis?.temporal).toBeNull(); // grain gated off by the engine verdict
+		expect(res.temporalGateReason).toContain("ratio");
+		expect(res.temporalGateSource).toBe("engine-verdict");
+	});
+
+	it("ENGINE VERDICT (DAT-731): a persisted time_additive=true keeps grain — and WINS over a stock sibling the heuristic would strip", async () => {
+		seed();
+		// The extract sums a BALANCE (the local heuristic would strip the grain),
+		// but the engine's rolled-up verdict says time_additive=true — the engine
+		// wins and the grain stays. This is the user-visible richer-verdict path.
+		rowsByTable.set(sqlSnippets, [
+			{
+				standardField: "revenue",
+				parts: {
+					select: [{ expr: "SUM(debit_balance)", alias: "value" }],
+					from: ["enriched_invoices"],
+					where: [],
+				},
+				failureCount: 0,
+			},
+		]);
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "debit_balance",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "point_in_time",
+			},
+		]);
+		rowsByTable.set(currentMetricAdditivity, [
+			{
+				timeAdditive: true,
+				timeReason: null,
+				categoricalAdditive: true,
+				categoricalReason: null,
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		expect(dateAxis?.temporal).toBe("date"); // grain KEPT — the engine verdict wins
+		expect(res.temporalGateReason).toBeUndefined();
+		expect(res.temporalGateSource).toBe("engine-verdict");
+	});
+
+	it("FAIL-OPEN (DAT-731): no persisted verdict → the local heuristic runs, STAMPED heuristic-fallback (never silent)", async () => {
+		seed(); // no currentMetricAdditivity row → resolveTargetAdditivity returns null
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// seed's `amount` is additive → the fallback gate passes, grain kept…
+		expect(dateAxis?.temporal).toBe("date");
+		// …and the fallback is STAMPED so its use is visible, not silent.
+		expect(res.temporalGateSource).toBe("heuristic-fallback");
+	});
+
+	it("UNIT GATE (DAT-731): a measure measured_in a MULTI-valued unit column flags a cross-unit aggregation", async () => {
+		seed();
+		// `amount` (the aggregated measure) is measured_in `currency`, which carries
+		// 4 distinct units on the fact → summing across the population mixes units.
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "amount",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "additive",
+				unitSourceColumn: "currency",
+			},
+			{
+				tableId: "fact1",
+				columnName: "currency",
+				resolvedType: "VARCHAR",
+				distinctCount: 4,
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		expect(res.unitGateReason).toContain("currency");
+		expect(res.unitGateReason).toContain("4");
+		expect(res.unitGateReason).toContain("conversion");
+		// The time grain is orthogonal — `amount` is a clean flow, so it stays.
+		expect(
+			res.axes.find((a) => a.column === "customer__segment")?.temporal,
+		).toBe("date");
+	});
+
+	it("UNIT GATE (DAT-731): a SINGLE-currency measure is NOT flagged (the clean corpus stays quiet)", async () => {
+		seed();
+		rowsByTable.set(columns, [
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{
+				tableId: "fact1",
+				columnName: "amount",
+				resolvedType: "DOUBLE",
+				temporalBehavior: "additive",
+				unitSourceColumn: "currency",
+			},
+			{
+				tableId: "fact1",
+				columnName: "currency",
+				resolvedType: "VARCHAR",
+				distinctCount: 1,
+			},
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		expect(res.unitGateReason).toBeUndefined();
 	});
 });
 

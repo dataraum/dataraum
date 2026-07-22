@@ -31,7 +31,9 @@ import {
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
+	currentMetricAdditivity,
 	currentSliceDefinitions,
+	currentStatisticalProfiles,
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
@@ -323,6 +325,151 @@ export function describeTemporalGate(
 		)}. Only a summable flow can be bucketed by period without double-counting.`;
 }
 
+/** The engine's persisted 2-axis additivity verdict for one drill target
+ *  (`metric_additivity`, DAT-716) — the DAG-aware classification the drill now
+ *  CONSUMES instead of re-deriving. `null` reasons mean the axis reconciles. */
+export interface PersistedAdditivity {
+	timeAdditive: boolean;
+	timeReason: string | null;
+	categoricalAdditive: boolean;
+	categoricalReason: string | null;
+}
+
+/**
+ * Phrase the engine's `time_reason` as a drill refusal (pure; DAT-731). The
+ * engine's reason vocabulary (dataraum.graphs.additivity) is RICHER than the
+ * local flow gate's two causes — it rolls the whole metric DAG up, so it can
+ * name a ratio, an average, a distinct/snapshot count, or an unresolved
+ * aggregate, none of which the column-level temporal_behavior heuristic can see.
+ * An unrecognized/None reason falls back to the same honest "couldn't confirm a
+ * summable flow" the empty local gate uses.
+ */
+export function describeEngineTimeVerdict(reason: string | null): string {
+	const cause = ((): string => {
+		switch (reason) {
+			case "stock":
+				return "aggregates a balance (point-in-time stock), which double-counts when summed across periods";
+			case "snapshot_count":
+				return "counts over a periodic-snapshot fact, which recounts the same population every period";
+			case "ratio":
+				return "is a ratio, which does not sum across periods";
+			case "average":
+				return "is an average, which does not sum across periods";
+			case "distinct_count":
+				return "is a distinct count, whose per-period slices overlap";
+			case "min_max":
+				return "is a min/max, which is not summable across periods";
+			case "unknown_temporal":
+				return "aggregates a column with no stock/flow classification";
+			case "unknown_aggregate":
+				return "uses an aggregate we can't confirm sums across periods";
+			default:
+				return "couldn't be confirmed to sum across periods";
+		}
+	})();
+	return `Time grain is off: this measure ${cause}. Only a summable flow can be bucketed by period without double-counting.`;
+}
+
+/** The drill target's (kind, key) for the persisted-verdict lookup (DAT-731): a
+ *  metric is keyed by its graph_id, a measure by its standard_field — exactly the
+ *  `(target_kind, target_key)` the metrics phase persists. */
+function additivityTarget(req: DrillAxesRequest): {
+	kind: "metric" | "measure";
+	key: string;
+} {
+	return req.standardField !== undefined
+		? { kind: "measure", key: req.standardField }
+		: { kind: "metric", key: req.metricKey };
+}
+
+/** Read the engine's persisted additivity verdict for the target, or `null` when
+ *  none exists (a not-yet-classified target — the drill fails OPEN to the local
+ *  heuristic, never silently blocks). One row by the `(target_kind, target_key)`
+ *  UNIQUE, resolved to the current operating_model run by the read view. */
+async function resolveTargetAdditivity(
+	req: DrillAxesRequest,
+): Promise<PersistedAdditivity | null> {
+	const { kind, key } = additivityTarget(req);
+	const [row] = await metadataDb
+		.select({
+			timeAdditive: currentMetricAdditivity.timeAdditive,
+			timeReason: currentMetricAdditivity.timeReason,
+			categoricalAdditive: currentMetricAdditivity.categoricalAdditive,
+			categoricalReason: currentMetricAdditivity.categoricalReason,
+		})
+		.from(currentMetricAdditivity)
+		.where(
+			and(
+				eq(currentMetricAdditivity.targetKind, kind),
+				eq(currentMetricAdditivity.targetKey, key),
+			),
+		)
+		.limit(1);
+	if (!row || row.timeAdditive === null || row.categoricalAdditive === null) {
+		return null;
+	}
+	return {
+		timeAdditive: row.timeAdditive,
+		timeReason: row.timeReason,
+		categoricalAdditive: row.categoricalAdditive,
+		categoricalReason: row.categoricalReason,
+	};
+}
+
+/** One measure whose aggregation crosses units (DAT-731): the measure column and
+ *  the unit column that carries more than one distinct unit. */
+export interface CrossUnitColumn {
+	measure: string;
+	unitColumn: string;
+	unitCount: number;
+}
+
+/**
+ * The UNIT GATE (DAT-731): a measure aggregated across a unit column that holds
+ * MORE THAN ONE distinct unit mixes units — a cross-currency total is arithmetic
+ * without meaning until a conversion is applied. Pure over the node's aggregated
+ * base columns, each measure's authored `unit_source_column`, and the distinct
+ * count of the resolved unit column. `dimensionless` / absent unit → not gated
+ * (nothing to mix). A unit column whose cardinality can't be resolved — a
+ * qualified `table.column` pointer to a column outside the node's facts — is NOT
+ * gated (conservative: never a FALSE cross-unit flag; the graph's measured_in
+ * edge still represents the dependence). A single-unit column (count 1, the clean
+ * finance corpus) is silent — the flag fires only on real mixing. The conversion
+ * GROUNDING that would UNBLOCK the SUM (an fx-rate table) is not a structural edge
+ * in v1; this gate names the block, the unblock is future work.
+ */
+export function unitGate(
+	aggregatedCols: ReadonlySet<string>,
+	unitSourceByColumn: ReadonlyMap<string, string>,
+	distinctByColumn: ReadonlyMap<string, number>,
+): CrossUnitColumn[] {
+	const out: CrossUnitColumn[] = [];
+	for (const measure of aggregatedCols) {
+		const src = unitSourceByColumn.get(measure);
+		if (!src || src === "dimensionless") continue;
+		// A bare sibling name, or the column part of a qualified table.column pointer.
+		const dot = src.indexOf(".");
+		const unitColumn = dot >= 0 ? src.slice(dot + 1) : src;
+		const unitCount = distinctByColumn.get(unitColumn);
+		if (unitCount !== undefined && unitCount > 1) {
+			out.push({ measure, unitColumn, unitCount });
+		}
+	}
+	return out;
+}
+
+/** Phrase the unit-gate flag from the offending measures (pure). */
+export function describeUnitGate(
+	offending: readonly CrossUnitColumn[],
+): string {
+	const parts = offending.map(
+		(o) => `${o.measure} spans ${o.unitCount} units (via ${o.unitColumn})`,
+	);
+	return `Cross-unit aggregation: ${parts.join(
+		"; ",
+	)}. A raw SUM across units is not meaningful without a conversion.`;
+}
+
 /** Axes plus — when empty — the WHY, so the UI never shows a dead-end badge:
  *  each empty case names the stage of the resolution chain that yielded
  *  nothing (no extracts / stale relations / bare catalog). */
@@ -336,6 +483,21 @@ export interface DrillAxesResult {
 	 *  drill UI (so the missing grain chip reads as a decision, not a gap) is
 	 *  deferred to DAT-715. */
 	temporalGateReason?: string;
+	/** Which path decided the time gate (DAT-731), STAMPED so a fail-open fallback
+	 *  is never silent: `engine-verdict` = the engine's persisted, DAG-aware
+	 *  `metric_additivity.time_additive`; `heuristic-fallback` = the target had NO
+	 *  persisted verdict, so the local temporal_behavior flow-gate ran instead
+	 *  (absence must not silently block a drill). Set only when a temporal axis was
+	 *  actually offered (the gate ran). SERVER-SIDE signal, like temporalGateReason. */
+	temporalGateSource?: "engine-verdict" | "heuristic-fallback";
+	/** Set when the UNIT gate flagged a cross-unit aggregation (DAT-731): the node
+	 *  aggregates a measure `measured_in` a unit column that carries MORE THAN ONE
+	 *  distinct unit (e.g. a multi-currency amount), so a raw SUM across the whole
+	 *  population mixes units — meaningless without a conversion. Loud, never
+	 *  silently produced. SERVER-SIDE signal only (no client reads it yet). The
+	 *  conversion GROUNDING itself (an fx-rate table) is not modelled as a
+	 *  structural edge in v1 — this flag names the block, the unblock is future. */
+	unitGateReason?: string;
 }
 
 export async function resolveDrillAxes(
@@ -496,11 +658,20 @@ export async function resolveDrillAxes(
 				// null when the column has no concept (unclassified → fail closed).
 				// Trusted at face value (DAT-786) — no separate contested flag.
 				temporalBehavior: currentColumnConcepts.temporalBehavior,
+				// The unit gate (DAT-731): the measure's authored unit_source_column
+				// (catalogue_semantics) + the distinct-value count of a column, so a
+				// measure whose unit column carries >1 distinct unit is flaggable.
+				unitSourceColumn: currentColumnConcepts.unitSourceColumn,
+				distinctCount: currentStatisticalProfiles.distinctCount,
 			})
 			.from(columns)
 			.leftJoin(
 				currentColumnConcepts,
 				eq(columns.columnId, currentColumnConcepts.columnId),
+			)
+			.leftJoin(
+				currentStatisticalProfiles,
+				eq(columns.columnId, currentStatisticalProfiles.columnId),
 			)
 			.where(inArray(columns.tableId, typeTableIds))
 			// Deterministic row order — temporalKindsFromColumns is first-wins
@@ -534,63 +705,110 @@ export async function resolveDrillAxes(
 		};
 	}
 
-	// FLOW GATE (DAT-673): only run when a temporal axis is actually offered.
-	// Extract the base columns the node's measures aggregate (AST read), then
-	// gate the grain on their stock/flow verdict.
+	// The result accrues gate outcomes: a node can fail the TIME gate and be
+	// cross-unit INDEPENDENTLY, so neither gate early-returns — each stamps the
+	// same result and the (possibly grain-stripped) axes fall through once.
+	const stripTimeGrain = (xs: DrillAxis[]): DrillAxis[] =>
+		xs.map((a) => (a.temporal !== null ? { ...a, temporal: null } : a));
+	const result: DrillAxesResult = { axes };
+	let gatedAxes = axes;
+
+	// The node's aggregated base measure columns (AST read), scoped to grounded
+	// facts — shared by the time-gate FALLBACK and the unit gate below. A
+	// stale/unpromoted snippet contributes nothing (its relation resolves to no kept
+	// fact). couldNotDetermine = an expr we couldn't read (window / COUNT(*) /
+	// unparseable): the TIME fallback fails CLOSED on it (a windowed stock must never
+	// slip through), while the unit gate simply has no column to check for that expr.
+	const factIdSet = new Set(factIds);
+	const aggCols = new Set<string>();
+	let couldNotDetermine = false;
+	for (const { relation, selectExpr } of acceptedExprs) {
+		const factId = viewByName.get(relation)?.factTableId;
+		if (!factId || !factIdSet.has(factId)) continue;
+		const cols = await aggregatedColumns(selectExpr);
+		if (cols.size === 0) {
+			couldNotDetermine = true;
+			continue;
+		}
+		for (const c of cols) aggCols.add(c);
+	}
+
+	// TIME GATE (DAT-673 → DAT-731): only when a temporal axis is offered. The
+	// engine's persisted, DAG-aware additivity verdict (metric_additivity) is now
+	// AUTHORITATIVE — it rolls the whole metric formula up (ratios, averages,
+	// snapshot counts) where the local column-level temporal_behavior heuristic sees
+	// only stock/flow per base column. The heuristic survives ONLY as the fail-open
+	// fallback for a target with no persisted verdict (absence must never silently
+	// block a drill), stamped so that fallback is visible, never silent.
 	if (axes.some((a) => a.temporal !== null)) {
-		const factIdSet = new Set(factIds);
-		const behaviorByColumn = new Map<string, TemporalBehavior>();
-		for (const r of columnRows) {
-			if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
-			// First-wins per name (rows are ordered); an OFFENDING verdict (stock or
-			// unclassified) is sticky — never overwritten by a later flow-safe
-			// (additive) row for the same name, so a shared column can only lose
-			// grain, never regain it across facts.
-			const current = behaviorByColumn.get(r.columnName);
-			const currentFlowSafe =
-				current !== undefined && current.behavior === "additive";
-			if (current === undefined || currentFlowSafe) {
-				behaviorByColumn.set(r.columnName, {
-					behavior: r.temporalBehavior ?? null,
-				});
+		const verdict = await resolveTargetAdditivity(req);
+		if (verdict !== null) {
+			result.temporalGateSource = "engine-verdict";
+			if (!verdict.timeAdditive) {
+				gatedAxes = stripTimeGrain(gatedAxes);
+				result.temporalGateReason = describeEngineTimeVerdict(
+					verdict.timeReason,
+				);
 			}
-		}
-		// Scope the exprs to the SAME grounded facts as behaviorByColumn: only
-		// snippets whose relation resolves to a fact we kept (factIds). Mirrors
-		// the relations→factIds filter above — a stale/unpromoted snippet
-		// contributes NO aggregated column to the gate.
-		const aggCols = new Set<string>();
-		// If ANY grounded expr yields no columns, we couldn't read what it
-		// aggregates (a window aggregate / COUNT(*) / unparseable) — fail the WHOLE
-		// gate closed rather than skip that expr, or a windowed STOCK would slip
-		// through when a non-windowed sibling makes aggCols non-empty (fail-open,
-		// DAT-673). Per-shape handling (COUNT(*)→flow, window bodies) is DAT-715.
-		let couldNotDetermine = false;
-		for (const { relation, selectExpr } of acceptedExprs) {
-			const factId = viewByName.get(relation)?.factTableId;
-			if (!factId || !factIdSet.has(factId)) continue;
-			const cols = await aggregatedColumns(selectExpr);
-			if (cols.size === 0) {
-				couldNotDetermine = true;
-				break;
-			}
-			for (const c of cols) aggCols.add(c);
-		}
-		// An empty set makes temporalGate fail closed with no column to name — the
-		// "could not confirm a summable flow" verdict couldNotDetermine warrants.
-		const gate = temporalGate(
-			couldNotDetermine ? new Set<string>() : aggCols,
-			behaviorByColumn,
-		);
-		if (!gate.safe) {
-			const gated = axes.map((a) =>
-				a.temporal !== null ? { ...a, temporal: null } : a,
+		} else {
+			// FAIL-OPEN: no persisted verdict → the local temporal_behavior flow gate,
+			// STAMPED + logged. Gate the grain on the aggregated columns' stock/flow.
+			result.temporalGateSource = "heuristic-fallback";
+			console.warn(
+				"drill additivity verdict missing — falling back to the temporal_behavior heuristic",
+				additivityTarget(req),
 			);
-			return {
-				axes: gated,
-				temporalGateReason: describeTemporalGate(gate.offending),
-			};
+			const behaviorByColumn = new Map<string, TemporalBehavior>();
+			for (const r of columnRows) {
+				if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
+				// First-wins per name (rows are ordered); an OFFENDING verdict (stock or
+				// unclassified) is sticky — never overwritten by a later flow-safe
+				// (additive) row for the same name, so a shared column can only lose
+				// grain, never regain it across facts.
+				const current = behaviorByColumn.get(r.columnName);
+				const currentFlowSafe =
+					current !== undefined && current.behavior === "additive";
+				if (current === undefined || currentFlowSafe) {
+					behaviorByColumn.set(r.columnName, {
+						behavior: r.temporalBehavior ?? null,
+					});
+				}
+			}
+			// An empty set makes temporalGate fail closed with no column to name — the
+			// "could not confirm a summable flow" verdict couldNotDetermine warrants.
+			const gate = temporalGate(
+				couldNotDetermine ? new Set<string>() : aggCols,
+				behaviorByColumn,
+			);
+			if (!gate.safe) {
+				gatedAxes = stripTimeGrain(gatedAxes);
+				result.temporalGateReason = describeTemporalGate(gate.offending);
+			}
 		}
 	}
-	return { axes };
+
+	// UNIT GATE (DAT-731): a cross-unit aggregation — a measure whose authored
+	// unit_source_column is a column carrying MORE THAN ONE distinct unit — is
+	// flagged loudly (representable as blocked, never silently produced). Runs
+	// regardless of whether a time axis was offered: mixing units is meaningless for
+	// ANY aggregation. Reads the node's aggregated measure columns' unit sources and
+	// the resolved unit column's distinct count off the SAME fact-scoped column read.
+	const unitSourceByColumn = new Map<string, string>();
+	const distinctByColumn = new Map<string, number>();
+	for (const r of columnRows) {
+		if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
+		if (r.unitSourceColumn && !unitSourceByColumn.has(r.columnName)) {
+			unitSourceByColumn.set(r.columnName, r.unitSourceColumn);
+		}
+		if (r.distinctCount != null && !distinctByColumn.has(r.columnName)) {
+			distinctByColumn.set(r.columnName, r.distinctCount);
+		}
+	}
+	const crossUnit = unitGate(aggCols, unitSourceByColumn, distinctByColumn);
+	if (crossUnit.length > 0) {
+		result.unitGateReason = describeUnitGate(crossUnit);
+	}
+
+	result.axes = gatedAxes;
+	return result;
 }

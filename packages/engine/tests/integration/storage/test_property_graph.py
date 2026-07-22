@@ -1110,17 +1110,29 @@ def test_concept_groundings_and_their_columns_in_one_match(graph_engine: Engine)
 
 
 def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:
-    """The workspace reader role (ADR-0008) can run GRAPH_TABLE — the grant reached it."""
+    """The workspace reader role (ADR-0008) can run GRAPH_TABLE — the grant reached it.
+
+    Also covers a DAT-730 element (temporal_coverage): the single
+    ``GRANT SELECT ON PROPERTY GRAPH`` covers every label, and
+    ``GRANT SELECT ON ALL TABLES`` the new og_* views — so no per-element grant is
+    needed (the empirical answer to the module docstring's caution)."""
     reader = reader_role_for(schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"]))
     sql = (
         f"SELECT count(*) AS n FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (a IS table_node)-[e IS refs]->(b IS table_node) COLUMNS (1 AS one))"
     )
+    cov_sql = (
+        f"SELECT count(*) AS n FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[c IS temporal_coverage]->(col IS column_node) "
+        "COLUMNS (1 AS one))"
+    )
     with graph_engine.connect() as conn:
         conn.execute(text(f"SET ROLE {reader}"))
         n = conn.execute(text(sql)).scalar_one()
+        cov = conn.execute(text(cov_sql)).scalar_one()
         conn.execute(text("RESET ROLE"))
     assert n == 6
+    assert cov == 3  # t1's three declared time columns — the new element is reader-visible
 
 
 def test_bootstrap_is_idempotent(graph_engine: Engine) -> None:

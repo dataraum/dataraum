@@ -81,7 +81,7 @@ class DimensionOrdering(StrEnum):
 
     - ``ORDERED`` — an ordinal axis (an authored severity ladder, a size scale);
       window/range logic MAY apply.
-    - ``NOMINAL`` — an unordered categorical (region, account_type); window logic is
+    - ``NOMINAL`` — an unordered categorical (region, colour); window logic is
       WITHHELD — a range over nominal labels is meaningless.
 
     The safe default is ``nominal``: an absent/NULL fact withholds windows rather

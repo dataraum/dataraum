@@ -71,7 +71,7 @@ class BusMatrixStats:
     never die silently either.
     """
 
-    status: str = "ran"  # ran | failed (the conform lane)
+    status: str = "ran"  # ran | failed (the FOLDED conform lane)
     referenced: int = 0
     folded: int = 0
     conform_pairs: int = 0
@@ -85,6 +85,9 @@ class BusMatrixStats:
     # FK-role pairs to decide whether role-playing FKs (bill-to vs ship-to)
     # conform to ONE identity or stay distinct axes. Same-named roles auto-conform
     # structurally (no LLM call), so these count only the genuinely ambiguous pairs.
+    # ``ref_status`` is the referenced lane's own outcome — the two judge calls fail
+    # INDEPENDENTLY, so a single conflated flag would hide which lane died.
+    ref_status: str = "ran"  # ran | failed (the REFERENCED conform lane)
     ref_conform_pairs: int = 0
     ref_conformed: int = 0
     ref_abstained: int = 0
@@ -99,6 +102,7 @@ class BusMatrixStats:
             "conformed": self.conformed,
             "abstained": self.abstained,
             "unanswered": self.unanswered,
+            "ref_status": self.ref_status,
             "ref_conform_pairs": self.ref_conform_pairs,
             "ref_conformed": self.ref_conformed,
             "ref_abstained": self.ref_abstained,
@@ -225,16 +229,16 @@ def derive_bus_matrix(
     _conform_pass(session, components, run_id=run_id, judge=judge, stats=stats)
     rows += _folded_cells(components, run_id=run_id, stats=stats)
 
-    # Retry stability: a folded cell's signature carries its component's member
-    # set, which is derived from this run's discovered structures — and those
-    # include the user's teach overlay, which can change BETWEEN activity
-    # attempts (a teach landing after a crash shifts component membership →
-    # member_key → signature). A redelivery would then strand the first
-    # attempt's cells under the same run_id — invisible to the upsert, visible
-    # through ``current_bus_matrix``. Delete-then-insert in ONE transaction
-    # replaces the run's cell set wholesale, so no cell this derivation did not
-    # emit can survive; the upsert + unique constraint stay as the in-batch
-    # backstop.
+    # Retry stability: a cell's signature is judge-verdict-dependent on BOTH legs —
+    # a folded cell's carries its component's member set (which includes the user's
+    # teach overlay, changeable between attempts), and a referenced cell's carries
+    # its role set (DAT-788: a conform verdict merging differently-named roles shifts
+    # ``roles`` → signature between attempts). A redelivery could then strand the
+    # first attempt's cells under the same run_id — invisible to the upsert, visible
+    # through ``current_bus_matrix``. Delete-then-insert in ONE transaction replaces
+    # the run's cell set wholesale (unconditional on ``run_id + fact_table_id``, not
+    # signature-scoped), so no cell this derivation did not emit can survive; the
+    # upsert + unique constraint stay as the in-batch backstop.
     session.execute(
         delete(BusMatrixEntry).where(
             BusMatrixEntry.run_id == run_id, BusMatrixEntry.fact_table_id.in_(fact_ids)
@@ -398,12 +402,12 @@ def _referenced_conform_pass(
                 result = judge.conform(candidates=chunk)
             except PermanentProviderError as exc:
                 logger.warning("bus_matrix_ref_conform_skipped", reason=str(exc))
-                stats.status = "failed"
+                stats.ref_status = "failed"
                 verdicts = []
                 break
             if not result.success:
                 logger.warning("bus_matrix_ref_conform_skipped", reason=result.error)
-                stats.status = "failed"
+                stats.ref_status = "failed"
                 verdicts = []
                 break
             verdicts.extend(result.unwrap())
@@ -447,8 +451,13 @@ def _referenced_conform_pass(
         comp_roles.setdefault(find(k), set()).add(e.fk_role)
     for k, e in enumerate(exposures):
         e.conformed_group = _ref_group_signature(e.dim_table_id, comp_roles[find(k)])
+    # An abstain flags needs_confirmation UNLESS the exposure's final component was
+    # judge-conformed — TRANSITIVELY (the folded leg's discipline): an exposure can
+    # join a conformed component through the same-name floor without being a direct
+    # party to a conform verdict, and its identity is then resolved, not pending.
+    conformed_roots = {find(i) for i in judge_conformed}
     for k in abstain_touched:
-        if k not in judge_conformed:
+        if find(k) not in conformed_roots:
             exposures[k].needs_confirmation = True
 
 

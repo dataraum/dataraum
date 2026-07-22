@@ -162,7 +162,7 @@ JOIN __READ__.current_bus_matrix b1
  AND b1.fact_table_id = s1.table_id
  AND b1.dimension_table_id = s1.dimension_table_id
  AND EXISTS (SELECT 1 FROM json_array_elements_text(b1.roles) AS r(role)
-             WHERE r.role = s1.fk_role)
+             WHERE r.role = COALESCE(NULLIF(s1.fk_role, ''), s1.column_name))
 JOIN __READ__.current_slice_definitions s2
   ON s2.dimension_table_id = s1.dimension_table_id
  AND COALESCE(s2.dimension_attribute, '') = COALESCE(s1.dimension_attribute, '')
@@ -172,7 +172,7 @@ JOIN __READ__.current_bus_matrix b2
  AND b2.fact_table_id = s2.table_id
  AND b2.dimension_table_id = s2.dimension_table_id
  AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)
-             WHERE r.role = s2.fk_role)
+             WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))
 WHERE s1.dimension_table_id IS NOT NULL
  AND b1.conformed_group = b2.conformed_group;
 

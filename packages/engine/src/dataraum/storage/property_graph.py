@@ -526,8 +526,11 @@ def _element_view_sql(name: str) -> str:
             f"  ON b1.attachment = 'referenced'\n"
             f" AND b1.fact_table_id = s1.table_id\n"
             f" AND b1.dimension_table_id = s1.dimension_table_id\n"
+            # ``COALESCE(NULLIF(fk_role,''), column_name)`` mirrors the Python role
+            # identity (``fk_role or column_name``) the cell's ``roles`` were built
+            # from, so an empty fk_role resolves the same on both sides — no divergence.
             f" AND EXISTS (SELECT 1 FROM json_array_elements_text(b1.roles) AS r(role)\n"
-            f"             WHERE r.role = s1.fk_role)\n"
+            f"             WHERE r.role = COALESCE(NULLIF(s1.fk_role, ''), s1.column_name))\n"
             f"JOIN {READ_TOKEN}.current_slice_definitions s2\n"
             f"  ON s2.dimension_table_id = s1.dimension_table_id\n"
             f" AND COALESCE(s2.dimension_attribute, '') = COALESCE(s1.dimension_attribute, '')\n"
@@ -537,7 +540,7 @@ def _element_view_sql(name: str) -> str:
             f" AND b2.fact_table_id = s2.table_id\n"
             f" AND b2.dimension_table_id = s2.dimension_table_id\n"
             f" AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)\n"
-            f"             WHERE r.role = s2.fk_role)\n"
+            f"             WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))\n"
             f"WHERE s1.dimension_table_id IS NOT NULL\n"
             f" AND b1.conformed_group = b2.conformed_group;"
         )

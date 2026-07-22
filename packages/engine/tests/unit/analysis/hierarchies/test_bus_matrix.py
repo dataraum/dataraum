@@ -293,7 +293,50 @@ class TestReferencedConform:
         # Cells still emit with the structural (separate) floor — never nothing.
         assert len(referenced) == 2
         assert len({c.conformed_group for c in referenced}) == 2
-        assert stats.status == "failed"
+        assert stats.ref_status == "failed"  # the referenced lane, distinct from folded
+        assert stats.status == "ran"  # the folded lane did not fail (nothing to judge)
+
+    def test_abstain_on_transitively_conformed_role_clears_needs_confirmation(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """An exposure joins a judge-conformed component through the same-name floor
+        (never a direct conform party) AND is abstained on elsewhere: its identity is
+        RESOLVED, so needs_confirmation must be cleared — the folded leg's transitive
+        discipline. fact_a & fact_c both carry 'acct' (same-name auto-conform); fact_b
+        carries 'gl' which the judge CONFORMS with fact_a.acct, anchoring the whole
+        {acct, gl} component; a separate abstain touches fact_c.acct."""
+        dim_tid = seed_view(real_session, duck, "dim_party", {"party_id": ["x", "y"]})
+        a = _seed_ref_fact(
+            real_session, duck, "fact_a", dim_tid, "party_id", [("acct", "unconfirmed")]
+        )
+        b = _seed_ref_fact(
+            real_session, duck, "fact_b", dim_tid, "party_id", [("gl", "unconfirmed")]
+        )
+        c = _seed_ref_fact(
+            real_session, duck, "fact_c", dim_tid, "party_id", [("acct", "unconfirmed")]
+        )
+        # Exposures name-sorted: 0=fact_a.acct, 1=fact_b.gl, 2=fact_c.acct.
+        # fact_a.acct ⇄ fact_c.acct auto-conform (same name); judge conforms 0⇄1;
+        # the differently-named 1⇄2 (fact_b.gl vs fact_c.acct) abstains → touches
+        # fact_c, already in the conformed component transitively.
+        judge = _conform_judge(
+            [
+                ConformVerdict(
+                    pair_ref="pair:0:1", verdict="conform", concept_label="party", reason="same"
+                ),
+                ConformVerdict(
+                    pair_ref="pair:1:2", verdict="abstain", concept_label="", reason="unsure"
+                ),
+            ]
+        )
+
+        derive_bus_matrix(real_session, table_ids=[a, b, c, dim_tid], run_id=RUN, judge=judge)
+
+        referenced = _referenced(real_session)
+        # One conformed identity across all three facts (acct + gl merged).
+        assert len({cell.conformed_group for cell in referenced}) == 1
+        # The abstain leaves NO stale confirmation request on the resolved identity.
+        assert all(cell.needs_confirmation is False for cell in referenced)
 
     def test_ref_conform_candidates_are_chunked(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

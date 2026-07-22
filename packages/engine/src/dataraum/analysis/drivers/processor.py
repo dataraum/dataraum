@@ -434,12 +434,12 @@ def discover_drivers(
     (arrow-backed load) will raise the ceiling so sampling becomes a rare fallback.
     """
 
-    def abstain(reason: AbstainReason, *, n_rows: int = 0) -> DriverRanking:
+    def abstain(reason: AbstainReason) -> DriverRanking:
         """The honest-empty ranking (DAT-859): known target_type, no ranked content."""
         return DriverRanking(
             measure=measure.label,
             target_type=measure.target_type,
-            n_rows=n_rows,
+            n_rows=0,
             status=RankingStatus.ABSTAINED,
             abstain_reason=reason,
         )

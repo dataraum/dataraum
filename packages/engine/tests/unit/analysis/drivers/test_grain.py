@@ -318,16 +318,93 @@ class TestEntityGrainAbstains:
         assert rank.ranked_dimensions == []
         assert rank.root is None
 
+    def test_routed_ranking_real_path_abstained_primary_keeps_secondary_content(self) -> None:
+        """Regression (DAT-859 review), driven through the REAL ``_routed_ranking``
+        numerical path — not the synthetic ``replace()`` call below.
+
+        Constructing this needs care: an entity whose ``_entity_grain_ranking``
+        ABSTAINS (``values.size == 0``) necessarily has ICC == 0.0 exactly (the
+        ``variance_reduction`` floor — abstention means literally zero valid
+        ``(entity, measure)`` pairs, which is a stricter condition than "no big
+        ICC group", so it can never register *any* between-entity variance). Since
+        families sort by ICC **descending** within a bucket, an ICC-0.0 abstained
+        family can only sort ahead of a REAL, content-bearing sibling by TYING its
+        icc at the same floor — never by beating it — with the alphabetical
+        entity-name tiebreak deciding who goes first. So:
+
+        - ``cust``: valid on the FIRST half of rows (where measure is NaN), NULL on
+          the second half (where measure is populated) — every ``(cust, measure)``
+          pair is invalid, so its collapse is truly empty (ABSTAINED,
+          ``insufficient_data``), and its ICC is the ``keep.sum() == 0`` floor: 0.0.
+        - ``prod``: one entity PER ROW of the second half (where measure lives) —
+          every entity has exactly 1 row, so ``variance_reduction``'s "big" filter
+          (``min_entity_rows=2``) never clears for ANY entity, forcing ICC to the
+          SAME 0.0 floor via a different mechanism (an ICC artifact, not real
+          zero-signal) — while ``_entity_grain_ranking``'s own significance test
+          on the 2000-entity collapse (1000 per ``prod_attr`` group) easily detects
+          the real, large ``prod_attr`` shift.
+        - Both entities tie at ICC 0.0 (bucket 2, since ``0.0 <= icc_threshold``)
+          with no bucket-0/1 family in play (both home dims route to an entity, so
+          ``row_dims`` is empty) — "cust" sorts before "prod" alphabetically, so
+          the index-0 fallback picks the ABSTAINED ``cust`` family as primary, and
+          ``replace(..., secondary_dimensions=...)`` attaches ``prod``'s real
+          finding — exactly the interaction the synthetic test below pins in
+          isolation.
+        """
+        from dataraum.analysis.drivers.models import Measure, RankingStatus
+        from dataraum.analysis.drivers.processor import DEFAULT_ICC_THRESHOLD, _routed_ranking
+
+        rng = np.random.default_rng(3)
+        half = 2000  # cust-valid / measure-NaN rows
+        second = 2000  # cust-null / measure-valid rows, one unique "prod" per row
+
+        cust_ids = rng.integers(0, 15, half)
+        cust_attr_grp = rng.integers(0, 3, 15)  # cust's home dim; unrelated to measure
+        prod_attr_grp = rng.integers(0, 2, second)  # prod's home dim; REAL shift
+        prod_shift = np.array([-3.0, 3.0])[prod_attr_grp]
+
+        measure = np.full(half + second, np.nan)
+        measure[half:] = 100.0 + prod_shift + rng.normal(0, 1.0, second)
+
+        df = pl.DataFrame(
+            {
+                "cust": [f"c{i}" for i in cust_ids] + [None] * second,
+                "prod": [None] * half + [f"p{i}" for i in range(second)],
+                "cust_attr": [f"ca{cust_attr_grp[i]}" for i in cust_ids] + [None] * second,
+                "prod_attr": [None] * half + [f"pa{g}" for g in prod_attr_grp],
+                "measure": measure,
+            }
+        )
+
+        rank = _routed_ranking(
+            df,
+            ["cust_attr", "prod_attr"],
+            Measure(target_type="flow", column="measure"),
+            ["cust", "prod"],
+            seed=0,
+            max_depth=2,
+            alpha=0.05,
+            min_support=5,
+            missingness_gate=0.5,
+            n_perm=200,
+            icc_threshold=DEFAULT_ICC_THRESHOLD,
+            min_entities=10,
+        )
+
+        assert rank.status == RankingStatus.ABSTAINED
+        assert rank.entity == "cust"
+        assert rank.ranked_dimensions == []  # the abstained primary's own story is empty
+        assert rank.secondary_dimensions  # prod's real finding survives, non-empty
+        assert rank.secondary_dimensions[0].dimension == "prod_attr"
+        assert rank.secondary_dimensions[0].entity == "prod"
+
     def test_abstained_family_survives_routed_rankings_secondary_attach(self) -> None:
-        """Regression (found in DAT-859 self-review): ``_routed_ranking`` can pick
-        an ABSTAINED entity family as ``primary`` via its index-0 fallback (every
-        bucket-0/1 family empty) and then ``dataclasses.replace(primary,
-        secondary_dimensions=...)`` to attach a DIFFERENT, non-empty family's
-        findings — a pre-existing, correct shape (DAT-695) that DAT-859 must not
-        break. An early draft of the abstention invariant forbade ANY content
-        (including secondary_dimensions) on an abstained ranking, which made this
-        exact ``replace()`` raise; the invariant now exempts secondary_dimensions
-        (see the DriverRanking docstring) precisely so this keeps working."""
+        """Synthetic companion to the real-path test above: pins the exact
+        ``dataclasses.replace()`` interaction in isolation. An early draft of the
+        abstention invariant forbade ANY content (including secondary_dimensions)
+        on an abstained ranking, which made this exact ``replace()`` raise; the
+        invariant now exempts secondary_dimensions (see the DriverRanking
+        docstring) precisely so this keeps working."""
         from dataclasses import replace
 
         from dataraum.analysis.drivers.models import (

@@ -492,7 +492,7 @@ CREATE TABLE driver_rankings (
 	CONSTRAINT uq_driver_rankings_column_run UNIQUE (measure_column_id, run_id), 
 	CONSTRAINT ck_driver_rankings_status CHECK (status IN ('abstained', 'measured')), 
 	CONSTRAINT ck_driver_rankings_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('insufficient_candidates', 'insufficient_data', 'missing_inputs')), 
-	CONSTRAINT ck_driver_rankings_status_abstain_reason CHECK ((status = 'measured' AND abstain_reason IS NULL) OR (status = 'abstained' AND abstain_reason IS NOT NULL)), 
+	CONSTRAINT ck_driver_rankings_status_abstain_reason CHECK ((status = 'measured' AND abstain_reason IS NULL AND target_type IS NOT NULL) OR (status = 'abstained' AND abstain_reason IS NOT NULL)), 
 	CONSTRAINT fk_driver_rankings_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_driver_rankings_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id)
 );

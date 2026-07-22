@@ -2083,21 +2083,20 @@ def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
     dimension VALUES with signed effect + support — a HINT for which values carry
     data, never the complete value-set (that's the per-column Value sets).
 
-    The ONE read-side convention (DAT-859): a ranking renders only when it is
-    `status == "measured"` AND actually carries content. An abstained ranking
-    (temporal_behavior undetermined, no enriched view, too few candidates, no
-    usable measure value) must never surface as a driver — and neither should a
-    measured-but-empty one (no significant driver found): both would otherwise
-    emit a content-free "### measure (type)" heading with nothing under it. The
-    raw artifact stays honest either way — this filter is prompt-rendering only.
+    The ONE read-side convention (DAT-859): gate on `status == "measured"` ONLY —
+    an abstained ranking (temporal_behavior undetermined, no enriched view, too few
+    candidates, no usable measure value) never surfaces as a driver, full stop.
+    This must NOT also gate on content, or "measured" behavior changes: a measured
+    ranking that found nothing (no ranked dims/slices/secondaries — a real "no
+    significant driver" answer) still renders its heading, with an explicit
+    absence line — "analyzed, nothing significant" is a visible grounding signal
+    in its own right, distinct from both abstention (never analyzed for a known
+    reason) and non-analysis (`context.drivers` empty altogether, DAT-853's
+    absence-falls-loud principle applied here). The raw artifact stays honest
+    either way — this is prompt-rendering only.
     """
-    rendered = [
-        d
-        for d in context.drivers
-        if d.status == "measured"
-        and (d.ranked_dimensions or d.interesting_slices or d.secondary_dimensions)
-    ]
-    if not rendered:
+    measured = [d for d in context.drivers if d.status == "measured"]
+    if not measured:
         return
 
     lines.append("")
@@ -2108,9 +2107,12 @@ def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
         "aggregation: flow→SUM across periods, stock→latest-period only, ratio→Σnum/Σden. "
         "`interesting_slices` are values that MOVE the measure — a hint, NOT the value-set."
     )
-    for d in rendered:
+    for d in measured:
         grain_note = f", grain {d.grain}" + (f"/{d.entity}" if d.entity else "")
         lines.append(f"\n### {d.measure_label} ({d.target_type}{grain_note})")
+        if not (d.ranked_dimensions or d.interesting_slices or d.secondary_dimensions):
+            lines.append("- No significant driver found.")
+            continue
         if d.ranked_dimensions:
             dims = ", ".join(
                 f"{r.get('dimension')} ({r.get('gain'):.2f})"

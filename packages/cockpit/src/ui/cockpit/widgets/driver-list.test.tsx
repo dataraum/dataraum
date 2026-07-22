@@ -97,6 +97,59 @@ describe("DriverListWidget (DAT-579 follow-up)", () => {
 		expect(screen.getByText("no significant driver")).toBeTruthy();
 	});
 
+	// DAT-859: an abstained measure gets its own distinct badge — never the
+	// measured-empty "no significant driver" text, which would misreport an
+	// abstention as "we tried and found nothing".
+	it("renders an abstained ranking with a distinct badge, not 'no significant driver'", () => {
+		renderWidget({
+			analyzed: true,
+			rankings: [
+				ranking({
+					measure: "unclassified_amount",
+					target_type: "",
+					status: "abstained",
+					abstain_reason: "missing_inputs",
+					ranked_dimensions: [],
+				}),
+			],
+		});
+		expect(screen.getByText("Abstained (Missing inputs)")).toBeTruthy();
+		expect(screen.queryByText("no significant driver")).toBeNull();
+	});
+
+	it("falls back to a bare 'Abstained' badge when no reason is present", () => {
+		renderWidget({
+			analyzed: true,
+			rankings: [
+				ranking({
+					status: "abstained",
+					abstain_reason: null,
+					ranked_dimensions: [],
+				}),
+			],
+		});
+		expect(screen.getByText("Abstained")).toBeTruthy();
+	});
+
+	// DAT-859: an abstained measure was never ranked, so it must not inflate
+	// "N ranked measures" — it gets its own, separately-labeled count instead.
+	it("excludes abstained measures from the ranked-measures count", () => {
+		renderWidget({
+			analyzed: true,
+			rankings: [
+				ranking({ measure: "revenue" }),
+				ranking({
+					measure: "unclassified_amount",
+					status: "abstained",
+					abstain_reason: "missing_inputs",
+					ranked_dimensions: [],
+				}),
+			],
+		});
+		expect(screen.getByText(/1 ranked measure/)).toBeTruthy();
+		expect(screen.getByText(/1 abstained measure/)).toBeTruthy();
+	});
+
 	it("renders the not-run state pointing at begin_session", () => {
 		renderWidget({ analyzed: false, rankings: [] });
 		expect(screen.getByTestId("canvas-driver-list-unanalyzed")).toBeTruthy();

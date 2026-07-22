@@ -78,13 +78,15 @@ class DriverRankingArtifact(Base):
             name="abstain_reason",
         ),
         # The pairing (DAT-859, mirroring entropy/db_models.py's
-        # status_score_reason): a measured row carries no reason; an abstained row
-        # always carries one. ``target_type`` is deliberately NOT in this CHECK — an
-        # abstained ranking may still know its target_type (the 3 processor.py
+        # status_score_reason IN FULL, including its measured-side value guard): a
+        # measured row carries no reason and MUST know its target_type (a Measure's
+        # own __post_init__ never admits a blank one); an abstained row always
+        # carries a reason. ``target_type`` is NOT required on the abstained side —
+        # an abstained ranking may still know its target_type (the 3 processor.py
         # honest-empty sites do; only the unresolved-temporal_behavior abstention at
-        # persistence.py does not), so its nullability is independent of status.
+        # persistence.py does not), so its nullability there is independent of status.
         CheckConstraint(
-            "(status = 'measured' AND abstain_reason IS NULL)"
+            "(status = 'measured' AND abstain_reason IS NULL AND target_type IS NOT NULL)"
             " OR (status = 'abstained' AND abstain_reason IS NOT NULL)",
             name="status_abstain_reason",
         ),

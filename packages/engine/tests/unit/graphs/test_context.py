@@ -348,14 +348,19 @@ class TestDrivers:
         assert "## Drivers" not in out
         assert "unclassified_amount" not in out
 
-    def test_measured_but_content_free_ranking_never_renders(self) -> None:
+    def test_measured_but_content_free_ranking_renders_explicit_absence(self) -> None:
         """A measured ranking with no ranked dims/slices/secondaries (a real "no
-        significant driver found" answer) is also skipped — the pre-existing
-        empty-heading bug DAT-859 closes alongside the abstention convention."""
+        significant driver found" answer) still renders its heading — status
+        gates ONLY on "measured" (never on content, which would silently change
+        measured-ranking behavior) — with an explicit absence line, so "analyzed,
+        nothing significant" stays a visible grounding signal distinct from both
+        abstention (skipped entirely) and never-analyzed (no ## Drivers section
+        at all, DAT-859 review)."""
         barren = DriverContext(measure_label="flat_amount", target_type="flow", grain="row")
         out = format_served_context(GraphExecutionContext(drivers=[barren]))
-        assert "## Drivers" not in out
-        assert "flat_amount" not in out
+        assert "## Drivers" in out
+        assert "### flat_amount (flow, grain row)" in out
+        assert "- No significant driver found." in out
 
     def test_measured_and_abstained_mix_only_renders_the_measured_one(self) -> None:
         measured = DriverContext(

@@ -469,3 +469,21 @@ class TestPersistenceContract:
         real_session.add(_bare_artifact(status="abstained", abstain_reason=None))
         with pytest.raises(IntegrityError):
             real_session.flush()
+
+    def test_measured_without_target_type_rejected(self, real_session: Session) -> None:
+        """The measured-side guard (DAT-859 review): mirrors entropy/db_models.py's
+        status_score_reason CHECK in full — a measured row must know its
+        target_type (a Measure's own __post_init__ never admits a blank one), so a
+        bypass write with NULL target_type is rejected at the DB layer too."""
+        real_session.add(_bare_artifact(status="measured", target_type=None))
+        with pytest.raises(IntegrityError):
+            real_session.flush()
+
+    def test_abstained_without_target_type_still_accepted(self, real_session: Session) -> None:
+        """The abstained side keeps its flexibility: target_type nullability is
+        independent of status (only 1 of the 4 abstention sites has no resolved
+        type), so this must NOT be rejected."""
+        real_session.add(
+            _bare_artifact(status="abstained", abstain_reason="missing_inputs", target_type=None)
+        )
+        real_session.flush()  # no raise

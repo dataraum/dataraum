@@ -739,6 +739,12 @@ def _element_view_sql(name: str) -> str:
         # belongs to one metric), so it doubles as the edge KEY and the destination
         # endpoint key; graph_id is the source endpoint (resolves to the og_metrics
         # vertex). Active rows of the bound vertical only (the __READ__ view is scoped).
+        # No explicit JOIN to og_metrics (unlike og_derives_from's dangling guard): a
+        # parameter is seeded in the SAME savepoint as its metric node with no
+        # independent supersession, so its graph_id always resolves to a metric vertex.
+        # Once a ``frame`` editor can supersede a Metric without its parameters, this
+        # should gain the same INNER-JOIN discipline (a source endpoint resolving to no
+        # vertex simply won't traverse in a MATCH, so the graph stays honest meanwhile).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_has_parameter AS\n"
             f"SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id\n"

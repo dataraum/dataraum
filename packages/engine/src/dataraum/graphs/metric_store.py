@@ -27,7 +27,7 @@ from sqlalchemy import text as sa_text
 from dataraum.analysis.semantic.db_models import WorkspaceSettings
 from dataraum.core.logging import get_logger
 from dataraum.graphs.config import get_metric_definitions
-from dataraum.graphs.loader import GraphLoader
+from dataraum.graphs.loader import GraphLoader, GraphLoadError
 from dataraum.graphs.metric_graph_db_models import (
     Metric,
     MetricDerivesFrom,
@@ -62,44 +62,57 @@ def ensure_metrics_seeded(session: Session, vertical: str) -> int:
     the same discipline as ``ensure_concepts_seeded``. A framed vertical with no on-disk
     metrics and no ``metric`` overlays seeds nothing. Returns the number of metric
     NODES inserted (conflicts skipped).
+
+    **Per-metric fault isolation.** Each declared metric is parsed AND written on its
+    own, mirroring the sibling ``ground_columns`` in this same phase ("a malformed graph
+    must not sink column grounding"): a definition that fails to parse (a shipped-YAML
+    typo, or a user-authored ``metric`` teach-overlay row) is logged and skipped, and
+    each metric's node+params+edges are written inside their OWN ``begin_nested``
+    savepoint so a bad row (e.g. a CHECK violation from an invalid teach payload) rolls
+    back only THAT metric — never the whole batch, and never the concept/edge seeds this
+    phase already committed. One malformed metric must not fail the add_source grounding
+    phase (a non-transient failure Temporal would retry forever).
     """
-    graphs = GraphLoader().graphs_from_definitions(get_metric_definitions(vertical))
-    if not graphs:
-        return 0
-
-    metric_rows: list[dict[str, Any]] = []
-    param_rows: list[dict[str, Any]] = []
-    edge_rows: list[dict[str, Any]] = []
-    for graph in graphs.values():
-        metric_rows.append(_metric_row(vertical, graph))
-        param_rows.extend(_parameter_rows(vertical, graph))
-        edge_rows.extend(_derives_from_rows(vertical, graph))
-
     seeded = 0
-    if metric_rows:
-        seeded = insert_if_absent(
-            session,
-            Metric,
-            metric_rows,
-            index_elements=["vertical", "graph_id"],
-            index_where=sa_text("superseded_at IS NULL"),
-        )
-    if param_rows:
-        insert_if_absent(
-            session,
-            MetricParameter,
-            param_rows,
-            index_elements=["vertical", "graph_id", "name"],
-            index_where=sa_text("superseded_at IS NULL"),
-        )
-    if edge_rows:
-        insert_if_absent(
-            session,
-            MetricDerivesFrom,
-            edge_rows,
-            index_elements=["vertical", "graph_id", "concept_name"],
-            index_where=sa_text("superseded_at IS NULL"),
-        )
+    for graph_id, defn in get_metric_definitions(vertical).items():
+        try:
+            graph = GraphLoader().graphs_from_definitions({graph_id: defn})[graph_id]
+        except GraphLoadError as exc:
+            logger.warning("metric_seed_parse_skip", graph_id=graph_id, error=str(exc))
+            continue
+        try:
+            with session.begin_nested():
+                inserted = insert_if_absent(
+                    session,
+                    Metric,
+                    [_metric_row(vertical, graph)],
+                    index_elements=["vertical", "graph_id"],
+                    index_where=sa_text("superseded_at IS NULL"),
+                )
+                param_rows = _parameter_rows(vertical, graph)
+                if param_rows:
+                    insert_if_absent(
+                        session,
+                        MetricParameter,
+                        param_rows,
+                        index_elements=["vertical", "graph_id", "name"],
+                        index_where=sa_text("superseded_at IS NULL"),
+                    )
+                edge_rows = _derives_from_rows(vertical, graph)
+                if edge_rows:
+                    insert_if_absent(
+                        session,
+                        MetricDerivesFrom,
+                        edge_rows,
+                        index_elements=["vertical", "graph_id", "concept_name"],
+                        index_where=sa_text("superseded_at IS NULL"),
+                    )
+        except Exception as exc:  # noqa: BLE001 - one bad metric must not sink the seed
+            # The savepoint rolled back only THIS metric's partial writes; the outer
+            # session (concept seeds, prior metrics) is intact. Degrade to skip-and-log.
+            logger.warning("metric_seed_write_skip", graph_id=graph_id, error=str(exc))
+            continue
+        seeded += inserted
     if seeded:
         logger.info("metrics_seeded", vertical=vertical, count=seeded)
     return seeded

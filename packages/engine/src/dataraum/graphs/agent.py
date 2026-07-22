@@ -1351,7 +1351,10 @@ class GraphAgent(LLMFeature):
         the declared default. When the typed home has no row for a parameter (an
         unseeded substrate, or a metric declared but not yet seeded), fall back to the
         parsed graph's declared default: YAML is the SEED, the DB is the authority once
-        seeded — the same value by construction, so the runtime path is unchanged.
+        seeded. In every real pipeline run the seed committed in add_source, so the DB
+        row exists and wins; the fallback is the load-bearing path only for an
+        as-yet-unseeded graph (a new parameter added to YAML between deploys) and for
+        ad-hoc graphs built directly in tests.
         """
         from dataraum.graphs.metric_store import metric_parameter_defaults
 

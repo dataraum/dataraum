@@ -51,16 +51,32 @@ from dataraum.storage import Base
 
 
 class MetricParameterDerivation(StrEnum):
-    """How a metric parameter's runtime value is DERIVED when the user provides none.
+    """Names the RULE that derives a metric parameter's value from the data (DAT-732).
 
-    The typed home of the declared-default ↔ observed-override split (DAT-732). A
-    parameter carries its DECLARED default as metadata; ``derivation`` names the RULE
-    that computes an override from the data at runtime (never a stored value):
+    A DECLARED, PROJECTED marker — the typed side of the declared-default ↔
+    observed-override split: the parameter carries its declared default as metadata, and
+    ``derivation`` names the rule that computes an override from the data (never a stored
+    value). It is graph STRUCTURE (persisted here, exposed as
+    ``og_metric_parameters.derivation``) documenting which rule a parameter belongs to —
+    it is NOT itself a runtime dispatch key: today ``period_resolver`` (P5/DAT-785) keys
+    the override on the parameter NAME (``days_in_period``), not on this marker, so the
+    two coincide by construction (only the working-capital metrics' ``days_in_period``
+    carries it). Wiring a generic ``derivation``-dispatched resolver is a P5-substrate
+    change, out of scope here.
 
-    - ``PERIOD_GRAIN`` — resolved from the flow's observed accumulation window over
-      the period-grain ladder (:mod:`dataraum.graphs.period_resolver`, DAT-785). The
-      first and only instance today: ``days_in_period``. NULL ⇒ no derivation, the
-      declared default stands unless the caller overrides it.
+    - ``PERIOD_GRAIN`` — the value is the flow's observed accumulation window over the
+      period-grain ladder (``period_resolver``). The first and only instance today:
+      ``days_in_period``. NULL ⇒ no derivation; the declared default stands unless the
+      caller overrides it.
+
+    Fiscal-boundary seam (DAT-732 deliverable 4): the "last-complete-fiscal-quarter"
+    boundary computation does NOT land here — ``days_in_period`` is a period-grain WINDOW
+    derivation, a different rule from a fiscal-quarter BOUNDARY. When its first consumer
+    appears (a metric or cockpit time-filter asking "as of the last complete fiscal
+    quarter"), it lands as a sibling derivation kind here, computed by walking
+    ``og_period_rolls_up_to`` up from the observed last-complete-month using
+    ``og_period_grain.fiscal_year_start_month`` (the P5 / WorkspaceCalendar substrate,
+    which stays untouched until then).
     """
 
     PERIOD_GRAIN = "period_grain"

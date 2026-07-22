@@ -34,6 +34,8 @@ def _summary(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "cycle_name": "Order Fulfillment",
         "cycle_type": "order_fulfillment",
+        "family": "",
+        "direction": "",
         "description": "orders move to shipped",
         "business_value": "high",
         "status_column": "",
@@ -49,6 +51,33 @@ def _summary(**overrides: Any) -> dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+# The finance settlement family, as the context builder threads it in (config→DB).
+_FAMILY_CONTEXT: dict[str, Any] = {
+    **_CONTEXT,
+    "cycle_families": {
+        "settlement": {"incoming": "accounts_receivable", "outgoing": "accounts_payable"}
+    },
+}
+
+
+def _parse_with_families(summary: dict[str, Any]) -> Any:
+    output = BusinessCycleAnalysisOutput.model_validate(
+        {
+            "cycles": [summary],
+            "stages": [],
+            "entity_flows": [],
+            "business_summary": "s",
+            "detected_processes": [],
+            "data_quality_observations": [],
+            "recommendations": [],
+        }
+    )
+    agent = BusinessCycleAgent.__new__(BusinessCycleAgent)
+    analysis = agent._parse_output(output, _FAMILY_CONTEXT, 0.0, model="m", vertical="finance")
+    (cycle,) = analysis.cycles
+    return cycle
 
 
 def _parse(summary: dict[str, Any]) -> Any:
@@ -74,6 +103,39 @@ def test_measured_cycle_keeps_its_numbers() -> None:
     assert cycle.total_records == 100
     assert cycle.completed_cycles == 40
     assert cycle.completion_rate == 0.4
+
+
+def test_non_family_cycle_has_no_direction_axis() -> None:
+    cycle = _parse(_summary())
+    assert cycle.family is None
+    assert cycle.direction is None
+
+
+def test_family_decided_direction_resolves_to_member(monkeypatch: Any) -> None:
+    # A decided settlement/outgoing resolves to accounts_payable (the directed member).
+    monkeypatch.setattr(
+        "dataraum.analysis.cycles.agent.verify_cycles", lambda cycles, ctx: (cycles, [])
+    )
+    cycle = _parse_with_families(
+        _summary(cycle_type="settlement", family="settlement", direction="outgoing")
+    )
+    assert cycle.canonical_type == "accounts_payable"
+    assert cycle.is_known_type is True
+    assert cycle.family == "settlement"
+    assert cycle.direction == "outgoing"
+
+
+def test_family_undetermined_keeps_the_family(monkeypatch: Any) -> None:
+    # The honest detected-but-undirected state: canonical is the family, never coerced.
+    monkeypatch.setattr(
+        "dataraum.analysis.cycles.agent.verify_cycles", lambda cycles, ctx: (cycles, [])
+    )
+    cycle = _parse_with_families(
+        _summary(cycle_type="settlement", family="settlement", direction="undetermined")
+    )
+    assert cycle.canonical_type == "settlement"
+    assert cycle.family == "settlement"
+    assert cycle.direction == "undetermined"
 
 
 def test_unmeasured_cycle_normalizes_to_none() -> None:

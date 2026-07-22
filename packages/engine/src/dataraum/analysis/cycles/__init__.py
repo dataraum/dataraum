@@ -6,6 +6,7 @@ without hardcoded pattern matching.
 
 from dataraum.analysis.cycles.agent import BusinessCycleAgent
 from dataraum.analysis.cycles.db_models import (
+    CycleFamily,
     DetectedBusinessCycle,
 )
 from dataraum.analysis.cycles.health import (
@@ -29,6 +30,7 @@ __all__ = [
     "CycleStage",
     "EntityFlow",
     # DB models
+    "CycleFamily",
     "DetectedBusinessCycle",
     # Health scoring
     "CycleHealthScore",

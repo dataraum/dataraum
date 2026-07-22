@@ -46,6 +46,13 @@ class DetectedCycle(BaseModel):
     canonical_type: str | None = None  # Mapped to vocabulary key (e.g., "accounts_receivable")
     is_known_type: bool = False  # True if cycle_type matches vocabulary
 
+    # Direction axis (DAT-856): the resolved family + direction. Both None for a
+    # non-family cycle; both set for a family cycle (a decided label, or the
+    # 'undetermined' sentinel). Resolved from the judge's output at parse time by
+    # ``config.resolve_cycle_identity`` — the sole producer of the pair.
+    family: str | None = None
+    direction: str | None = None
+
     description: str  # LLM-generated description of what this cycle represents
     business_value: str = "medium"  # "high", "medium", "low"
 
@@ -147,6 +154,23 @@ class CycleSummaryOutput(BaseModel):
             "For cycles not in the vocabulary, use a descriptive snake_case identifier "
             "(e.g., order_fulfillment, incident_resolution, employee_onboarding). "
             "Do NOT use generic labels like 'custom' or 'other'."
+        )
+    )
+    family: str = Field(
+        description=(
+            "The declared cycle FAMILY this cycle belongs to, chosen from the CYCLE "
+            "FAMILIES list in DOMAIN KNOWLEDGE — a family groups cycle types that differ "
+            'ONLY in direction. "" when this cycle is not a member of any declared family '
+            "(all cycles outside a declared family)."
+        )
+    )
+    direction: str = Field(
+        description=(
+            "For a family cycle: which declared direction the served evidence decides — "
+            'one of the family\'s declared direction labels, or "undetermined" when the '
+            "served evidence does not decide the axis. undetermined is the HONEST answer "
+            "(detected the family, could not direction it); never guess a direction to "
+            'avoid it. "" when family is "" (not a family cycle).'
         )
     )
     description: str = Field(description="What this cycle represents in the business")

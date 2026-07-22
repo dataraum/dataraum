@@ -194,6 +194,8 @@ export const currentDetectedBusinessCycles = pgView(
 		cycleType: varchar("cycle_type"),
 		canonicalType: varchar("canonical_type"),
 		isKnownType: boolean("is_known_type"),
+		family: varchar(),
+		direction: varchar(),
 		description: text(),
 		businessValue: varchar("business_value"),
 		confidence: doublePrecision(),
@@ -210,7 +212,7 @@ export const currentDetectedBusinessCycles = pgView(
 		detectedAt: timestamp("detected_at"),
 	},
 ).as(
-	sql`SELECT cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM engine.detected_business_cycles r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, family, direction, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM engine.detected_business_cycles r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentDimensionHierarchies = pgView(
@@ -649,6 +651,18 @@ export const currentValidationResults = pgView("current_validation_results", {
 	executedAt: timestamp("executed_at"),
 }).as(
 	sql`SELECT result_id, run_id, validation_id, table_ids, columns_used, sql_used, executed_at FROM engine.validation_results r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+);
+
+export const cycleFamilies = pgView("cycle_families", {
+	familyId: varchar("family_id"),
+	vertical: varchar(),
+	family: varchar(),
+	directions: json(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT family_id, vertical, family, directions, source, created_at, superseded_at FROM engine.cycle_families WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const metadataSnapshotHead = pgView("metadata_snapshot_head", {

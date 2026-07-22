@@ -77,6 +77,19 @@ def test_the_prior_entity_evidence_rules_survive(cycles: PromptTemplate) -> None
     assert "never the flow shape alone" in system
 
 
+def test_direction_axis_output_contract_is_pinned(cycles: PromptTemplate) -> None:
+    """The direction axis has a STRUCTURED output home (DAT-856): the judge is told to
+    set family + direction from the CYCLE FAMILIES section, and that `undetermined` is
+    the honest detected-but-undirected answer — all GENERIC (the leak tripwire below
+    proves the family/member vocabulary stays DATA, never hardcoded here)."""
+    system = _flat(cycles.system_prompt)
+    assert "CYCLE FAMILIES section" in system
+    assert "set `family`" in system
+    assert "honest detected-but-undirected answer" in system
+    assert "never guess a label" in system
+    assert "at most ONE cycle per declared family" in system
+
+
 def test_generic_prompt_carries_no_domain_vocabulary() -> None:
     """Leak tripwire (DAT-853 lead ruling): the generic prompt is domain-free.
 

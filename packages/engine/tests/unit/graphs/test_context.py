@@ -418,6 +418,36 @@ class TestBusinessProcesses:
         # It still reads in the narrative, re-qualified from the bare parts.
         assert 'Completion: invoices.status = "paid"' in out
 
+    def test_undirected_family_cycle_renders_direction_honestly(self) -> None:
+        """DAT-856: a detected-but-undirected family cycle reads as exactly that — the
+        family with its direction undetermined, never a guessed member label."""
+        undirected = BusinessCycleContext(
+            cycle_name="Settlement",
+            cycle_type="settlement",
+            family="settlement",
+            direction="undetermined",
+        )
+        out = format_served_context(GraphExecutionContext(business_cycles=[undirected]))
+        assert "### Settlement (settlement, direction undetermined)" in out
+
+    def test_directed_family_cycle_names_its_direction(self) -> None:
+        """A decided family cycle names the resolved member + its direction."""
+        directed = BusinessCycleContext(
+            cycle_name="Payables",
+            cycle_type="accounts_payable",
+            family="settlement",
+            direction="outgoing",
+        )
+        out = format_served_context(GraphExecutionContext(business_cycles=[directed]))
+        assert "### Payables (accounts_payable, direction outgoing)" in out
+
+    def test_non_family_cycle_render_is_unchanged(self) -> None:
+        """A cycle outside any declared family renders with no direction clause."""
+        plain = BusinessCycleContext(cycle_name="Order to Cash", cycle_type="order_to_cash")
+        out = format_served_context(GraphExecutionContext(business_cycles=[plain]))
+        assert "### Order to Cash (order_to_cash)" in out
+        assert "direction" not in out.split("### Order to Cash")[1].split("\n")[0]
+
 
 class TestValidations:
     def test_unjudged_never_labeled_failed(self) -> None:

@@ -435,8 +435,16 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
     lines.append("")
     lines.append("<sql_usage_note>")
     lines.append("IMPORTANT: Use the sql_reference attribute when writing SQL.")
-    lines.append('Column names with spaces MUST be quoted: "Transaction date" not transaction_date')
+    lines.append(
+        'Quote EVERY column name, not just ones with spaces: "Transaction date" '
+        'not transaction_date, "amount" not amount.'
+    )
     lines.append("Use the duckdb_path for table references in FROM/JOIN clauses.")
+    lines.append(
+        "Also quote every alias, CTE name, or derived column YOU introduce — "
+        "DuckDB reserves ordinary English words as keywords in some grammar "
+        "positions, so an unquoted made-up name can still fail to parse."
+    )
     lines.append("</sql_usage_note>")
 
     return "\n".join(lines)

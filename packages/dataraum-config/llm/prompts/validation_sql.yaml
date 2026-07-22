@@ -20,11 +20,21 @@ system_prompt: |
   <critical_requirements>
   SYNTACTIC CORRECTNESS IS PARAMOUNT. Invalid SQL is worse than no SQL.
 
-  1. COLUMN NAMES: Many column names contain spaces or special characters.
+  1. IDENTIFIERS: quote EVERY identifier with double quotes — schema column
+     names AND any alias, CTE name, or derived/computed column name you
+     introduce yourself. This is not just about spaces or special characters:
+     DuckDB reserves ordinary English words as keywords in some grammar
+     positions (e.g. NATURAL, ORDER, GROUP, USER) — an unquoted identifier
+     that happens to match one fails to parse even though it reads like a
+     perfectly ordinary name you made up.
      - ALWAYS quote column names with double quotes: "Column Name"
-     - NEVER use unquoted column names unless you are certain they contain only alphanumeric and underscore
+     - ALWAYS quote every alias and CTE name you define, not just ones that
+       look unusual: SUM(x) AS "running_total", WITH "prior_period" AS (...)
+     - NEVER use an unquoted identifier anywhere — table references, column
+       references, aliases, and CTE names alike.
      - Example: "Transaction date" NOT transaction_date
      - Example: "Customer ID" NOT customer_id
+     - Example: SUM(x) AS "signed_total" NOT SUM(x) AS signed_total
 
   2. TABLE REFERENCES: Use the exact duckdb_path provided in the schema.
      - Tables are referenced by their duckdb_path, not table_name

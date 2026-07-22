@@ -202,6 +202,33 @@ class ExecutionContext:
         )
 
 
+def _served_value_sets(context: ExecutionContext) -> dict[str, set[str]]:
+    """Column name → its COMPLETE served value-set (the DAT-787 member reference).
+
+    Only columns whose ``top_values`` are the COMPLETE enumeration
+    (``distinct_count <= len(top_values)``) — the same "complete" gate the
+    prompt's Value sets render on (``_build_value_sets``). High-cardinality
+    (``search_values``-resolved) and unprofiled columns are omitted, so
+    ``validate_grounding_basis`` treats a member on them as honest under-coverage
+    rather than a false rejection. Keyed by bare column name; a name that collides
+    across tables unions their served values (accept-if-served-anywhere — a
+    validator, never a source).
+    """
+    served: dict[str, set[str]] = {}
+    rich = context.rich_context
+    if rich is None:
+        return served
+    for table in rich.tables:
+        for col in table.columns:
+            top = col.top_values
+            if not top or col.distinct_count is None or col.distinct_count > len(top):
+                continue
+            values = {str(tv["value"]) for tv in top if tv.get("value") is not None}
+            if values:
+                served.setdefault(col.column_name, set()).update(values)
+    return served
+
+
 class GraphAgent(LLMFeature):
     """Unified agent for executing any graph type.
 
@@ -951,7 +978,12 @@ class GraphAgent(LLMFeature):
         from dataraum.llm.contract_repair import repair_tool_contract
 
         schema_tables = schema_tables_from_info(schema_info)
-        violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+        # DAT-787: the value reference for filter_members — the complete served
+        # value-sets, the same enumeration the prompt's Value sets render.
+        served_values = _served_value_sets(context)
+        violations = validate_grounding_basis(
+            output, schema_tables, context.duckdb_conn, served_values
+        )
         if violations:
             repaired = repair_tool_contract(
                 self.provider,
@@ -965,7 +997,9 @@ class GraphAgent(LLMFeature):
             if not repaired.success:
                 return Result.fail(repaired.error or "grounding contract repair failed")
             output = repaired.unwrap()
-            violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+            violations = validate_grounding_basis(
+                output, schema_tables, context.duckdb_conn, served_values
+            )
 
         # Bind the one generated grounding to the graph's own leaf id (the model
         # never names a step — DAT-664's id-paraphrase class is gone by

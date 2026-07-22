@@ -278,3 +278,82 @@ def test_distinct_concepts_are_fine() -> None:
         column_mappings_basis=[*_basis("revenue", ["credit"]), *_basis("cost", ["debit"])]
     )
     assert len(prov.column_mappings_basis) == 2
+
+
+# --- filter_members enforcement (DAT-787) -------------------------------------
+
+
+def test_filter_member_shape_requires_column_and_value() -> None:
+    """FilterMember is a strict typed pair — both fields, no extras."""
+    import pytest
+    from pydantic import ValidationError
+
+    assert FilterMember(column="account_type", value="asset").model_dump() == {
+        "column": "account_type",
+        "value": "asset",
+    }
+    with pytest.raises(ValidationError):
+        FilterMember(column="account_type")  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        FilterMember(column="account_type", value="asset", extra="x")  # type: ignore[call-arg]
+
+
+def _member_output(members: list[FilterMember], where: list[str]) -> ExtractGroundingOutput:
+    return _output(
+        select_expr="SUM(credit)",
+        where=where,
+        basis=_basis("account_balance", ["credit"], ["account_type"], members),
+    )
+
+
+def test_clean_member_passes(conn) -> None:
+    """Column ∈ filter_columns, value served, value in the where predicates."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="asset")],
+        ["account_type IN ('asset')"],
+    )
+    served = {"account_type": {"asset", "liability", "equity"}}
+    assert validate_grounding_basis(out, _SCHEMA, conn, served) == []
+
+
+def test_member_column_must_be_in_filter_columns(conn) -> None:
+    """A member on a column the concept does not filter on is rejected."""
+    out = _member_output(
+        [FilterMember(column="posted", value="asset")],
+        ["account_type IN ('asset')"],
+    )
+    violations = validate_grounding_basis(out, _SCHEMA, conn, {})
+    assert any("'posted'" in v and "not in filter_columns" in v for v in violations)
+
+
+def test_member_value_must_be_served(conn) -> None:
+    """A fabricated value (not in the complete served set) is caught."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="revenue")],
+        ["account_type IN ('revenue')"],
+    )
+    served = {"account_type": {"asset", "liability", "equity"}}
+    violations = validate_grounding_basis(out, _SCHEMA, conn, served)
+    assert any("'revenue'" in v and "not a served value" in v for v in violations)
+
+
+def test_member_value_membership_skipped_without_served_set(conn) -> None:
+    """No complete served set for the column ⇒ honest under-coverage, no reject."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="whatever")],
+        ["account_type IN ('whatever')"],
+    )
+    # served_values empty for account_type → value-membership not enforced.
+    assert validate_grounding_basis(out, _SCHEMA, conn, {}) == []
+
+
+def test_member_value_must_appear_in_where(conn) -> None:
+    """A member whose value no predicate references is rejected — this is the
+    lexical cross-check that keeps engine-appended scope values out of members."""
+    out = _member_output(
+        [FilterMember(column="account_type", value="asset")],
+        ["account_type IN ('liability')"],
+    )
+    served = {"account_type": {"asset", "liability"}}
+    violations = validate_grounding_basis(out, _SCHEMA, conn, served)
+    assert any("'asset'" in v and "no where predicate references it" in v for v in violations)

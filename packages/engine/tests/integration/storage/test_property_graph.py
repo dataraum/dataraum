@@ -1565,6 +1565,8 @@ def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None
     }
     # The dimensionless measure contributes nothing — an explicit no-edge assertion.
     assert not any(m == "amount_declared" for m, *_ in rows)
+
+
 # --- Metric DAG (DAT-732): metric_node + derives_from + has_parameter ---
 
 

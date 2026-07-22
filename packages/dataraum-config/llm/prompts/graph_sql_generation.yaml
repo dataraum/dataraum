@@ -1,6 +1,6 @@
 name: "graph_sql_generation"
-version: "9.0"
-description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does). v7.1 (DAT-792): the graph spec serves the step's declared validations — catalogue-declared expectations on the executed value the grounding should be consistent with; enforced post-hoc by the verifier, never a filter to inject. v8.0 (DAT-727, provenance contract v2): column_mappings_basis enumerates EVERY relation column the parts touch, by role (measure_columns / filter_columns) — validated against the served schema and cross-checked against the SQL parts at save; the v1 free-form keys (column, resolution) are gone. v9.0 (DAT-734, graph-shaped context): <dataset_context> is assembled by traversal over the operating-model property graph — Business Concepts serves each concept's graph neighbourhood (part_of/disjoint/reconciles) AND its prior committed groundings (relation + filter + value expression + used columns, failures with reasons); relationships carry a Confirmed column; conformed dimension axes served as structure; the column table serves the graph-resolved Materialization (flow/stock, replacing the temporal_behavior wording) with business meaning single-homed in COLUMN MEANINGS."
+version: "10.0"
+description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does). v7.1 (DAT-792): the graph spec serves the step's declared validations — catalogue-declared expectations on the executed value the grounding should be consistent with; enforced post-hoc by the verifier, never a filter to inject. v8.0 (DAT-727, provenance contract v2): column_mappings_basis enumerates EVERY relation column the parts touch, by role (measure_columns / filter_columns) — validated against the served schema and cross-checked against the SQL parts at save; the v1 free-form keys (column, resolution) are gone. v9.0 (DAT-734, graph-shaped context): <dataset_context> is assembled by traversal over the operating-model property graph — Business Concepts serves each concept's graph neighbourhood (part_of/disjoint/reconciles) AND its prior committed groundings (relation + filter + value expression + used columns, failures with reasons); relationships carry a Confirmed column; conformed dimension axes served as structure; the column table serves the graph-resolved Materialization (flow/stock, replacing the temporal_behavior wording) with business meaning single-homed in COLUMN MEANINGS. v10.0 (DAT-787): column_mappings_basis also types filter_members — one {column, value} per value the where predicates SELECT (the value side of filter_columns); validated against the served value sets and cross-checked against the predicates, and the substrate the operating-model graph's filtered_by edge un-nests into DimMember vertices."
 temperature: 0.0
 
 # System prompt — defines the single job: ground ONE concept to one extract.
@@ -78,7 +78,12 @@ system_prompt: |
   filter_columns (the columns your where predicates filter on). Bare served column names,
   verbatim, no table qualifier. This enumeration is validated against the served schema and
   cross-checked against your SQL parts — a column your SQL uses but you did not enumerate (or
-  one you enumerate but never use) is rejected.
+  one you enumerate but never use) is rejected. Then, in filter_members, name each specific
+  value your predicates SELECT — one `{column, value}` per value (an `IN (...)` of three values
+  is three members; a range/comparison or non-value predicate contributes none). Each column
+  must be one you listed in filter_columns, and each value must be a served value, verbatim
+  (the same value you put in the predicate) — this is the typed form of `filter`, and it is
+  what turns a dimensional filter into a first-class DimMember downstream.
 
   FLOORS — few, and non-negotiable, because each one is a silent-wrong-number we have actually
   shipped (reason freely above them; never through them):
@@ -303,9 +308,11 @@ user_prompt: |
   3. `description` — the one-line human summary.
   4. `provenance` — column_mappings_basis = {concept: {measure_columns (EVERY relation
      column select_expr reads), filter_columns (EVERY relation column the where predicates
-     filter on), filter (the exact values selected)}}. Served column names verbatim — the
-     enumeration is validated against the served schema and against your own SQL parts, so
-     it must cover exactly the columns they touch.
+     filter on), filter (the exact values selected), filter_members (one {column, value} per
+     value the predicates select — the typed form of `filter`)}}. Served column names
+     verbatim — the enumeration is validated against the served schema and against your own
+     SQL parts, so it must cover exactly the columns they touch, and each filter_member's
+     value must be a served value that appears in your predicates.
   5. `assumptions` — genuine interpretation choices only; ALWAYS record one (LOW confidence)
      in the FALL-LOUD case, naming the concept and why it is ungrounded.
 

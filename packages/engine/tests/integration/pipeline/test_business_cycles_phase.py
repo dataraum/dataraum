@@ -415,9 +415,7 @@ class TestCycleLifecycleFlow:
             "accounts_payable": {"business_value": "high"},
         }
         mock_ground.return_value = Result.ok(
-            _analysis(
-                [_detected("settlement", family="settlement", direction="undetermined")]
-            )
+            _analysis([_detected("settlement", family="settlement", direction="undetermined")])
         )
 
         result = BusinessCyclesPhase()._run(
@@ -458,13 +456,7 @@ class TestCycleLifecycleFlow:
             "accounts_payable": {"business_value": "high"},
         }
         mock_ground.return_value = Result.ok(
-            _analysis(
-                [
-                    _detected(
-                        "accounts_payable", family="settlement", direction="outgoing"
-                    )
-                ]
-            )
+            _analysis([_detected("accounts_payable", family="settlement", direction="outgoing")])
         )
 
         result = BusinessCyclesPhase()._run(

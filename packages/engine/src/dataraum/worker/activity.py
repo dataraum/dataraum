@@ -25,9 +25,9 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 from temporalio.exceptions import ApplicationError
 
+from dataraum.analysis.semantic.concept_store import require_active_vertical
 from dataraum.core.config import load_phase_config, load_pipeline_config
 from dataraum.core.logging import get_logger
-from dataraum.core.vertical import require_known_vertical
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
 from dataraum.investigation.queries import link_run_tables, tables_for_run
@@ -113,6 +113,9 @@ _DETECTOR_PHASES = (
 SESSION_DETECTOR_PHASES = (
     "relationships",
     "semantic_per_table",
+    # unit_source (DAT-647/823): reads ColumnConcept.unit_source_column, which
+    # catalogue_semantics authors under the begin_session run.
+    "catalogue_semantics",
     "aggregation_lineage",
     "enriched_views",
     "correlations",
@@ -128,11 +131,19 @@ OPERATING_MODEL_DETECTOR_PHASES = ("validation",)
 
 @dataclass
 class PhaseRun:
-    """Temporal-agnostic outcome of one phase body (no detector side-effects)."""
+    """Temporal-agnostic outcome of one phase body (no detector side-effects).
+
+    ``declared`` carries a phase's declared-artifact count up to the activity
+    boundary when its outputs report one (the three operating_model families;
+    ``None`` otherwise). It is the ONE output field that survives the collapse to
+    :class:`PhaseOutcome` — the gate signal ``OperatingModelWorkflow`` reads to
+    refuse an empty promote (DAT-845).
+    """
 
     status: str
     summary: str = ""
     error: str | None = None
+    declared: int | None = None
 
 
 def run_phase(
@@ -449,6 +460,10 @@ def run_session_phase(
         status=result.status.value,
         summary=result.summary,
         error=result.error,
+        # The three operating_model families report their declared-artifact count
+        # in outputs; thread it up as the promote gate's signal (DAT-845). Every
+        # other session phase omits the key → None.
+        declared=result.outputs.get("declared"),
     )
 
 
@@ -688,11 +703,21 @@ def resolve_operating_model_scope(
     from dataraum.lifecycle import resolve_operating_model_base_runs
 
     with manager.session_scope() as session:
-        # Born-loud on a typo'd / never-framed vertical (DAT-480): an unknown
-        # name would silently resolve to no declared validations/cycles/metrics
-        # and every phase would emit a benign no_declared_*. A placeholder
-        # (_adhoc), shipped, or framed name passes through unchanged.
-        require_known_vertical(vertical)
+        # Born-loud on a typo'd / never-framed vertical (DAT-480) AND on a vertical
+        # that mismatches the workspace's bound one (DAT-848): an unknown name would
+        # silently resolve to no declared validations/cycles/metrics (benign
+        # no_declared_*), and a wrong --vertical would ground operating_model against
+        # another vertical's concepts. require_active_vertical checks both (binds if
+        # this is somehow the workspace's first non-placeholder run). A placeholder
+        # (_adhoc), or the matching shipped/framed name, passes through unchanged.
+        # Both failures are DETERMINISTIC (a typo/mismatch never fixes itself on
+        # retry), so — like every other refusal in this pre-flight — surface them as
+        # a non-retryable PhaseFailed rather than a plain RuntimeError that would burn
+        # the retry policy's 5 attempts.
+        try:
+            require_active_vertical(session, vertical)
+        except RuntimeError as e:
+            raise ApplicationError(str(e), type="PhaseFailed", non_retryable=True) from e
         # The catalog head names begin_session's promoted run; its run_tables are
         # the workspace's composed table set (DAT-506). No promoted run → refuse.
         catalog_run_id = head_run_id(session, catalog_head_target(), "catalog")

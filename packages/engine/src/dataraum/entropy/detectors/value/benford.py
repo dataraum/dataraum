@@ -22,7 +22,7 @@ import math
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import ABSTAIN_NOT_APPLICABLE, EntropyObject
 from dataraum.entropy.surprise import kl_divergence, surprise_score
 
 # Benford's Law expected leading-digit (1..9) probabilities.
@@ -115,6 +115,28 @@ class BenfordDetector(EntropyDetector):
         # The observed leading-digit distribution is required for a surprise score.
         if not isinstance(benford_analysis, dict):
             return []
+
+        # Applicability (DAT-843/853): the quality phase measured the magnitude
+        # span; under ~1 order of magnitude Benford is undefined — a KL score
+        # would be geometry, not surprise. Abstain, don't skip: the row keeps
+        # "not measured" distinguishable from "measured clean".
+        if benford_analysis.get("status") == "not_applicable":
+            return [
+                self.create_abstention(
+                    context,
+                    ABSTAIN_NOT_APPLICABLE,
+                    evidence=[
+                        {
+                            "magnitude_span_decades": benford_analysis.get(
+                                "magnitude_span_decades"
+                            ),
+                            "interpretation": benford_analysis.get("interpretation", ""),
+                            "n_values": n_values,
+                        }
+                    ],
+                )
+            ]
+
         digit_distribution = benford_analysis.get("digit_distribution")
         if not isinstance(digit_distribution, dict):
             return []
@@ -136,7 +158,7 @@ class BenfordDetector(EntropyDetector):
                 "kl_bits": round(kl_bits, 4),
                 "digit_distribution": digit_distribution,
                 "n_values": n_values,
-                "is_compliant": benford_analysis.get("is_compliant"),
+                "status": benford_analysis.get("status"),
                 "chi_square": benford_analysis.get("chi_square"),
                 "p_value": benford_analysis.get("p_value"),
                 "interpretation": benford_analysis.get("interpretation", ""),

@@ -274,9 +274,8 @@ def load_statistics(
     if qm:
         qd = qm.quality_data or {}
         quality_dict: dict[str, Any] = {
-            "benford_compliant": bool(qm.benford_compliant)
-            if qm.benford_compliant is not None
-            else None,
+            # The benford detector reads the full benford_analysis dict — the
+            # typed status (DAT-843) rides inside it; no separate key.
             "benford_analysis": qd.get("benford_analysis"),
             "quality_data": qm.quality_data,
         }

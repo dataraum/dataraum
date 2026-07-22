@@ -38,6 +38,7 @@ const REL = {
 	to_table_name: "customers",
 	to_column_name: "id",
 	band: "ready",
+	coverage: "measured",
 	worst_intent_risk: 0.1,
 	intents: [{ intent: "query_intent", band: "ready", risk: 0.1 }],
 	top_drivers: [

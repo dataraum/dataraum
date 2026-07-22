@@ -102,6 +102,23 @@ export function computeNextActions(
 		});
 	}
 
+	// P3 — the operating model RAN but the framed vertical declares nothing to build
+	// one from (DAT-845). NOT a "run it again" loop: a re-run can't fix a vertical
+	// that declares no validations, cycles, or metrics — the declarations must be
+	// ADDED (framed) first. An honest dead-end routed to the Stage chat, where framing
+	// lives. The `operating_model` nudge above never fires here (analyse is
+	// `nothing_declared`, not `empty`), and "Ready to answer" below is gated on
+	// `ready`, so this state neither loops nor claims answerable.
+	if (progress.analyse === "nothing_declared") {
+		actions.push({
+			kind: "declare",
+			label:
+				"No operating model — this vertical declares no validations, cycles, or metrics; add declarations to build one",
+			targetChat: "stage",
+			priority: 3,
+		});
+	}
+
 	// P4 — everything's ready and nothing blocks answers.
 	if (progress.analyse === "ready" && attention.columnsBlocked === 0) {
 		actions.push({

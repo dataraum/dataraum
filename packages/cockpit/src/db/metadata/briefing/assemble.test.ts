@@ -20,6 +20,7 @@ const ALL_EMPTY_FLAGS: BriefingStageFlags = {
 	addSourceRunning: false,
 	beginSessionRunning: false,
 	operatingModelRunning: false,
+	operatingModelNothingDeclared: false,
 };
 
 function driver(label: string) {
@@ -118,6 +119,30 @@ describe("assembleBriefing — inventory (source-qualified)", () => {
 		expect(b.inventory.bandCounts.unknown).toBe(1);
 		// The null-band table still appears in the inventory, carrying band null.
 		expect(b.inventory.tables.find((x) => x.name === "items")?.band).toBeNull();
+	});
+
+	it("treats an unmeasured column as no-signal (unknown), never ready (DAT-853)", () => {
+		// A never-measured column reads band='ready' with coverage='unmeasured'. The
+		// briefing must NOT count it as ready — it lands in the "not analyzed" (unknown)
+		// bucket, and its table's worst-band is no-signal, never a green "ready".
+		const b = assembleBriefing(
+			inputs({
+				tableMetaById: { t: meta("src_a", "orders") },
+				readiness: [
+					readiness({
+						tableId: "t",
+						columnId: "c1",
+						band: "ready",
+						coverage: "unmeasured",
+					}),
+				],
+			}),
+		);
+		expect(b.inventory.bandCounts.ready).toBe(0);
+		expect(b.inventory.bandCounts.unknown).toBe(1);
+		expect(
+			b.inventory.tables.find((x) => x.name === "orders")?.band,
+		).toBeNull();
 	});
 
 	it("sorts by source, then worst band, then name", () => {
@@ -323,5 +348,59 @@ describe("assembleBriefing — progress", () => {
 			}),
 		);
 		expect(b.progress.stage).toBe("in_progress");
+	});
+
+	it("analyse=nothing_declared when the OM run completed but declared nothing (DAT-845)", () => {
+		const b = assembleBriefing(
+			inputs({
+				flags: {
+					...ALL_EMPTY_FLAGS,
+					hasImportedTables: true,
+					catalogPromoted: true,
+					// The run COMPLETED without flipping the head → not promoted, not empty.
+					operatingModelPromoted: false,
+					operatingModelNothingDeclared: true,
+				},
+			}),
+		);
+		expect(b.progress.analyse).toBe("nothing_declared");
+		// The honest nudge is emitted; the "run the operating model" loop is NOT, and
+		// "Ready to answer" is NOT (analyse isn't ready).
+		const kinds = b.nextActions.map((a) => a.kind);
+		expect(kinds).toContain("declare");
+		expect(kinds).not.toContain("operating_model");
+		expect(kinds).not.toContain("answer");
+	});
+
+	it("a promoted head still wins over a stale nothing_declared flag", () => {
+		// Belt-and-braces: if both are somehow set, head-presence (a real operating
+		// model exists) takes precedence — analyse reads ready, never nothing_declared.
+		const b = assembleBriefing(
+			inputs({
+				flags: {
+					...ALL_EMPTY_FLAGS,
+					hasImportedTables: true,
+					catalogPromoted: true,
+					operatingModelPromoted: true,
+					operatingModelNothingDeclared: true,
+				},
+			}),
+		);
+		expect(b.progress.analyse).toBe("ready");
+	});
+
+	it("an in-flight OM run wins over a prior nothing_declared", () => {
+		const b = assembleBriefing(
+			inputs({
+				flags: {
+					...ALL_EMPTY_FLAGS,
+					hasImportedTables: true,
+					catalogPromoted: true,
+					operatingModelRunning: true,
+					operatingModelNothingDeclared: true,
+				},
+			}),
+		);
+		expect(b.progress.analyse).toBe("in_progress");
 	});
 });

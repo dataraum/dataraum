@@ -12,8 +12,6 @@ def _table(time_columns: list[dict], **overrides: object) -> dict:
     """A minimal valid TableEntityOutput dict with the given time_columns."""
     base = {
         "table_name": "orders",
-        "entity_type": "orders",
-        "description": "Customer orders.",
         "is_fact_table": True,
         "grain": ["order_id"],
         "time_columns": time_columns,
@@ -38,7 +36,11 @@ def test_table_synthesis_output_has_no_column_field() -> None:
         TableSynthesisOutput.model_json_schema()["$defs"]["TableEntityOutput"]["properties"]
     )
     assert "columns" not in fields
-    assert {"table_name", "entity_type", "is_fact_table", "grain"} <= fields
+    assert {"table_name", "is_fact_table", "grain"} <= fields
+    # DAT-823: the business reading moved to catalogue_semantics — a leak back
+    # into this schema would re-couple the structural judge to it.
+    assert "entity_type" not in fields
+    assert "description" not in fields
     # DAT-565: multi-temporal + identity roles live on the per-table schema.
     assert {"time_columns", "identity_columns"} <= fields
 
@@ -52,8 +54,6 @@ def test_table_entity_output_parses_multi_time_and_identity() -> None:
             "tables": [
                 {
                     "table_name": "orders",
-                    "entity_type": "orders",
-                    "description": "Customer orders.",
                     "is_fact_table": True,
                     "grain": ["order_id"],
                     "time_columns": [
@@ -246,8 +246,6 @@ def test_table_synthesis_output_validates_entities_and_relationships() -> None:
             "tables": [
                 {
                     "table_name": "orders",
-                    "entity_type": "orders",
-                    "description": "Customer orders.",
                     "is_fact_table": True,
                     "grain": ["order_id"],
                     "time_columns": [],
@@ -293,10 +291,10 @@ def test_every_field_is_required_in_the_output_schema() -> None:
         assert not optional, f"{owner} has optional fields: {sorted(optional)}"
 
 
-def test_omitting_column_concepts_is_a_validation_error() -> None:
-    """Omitting the whole field now raises — the signal the repair turn keys on."""
+def test_omitting_relationships_is_a_validation_error() -> None:
+    """Omitting a whole required field raises — the signal the repair turn keys on."""
     import pytest
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        TableSynthesisOutput.model_validate({"tables": [], "relationships": []})
+        TableSynthesisOutput.model_validate({"tables": []})

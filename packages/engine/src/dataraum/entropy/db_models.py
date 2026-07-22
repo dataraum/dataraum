@@ -25,6 +25,13 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.entropy.dimensions import Dimension, Layer, SubDimension
+from dataraum.entropy.models import (
+    ABSTAIN_REASONS,
+    COVERAGE_MEASURED,
+    COVERAGE_STATES,
+    ENTROPY_STATUSES,
+    STATUS_MEASURED,
+)
 from dataraum.storage import Base
 
 # Use JSONB for PostgreSQL, JSON for SQLite (JSON handles serialization automatically)
@@ -64,6 +71,27 @@ class EntropyObjectRecord(Base):
             "sub_dimension IN (" + ", ".join(f"'{v}'" for v in _SUB_DIMENSION_VALUES) + ")",
             name="sub_dimension",
         ),
+        # Abstention vocabulary (DAT-853): derived from the single-home constants
+        # in ``entropy.models`` (the EntropyObject __post_init__ is the writer-side
+        # enforcement; this is the DB backstop). Sorted for a deterministic dump.
+        CheckConstraint(
+            "status IN (" + ", ".join(f"'{v}'" for v in sorted(ENTROPY_STATUSES)) + ")",
+            name="status",
+        ),
+        CheckConstraint(
+            "abstain_reason IS NULL OR abstain_reason IN ("
+            + ", ".join(f"'{v}'" for v in sorted(ABSTAIN_REASONS))
+            + ")",
+            name="abstain_reason",
+        ),
+        # The pairing: a measured row carries a score and no reason; an abstained
+        # row carries a reason and no score — "not measured" can never render as
+        # a number.
+        CheckConstraint(
+            "(status = 'measured' AND score IS NOT NULL AND abstain_reason IS NULL)"
+            " OR (status = 'abstained' AND score IS NULL AND abstain_reason IS NOT NULL)",
+            name="status_score_reason",
+        ),
     )
 
     object_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -89,8 +117,11 @@ class EntropyObjectRecord(Base):
     # Snapshot version axis (DAT-413): the run that wrote this row.
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
-    # Measurement
-    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Measurement (DAT-853): ``score`` is NULL exactly when the detector
+    # abstained (``status = 'abstained'``); the pairing is CHECK-enforced above.
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default=STATUS_MEASURED)
+    abstain_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Evidence (detector-specific)
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
@@ -138,6 +169,13 @@ class EntropyReadinessRecord(Base):
         # body, not (yet) its own enum; hand-typed inline, matching the
         # ``relationship_type`` precedent.
         CheckConstraint("band IN ('ready', 'investigate', 'blocked')", name="band"),
+        # Rollup coverage (DAT-853): the third outcome. The band vocabulary above
+        # stays frozen; ``coverage`` distinguishes "measured clean" from "not
+        # measured" — derived from the single-home constants in ``entropy.models``.
+        CheckConstraint(
+            "coverage IN (" + ", ".join(f"'{v}'" for v in sorted(COVERAGE_STATES)) + ")",
+            name="coverage",
+        ),
     )
 
     readiness_id: Mapped[str] = mapped_column(
@@ -163,6 +201,15 @@ class EntropyReadinessRecord(Base):
     # signal the contract gate consumes — plus the worst per-intent risk behind it.
     band: Mapped[str] = mapped_column(String, nullable=False, default="ready")
     worst_intent_risk: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Rollup coverage (DAT-853): whether the band rests on actual measurements.
+    # Degraded only by GAP-reason abstentions (ABSTAIN_GAP_REASONS — a
+    # not_applicable "no such question" does not degrade coverage). 'unmeasured'
+    # rows carry band='ready' with zero risk — the band is vacuous and this
+    # column says so; previously such targets got NO row (silent green).
+    # ``abstentions`` is the self-describing trace: [{detector, reason, intents}].
+    coverage: Mapped[str] = mapped_column(String, nullable=False, default=COVERAGE_MEASURED)
+    abstentions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON_TYPE)
 
     # Per-intent breakdown: [{intent, band, risk, drivers: [{node, state, impact_delta}]}].
     intents: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON_TYPE)

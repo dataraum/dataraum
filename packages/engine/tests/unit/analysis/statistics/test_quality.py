@@ -119,3 +119,103 @@ class TestOutlierDetection:
         # Verify the known outliers are detected
         assert 200 > upper_fence or 200 < lower_fence
         assert 250 > upper_fence or 250 < lower_fence
+
+
+class TestBenfordApplicabilityGate:
+    """DAT-843: Benford is undefined for values confined to <1 order of magnitude.
+
+    Real check_benford_law against an in-memory DuckDB — no mocks: the gate is
+    about the actual values.
+    """
+
+    class _TableProxy:
+        table_name = "t"
+        duckdb_path = "t"
+
+    class _ColumnProxy:
+        column_id = "c1"
+        column_name = "v"
+        resolved_type = "DOUBLE"
+
+    def _run(self, values):
+        import duckdb
+
+        from dataraum.analysis.statistics.quality import check_benford_law
+
+        conn = duckdb.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE t (v DOUBLE)")
+            conn.executemany("INSERT INTO t VALUES (?)", [(float(v),) for v in values])
+            result = check_benford_law(self._TableProxy(), self._ColumnProxy(), conn)  # type: ignore[arg-type]
+        finally:
+            conn.close()
+        assert result.success, result.error
+        return result.value
+
+    def test_bounded_one_decade_is_not_applicable(self):
+        """Values in [100, 999] span <1 decade -> not_applicable, no chi-square verdict."""
+        rng = np.random.default_rng(42)
+        analysis = self._run(rng.integers(100, 1000, size=500))
+        assert analysis is not None
+        assert analysis.status == "not_applicable"
+        assert analysis.magnitude_span_decades < 1.0
+        assert analysis.chi_square is None
+        assert analysis.p_value is None
+        assert analysis.digit_distribution is None
+        assert "not applicable" in analysis.interpretation
+
+    def test_log_uniform_multi_decade_is_compliant(self):
+        """Log-uniform values across 4 decades follow Benford exactly -> compliant."""
+        rng = np.random.default_rng(42)
+        analysis = self._run(10 ** rng.uniform(0, 4, size=5000))
+        assert analysis is not None
+        assert analysis.status == "compliant"
+        assert analysis.magnitude_span_decades >= 1.0
+        assert analysis.p_value is not None and analysis.p_value > 0.05
+        assert analysis.digit_distribution is not None
+
+    def test_linear_uniform_multi_decade_is_violating(self):
+        """Uniform(1, 10000) spans decades but has ~uniform leading digits -> violating."""
+        rng = np.random.default_rng(42)
+        analysis = self._run(rng.uniform(1000, 9999, size=2000).tolist() + [1.5, 15.0, 150.0])
+        assert analysis is not None
+        assert analysis.status == "violating"
+        assert analysis.p_value is not None and analysis.p_value <= 0.05
+
+    def test_small_sample_stays_none(self):
+        """n < 100 remains 'no analysis' (unchanged gate)."""
+        analysis = self._run(range(1, 60))
+        assert analysis is None
+
+
+class TestBenfordIssueSuppression:
+    """A not_applicable outcome must never become a benford_violation issue."""
+
+    def _analysis(self, status: str):
+        from dataraum.analysis.statistics.models import BenfordAnalysis
+
+        measured = status != "not_applicable"
+        return BenfordAnalysis(
+            status=status,  # type: ignore[arg-type]
+            magnitude_span_decades=0.5 if not measured else 3.0,
+            chi_square=42.0 if measured else None,
+            p_value=0.001 if measured else None,
+            digit_distribution={"1": 0.5} if measured else None,
+            interpretation="x",
+        )
+
+    def test_violating_yields_issue(self):
+        from dataraum.analysis.statistics.quality import _generate_statistical_quality_issues
+
+        issues = _generate_statistical_quality_issues(self._analysis("violating"), None)
+        assert [i["issue_type"] for i in issues] == ["benford_violation"]
+
+    def test_not_applicable_yields_no_issue(self):
+        from dataraum.analysis.statistics.quality import _generate_statistical_quality_issues
+
+        assert _generate_statistical_quality_issues(self._analysis("not_applicable"), None) == []
+
+    def test_compliant_yields_no_issue(self):
+        from dataraum.analysis.statistics.quality import _generate_statistical_quality_issues
+
+        assert _generate_statistical_quality_issues(self._analysis("compliant"), None) == []

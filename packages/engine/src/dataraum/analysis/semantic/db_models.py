@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -25,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from dataraum.analysis.catalogue.models import MEANING_STATUSES
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
@@ -288,6 +290,63 @@ class ConceptEdge(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class WorkspaceSettings(Base):
+    """The workspace's bound active vertical — the one home DAT-848 was missing.
+
+    A workspace's concept vocabulary (:class:`Concept` / :class:`ConceptEdge`, keyed
+    ``(vertical, name)``) is bound to exactly ONE vertical. The engine had no fact
+    recording which, so a run launched with the wrong ``--vertical`` seeded a second
+    vertical's rows and every unscoped reader served the union — permanent
+    cross-vertical contamination (DAT-848). This single-row table is that fact.
+
+    **Binding.** ``active_vertical`` is set the first time a run resolves a
+    NON-placeholder vertical (``require_active_vertical`` in ``concept_store.py``,
+    the resolve gate); a later run whose vertical differs fails LOUD there rather
+    than seeding beside it. Placeholder runs (``_adhoc``) declare no domain — they
+    never bind and are never checked. Changing a bound workspace's vertical is a
+    deliberate, explicit operation (re-run after the change), NOT a per-run override
+    — the gate refuses to silently repurpose a finance workspace as marketing.
+
+    **Scoping.** The concept read surface — the ``__READ__.concepts`` /
+    ``__READ__.concept_edges`` views (``storage/read_views.py``), which feed both
+    ``og_concepts`` / ``og_concept_edges`` (the property graph) and the cockpit's
+    Drizzle mirror — filters to ``active_vertical``. So a Concept row that a wrong
+    ``--vertical`` (or the eval's wild-vertical stand-in) left under a DIFFERENT
+    vertical is present in the base table but never SERVED. Frame writes and the
+    seed still land on the raw ``concepts`` table directly; only the read surface is
+    scoped.
+
+    **Identity.** Workspace identity IS the ``ws_<id>`` schema (no ``workspace_id``
+    column, as :class:`Concept`). Singleton: ``pin`` is a boolean PK checked
+    ``= TRUE``, so at most one row exists per schema. The row exists iff a real
+    vertical is bound; an unbound workspace has zero rows → the scoping subquery
+    resolves to NULL and the read views ``COALESCE`` it to the placeholder ``_adhoc``
+    (the no-domain vocabulary ``frame`` writes when the user names no vertical), so an
+    unbound workspace serves its ``_adhoc`` concepts, not nothing.
+    """
+
+    __tablename__ = "workspace_settings"
+    __table_args__ = (
+        # Singleton guard: pin is the boolean PK restricted to TRUE, so the table
+        # holds at most one row. The bind's INSERT ... ON CONFLICT (pin) DO NOTHING
+        # (``require_active_vertical``) is thereby race-safe against a concurrent
+        # first run (Temporal at-least-once) — the second INSERT is a no-op, and
+        # both callers re-read the winner's value to check their own vertical.
+        CheckConstraint("pin = TRUE", name="pin"),
+    )
+
+    pin: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
+    # The workspace's bound vertical (shipped, framed, or placeholder name). Open
+    # vocabulary (framed verticals are user-declared), so no CHECK on its value —
+    # but NOT NULL with no default: a row exists only when a vertical is bound, and
+    # the gate always supplies one, so an omitting writer fails loud (DAT-802 v4:
+    # no permissive default on a load-bearing scalar).
+    active_vertical: Mapped[str] = mapped_column(String, nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
 class SemanticAnnotation(Base):
     """Semantic annotations for columns.
 
@@ -361,13 +420,15 @@ class SemanticAnnotation(Base):
 
 
 class ColumnConcept(Base):
-    """Catalogue-grain per-column semantics, owned by the table agent (DAT-637).
+    """Catalogue-grain per-column semantics, owned by the catalogue agent (DAT-637/823).
 
     The home for column attributes that CANNOT be decided from a single table —
     they need the composed catalogue (cross-cutting ontology concepts, the
-    confirmed relationship catalogue, the enriched fact×dimension views). They are
-    authored ONLY by ``semantic_per_table`` (begin_session) and sealed under the
-    workspace **catalogue head**, never by the object-grain per-column agent.
+    confirmed relationship catalogue, the enriched fact×dimension views, the
+    resolved slice axes). They are authored ONLY by ``catalogue_semantics``
+    (begin_session, after enriched_views + slicing — DAT-823 moved authoring off
+    the structural per-table judge) and sealed under the workspace **catalogue
+    head**, never by the object-grain per-column agent.
 
     Single ownership, no copy-forward: these fields were physically removed from
     ``SemanticAnnotation`` (object-grain, add_source generation head). A reader
@@ -387,6 +448,14 @@ class ColumnConcept(Base):
             Replaces the retired single-slot ``business_concept`` binding — the
             precise-word mapping was ill-posed for multi-facet columns and no
             consumer branched on it.
+        meaning_status: the agent's persisted determination (DAT-823, W2-A
+            persisted-status precedent): 'determined' = the composed evidence
+            settles the meaning; 'ambiguous' = declared ignorance WITH a meaning
+            present — the meaning text states what is undetermined and what
+            would settle it (the DAT-769 contract licenses this). NULL on rows
+            written before the column existed (no backfill) and on rows without
+            a meaning (a coverage gap is not a judgment). No consumer branches
+            on it — it is queryable state, not a decision surface.
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural
@@ -409,11 +478,21 @@ class ColumnConcept(Base):
     __table_args__ = (
         UniqueConstraint("column_id", "run_id", name="uq_column_concept"),
         # Closed-vocabulary enforcement (DAT-802): the ONLY value any writer
-        # produces today is 'llm' (``semantic_per_table``, the sole authoring
-        # path — this table's own docstring: "authored ONLY by semantic_per_table").
+        # produces today is 'llm' (``catalogue_semantics``, the sole authoring
+        # path — this table's own docstring: "authored ONLY by catalogue_semantics").
         CheckConstraint(
             "annotation_source IS NULL OR annotation_source IN ('llm')",
             name="annotation_source",
+        ),
+        # Persisted-determination vocabulary (DAT-823): NULL-or-IN, derived from
+        # its single home ``catalogue.models.MEANING_STATUSES`` (the W2-A
+        # ``abstain_reason`` pattern — explicit IS NULL arm, values sorted for a
+        # deterministic offline DDL dump).
+        CheckConstraint(
+            "meaning_status IS NULL OR meaning_status IN ("
+            + ", ".join(f"'{v}'" for v in sorted(MEANING_STATUSES))
+            + ")",
+            name="meaning_status",
         ),
     )
 
@@ -423,6 +502,8 @@ class ColumnConcept(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     meaning: Mapped[str | None] = mapped_column(Text)
+    # Closed vocab: see ck_column_concepts_meaning_status (DAT-823). Old runs NULL.
+    meaning_status: Mapped[str | None] = mapped_column(String)
     temporal_behavior: Mapped[str | None] = mapped_column(String)
     unit_source_column: Mapped[str | None] = mapped_column(String)
     derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
@@ -438,10 +519,17 @@ class ColumnConcept(Base):
 
 
 class TableEntity(Base):
-    """Entity detection at table level.
+    """Table classification — structural stub, then the business reading (DAT-823).
 
-    Identifies the type of entity represented by the table
-    and classifies it as fact/dimension table with grain analysis.
+    Written in two steps within one begin_session run: ``semantic_per_table``
+    INSERTs the STRUCTURAL stub (table_role, grain, time/identity columns) with
+    ``detected_entity_type``/``description`` NULL; ``catalogue_semantics``
+    UPDATEs the same ``(table_id, run_id)`` row with the business reading once
+    the composed catalogue (confirmed relationships, enriched views, slice
+    axes) exists to argue it from. The NULL window is within-run only — nothing
+    between the two phases reads either column (verified at the rebalance); a
+    NULL that survives the run is declared ignorance (the catalogue turn could
+    not name the entity), not an error.
     """
 
     __tablename__ = "table_entities"
@@ -473,9 +561,10 @@ class TableEntity(Base):
     # Snapshot version axis (DAT-413): the run that wrote this row.
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
-    detected_entity_type: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # 'customer', 'order', 'product', etc.
+    # 'customer', 'order', 'product', etc. Nullable (DAT-823): the structural
+    # stub has no business reading yet — the documented unclassified-stub
+    # nullability pattern (table_role / grain_columns below).
+    detected_entity_type: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
 
     # Grain analysis. A bare JSON list of column NAMES that uniquely identify
@@ -520,5 +609,6 @@ __all__ = [
     "SemanticAnnotation",
     "TableEntity",
     "TableRole",
+    "WorkspaceSettings",
     "derive_table_role",
 ]

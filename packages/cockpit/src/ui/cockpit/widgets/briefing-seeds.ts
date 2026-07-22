@@ -16,6 +16,8 @@ export function nextActionSeed(action: BriefingAction): string {
 			return "Build the model over the imported tables (begin_session).";
 		case "operating_model":
 			return "Run the operating model over the workspace.";
+		case "declare":
+			return "This workspace's vertical declares no validations, cycles, or metrics, so no operating model can be built over it. Help me add the declarations it needs.";
 		case "answer":
 			return "What can I analyze in this data?";
 		case "review_blocker":

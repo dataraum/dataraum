@@ -13,12 +13,10 @@ from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipDB
 from dataraum.analysis.semantic.agent import SemanticAgent
-from dataraum.analysis.semantic.db_models import ColumnConcept as ColumnConceptDB
 from dataraum.analysis.semantic.db_models import SemanticAnnotation as AnnotationDB
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
-    ColumnConceptOutput,
     ColumnSemanticOutput,
     EntityDetection,
     IdentityColumn,
@@ -30,26 +28,11 @@ from dataraum.analysis.semantic.models import (
 )
 from dataraum.analysis.semantic.processor import (
     persist_column_annotations,
-    persist_column_concepts,
     synthesize_and_store_tables,
 )
 from dataraum.core.models.base import RelationshipType, Result
 from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_run_id
-
-# A minimal resolvable meaning entry (orders.order_id exists in every relationship
-# fixture below) so the DAT-768/769 empty-surface gate — not under test in the
-# relationship flows — stays quiet.
-_MEANING_MIN = [
-    ColumnConceptOutput(
-        table_name="orders",
-        column_name="order_id",
-        meaning="test meaning",
-        unit_source_column="",
-        derived_formula_hypothesis="",
-        derived_formula_confidence=0.0,
-    )
-]
 
 
 def _table_with_columns(session, name: str, columns: list[str]) -> Table:
@@ -144,126 +127,6 @@ class TestPersistColumnAnnotations:
         assert count == 1
 
 
-class TestPersistColumnConcepts:
-    """The catalogue-grain authoring the table agent owns (DAT-637)."""
-
-    def test_persists_concept_unit_and_normalizes_formula(self, session) -> None:
-        """meaning / hints / unit source / derived-formula land on ColumnConcept.
-
-        Whitespace-only hypotheses normalize to None so the detector's
-        truthiness read ("no hypothesis → witness abstains") holds.
-        """
-        table = _table_with_columns(session, "orders", ["total", "discount"])
-        concepts = [
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="total",
-                meaning="Order total including tax",
-                unit_source_column="currency_code",
-                derived_formula_hypothesis="subtotal + tax",
-                derived_formula_confidence=0.85,
-            ),
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="discount",
-                meaning="Per-order discount amount",
-                derived_formula_hypothesis="   ",
-                unit_source_column="",
-                derived_formula_confidence=0.0,
-            ),
-        ]
-
-        result = persist_column_concepts(
-            session,
-            concepts,
-            [table.table_id],
-            annotated_by="m",
-            run_id=baseline_run_id(),
-        )
-        session.flush()
-
-        assert result.resolved == 2
-        assert result.emitted == 2
-        assert result.dropped_unresolved == 0
-        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
-        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
-        total = rows[cols["total"]]
-        assert total.meaning == "Order total including tax"
-        assert total.unit_source_column == "currency_code"
-        assert total.derived_formula_hypothesis == "subtotal + tax"
-        assert total.derived_formula_confidence == 0.85
-        # DAT-807: the output model states every attribute, so "not applicable"
-        # arrives as the "" sentinel — persist_column_concepts must normalize it
-        # back to NULL, or the nullable column starts holding empty strings and
-        # every `IS NOT NULL` reader silently changes meaning.
-        assert rows[cols["discount"]].derived_formula_hypothesis is None
-        assert rows[cols["discount"]].unit_source_column is None
-
-    def test_duplicate_column_concepts_collapse_to_one_row(self, session) -> None:
-        """The table agent can list the same column twice; the upsert batch must dedup.
-
-        Two ColumnConceptOutput for the same (table, column) share the (column_id,
-        run_id) upsert key — without dedup Postgres raises CardinalityViolation
-        ("ON CONFLICT cannot affect a row twice"). Last mention wins.
-        """
-        table = _table_with_columns(session, "orders", ["total"])
-        concepts = [
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="total",
-                meaning="gross",
-                unit_source_column="",
-                derived_formula_hypothesis="",
-                derived_formula_confidence=0.0,
-            ),
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="total",
-                meaning="net",
-                unit_source_column="",
-                derived_formula_hypothesis="",
-                derived_formula_confidence=0.0,
-            ),
-        ]
-
-        result = persist_column_concepts(
-            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.resolved == 1  # collapsed
-        assert result.emitted == 2  # both mentions counted as emitted
-        rows = list(session.execute(select(ColumnConceptDB)).scalars())
-        assert len(rows) == 1
-        assert rows[0].meaning == "net"  # last mention wins
-
-    def test_unresolvable_concept_dropped_and_counted(self, session) -> None:
-        """DAT-768 path #2: a concept whose (table, column) name resolves to no column
-        is dropped, and the breakdown surfaces it (resolved 0, dropped 1) instead of
-        being indistinguishable from an empty emission."""
-        table = _table_with_columns(session, "orders", ["total"])
-        concepts = [
-            ColumnConceptOutput(
-                table_name="orders",
-                column_name="ghost",
-                meaning="phantom",
-                unit_source_column="",
-                derived_formula_hypothesis="",
-                derived_formula_confidence=0.0,
-            )
-        ]
-
-        result = persist_column_concepts(
-            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.emitted == 1
-        assert result.resolved == 0
-        assert result.dropped_unresolved == 1
-        assert list(session.execute(select(ColumnConceptDB)).scalars()) == []
-
-
 class TestNearConstantFeed:
     """The per-table feed flags near-constant columns (DAT-637 quality fix) so the
     table agent refuses to bind a concept to a status flag."""
@@ -315,12 +178,10 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[
                         EntityDetection(
                             table_id="",
                             table_name="orders",
-                            entity_type="orders",
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[
@@ -390,16 +251,40 @@ class TestSynthesizeAndStoreTables:
         assert len(rels) == 1 and rels[0].cardinality is None  # no duckdb → unresolved
         assert anns == []  # per-table synthesis never writes column annotations
 
-    def test_declined_relationship_persists_as_candidate_not_llm(self, session) -> None:
-        """DAT-699 follow-up: a judge-DECLINED relationship (confidence below the
-        judge's own decision boundary, REL_CONFIRM_MIN) is persisted as
-        ``candidate`` with its evidence/reasoning kept — NOT as ``llm`` — so it
-        never enters the "defined" catalog (``detection_method != 'candidate'``)
-        that every downstream consumer reads. Cuts declines at the source instead
-        of making each consumer re-weigh confidence.
+    def test_declined_relationship_annotates_candidate_not_llm(self, session) -> None:
+        """A judge-DECLINED relationship (confidence below REL_CONFIRM_MIN) never
+        becomes ``llm`` (DAT-722) and never clobbers the structural measurement
+        (DAT-824): its pair's ``candidate`` row keeps its measured value-overlap
+        evidence and is annotated ``judge_verdict='declined'`` with the reasoning,
+        so it stays out of the "defined" catalog (``detection_method != 'candidate'``)
+        that every downstream consumer reads.
         """
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])
+        order_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "order_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        # The structural detector's candidate row for the pair the judge declines.
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=order_col.column_id,
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.8,  # the measured value-overlap statistic
+                detection_method="candidate",
+                evidence={"source": "value_overlap", "join_confidence": 0.8},
+            )
+        )
+        session.flush()
 
         agent = MagicMock()
         agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
@@ -407,7 +292,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -458,23 +342,49 @@ class TestSynthesizeAndStoreTables:
             .scalars()
             .all()
         )
-        # Only the accepted FK is "defined" (llm); the declined one is a candidate.
+        # Only the accepted FK is "defined" (llm); the declined one stays a
+        # candidate with its measurement intact and the verdict annotated.
         assert len(llm_rels) == 1 and llm_rels[0].confidence == 0.9
-        assert len(cand_rels) == 1 and cand_rels[0].confidence == 0.3
-        # The judge's reasoning is preserved on the candidate row.
+        assert len(cand_rels) == 1
+        assert cand_rels[0].confidence == 0.8  # measured overlap NOT clobbered to 0.3
+        assert cand_rels[0].judge_verdict == "declined"
+        assert (cand_rels[0].evidence or {}).get("join_confidence") == 0.8  # measurement kept
         assert (cand_rels[0].evidence or {}).get("reasoning") == "coincidental overlap; decline"
 
     def test_declined_composite_does_not_become_confirmed_intent(self, session) -> None:
         """A composite (``key_columns``) the judge did NOT confirm (confidence below
         REL_CONFIRM_MIN) must not slip into the "defined" catalog via the surrogate-
-        intent → mint path (DAT-722). It falls through to the gated single-column
-        persist (→ ``candidate``), like any other declined verdict — no confirmed
-        intent, no ``llm`` row.
+        intent → mint path (DAT-722). It falls through to the single-column DECLINE
+        path, annotating the anchor pair's candidate row (DAT-824) — no confirmed
+        intent, no ``llm`` row, measured evidence preserved.
         """
         from dataraum.analysis.relationships.db_models import SurrogateKeyIntent
 
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])
+        cust_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=cust_col.column_id,
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.9,
+                detection_method="candidate",
+                evidence={"source": "value_overlap", "join_confidence": 0.9},
+            )
+        )
+        session.flush()
 
         agent = MagicMock()
         agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
@@ -482,7 +392,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -527,12 +436,15 @@ class TestSynthesizeAndStoreTables:
         )
         assert confirmed_intents == []
         assert llm_rels == []
-        assert len(cand_rels) == 1 and cand_rels[0].confidence == 0.3
+        assert len(cand_rels) == 1
+        assert cand_rels[0].judge_verdict == "declined"
+        assert cand_rels[0].confidence == 0.9  # measured overlap preserved, not clobbered
 
-    def test_declined_relationship_merges_onto_structural_candidate(self, session) -> None:
-        """A declined semantic rel upserts onto the PRE-EXISTING structural
-        ``candidate`` row for the same oriented pair (DAT-722) — replacing it with
-        the judge's confidence/reasoning, one row not two, still not "defined".
+    def test_declined_verdict_preserves_structural_candidate_evidence(self, session) -> None:
+        """A judge DECLINE annotates the pair's PRE-EXISTING structural candidate
+        row (DAT-824) — it keeps its measured confidence/evidence intact and gains
+        ``judge_verdict='declined'`` + the reasoning, never a clobbering re-write.
+        One row, still ``candidate`` (not defined), no ``llm`` row.
         """
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])
@@ -544,7 +456,8 @@ class TestSynthesizeAndStoreTables:
         id_col = session.execute(
             select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
         ).scalar_one()
-        # The structural detector's prior candidate row for this pair.
+        # The structural detector's prior candidate row for this pair, carrying its
+        # measured value-overlap evidence.
         session.add(
             RelationshipDB(
                 run_id=baseline_run_id(),
@@ -553,10 +466,10 @@ class TestSynthesizeAndStoreTables:
                 to_table_id=customers.table_id,
                 to_column_id=id_col.column_id,
                 relationship_type="candidate",
-                cardinality=None,
-                confidence=1.0,
+                cardinality="many-to-one",
+                confidence=1.0,  # the measured value-overlap statistic
                 detection_method="candidate",
-                evidence={"source": "structural"},
+                evidence={"source": "value_overlap", "join_confidence": 0.62, "algorithm": "exact"},
             )
         )
         session.flush()
@@ -567,7 +480,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -599,16 +511,169 @@ class TestSynthesizeAndStoreTables:
             .scalars()
             .all()
         )
-        # One merged candidate row (not two), now carrying the judge's verdict.
+        # One candidate row (not two); measured evidence PRESERVED, decline typed.
         assert len(cand_rels) == 1
-        assert cand_rels[0].confidence == 0.3
-        assert (cand_rels[0].evidence or {}).get("reasoning") == "coincidental"
+        row = cand_rels[0]
+        assert row.confidence == 1.0  # measured overlap survives, NOT clobbered to 0.3
+        assert row.judge_verdict == "declined"
+        assert (row.evidence or {}).get("join_confidence") == 0.62  # measurement intact
+        assert (row.evidence or {}).get("source") == "value_overlap"
+        assert (row.evidence or {}).get("reasoning") == "coincidental"  # reasoning merged
         assert (
             session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
             .scalars()
             .all()
             == []
         )
+
+    def test_declined_verdict_matches_reversed_orientation(self, session) -> None:
+        """The candidate is stored oriented (many→one, DAT-777) but the judge may
+        name the pair either way — the decline must still land on it. Store the
+        candidate customer_id→id, have the judge decline id→customer_id (reversed),
+        and assert the undirected match annotates the same row (DAT-824).
+        """
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+        cust_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=cust_col.column_id,  # stored many→one: customer_id → id
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.7,
+                detection_method="candidate",
+                evidence={"source": "value_overlap", "join_confidence": 0.7},
+            )
+        )
+        session.flush()
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-decline",
+                            from_table="customers",  # REVERSED vs the stored candidate
+                            from_column="id",
+                            to_table="orders",
+                            to_column="customer_id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.3,  # < 0.7 → judge declined
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis", "reasoning": "reversed decline"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [orders.table_id, customers.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+        assert result.success
+
+        cand_rels = (
+            session.execute(
+                select(RelationshipDB).where(RelationshipDB.detection_method == "candidate")
+            )
+            .scalars()
+            .all()
+        )
+        assert len(cand_rels) == 1
+        assert cand_rels[0].judge_verdict == "declined"  # reversed pair still matched
+        assert cand_rels[0].confidence == 0.7  # measurement preserved
+        assert (cand_rels[0].evidence or {}).get("reasoning") == "reversed decline"
+
+    def test_confirm_clears_a_stale_decline_verdict(self, session) -> None:
+        """A Temporal at-least-once retry can FLIP the judge verdict across attempts
+        (the LLM is re-called, not cached). If a prior attempt declined the pair
+        (candidate row carries ``judge_verdict='declined'``) and this attempt
+        confirms it, the confirm must CLEAR the stale verdict — the ``llm`` row is
+        the truth and a candidate carrying 'declined' beside it would contradict the
+        model (DAT-824).
+        """
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+        cust_col = session.execute(
+            select(Column).where(
+                Column.table_id == orders.table_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        id_col = session.execute(
+            select(Column).where(Column.table_id == customers.table_id, Column.column_name == "id")
+        ).scalar_one()
+        # Candidate row already annotated 'declined' by a prior (crashed) attempt.
+        session.add(
+            RelationshipDB(
+                run_id=baseline_run_id(),
+                from_table_id=orders.table_id,
+                from_column_id=cust_col.column_id,
+                to_table_id=customers.table_id,
+                to_column_id=id_col.column_id,
+                relationship_type="candidate",
+                cardinality="many-to-one",
+                confidence=0.9,
+                detection_method="candidate",
+                judge_verdict="declined",
+                evidence={"source": "value_overlap", "join_confidence": 0.9},
+            )
+        )
+        session.flush()
+
+        agent = MagicMock()
+        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-confirm",
+                            from_table="orders",
+                            from_column="customer_id",
+                            to_table="customers",
+                            to_column="id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.9,  # >= 0.7 → judge confirmed this attempt
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis", "reasoning": "clean FK"},
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session, agent, [orders.table_id, customers.table_id], run_id=baseline_run_id()
+        )
+        session.flush()
+        assert result.success
+
+        cand = session.execute(
+            select(RelationshipDB).where(RelationshipDB.detection_method == "candidate")
+        ).scalar_one()
+        assert cand.judge_verdict is None  # stale 'declined' cleared by the confirm
+        llm = session.execute(
+            select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
+        ).scalar_one()
+        assert llm.confidence == 0.9  # the confirmation is the truth
 
     def test_flipped_one_to_one_confirmation_persists_in_the_judges_direction(
         self, session
@@ -655,24 +720,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=[
-                        ColumnConceptOutput(
-                            table_name="invoices",
-                            column_name="entry_id",
-                            meaning="link",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                        ColumnConceptOutput(
-                            table_name="journal_entries",
-                            column_name="entry_id",
-                            meaning="key",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                    ],
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -755,24 +802,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=[
-                        ColumnConceptOutput(
-                            table_name="detail",
-                            column_name="link_id",
-                            meaning="link",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                        ColumnConceptOutput(
-                            table_name="master",
-                            column_name="link_id",
-                            meaning="key",
-                            unit_source_column="",
-                            derived_formula_hypothesis="",
-                            derived_formula_confidence=0.0,
-                        ),
-                    ],
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -850,7 +879,6 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[],
                     relationships=[
                         Relationship(
@@ -895,12 +923,10 @@ class TestSynthesizeAndStoreTables:
             return_value=Result.ok(
                 SemanticEnrichmentResult(
                     annotations=[],
-                    column_concepts=_MEANING_MIN,
                     entity_detections=[
                         EntityDetection(
                             table_id="",
                             table_name="orders",
-                            entity_type="orders",
                             grain_columns=["order_id"],
                             table_role="fact",
                             time_columns=[
@@ -998,239 +1024,6 @@ class TestSynthesizeAndStoreTables:
         assert not result.success
         assert "LLM down" in (result.error or "")
 
-    @staticmethod
-    def _agent_returning_empty_concepts() -> MagicMock:
-        agent = MagicMock()
-        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
-        agent.synthesize_tables = MagicMock(
-            return_value=Result.ok(
-                SemanticEnrichmentResult(
-                    annotations=[], entity_detections=[], relationships=[], column_concepts=[]
-                )
-            )
-        )
-        return agent
-
-    @staticmethod
-    def _annotate(session, table, column: str, role: str) -> None:
-        persist_column_annotations(
-            session,
-            ColumnAnnotationOutput(
-                tables=[
-                    TableColumnAnnotation(table_name=table.table_name, columns=[_col(column, role)])
-                ]
-            ),
-            [table.table_id],
-            annotated_by="m",
-            run_id=baseline_run_id(),
-        )
-        session.flush()
-
-    def test_empty_concepts_fails_loud(self, session) -> None:
-        """DAT-768/769: zero resolved column_concepts for a non-empty schema is an
-        emptied grounding surface — every column carries a meaning by contract, so
-        emptiness is never a judgment. begin_session fails loud."""
-        tbl = _table_with_columns(session, "trial_balance", ["debit_balance"])
-        self._annotate(session, tbl, "debit_balance", "measure")
-
-        result = synthesize_and_store_tables(
-            session,
-            self._agent_returning_empty_concepts(),
-            [tbl.table_id],
-            run_id=baseline_run_id(),
-        )
-
-        assert not result.success
-        assert "zero meaningful rows" in (result.error or "")
-        assert "DAT-768" in (result.error or "")
-
-    def test_empty_concepts_fails_loud_without_measures_too(self, session) -> None:
-        """The gate is blanket under the meaning contract (DAT-769) — a
-        dimension-only batch still carries meanings, so emptiness fails there too
-        (the old gate was measure-conditional)."""
-        tbl = _table_with_columns(session, "regions", ["region_name"])
-        self._annotate(session, tbl, "region_name", "dimension")
-
-        result = synthesize_and_store_tables(
-            session,
-            self._agent_returning_empty_concepts(),
-            [tbl.table_id],
-            run_id=baseline_run_id(),
-        )
-
-        assert not result.success
-        assert "zero meaningful rows" in (result.error or "")
-
-
-class TestColumnConceptCoverageRetry:
-    """DAT-725: bounded scoped re-prompts fill column_concepts truncation gaps.
-
-    One batched call can emit meanings for a fraction of the catalogue (output
-    truncation jitter under the warn-only contract). The processor re-prompts —
-    same prompt, scoped to the tables with uncovered columns — up to
-    CONCEPT_COVERAGE_RETRIES times, merges only the still-missing columns'
-    entries (first emission wins), and persists ONCE. Warn-only stays the
-    terminal state when retries exhaust.
-    """
-
-    @staticmethod
-    def _cc(table: str, column: str, meaning: str) -> ColumnConceptOutput:
-        return ColumnConceptOutput(
-            table_name=table,
-            column_name=column,
-            meaning=meaning,
-            unit_source_column="",
-            derived_formula_hypothesis="",
-            derived_formula_confidence=0.0,
-        )
-
-    @staticmethod
-    def _enrichment(concepts: list[ColumnConceptOutput]) -> Result:
-        return Result.ok(
-            SemanticEnrichmentResult(
-                annotations=[], entity_detections=[], relationships=[], column_concepts=concepts
-            )
-        )
-
-    def _agent(self, results: list[Result]) -> MagicMock:
-        agent = MagicMock()
-        agent.provider.get_model_for_tier = MagicMock(return_value="test-model")
-        agent.synthesize_tables = MagicMock(side_effect=results)
-        return agent
-
-    def test_retry_is_scoped_to_missing_tables_and_merges(self, session) -> None:
-        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
-        beta = _table_with_columns(session, "beta", ["b1", "b2"])
-        agent = self._agent(
-            [
-                # First (full-catalogue) call truncated: alpha covered, beta absent.
-                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "m2")]),
-                # Scoped retry supplies beta.
-                self._enrichment([self._cc("beta", "b1", "m3"), self._cc("beta", "b2", "m4")]),
-            ]
-        )
-        candidates = [
-            {"table1": "alpha", "table2": "beta", "join_columns": []},
-            {"table1": "alpha", "table2": "alpha", "join_columns": []},
-        ]
-
-        result = synthesize_and_store_tables(
-            session,
-            agent,
-            [alpha.table_id, beta.table_id],
-            relationship_candidates=candidates,
-            run_id=baseline_run_id(),
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2
-        retry_kwargs = agent.synthesize_tables.call_args_list[1].kwargs
-        # Scoped to the uncovered table only — same prompt, smaller catalogue.
-        assert retry_kwargs["table_ids"] == [beta.table_id]
-        # Candidates filtered to those involving a retried table.
-        assert retry_kwargs["relationship_candidates"] == [candidates[0]]
-        rows = session.execute(select(ColumnConceptDB)).scalars().all()
-        assert len(rows) == 4
-
-    def test_retry_exhaustion_stays_warn_only(self, session) -> None:
-        """Retries that never fill the gap end in the warn-only terminal state."""
-        alpha = _table_with_columns(session, "alpha", ["a1"])
-        beta = _table_with_columns(session, "beta", ["b1"])
-        partial = [self._cc("alpha", "a1", "m1")]
-        agent = self._agent([self._enrichment(partial) for _ in range(3)])
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success  # partial coverage never fails the phase
-        # Initial call + CONCEPT_COVERAGE_RETRIES scoped retries, then stop.
-        assert agent.synthesize_tables.call_count == 3
-        rows = session.execute(select(ColumnConceptDB)).scalars().all()
-        assert len(rows) == 1
-
-    def test_retry_never_overwrites_the_first_emission(self, session) -> None:
-        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
-        agent = self._agent(
-            [
-                self._enrichment([self._cc("alpha", "a1", "first")]),
-                # Retry re-emits a1 (already covered) alongside the missing a2.
-                self._enrichment(
-                    [self._cc("alpha", "a1", "second"), self._cc("alpha", "a2", "filled")]
-                ),
-            ]
-        )
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2
-        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
-        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
-        assert rows[cols["a1"]].meaning == "first"
-        assert rows[cols["a2"]].meaning == "filled"
-
-    def test_blank_meaning_counts_as_missing_and_is_refilled(self, session) -> None:
-        """A whitespace-only meaning is absence by the persist contract (it
-        normalizes to NULL), so coverage must re-ask for that column — and the
-        meaningful re-emission wins over the blank one at persist."""
-        alpha = _table_with_columns(session, "alpha", ["a1", "a2"])
-        agent = self._agent(
-            [
-                self._enrichment([self._cc("alpha", "a1", "m1"), self._cc("alpha", "a2", "   ")]),
-                self._enrichment([self._cc("alpha", "a2", "filled")]),
-            ]
-        )
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2
-        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
-        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
-        assert rows[cols["a2"]].meaning == "filled"
-
-    def test_full_coverage_triggers_no_retry(self, session) -> None:
-        alpha = _table_with_columns(session, "alpha", ["a1"])
-        agent = self._agent([self._enrichment([self._cc("alpha", "a1", "m1")])])
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 1
-
-    def test_failed_retry_is_best_effort(self, session) -> None:
-        """A failing retry never fails the phase — the first pass stands."""
-        alpha = _table_with_columns(session, "alpha", ["a1"])
-        beta = _table_with_columns(session, "beta", ["b1"])
-        agent = self._agent(
-            [
-                self._enrichment([self._cc("alpha", "a1", "m1")]),
-                Result.fail("LLM down"),
-            ]
-        )
-
-        result = synthesize_and_store_tables(
-            session, agent, [alpha.table_id, beta.table_id], run_id=baseline_run_id()
-        )
-        session.flush()
-
-        assert result.success
-        assert agent.synthesize_tables.call_count == 2  # stopped after the failure
-        rows = session.execute(select(ColumnConceptDB)).scalars().all()
-        assert len(rows) == 1
-
 
 # ---------------------------------------------------------------------------
 # per-table parse / format helpers
@@ -1247,8 +1040,6 @@ class TestTableSynthesisHelpers:
                 "tables": [
                     {
                         "table_name": "orders",
-                        "entity_type": "orders",
-                        "description": "orders",
                         "is_fact_table": True,
                         "grain": ["order_id"],
                         "time_columns": [],
@@ -1256,7 +1047,6 @@ class TestTableSynthesisHelpers:
                     }
                 ],
                 "relationships": [],
-                "column_concepts": [],
             }
         )
         result = agent._build_enrichment_result(synthesis)

@@ -164,6 +164,61 @@ def test_scopes_to_pinned_run(session, two_tables_two_runs) -> None:
     assert entities[0]["grain_columns"] == ["account_id", "period"]
 
 
+def test_conformed_meetings_split_out_of_the_reference_serve(session, two_tables_two_runs) -> None:
+    """DAT-850: a 'conformed_dimension' row is not served as a reference.
+
+    It leaves the relationships list (no entity flow rides a shared axis, and
+    the graph topology below consumes that list) and lands in the
+    explicitly-labelled conformed_meetings block the prompt renders — loud
+    typing, never a silent drop.
+    """
+    from dataraum.analysis.cycles.context import format_context_for_prompt
+
+    table_ids = two_tables_two_runs
+    # A shared-axis column on each table — the shape a meeting actually links.
+    region_cols = [
+        Column(
+            table_id=tid,
+            column_name="region",
+            column_position=5,
+            raw_type="VARCHAR",
+            resolved_type="VARCHAR",
+        )
+        for tid in table_ids
+    ]
+    session.add_all(region_cols)
+    session.flush()
+    session.add(
+        Relationship(
+            run_id="run-current",
+            from_table_id=table_ids[0],
+            from_column_id=region_cols[0].column_id,
+            to_table_id=table_ids[1],
+            to_column_id=region_cols[1].column_id,
+            relationship_type="conformed_dimension",
+            cardinality="many-to-many",
+            confidence=0.9,
+            detection_method="llm",
+            evidence={"resolved_from_type": "foreign_key"},
+        )
+    )
+    session.commit()
+
+    ctx = _build(
+        session,
+        table_ids,
+        base_runs=BaseRunMap(relationship_run_id="run-current"),
+    )
+
+    assert [r["relationship_type"] for r in ctx["relationships"]] == ["foreign_key"]
+    assert [r["relationship_type"] for r in ctx["conformed_meetings"]] == ["conformed_dimension"]
+    assert ctx["summary"]["conformed_meetings_found"] == 1
+
+    prompt = format_context_for_prompt(ctx)
+    assert "CONFORMED DIMENSION MEETINGS" in prompt
+    assert "NOT references" in prompt
+
+
 def test_format_context_for_prompt_renders_grain_column_names() -> None:
     """DAT-775 regression: the cycle-detection prompt renders the table's ACTUAL
     grain columns, never the literal string "columns" — the symptom of the fixed
@@ -709,6 +764,430 @@ def test_entity_flow_samples_capped_and_truncated(session) -> None:
     assert len(samples) == 10
     assert samples[0] == "x" * 100 + "..."
     assert samples[1] == "v00"
+
+
+# ---------------------------------------------------------------------------
+# Chain-conditioned label samples (DAT-853): the from-side identity labels of a
+# reference, aggregated over ONLY the rows that resolve across the join. The
+# flat per-column samples blur populations sharing a table — the AP forensics
+# case (counterparty at 37% vendors flat, 100% vendors on payment-linked rows).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def payment_chain_with_labels(session):
+    """bank_txns.payment_id -> payments.payment_id + a real DuckDB whose
+    conditioned counterparty distribution differs from the flat one.
+
+    Flat counterparty: customer-dominated (4x Customer X, 2x Bank Fee, one
+    orphan). Payment-linked counterparty: 100% vendors. Returns
+    ``(duck_conn, table_ids)``.
+    """
+    duck = duckdb.connect()
+    duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+    duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2'), ('P3'), ('P4')")
+    duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, counterparty VARCHAR)")
+    duck.execute(
+        "INSERT INTO typed_bank_txns VALUES "
+        "('P1', 'Vendor A'), ('P2', 'Vendor A'), ('P3', 'Vendor A'), ('P4', 'Vendor B'), "
+        "('ORPHAN-1', 'Orphan Corp'), "  # fk set, never resolves — must not ride
+        "(NULL, 'Customer X'), (NULL, 'Customer X'), (NULL, 'Customer X'), "
+        "(NULL, 'Customer X'), (NULL, 'Bank Fee'), (NULL, 'Bank Fee')"
+    )
+
+    source = Source(name="chain_source", source_type="csv")
+    session.add(source)
+    session.flush()
+    bank = Table(
+        source_id=source.source_id,
+        table_name="bank_txns",
+        layer="typed",
+        row_count=11,
+        duckdb_path="typed_bank_txns",
+    )
+    payments = Table(
+        source_id=source.source_id,
+        table_name="payments",
+        layer="typed",
+        row_count=4,
+        duckdb_path="typed_payments",
+    )
+    session.add_all([bank, payments])
+    session.flush()
+
+    fk_col = Column(
+        table_id=bank.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    label_col = Column(
+        table_id=bank.table_id, column_name="counterparty", column_position=1, raw_type="VARCHAR"
+    )
+    key_col = Column(
+        table_id=payments.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    session.add_all([fk_col, label_col, key_col])
+    session.flush()
+
+    session.add(
+        TableEntity(
+            entity_id=_id(),
+            table_id=bank.table_id,
+            run_id="run-current",
+            detected_entity_type="bank transaction",
+            table_role="fact",
+            identity_columns=[
+                {"column": "payment_id", "note": "matches the payments key"},
+                {"column": "counterparty", "note": "external party label"},
+            ],
+        )
+    )
+    session.add(
+        Relationship(
+            run_id="run-current",
+            from_table_id=bank.table_id,
+            from_column_id=fk_col.column_id,
+            to_table_id=payments.table_id,
+            to_column_id=key_col.column_id,
+            relationship_type="foreign_key",
+            cardinality="many-to-one",
+            confidence=0.9,
+            detection_method="llm",
+        )
+    )
+    session.commit()
+    return duck, [bank.table_id, payments.table_id]
+
+
+def test_conditioned_labels_serve_the_discriminating_distribution(
+    session, payment_chain_with_labels
+) -> None:
+    """The conditioned line carries the join-riding population only: vendors at
+    their joined-row shares — no NULL-fk populations (customers, fees) and no
+    orphan fks (a claimed link that never resolves does not ride the join)."""
+    duck, table_ids = payment_chain_with_labels
+    ctx = build_cycle_detection_context(
+        session,
+        duck,
+        table_ids,
+        vertical="finance",
+        base_runs=BaseRunMap(relationship_run_id="run-current"),
+    )
+
+    (rel,) = ctx["relationships"]
+    assert rel["conditioned_label_samples"] == [
+        {"column": "counterparty", "samples": ["Vendor A (75%)", "Vendor B (25%)"]}
+    ]
+
+    rendered = format_context_for_prompt(ctx)
+    assert (
+        "bank_txns.counterparty (payment_id-joined rows only): Vendor A (75%), Vendor B (25%)"
+        in rendered
+    )
+    assert "Customer X" not in rendered
+    assert "Orphan Corp" not in rendered
+    # The fk column itself is a join key — never a conditioned label.
+    assert "bank_txns.payment_id (payment_id-joined rows only)" not in rendered
+
+
+def test_conditioned_labels_sensitive_name_serves_nothing(
+    session, payment_chain_with_labels
+) -> None:
+    """This builder's privacy convention: a sensitive label is ABSENT from the
+    conditioned serve (no placeholder), while non-sensitive labels still serve."""
+    duck, table_ids = payment_chain_with_labels
+    ctx = build_cycle_detection_context(
+        session,
+        duck,
+        table_ids,
+        vertical="finance",
+        base_runs=BaseRunMap(relationship_run_id="run-current"),
+        privacy=LLMPrivacy(sensitive_patterns=[".*counterparty.*"]),
+    )
+    (rel,) = ctx["relationships"]
+    assert "conditioned_label_samples" not in rel
+    assert "Vendor A" not in format_context_for_prompt(ctx)
+
+
+def test_conditioned_labels_fail_soft_on_missing_typed_table(session) -> None:
+    """A dangling duckdb_path logs and serves no conditioned line — the
+    context build survives (the row-count read has the same posture)."""
+    source = Source(name="dangling_source", source_type="csv")
+    session.add(source)
+    session.flush()
+    a = Table(
+        source_id=source.source_id,
+        table_name="a_fact",
+        layer="typed",
+        row_count=1,
+        duckdb_path="typed_missing_a",
+    )
+    b = Table(
+        source_id=source.source_id,
+        table_name="b_dim",
+        layer="typed",
+        row_count=1,
+        duckdb_path="typed_missing_b",
+    )
+    session.add_all([a, b])
+    session.flush()
+    a_fk = Column(table_id=a.table_id, column_name="b_id", column_position=0, raw_type="VARCHAR")
+    a_label = Column(
+        table_id=a.table_id, column_name="label", column_position=1, raw_type="VARCHAR"
+    )
+    b_key = Column(table_id=b.table_id, column_name="b_id", column_position=0, raw_type="VARCHAR")
+    session.add_all([a_fk, a_label, b_key])
+    session.flush()
+    session.add(
+        TableEntity(
+            entity_id=_id(),
+            table_id=a.table_id,
+            run_id="run-current",
+            detected_entity_type="fact",
+            table_role="fact",
+            identity_columns=[{"column": "label", "note": "n"}],
+        )
+    )
+    session.add(
+        Relationship(
+            run_id="run-current",
+            from_table_id=a.table_id,
+            from_column_id=a_fk.column_id,
+            to_table_id=b.table_id,
+            to_column_id=b_key.column_id,
+            relationship_type="foreign_key",
+            cardinality="many-to-one",
+            confidence=0.9,
+            detection_method="llm",
+        )
+    )
+    session.commit()
+
+    ctx = build_cycle_detection_context(
+        session,
+        duckdb.connect(),  # empty database — both paths dangle
+        [a.table_id, b.table_id],
+        vertical="finance",
+        base_runs=BaseRunMap(relationship_run_id="run-current"),
+    )
+    (rel,) = ctx["relationships"]
+    assert "conditioned_label_samples" not in rel
+
+
+# ---------------------------------------------------------------------------
+# Chain-conditioned measure sign/range (DAT-853): the from-side measures'
+# min/max over ONLY the rows that resolve across the join. The flat profile
+# blurs populations sharing a table — a measure globally mixed-sign can be
+# uniformly one sign on the chain-linked rows, and that conditioned sign is
+# the direction evidence.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def payment_chain_with_measures(session):
+    """bank_txns with two annotated measures over the payments join.
+
+    ``amount`` is globally mixed-sign (positive unlinked rows, a positive
+    orphan) but uniformly negative on the join-riding rows — the
+    discriminating case where the conditioned sign differs from the global
+    sign. ``fee`` is genuinely mixed-sign on the joined rows. Returns
+    ``(duck_conn, table_ids, bank_table_id)``.
+    """
+    duck = duckdb.connect()
+    duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+    duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2')")
+    duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE, fee DOUBLE)")
+    duck.execute(
+        "INSERT INTO typed_bank_txns VALUES "
+        "('P1', -135000.0, -5.0), ('P2', -50.25, 10.0), "
+        "('ORPHAN-1', 77.0, 1.0), "  # fk set, never resolves — must not ride
+        "(NULL, 200.0, 2.0), (NULL, 950.5, 3.0)"  # unlinked rows: positive
+    )
+
+    source = Source(name="measure_chain_source", source_type="csv")
+    session.add(source)
+    session.flush()
+    bank = Table(
+        source_id=source.source_id,
+        table_name="bank_txns",
+        layer="typed",
+        row_count=5,
+        duckdb_path="typed_bank_txns",
+    )
+    payments = Table(
+        source_id=source.source_id,
+        table_name="payments",
+        layer="typed",
+        row_count=2,
+        duckdb_path="typed_payments",
+    )
+    session.add_all([bank, payments])
+    session.flush()
+
+    fk_col = Column(
+        table_id=bank.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    amount_col = Column(
+        table_id=bank.table_id, column_name="amount", column_position=1, raw_type="DOUBLE"
+    )
+    fee_col = Column(
+        table_id=bank.table_id, column_name="fee", column_position=2, raw_type="DOUBLE"
+    )
+    key_col = Column(
+        table_id=payments.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    session.add_all([fk_col, amount_col, fee_col, key_col])
+    session.flush()
+
+    # The measure selection is this builder's pinned annotations — pin both
+    # measures under the bank table's generation run.
+    for col in (amount_col, fee_col):
+        session.add(
+            SemanticAnnotation(column_id=col.column_id, run_id="gen-run", semantic_role="measure")
+        )
+    session.add(
+        Relationship(
+            run_id="run-current",
+            from_table_id=bank.table_id,
+            from_column_id=fk_col.column_id,
+            to_table_id=payments.table_id,
+            to_column_id=key_col.column_id,
+            relationship_type="foreign_key",
+            cardinality="many-to-one",
+            confidence=0.9,
+            detection_method="llm",
+        )
+    )
+    session.commit()
+    return duck, [bank.table_id, payments.table_id], bank.table_id
+
+
+def test_conditioned_measure_ranges_serve_the_conditioned_sign(
+    session, payment_chain_with_measures
+) -> None:
+    """The range line carries the join-riding population only: globally the
+    amounts are mixed-sign, on the joined rows uniformly negative — the sign
+    evidence the flat profile blurs. A genuinely mixed measure says so
+    plainly, in column order."""
+    duck, table_ids, bank_table_id = payment_chain_with_measures
+    ctx = build_cycle_detection_context(
+        session,
+        duck,
+        table_ids,
+        vertical="finance",
+        base_runs=BaseRunMap(
+            relationship_run_id="run-current", semantic_runs={bank_table_id: "gen-run"}
+        ),
+    )
+
+    (rel,) = ctx["relationships"]
+    assert rel["conditioned_measure_ranges"] == [
+        {"column": "amount", "min": -135000.0, "max": -50.25, "summary": "all negative"},
+        {"column": "fee", "min": -5.0, "max": 10.0, "summary": "mixed signs"},
+    ]
+
+    rendered = format_context_for_prompt(ctx)
+    assert (
+        "bank_txns.amount (payment_id-joined rows only): min=-135000.0 max=-50.25 — all negative"
+        in rendered
+    )
+    assert (
+        "bank_txns.fee (payment_id-joined rows only): min=-5.0 max=10.0 — mixed signs" in rendered
+    )
+
+
+def test_conditioned_measure_ranges_sensitive_name_serves_nothing(
+    session, payment_chain_with_measures
+) -> None:
+    """This builder's privacy convention: a sensitive measure is ABSENT from
+    the conditioned serve (no placeholder); non-sensitive measures still serve."""
+    duck, table_ids, bank_table_id = payment_chain_with_measures
+    ctx = build_cycle_detection_context(
+        session,
+        duck,
+        table_ids,
+        vertical="finance",
+        base_runs=BaseRunMap(
+            relationship_run_id="run-current", semantic_runs={bank_table_id: "gen-run"}
+        ),
+        privacy=LLMPrivacy(sensitive_patterns=[".*amount.*"]),
+    )
+    (rel,) = ctx["relationships"]
+    assert rel["conditioned_measure_ranges"] == [
+        {"column": "fee", "min": -5.0, "max": 10.0, "summary": "mixed signs"}
+    ]
+    assert "-135000.0" not in format_context_for_prompt(ctx)
+
+
+def test_conditioned_measure_ranges_nan_serves_nothing(session) -> None:
+    """A NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every sign
+    comparison — a poisoned range would read 'all positive'. Absence is the
+    honest serving."""
+    duck = duckdb.connect()
+    duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
+    duck.execute("INSERT INTO typed_payments VALUES ('P1'), ('P2')")
+    duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR, amount DOUBLE)")
+    duck.execute("INSERT INTO typed_bank_txns VALUES ('P1', 2.0), ('P2', CAST('nan' AS DOUBLE))")
+
+    source = Source(name="nan_chain_source", source_type="csv")
+    session.add(source)
+    session.flush()
+    bank = Table(
+        source_id=source.source_id,
+        table_name="bank_txns",
+        layer="typed",
+        row_count=2,
+        duckdb_path="typed_bank_txns",
+    )
+    payments = Table(
+        source_id=source.source_id,
+        table_name="payments",
+        layer="typed",
+        row_count=2,
+        duckdb_path="typed_payments",
+    )
+    session.add_all([bank, payments])
+    session.flush()
+    fk_col = Column(
+        table_id=bank.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    amount_col = Column(
+        table_id=bank.table_id, column_name="amount", column_position=1, raw_type="DOUBLE"
+    )
+    key_col = Column(
+        table_id=payments.table_id, column_name="payment_id", column_position=0, raw_type="VARCHAR"
+    )
+    session.add_all([fk_col, amount_col, key_col])
+    session.flush()
+    session.add(
+        SemanticAnnotation(
+            column_id=amount_col.column_id, run_id="gen-run", semantic_role="measure"
+        )
+    )
+    session.add(
+        Relationship(
+            run_id="run-current",
+            from_table_id=bank.table_id,
+            from_column_id=fk_col.column_id,
+            to_table_id=payments.table_id,
+            to_column_id=key_col.column_id,
+            relationship_type="foreign_key",
+            cardinality="many-to-one",
+            confidence=0.9,
+            detection_method="llm",
+        )
+    )
+    session.commit()
+
+    ctx = build_cycle_detection_context(
+        session,
+        duck,
+        [bank.table_id, payments.table_id],
+        vertical="finance",
+        base_runs=BaseRunMap(
+            relationship_run_id="run-current", semantic_runs={bank.table_id: "gen-run"}
+        ),
+    )
+    (rel,) = ctx["relationships"]
+    assert "conditioned_measure_ranges" not in rel
 
 
 def test_format_context_renders_zero_annotation_confidence() -> None:

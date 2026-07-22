@@ -115,6 +115,17 @@ _DUAL_GRAIN: dict[str, str] = {
 # promoted state.
 _ALWAYS_PASSTHROUGH: tuple[str, ...] = ("metadata_snapshot_head", "run_tables")
 
+# The workspace concept vocabulary (DAT-848). Un-versioned (keyed ``(vertical,
+# name)``, superseded_at the only lifecycle axis), so it would otherwise get a
+# plain pass-through — but a wrong ``--vertical`` (or the eval's wild-vertical
+# stand-in) can leave rows under OTHER verticals in the base table. The read
+# surface must serve only the workspace's single bound active vertical
+# (``workspace_settings.active_vertical``), so ``og_concepts`` / ``og_concept_edges``
+# (they read ``__READ__.concepts`` / ``__READ__.concept_edges``) and the cockpit
+# mirror never surface cross-vertical rows. Scoped here in ONE place instead of on
+# each downstream view.
+_VERTICAL_SCOPED: tuple[str, ...] = ("concepts", "concept_edges")
+
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the
 # failure contract's exempt list (DAT-502 / ADR-0010). The contract: Postgres
 # owns within-attempt atomicity (run_phase rolls back FAILED phases); writer
@@ -323,6 +334,36 @@ def _current_view_sql(table: str) -> str:
     raise AssertionError(f"unreachable: {table} not classified")
 
 
+def _vertical_scoped_view_sql(table: str) -> str:
+    """A pass-through scoped to the workspace's single bound active vertical (DAT-848).
+
+    ``concepts`` / ``concept_edges`` are the workspace vocabulary; a wrong
+    ``--vertical`` (or a direct wild-vertical write) can leave rows under other
+    verticals in the base table. The correlated singleton subquery pins the served
+    set to ``workspace_settings.active_vertical`` (the ``pin`` CHECK keeps that a
+    single row, so the scalar is well-defined).
+
+    An UNBOUND workspace has no ``workspace_settings`` row → the scalar is NULL →
+    ``COALESCE`` falls back to the placeholder vertical ``_adhoc``. This is NOT
+    "serve nothing": ``_adhoc`` is a real, servable vocabulary — the cockpit ``frame``
+    stage writes concepts under ``vertical='_adhoc'`` when the user names no domain,
+    and ``require_active_vertical`` deliberately never binds a placeholder (so a
+    later ``frame`` to a real vertical can bind it cleanly). Without the fallback an
+    ad-hoc workspace would silently show an empty vocabulary graph. Once a real
+    vertical binds, ``active_vertical`` wins and any ``_adhoc``-era rows drop out —
+    the clean-cut re-frame behaviour. All columns (including superseded history) pass
+    through unchanged; only the vertical axis is scoped — downstream views
+    (``og_concepts``, the cockpit mirror) keep applying their own
+    ``superseded_at IS NULL`` filter.
+    """
+    return (
+        f"CREATE VIEW {READ_TOKEN}.{table} AS\n"
+        f"SELECT * FROM {WS_TOKEN}.{table}\n"
+        f"WHERE vertical = COALESCE(\n"
+        f"  (SELECT active_vertical FROM {WS_TOKEN}.workspace_settings), '_adhoc');"
+    )
+
+
 def _current_entity_view_statements() -> list[tuple[str, str]]:
     """Derived current-state views over the un-versioned substrate.
 
@@ -475,6 +516,11 @@ def read_view_statements() -> list[tuple[str, str]]:
                     f"table must appear on the promoted-read surface (ADR-0008)."
                 )
             statements.append((f"current_{name}", _current_view_sql(name)))
+            continue
+        if name in _VERTICAL_SCOPED:
+            # Un-versioned, but scoped to the workspace's active vertical (DAT-848)
+            # instead of a plain pass-through.
+            statements.append((name, _vertical_scoped_view_sql(name)))
             continue
         statements.append(
             (

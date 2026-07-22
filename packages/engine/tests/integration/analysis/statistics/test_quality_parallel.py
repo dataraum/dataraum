@@ -193,8 +193,11 @@ class TestAssessStatisticalQualityParallel:
         # At least some columns should have Benford analysis (500 rows > 100 threshold)
         assert len(results_with_benford) > 0
 
-        # Check structure
+        # Check structure: a typed status always; test statistics exactly when
+        # measured (DAT-843 — not_applicable carries the span but no chi-square).
         for qr in results_with_benford:
-            assert qr.benford_analysis.chi_square is not None
-            assert qr.benford_analysis.p_value is not None
-            assert qr.benford_analysis.is_compliant is not None
+            assert qr.benford_analysis.status in ("compliant", "violating", "not_applicable")
+            assert qr.benford_analysis.magnitude_span_decades is not None
+            if qr.benford_analysis.status != "not_applicable":
+                assert qr.benford_analysis.chi_square is not None
+                assert qr.benford_analysis.p_value is not None

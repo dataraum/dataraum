@@ -147,7 +147,7 @@ class TestBenfordDetector:
         role: str = "measure",
     ) -> DetectorContext:
         """Build a detector context with the given observed digit distribution."""
-        analysis: dict[str, object] = {"is_compliant": True, "chi_square": 5.0, "p_value": 0.8}
+        analysis: dict[str, object] = {"status": "compliant", "chi_square": 5.0, "p_value": 0.8}
         if digit_distribution is not None:
             analysis["digit_distribution"] = digit_distribution
         return DetectorContext(
@@ -201,7 +201,7 @@ class TestBenfordDetector:
         assert len(results) == 1
         assert results[0].score < 0.02
         assert results[0].evidence[0]["kl_bits"] < 0.05
-        assert results[0].evidence[0]["is_compliant"] is True
+        assert results[0].evidence[0]["status"] == "compliant"
 
     def test_skewed_distribution_is_high_surprise(self, detector: BenfordDetector):
         """A distribution that departs Benford hard → high surprise."""
@@ -221,3 +221,39 @@ class TestBenfordDetector:
         assert detector.layer == "value"
         assert detector.dimension == "distribution"
         assert detector.required_analyses == ["statistics", "semantic"]
+
+
+class TestBenfordAbstention:
+    """DAT-843/853: a bounded-magnitude column abstains — never a KL verdict."""
+
+    @pytest.fixture
+    def detector(self) -> BenfordDetector:
+        return BenfordDetector()
+
+    def _context_not_applicable(self) -> DetectorContext:
+        return DetectorContext(
+            table_name="orders",
+            column_name="rating",
+            analysis_results={
+                "statistics": {
+                    "total_count": 1000,
+                    "quality": {
+                        "benford_analysis": {
+                            "status": "not_applicable",
+                            "magnitude_span_decades": 0.95,
+                            "interpretation": "Benford's Law not applicable: values span 0.95 decades (< 1 order of magnitude)",
+                        }
+                    },
+                },
+                "semantic": {"semantic_role": "measure"},
+            },
+        )
+
+    def test_not_applicable_abstains(self, detector: BenfordDetector):
+        results = detector.detect(self._context_not_applicable())
+        assert len(results) == 1
+        obj = results[0]
+        assert obj.status == "abstained"
+        assert obj.abstain_reason == "not_applicable"
+        assert obj.score is None
+        assert obj.evidence[0]["magnitude_span_decades"] == 0.95

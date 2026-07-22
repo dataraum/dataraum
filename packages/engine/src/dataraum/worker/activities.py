@@ -385,6 +385,20 @@ class PhaseActivities:
             "slicing", payload.run, payload.table_ids, payload.vertical
         )
 
+    @activity.defn(name="catalogue_semantics")
+    def run_catalogue_semantics(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Catalogue-semantics activity — table readings + column concepts (DAT-823).
+
+        The catalogue-horizon authoring turn: UPDATEs the run's TableEntity
+        stubs with business readings and writes the ColumnConcept rows, argued
+        over the composed catalogue (confirmed relationships, enriched views,
+        slice axes). Makes real Anthropic calls; needs ``ANTHROPIC_API_KEY`` +
+        the session's ``vertical``.
+        """
+        return self._run_session_or_raise(
+            "catalogue_semantics", payload.run, payload.table_ids, payload.vertical
+        )
+
     @activity.defn(name="dimension_hierarchies")
     def run_dimension_hierarchies(self, payload: SessionScopedInput) -> PhaseOutcome:
         """Dimension-hierarchies activity — g3 FD / drill-down / alias discovery (DAT-537).
@@ -703,4 +717,4 @@ class PhaseActivities:
             if _is_transient_commit_conflict(run.error):
                 raise ApplicationError(message, type="TransientPhaseFailure")
             raise ApplicationError(message, type="PhaseFailed", non_retryable=True)
-        return PhaseOutcome(status=run.status, summary=run.summary)
+        return PhaseOutcome(status=run.status, summary=run.summary, declared=run.declared)

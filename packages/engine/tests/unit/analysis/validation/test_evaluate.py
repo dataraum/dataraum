@@ -46,9 +46,15 @@ class TestSharedVerdictVectors:
     @pytest.mark.parametrize("case", _VECTORS, ids=[c["name"] for c in _VECTORS])
     def test_vector(self, case: dict) -> None:
         spec = _eval_spec(case["check_type"], tolerance=case["tolerance"])
-        status, _, _ = evaluate_result(spec, case["rows"])
+        status, _, details = evaluate_result(spec, case["rows"])
         assert status.value == case["expected"]["status"]
         assert (status == ValidationStatus.PASSED) == case["expected"]["passed"]
+        # Optional numeric pins (DAT-852): the WORST-row numbers both mirrors
+        # must serve — guards the selection, not just the verdict.
+        if "deviation" in case["expected"]:
+            assert details["deviation"] == pytest.approx(case["expected"]["deviation"])
+        if "magnitude" in case["expected"]:
+            assert details["magnitude"] == pytest.approx(case["expected"]["magnitude"])
 
 
 class TestEvaluateResultDetails:
@@ -82,6 +88,65 @@ class TestEvaluateResultDetails:
         assert status == ValidationStatus.ERROR
         assert "inconclusive" in message
         assert "deviation" in message
+
+    def test_multi_leg_flat_details_are_the_worst_leg(self) -> None:
+        """DAT-852: the entropy scorer's flat contract is the WORST leg's numbers,
+        and the full per-leg breakdown rides ``legs`` — never a pooled number."""
+        spec = _eval_spec("aggregate", tolerance=0.02)
+        rows = [
+            {"leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0},
+            {"leg": "txns.vendor_id->vendors.id", "deviation": 0.315, "magnitude": 1.0},
+        ]
+        status, message, details = evaluate_result(spec, rows)
+        assert status == ValidationStatus.FAILED
+        assert details["deviation"] == 0.315
+        assert details["magnitude"] == 1.0
+        assert details["legs"] == [
+            {"leg": "txns.account_id->accounts.id", "deviation": 0.0, "magnitude": 1.0},
+            {"leg": "txns.vendor_id->vendors.id", "deviation": 0.315, "magnitude": 1.0},
+        ]
+        assert "txns.vendor_id->vendors.id" in message
+        assert "2 legs judged" in message
+
+    def test_single_row_details_carry_no_legs_breakdown(self) -> None:
+        spec = _eval_spec("balance", tolerance=0.01)
+        _, message, details = evaluate_result(spec, [{"deviation": 0.0, "magnitude": 1.0}])
+        assert "legs" not in details
+        assert "leg" not in message
+
+
+class TestNonFiniteInputs:
+    """NaN/inf handling — per-side tests because JSON vectors cannot encode them.
+
+    A NaN deviation is REACHABLE, not theoretical: DuckDB's IEEE division
+    returns NaN for an orphan-rate leg over an all-NULL FK column (0.0/0.0).
+    Unguarded, a NaN in the worst-row max() made the verdict ORDER-DEPENDENT
+    (NaN comparisons are always False) while the TS mirror returned ERROR for
+    the same rows — a live divergence the shared truth table cannot see.
+    """
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_deviation_is_inconclusive(self, bad: float) -> None:
+        spec = _eval_spec("aggregate", tolerance=10.0)
+        status, message, _ = evaluate_result(spec, [{"deviation": bad}])
+        assert status == ValidationStatus.ERROR
+        assert "non-finite" in message
+
+    def test_nan_deviation_is_inconclusive_regardless_of_row_order(self) -> None:
+        spec = _eval_spec("aggregate", tolerance=10.0)
+        rows_nan_first = [{"deviation": float("nan")}, {"deviation": 5.0}]
+        rows_nan_last = [{"deviation": 5.0}, {"deviation": float("nan")}]
+        for rows in (rows_nan_first, rows_nan_last):
+            status, _, _ = evaluate_result(spec, rows)
+            assert status == ValidationStatus.ERROR, "verdict must never depend on row order"
+
+    def test_nan_magnitude_degrades_to_fallback_not_error(self) -> None:
+        # magnitude is severity garnish, never verdict-bearing — a NaN
+        # magnitude must not reach the entropy scorer's divisor.
+        spec = _eval_spec("aggregate", tolerance=10.0)
+        status, _, details = evaluate_result(spec, [{"deviation": 5.0, "magnitude": float("nan")}])
+        assert status == ValidationStatus.PASSED
+        assert details["magnitude"] == 5.0
 
 
 class TestEvaluateValidation:

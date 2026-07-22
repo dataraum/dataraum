@@ -12,7 +12,11 @@ import {
 	stageOfRow,
 } from "./readiness-grain";
 
-type Row = GrainRow & { id: string; detectorId: string | null };
+type Row = GrainRow & {
+	id: string;
+	detectorId: string | null;
+	status?: string | null;
+};
 
 function row(id: string, overrides: Partial<Omit<Row, "id">> = {}): Row {
 	return {
@@ -152,6 +156,7 @@ describe("projectVerdictHistory", () => {
 		overrides: Partial<
 			GrainRow & {
 				band: string | null;
+				coverage: string | null;
 				worstIntentRisk: number | null;
 				runId: string | null;
 			}
@@ -232,5 +237,35 @@ describe("projectVerdictHistory", () => {
 			}),
 		]);
 		expect(history.map((h) => h.run_id)).toEqual(["r1-run", "r2-run"]);
+	});
+
+	it("carries each snapshot's coverage so an unmeasured 'ready' is labeled (DAT-853)", () => {
+		const history = projectVerdictHistory([
+			histRow("run-um", {
+				viaTableHead: true,
+				band: "ready",
+				coverage: "unmeasured",
+			}),
+		]);
+		expect(history[0]?.band).toBe("ready");
+		expect(history[0]?.coverage).toBe("unmeasured");
+	});
+
+	it("excludes abstained evidence from a stage's signal count (DAT-853)", () => {
+		// signals must agree with the tool's measured-only signal_count — an abstained
+		// detector is an absence, not a signal that backs the verdict.
+		const history = projectVerdictHistory(
+			[histRow("run-add", { viaTableHead: true })],
+			[
+				row("e1", { detectorId: "null_ratio", viaTableHead: true }),
+				row("e2", {
+					detectorId: "benford",
+					status: "abstained",
+					viaTableHead: true,
+				}),
+			],
+		);
+		// Only the one MEASURED detector counts.
+		expect(history[0]?.signals).toBe(1);
 	});
 });

@@ -83,6 +83,16 @@ export interface OperatingModelResult {
 	// table_ids (DAT-506): operating_model carries no table set — the cockpit
 	// reads the catalog views.
 	validation_summary: string;
+	// The terminal disposition (DAT-845). `"promoted"`: the run declared at least
+	// one validation/cycle/metric and flipped the (catalog, "operating_model")
+	// head as usual. `"nothing_declared"`: the framed vertical declared ZERO
+	// across all three families, so NO operating model exists — the run COMPLETES
+	// but deliberately does NOT flip the head. A handled-but-INVALID
+	// misconfiguration signal (a workspace with no validations/cycles/metrics is
+	// never a valid end state; the collaborative fix is DAT-855), never a benign
+	// variant. Lockstep mirror of `OperatingModelResult.outcome` in the engine's
+	// `dataraum.worker.contracts` (a rename/retype there is cross-PACKAGE).
+	outcome: "promoted" | "nothing_declared";
 }
 
 // One raw→typed mapping, produced by a ProcessTableWorkflow child.
@@ -134,6 +144,13 @@ export interface ProgressSnapshot {
 // The terminal `phase` the parent sets just before returning AddSourceResult —
 // the cockpit's progress poll stops here (alongside a terminal describe() status).
 export const PROGRESS_DONE_PHASE = "done";
+
+// The terminal `phase` the operating_model workflow sets INSTEAD of "done" when a
+// framed vertical declared zero validations/cycles/metrics (DAT-845) — the run
+// COMPLETES without flipping the head (no operating model exists). Mirrors the
+// engine workflow's terminal phase value; the reconcile reads it to persist the
+// run's `nothing_declared` outcome when it never saw the workflow result.
+export const PROGRESS_NOTHING_DECLARED_PHASE = "nothing_declared";
 
 // --- Orchestration workflows (DAT-708) ---------------------------------------
 // The grounding loop + session cascade run on the ENGINE worker (ADR-0020

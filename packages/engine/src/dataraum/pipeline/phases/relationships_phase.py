@@ -120,7 +120,11 @@ class RelationshipsPhase(BasePhase):
 
         # Summarize findings
         candidates = result_data.candidates
-        high_confidence = [
+        # High-OVERLAP, not high-confidence (DAT-839): jc.join_confidence is the
+        # value-overlap statistic max(Jaccard, containment), which an unconfirmed
+        # candidate can max out at 1.0. A summary tally of strongly overlapping
+        # candidates, never a posterior-confidence gate.
+        high_overlap = [
             c for c in candidates if any(jc.join_confidence >= 0.7 for jc in c.join_candidates)
         ]
 
@@ -128,10 +132,10 @@ class RelationshipsPhase(BasePhase):
             outputs={
                 "relationship_candidates": [f"{c.table1} <-> {c.table2}" for c in candidates],
                 "total_candidates": len(candidates),
-                "high_confidence_count": len(high_confidence),
+                "high_overlap_count": len(high_overlap),
                 "duration_seconds": result_data.duration_seconds,
             },
             records_processed=len(table_ids) * (len(table_ids) - 1) // 2,  # pairs analyzed
             records_created=len(candidates),
-            summary=f"{len(candidates)} candidates ({len(high_confidence)} high-confidence)",
+            summary=f"{len(candidates)} candidates ({len(high_overlap)} high-overlap)",
         )

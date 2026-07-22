@@ -185,6 +185,14 @@ CREATE TABLE validation_results (
 
 CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
 
+CREATE TABLE workspace_settings (
+	pin BOOLEAN NOT NULL, 
+	active_vertical VARCHAR NOT NULL, 
+	bound_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_workspace_settings PRIMARY KEY (pin), 
+	CONSTRAINT ck_workspace_settings_pin CHECK (pin = TRUE)
+);
+
 CREATE TABLE tables (
 	table_id VARCHAR NOT NULL, 
 	source_id VARCHAR NOT NULL, 
@@ -379,7 +387,7 @@ CREATE TABLE table_entities (
 	entity_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
-	detected_entity_type VARCHAR NOT NULL, 
+	detected_entity_type VARCHAR, 
 	description TEXT, 
 	grain_columns JSON, 
 	table_role VARCHAR, 
@@ -423,6 +431,7 @@ CREATE TABLE column_concepts (
 	column_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	meaning TEXT, 
+	meaning_status VARCHAR, 
 	temporal_behavior VARCHAR, 
 	unit_source_column VARCHAR, 
 	derived_formula_hypothesis VARCHAR, 
@@ -434,6 +443,7 @@ CREATE TABLE column_concepts (
 	CONSTRAINT pk_column_concepts PRIMARY KEY (concept_id), 
 	CONSTRAINT uq_column_concept UNIQUE (column_id, run_id), 
 	CONSTRAINT ck_column_concepts_annotation_source CHECK (annotation_source IS NULL OR annotation_source IN ('llm')), 
+	CONSTRAINT ck_column_concepts_meaning_status CHECK (meaning_status IS NULL OR meaning_status IN ('ambiguous', 'determined')), 
 	CONSTRAINT fk_column_concepts_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
@@ -495,7 +505,9 @@ CREATE TABLE entropy_objects (
 	table_id VARCHAR, 
 	column_id VARCHAR, 
 	run_id VARCHAR NOT NULL, 
-	score FLOAT NOT NULL, 
+	score FLOAT, 
+	status VARCHAR NOT NULL, 
+	abstain_reason VARCHAR, 
 	evidence JSONB, 
 	detector_id VARCHAR NOT NULL, 
 	source_analysis_ids JSONB, 
@@ -504,6 +516,9 @@ CREATE TABLE entropy_objects (
 	CONSTRAINT ck_entropy_objects_layer CHECK (layer IN ('computational', 'semantic', 'structural', 'value')), 
 	CONSTRAINT ck_entropy_objects_dimension CHECK (dimension IN ('business_meaning', 'coverage', 'derived_values', 'dimensional', 'distribution', 'nulls', 'reconciliation', 'relations', 'temporal', 'types', 'units', 'variance')), 
 	CONSTRAINT ck_entropy_objects_sub_dimension CHECK (sub_dimension IN ('benford_compliance', 'cross_column_patterns', 'cross_table_consistency', 'dimension_coverage', 'formula_match', 'join_path_determinism', 'naming_clarity', 'null_ratio', 'null_semantics', 'relationship_discovery', 'relationship_quality', 'slice_conditional_null', 'slice_stability', 'temporal_behavior', 'time_role', 'type_fidelity', 'unit_declaration', 'unit_source')), 
+	CONSTRAINT ck_entropy_objects_status CHECK (status IN ('abstained', 'measured')), 
+	CONSTRAINT ck_entropy_objects_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('detector_error', 'insufficient_data', 'missing_inputs', 'not_applicable')), 
+	CONSTRAINT ck_entropy_objects_status_score_reason CHECK ((status = 'measured' AND score IS NOT NULL AND abstain_reason IS NULL) OR (status = 'abstained' AND score IS NULL AND abstain_reason IS NOT NULL)), 
 	CONSTRAINT fk_entropy_objects_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_entropy_objects_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
@@ -526,11 +541,14 @@ CREATE TABLE entropy_readiness (
 	run_id VARCHAR NOT NULL, 
 	band VARCHAR NOT NULL, 
 	worst_intent_risk FLOAT NOT NULL, 
+	coverage VARCHAR NOT NULL, 
+	abstentions JSONB, 
 	intents JSONB, 
 	top_drivers JSONB, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_entropy_readiness PRIMARY KEY (readiness_id), 
 	CONSTRAINT ck_entropy_readiness_band CHECK (band IN ('ready', 'investigate', 'blocked')), 
+	CONSTRAINT ck_entropy_readiness_coverage CHECK (coverage IN ('measured', 'partial', 'unmeasured')), 
 	CONSTRAINT fk_entropy_readiness_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_entropy_readiness_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
@@ -590,13 +608,17 @@ CREATE TABLE relationships (
 	confidence FLOAT NOT NULL, 
 	detection_method VARCHAR, 
 	evidence JSON, 
+	judge_verdict VARCHAR, 
 	confirmation_source VARCHAR DEFAULT 'unconfirmed' NOT NULL, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_relationships PRIMARY KEY (relationship_id), 
 	CONSTRAINT uq_relationship_columns_method UNIQUE (run_id, from_column_id, to_column_id, detection_method), 
-	CONSTRAINT ck_relationships_relationship_type CHECK (relationship_type IN ('foreign_key', 'hierarchy', 'candidate')), 
+	CONSTRAINT ck_relationships_relationship_type CHECK (relationship_type IN ('foreign_key', 'hierarchy', 'conformed_dimension', 'candidate')), 
+	CONSTRAINT ck_relationships_reference_not_many_to_many CHECK (NOT (relationship_type IN ('foreign_key', 'hierarchy') AND cardinality = 'many-to-many')), 
 	CONSTRAINT ck_relationships_confirmation_source CHECK (confirmation_source IN ('unconfirmed', 'judge', 'user', 'keeper')), 
 	CONSTRAINT ck_relationships_detection_method CHECK (detection_method IS NULL OR detection_method IN ('candidate', 'llm', 'manual', 'keeper')), 
+	CONSTRAINT ck_relationships_judge_verdict CHECK (judge_verdict IS NULL OR judge_verdict IN ('declined')), 
+	CONSTRAINT ck_relationships_judge_verdict_on_candidate CHECK (judge_verdict IS NULL OR detection_method = 'candidate'), 
 	CONSTRAINT ck_relationships_cardinality_oriented CHECK (cardinality IS NULL OR cardinality IN ('one-to-one', 'many-to-one', 'many-to-many')), 
 	CONSTRAINT fk_relationships_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_relationships_from_column_id_columns FOREIGN KEY(from_column_id) REFERENCES columns (column_id), 
@@ -701,6 +723,7 @@ CREATE TABLE statistical_quality_metrics (
 	column_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	benford_status VARCHAR, 
 	benford_compliant INTEGER, 
 	has_outliers INTEGER, 
 	iqr_outlier_ratio FLOAT, 
@@ -708,6 +731,7 @@ CREATE TABLE statistical_quality_metrics (
 	quality_data JSON NOT NULL, 
 	CONSTRAINT pk_statistical_quality_metrics PRIMARY KEY (metric_id), 
 	CONSTRAINT uq_statistical_quality_metrics_column_run UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_statistical_quality_metrics_benford_status CHECK (benford_status IS NULL OR benford_status IN ('compliant', 'not_applicable', 'violating')), 
 	CONSTRAINT fk_statistical_quality_metrics_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 

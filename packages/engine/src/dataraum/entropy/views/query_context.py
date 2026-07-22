@@ -51,6 +51,10 @@ class EntropyForQuery:
     # Counts
     high_entropy_count: int = 0
     critical_entropy_count: int = 0
+    # DAT-853: columns whose loss-path detectors all abstained. Distinguishes
+    # "ready because measured clean" from "ready because nothing was measured"
+    # at the summary grain the agent reads.
+    unmeasured_count: int = 0
 
     # Contract evaluation (if evaluated)
     contract_name: str | None = None
@@ -87,6 +91,7 @@ class EntropyForQuery:
             "overall_readiness": self.overall_readiness,
             "high_entropy_count": self.high_entropy_count,
             "critical_entropy_count": self.critical_entropy_count,
+            "unmeasured_count": self.unmeasured_count,
             "contract_name": self.contract_name,
             "confidence_level": self.confidence_level.value,
             "confidence_emoji": self.confidence_level.emoji,
@@ -140,6 +145,7 @@ def build_for_query(
     overall_readiness = persisted.overall_readiness
     high_entropy_count = persisted.columns_blocked + persisted.columns_investigate
     critical_entropy_count = persisted.columns_blocked
+    unmeasured_count = persisted.columns_unmeasured
 
     # Contract gate: raw dimension scores (rollup-free) + the persisted band.
     evidence = build_column_evidence(session, table_ids, resolve_runs=resolve_runs)
@@ -190,6 +196,7 @@ def build_for_query(
         overall_readiness=overall_readiness,
         high_entropy_count=high_entropy_count,
         critical_entropy_count=critical_entropy_count,
+        unmeasured_count=unmeasured_count,
         contract_name=contract_name,
         contract_evaluation=contract_evaluation,
         confidence_level=confidence_level,

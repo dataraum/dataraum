@@ -154,17 +154,28 @@ class RunRef(BaseModel):
 
 
 class PhaseOutcome(BaseModel):
-    """Lean per-activity result: outcome + human summary.
+    """Lean per-activity result: outcome + human summary (+ the declared count).
 
     Returned by the activities that don't mint an id (the analytics phases,
     ``semantic_per_column``, the terminal ``detect``). A deterministic phase *failure*
     never travels in here — it is raised as a non-retryable ``ApplicationError``
     by the activity wrapper — so a returned outcome is always ``completed`` or
     ``skipped``. Carries no ``table_ids``/``outputs`` god-fields.
+
+    ``declared`` is the ONE typed signal threaded up from a phase's outputs: the
+    count of declared lifecycle artifacts for the three operating_model families
+    (validation / business_cycles / metrics), ``0`` when the vertical declares
+    none of that family. ``None`` for every other activity (which declares nothing
+    of the kind). ``OperatingModelWorkflow`` reads the three counts to gate the
+    terminal promote (DAT-845): all three ``0`` ⇒ no operating model exists, so it
+    does not flip the head. Engine-internal — this result is consumed only by the
+    workflow (Python→Python), never deserialized by the cockpit, so it is NOT
+    mirrored in ``src/temporal/types.ts``.
     """
 
     status: str
     summary: str = ""
+    declared: int | None = None
 
 
 class ImportInput(BaseModel):
@@ -371,10 +382,24 @@ class OperatingModelResult(BaseModel):
     renders what happened without re-deriving it. No ``table_ids``:
     operating_model carries no table set — the phases read the catalog head's
     ``run_tables`` and the cockpit reads the catalog views.
+
+    ``outcome`` is the terminal disposition (DAT-845). ``"promoted"``: the run
+    declared at least one validation/cycle/metric and flipped the
+    ``(catalog, "operating_model")`` head as usual. ``"nothing_declared"``: the
+    framed vertical declared ZERO across all three families, so NO operating model
+    exists — the run COMPLETES (a re-run can't fix a vertical that declares
+    nothing, so there is nothing to retry) but deliberately does NOT flip the head.
+    A misconfiguration signal, not a benign variant: a workspace with no
+    validations/cycles/metrics is never a valid end state (the collaborative path
+    (DAT-855). CROSS-PACKAGE: ``OperatingModelResult`` (including this ``outcome``
+    field) is hand-mirrored in the cockpit's ``src/temporal/types.ts`` and persisted
+    to cockpit_db ``runs.outcome`` for rendering. Keep the type and semantics in
+    lockstep across engine + cockpit.
     """
 
     run_id: str
     validation_summary: str = ""
+    outcome: Literal["promoted", "nothing_declared"] = "promoted"
 
 
 class AddSourceInput(BaseModel):
@@ -539,6 +564,16 @@ class SessionCascadeInput(BaseModel):
 # workflows schedule them BY NAME on the cockpit queue, and both converters
 # (pydantic here, the TS default there) pass JSON keys through verbatim. Do not
 # "fix" the casing — a rename here is a silent wire break.
+#
+# ``markRunStatus`` / ``markRunAwaitingInput`` take no model — they are scheduled
+# with POSITIONAL args, so there is nothing to mirror as a class here; the TS
+# signatures in ``src/db/cockpit/runs.ts`` are authoritative and ``_run_stage``
+# below must pass matching positionals. ``markRunStatus`` is
+# ``(workflowId, runId, status, outcome?)`` (DAT-845): ``status`` is the lifecycle
+# axis ("completed" | "failed" | "retired"); the trailing ``outcome`` is a distinct
+# RESULT axis ("promoted" | "nothing_declared") set only for the operating_model
+# stage, optional-with-default (None → JSON null) so the three-arg failed/retired
+# marks and the non-OM stages stay valid. Evolve the positional order in lockstep.
 
 
 class RecordRunInput(BaseModel):

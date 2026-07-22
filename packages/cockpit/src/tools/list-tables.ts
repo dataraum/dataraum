@@ -44,9 +44,10 @@ const ReadinessRollup = z.object({
 	ready: z.number(),
 	investigate: z.number(),
 	blocked: z.number(),
-	// Columns with no readiness row yet (the table — or some of its columns —
-	// hasn't been analyzed). Kept distinct from a band so "not measured" never
-	// reads as "ready".
+	// Columns with no trustworthy readiness signal: no readiness row yet, OR a row
+	// whose rollup coverage is 'unmeasured' (DAT-853 — all loss-path detectors
+	// abstained, so the frozen-default band='ready' is vacuous). Kept distinct from
+	// a band so "not measured" never reads as "ready".
 	unanalyzed: z.number(),
 });
 export type ReadinessRollup = z.infer<typeof ReadinessRollup>;
@@ -167,10 +168,14 @@ function sourceLabel(row: InventoryTableRow): string {
 	return "upload";
 }
 
-/** One column ⟕ readiness row (band null = the column has no readiness row). */
+/** One column ⟕ readiness row (band null = the column has no readiness row).
+ * `coverage` (DAT-853) is the rollup outcome: an 'unmeasured' column carries a
+ * frozen-default band='ready' that is VACUOUS, so the rollup counts it as
+ * unanalyzed, never ready. */
 export interface ColumnBandRow {
 	tableId: string;
 	band: string | null;
+	coverage?: string | null;
 }
 
 /**
@@ -237,13 +242,19 @@ export function buildInventory(
 	enrichedViewRows: EnrichedViewRow[] = [],
 ): ProjectedInventoryTable[] {
 	const rollups = new Map<string, ReadinessRollup>();
-	for (const { tableId, band } of columnBandRows) {
+	for (const { tableId, band, coverage } of columnBandRows) {
 		let r = rollups.get(tableId);
 		if (!r) {
 			r = { ready: 0, investigate: 0, blocked: 0, unanalyzed: 0 };
 			rollups.set(tableId, r);
 		}
-		if (band === "ready" || band === "investigate" || band === "blocked") {
+		// A real band only counts when it rests on actual measurement: an
+		// 'unmeasured' column (DAT-853) carries a vacuous band='ready' and must NOT
+		// inflate the ready count — it is "not measured", so it rolls up as unanalyzed.
+		const measured =
+			(band === "ready" || band === "investigate" || band === "blocked") &&
+			coverage !== "unmeasured";
+		if (measured) {
 			r[band as Band] += 1;
 		} else {
 			r.unanalyzed += 1;
@@ -399,6 +410,7 @@ export async function listTables(
 					.select({
 						columnId: currentEntropyReadiness.columnId,
 						band: currentEntropyReadiness.band,
+						coverage: currentEntropyReadiness.coverage,
 						computedAt: currentEntropyReadiness.computedAt,
 						viaTableHead: currentEntropyReadiness.viaTableHead,
 						viaCatalogHead: currentEntropyReadiness.viaCatalogHead,
@@ -420,11 +432,16 @@ export async function listTables(
 		if (group === undefined) grainsByColumn.set(key, [row]);
 		else group.push(row);
 	}
-	const columnBandRows = columnRows.map((c) => ({
-		tableId: c.tableId,
-		band:
-			pickCurrentRow(grainsByColumn.get(c.columnId ?? "") ?? [])?.band ?? null,
-	}));
+	const columnBandRows = columnRows.map((c) => {
+		const picked = pickCurrentRow(grainsByColumn.get(c.columnId ?? "") ?? []);
+		return {
+			tableId: c.tableId,
+			band: picked?.band ?? null,
+			// Coverage rides the SAME picked grain so an 'unmeasured' verdict rolls up
+			// as unanalyzed, not ready (DAT-853).
+			coverage: picked?.coverage ?? null,
+		};
+	});
 
 	// Session/detect-grain orientation (DAT-477). The current_* views resolve the
 	// promoted detect run server-side (the head join lives in the DB, ADR-0008),
@@ -485,7 +502,9 @@ export const listTablesTool = toolDefinition({
 		"run_sql as `lake.<layer>.<physical_name>`), layer, row count, column " +
 		"count, its source (name/type/backend), and a readiness rollup — how " +
 		"many of its columns are ready / investigate / blocked / unanalyzed plus " +
-		"the worst band. After a begin_session run it also carries each table's " +
+		"the worst band (unanalyzed INCLUDES never-measured columns, whose loss-path " +
+		"detectors all abstained — they are NOT counted as ready). After a " +
+		"begin_session run it also carries each table's " +
 		"detected entity_type and table_role (fact / periodic_snapshot / " +
 		"dimension) classification, and an enriched_views " +
 		"summary (count + view_names of the fact/dimension views built off that " +

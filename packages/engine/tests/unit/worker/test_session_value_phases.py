@@ -23,6 +23,10 @@ from dataraum.worker.workflows import _SESSION_VALUE_PHASE_ORDER
 def test_value_phase_order_is_the_agreed_chain() -> None:
     assert _SESSION_VALUE_PHASE_ORDER == (
         "slicing",
+        # DAT-823: catalogue-semantics authoring (table readings + column
+        # concepts) over the composed catalogue — after slicing resolves the
+        # dimension identities, before the dimension_hierarchies conform judge.
+        "catalogue_semantics",
         # DAT-537: deterministic g3 FD pass over slicing's catalog — drill-down
         # hierarchies + aliases. Reads slicing; consumed by the answer agent (DAT-538).
         "dimension_hierarchies",

@@ -15,8 +15,20 @@ import type { ConversationKind } from "#/db/cockpit/conversations";
 /** The engine's readiness bands (`entropy_readiness.band`, DAT-442). */
 export type ReadinessBand = "ready" | "investigate" | "blocked";
 
-/** A chat-stage's standing status, derived from snapshot heads + runs + attention. */
-export type StageStatus = "empty" | "in_progress" | "ready" | "needs_attention";
+/**
+ * A chat-stage's standing status, derived from snapshot heads + runs + attention.
+ * `nothing_declared` is the analyse stage's own terminal state (DAT-845): the
+ * operating_model run COMPLETED but the framed vertical declared no
+ * validations/cycles/metrics, so no operating model exists — distinct from `empty`
+ * (never run) and `ready` (promoted). Only analyse ever takes it (connect/stage
+ * share this union but never derive it, like `needs_attention`).
+ */
+export type StageStatus =
+	| "empty"
+	| "in_progress"
+	| "ready"
+	| "needs_attention"
+	| "nothing_declared";
 
 export interface BriefingBandCounts {
 	ready: number;
@@ -94,6 +106,9 @@ export type BriefingActionKind =
 	| "teach"
 	| "begin_session"
 	| "operating_model"
+	// The framed vertical declares no validations/cycles/metrics (DAT-845) — the
+	// honest nudge is to ADD declarations (frame), not to re-run the operating model.
+	| "declare"
 	| "answer";
 
 export interface BriefingAction {
@@ -137,6 +152,11 @@ export interface BriefingReadinessRow {
 	tableId: string | null;
 	columnId: string | null;
 	band: string | null;
+	/** Rollup coverage (DAT-853): 'measured' | 'partial' | 'unmeasured' | null. An
+	 * 'unmeasured' row carries a vacuous band='ready' — the briefing treats it as
+	 * no-signal (counts it as "not analyzed"), never as ready. Optional as a fixture
+	 * affordance; the live read always sets it. */
+	coverage?: string | null;
 	worstIntentRisk: number | null;
 	topDrivers: unknown;
 }
@@ -163,6 +183,15 @@ export interface BriefingStageFlags {
 	addSourceRunning: boolean;
 	beginSessionRunning: boolean;
 	operatingModelRunning: boolean;
+	/**
+	 * The workspace's LATEST operating_model run terminated `nothing_declared`
+	 * (DAT-845): it COMPLETED without flipping the head because the framed vertical
+	 * declared no validations/cycles/metrics. Distinct from `operatingModelPromoted`
+	 * (no head flip) — the analyse stage's honest terminal state. Read from cockpit_db
+	 * `runs` (the persisted outcome), NOT the metadata heads: a `nothing_declared` run
+	 * writes nothing to `ws_<id>`.
+	 */
+	operatingModelNothingDeclared: boolean;
 }
 
 export interface BriefingAwaitingItem {

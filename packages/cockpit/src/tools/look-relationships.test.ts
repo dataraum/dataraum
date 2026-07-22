@@ -136,6 +136,17 @@ describe("projectRelationshipReadiness (DAT-409)", () => {
 		).toBeNull();
 	});
 
+	it("carries coverage so an unmeasured relationship reads 'not measured' (DAT-853)", () => {
+		const out = projectRelationshipReadiness(
+			row({ band: "ready", coverage: "unmeasured" }),
+			names(),
+		);
+		expect(out).not.toBeNull();
+		if (!out) return;
+		expect(out.band).toBe("ready");
+		expect(out.coverage).toBe("unmeasured");
+	});
+
 	it("degrades a missing endpoint name to null rather than dropping the row", () => {
 		const out = projectRelationshipReadiness(row(), new Map());
 		expect(out).not.toBeNull();

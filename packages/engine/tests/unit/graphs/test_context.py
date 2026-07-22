@@ -368,3 +368,29 @@ class TestValidations:
         assert "[CRITICAL] v2: imbalance" in out
         assert "Unjudged (inconclusive or not executed — NOT data failures):" in out
         assert "[error] v3: could not evaluate" in out
+
+
+class TestColumnFlagsBenfordSuppression:
+    """DAT-843: only a MEASURED Benford violation flags to the agent."""
+
+    def _flags(self, benford_status):
+        from dataraum.graphs.context import _generate_column_flags
+
+        return _generate_column_flags(
+            null_ratio=None,
+            benford_status=benford_status,
+            is_stale=None,
+            cardinality_ratio=None,
+        )
+
+    def test_violating_flags(self):
+        assert self._flags("violating") == ["benford_violation"]
+
+    def test_not_applicable_suppressed(self):
+        assert self._flags("not_applicable") == []
+
+    def test_compliant_suppressed(self):
+        assert self._flags("compliant") == []
+
+    def test_none_suppressed(self):
+        assert self._flags(None) == []

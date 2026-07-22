@@ -64,6 +64,8 @@ _PHASE_ORDER = [
     "surrogate_mint",
     "enriched_views",
     "slicing",
+    # DAT-823: catalogue-semantics authoring between slicing and the hierarchies.
+    "catalogue_semantics",
     "dimension_hierarchies",
     "aggregation_lineage",
     "correlations",

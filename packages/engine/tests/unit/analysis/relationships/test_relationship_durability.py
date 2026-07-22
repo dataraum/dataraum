@@ -505,6 +505,82 @@ def test_materialize_keep_overlay_creates_keeper_with_last_measured_evidence(
     }
 
 
+def test_keeper_copies_the_measured_rows_edge_kind(session: Session) -> None:
+    """A keeper of a conformed llm row stays conformed (DAT-850).
+
+    The prior run's judge claim was refuted by measurement and persisted as
+    'conformed_dimension'; the keeper copies that resolved kind with the
+    measurement — hardcoding 'foreign_key' here would resurrect the refuted
+    reference claim into the defined catalog (and trip the compound CHECK,
+    since the copied cardinality is many-to-many).
+    """
+    _seed_tables_columns(session)
+    session.add(
+        Relationship(
+            run_id="r0",
+            from_table_id="t1",
+            from_column_id="ca",
+            to_table_id="t2",
+            to_column_id="cb",
+            relationship_type="conformed_dimension",
+            cardinality="many-to-many",
+            confidence=0.85,
+            detection_method="llm",
+            evidence={"resolved_from_type": "foreign_key"},
+        )
+    )
+    _overlay(session, "keep", "ca", "cb")
+    session.flush()
+
+    materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
+    session.flush()
+
+    rows = _materialized(session)
+    assert [r.detection_method for r in rows] == ["keeper"]
+    assert rows[0].relationship_type == "conformed_dimension"
+    assert rows[0].cardinality == "many-to-many"
+    assert rows[0].evidence["resolved_from_type"] == "foreign_key"
+
+
+def test_manual_add_measuring_many_to_many_lands_as_conformed(session: Session) -> None:
+    """A never-detected teach measuring m2m persists honestly (DAT-850).
+
+    The user asserts a reference; the DAT-790 in-materialize measurement says
+    the join fans out both ways (both endpoints hold duplicate values). The
+    shared builder resolves the claim to 'conformed_dimension' — same rule as
+    every other writer — instead of persisting the fk+m2m contradiction under
+    confirmation_source='user'.
+    """
+    _seed_tables_columns(session)
+    _set_duckdb_paths(session)
+    _overlay(session, "add", "ca", "cb")
+    session.flush()
+
+    conn = _lake_conn()
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__orders" AS '
+        "SELECT * FROM (VALUES (1), (1), (2)) AS t(customer_id)"
+    )
+    conn.execute(
+        'CREATE TABLE lake.typed."csv__customers" AS SELECT * FROM (VALUES (1), (1), (2)) AS t(id)'
+    )
+    try:
+        materialize_relationship_overlays(
+            session, run_id="r1", table_ids=["t1", "t2"], duckdb_conn=conn
+        )
+    finally:
+        conn.close()
+    session.flush()
+
+    rows = _materialized(session)
+    assert [r.detection_method for r in rows] == ["manual"]
+    assert rows[0].relationship_type == "conformed_dimension"
+    assert rows[0].cardinality == "many-to-many"
+    assert rows[0].evidence is not None
+    assert rows[0].evidence["resolved_from_type"] == "foreign_key"
+    assert rows[0].confirmation_source == "user"
+
+
 def test_keep_overlay_without_measurement_is_skipped_loud(session: Session) -> None:
     """A keeper is lifted FROM an llm row; with no measurement recoverable it
     has no basis — any stamped confidence would be fabricated. Loud skip."""

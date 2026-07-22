@@ -112,6 +112,33 @@ describe("projectColumnReadiness (DAT-350)", () => {
 		expect(out.semantic).toBeNull();
 	});
 
+	it("carries coverage so an unmeasured column reads 'not measured', not 'ready' (DAT-853)", () => {
+		// A never-measured column reads band='ready' (frozen vocabulary) with
+		// coverage='unmeasured'. The grid must serve coverage so the badge renders
+		// "not measured", never a green ready badge.
+		const out = projectColumnReadiness(
+			row({ band: "ready", coverage: "unmeasured" }),
+		);
+		expect(out.band).toBe("ready");
+		expect(out.coverage).toBe("unmeasured");
+	});
+
+	it("serves 'partial' coverage alongside the real band", () => {
+		const out = projectColumnReadiness(
+			row({ band: "investigate", coverage: "partial" }),
+		);
+		expect(out.coverage).toBe("partial");
+		expect(out.band).toBe("investigate");
+	});
+
+	it("null coverage when the column is unanalyzed (no row)", () => {
+		const out = projectColumnReadiness(
+			row({ band: null, coverage: "measured" }),
+		);
+		expect(out.band).toBeNull();
+		expect(out.coverage).toBeNull();
+	});
+
 	it("surfaces ALL top drivers (no cap) — every ranked driver is served (DAT-649)", () => {
 		const many = Array.from({ length: 6 }, (_, i) => ({
 			node: `n${i}`,
@@ -424,6 +451,14 @@ describe("projectTableBand (DAT-415)", () => {
 		expect(out.intents).toEqual([]);
 		expect(out.top_drivers).toEqual([]);
 		expect(out.band).toBe("investigate"); // scalar still comes through
+	});
+
+	it("carries coverage for an unmeasured whole-table band (DAT-853)", () => {
+		const out = projectTableBand(
+			tableRow({ band: "ready", coverage: "unmeasured" }),
+		);
+		expect(out.band).toBe("ready");
+		expect(out.coverage).toBe("unmeasured");
 	});
 });
 

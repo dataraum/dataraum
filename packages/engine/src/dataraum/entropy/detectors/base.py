@@ -16,7 +16,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, relationship_target_key
+from dataraum.entropy.models import (
+    STATUS_ABSTAINED,
+    EntropyObject,
+    relationship_target_key,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -193,6 +197,43 @@ class EntropyDetector(ABC):
             sub_dimension=self.sub_dimension,
             target=context.target_ref,
             score=score,
+            evidence=enriched_evidence,
+            detector_id=self.detector_id,
+            source_analysis_ids=[],
+        )
+
+    def create_abstention(
+        self,
+        context: DetectorContext,
+        reason: str,
+        evidence: list[dict[str, Any]] | None = None,
+    ) -> EntropyObject:
+        """An "I did not measure this" outcome for this detector's question (DAT-853).
+
+        A first-class object (persisted like any measurement, ``score`` None) so
+        absence never renders as measured-clean. Vocabulary is validated by
+        ``EntropyObject.__post_init__``.
+
+        Args:
+            context: Detection context (supplies the target).
+            reason: One of ``entropy.models.ABSTAIN_REASONS``.
+            evidence: Optional detail on why the question was unanswerable.
+
+        Returns:
+            Abstained EntropyObject with detector metadata.
+        """
+        enriched_evidence = [dict(ev) for ev in (evidence or [])]
+        for ev in enriched_evidence:
+            ev.setdefault("_column_name", context.column_name)
+            ev.setdefault("_table_name", context.table_name)
+        return EntropyObject(
+            layer=self.layer,
+            dimension=self.dimension,
+            sub_dimension=self.sub_dimension,
+            target=context.target_ref,
+            score=None,
+            status=STATUS_ABSTAINED,
+            abstain_reason=reason,
             evidence=enriched_evidence,
             detector_id=self.detector_id,
             source_analysis_ids=[],

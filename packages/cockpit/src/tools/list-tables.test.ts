@@ -118,6 +118,41 @@ describe("buildInventory (DAT-349)", () => {
 		expect(out.analyzed).toBe(true);
 	});
 
+	it("counts an unmeasured column as unanalyzed, never ready (DAT-853)", () => {
+		// A never-measured column reads band='ready' with coverage='unmeasured' (the
+		// engine freezes the band vocabulary). The rollup must NOT count it as ready —
+		// it rolls into the "not measured" bucket, and worst_band ignores it.
+		const cols: ColumnBandRow[] = [
+			{ tableId: "t_orders", band: "ready", coverage: "measured" },
+			{ tableId: "t_orders", band: "ready", coverage: "unmeasured" },
+			{ tableId: "t_orders", band: "investigate", coverage: "partial" },
+		];
+		const [out] = buildInventory([tableRow()], cols);
+		expect(out.readiness).toEqual({
+			ready: 1, // only the genuinely-measured ready column
+			investigate: 1, // a partial-coverage band still counts as its band
+			blocked: 0,
+			unanalyzed: 1, // the unmeasured one folds here
+		});
+		// worst_band ignores the unmeasured column — investigate is the worst measured.
+		expect(out.worst_band).toBe("investigate");
+		expect(out.analyzed).toBe(true);
+	});
+
+	it("a table whose only columns are unmeasured reads not analyzed, never ready (DAT-853)", () => {
+		const [out] = buildInventory(
+			[tableRow()],
+			[
+				{ tableId: "t_orders", band: "ready", coverage: "unmeasured" },
+				{ tableId: "t_orders", band: "ready", coverage: "unmeasured" },
+			],
+		);
+		expect(out.readiness.ready).toBe(0);
+		expect(out.readiness.unanalyzed).toBe(2);
+		expect(out.worst_band).toBeNull();
+		expect(out.analyzed).toBe(false);
+	});
+
 	it("worst_band is the most severe present (blocked > investigate > ready)", () => {
 		const worst = (bands: (string | null)[]) =>
 			buildInventory(

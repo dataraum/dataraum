@@ -25,6 +25,16 @@ export interface GroundingReadinessRow {
 	band: string;
 	/** Worst per-intent risk in [0,1]; higher = more disagreement/ignorance. */
 	worstIntentRisk: number;
+	/** The rollup's coverage (DAT-853): 'measured' | 'partial' | 'unmeasured'.
+	 * 'unmeasured' means the loss-path detectors ALL abstained (gap reasons), so
+	 * `band`='ready' is VACUOUS — the agent must treat it as a gap, not clean.
+	 * Defaults to "measured" only if the view row carried no coverage (the column
+	 * is NOT NULL underneath — this coalesce is a view-type artifact). */
+	coverage: string;
+	/** The self-describing abstention trace (DAT-853): [{detector, reason, intents}]
+	 * — WHY a loss-path detector could not measure. The agent reads this to see if
+	 * an unmeasured/partial target is a mechanical gap it can still ground. */
+	abstentions: unknown;
 	/** Ranked drivers [{node, state, impact_delta}] — the detectors driving the
 	 * risk; the agent maps these to the grounding teach that addresses them. */
 	topDrivers: unknown;
@@ -46,6 +56,8 @@ export async function readGroundingReadiness(
 			columnId: currentEntropyReadiness.columnId,
 			band: currentEntropyReadiness.band,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			coverage: currentEntropyReadiness.coverage,
+			abstentions: currentEntropyReadiness.abstentions,
 			topDrivers: currentEntropyReadiness.topDrivers,
 		})
 		.from(currentEntropyReadiness)
@@ -69,6 +81,12 @@ export async function readGroundingReadiness(
 		columnId: r.columnId,
 		band: r.band ?? "unknown",
 		worstIntentRisk: r.worstIntentRisk ?? 0,
+		// NOT NULL underneath (engine default 'measured'); the view types it nullable.
+		// This coalesce is unreachable, but fail CLOSED: an unexpected null biases the
+		// gap filter toward "not measured" (one wasted LLM look) rather than exiting
+		// the grounding loop green on a target it never measured — the epic's failure.
+		coverage: r.coverage ?? "unmeasured",
+		abstentions: r.abstentions,
 		topDrivers: r.topDrivers,
 	}));
 }

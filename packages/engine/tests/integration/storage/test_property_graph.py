@@ -198,14 +198,16 @@ def _seed(engine: Engine) -> None:
         f"'month', 'SUM(amount)', "
         f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, '{TS}')"
     )
+    # detection_method='llm': og_references serves the DEFINED catalog only
+    # (DAT-850) — a row without a real method would be dropped by the view.
     for rid, ft, fc, tt, tc in _REFS:
         stmts.append(
             "INSERT INTO relationships "
             "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
             " to_column_id, relationship_type, cardinality, confidence, confirmation_source, "
-            " detected_at) "
+            " detection_method, detected_at) "
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
-            f"'foreign_key', 'many-to-one', 0.9, 'judge', '{TS}')"
+            f"'foreign_key', 'many-to-one', 0.9, 'judge', 'llm', '{TS}')"
         )
     # has_dimension: three facts each sliced by their own account_id FK, all resolving
     # the referenced identity dimension_table_id='t2' (the accounts dim). journal (t1)
@@ -226,12 +228,14 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', '{colname}', 't2', "
             f"'{attr}', 'account_id', 1, 'categorical', 'llm', '{TS}')"
         )
-    # SPURIOUS fact↔fact relationships between account_id slice columns (the DAT-723
-    # fan trap): both endpoints resolve dimension_table_id='t2', so each is a conformed
-    # dimension, NOT an FK — og_references must drop BOTH (table grain, regardless of
-    # slice attribute). r_fan links the same-attribute pair (t1↔t4, which DOES get a
-    # conformed edge); r_fan_xlevel links the cross-level pair (t1↔t3, which does NOT —
-    # proving the exclusion and the edge are decoupled: excluded yet unedged is correct).
+    # Fact↔fact MEETINGS between account_id slice columns (the DAT-723 fan trap),
+    # persisted the way the write site now produces them (DAT-850): the judge's fk
+    # claim refuted by the measured many-to-many resolves to 'conformed_dimension'
+    # at oriented_row, so og_references drops them BY KIND — no slice-identity
+    # re-derivation. r_fan links the same-attribute pair (t1↔t4, which DOES get a
+    # conformed edge from the slice axis); r_fan_xlevel links the cross-level pair
+    # (t1↔t3, which does NOT — typed out of refs yet unedged is correct: no common
+    # axis to drill across).
     for rid, ft, fc, tt, tc in [
         ("r_fan", "t1", "c_k1", "t4", "c_k4b"),
         ("r_fan_xlevel", "t1", "c_k1", "t3", "c_k3b"),
@@ -240,10 +244,22 @@ def _seed(engine: Engine) -> None:
             "INSERT INTO relationships "
             "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
             " to_column_id, relationship_type, cardinality, confidence, confirmation_source, "
-            " detected_at) "
+            " detection_method, detected_at) "
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
-            f"'foreign_key', 'many-to-one', 0.9, 'judge', '{TS}')"
+            f"'conformed_dimension', 'many-to-many', 0.9, 'judge', 'llm', '{TS}')"
         )
+    # A judge-DECLINED pair (detection_method='candidate') under the same catalog
+    # run: NOT part of the defined catalog, so og_references must not serve it —
+    # before DAT-850 the view had no detection_method filter and leaked these to
+    # the GraphAgent as FK edges.
+    stmts.append(
+        "INSERT INTO relationships "
+        "(relationship_id, run_id, from_table_id, from_column_id, to_table_id, "
+        " to_column_id, relationship_type, cardinality, confidence, confirmation_source, "
+        " detection_method, detected_at) "
+        f"VALUES ('r_declined', '{RUN}', 't3', 'c_k3b', 't1', 'c_k1', "
+        f"'foreign_key', 'many-to-one', 0.4, 'unconfirmed', 'candidate', '{TS}')"
+    )
     # t1 carries a DECLARED time-axis set with the anchor at index 1 (NOT 0) and an
     # attribute date mixed in — the scrambled-order proof (DAT-780): a positional
     # reader would wrongly pick 'created_date' at index 0, the view must pick the
@@ -295,6 +311,16 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{vid}', '{fact}', {view_tid}, '{vname}', '{RUN}', "
             f"'{dims}'::json, true, '{TS}')"
         )
+    # Bind the workspace's active vertical (DAT-848): the concept read views
+    # (og_concepts / og_concept_edges read __READ__.concepts / .concept_edges) scope
+    # to workspace_settings.active_vertical, falling back to '_adhoc' when unbound —
+    # so an unbound workspace would serve only its '_adhoc' vocabulary (none exists in
+    # this seed). Every concept/edge below is 'finance' — bind it so the vocabulary
+    # graph is populated.
+    stmts.append(
+        "INSERT INTO workspace_settings (pin, active_vertical, bound_at) "
+        f"VALUES (true, 'finance', '{TS}')"
+    )
     # Concept vertices + a disjoint_with concept edge (DAT-729): the vocabulary graph.
     # Concepts/edges are workspace-persistent (NOT run-versioned) — plain active rows,
     # no head to promote. The og_concept_edges view resolves the edge's (vertical, name)
@@ -739,14 +765,17 @@ def test_conformed_dimension_is_attribute_grain(graph_engine: Engine) -> None:
 
 
 def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:
-    """The DAT-723 fan trap: a spurious fact↔fact relationship whose endpoints both
-    resolve the accounts dim is NOT surfaced as a reference. The exclusion is TABLE
-    grain — it fires on BOTH the same-attribute pair (journal↔statement) and the
-    cross-level pair (journal↔account_group), regardless of slice attribute. This is
-    deliberately DECOUPLED from the attribute-grain conformed edge: the cross-level
-    pair is excluded from refs yet has no conformed edge, and that is correct. The
-    genuine fact→dim FK (journal→accounts) survives (a dim key is never a slice
-    column, so the exclusion cannot fire on it)."""
+    """The DAT-723 fan trap is typed out of refs BY KIND (DAT-850).
+
+    og_references consumes the edge-kind owner — the row's relationship_type,
+    resolved at the write site — instead of re-deriving the meeting from slice
+    identity. Both meeting rows (same-attribute journal↔statement AND
+    cross-level journal↔account_group) persist as 'conformed_dimension' and are
+    not reference kinds; the cross-level pair also has no conformed edge (no
+    common axis), and typed-out-yet-unedged is correct. The genuine fact→dim FK
+    (journal→accounts) survives, and a judge-DECLINED row
+    (detection_method='candidate') never appears — the view serves the defined
+    catalog only."""
     sql = (
         f"SELECT src, dst FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (a IS table_node)-[e IS refs]->(b IS table_node) "
@@ -757,6 +786,7 @@ def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:
     assert ("journal", "statement") not in rows, "same-attribute fan trap leaked into refs"
     assert ("journal", "account_group") not in rows, "cross-level fan trap leaked into refs"
     assert ("journal", "accounts") in rows, "genuine fact→dim FK was wrongly excluded"
+    assert ("account_group", "journal") not in rows, "declined candidate leaked into refs"
 
 
 def test_concept_edge_disjoint_with_matches(graph_engine: Engine) -> None:

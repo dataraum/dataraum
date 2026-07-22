@@ -303,5 +303,61 @@ def test_current_tables_returns_promoted_typed_representative_only() -> None:
     assert columns == [("c_typed",)]
 
 
+def test_concept_views_are_vertical_scoped() -> None:
+    """DAT-848: the concept vocabulary views scope to the workspace's active vertical.
+
+    ``concepts`` / ``concept_edges`` are un-versioned but must NOT be plain
+    pass-throughs — each filters to ``workspace_settings.active_vertical`` (with the
+    ``_adhoc`` placeholder fallback for an unbound workspace) so a row left under a
+    wrong vertical is never served (``og_concepts`` and the cockpit mirror read these
+    views)."""
+    statements = dict(read_view_statements())
+    for name in ("concepts", "concept_edges"):
+        sql = statements[name]
+        assert f"SELECT active_vertical FROM {WS_TOKEN}.workspace_settings" in sql, name
+        assert "COALESCE(" in sql and "'_adhoc'" in sql, name
+
+
+def test_concepts_view_serves_only_active_vertical() -> None:
+    """DAT-848 semantics, executed live: rows under a NON-active vertical (a wrong
+    ``--vertical`` or a wild-vertical stand-in) sit in the base table but are never
+    served. An UNBOUND workspace falls back to the ``_adhoc`` placeholder vocabulary
+    (frame writes ``_adhoc`` concepts when no domain is named); once a real vertical
+    binds, only its rows surface."""
+    import sqlite3
+
+    # READ_TOKEN → a distinct ``v_`` prefix so the view (``v_concepts``) and the base
+    # table (``concepts``) don't collide under one SQLite schema; in prod they live in
+    # separate ``__READ__`` / ``__WS__`` schemas.
+    view_ddl = dict(read_view_statements())["concepts"]
+    view_ddl = view_ddl.replace(f"{READ_TOKEN}.", "v_").replace(f"{WS_TOKEN}.", "")
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE concepts (concept_id TEXT PRIMARY KEY, vertical TEXT, name TEXT);"
+        "CREATE TABLE workspace_settings (pin INTEGER PRIMARY KEY, active_vertical TEXT);"
+    )
+    conn.executemany(
+        "INSERT INTO concepts VALUES (?, ?, ?)",
+        [
+            ("c_adhoc", "_adhoc", "amount"),  # the no-domain placeholder vocabulary
+            ("c_fin", "finance", "revenue"),
+            ("c_wild", "healthcare", "diagnosis"),  # contamination: wrong-vertical row
+        ],
+    )
+    conn.execute(view_ddl)
+
+    # Unbound: no workspace_settings row → COALESCE falls back to '_adhoc'; the
+    # placeholder vocabulary is served, finance + the wild row are not.
+    unbound = conn.execute("SELECT vertical, name FROM v_concepts ORDER BY name").fetchall()
+    assert unbound == [("_adhoc", "amount")]
+
+    # Bind finance → only finance surfaces; both _adhoc and the wild row drop out.
+    conn.execute("INSERT INTO workspace_settings VALUES (1, 'finance')")
+    served = conn.execute("SELECT vertical, name FROM v_concepts ORDER BY name").fetchall()
+    conn.close()
+    assert served == [("finance", "revenue")]
+
+
 def test_read_schema_name() -> None:
     assert read_schema_name_for("ws_abc") == "ws_abc_read"

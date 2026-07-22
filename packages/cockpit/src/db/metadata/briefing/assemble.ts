@@ -31,6 +31,17 @@ function asBand(raw: string | null): ReadinessBand | null {
 	return null;
 }
 
+/** The band the briefing should COUNT, folding coverage in (DAT-853): an
+ * 'unmeasured' row carries a vacuous frozen-default band='ready' — treat it as
+ * no-signal (null → "not analyzed" in the counts + inventory), never as ready. */
+function effectiveBand(
+	raw: string | null,
+	coverage: string | null | undefined,
+): ReadinessBand | null {
+	if (coverage === "unmeasured") return null;
+	return asBand(raw);
+}
+
 /** The worse (higher-rank) of two bands; null is "no signal yet" and loses. */
 function worseBand(
 	a: ReadinessBand | null,
@@ -128,13 +139,18 @@ function deriveProgress(
 				? "needs_attention"
 				: "ready";
 
+	// Precedence: an in-flight run wins; then a promoted head (ready / needs_attention);
+	// then the DAT-845 terminal `nothing_declared` (completed, no head, nothing
+	// declared) as its own state; else never-run `empty`.
 	const analyse: StageStatus = flags.operatingModelRunning
 		? "in_progress"
-		: !flags.operatingModelPromoted
-			? "empty"
-			: columnsBlocked > 0
+		: flags.operatingModelPromoted
+			? columnsBlocked > 0
 				? "needs_attention"
-				: "ready";
+				: "ready"
+			: flags.operatingModelNothingDeclared
+				? "nothing_declared"
+				: "empty";
 
 	return { connect, stage, analyse };
 }
@@ -150,7 +166,7 @@ export function assembleBriefing(input: BriefingInputs): WorkspaceBriefing {
 	let columnsInvestigate = 0;
 	for (const r of input.readiness) {
 		if (r.columnId === null) continue; // table/relationship grain — not a column
-		const band = asBand(r.band);
+		const band = effectiveBand(r.band, r.coverage);
 		if (band === "blocked") columnsBlocked++;
 		else if (band === "investigate") columnsInvestigate++;
 		if (r.tableId !== null) {
@@ -165,7 +181,10 @@ export function assembleBriefing(input: BriefingInputs): WorkspaceBriefing {
 	// de-prefixed for display; the raw target still drives the drill. Source kept
 	// so a bare `table.column` is never ambiguous across sources.
 	const readinessBlockers: ReadinessBlocker[] = input.readiness
-		.filter((r) => asBand(r.band) === "blocked" && r.target !== null)
+		.filter(
+			(r) =>
+				effectiveBand(r.band, r.coverage) === "blocked" && r.target !== null,
+		)
 		.sort((a, b) => (b.worstIntentRisk ?? -1) - (a.worstIntentRisk ?? -1))
 		.map((r) => {
 			const meta =

@@ -158,7 +158,12 @@ def get_multi_table_schema_for_llm(
         load_defined_relationships(session, table_ids, run_id=run_id) if run_id is not None else []
     )
 
-    # Format relationships
+    # Format relationships. relationship_type is served VERBATIM and is now the
+    # trustworthy edge-kind owner (DAT-850, resolved+enforced at the write
+    # site): a 'conformed_dimension' entry is two facts meeting at a shared
+    # axis, and the reference-integrity sql_hints (orphan_transactions) gate
+    # their legs on type='foreign_key' — served typed and loud, never silently
+    # dropped from the schema context.
     formatted_rels = []
     for rel in relationships:
         from_info = column_id_to_info.get(rel.from_column_id, {})

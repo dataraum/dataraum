@@ -36,7 +36,7 @@ export const conceptEdges = pgView("concept_edges", {
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT edge_id, vertical, predicate, from_concept, to_concept, tolerance, source, created_at, superseded_at FROM engine.concept_edges`,
+	sql`SELECT edge_id, vertical, predicate, from_concept, to_concept, tolerance, source, created_at, superseded_at FROM engine.concept_edges WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const concepts = pgView("concepts", {
@@ -52,7 +52,7 @@ export const concepts = pgView("concepts", {
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM engine.concepts`,
+	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const configOverlay = pgView("config_overlay", {
@@ -107,6 +107,7 @@ export const currentColumnConcepts = pgView("current_column_concepts", {
 	columnId: varchar("column_id"),
 	runId: varchar("run_id"),
 	meaning: text(),
+	meaningStatus: varchar("meaning_status"),
 	temporalBehavior: varchar("temporal_behavior"),
 	unitSourceColumn: varchar("unit_source_column"),
 	derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
@@ -116,7 +117,7 @@ export const currentColumnConcepts = pgView("current_column_concepts", {
 	annotatedBy: varchar("annotated_by"),
 	confidence: doublePrecision(),
 }).as(
-	sql`SELECT concept_id, column_id, run_id, meaning, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT concept_id, column_id, run_id, meaning, meaning_status, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentColumnEligibility = pgView("current_column_eligibility", {
@@ -280,6 +281,8 @@ export const currentEntropyObjects = pgView("current_entropy_objects", {
 	columnId: varchar("column_id"),
 	runId: varchar("run_id"),
 	score: doublePrecision(),
+	status: varchar(),
+	abstainReason: varchar("abstain_reason"),
 	evidence: jsonb(),
 	detectorId: varchar("detector_id"),
 	sourceAnalysisIds: jsonb("source_analysis_ids"),
@@ -288,7 +291,7 @@ export const currentEntropyObjects = pgView("current_entropy_objects", {
 	viaCatalogHead: boolean("via_catalog_head"),
 	viaOperatingModelHead: boolean("via_operating_model_head"),
 }).as(
-	sql`SELECT object_id, layer, dimension, sub_dimension, target, table_id, column_id, run_id, score, evidence, detector_id, source_analysis_ids, computed_at, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_catalog_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_operating_model_head FROM engine.entropy_objects r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'generation'::text AND h.target::text = ('table:'::text || r.table_id::text) OR h.stage::text = 'catalog'::text AND h.target::text = 'catalog'::text OR h.stage::text = 'operating_model'::text AND h.target::text = 'catalog'::text)))`,
+	sql`SELECT object_id, layer, dimension, sub_dimension, target, table_id, column_id, run_id, score, status, abstain_reason, evidence, detector_id, source_analysis_ids, computed_at, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_catalog_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_operating_model_head FROM engine.entropy_objects r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'generation'::text AND h.target::text = ('table:'::text || r.table_id::text) OR h.stage::text = 'catalog'::text AND h.target::text = 'catalog'::text OR h.stage::text = 'operating_model'::text AND h.target::text = 'catalog'::text)))`,
 );
 
 export const currentEntropyReadiness = pgView("current_entropy_readiness", {
@@ -299,6 +302,8 @@ export const currentEntropyReadiness = pgView("current_entropy_readiness", {
 	runId: varchar("run_id"),
 	band: varchar(),
 	worstIntentRisk: doublePrecision("worst_intent_risk"),
+	coverage: varchar(),
+	abstentions: jsonb(),
 	intents: jsonb(),
 	topDrivers: jsonb("top_drivers"),
 	computedAt: timestamp("computed_at"),
@@ -306,7 +311,7 @@ export const currentEntropyReadiness = pgView("current_entropy_readiness", {
 	viaCatalogHead: boolean("via_catalog_head"),
 	viaOperatingModelHead: boolean("via_operating_model_head"),
 }).as(
-	sql`SELECT readiness_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_catalog_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_operating_model_head FROM engine.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'generation'::text AND h.target::text = ('table:'::text || r.table_id::text) OR h.stage::text = 'catalog'::text AND h.target::text = 'catalog'::text OR h.stage::text = 'operating_model'::text AND h.target::text = 'catalog'::text))) AND (NOT (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = 'catalog'::text AND (h3.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])))) OR NOT (EXISTS ( SELECT 1 FROM engine.entropy_readiness r2 JOIN engine.metadata_snapshot_head h2 ON h2.run_id::text = r2.run_id::text AND h2.target::text = 'catalog'::text AND (h2.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])) WHERE r2.target::text = r.target::text AND r2.run_id::text <> r.run_id::text AND h2.promoted_at > (( SELECT max(h3.promoted_at) AS max FROM engine.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = 'catalog'::text AND (h3.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])))))))`,
+	sql`SELECT readiness_id, target, table_id, column_id, run_id, band, worst_intent_risk, coverage, abstentions, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_catalog_head, (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_operating_model_head FROM engine.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'generation'::text AND h.target::text = ('table:'::text || r.table_id::text) OR h.stage::text = 'catalog'::text AND h.target::text = 'catalog'::text OR h.stage::text = 'operating_model'::text AND h.target::text = 'catalog'::text))) AND (NOT (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = 'catalog'::text AND (h3.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])))) OR NOT (EXISTS ( SELECT 1 FROM engine.entropy_readiness r2 JOIN engine.metadata_snapshot_head h2 ON h2.run_id::text = r2.run_id::text AND h2.target::text = 'catalog'::text AND (h2.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])) WHERE r2.target::text = r.target::text AND r2.run_id::text <> r.run_id::text AND h2.promoted_at > (( SELECT max(h3.promoted_at) AS max FROM engine.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = 'catalog'::text AND (h3.stage::text = ANY (ARRAY['catalog'::character varying, 'operating_model'::character varying]::text[])))))))`,
 );
 
 export const currentGroundings = pgView("current_groundings", {
@@ -419,10 +424,11 @@ export const currentRelationships = pgView("current_relationships", {
 	confidence: doublePrecision(),
 	detectionMethod: varchar("detection_method"),
 	evidence: json(),
+	judgeVerdict: varchar("judge_verdict"),
 	confirmationSource: varchar("confirmation_source"),
 	detectedAt: timestamp("detected_at"),
 }).as(
-	sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, confirmation_source, detected_at FROM engine.relationships r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, judge_verdict, confirmation_source, detected_at FROM engine.relationships r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentSemanticAnnotations = pgView(
@@ -499,6 +505,7 @@ export const currentStatisticalQualityMetrics = pgView(
 		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
 		computedAt: timestamp("computed_at"),
+		benfordStatus: varchar("benford_status"),
 		benfordCompliant: integer("benford_compliant"),
 		hasOutliers: integer("has_outliers"),
 		iqrOutlierRatio: doublePrecision("iqr_outlier_ratio"),
@@ -506,7 +513,7 @@ export const currentStatisticalQualityMetrics = pgView(
 		qualityData: json("quality_data"),
 	},
 ).as(
-	sql`SELECT metric_id, column_id, run_id, computed_at, benford_compliant, has_outliers, iqr_outlier_ratio, zscore_outlier_ratio, quality_data FROM engine.statistical_quality_metrics r WHERE (EXISTS ( SELECT 1 FROM engine.columns c JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT metric_id, column_id, run_id, computed_at, benford_status, benford_compliant, has_outliers, iqr_outlier_ratio, zscore_outlier_ratio, quality_data FROM engine.statistical_quality_metrics r WHERE (EXISTS ( SELECT 1 FROM engine.columns c JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentSurrogateKeyIntents = pgView(
@@ -691,4 +698,12 @@ export const tables = pgView("tables", {
 	lastProfiledAt: timestamp("last_profiled_at"),
 }).as(
 	sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM engine.tables`,
+);
+
+export const workspaceSettings = pgView("workspace_settings", {
+	pin: boolean(),
+	activeVertical: varchar("active_vertical"),
+	boundAt: timestamp("bound_at"),
+}).as(
+	sql`SELECT pin, active_vertical, bound_at FROM engine.workspace_settings`,
 );

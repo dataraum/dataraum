@@ -70,6 +70,20 @@ describe("computeNextActions", () => {
 		expect(teach).toMatchObject({ kind: "teach", targetChat: "stage" });
 	});
 
+	it("emits the honest declare nudge for nothing_declared, not the run-OM loop (DAT-845)", () => {
+		const actions = computeNextActions(
+			{ connect: "ready", stage: "ready", analyse: "nothing_declared" },
+			NO_ATTENTION,
+		);
+		const declare = actions.find((a) => a.kind === "declare");
+		expect(declare).toMatchObject({ targetChat: "stage", priority: 3 });
+		expect(declare?.label).toContain("no validations, cycles, or metrics");
+		// Never the "run the operating model" nudge (that would loop) …
+		expect(actions.map((a) => a.kind)).not.toContain("operating_model");
+		// … and never "Ready to answer questions" (analyse isn't ready).
+		expect(actions.map((a) => a.kind)).not.toContain("answer");
+	});
+
 	it("emits an answer action when analyse is ready and unblocked", () => {
 		const actions = computeNextActions(
 			{ connect: "ready", stage: "ready", analyse: "ready" },

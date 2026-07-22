@@ -15,7 +15,7 @@
 //
 // The value space is not `unknown` — it is what the 9 shipped specs actually
 // hold, and nothing else:
-//   number      -> tolerance: 0.01 | 0.05 | 0.0, max_orphan_rate: 0.02,
+//   number      -> tolerance: 0.01 | 0.05 | 0.02 | 0.0,
 //                  max_violation_rate: 0.05, amount_tolerance_pct: 0.01,
 //                  quantity_tolerance_pct: 0.02
 //   string list -> asset_types / liability_types / equity_types /

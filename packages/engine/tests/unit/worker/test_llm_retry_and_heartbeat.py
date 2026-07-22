@@ -40,6 +40,7 @@ def test_retry_for_picks_llm_policy_only_for_llm_phases() -> None:
         "semantic_per_column",
         "semantic_per_table",
         "slicing",
+        "catalogue_semantics",
         "enriched_views",
         "validation",
         "business_cycles",

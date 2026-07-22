@@ -205,12 +205,22 @@ class EnrichedViewsPhase(BasePhase):
             )
 
         # The session's defined relationships (not candidate) touching these tables.
-        all_relationships = load_defined_relationships(
-            ctx.session,
-            table_ids,
-            run_id=ctx.run_id,
-            both_tables=False,
-        )
+        # REFERENCE kinds only (DAT-850): a 'conformed_dimension' row is two facts
+        # meeting at a shared axis — joining it fans out by construction, so it is
+        # never a dimension-join candidate. Filtering here keeps it out of the
+        # enrichment LLM's candidate list AND out of the DAT-516 sticky
+        # considered-pairs shape (the grain probe would only re-discover the
+        # fan-out empirically and burn the fact's view on it).
+        all_relationships = [
+            r
+            for r in load_defined_relationships(
+                ctx.session,
+                table_ids,
+                run_id=ctx.run_id,
+                both_tables=False,
+            )
+            if r.relationship_type != "conformed_dimension"
+        ]
 
         # Build column lookups
         cols_stmt = select(Column).where(Column.table_id.in_(table_ids))

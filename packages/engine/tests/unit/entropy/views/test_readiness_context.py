@@ -19,7 +19,7 @@ from dataraum.entropy.views.readiness_context import (
     assemble_readiness_context,
 )
 
-from .conftest import make_entropy_object
+from .conftest import make_abstention, make_entropy_object
 
 # ===================================================================
 # A. Dataclass defaults
@@ -381,3 +381,119 @@ class TestMultiIntentAssembly:
         ]
         result = assemble_readiness_context(objects)
         assert result.overall_readiness == "ready"
+
+
+# ===================================================================
+# E. Coverage — the third rollup outcome (DAT-853)
+# ===================================================================
+
+
+class TestCoverage:
+    def test_all_measured_is_coverage_measured(self):
+        """Existing behavior: a measured target rolls up with coverage='measured'."""
+        ctx = assemble_readiness_context([make_entropy_object(score=0.9)])
+        col = ctx.columns["column:test_table.col1"]
+        assert col.coverage == "measured"
+        assert col.abstentions == []
+        assert ctx.columns_unmeasured == 0
+
+    def test_all_abstained_is_unmeasured_not_silent(self):
+        """Zero measured loss objects now yields a ROW: band vacuous, coverage says so.
+
+        Before DAT-853 this target produced no result at all — indistinguishable
+        from measured-clean (the missing→green line).
+        """
+        ctx = assemble_readiness_context(
+            [make_abstention(detector_id="null_ratio", reason="missing_inputs")]
+        )
+        col = ctx.columns["column:test_table.col1"]
+        assert col.coverage == "unmeasured"
+        assert col.readiness == "ready"  # frozen band vocabulary — vacuous by design
+        assert col.worst_intent_risk == 0.0
+        assert col.intents == []
+        assert col.abstentions == [
+            {
+                "detector": "null_ratio",
+                "reason": "missing_inputs",
+                "intents": ["aggregation_intent", "query_intent", "reporting_intent"],
+            }
+        ]
+        # Counted apart from ready — an unmeasured column is not a clean one.
+        assert ctx.columns_unmeasured == 1
+        assert ctx.columns_ready == 0
+
+    def test_mixed_is_partial_and_risk_unchanged(self):
+        """A measured detector still drives risk; the abstention degrades coverage only."""
+        measured = make_entropy_object(score=0.9)  # null_ratio, high risk
+        abstained = make_abstention(
+            detector_id="type_fidelity", sub_dimension="type_fidelity", reason="detector_error"
+        )
+        ctx = assemble_readiness_context([measured, abstained])
+        col = ctx.columns["column:test_table.col1"]
+        assert col.coverage == "partial"
+        assert col.readiness == "blocked"  # 0.9 * 0.7 agg = 0.63 > 0.6
+        assert [a["detector"] for a in col.abstentions] == ["type_fidelity"]
+        # The measured rollup itself is byte-identical to the abstention-free one.
+        ctx_without = assemble_readiness_context([make_entropy_object(score=0.9)])
+        col_without = ctx_without.columns["column:test_table.col1"]
+        assert col.worst_intent_risk == col_without.worst_intent_risk
+        assert [i.risk for i in col.intents] == [i.risk for i in col_without.intents]
+
+    def test_non_loss_abstention_yields_no_signal_and_no_row(self):
+        """An abstained informative detector (benford) is trace-only: no DirectSignal."""
+        ctx = assemble_readiness_context(
+            [make_abstention(detector_id="benford", sub_dimension="benford_compliance")]
+        )
+        assert ctx.columns == {}
+        assert ctx.direct_signals == []
+
+    def test_cheap_path_carries_coverage_but_no_unmeasured_row(self):
+        """compute_rollup=False (contract gate) keeps today's shape for unmeasured."""
+        ctx = assemble_readiness_context(
+            # A GAP reason: pins that the cheap path suppresses the unmeasured
+            # row even for a genuine gap (not_applicable would yield no row on
+            # EITHER path and pin nothing).
+            [make_abstention(detector_id="null_ratio", reason="missing_inputs")],
+            compute_rollup=False,
+        )
+        assert ctx.columns == {}  # gate reads scores; the trace is entropy_objects
+        mixed = assemble_readiness_context(
+            [
+                make_entropy_object(score=0.5),
+                make_abstention(detector_id="type_fidelity", reason="detector_error"),
+            ],
+            compute_rollup=False,
+        )
+        col = mixed.columns["column:test_table.col1"]
+        assert col.coverage == "partial"
+
+    def test_not_applicable_does_not_degrade_coverage(self):
+        """A 'no such question' abstention rides the trace but is not a gap.
+
+        The relationship norm (DAT-851): join_path abstains not_applicable on
+        ~every single-path pair — if that degraded coverage, 'partial' would be
+        wallpaper and bury genuine missing_inputs/detector_error gaps.
+        """
+        measured = make_entropy_object(score=0.2)
+        na = make_abstention(
+            detector_id="join_path_determinism",
+            sub_dimension="join_path_determinism",
+            reason="not_applicable",
+        )
+        ctx = assemble_readiness_context([measured, na])
+        col = ctx.columns["column:test_table.col1"]
+        assert col.coverage == "measured"
+        # The trace stays complete — the abstention is visible, just not a gap.
+        assert [a["detector"] for a in col.abstentions] == ["join_path_determinism"]
+
+    def test_only_not_applicable_yields_no_row(self):
+        """All-not_applicable (no gap, nothing measured): no readiness row.
+
+        Nothing measurable existed, so there is no unmeasured RISK to warn
+        about; the trace lives in entropy_objects.
+        """
+        ctx = assemble_readiness_context(
+            [make_abstention(detector_id="join_path_determinism", reason="not_applicable")]
+        )
+        assert ctx.columns == {}
+        assert ctx.columns_unmeasured == 0

@@ -49,7 +49,7 @@ cycle_types:
       - journal_entry_cycle
 
   accounts_receivable:
-    description: "AR collection cycle: invoices issued to customers through payment collection — the counterparty is a customer who owes us"
+    description: "AR collection cycle: customer invoices settled by INCOMING flows from the counterparty — the counterparty is a customer who owes us; the counterparty code axis on the invoice fact carries the direction"
     business_value: high
     aliases:
       - ar_cycle
@@ -110,7 +110,7 @@ cycle_types:
       - inventory_cycle
 
   accounts_payable:
-    description: "AP payment cycle: vendor/supplier invoices through payment disbursement — the counterparty is a vendor we owe"
+    description: "AP payment cycle: supplier/vendor invoices settled by OUTGOING flows to the counterparty — the counterparty is a vendor we owe; the counterparty code axis on the invoice fact carries the direction"
     business_value: high
     aliases:
       - ap_cycle
@@ -363,8 +363,15 @@ analysis_hints:
     - "An invoice-to-payment flow is ambiguous between accounts_receivable and
        accounts_payable until the counterparty is determined: a vendor/supplier
        counterparty means payables, a customer counterparty means receivables.
-       Decide from the entity evidence (identity columns, their values, the
+       The counterparty code axis on the invoice fact carries the direction —
+       decide from the entity evidence (identity columns, their values, the
        confirmed relationships), never from the flow shape alone"
+    - "Settlement flow signs carry the same direction: payables settle by
+       OUTGOING flows (money paid to the counterparty, negative amounts in a
+       bank or cash view), receivables by INCOMING flows (money collected,
+       positive amounts). Chain-conditioned flow signs on the settlement path
+       that are uniformly outgoing decide the payable reading; uniformly
+       incoming decides the receivable reading"
 
   # What makes a cycle "healthy"
   health_factors:

@@ -48,17 +48,13 @@ phases:
     detectors: [business_meaning, unit_entropy, temporal_entropy, benford, temporal_behavior]
 
   semantic_per_table:
-    description: Per-table LLM synthesis (entities, relationships) over annotations
+    description: Per-table LLM synthesis (structural roles, relationships) over annotations
     # relationship_discovery (ADR-0009): pools the witness classes already on the
     # focal pair's rows (candidate value-overlap stats, llm confirmation, manual/
     # keeper teaches) into {genuine, spurious} — runs at the terminal session
     # detect, after the catalog (llm + materialized overlays) is complete.
-    # unit_source (DAT-647): the SEMANTIC half of unit detection — reads
-    # ColumnConcept.unit_source_column, authored by THIS agent under the
-    # begin_session run, so it must run at the session detect where the catalogue
-    # grain exists. The value-carried half (unit_entropy) stays on
-    # semantic_per_column (add_source, typing grain).
-    detectors: [join_path_determinism, relationship_entropy, relationship_discovery, unit_source]
+    # unit_source moved to catalogue_semantics (DAT-823) with the authoring it reads.
+    detectors: [join_path_determinism, relationship_entropy, relationship_discovery]
 
   # =========================================================================
   # Zone 2: Enrichment
@@ -80,6 +76,18 @@ phases:
     # temporal_slice_analysis) removed — the structural_reconciliation substrate is
     # now aggregated inline over the enriched views in aggregation_lineage.
     # dimensional_entropy lost its run site here; its formal cut is DAT-539.
+
+  catalogue_semantics:
+    description: Catalogue-horizon business semantics — table readings + column concepts (LLM)
+    # DAT-823: the authoring half the per-table tier used to carry, moved to where
+    # its evidence exists — after enriched_views + slicing, before the
+    # dimension_hierarchies conform judge.
+    # unit_source (DAT-647): the SEMANTIC half of unit detection — reads
+    # ColumnConcept.unit_source_column, authored by THIS phase under the
+    # begin_session run, so it must run at the session detect where the catalogue
+    # grain exists. The value-carried half (unit_entropy) stays on
+    # semantic_per_column (add_source, typing grain).
+    detectors: [unit_source]
 
   dimension_hierarchies:
     description: Deterministic g3 FD pass — drill-down hierarchies + 1:1 aliases over the slice catalog

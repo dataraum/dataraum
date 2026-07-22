@@ -22,6 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from dataraum.core.models.base import RelationshipType
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
@@ -43,6 +44,16 @@ class Relationship(Base):
       the user never rejected it) — materialized from a ``keep`` overlay (DAT-409).
     The "defined" catalog the downstream stages read is ``detection_method != 'candidate'``.
 
+    A judge DECLINE is a SEPARATE FACT from the structural measurement (DAT-824):
+    it is recorded as ``judge_verdict='declined'`` ANNOTATED onto the pair's
+    existing ``candidate`` row — never a clobbering re-write that would destroy
+    the measured value-overlap evidence, and never a new ``detection_method`` that
+    would leak into the ``!= 'candidate'`` defined catalog and become a reference.
+    A declined candidate stays ``detection_method='candidate'`` (excluded from every
+    reference-serving consumer for free) and keeps its measured
+    ``confidence``/``evidence`` intact; the judge's reasoning is merged into
+    ``evidence['reasoning']``.
+
     Run-versioned (DAT-408): every row carries the producing ``run_id`` and rows
     coexist across runs (non-destructive; deletes are run_id-scoped, retry-only).
     The durable methods (manual/keeper) are re-materialized into each run from
@@ -61,16 +72,31 @@ class Relationship(Base):
             "detection_method",
             name="uq_relationship_columns_method",
         ),
-        # Closed-vocabulary enforcement (DAT-772 audit, DAT-782): the values every
-        # writer actually produces — ``detector.py`` (structural candidate),
-        # ``agent.py``/``processor.py`` (LLM-confirmed, orienting the LLM's
-        # foreign_key/hierarchy choice), ``materialize.py`` (manual/keeper overlay
-        # materialization, always 'foreign_key'). A producer-side Literal alone
-        # (``semantic/models.py``'s ``RelationshipOutput.relationship_type``)
-        # already drifted from this once — the CHECK is the DB-enforced backstop.
+        # Closed-vocabulary enforcement (DAT-772 audit, DAT-782, DAT-850): the
+        # values every writer actually produces — ``detector.py`` (structural
+        # candidate), ``agent.py``/``processor.py`` (LLM-claimed foreign_key/
+        # hierarchy), ``materialize.py`` (manual/keeper overlay materialization),
+        # plus 'conformed_dimension' — never an LLM claim, ASSIGNED by
+        # :meth:`oriented_row` when the measured cardinality refutes a reference
+        # claim (DAT-850). A producer-side Literal alone (``semantic/models.py``'s
+        # ``RelationshipOutput.relationship_type``) already drifted from this
+        # once — the CHECK is the DB-enforced backstop.
         CheckConstraint(
-            "relationship_type IN ('foreign_key', 'hierarchy', 'candidate')",
+            "relationship_type IN ('foreign_key', 'hierarchy', 'conformed_dimension', 'candidate')",
             name="relationship_type",
+        ),
+        # Edge-kind × cardinality consistency (DAT-850): a reference claim
+        # (foreign_key/hierarchy) requires a unique parent side, so a measured
+        # 'many-to-many' REFUTES it — that shape is two facts meeting at a shared
+        # axis (a conformed-dimension meeting), and before this CHECK it persisted
+        # as a plain FK that cycles/validation then consumed as a genuine
+        # reference. :meth:`oriented_row` resolves the kind before persisting;
+        # this is the backstop for a writer that bypasses the helper. NULL
+        # cardinality passes — an unmeasured claim is unknown, not contradicted.
+        CheckConstraint(
+            "NOT (relationship_type IN ('foreign_key', 'hierarchy') "
+            "AND cardinality = 'many-to-many')",
+            name="reference_not_many_to_many",
         ),
         # Confirmation-source vocabulary (DAT-776): the DB-enforced backstop for the
         # closed set every writer sets EXPLICITLY via :meth:`oriented_row`. Replaces
@@ -89,6 +115,26 @@ class Relationship(Base):
             "detection_method IS NULL OR detection_method IN "
             "('candidate', 'llm', 'manual', 'keeper')",
             name="detection_method",
+        ),
+        # Judge-verdict vocabulary (DAT-824): a single-column decline is recorded
+        # by ANNOTATING the pair's ``candidate`` row rather than clobbering its
+        # measured evidence with the LLM's low confidence. ``NULL`` = the judge
+        # did not decline this candidate (never adjudicated, or confirmed → see the
+        # sibling ``llm`` row); ``'declined'`` = the judge ruled the pair not a real
+        # relationship (reasoning kept in ``evidence['reasoning']``). Only ever set
+        # on a ``candidate`` row — a confirm becomes a distinct ``llm`` row, so
+        # 'confirmed' is deliberately absent from the vocabulary.
+        CheckConstraint(
+            "judge_verdict IS NULL OR judge_verdict IN ('declined')",
+            name="judge_verdict",
+        ),
+        # A judge verdict is only ever ANNOTATED onto a structural ``candidate``
+        # row (DAT-824) — a confirm becomes a distinct ``llm`` row, never a verdict
+        # on an ``llm``/``manual``/``keeper`` row. DB backstop for a future writer
+        # that bypasses ``_apply_judge_verdicts``.
+        CheckConstraint(
+            "judge_verdict IS NULL OR detection_method = 'candidate'",
+            name="judge_verdict_on_candidate",
         ),
         # Orientation invariant (DAT-777, upgraded DAT-802): a persisted FK is
         # stored many→one, child→parent — so ``from`` is always the many/fact side
@@ -119,18 +165,36 @@ class Relationship(Base):
     to_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
     to_column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
 
-    # Classification
-    relationship_type: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # 'foreign_key', 'hierarchy', 'candidate' — see ck_relationships_relationship_type
+    # Classification — the edge KIND (DAT-850): is this a reference
+    # (foreign_key/hierarchy) or two facts meeting at a shared axis
+    # (conformed_dimension)? ONE home: resolved by :meth:`oriented_row` from the
+    # claim × the measured cardinality, backstopped by
+    # ck_relationships_relationship_type + ck_relationships_reference_not_many_to_many.
+    relationship_type: Mapped[str] = mapped_column(String, nullable=False)
     cardinality: Mapped[str | None] = mapped_column(
         String
     )  # 'one-to-one', 'one-to-many', 'many-to-one', 'many-to-many'
 
-    # Confidence and evidence
+    # Confidence and evidence.
+    #
+    # ``confidence`` is METHOD-DEPENDENT and NOT a cross-method posterior (DAT-839):
+    #   - 'llm'      → the judge's existence confidence (0-1) for the pair.
+    #   - 'manual'   → the user's assertion (1.0) or the copied llm confidence.
+    #   - 'keeper'   → the retained prior-run llm confidence.
+    #   - 'candidate'→ the raw VALUE-OVERLAP statistic max(Jaccard, containment),
+    #     the SAME number as ``evidence['join_confidence']`` — a measurement, not a
+    #     judgement. An unconfirmed candidate reaches 1.0 while a judge-confirmed FK
+    #     sits at ~0.95, so candidate and non-candidate values are NOT comparable.
+    # Never rank/filter/gate across methods on this column as if it were a posterior;
+    # the entropy adjudicator reads the overlap from ``evidence['join_confidence']``
+    # and the judge/user confidence from this column PER METHOD, never mixing them.
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     detection_method: Mapped[str | None] = mapped_column(String)  # 'candidate', 'llm', 'manual'
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # The judge's single-column decline verdict (DAT-824), annotated onto a
+    # ``candidate`` row without disturbing its measured evidence. NULL | 'declined'
+    # (see ``ck_relationships_judge_verdict``).
+    judge_verdict: Mapped[str | None] = mapped_column(String)
 
     # Verification source (DAT-776): WHO/WHAT vouches for this edge. Set EXPLICITLY
     # by every writer via :meth:`oriented_row` (see ``ck_relationships_confirmation_source``):
@@ -220,8 +284,25 @@ class Relationship(Base):
         ``many-to-many``/``None`` cannot be oriented. The DB backstop is
         ``ck_relationships_cardinality_oriented``: a mis-oriented ``one-to-many``
         row fails loud at flush even if a future writer bypasses this helper.
+
+        **Edge-kind resolution (DAT-850) — the second job of this chokepoint.**
+        A reference claim (``foreign_key``/``hierarchy``) requires a unique
+        parent side; a measured ``many-to-many`` refutes it — that shape is two
+        facts meeting at a shared axis, so the row is persisted as
+        ``conformed_dimension`` with the refuted claim kept in
+        ``evidence['resolved_from_type']``. Same philosophy as
+        ``_resolve_cardinality`` (processor): the measurement, not the LLM's
+        guess, decides — and like the orientation rule it only rewrites the
+        writer's OWN measured label into an honest kind. The judge's EXISTENCE
+        verdict survives (``confirmation_source`` untouched): the edge is real,
+        its kind was mislabelled. ``candidate`` rows pass through — a structural
+        candidate is a measurement awaiting a claim, not a claim. DB backstop:
+        ``ck_relationships_reference_not_many_to_many``.
         """
         evidence = dict(evidence) if evidence else {}
+        if cardinality == "many-to-many" and relationship_type in ("foreign_key", "hierarchy"):
+            evidence["resolved_from_type"] = relationship_type
+            relationship_type = RelationshipType.CONFORMED_DIMENSION.value
         if cardinality == "one-to-many":
             from_table_id, from_column_id, to_table_id, to_column_id = (
                 to_table_id,
@@ -321,6 +402,10 @@ _SYMMETRIC_EVIDENCE_KEYS = frozenset(
         # Whether the measured cardinality was confirmed against the actual
         # join — a property of the check, not of a side.
         "cardinality_verified",
+        # The reference claim a measured many-to-many refuted (DAT-850,
+        # ``oriented_row``'s edge-kind resolution) — a fact about the pair's
+        # adjudication, true either way round.
+        "resolved_from_type",
         # Provenance: which writer produced the row, which run measured it,
         # whether the measurement was copied rather than retaken, which teach
         # action created it (add/keep), and which method donated RI evidence.

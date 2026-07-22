@@ -109,7 +109,11 @@ class RelationshipDetectionResult(BaseModel):
 
     total_tables: int = 0
     total_candidates: int = 0
-    high_confidence_count: int = 0
+    # Count of candidates whose value-overlap statistic (join_confidence =
+    # max(Jaccard, containment)) exceeds 0.7 — a structural-detection tally, NOT
+    # a posterior-confidence count (DAT-839). Overlap is not comparable to a
+    # judge/user confidence; never gate on it as one.
+    high_overlap_count: int = 0
 
     computed_at: datetime | None = None
     duration_seconds: float = 0.0

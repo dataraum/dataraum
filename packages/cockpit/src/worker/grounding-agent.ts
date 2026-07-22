@@ -42,7 +42,7 @@ const GROUNDING_LOOP_MAX_ITERATIONS = 12;
 
 const GROUNDING_INSTRUCTIONS = `You are the grounding-teach agent. After a data import, you fix MECHANICAL grounding gaps so the data types cleanly — nothing more.
 
-You are given the readiness of each column (band + worst-intent risk + the top drivers behind the risk). For each NON-ready target, decide if it is a MECHANICAL grounding gap you can fix, and if so apply ONE teach via the ground_teach tool:
+You are given the readiness of each column (band + worst-intent risk + coverage + the top drivers behind the risk). Coverage is 'measured' (the band rests on real measurements), 'partial' (some loss-path detectors abstained), or 'unmeasured' (they ALL abstained — the band is vacuous, NOT a clean bill of health). An unmeasured target's abstention reasons tell you WHY it could not be measured; a mechanical one (a column that could not be typed, an unrecognized null token) is often exactly what you can ground. For each target that is non-ready OR unmeasured, decide if it is a MECHANICAL grounding gap you can fix, and if so apply ONE teach via the ground_teach tool:
 - driver about TYPE / type_fidelity (e.g. a date or number read as text) → type_pattern: a regex matching the values + the inferred_type.
 - driver about NULLS / null_semantics (an unrecognized null token like "N/A", "-", "TBD") → null_value: the token + its category.
 - driver about UNITS / unit_entropy (a measure whose VALUE-CARRIED unit — a unit token in the values, e.g. "€100", "5kg" — is ambiguous or low-confidence) → unit: {table, column, unit}, identifying the column by NAME (parse it from the target "column:<table>.<col>").
@@ -97,7 +97,14 @@ function buildReadinessMessage(
 ): string {
 	const lines = gaps.map((g) => {
 		const drivers = JSON.stringify(g.topDrivers ?? []);
-		return `- ${g.target} — band=${g.band}, worst_intent_risk=${g.worstIntentRisk.toFixed(2)}, top_drivers=${drivers}`;
+		// Surface coverage + the abstention reasons on unmeasured/partial targets so
+		// the agent can tell a measurement GAP (nothing to score yet) from a measured
+		// quality risk, and see which mechanical grounding a gap-reason abstention calls for.
+		const coverageNote =
+			g.coverage === "measured"
+				? ""
+				: `, coverage=${g.coverage}, abstentions=${JSON.stringify(g.abstentions ?? [])}`;
+		return `- ${g.target} — band=${g.band}, worst_intent_risk=${g.worstIntentRisk.toFixed(2)}${coverageNote}, top_drivers=${drivers}`;
 	});
 	return `<grounding_attempts_remaining>${attemptsRemaining}</grounding_attempts_remaining>\n<non_ready_targets>\n${lines.join("\n")}\n</non_ready_targets>`;
 }
@@ -144,7 +151,13 @@ export async function assessAndGround(
 	input: AssessAndGroundInput,
 ): Promise<AssessAndGroundResult> {
 	const readiness = await readGroundingReadiness(input.tableIds);
-	const gaps = readiness.filter((r) => r.band !== "ready");
+	// A gap is any non-ready band OR an 'unmeasured' target (DAT-853): the engine
+	// keeps the band vocabulary frozen, so a never-measured column reads band='ready'
+	// with coverage='unmeasured' — counting that as clean would let the loop exit
+	// green on data it never actually measured (the epic's core failure mode).
+	const gaps = readiness.filter(
+		(r) => r.band !== "ready" || r.coverage === "unmeasured",
+	);
 	// Fast path: nothing to ground → no LLM call, the loop exits clean.
 	if (gaps.length === 0) {
 		return { appliedCount: 0, needsJudgement: false, judgementNote: null };

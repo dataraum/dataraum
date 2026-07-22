@@ -18,6 +18,7 @@ never cross-run (fail-closed, DAT-429).
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -84,7 +85,9 @@ def build_cycle_detection_context(
 
     Args:
         session: SQLAlchemy session
-        duckdb_conn: DuckDB connection for row counts
+        duckdb_conn: DuckDB connection for row counts and the
+            chain-conditioned label + measure-range aggregates on the
+            reference lines (DAT-853)
         table_ids: Tables to analyze
         vertical: Vertical name (e.g. 'finance')
         base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).
@@ -154,12 +157,18 @@ def build_cycle_detection_context(
         )
 
     # 3. The defined relationships (not candidate) within the selection — run-scoped,
-    # fail-closed above (empty when the session's run is unresolved).
+    # fail-closed above (empty when the session's run is unresolved). Split by the
+    # edge-kind owner (DAT-850, the row's relationship_type): REFERENCE kinds
+    # (foreign_key/hierarchy) are the edges entity flows ride on and feed the
+    # graph topology below; a 'conformed_dimension' row is two facts meeting at a
+    # shared axis — no entity flows through it — served to the LLM in its own
+    # explicitly-labelled block (loud absence-from-references, never a silent drop).
     relationships = (
         load_defined_relationships(session, table_ids, run_id=run_id) if run_id is not None else []
     )
 
     rel_list: list[dict[str, Any]] = []
+    conformed_list: list[dict[str, Any]] = []
     for rel in relationships:
         from_col = column_by_id.get(rel.from_column_id)
         to_col = column_by_id.get(rel.to_column_id)
@@ -167,19 +176,21 @@ def build_cycle_detection_context(
         to_table = table_by_id.get(rel.to_table_id)
 
         if from_col and to_col and from_table and to_table:
-            rel_list.append(
-                {
-                    "from_table_id": rel.from_table_id,
-                    "from_table": from_table.table_name,
-                    "from_column": from_col.column_name,
-                    "to_table_id": rel.to_table_id,
-                    "to_table": to_table.table_name,
-                    "to_column": to_col.column_name,
-                    "relationship_type": rel.relationship_type,
-                    "cardinality": rel.cardinality,
-                    "confidence": rel.confidence,
-                }
-            )
+            entry = {
+                "from_table_id": rel.from_table_id,
+                "from_table": from_table.table_name,
+                "from_column": from_col.column_name,
+                "to_table_id": rel.to_table_id,
+                "to_table": to_table.table_name,
+                "to_column": to_col.column_name,
+                "relationship_type": rel.relationship_type,
+                "cardinality": rel.cardinality,
+                "confidence": rel.confidence,
+            }
+            if rel.relationship_type == "conformed_dimension":
+                conformed_list.append(entry)
+            else:
+                rel_list.append(entry)
 
     # Entity-flow candidate columns: the columns cycles' entity flows ride on —
     # confirmed-relationship endpoints plus each table's recurring identity
@@ -192,14 +203,22 @@ def build_cycle_detection_context(
     columns_by_table: dict[str, set[str]] = {
         t.table_name: {c.column_name for c in t.columns} for t in tables
     }
+    served_identity: dict[str, list[dict[str, Any]]] = {
+        ent_table_name: _served_identity_columns(
+            ent.identity_columns, columns_by_table.get(ent_table_name, set())
+        )
+        for ent, ent_table_name in entities
+    }
     entity_flow_columns: set[tuple[str, str]] = set()
     for r in rel_list:
         entity_flow_columns.add((r["from_table"], r["from_column"]))
         entity_flow_columns.add((r["to_table"], r["to_column"]))
-    for ent, ent_table_name in entities:
-        for ic in _served_identity_columns(
-            ent.identity_columns, columns_by_table.get(ent_table_name, set())
-        ):
+    # Join keys — the endpoints alone: excluded from the chain-conditioned
+    # labels below (their values are the information-free IDs the flat
+    # endpoint samples already carry).
+    endpoint_columns = set(entity_flow_columns)
+    for ent_table_name, identity_cols in served_identity.items():
+        for ic in identity_cols:
             entity_flow_columns.add((ent_table_name, ic["column"]))
 
     # Row counts from DuckDB
@@ -213,6 +232,85 @@ def build_cycle_detection_context(
             row_counts[t.table_name] = None
 
     sampler = DataSampler(privacy) if privacy is not None else None
+
+    # Chain-conditioned evidence on the reference lines (DAT-853): for each
+    # A.fk -> B.key, aggregated over ONLY the rows that ride the join —
+    # (a) the from-side identity labels' top values, and (b) the from-side
+    # measure columns' min/max with a plain sign statement. The flat samples
+    # and profiles served per column below blur populations sharing a table
+    # (counterparty at 37% vendors flat vs 100% vendors on payment-linked
+    # rows — the AP mislabel; a measure globally mixed-sign yet uniformly one
+    # sign on the joined rows); the conditioned distribution and sign are the
+    # direction evidence. Additional serving — the flat samples stay. Privacy
+    # follows this builder's convention: a sensitive column serves NOTHING
+    # (absence, never a placeholder).
+    for r in rel_list:
+        from_tbl = table_by_id.get(r["from_table_id"])
+        to_tbl = table_by_id.get(r["to_table_id"])
+        if from_tbl is None or to_tbl is None:
+            continue
+        if not from_tbl.duckdb_path or not to_tbl.duckdb_path:
+            continue
+        conditioned: list[dict[str, Any]] = []
+        for ic in served_identity.get(r["from_table"], []):
+            label_name = ic["column"]
+            if (r["from_table"], label_name) in endpoint_columns:
+                continue
+            if sampler is not None and sampler.is_sensitive(label_name):
+                continue
+            top = _conditioned_top_values(
+                duckdb_conn,
+                from_path=from_tbl.duckdb_path,
+                to_path=to_tbl.duckdb_path,
+                fk=r["from_column"],
+                key=r["to_column"],
+                label_column=label_name,
+                limit=_ENTITY_FLOW_SAMPLE_BUDGET,
+            )
+            if top:
+                conditioned.append(
+                    {
+                        "column": label_name,
+                        "samples": [
+                            f"{_truncate_sample_value(value)} ({pct:.0f}%)" for value, pct in top
+                        ],
+                    }
+                )
+        if conditioned:
+            r["conditioned_label_samples"] = conditioned
+        # Measure sign/range over the same joined population — one aggregate
+        # per relationship × measure column, the measure selection being this
+        # builder's pinned annotations (semantic_role == "measure").
+        ranges: list[dict[str, Any]] = []
+        for measure_col in sorted(from_tbl.columns, key=lambda c: c.column_position):
+            ann = annotations.get(measure_col.column_id)
+            if ann is None or ann.semantic_role != "measure":
+                continue
+            if (r["from_table"], measure_col.column_name) in endpoint_columns:
+                continue
+            if sampler is not None and sampler.is_sensitive(measure_col.column_name):
+                continue
+            value_range = _conditioned_measure_range(
+                duckdb_conn,
+                from_path=from_tbl.duckdb_path,
+                to_path=to_tbl.duckdb_path,
+                fk=r["from_column"],
+                key=r["to_column"],
+                measure_column=measure_col.column_name,
+            )
+            if value_range is None:
+                continue
+            min_v, max_v = value_range
+            ranges.append(
+                {
+                    "column": measure_col.column_name,
+                    "min": min_v,
+                    "max": max_v,
+                    "summary": _sign_summary(min_v, max_v),
+                }
+            )
+        if ranges:
+            r["conditioned_measure_ranges"] = ranges
 
     # Build table info with columns and semantic annotations
     table_info = []
@@ -281,15 +379,16 @@ def build_cycle_detection_context(
             "grain_columns": ent.grain_columns,
             # Recurring identity columns (DAT-565) with their authored notes —
             # the columns entity flows ride on; rendered so the agent sees WHY
-            # a column carries samples. Existence-filtered (see the helper).
-            "identity_columns": _served_identity_columns(
-                ent.identity_columns, columns_by_table.get(table_name, set())
-            ),
+            # a column carries samples. Existence-filtered once above
+            # (``served_identity``), shared with the entity-flow gate and the
+            # chain-conditioned label serve.
+            "identity_columns": served_identity.get(table_name, []),
         }
         for ent, table_name in entities
     ]
 
     context["relationships"] = rel_list
+    context["conformed_meetings"] = conformed_list
 
     # 4. Graph topology
     table_name_map = {t.table_id: t.table_name for t in tables}
@@ -449,6 +548,7 @@ def build_cycle_detection_context(
         "total_tables": len(tables),
         "total_columns": sum(len(t.columns) for t in tables),
         "total_relationships": len(rel_list),
+        "conformed_meetings_found": len(conformed_list),
         "slice_dimensions_found": len(slice_list),
         "derived_relationships_found": len(derived_list),
         "temporal_columns": len(context["temporal_profiles"]),
@@ -497,6 +597,125 @@ def _truncate_sample_value(value: Any) -> str:
     if len(text) > _SAMPLE_VALUE_MAX_CHARS:
         return text[:_SAMPLE_VALUE_MAX_CHARS] + "..."
     return text
+
+
+def _qident(name: str) -> str:
+    """Double-quote one DuckDB identifier (embedded quotes doubled)."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _conditioned_top_values(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    from_path: str,
+    to_path: str,
+    fk: str,
+    key: str,
+    label_column: str,
+    limit: int,
+) -> list[tuple[str, float]]:
+    """One DuckDB aggregate: a label's top (value, pct) over rows riding the join.
+
+    Twin of the catalogue builder's helper (analysis/catalogue/context.py) —
+    same semantics, this builder's own rendering. The restriction is a
+    semi-join (the fk RESOLVES into the key), not just ``fk IS NOT NULL``: an
+    orphaned fk claims a link that never resolves, and evidence labeled
+    "joined rows" must describe the population that actually joins.
+    Percentage denominator = ALL joined rows (NULL labels included, the
+    stored profile's top_values convention); ordering count DESC then value
+    keeps the serve deterministic. Fail-soft: a missing typed table logs and
+    serves nothing — the context build must survive it.
+    """
+    query = f"""
+        SELECT value, pct FROM (
+            SELECT CAST({_qident(label_column)} AS VARCHAR) AS value,
+                   COUNT(*) AS cnt,
+                   COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS pct
+            FROM {_qident(from_path)} src
+            WHERE src.{_qident(fk)} IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM {_qident(to_path)} tgt
+                  WHERE tgt.{_qident(key)} = src.{_qident(fk)}
+              )
+            GROUP BY 1
+        )
+        WHERE value IS NOT NULL
+        ORDER BY cnt DESC, value
+        LIMIT {int(limit)}
+    """
+    try:
+        rows = duckdb_conn.execute(query).fetchall()
+    except Exception as e:
+        logger.warning(
+            "conditioned_samples_failed", table=from_path, column=label_column, error=str(e)
+        )
+        return []
+    return [(value, float(pct)) for value, pct in rows]
+
+
+def _sign_summary(min_v: float, max_v: float) -> str:
+    """Plain-language sign statement of a served ``[min, max]`` range."""
+    if max_v < 0:
+        return "all negative"
+    if min_v > 0:
+        return "all positive"
+    if min_v >= 0:
+        return "none negative"
+    if max_v <= 0:
+        return "none positive"
+    return "mixed signs"
+
+
+def _conditioned_measure_range(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    from_path: str,
+    to_path: str,
+    fk: str,
+    key: str,
+    measure_column: str,
+) -> tuple[float, float] | None:
+    """One DuckDB aggregate: a measure's min/max over rows riding the join.
+
+    Twin of the catalogue builder's helper (analysis/catalogue/context.py) —
+    same semantics, this builder's own rendering. The same semi-join
+    restriction as :func:`_conditioned_top_values` (the fk RESOLVES into the
+    key — orphans and NULL fks do not ride): the flow sign a chain carries is
+    a property of the joined population, and a measure globally mixed-sign
+    can be uniformly one sign on the chain-linked rows. NULLs are ignored by
+    MIN/MAX; an empty or all-NULL joined population serves nothing.
+    Fail-soft: a missing typed table logs and serves nothing; a non-numeric,
+    all-NULL, or NaN-tainted result serves nothing silently — the context
+    build must survive it.
+    """
+    query = f"""
+        SELECT MIN({_qident(measure_column)}), MAX({_qident(measure_column)})
+        FROM {_qident(from_path)} src
+        WHERE src.{_qident(fk)} IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM {_qident(to_path)} tgt
+              WHERE tgt.{_qident(key)} = src.{_qident(fk)}
+          )
+    """
+    try:
+        row = duckdb_conn.execute(query).fetchone()
+    except Exception as e:
+        logger.warning(
+            "conditioned_range_failed", table=from_path, column=measure_column, error=str(e)
+        )
+        return None
+    if row is None:
+        return None
+    try:
+        min_v, max_v = float(row[0]), float(row[1])
+    except TypeError, ValueError:
+        # All-NULL joined population (MIN/MAX → None) or a non-numeric column.
+        return None
+    if math.isnan(min_v) or math.isnan(max_v):
+        # One NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every
+        # sign comparison — absence is the honest serving.
+        return None
+    return min_v, max_v
 
 
 def _load_pinned_annotations(
@@ -642,7 +861,11 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         )
         row_str = f", {row_count:,} rows" if row_count else ""
         grain = f", grain: {', '.join(ent['grain_columns'])}" if ent.get("grain_columns") else ""
-        lines.append(f"- {ent['table_name']} ({table_type}{row_str}{grain}): {ent['entity_type']}")
+        # Nullable since DAT-823 (the catalogue turn may honestly leave a table
+        # unread after retries) — render declared ignorance, never the literal
+        # string "None", matching the guarded siblings above.
+        entity_type = ent.get("entity_type") or "(entity type undetermined)"
+        lines.append(f"- {ent['table_name']} ({table_type}{row_str}{grain}): {entity_type}")
         if ent.get("description"):
             lines.append(f"  {ent['description'][:500]}")
         # Recurring identity columns (DAT-565): the entity-identifying columns
@@ -728,7 +951,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 lines.append(f"  Added columns: {cols}")
         lines.append("")
 
-    # Relationships
+    # Relationships (REFERENCE kinds only — the edges entity flows ride on)
     lines.append("## CONFIRMED RELATIONSHIPS")
     for rel in context.get("relationships", []):
         lines.append(
@@ -736,7 +959,40 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             f"{rel['to_table']}.{rel['to_column']} "
             f"({rel['relationship_type']}, {rel['cardinality']}, conf={rel['confidence']:.0%})"
         )
+        # Chain-conditioned evidence (DAT-853): the from-side labels and
+        # measure sign/ranges on ONLY the rows that ride this join — where
+        # these differ from a column's flat samples/profile, they are the
+        # evidence for what the chain itself carries (e.g. which party the
+        # linked rows involve, and the flow sign of the linked rows).
+        for cls_entry in rel.get("conditioned_label_samples", []):
+            lines.append(
+                f"    {rel['from_table']}.{cls_entry['column']} "
+                f"({rel['from_column']}-joined rows only): " + ", ".join(cls_entry["samples"])
+            )
+        for range_entry in rel.get("conditioned_measure_ranges", []):
+            lines.append(
+                f"    {rel['from_table']}.{range_entry['column']} "
+                f"({rel['from_column']}-joined rows only): "
+                f"min={range_entry['min']} max={range_entry['max']} — {range_entry['summary']}"
+            )
     lines.append("")
+
+    # Conformed-dimension meetings (DAT-850): confirmed edges whose measured
+    # cardinality refuted the reference claim — two facts sharing an axis. Served
+    # under their own heading so their absence from the references above is loud,
+    # and the LLM never routes an entity flow through a shared-axis join.
+    conformed = context.get("conformed_meetings", [])
+    if conformed:
+        lines.append("## CONFORMED DIMENSION MEETINGS (shared axes — NOT references)")
+        lines.append("These column pairs join two fact tables on a shared dimension axis.")
+        lines.append("No entity flows through them; joining on one fans out both ways.")
+        for rel in conformed:
+            lines.append(
+                f"- {rel['from_table']}.{rel['from_column']} ↔ "
+                f"{rel['to_table']}.{rel['to_column']} "
+                f"(shared axis, {rel['cardinality']}, conf={rel['confidence']:.0%})"
+            )
+        lines.append("")
 
     # Graph topology
     graph_topology = context.get("graph_topology")

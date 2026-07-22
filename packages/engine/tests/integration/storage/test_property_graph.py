@@ -359,10 +359,90 @@ def _seed(engine: Engine) -> None:
             "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
             f"VALUES ('{eid}', 'finance', 'part_of', '{frm}', '{to}', 'seed', '{TS}')"
         )
+    stmts.extend(_coverage_and_rollup_stmts())
     stmts.extend(_grounding_stmts())
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
+
+
+def _coverage_and_rollup_stmts() -> list[str]:
+    """DAT-730 fixture rows: temporal coverage, drill-down roll-up, dimension ordering.
+
+    - t1's three DECLARED time columns (txn_date anchor/event, created_date event,
+      due_date attribute) become real ``columns`` rows so the time_columns JSON names
+      resolve to og_columns vertices. txn_date carries a COMPLETE monthly profile,
+      created_date a partial-trailing DAILY profile, due_date NO profile at all — the
+      absence-falls-loud case (coverage edge with NULL observed_*).
+    - a ``drilldown`` dimension_hierarchies row over c_k1→c_k2→c_k3 (levels 2→1→0,
+      finer→coarser) plus a level-3 member with NO catalog column ('') to prove the
+      skip, and an ``alias`` row to prove kind!='drilldown' emits no rolls_up_to.
+    - a ``dimension`` concept carrying ordering='ordered' (the DAT-730 typed fact).
+    """
+    import json
+
+    stmts: list[str] = []
+    for cid, name in [("c_txn", "txn_date"), ("c_created", "created_date"), ("c_due", "due_date")]:
+        stmts.append(
+            f"INSERT INTO columns (column_id, table_id, column_name, column_position) "
+            f"VALUES ('{cid}', 't1', '{name}', 10)"
+        )
+    # txn_date: a COMPLETE monthly series (last_period_complete=true, ratio 1.0).
+    stmts.append(
+        "INSERT INTO temporal_column_profiles "
+        "(profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, "
+        " detected_granularity, granularity_confidence, completeness_ratio, expected_periods, "
+        " actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps) "
+        f"VALUES ('tp_txn', 'c_txn', '{RUN}', '{TS}', '2023-01-31', '2023-12-31', 334, "
+        f"'month', 0.9, 1.0, 12, 12, 0, NULL, true, false, '[]'::json)"
+    )
+    # created_date: a partial-trailing DAILY series (last_period_complete=false).
+    stmts.append(
+        "INSERT INTO temporal_column_profiles "
+        "(profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, "
+        " detected_granularity, granularity_confidence, completeness_ratio, expected_periods, "
+        " actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps) "
+        f"VALUES ('tp_created', 'c_created', '{RUN}', '{TS}', '2024-01-01', '2024-03-31', 90, "
+        f"'day', 0.9, 0.9, 91, 82, 3, 5, false, false, '[]'::json)"
+    )
+    # due_date (c_due): NO temporal profile — the LEFT JOIN yields NULL observed_*.
+    # A drill-down hierarchy c_k1 (lvl2, finest) → c_k2 (lvl1) → c_k3 (lvl0, coarsest),
+    # plus a level-3 member with '' column_id (skipped) — level is the SOLE direction.
+    dh_members = json.dumps(
+        [
+            {"column_name": "group_id", "column_id": "c_k3", "distinct_count": 5, "level": 0},
+            {"column_name": "account_id", "column_id": "c_k2", "distinct_count": 50, "level": 1},
+            {"column_name": "acct_own", "column_id": "c_k1", "distinct_count": 500, "level": 2},
+            {"column_name": "orphan", "column_id": "", "distinct_count": None, "level": 3},
+        ]
+    ).replace("'", "''")
+    stmts.append(
+        "INSERT INTO dimension_hierarchies "
+        "(hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, "
+        " detection_source, needs_confirmation, created_at) "
+        f"VALUES ('dh_1', '{RUN}', 't1', 'drilldown', '{dh_members}'::json, "
+        f"'group → account → acct', 'drilldown:t1:acct', 'g3', false, '{TS}')"
+    )
+    # An ALIAS structure over the same members must emit NO rolls_up_to edge.
+    alias_members = json.dumps(
+        [
+            {"column_name": "division_id", "column_id": "c_k5", "distinct_count": 3, "level": 0},
+            {"column_name": "statement_id", "column_id": "c_k4", "distinct_count": 3, "level": 1},
+        ]
+    ).replace("'", "''")
+    stmts.append(
+        "INSERT INTO dimension_hierarchies "
+        "(hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, "
+        " detection_source, needs_confirmation, created_at) "
+        f"VALUES ('dh_2', '{RUN}', 't4', 'alias', '{alias_members}'::json, "
+        f"'division_id', 'alias:t4:division', 'g3', false, '{TS}')"
+    )
+    # A dimension concept carrying the DAT-730 ordering fact (og_concepts.ordering).
+    stmts.append(
+        "INSERT INTO concepts (concept_id, vertical, name, kind, ordering, created_at) "
+        f"VALUES ('con_sev', 'finance', 'severity', 'dimension', 'ordered', '{TS}')"
+    )
+    return stmts
 
 
 # Grounding fixtures (DAT-727): the snippet-KB rows current_groundings
@@ -1115,3 +1195,142 @@ def test_fixed_depth_unroll_agrees_with_closure_at_depth_four(graph_engine: Engi
         reached = {r.reached for r in conn.execute(text(sql))}
     # t5 = 'division' is the closure's depth-4 node from t1 (see the closure test).
     assert reached == {"division"}
+
+
+# --- DAT-730: temporal coverage, roll-up, period ladder, dimension ordering ---
+
+
+def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engine) -> None:
+    """temporal_coverage (DAT-730): one edge per (relation × DECLARED time column),
+    carrying the PERSISTED profile — role/aspect/anchor from time_columns, observed grain
+    = detected_granularity, plus last_period_complete (the trailing-bucket signal)."""
+    sql = (
+        f"SELECT src, col, role, aspect, anchor, grain, ratio, lpc "
+        f"FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[cov IS temporal_coverage]->(c IS column_node) "
+        "COLUMNS (t.table_name AS src, c.column_name AS col, cov.role AS role, "
+        "cov.aspect AS aspect, cov.is_anchor AS anchor, cov.observed_grain AS grain, "
+        "cov.completeness_ratio AS ratio, cov.last_period_complete AS lpc))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {r.col: r for r in conn.execute(text(sql))}
+    # Only t1 (journal) declares time_columns → exactly its three date axes.
+    assert set(rows) == {"txn_date", "created_date", "due_date"}
+    assert all(r.src == "journal" for r in rows.values())
+    # The anchor event axis: a COMPLETE monthly series.
+    txn = rows["txn_date"]
+    assert (txn.role, txn.aspect, txn.anchor) == ("event", "txn", True)
+    assert txn.grain == "month"  # observed = detected_granularity, NOT a config echo
+    assert txn.ratio == 1.0
+    assert txn.lpc is True
+    # A non-anchor event axis with a PARTIAL trailing period.
+    created = rows["created_date"]
+    assert (created.role, created.anchor, created.grain) == ("event", False, "day")
+    assert created.lpc is False
+
+
+def test_temporal_coverage_absence_falls_loud(graph_engine: Engine) -> None:
+    """A declared time column with NO temporal profile keeps its coverage edge but with
+    NULL observed_* — absence is visible, never a fabricated window (DAT-730 / DAT-853)."""
+    sql = (
+        f"SELECT grain, ratio, lpc, span FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[cov IS temporal_coverage]->(c IS column_node "
+        "WHERE c.column_name = 'due_date') "
+        "COLUMNS (cov.observed_grain AS grain, cov.completeness_ratio AS ratio, "
+        "cov.last_period_complete AS lpc, cov.span_days AS span))"
+    )
+    with graph_engine.connect() as conn:
+        rows = conn.execute(text(sql)).all()
+    # due_date is a declared ATTRIBUTE axis that was never profiled → the edge exists
+    # (the column is a declared time column) but every observed fact is NULL.
+    assert rows == [(None, None, None, None)]
+
+
+def test_rolls_up_to_edges_follow_drilldown_levels(graph_engine: Engine) -> None:
+    """rolls_up_to (DAT-730): a drill-down's members become ordered level→level edges,
+    finer→coarser, keyed on column_id (level is the sole direction carrier). An alias
+    structure emits none, and a member with no catalog column ('') is skipped."""
+    sql = (
+        f"SELECT a_id, b_id, fl, tl FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS column_node)-[e IS rolls_up_to]->(b IS column_node) "
+        "COLUMNS (a.column_id AS a_id, b.column_id AS b_id, "
+        "e.from_level AS fl, e.to_level AS tl))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.a_id, r.b_id, r.fl, r.tl) for r in conn.execute(text(sql))}
+    # c_k1 (lvl2, finest) → c_k2 (lvl1) → c_k3 (lvl0, coarsest). The alias dh_2 and the
+    # level-3 orphan ('' column_id) contribute nothing.
+    assert rows == {("c_k1", "c_k2", 2, 1), ("c_k2", "c_k3", 1, 0)}
+
+
+def test_period_grain_ladder_default_then_declared(graph_engine: Engine) -> None:
+    """period_grain (DAT-730): the constant day/month/quarter/year nodes carry the
+    workspace fiscal boundary — an UNSET workspace stamps the calendar-year default
+    VISIBLY (calendar_source='default'); a declaration flips it to 'declared'."""
+    grain_sql = (
+        f"SELECT grain, ord, fym, src FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS period_grain) COLUMNS (g.grain AS grain, g.ordinal AS ord, "
+        "g.fiscal_year_start_month AS fym, g.calendar_source AS src))"
+    )
+    with graph_engine.connect() as conn:
+        default_rows = {r.grain: r for r in conn.execute(text(grain_sql))}
+    assert set(default_rows) == {"day", "month", "quarter", "year"}
+    assert default_rows["month"].ord == 1 and default_rows["year"].ord == 3
+    # Unset workspace: calendar-year default, stamped visibly (never silent).
+    assert all(r.fym == 1 and r.src == "default" for r in default_rows.values())
+
+    # The ladder edges day→month→quarter→year.
+    edge_sql = (
+        f"SELECT from_grain, to_grain FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS period_grain)-[e IS period_rolls_up_to]->(b IS period_grain) "
+        "COLUMNS (a.grain AS from_grain, b.grain AS to_grain))"
+    )
+    with graph_engine.connect() as conn:
+        edges = {(r.from_grain, r.to_grain) for r in conn.execute(text(edge_sql))}
+    assert edges == {("day", "month"), ("month", "quarter"), ("quarter", "year")}
+
+    # Declare a fiscal calendar (April start): the boundary flips to 'declared'.
+    with graph_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO workspace_calendar (pin, fiscal_year_start_month, declared_at) "
+                f"VALUES (true, 4, '{TS}')"
+            )
+        )
+    with graph_engine.connect() as conn:
+        declared = {r.grain: r for r in conn.execute(text(grain_sql))}
+    assert all(r.fym == 4 and r.src == "declared" for r in declared.values())
+
+
+def test_period_ladder_is_walkable_by_recursive_cte(graph_engine: Engine) -> None:
+    """The calendar ladder is walkable by the SAME bounded recursive CTE the part_of
+    closure uses, so last-complete-quarter is derivable from last-complete-month: a walk
+    up from 'month' reaches 'quarter' then 'year'."""
+    read = _read_schema()
+    sql = (
+        "WITH RECURSIVE reach(src, dst, depth, path) AS ("
+        f"  SELECT from_grain, to_grain, 1, ARRAY[from_grain, to_grain] "
+        f'  FROM "{read}".og_period_rolls_up_to '
+        "  UNION ALL "
+        "  SELECT r.src, e.to_grain, r.depth + 1, r.path || e.to_grain "
+        f'  FROM reach r JOIN "{read}".og_period_rolls_up_to e ON e.from_grain = r.dst '
+        "  WHERE r.depth < 4 AND NOT e.to_grain = ANY(r.path)"
+        ") SELECT dst, depth FROM reach WHERE src = 'month' ORDER BY depth, dst"
+    )
+    with graph_engine.connect() as conn:
+        rows = [(r.dst, r.depth) for r in conn.execute(text(sql))]
+    assert rows == [("quarter", 1), ("year", 2)]
+
+
+def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
+    """ordering (DAT-730): the dimension-axis fact rides the concept vertex — 'ordered'
+    where declared, NULL (⇒ nominal, windows withheld) otherwise."""
+    sql = (
+        f"SELECT name, ordering FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node) COLUMNS (c.name AS name, c.ordering AS ordering))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {r.name: r.ordering for r in conn.execute(text(sql))}
+    assert rows["severity"] == "ordered"
+    # A measure concept carries no ordering fact.
+    assert rows["accounts_payable"] is None

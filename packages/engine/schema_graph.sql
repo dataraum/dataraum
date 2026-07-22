@@ -206,7 +206,7 @@ CREATE VIEW __READ__.og_temporal_coverage AS
 SELECT DISTINCT ON (te.table_id, col.column_id)
        (te.table_id || '_' || col.column_id)::text AS coverage_key,
        te.table_id::text AS table_id, col.column_id::text AS column_id,
-       col.column_name, tc.role, tc.aspect, tc.is_anchor,
+       col.column_name, tc.role, tc.aspect, tc.declared_anchor,
        tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,
        tp.span_days, tp.detected_granularity AS observed_grain,
        tp.completeness_ratio, tp.expected_periods, tp.actual_periods,
@@ -215,17 +215,18 @@ FROM __READ__.current_table_entities te
 CROSS JOIN LATERAL (
     SELECT elem->>'column' AS column_name, elem->>'role' AS role,
            elem->>'aspect' AS aspect,
-           (elem->>'is_anchor')::boolean AS is_anchor
+           (elem->>'is_anchor')::boolean AS declared_anchor
     FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem
   ) tc
 JOIN __READ__.current_columns col
   ON col.table_id = te.table_id AND col.column_name = tc.column_name
 LEFT JOIN __READ__.current_temporal_column_profiles tp
   ON tp.column_id = col.column_id
-ORDER BY te.table_id, col.column_id, tc.is_anchor DESC NULLS LAST;
+ORDER BY te.table_id, col.column_id, tc.declared_anchor DESC NULLS LAST,
+         tc.role, tc.aspect, tc.column_name;
 
 CREATE VIEW __READ__.og_rolls_up_to AS
-SELECT (h.hierarchy_id || '_' || fine.col_id || '_' || coarse.col_id)::text
+SELECT (h.hierarchy_id || '_' || fine.lvl || '_' || coarse.lvl)::text
          AS edge_key,
        fine.col_id::text AS from_column_id,
        coarse.col_id::text AS to_column_id,
@@ -307,9 +308,10 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
       LABEL temporal_coverage
-      PROPERTIES (column_name, role, aspect, is_anchor, observed_min, observed_max,
-                  span_days, observed_grain, completeness_ratio, expected_periods,
-                  actual_periods, gap_count, is_stale, last_period_complete),
+      PROPERTIES (column_name, role, aspect, declared_anchor, observed_min,
+                  observed_max, span_days, observed_grain, completeness_ratio,
+                  expected_periods, actual_periods, gap_count, is_stale,
+                  last_period_complete),
     __READ__.og_rolls_up_to KEY (edge_key)
       SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)
       DESTINATION KEY (to_column_id) REFERENCES og_columns (column_id)

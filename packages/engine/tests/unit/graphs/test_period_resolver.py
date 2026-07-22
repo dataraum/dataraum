@@ -173,6 +173,7 @@ def _axis(**kw: object) -> _MeasureAxis:
         "grain": "month",
         "persisted_span_days": 334.0,
         "persisted_actual_periods": 12,
+        "axis_is_view_own": True,
     }
     base.update(kw)
     return _MeasureAxis(**base)  # type: ignore[arg-type]

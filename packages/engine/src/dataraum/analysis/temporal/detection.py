@@ -171,6 +171,14 @@ def analyze_last_period_completeness(
     zero and reads incomplete. Independent of month-start vs month-end stamping,
     which any fixed within-bucket-position test would misread.
 
+    **Sensitivity ceiling — conservative by design.** Rounding to a whole period catches
+    a TRUNCATED tail (a final bucket filled below ~50% of a typical bucket rounds to 0),
+    NOT a merely-SHORT tail (60–95% of typical rounds to 1 and reads complete). So a
+    ``True`` means "not obviously truncated", not "provably full to the period boundary";
+    a consumer must NOT over-trust it. ``False`` is the high-signal verdict (the final
+    period is materially short). The bias is deliberate — it avoids false-incompletes on
+    ordinary period-length variation, at the cost of missing marginal short tails.
+
     Returns ``None`` — never a fabricated ``True`` — when ``granularity`` has no
     ``date_trunc`` bucket (the irregular/unknown sentinels) or there is only ONE
     bucket (no prior period to define "typical"), matching ``count_grain_periods``'s

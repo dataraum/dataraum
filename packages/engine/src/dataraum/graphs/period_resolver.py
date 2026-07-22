@@ -136,9 +136,15 @@ class _MeasureAxis:
 
     ``persisted_span_days`` / ``persisted_actual_periods`` are the axis's WHOLE-COLUMN
     coverage from ``temporal_column_profiles`` (DAT-812): the exact window an
-    UNFILTERED (empty-WHERE) flow would live-scan, so it is read off the persisted
-    profile instead — ``None`` when the axis had no profile. Filtered flows ignore
-    these and scan live over their own rows (see :func:`_observe_flow_step`).
+    UNFILTERED (empty-WHERE) flow whose axis is VIEW-OWN would live-scan, so it is read
+    off the persisted profile instead — ``None`` when the axis had no profile. Filtered
+    flows ignore these and scan live over their own rows (see :func:`_observe_flow_step`).
+
+    ``axis_is_view_own`` is True only when the served axis is the relation's OWN column
+    (``current_enriched_columns.origin == 'fact'``, the fact ``f.*`` passthrough). A
+    joined-dim axis (origin='dimension') is False: its whole-column profile spans dim
+    dates the fact may not reference, so the collapse must NOT fire and the flow scans
+    live instead.
     """
 
     materialization: str | None
@@ -146,6 +152,7 @@ class _MeasureAxis:
     grain: str | None
     persisted_span_days: float | None
     persisted_actual_periods: int | None
+    axis_is_view_own: bool
 
 
 def resolve_days_in_period(
@@ -309,16 +316,27 @@ def _observe_flow_step(
                 f"flow '{field_name}' has no observable anchor-axis span "
                 f"(null anchor time axis or no temporal profile)"
             )
-        # DAT-812 profile-read collapse: an UNFILTERED flow's window IS the axis's
+        # DAT-812 profile-read collapse: an UNFILTERED flow whose axis is the relation's
+        # OWN column (a fact ``f.*`` passthrough) has a window equal to the axis's
         # whole-column span, which ``temporal_column_profiles`` already persisted — no
-        # need to re-scan DuckDB. A FILTERED flow keeps scanning live over exactly the
-        # rows its SUM touches (the whole-column span would be wrong for it). Falls back
-        # to the live empty-WHERE scan only if the persisted profile is absent, so
-        # correctness is unchanged either way.
+        # need to re-scan DuckDB. THREE conditions must ALL hold:
+        #   - no WHERE — a FILTERED flow scans live over exactly the rows its SUM touches
+        #     (the whole-column span is wrong for it, the DAT-785 Critical);
+        #   - a persisted span + period count exist;
+        #   - the axis is VIEW-OWN (``axis_is_view_own``: origin='fact'). A JOINED-DIM
+        #     anchor (a header/dim date, origin='dimension') is the collapse's blind spot:
+        #     its profile spans ALL dim dates, but the live scan spans only the dim dates
+        #     the FACT references — so a 2023-only fact on a 2020–2025 calendar dim would
+        #     collapse to a plausible-but-WRONG multi-year window. Such an axis falls back
+        #     to the live scan, the correct pre-DAT-812 behaviour. This equivalence is
+        #     fact-own-only; it is NOT an "anchors are always fact-own" assumption.
+        # A fall-back-to-live path keeps correctness unchanged whenever the collapse
+        # cannot safely fire.
         collapsible = (
             where_clause is None
             and measure.persisted_span_days is not None
             and measure.persisted_actual_periods is not None
+            and measure.axis_is_view_own
         )
         if collapsible:
             window = _window_from_profile(measure)
@@ -335,14 +353,17 @@ def _observe_flow_step(
 def _window_from_profile(measure: _MeasureAxis) -> _AxisWindow | str:
     """An unfiltered flow's window from the persisted whole-column profile (DAT-812).
 
-    The empty-WHERE collapse: for a flow with no filter, the SUM scans the whole
-    relation, so its accumulation window equals the axis's persisted whole-column span
-    — identical to what :func:`_observe_window` would live-scan with no ``WHERE``, but
-    read straight off ``temporal_column_profiles``. Applies the SAME fencepost
-    correction as the live path (so a caller can't tell which source produced the
-    number) and falls loud on the same degenerate cases (no clean grain bucket, a
-    single-or-zero period). Only ever called after the caller has confirmed the
-    persisted span and period count are present.
+    The empty-WHERE collapse: for a flow with no filter whose axis is the relation's OWN
+    column (origin='fact'), the SUM scans the whole relation, so its accumulation window
+    equals the axis's persisted whole-column span — identical to what
+    :func:`_observe_window` would live-scan with no ``WHERE``, read straight off
+    ``temporal_column_profiles``. The equivalence is FACT-OWN-ONLY: for a joined-dim
+    axis the profile (all dim dates) and the live scan (fact-referenced dim dates)
+    diverge, so the caller gates on ``axis_is_view_own`` and never routes a joined-dim
+    axis here. Applies the SAME fencepost correction as the live path (so a caller can't
+    tell which source produced the number) and falls loud on the same degenerate cases
+    (no clean grain bucket, a single-or-zero period). Only ever called after the caller
+    has confirmed the persisted span + period count are present and the axis is view-own.
     """
     if measure.grain not in DATE_TRUNC_GRAINS:
         return f"anchor axis {measure.axis!r} cadence {measure.grain!r} has no clean period"
@@ -510,12 +531,13 @@ def _read_measure_axes(
     extract in the graph yields a flow window (:func:`_derive_period`).
 
     The persisted whole-column ``span_days`` + ``actual_periods`` ARE read here (DAT-812)
-    — but consumed ONLY for an UNFILTERED flow, whose window IS the whole-column span
-    (:func:`_window_from_profile`). A WHERE-FILTERED flow ignores them and measures its
-    window live over exactly the rows its SUM touches (:func:`_observe_window`), because
-    the whole-column span is wrong for a filtered SUM. Verdict, axis identity, cadence,
-    and the whole-column span all come from the read surface; only the filtered scan
-    touches DuckDB.
+    — but consumed ONLY for an UNFILTERED, VIEW-OWN flow (``origin='fact'``), whose window
+    IS the whole-column span (:func:`_window_from_profile`). A WHERE-FILTERED flow — OR a
+    joined-dim axis (``origin='dimension'``, whose profile spans dim dates the fact may
+    not reference) — ignores them and measures its window live over exactly the rows its
+    SUM touches (:func:`_observe_window`). Verdict, axis identity, cadence, the
+    whole-column span, and the axis ORIGIN all come from the read surface; only the live
+    scan touches DuckDB.
 
     Runs inside the caller's SAVEPOINT (:func:`resolve_days_in_period`), so a read
     failure rolls back the nested transaction and degrades to the flagged default.
@@ -534,9 +556,13 @@ def _read_measure_axes(
         f"  WHERE m.table_id = :view_id AND m.column_name IN :measure_cols"
         f") SELECT DISTINCT measure.materialization, axis_col.column_name AS axis,"
         f"       tp.detected_granularity AS grain,"
-        # DAT-812: the axis's WHOLE-COLUMN span + present-period count — the exact
-        # window an UNFILTERED flow would live-scan, so it can be read here instead.
-        f"       tp.span_days AS span_days, tp.actual_periods AS actual_periods"
+        # DAT-812: the axis's WHOLE-COLUMN span + present-period count — the exact window
+        # an UNFILTERED, VIEW-OWN flow would live-scan, so it can be read here instead.
+        # ``origin`` discriminates a fact ``f.*`` passthrough (view-own, 1:1 with the
+        # relation's rows ⇒ whole-column span == the live empty-WHERE window) from a
+        # joined-dim axis (multiplicity via FK ⇒ they diverge, so no collapse).
+        f"       tp.span_days AS span_days, tp.actual_periods AS actual_periods,"
+        f"       axis_col.origin AS axis_origin"
         f" FROM measure"
         f'  LEFT JOIN "{read_schema}".current_enriched_columns axis_col'
         f"         ON axis_col.table_id = :view_id"
@@ -555,6 +581,9 @@ def _read_measure_axes(
             grain=str(grain) if grain is not None else None,
             persisted_span_days=float(span) if span is not None else None,
             persisted_actual_periods=int(periods) if periods is not None else None,
+            # Only the fact's own passthrough is safe to collapse; a joined-dim axis
+            # (origin='dimension') or an unresolved axis (NULL) scans live.
+            axis_is_view_own=(origin == "fact"),
         )
-        for mat, axis, grain, span, periods in rows
+        for mat, axis, grain, span, periods, origin in rows
     ]

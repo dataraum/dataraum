@@ -1214,14 +1214,14 @@ def test_fixed_depth_unroll_agrees_with_closure_at_depth_four(graph_engine: Engi
 
 def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engine) -> None:
     """temporal_coverage (DAT-730): one edge per (relation × DECLARED time column),
-    carrying the PERSISTED profile — role/aspect/anchor from time_columns, observed grain
-    = detected_granularity, plus last_period_complete (the trailing-bucket signal)."""
+    carrying the PERSISTED profile — role/aspect/declared_anchor from time_columns,
+    observed grain = detected_granularity, plus last_period_complete."""
     sql = (
-        f"SELECT src, col, role, aspect, anchor, grain, ratio, lpc "
+        f"SELECT src, col, role, aspect, danchor, grain, ratio, lpc "
         f"FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (t IS table_node)-[cov IS temporal_coverage]->(c IS column_node) "
         "COLUMNS (t.table_name AS src, c.column_name AS col, cov.role AS role, "
-        "cov.aspect AS aspect, cov.is_anchor AS anchor, cov.observed_grain AS grain, "
+        "cov.aspect AS aspect, cov.declared_anchor AS danchor, cov.observed_grain AS grain, "
         "cov.completeness_ratio AS ratio, cov.last_period_complete AS lpc))"
     )
     with graph_engine.connect() as conn:
@@ -1229,16 +1229,45 @@ def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engin
     # Only t1 (journal) declares time_columns → exactly its three date axes.
     assert set(rows) == {"txn_date", "created_date", "due_date"}
     assert all(r.src == "journal" for r in rows.values())
-    # The anchor event axis: a COMPLETE monthly series.
+    # The declared-anchor event axis: a COMPLETE monthly series.
     txn = rows["txn_date"]
-    assert (txn.role, txn.aspect, txn.anchor) == ("event", "txn", True)
+    assert (txn.role, txn.aspect, txn.danchor) == ("event", "txn", True)
     assert txn.grain == "month"  # observed = detected_granularity, NOT a config echo
     assert txn.ratio == 1.0
     assert txn.lpc is True
     # A non-anchor event axis with a PARTIAL trailing period.
     created = rows["created_date"]
-    assert (created.role, created.anchor, created.grain) == ("event", False, "day")
+    assert (created.role, created.danchor, created.grain) == ("event", False, "day")
     assert created.lpc is False
+
+
+def test_declared_anchor_is_not_the_operating_model_anchor(graph_engine: Engine) -> None:
+    """DAT-730: coverage.declared_anchor is the time_columns ROLE flag (the LLM's
+    declaration), NOT the operating-model anchor. The ONE home of a measure's resolved
+    anchor is og_columns.anchor_time_axis (witness ▸ declared, DAT-780) — and a lineage
+    witness can override the declaration, so the two legitimately DIVERGE.
+
+    The fixture seeds exactly that: t1 declares its anchor as 'txn_date', but the amount
+    measure (c_amt) has a lineage witness axis 'period_date'. So the coverage edge's
+    declared_anchor points at txn_date (the declaration) while the measure's resolved
+    anchor is period_date (the witness) — the same-name conflation the rename prevents."""
+    declared_sql = (
+        f"SELECT col, danchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node WHERE t.table_name = 'journal')"
+        "-[cov IS temporal_coverage]->(c IS column_node) "
+        "COLUMNS (c.column_name AS col, cov.declared_anchor AS danchor))"
+    )
+    resolved_sql = (
+        f"SELECT anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS column_node WHERE c.column_name = 'amount' AND c.table_id = 't1') "
+        "COLUMNS (c.anchor_time_axis AS anchor))"
+    )
+    with graph_engine.connect() as conn:
+        declared = [r.col for r in conn.execute(text(declared_sql)) if r.danchor]
+        resolved = conn.execute(text(resolved_sql)).scalar_one()
+    assert declared == ["txn_date"]  # the DECLARED anchor (time_columns role home)
+    assert resolved == "period_date"  # the WITNESS-resolved operating-model anchor
+    assert declared[0] != resolved  # the two homes diverge — never conflate them
 
 
 def test_temporal_coverage_absence_falls_loud(graph_engine: Engine) -> None:

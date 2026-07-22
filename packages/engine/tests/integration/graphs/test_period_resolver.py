@@ -47,7 +47,7 @@ from dataraum.graphs.models import (
     StepType,
     TransformationGraph,
 )
-from dataraum.graphs.period_resolver import resolve_days_in_period
+from dataraum.graphs.period_resolver import _apply_fencepost, resolve_days_in_period
 from dataraum.query.snippet_models import SQLSnippetRecord
 from dataraum.server.workspace import schema_name_for
 from dataraum.storage import Column, Table
@@ -1318,3 +1318,39 @@ def test_derives_header_dated_flow_via_declared_dim_anchor(
     assert resolution.flag is None
     assert resolution.days == pytest.approx(CORRECTED_DAYS)
     assert resolution.evidence["anchor_time_axis"] == ["entry_id__date"]
+
+
+def test_joined_dim_anchor_does_not_collapse_to_the_wider_profile_span(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """DAT-812 collapse gate (senior-review CRITICAL): a JOINED-DIM anchor
+    (``origin='dimension'``) must NOT read its whole-column profile span — the dim's
+    profile covers ALL dim dates, but the flow SUM scans only the dim dates the FACT
+    references. So the collapse must be SKIPPED and the flow scanned live.
+
+    Proof: the persisted dim profile (journal_entries.date) is widened to 20 quarters
+    over ~5 years, while the live enriched_journal_lines carries only the 4
+    fact-referenced quarters. A collapse would return the ~5-year window
+    (fencepost(1825, 20) ≈ 1921 days); the correct live scan returns the 4-quarter
+    window (364). The gate keeps the live scan, so 364 wins."""
+    _seed_declared_dim_anchor_flow(pg_session)
+    # Widen the DIM profile FAR beyond the fact-referenced range — the trap the collapse
+    # would fall into for a joined-dim axis.
+    wide = pg_session.query(TemporalColumnProfile).filter_by(profile_id="tp_entry_date").one()
+    wide.span_days = 5 * 365.0
+    wide.actual_periods = 20
+    pg_session.commit()
+    _create_enriched_journal_lines(duckdb_conn)  # only the 4 fact-referenced quarters
+    _boot(integration_engine)
+    resolution = resolve_days_in_period(
+        pg_session, duckdb_conn, graph=_header_flow_graph(), workspace_id=WS_ID
+    )
+    assert resolution is not None
+    assert resolution.derived is True
+    # The LIVE 4-quarter window, NOT the widened dim profile.
+    assert resolution.days == pytest.approx(CORRECTED_DAYS)
+    assert resolution.days != pytest.approx(_apply_fencepost(5 * 365.0, 20))
+    assert resolution.evidence["filtered_span_days"] == pytest.approx(SPAN_DAYS)
+    assert resolution.evidence["actual_periods"] == 4  # live periods, not the profile's 20

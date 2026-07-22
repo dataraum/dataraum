@@ -564,7 +564,7 @@ def _element_view_sql(name: str) -> str:
         # to og_has_dimension (table → column). The ROLE home is
         # ``table_entities.time_columns`` (the event/attribute + single-anchor JSON,
         # enforced at the LLM seam): unnested to name each declared time column with
-        # its ``role`` / ``aspect`` / ``is_anchor``. The name resolves to its
+        # its ``role`` / ``aspect`` / ``declared_anchor``. The name resolves to its
         # ``column_id`` in current_columns (INNER — a graph edge needs a real column
         # vertex; an unresolvable name is honest under-coverage, no dangling edge, the
         # og_concept_edges discipline). The observed facts LEFT-join
@@ -573,15 +573,24 @@ def _element_view_sql(name: str) -> str:
         # observed_* — absence falls loud, NEVER a fabricated window (DAT-853
         # abstention discipline; completeness_ratio/last_period_complete already NULL
         # at the source). The OBSERVED grain is ``detected_granularity`` — NEVER the
-        # ``measure_aggregation_lineage.period_grain`` config echo. DISTINCT ON
-        # (table, column) guarantees the unique PGQ KEY even if a column were ever
-        # listed twice in the JSON (anchor row wins).
+        # ``measure_aggregation_lineage.period_grain`` config echo.
+        #
+        # ``declared_anchor`` is the time_columns ROLE flag — whether the LLM DECLARED
+        # this column the table's anchor — NOT the operating-model anchor. The ONE home
+        # of a measure's resolved anchor axis is ``og_columns.anchor_time_axis`` (witness
+        # ▸ declared precedence, DAT-780); a witness can override the declaration there,
+        # so declared_anchor here and anchor_time_axis there legitimately DIVERGE. Named
+        # ``declared_anchor`` (not ``is_anchor``) so the two are impossible to conflate.
+        #
+        # DISTINCT ON (table, column) guarantees the unique PGQ KEY even if a column were
+        # ever listed twice in the JSON; the tiebreak is TOTAL (declared_anchor DESC then
+        # role/aspect/name) so the retained row is deterministic — the anchor row wins.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_temporal_coverage AS\n"
             f"SELECT DISTINCT ON (te.table_id, col.column_id)\n"
             f"       (te.table_id || '_' || col.column_id)::text AS coverage_key,\n"
             f"       te.table_id::text AS table_id, col.column_id::text AS column_id,\n"
-            f"       col.column_name, tc.role, tc.aspect, tc.is_anchor,\n"
+            f"       col.column_name, tc.role, tc.aspect, tc.declared_anchor,\n"
             f"       tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,\n"
             f"       tp.span_days, tp.detected_granularity AS observed_grain,\n"
             f"       tp.completeness_ratio, tp.expected_periods, tp.actual_periods,\n"
@@ -590,14 +599,15 @@ def _element_view_sql(name: str) -> str:
             f"CROSS JOIN LATERAL (\n"
             f"    SELECT elem->>'column' AS column_name, elem->>'role' AS role,\n"
             f"           elem->>'aspect' AS aspect,\n"
-            f"           (elem->>'is_anchor')::boolean AS is_anchor\n"
+            f"           (elem->>'is_anchor')::boolean AS declared_anchor\n"
             f"    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem\n"
             f"  ) tc\n"
             f"JOIN {READ_TOKEN}.current_columns col\n"
             f"  ON col.table_id = te.table_id AND col.column_name = tc.column_name\n"
             f"LEFT JOIN {READ_TOKEN}.current_temporal_column_profiles tp\n"
             f"  ON tp.column_id = col.column_id\n"
-            f"ORDER BY te.table_id, col.column_id, tc.is_anchor DESC NULLS LAST;"
+            f"ORDER BY te.table_id, col.column_id, tc.declared_anchor DESC NULLS LAST,\n"
+            f"         tc.role, tc.aspect, tc.column_name;"
         )
     if name == "og_rolls_up_to":
         # rolls_up_to edge (column → column, DAT-730): the dimension drill-down
@@ -610,13 +620,21 @@ def _element_view_sql(name: str) -> str:
         # coarse/fine axis (their ``level`` is a bare ordinal). members[].column_id is
         # the catalog SliceDefinition's underlying column (og_columns vertex identity);
         # a member with no catalog column ('' per HierarchyMember) is skipped — no
-        # dangling endpoint. edge_key = hierarchy_id + the two column ids ('_'-joined,
-        # NOT ':' a bind-param sigil), unique because levels are strictly increasing
-        # within a drilldown. Reads current_dimension_hierarchies (the promoted catalog
-        # head, DAT-537).
+        # dangling endpoint.
+        #
+        # edge_key = hierarchy_id + the two LEVELS ('_'-joined, NOT ':' a bind-param
+        # sigil). Keyed on LEVELS, not column ids: ``processor._validated_members``
+        # (DAT-779) asserts each drilldown's levels are a contiguous, UNIQUE ``0..n-1``
+        # at every write, so the (from_level, to_level) consecutive pair is unique within
+        # a hierarchy → the PGQ KEY is unique BY CONSTRUCTION. Column-uniqueness across
+        # levels is NOT enforced there, so a column id repeated at two consecutive levels
+        # would collide a column-keyed edge — keying on the validated levels sidesteps it
+        # without relying on an unenforced convention (the og_derived_from KEY-on-the-view
+        # discipline). Reads current_dimension_hierarchies (the promoted catalog head,
+        # DAT-537).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_rolls_up_to AS\n"
-            f"SELECT (h.hierarchy_id || '_' || fine.col_id || '_' || coarse.col_id)::text\n"
+            f"SELECT (h.hierarchy_id || '_' || fine.lvl || '_' || coarse.lvl)::text\n"
             f"         AS edge_key,\n"
             f"       fine.col_id::text AS from_column_id,\n"
             f"       coarse.col_id::text AS to_column_id,\n"
@@ -721,9 +739,10 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
         f"      LABEL temporal_coverage\n"
-        f"      PROPERTIES (column_name, role, aspect, is_anchor, observed_min, observed_max,\n"
-        f"                  span_days, observed_grain, completeness_ratio, expected_periods,\n"
-        f"                  actual_periods, gap_count, is_stale, last_period_complete),\n"
+        f"      PROPERTIES (column_name, role, aspect, declared_anchor, observed_min,\n"
+        f"                  observed_max, span_days, observed_grain, completeness_ratio,\n"
+        f"                  expected_periods, actual_periods, gap_count, is_stale,\n"
+        f"                  last_period_complete),\n"
         f"    {READ_TOKEN}.og_rolls_up_to KEY (edge_key)\n"
         f"      SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)\n"
         f"      DESTINATION KEY (to_column_id) REFERENCES og_columns (column_id)\n"

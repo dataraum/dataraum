@@ -475,6 +475,48 @@ class TestCycleLifecycleFlow:
 
     @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
     @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
+    def test_two_cycles_in_one_family_keep_the_decided_one(
+        self,
+        mock_types: MagicMock,
+        mock_ground: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """The prompt forbids >1 cycle per family; if the judge violates it (an
+        undetermined AND a decided settlement cycle, different canonical_types), the
+        phase keeps the DECIDED one and drops the undetermined — no double-count
+        (DAT-856, senior-review guard)."""
+        ensure_cycle_families_seeded(session, "finance")
+        session.commit()
+        mock_types.return_value = {
+            "accounts_receivable": {"business_value": "high"},
+            "accounts_payable": {"business_value": "high"},
+        }
+        mock_ground.return_value = Result.ok(
+            _analysis(
+                [
+                    _detected("settlement", family="settlement", direction="undetermined"),
+                    _detected("accounts_payable", family="settlement", direction="outgoing"),
+                ]
+            )
+        )
+
+        result = BusinessCyclesPhase()._run(
+            _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        )
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        # Exactly ONE persisted row for the family — the decided one.
+        cycles = session.execute(select(DetectedBusinessCycle)).scalars().all()
+        assert len(cycles) == 1
+        assert cycles[0].canonical_type == "accounts_payable"
+        assert cycles[0].direction == "outgoing"
+
+    @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
+    @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
     def test_rerun_supersedes_under_fresh_run_id(
         self,
         mock_types: MagicMock,

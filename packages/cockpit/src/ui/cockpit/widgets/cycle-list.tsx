@@ -131,7 +131,7 @@ export function CycleListWidget({
 										{/* Direction axis (DAT-856): a family cycle names its
 										    direction — "undetermined" reads as the honest
 										    detected-but-undirected state, never a guessed label. */}
-										{c.direction && (
+										{c.direction !== null && (
 											<Text
 												size="xs"
 												c="dimmed"

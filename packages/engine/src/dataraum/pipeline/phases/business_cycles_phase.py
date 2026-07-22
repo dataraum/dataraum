@@ -34,7 +34,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from dataraum.analysis.cycles import BusinessCycleAgent
-from dataraum.analysis.cycles.config import get_cycle_types
+from dataraum.analysis.cycles.config import UNDETERMINED_DIRECTION, get_cycle_types
 from dataraum.analysis.cycles.cycle_family_store import load_workspace_cycle_families
 from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 from dataraum.analysis.cycles.models import DetectedCycle
@@ -247,6 +247,39 @@ class BusinessCyclesPhase(BasePhase):
                     dropped_cycle=detected.cycle_name,
                     dropped_tables=detected.tables_involved,
                 )
+
+        # ONE cycle per declared FAMILY (DAT-856): the prompt forbids >1 (a family
+        # with an undetermined direction is one cycle, not one per direction). Two
+        # emissions in the same family resolve to DIFFERENT canonical_types (the
+        # family name for undetermined vs a directed member), so the per-canonical
+        # dedup above does not catch them — both would persist as independent rows,
+        # double-counting in health scoring and showing twice in the cockpit list
+        # (the same distortion the same-type revert above guarded against). Keep the
+        # DECIDED detection over an undetermined one (a resolved direction is
+        # strictly more informative); drop the rest loudly.
+        by_family: dict[str, str] = {}
+        for canonical_type, detected in list(detected_by_type.items()):
+            fam = detected.family
+            if fam is None:
+                continue
+            incumbent = by_family.get(fam)
+            if incumbent is None:
+                by_family[fam] = canonical_type
+                continue
+            incumbent_undetermined = detected_by_type[incumbent].direction == UNDETERMINED_DIRECTION
+            if incumbent_undetermined and detected.direction != UNDETERMINED_DIRECTION:
+                dropped, kept = incumbent, canonical_type  # challenger decided → wins
+                del detected_by_type[incumbent]
+                by_family[fam] = canonical_type
+            else:
+                dropped, kept = canonical_type, incumbent  # keep the incumbent
+                del detected_by_type[canonical_type]
+            _log.warning(
+                "cycle_duplicate_family_dropped",
+                family=fam,
+                kept_canonical_type=kept,
+                dropped_canonical_type=dropped,
+            )
 
         # bind → execute per declared artifact; persist the grounded cycles.
         grounded_against = base_runs.model_dump(mode="json")

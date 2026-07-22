@@ -220,6 +220,21 @@ class TestResolveCycleIdentity:
         assert r.family == "settlement"
         assert r.direction == UNDETERMINED_DIRECTION
 
+    def test_family_match_is_case_insensitive(self) -> None:
+        # An LLM that varies the family's casing must NOT lose the whole axis (the
+        # asymmetry senior review flagged): "Settlement" resolves like "settlement",
+        # and the persisted family is the DECLARED casing (stable identity).
+        r = resolve_cycle_identity(
+            cycle_type="settlement",
+            family="Settlement",
+            direction="Outgoing",
+            cycle_families=_FINANCE_FAMILIES,
+            vertical="finance",
+        )
+        assert r.canonical_type == "accounts_payable"
+        assert r.family == "settlement"  # declared casing, not the judge's "Settlement"
+        assert r.direction == "outgoing"
+
     def test_undeclared_family_falls_to_the_cycle_type_path(self) -> None:
         # The judge named a family the vertical does not declare → resolve by cycle_type,
         # family/direction NULL (a non-family cycle).

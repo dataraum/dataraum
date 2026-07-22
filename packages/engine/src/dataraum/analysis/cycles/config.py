@@ -159,29 +159,44 @@ def resolve_cycle_identity(
     both ``None``.
     """
     fam = family.strip()
-    if fam and fam in cycle_families:
-        directions = cycle_families[fam]
+    # Case-insensitive family match, mirroring map_to_canonical_type's cycle_type
+    # matching AND the direction lower-casing below — an LLM that varies the family's
+    # casing ("Settlement") must NOT lose the whole axis (a strictly worse silent
+    # recall loss than an off-vocab direction). The DECLARED name is the persisted
+    # identity, so casing never fragments a family's rows across runs.
+    families_ci = {name.lower(): (name, dirs) for name, dirs in cycle_families.items()}
+    if fam and fam.lower() in families_ci:
+        declared_family, directions = families_ci[fam.lower()]
         dir_norm = direction.strip().lower()
         if dir_norm == UNDETERMINED_DIRECTION:
             return CycleIdentity(
-                canonical_type=fam, is_known_type=True, family=fam, direction=UNDETERMINED_DIRECTION
+                canonical_type=declared_family,
+                is_known_type=True,
+                family=declared_family,
+                direction=UNDETERMINED_DIRECTION,
             )
         if dir_norm in directions:
             canonical, is_known = map_to_canonical_type(directions[dir_norm], vertical)
             return CycleIdentity(
-                canonical_type=canonical, is_known_type=is_known, family=fam, direction=dir_norm
+                canonical_type=canonical,
+                is_known_type=is_known,
+                family=declared_family,
+                direction=dir_norm,
             )
         # A direction the family does not declare: keep the family detection but leave
         # the axis honestly undetermined rather than guess a member (DAT-856 — recall
         # over a coerced label). Loud so the prompt-contract miss is visible.
         logger.warning(
             "cycle_direction_off_vocab",
-            family=fam,
+            family=declared_family,
             direction=direction,
             declared=sorted(directions),
         )
         return CycleIdentity(
-            canonical_type=fam, is_known_type=True, family=fam, direction=UNDETERMINED_DIRECTION
+            canonical_type=declared_family,
+            is_known_type=True,
+            family=declared_family,
+            direction=UNDETERMINED_DIRECTION,
         )
     if fam:
         # The judge named a family the vertical does not declare — fall to the

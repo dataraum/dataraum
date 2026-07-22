@@ -40,7 +40,9 @@ def _spec(severity: str = "critical", tolerance: float = 0.01) -> MagicMock:
     spec = MagicMock()
     spec.severity = MagicMock()
     spec.severity.value = severity
-    spec.parameters = {"tolerance": tolerance}
+    # The typed check definition (DAT-735): tolerance is a float field, not a
+    # `parameters` dict entry — mirror the real ValidationSpec the detector reads.
+    spec.tolerance = tolerance
     return spec
 
 

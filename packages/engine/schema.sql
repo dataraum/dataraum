@@ -253,6 +253,31 @@ CREATE TABLE validation_results (
 
 CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
 
+CREATE TABLE validations (
+	row_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	validation_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description TEXT NOT NULL, 
+	category VARCHAR NOT NULL, 
+	severity VARCHAR NOT NULL, 
+	check_type VARCHAR NOT NULL, 
+	tolerance FLOAT, 
+	guidance TEXT, 
+	expected_outcome TEXT, 
+	relevant_cycles JSON, 
+	tags JSON, 
+	version VARCHAR NOT NULL, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_validations PRIMARY KEY (row_id), 
+	CONSTRAINT ck_validations_source CHECK (source IS NULL OR source IN ('generated', 'seed')), 
+	CONSTRAINT ck_validations_severity CHECK (severity IN ('critical', 'error', 'info', 'warning'))
+);
+
+CREATE UNIQUE INDEX uq_validation_active ON validations (vertical, validation_id) WHERE superseded_at IS NULL;
+
 CREATE TABLE workspace_calendar (
 	pin BOOLEAN NOT NULL, 
 	fiscal_year_start_month INTEGER NOT NULL, 

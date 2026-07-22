@@ -763,7 +763,7 @@ def build_execution_context(
     from dataraum.analysis.validation.db_models import ValidationResultRecord
     from dataraum.analysis.validation.evaluate import evaluate_validation
 
-    val_specs = load_all_validation_specs(vertical) if vertical else {}
+    val_specs = load_all_validation_specs(vertical, session) if vertical else {}
     validation_contexts: list[ValidationContext] = []
     # No specs (no vertical) ⇒ every row would be skipped at the spec lookup, so
     # skip the read entirely rather than scan validation_results for nothing.

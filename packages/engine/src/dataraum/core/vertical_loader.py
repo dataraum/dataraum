@@ -110,6 +110,22 @@ class VerticalLoader:
         relative = f"verticals/{self.vertical}/{spec.subpath}"
         return apply_overlay(relative, self._read_base(spec, relative))
 
+    def shipped_base(self, family: Family) -> dict[str, Any]:
+        """A family's SHIPPED on-disk config, WITHOUT the overlay ``⊕`` layer.
+
+        The seed source for a typed home (DAT-735): a config→DB seed writes the
+        shipped vocabulary only, so the teach overlay stays a SEPARATE read-time
+        ``⊕`` layer and is never absorbed into the seed rows (contrast
+        :meth:`collection`, which applies the overlay). A framed vertical with no
+        on-disk source resolves to the family's empty base. An explicit
+        ``verticals_dir`` (tests) reads raw YAML the same way.
+        """
+        spec = _SPECS[family]
+        if self.verticals_dir is not None:
+            return self._read_raw(spec)
+        relative = f"verticals/{self.vertical}/{spec.subpath}"
+        return self._read_base(spec, relative)
+
     def _read_raw(self, spec: _FamilySpec) -> dict[str, Any]:
         """Test path: raw on-disk read under ``verticals_dir``, no overlay."""
         assert self.verticals_dir is not None

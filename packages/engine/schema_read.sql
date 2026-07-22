@@ -423,6 +423,12 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
+DROP VIEW IF EXISTS __READ__.validations;
+CREATE VIEW __READ__.validations AS
+SELECT * FROM __WS__.validations
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
 DROP VIEW IF EXISTS __READ__.workspace_calendar;
 CREATE VIEW __READ__.workspace_calendar AS
 SELECT * FROM __WS__.workspace_calendar;

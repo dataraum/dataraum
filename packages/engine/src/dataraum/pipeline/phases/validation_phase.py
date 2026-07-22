@@ -112,7 +112,7 @@ class ValidationPhase(BasePhase):
         # the engine induces no validations (declares come from the vertical
         # now; user declares arrive via frame-2 teach rows, DAT-441).
         vertical = ctx.config.get("vertical")
-        specs = load_all_validation_specs(vertical) if vertical else {}
+        specs = load_all_validation_specs(vertical, ctx.session) if vertical else {}
         if not specs:
             outcome = "no_vertical" if not vertical else "no_declared_validations"
             _log.warning("validation_nothing_declared", vertical=vertical, outcome=outcome)

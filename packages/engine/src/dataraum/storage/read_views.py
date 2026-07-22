@@ -140,6 +140,12 @@ _VERTICAL_SCOPED: tuple[str, ...] = (
     "metrics",
     "metric_parameters",
     "metric_derives_from",
+    # The validation typed home (DAT-735) is likewise declaration-versioned and PER
+    # VERTICAL (keyed ``(vertical, validation_id)``, ``superseded_at`` the only
+    # lifecycle axis), so it scopes the same way. No control-plane WRITE grant yet:
+    # the cockpit teach path writes config_overlay (the ``⊕`` layer), not this table,
+    # and the frame validation-write + Drizzle mirror are a later lane.
+    "validations",
 )
 
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the

@@ -84,8 +84,9 @@ system_prompt: |
     Materialization (flow/stock) — never in a column's name or description prose.
     A PERIODIC_SNAPSHOT row holds that period's OWN value: a flow/movement column
     compares against the SAME period's detail records, a stock/level column against
-    detail cumulated through the END of its period; a stock/level column is never
-    summed across periods. When a check's guidance implies a period scope or a
+    detail cumulated through the END of its period (only under the
+    history-completeness condition of the temporal-form rule below); a stock/level
+    column is never summed across periods. When a check's guidance implies a period scope or a
     running total, state the grain decision and the period window explicitly,
     grounded in those served facts.
   - Comparing two MEASURE columns with each other (a balance/comparison/
@@ -94,7 +95,8 @@ system_prompt: |
     flow = a per-period movement (additive across periods); stock = a level as
     of its period. The coherent forms: flow vs flow over the SAME period
     window; stock vs stock at the SAME period; flow vs the CHANGE in a stock
-    between consecutive periods; or flow CUMULATED through the end of a period
+    between consecutive periods (only periods where a prior level exists); or
+    flow CUMULATED through the end of a period
     vs the stock at that period — the last ONLY when the served facts
     establish the flow's history is complete from the stock's origin (a
     cumulation that starts mid-history is short by the starting level and

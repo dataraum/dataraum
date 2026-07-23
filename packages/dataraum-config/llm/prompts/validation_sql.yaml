@@ -157,7 +157,8 @@ system_prompt: |
     comparing against the SAME period's records only — never a running total from
     the beginning of the data. Build a cumulative/through-time total ONLY when the
     compared value is point_in_time (a level), and then cumulate through the END of
-    that row's period (see period_boundaries).
+    that row's period (see period_boundaries; subject to the same-temporal-form
+    history-completeness condition in comparison_discipline).
   - Never aggregate a point_in_time column across periods.
   - Two MEASURE columns compare with each other only in the same temporal form —
     movement vs movement, level vs level, or a coherent transform of one into

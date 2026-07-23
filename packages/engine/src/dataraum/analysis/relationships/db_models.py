@@ -290,9 +290,12 @@ class Relationship(Base):
         and would cry wolf on the very child-with-orphans FKs the judge is
         meant to confirm and name. The honesty signal is authored by the JUDGE
         in its ``reasoning`` instead — ``semantic_per_table``'s orientation
-        section requires it to flip, or to name the orphan problem, when its
-        own served numbers show the child mostly failing to resolve — never
-        recomputed from containment here.
+        section runs a CLAIM CHECK at EVERY cardinality (the measured
+        ``many-to-one`` fast path settles direction, never the claim): when the
+        child side mostly fails to resolve the judge must flip (one-to-one),
+        decline the reference as a shared axis (many-to-one, where the
+        non-unique side cannot become a clean parent), or confirm and NAME the
+        orphan problem — never recomputed from containment here.
 
         Direction only — the judge's EXISTENCE verdict is never touched here.
         ``many-to-many``/``None`` cannot be oriented. The DB backstop is

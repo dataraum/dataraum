@@ -532,10 +532,8 @@ def _validity_scope_stmts() -> list[str]:
     """
     return [
         # A real status column on journal + a recon status on ledger.
-        "INSERT INTO columns (column_id, table_id, column_name, column_position) "
-        "VALUES ('c_status', 't1', 'status', 4)",
-        "INSERT INTO columns (column_id, table_id, column_name, column_position) "
-        "VALUES ('c_recon', 't7', 'recon_status', 2)",
+        "INSERT INTO columns (column_id, table_id, column_name, column_position) VALUES ('c_status', 't1', 'status', 4)",
+        "INSERT INTO columns (column_id, table_id, column_name, column_position) VALUES ('c_recon', 't7', 'recon_status', 2)",
         # cyc_post: measured, resolves → the one validity filter.
         "INSERT INTO detected_business_cycles "
         "(cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, "

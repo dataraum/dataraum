@@ -143,16 +143,21 @@ def format_cycle_families_for_context(cycle_families: dict[str, dict[str, str]])
     """
     if not cycle_families:
         return ""
-    lines = [
-        "## CYCLE FAMILIES (direction axis)",
-        "",
+    # One paragraph, hoisted out of the list so the implicit concatenation reads
+    # unambiguously as a single string (never a forgotten comma between elements).
+    direction_guidance = (
         "Some cycle types differ ONLY in direction — the same shape of flow read from "
         "opposite sides. They are grouped into families below. When you detect a cycle "
         "in one of these families, set `family` to the family name and `direction` to "
         "the direction the served evidence decides. When the served evidence does NOT "
         'decide the direction, set `direction` to "undetermined": detecting the family '
         "without directing it is the honest answer, never a failure — do NOT guess a "
-        "direction to fill the field.",
+        "direction to fill the field."
+    )
+    lines = [
+        "## CYCLE FAMILIES (direction axis)",
+        "",
+        direction_guidance,
         "",
     ]
     for family_name in sorted(cycle_families):

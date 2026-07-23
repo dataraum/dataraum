@@ -4,12 +4,16 @@
 # Emphasizes syntactic correctness and proper column quoting.
 
 name: validation_sql
-version: "3.1.0"
+version: "3.2.0"
 description: >
   Generate DuckDB SQL for validation checks (contracted deviation/magnitude output),
   honoring the catalog's table-grain facts: role/grain/temporal semantics are
   authoritative over names, prose, and hints (DAT-870); two measures compare only
-  in the same temporal form — never a movement directly against a level (DAT-874)
+  in the same temporal form — never a movement directly against a level (DAT-874);
+  an existence check binds only against a dimension-role enumerator — a served
+  relationship qualifies its target only when that target is itself dimension-role,
+  so a self-referential edge on an activity table never makes existence bindable
+  there (DAT-876)
 
 # Temperature (0.0 = deterministic for SQL)
 temperature: 0.0
@@ -220,14 +224,21 @@ system_prompt: |
   <existence_checks>
   A check that an identifier "must exist" (a parent id, a referenced key) is
   bindable only against a table that AUTHORITATIVELY ENUMERATES that entity — a
-  dimension/master table (role="dimension") or the declared target of a served
-  relationship. Fact and periodic_snapshot tables record ACTIVITY: an entity absent
-  from them may simply have no activity there, so absence is not nonexistence. If
-  the schema serves no enumerating table for the referenced entity, set
-  can_validate=false with that reason — even when the guidance explicitly says to
-  check existence within the activity table itself. That guidance is the known-bad
-  pattern this rule exists to stop (it grades structural absence as a violation and
-  fails on clean data); declining to bind is the correct outcome, not a failure.
+  table whose role is dimension (role="dimension"), a master/reference table that
+  holds the entity's whole population. A served relationship qualifies its TARGET
+  table as such an enumerator ONLY when that target is itself role="dimension": a
+  relationship whose target is a fact or periodic_snapshot table — INCLUDING a
+  self-referential edge whose target is the SAME activity table (an id column
+  pointing back into its own table) — does NOT establish an enumerating universe,
+  because the target still records only activity. Fact and periodic_snapshot tables
+  record ACTIVITY: an entity absent from them may simply have no activity there, so
+  absence is not nonexistence. If the schema serves no dimension-role table that
+  enumerates the referenced entity, set can_validate=false with that reason — even
+  when the guidance explicitly says to check existence within the activity table
+  itself, or points at a self-referential relationship on that table. That guidance
+  is the known-bad pattern this rule exists to stop (it grades structural absence as
+  a violation and fails on clean data); declining to bind is the correct outcome,
+  not a failure.
   </existence_checks>
 
   <domain_conventions>

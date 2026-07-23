@@ -277,6 +277,12 @@ conventions:
       reserve) — they legitimately invert. A measure not listed has no fixed normal
       balance (raw ledger columns such as debit, credit, transaction_amount, or period
       balances) — sign it from its account context, not from this rule.
+
+      This rule says how a measure is EXPRESSED, not how values are STORED: stored
+      balance columns may already carry a signed storage convention of their own.
+      When COMPARING or RECONCILING two measures, express both sides in ONE
+      convention — normalize both sides per this rule, or compare both in their raw
+      stored/ledger convention — never normalize only one side of a comparison.
     concept_groups:
       credit_normal:
         - revenue

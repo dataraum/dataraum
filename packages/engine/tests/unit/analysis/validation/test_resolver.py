@@ -311,6 +311,98 @@ def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns
     assert amount_col["semantic"]["entity_type"] == "amount"
 
 
+def test_table_grain_facts_scope_to_pinned_catalogue_run(session, table_with_columns):
+    """Table-grain catalog facts (DAT-870) serve at the PINNED catalogue run only.
+
+    ``TableEntity`` (role / grain / time-column semantics) is written by the
+    begin_session catalogue run — the ``relationship_run_id`` pin — and
+    ``TemporalColumnProfile`` (detected cadence) by the add_source per-table
+    run — the ``semantic_runs`` pin. Both fail closed: an absent pin serves
+    NO facts, never a cross-run read.
+    """
+    from datetime import UTC, datetime
+
+    from dataraum.analysis.semantic.db_models import TableEntity
+    from dataraum.analysis.temporal.db_models import TemporalColumnProfile
+
+    table = table_with_columns
+    date_col = next(c for c in table.columns if c.column_name == "transaction_id")
+    session.add(
+        TableEntity(
+            table_id=table.table_id,
+            run_id="run-current",
+            table_role="periodic_snapshot",
+            grain_columns=["transaction_id", "amount"],
+            time_columns=[
+                {
+                    "column": "transaction_id",
+                    "aspect": "period",
+                    "role": "event",
+                    "is_anchor": True,
+                    "note": "The period label defining each snapshot row.",
+                }
+            ],
+        )
+    )
+    # A STALE catalogue run's entity must never leak into a pinned read.
+    session.add(
+        TableEntity(
+            table_id=table.table_id,
+            run_id="run-stale",
+            table_role="fact",
+            grain_columns=["amount"],
+        )
+    )
+    session.add(
+        TemporalColumnProfile(
+            profile_id="tp-1",
+            column_id=date_col.column_id,
+            run_id=SEM_RUN,
+            profiled_at=datetime.now(UTC),
+            min_timestamp=datetime(2020, 1, 1, tzinfo=UTC),
+            max_timestamp=datetime(2021, 1, 1, tzinfo=UTC),
+            span_days=366.0,
+            detected_granularity="month",
+            granularity_confidence=0.99,
+        )
+    )
+    session.commit()
+
+    pinned = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=_pins(table))
+    t = pinned["tables"][0]
+    assert t["table_role"] == "periodic_snapshot"
+    assert t["grain_columns"] == ["transaction_id", "amount"]
+    tid_col = next(c for c in t["columns"] if c["column_name"] == "transaction_id")
+    assert tid_col["time"] == {
+        "role": "event",
+        "aspect": "period",
+        "note": "The period label defining each snapshot row.",
+    }
+    assert tid_col["granularity"] == "month"
+
+    # No catalogue pin ⇒ no role/grain/time facts (fail-closed) — the
+    # granularity rides the still-pinned semantic run and stays.
+    unpinned = get_multi_table_schema_for_llm(
+        session, [table.table_id], base_runs=_pins(table, relationship_run_id=None)
+    )
+    t = unpinned["tables"][0]
+    assert "table_role" not in t
+    assert "grain_columns" not in t
+    assert "time" not in next(c for c in t["columns"] if c["column_name"] == "transaction_id")
+
+    # No semantic pin ⇒ no granularity either.
+    bare = get_multi_table_schema_for_llm(
+        session,
+        [table.table_id],
+        base_runs=BaseRunMap(relationship_run_id="run-current", semantic_runs={}),
+    )
+    t = bare["tables"][0]
+    assert t["table_role"] == "periodic_snapshot"
+    assert "granularity" not in next(
+        c for c in t["columns"] if c["column_name"] == "transaction_id"
+    )
+
+
 def test_get_multi_table_schema_for_llm_empty_list(session):
     """Test fetching multi-table schema with empty list."""
     schema = get_multi_table_schema_for_llm(session, [], base_runs=BaseRunMap())
@@ -506,3 +598,72 @@ class TestFormatMultiTableSchemaForPrompt:
 
         # New XML format
         assert "<error>No tables found</error>" in result
+
+    def test_format_escapes_quotes_in_prose_attributes(self):
+        """LLM-authored prose with embedded quotes must not terminate the attribute."""
+        schema = {
+            "tables": [
+                {
+                    "table_name": "t",
+                    "duckdb_path": "t",
+                    "columns": [
+                        {
+                            "column_name": "d",
+                            "data_type": "DATE",
+                            "semantic": {
+                                "role": "dimension",
+                                "meaning": 'the "as of" moment',
+                            },
+                            "time": {"note": 'the "as of" label'},
+                        },
+                    ],
+                },
+            ],
+            "relationships": [],
+        }
+
+        result = format_multi_table_schema_for_prompt(schema)
+
+        assert 'time_note="the &quot;as of&quot; label"' in result
+        assert 'meaning="the &quot;as of&quot; moment"' in result
+        assert '"as of"' not in result
+
+    def test_format_table_grain_and_time_facts(self):
+        """DAT-870: role/grain render as table attrs, time facts as column attrs."""
+        schema = {
+            "tables": [
+                {
+                    "table_name": "snapshots",
+                    "duckdb_path": "typed_snapshots",
+                    "table_role": "periodic_snapshot",
+                    "grain_columns": ["entity_id", "period"],
+                    "columns": [
+                        {
+                            "column_name": "period",
+                            "data_type": "DATE",
+                            "granularity": "month",
+                            "time": {
+                                "role": "event",
+                                "aspect": "period",
+                                "note": "The period label defining each snapshot row.",
+                            },
+                        },
+                        {"column_name": "level", "data_type": "DECIMAL"},
+                    ],
+                },
+            ],
+            "relationships": [],
+        }
+
+        result = format_multi_table_schema_for_prompt(schema)
+
+        assert 'role="periodic_snapshot"' in result
+        assert 'grain="entity_id, period"' in result
+        assert 'granularity="month"' in result
+        assert 'time_role="event"' in result
+        assert 'time_aspect="period"' in result
+        assert 'time_note="The period label defining each snapshot row."' in result
+        # A plain column renders without any time attributes.
+        level_line = next(line for line in result.splitlines() if 'name="level"' in line)
+        assert "time_" not in level_line
+        assert "granularity" not in level_line

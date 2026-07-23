@@ -41,6 +41,55 @@ logger = get_logger(__name__)
 SQL_GENERATION_TEMPLATE_NAME = "validation_sql"
 
 
+def _render_grain_facts(schema: dict[str, Any]) -> str:
+    """Compact per-table grain callout, served ADJACENT to the spec (DAT-870).
+
+    The same measured facts the schema XML carries as attributes, restated as
+    one dense block right after the validation_spec — where the spec's advisory
+    prose lives. Probe evidence: with the facts only as schema attributes, a
+    confidently wrong hint ("cumulative…") out-pulled them; proximity is the
+    structural counterweight. Deterministic presentation of served facts —
+    no SQL is generated or rewritten here.
+    """
+    lines: list[str] = []
+    for table in schema.get("tables", []):
+        parts: list[str] = []
+        if table.get("table_role"):
+            parts.append(f"role={table['table_role']}")
+        if table.get("grain_columns"):
+            parts.append(f"grain=({', '.join(table['grain_columns'])})")
+        time_cols = [
+            f"{col['column_name']}={col['granularity']}"
+            for col in table.get("columns", [])
+            if col.get("granularity")
+        ]
+        if time_cols:
+            parts.append(f"time granularity: {', '.join(time_cols)}")
+        by_behavior: dict[str, list[str]] = {}
+        for col in table.get("columns", []):
+            behavior = (col.get("semantic") or {}).get("temporal_behavior")
+            if behavior:
+                by_behavior.setdefault(behavior, []).append(col["column_name"])
+        if "additive" in by_behavior:
+            parts.append(f"additive (per-period movement): {', '.join(by_behavior['additive'])}")
+        if "point_in_time" in by_behavior:
+            parts.append(
+                f"point_in_time (level, never summed across periods): "
+                f"{', '.join(by_behavior['point_in_time'])}"
+            )
+        if parts:
+            lines.append(f"- {table['table_name']}: {'; '.join(parts)}")
+    if not lines:
+        return ""
+    header = (
+        "<grain_facts>\n"
+        "Measured catalog facts for the tables in <schema> — AUTHORITATIVE over the\n"
+        "validation_spec's description/hints (the facts-over-hints requirement).\n"
+        "Resolve every conflict in these facts' favor before writing SQL:\n"
+    )
+    return header + "\n".join(lines) + "\n</grain_facts>"
+
+
 class ValidationAgent(LLMFeature):
     """LLM-powered validation agent.
 
@@ -326,6 +375,9 @@ class ValidationAgent(LLMFeature):
             ),
             "sql_hints": sql_hints,
             "expected_outcome": expected,
+            # DAT-870: the measured grain facts restated NEXT TO the spec's
+            # advisory prose (empty when the catalog served none).
+            "grain_facts": _render_grain_facts(schema),
             "schema": schema_text,
             # DAT-645: the vertical's conventions, piped verbatim (engine never
             # interprets them) — the same source of truth extraction uses.

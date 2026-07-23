@@ -12,16 +12,22 @@ cross-run (fail-closed, DAT-429).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.relationships.utils import load_defined_relationships
-from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
+from dataraum.analysis.semantic.db_models import (
+    ColumnConcept,
+    SemanticAnnotation,
+    TableEntity,
+)
 from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
+from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.lifecycle import BaseRunMap
@@ -92,6 +98,16 @@ def get_multi_table_schema_for_llm(
         if base_runs.relationship_run_id
         else {}
     )
+    # Table-grain catalog facts (DAT-870): role / grain / time-column semantics.
+    # TableEntity is written by the begin_session catalogue run — the SAME run
+    # that writes column_concepts and slice_definitions — so it pins on
+    # ``relationship_run_id`` (verified against the run-id map, not the
+    # per-table ``semantic_runs``, which pin the add_source-time annotations).
+    # Fail-closed like every other run-versioned read here: no pin ⇒ no facts.
+    entities = _load_pinned_table_entities(session, table_ids, base_runs.relationship_run_id)
+    # Detected time-column cadence (TemporalColumnProfile) rides the add_source
+    # per-table run — same pin as the annotations.
+    granularities = _load_pinned_granularities(session, tables, base_runs.semantic_runs)
 
     # Build table schemas
     table_schemas = []
@@ -132,7 +148,14 @@ def get_multi_table_schema_for_llm(
                     duckdb_path=table.duckdb_path,
                 )
 
-        schema = _format_table_schema(table, annotations, concepts, row_count=row_count)
+        schema = _format_table_schema(
+            table,
+            annotations,
+            concepts,
+            entity=entities.get(table.table_id),
+            granularities=granularities,
+            row_count=row_count,
+        )
         table_schemas.append(schema)
         table_id_to_name[table.table_id] = table.table_name
 
@@ -258,7 +281,7 @@ def get_multi_table_schema_for_llm(
 
 def _load_pinned_annotations(
     session: Session,
-    tables: list[Table] | Any,
+    tables: Sequence[Table],
     semantic_runs: dict[str, str],
 ) -> dict[str, SemanticAnnotation]:
     """Load each table's semantic annotations at its PINNED run, keyed by column_id.
@@ -291,11 +314,76 @@ def _load_pinned_annotations(
     return annotations
 
 
+def _load_pinned_table_entities(
+    session: Session,
+    table_ids: list[str],
+    catalogue_run_id: str | None,
+) -> dict[str, TableEntity]:
+    """Load each table's :class:`TableEntity` at the PINNED catalogue run.
+
+    The entity row carries the table-grain catalog facts the SQL binder needs
+    to not contradict the run's own catalog (DAT-870): ``table_role``
+    (fact | periodic_snapshot | dimension), ``grain_columns``, and the
+    ``time_columns`` semantics (aspect / event-vs-attribute / note). Written by
+    the begin_session catalogue run, so it pins on the same run id as the
+    concepts/slices reads. Fail-closed: no pin ⇒ empty, never cross-run.
+    """
+    if catalogue_run_id is None:
+        return {}
+    rows = (
+        session.execute(
+            select(TableEntity).where(
+                TableEntity.table_id.in_(table_ids),
+                TableEntity.run_id == catalogue_run_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {entity.table_id: entity for entity in rows}
+
+
+def _load_pinned_granularities(
+    session: Session,
+    tables: Sequence[Table],
+    semantic_runs: dict[str, str],
+) -> dict[str, str]:
+    """Detected time-column cadence per column_id, at each table's PINNED run.
+
+    :class:`TemporalColumnProfile` is written by the add_source-time temporal
+    phase — the same run axis as the semantic annotations — so it pins per
+    table via ``semantic_runs``. Served verbatim (the vocabulary includes
+    ``irregular``/``unknown``); a table with no pinned run contributes nothing.
+    """
+    granularities: dict[str, str] = {}
+    for table in tables:
+        run_id = semantic_runs.get(table.table_id)
+        if run_id is None:
+            continue
+        column_ids = [col.column_id for col in table.columns]
+        if not column_ids:
+            continue
+        rows = (
+            session.execute(
+                select(TemporalColumnProfile).where(
+                    TemporalColumnProfile.column_id.in_(column_ids),
+                    TemporalColumnProfile.run_id == run_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        granularities.update({p.column_id: p.detected_granularity for p in rows})
+    return granularities
+
+
 def _format_table_schema(
     table: Table,
     annotations: dict[str, SemanticAnnotation],
     concepts: dict[str, ColumnConcept],
     *,
+    entity: TableEntity | None = None,
+    granularities: dict[str, str] | None = None,
     row_count: int | None = None,
 ) -> dict[str, Any]:
     """Format a single table's schema.
@@ -304,11 +392,21 @@ def _format_table_schema(
         table: Table ORM object with columns loaded
         annotations: run-pinned object-grain semantic annotations keyed by column_id
         concepts: run-pinned catalogue-grain column concepts keyed by column_id
+        entity: run-pinned table entity (role / grain / time-column facts), if any
+        granularities: run-pinned detected time-column cadence keyed by column_id
         row_count: Optional row count from DuckDB
 
     Returns:
         Dict with table info and columns
     """
+    granularities = granularities or {}
+    # Time-column semantics by physical column name (DAT-870). Only entries
+    # matching a physical column attach — a derived axis (e.g. a joined
+    # dimension-time backstop) has no column line to carry it.
+    time_facts: dict[str, dict[str, Any]] = {}
+    if entity is not None and entity.time_columns:
+        time_facts = {tc["column"]: tc for tc in entity.time_columns if tc.get("column")}
+
     columns = []
     for col in table.columns:
         col_info: dict[str, Any] = {
@@ -328,6 +426,20 @@ def _format_table_schema(
                 "temporal_behavior": concept.temporal_behavior if concept else None,
             }
 
+        tf = time_facts.get(col.column_name)
+        if tf is not None:
+            time_info: dict[str, Any] = {}
+            if tf.get("role"):
+                time_info["role"] = tf["role"]
+            if tf.get("aspect"):
+                time_info["aspect"] = tf["aspect"]
+            if tf.get("note"):
+                time_info["note"] = tf["note"]
+            if time_info:
+                col_info["time"] = time_info
+        if col.column_id in granularities:
+            col_info["granularity"] = granularities[col.column_id]
+
         columns.append(col_info)
 
     result: dict[str, Any] = {
@@ -336,9 +448,24 @@ def _format_table_schema(
         "duckdb_path": table.duckdb_path,
         "columns": columns,
     }
+    if entity is not None:
+        if entity.table_role:
+            result["table_role"] = entity.table_role
+        if entity.grain_columns:
+            result["grain_columns"] = entity.grain_columns
     if row_count is not None:
         result["row_count"] = row_count
     return result
+
+
+def _attr(value: str) -> str:
+    """Escape prose for an XML-ish attribute — an embedded ``"`` would terminate it.
+
+    The consumer is an LLM, not an XML parser, so this is prompt-clarity
+    protection, applied uniformly to every free-text attribute (LLM-authored
+    prose and data values); closed-vocabulary attributes need none.
+    """
+    return value.replace('"', "&quot;")
 
 
 def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
@@ -359,8 +486,17 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
 
     for table in schema.get("tables", []):
         row_count_attr = f' row_count="{table["row_count"]}"' if table.get("row_count") else ""
+        # Table-grain catalog facts (DAT-870): the run's own measured verdicts.
+        # role/grain are CLOSED facts (see the prompt's table_grain_semantics
+        # block) — absent when the catalogue run is unpinned or the table is an
+        # unclassified stub, and the prompt tells the LLM not to assume then.
+        role_attr = f' role="{table["table_role"]}"' if table.get("table_role") else ""
+        grain_attr = (
+            f' grain="{", ".join(table["grain_columns"])}"' if table.get("grain_columns") else ""
+        )
         lines.append(
-            f'<table name="{table["table_name"]}" duckdb_path="{table["duckdb_path"]}"{row_count_attr}>'
+            f'<table name="{table["table_name"]}" duckdb_path="{table["duckdb_path"]}"'
+            f"{role_attr}{grain_attr}{row_count_attr}>"
         )
         lines.append("<columns>")
 
@@ -380,18 +516,32 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                 if sem.get("entity_type"):
                     col_line += f' entity="{sem["entity_type"]}"'
                 if sem.get("business_name"):
-                    col_line += f' business_name="{sem["business_name"]}"'
+                    col_line += f' business_name="{_attr(sem["business_name"])}"'
                 if sem.get("meaning"):
-                    col_line += f' meaning="{sem["meaning"]}"'
+                    col_line += f' meaning="{_attr(sem["meaning"])}"'
                 if sem.get("temporal_behavior"):
                     col_line += f' temporal_behavior="{sem["temporal_behavior"]}"'
                 if sem.get("business_description"):
-                    desc = sem["business_description"][:500]
+                    desc = _attr(sem["business_description"][:500])
                     col_line += f' description="{desc}"'
+
+            # Time-column semantics (DAT-870): the catalogue's reading of what
+            # this date/period column IS — event axis vs attribute, its aspect,
+            # and the detected cadence the period-boundary rules key off.
+            if col.get("granularity"):
+                col_line += f' granularity="{col["granularity"]}"'
+            if "time" in col:
+                tf = col["time"]
+                if tf.get("role"):
+                    col_line += f' time_role="{tf["role"]}"'
+                if tf.get("aspect"):
+                    col_line += f' time_aspect="{tf["aspect"]}"'
+                if tf.get("note"):
+                    col_line += f' time_note="{_attr(tf["note"])}"'
 
             # Distinct values from slicing phase (categorical columns)
             if col.get("distinct_values"):
-                vals = ", ".join(col["distinct_values"])
+                vals = _attr(", ".join(col["distinct_values"]))
                 col_line += f' distinct_values="{vals}"'
 
             col_line += " />"

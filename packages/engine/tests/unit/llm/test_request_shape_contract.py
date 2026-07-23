@@ -59,7 +59,9 @@ _EXPECTED: dict[str, dict[str, Any]] = {
     "enrichment_analysis": {"tier": "balanced", "effort": "high", "thinking": False},
     "dimension_conform": {"tier": "balanced", "effort": "high", "thinking": False},
     "dimension_alias": {"tier": "balanced", "effort": "high", "thinking": False},
-    "validation_sql": {"tier": "balanced", "effort": "low", "thinking": False},
+    # medium (DAT-870): binding must cross-reference the spec's prose against
+    # the schema's measured grain facts; at low the literal hint wins.
+    "validation_sql": {"tier": "balanced", "effort": "medium", "thinking": False},
     "graph_sql_generation": {"tier": "balanced", "effort": "high", "thinking": True},
 }
 

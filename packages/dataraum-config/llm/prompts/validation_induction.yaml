@@ -8,8 +8,11 @@
 # so the engine can reject fabricated tables/columns/concepts.
 
 name: validation_induction
-version: "3.0.0"
-description: Induce typed validation checks from the served operating-model graph
+version: "3.1.0"
+description: >
+  Induce typed validation checks from the served operating-model graph; grain,
+  boundary, coverage, and existence judgments ground in the served closed facts
+  or are not proposed (DAT-870)
 temperature: 0.0
 
 system_prompt: |
@@ -74,11 +77,28 @@ system_prompt: |
     convention a check's logic relies on in relevant_conventions: the SQL author
     receives exactly the declared conventions, so a check whose correctness depends on
     a convention it does not declare will be bound WITHOUT that judgment.
+  - Ground grain judgments in the served CLOSED facts — a table's role label
+    (FACT / PERIODIC_SNAPSHOT / DIMENSION), its grain, and each column's
+    Materialization (flow/stock) — never in a column's name or description prose.
+    A PERIODIC_SNAPSHOT row holds that period's OWN value: a flow/movement column
+    compares against the SAME period's detail records, a stock/level column against
+    detail cumulated through the END of its period; a stock/level column is never
+    summed across periods. When a check's guidance implies a period scope or a
+    running total, state the grain decision and the period window explicitly,
+    grounded in those served facts.
+  - Propose an existence check (a parent id or referenced key "must exist") ONLY
+    against a table that authoritatively enumerates that entity — a DIMENSION or
+    master table, or the declared target of a served reference. Fact and snapshot
+    tables record ACTIVITY: an entity absent from them may simply have no activity
+    there, so absence is not nonexistence — an existence check against an
+    activity table fails on clean data.
   - Abstain rather than guess: when a check's correctness depends on a judgment — a
-    sign or direction, a netting rule, an ordering — that neither the served graph nor
-    a declared convention determines, do NOT propose the check. A missing check
-    surfaces loudly and can be declared later; a check built on a guessed judgment
-    fails on clean data.
+    sign or direction, a netting rule, an ordering, a table's grain (periodic vs
+    cumulative), the boundary semantics of a period label, or coverage (whether a
+    table holds an entity's WHOLE population) — that neither the served graph's
+    facts nor a declared convention determines, do NOT propose the check. A missing
+    check surfaces loudly and can be declared later; a check built on a guessed
+    judgment fails on clean data.
   - Set relevant_cycles from the served cycles when a check is cycle-specific; leave it
     [] for a universal structural check.
   </guidelines>

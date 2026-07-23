@@ -9,7 +9,7 @@
 # the CatalogueSemanticsOutput Pydantic schema.
 
 name: catalogue_semantics
-version: "1.1.0"
+version: "1.2.0"
 description: Catalogue-horizon business semantics — table readings + column concepts
 
 temperature: 0.0
@@ -55,15 +55,24 @@ system_prompt: |
     answer; a guessed single label over unsettled evidence is not.
   - unit_source_column: the column defining a measure's unit. Set it for EVERY
     measure (leave "" only when genuinely undeterminable) — a measure with no
-    unit source is flagged as unsafe to aggregate. Resolve in this order:
-    (1) if the measure carries its OWN unit in its values (shown as
-    `value_unit=<unit>` in the annotations below), set it to the measure's own
-    column name — the unit is self-contained;
-    (2) else a sibling dimension column supplies it — a same-table name (e.g. a
-    `currency` column), or 'table.column' reachable via a CONFIRMED
-    relationship from the catalogue below. An ontology concept marked
-    "Unit from concept: <name>" (e.g. currency) tells you which sibling to bind;
-    (3) 'dimensionless' if the measure is a pure ratio/count/rate with no unit.
+    unit source is flagged as unsafe to aggregate. FIRST decide what KIND of
+    quantity the measure is; only an amount gets a unit source:
+    - A pure ratio, rate, factor, index or count is 'dimensionless' — a
+      positive classification, not a fallback. A conversion factor or rate
+      BETWEEN two unit-bearing quantities is dimensionless BY CONSTRUCTION,
+      even when the columns naming those units sit right beside it: a rate
+      flanked by two unit columns is the ratio tell, not a unit binding. A
+      unit edge on such a column would claim it summable, and summing a rate
+      is meaningless.
+    - For a measure that IS an amount, resolve in this order:
+      (1) if it carries its OWN unit in its values (shown as
+      `value_unit=<unit>` in the annotations below), set it to the measure's
+      own column name — the unit is self-contained;
+      (2) else a sibling dimension column supplies it — a same-table name
+      (e.g. a `currency` column), or 'table.column' reachable via a CONFIRMED
+      relationship from the catalogue below. An ontology concept marked
+      "Unit from concept: <name>" (e.g. currency) tells you which sibling to
+      bind.
   - derived_formula_hypothesis: if a column reads as computed, the arithmetic it
     should obey (two column names joined by + - * /). Operands MAY live in a
     JOINED table reachable via a confirmed relationship (use 'table.column') —

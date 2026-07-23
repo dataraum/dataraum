@@ -70,14 +70,11 @@ import {
 	applyTemporalKinds,
 	axesFromSliceRows,
 	describeEngineTimeVerdict,
-	describeTemporalGate,
 	describeUnitGate,
 	driverGains,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
 	resolveDrillAxes,
-	type TemporalBehavior,
-	temporalGate,
 	temporalKindsFromColumns,
 	unionSubstrateAxes,
 	unitGate,
@@ -268,112 +265,8 @@ describe("applyTemporalKinds", () => {
 	});
 });
 
-describe("temporalGate (DAT-673, contested handling reversed by DAT-786)", () => {
-	const behavior = (
-		entries: [string, string | null][],
-	): Map<string, TemporalBehavior> =>
-		new Map(entries.map(([col, b]) => [col, { behavior: b }]));
-
-	it("passes a plain additive flow — grain stays", () => {
-		const gate = temporalGate(
-			new Set(["credit"]),
-			behavior([["credit", "additive"]]),
-		);
-		expect(gate).toEqual({ safe: true, offending: [] });
-	});
-
-	it("trusts a reconciled additive verdict at face value — no contested gate (DAT-786 reversal of DAT-673)", () => {
-		// DAT-673 used to treat a "contested" additive verdict as stock (fail
-		// closed). DAT-786 removed the contested flag entirely — the stock/flow
-		// resolve pass already adjudicates the LLM claim vs the structural
-		// witness, so the reconciled `additive` verdict is trusted outright.
-		const gate = temporalGate(
-			new Set(["credit"]),
-			behavior([["credit", "additive"]]),
-		);
-		expect(gate).toEqual({ safe: true, offending: [] });
-	});
-
-	it("distinguishes stock (point_in_time) from unclassified (missing)", () => {
-		const gate = temporalGate(
-			new Set(["balance", "mystery"]),
-			behavior([["balance", "point_in_time"]]),
-		);
-		expect(gate.safe).toBe(false);
-		expect(gate.offending).toEqual([
-			{ column: "balance", cause: "stock" },
-			{ column: "mystery", cause: "unclassified" },
-		]);
-	});
-
-	it("reports a present-but-null behavior as unclassified", () => {
-		const gate = temporalGate(new Set(["x"]), behavior([["x", null]]));
-		expect(gate.offending).toEqual([{ column: "x", cause: "unclassified" }]);
-	});
-
-	it("is safe only when EVERY aggregated column is a clean flow", () => {
-		expect(
-			temporalGate(
-				new Set(["credit", "debit"]),
-				behavior([
-					["credit", "additive"],
-					["debit", "additive"],
-				]),
-			),
-		).toEqual({ safe: true, offending: [] });
-		expect(
-			temporalGate(
-				new Set(["credit", "debit"]),
-				behavior([
-					["credit", "additive"],
-					["debit", "point_in_time"],
-				]),
-			),
-		).toEqual({
-			safe: false,
-			offending: [{ column: "debit", cause: "stock" }],
-		});
-	});
-
-	it("fails closed when the aggregated set is empty (unparseable expr)", () => {
-		expect(temporalGate(new Set(), behavior([["credit", "additive"]]))).toEqual(
-			{
-				safe: false,
-				offending: [],
-			},
-		);
-	});
-});
-
-describe("describeTemporalGate (DAT-673)", () => {
-	it("phrases each cause honestly — a balance, a gap", () => {
-		expect(
-			describeTemporalGate([{ column: "debit_balance", cause: "stock" }]),
-		).toMatch(/debit_balance.*balance.*not a flow/);
-		expect(
-			describeTemporalGate([{ column: "mystery", cause: "unclassified" }]),
-		).toMatch(/mystery.*no stock\/flow classification/);
-	});
-
-	it("does NOT call an unclassified column a balance", () => {
-		expect(
-			describeTemporalGate([{ column: "mystery", cause: "unclassified" }]),
-		).not.toContain("balance");
-	});
-
-	it("joins multiple offenders and covers the empty (couldn't-confirm) case", () => {
-		const msg = describeTemporalGate([
-			{ column: "a", cause: "stock" },
-			{ column: "b", cause: "unclassified" },
-		]);
-		expect(msg).toContain("a");
-		expect(msg).toContain("b");
-		expect(describeTemporalGate([])).toContain("couldn't confirm");
-	});
-});
-
 describe("describeEngineTimeVerdict (DAT-731 — the engine verdict's richer reasons)", () => {
-	it("phrases each engine reason distinctly — the DAG-aware causes the local gate can't see", () => {
+	it("phrases each engine reason distinctly — the DAG-aware causes a column-level check alone couldn't see", () => {
 		expect(describeEngineTimeVerdict("stock")).toContain("balance");
 		expect(describeEngineTimeVerdict("snapshot_count")).toContain("snapshot");
 		expect(describeEngineTimeVerdict("ratio")).toContain("ratio");
@@ -660,9 +553,7 @@ const seed = () => {
 		},
 	]);
 	// The catalog types behind temporal detection: the VIEW table (vt1) carries
-	// the FK-projected dims; customer__segment is a DATE there. The FACT (fact1)
-	// carries the aggregated measure `amount` — additive (a clean flow), so the
-	// flow gate leaves the temporal grain on.
+	// the FK-projected dims; customer__segment is a DATE there.
 	rowsByTable.set(columns, [
 		{ tableId: "vt1", columnName: "customer__region", resolvedType: "VARCHAR" },
 		{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
@@ -670,7 +561,19 @@ const seed = () => {
 			tableId: "fact1",
 			columnName: "amount",
 			resolvedType: "DOUBLE",
-			temporalBehavior: "additive",
+		},
+	]);
+	// The baseline fixture represents an already-classified metric (DAT-725):
+	// the engine's additivity phase has run and says time-additive, so tests
+	// NOT about the time gate itself don't need to think about it. Tests that
+	// exercise the gate override this explicitly (VERDICT-STOCK clears/flips
+	// it, VERDICT-MISSING/WITHHELD empties the table to simulate no verdict).
+	rowsByTable.set(currentMetricAdditivity, [
+		{
+			timeAdditive: true,
+			timeReason: null,
+			categoricalAdditive: true,
+			categoricalReason: null,
 		},
 	]);
 };
@@ -754,196 +657,10 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		);
 	});
 
-	it("FLOW GATE: a stock measure keeps the date axis but loses its grain (DAT-673)", async () => {
+	it("VERDICT-STOCK (DAT-731/725): a persisted time_additive=false strips grain, with the engine's reason and source stamped", async () => {
 		seed();
-		// The extract sums a BALANCE column (point-in-time), not a flow.
-		rowsByTable.set(sqlSnippets, [
-			{
-				standardField: "revenue",
-				parts: {
-					select: [{ expr: "SUM(debit_balance)", alias: "value" }],
-					from: ["enriched_invoices"],
-					where: [],
-				},
-				failureCount: 0,
-			},
-		]);
-		rowsByTable.set(columns, [
-			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
-			{
-				tableId: "fact1",
-				columnName: "debit_balance",
-				resolvedType: "DOUBLE",
-				temporalBehavior: "point_in_time",
-			},
-		]);
-		const res = await resolveDrillAxes({ standardField: "revenue" });
-		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		// Still offered as a raw slice…
-		expect(dateAxis).toBeDefined();
-		// …but the grain is gated off, with a surfaced reason.
-		expect(dateAxis?.temporal).toBeNull();
-		expect(res.temporalGateReason).toContain("debit_balance");
-		expect(res.temporalGateReason).toContain("balance");
-	});
-
-	it("FLOW GATE: an unclassified measure fails closed (no grain)", async () => {
-		seed();
-		rowsByTable.set(sqlSnippets, [
-			{
-				standardField: "revenue",
-				parts: {
-					select: [{ expr: "SUM(mystery)", alias: "value" }],
-					from: ["enriched_invoices"],
-					where: [],
-				},
-				failureCount: 0,
-			},
-		]);
-		// `mystery` has no column_concept → temporalBehavior null → fail closed.
-		rowsByTable.set(columns, [
-			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
-			{
-				tableId: "fact1",
-				columnName: "mystery",
-				resolvedType: "DOUBLE",
-				temporalBehavior: null,
-			},
-		]);
-		const res = await resolveDrillAxes({ standardField: "revenue" });
-		expect(
-			res.axes.find((a) => a.column === "customer__segment")?.temporal,
-		).toBeNull();
-		expect(res.temporalGateReason).toContain("mystery");
-		// Accurate cause: an unclassified column is NOT called a balance.
-		expect(res.temporalGateReason).toContain("no stock/flow classification");
-		expect(res.temporalGateReason).not.toContain("balance");
-	});
-
-	it("FLOW GATE: a reconciled additive measure keeps its grain — no contested second-guessing (DAT-786 reversal of DAT-673)", async () => {
-		// DAT-673 used to fail this closed when the detectors "contested" the
-		// additive verdict. DAT-786 removed that flag: the stock/flow resolve
-		// pass already adjudicated the LLM claim vs the structural witness, so
-		// the reconciled `additive` verdict on `net_position` is now trusted
-		// outright and the time-grain slice is NOT withheld.
-		seed();
-		rowsByTable.set(sqlSnippets, [
-			{
-				standardField: "revenue",
-				parts: {
-					select: [{ expr: "SUM(net_position)", alias: "value" }],
-					from: ["enriched_invoices"],
-					where: [],
-				},
-				failureCount: 0,
-			},
-		]);
-		rowsByTable.set(columns, [
-			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
-			{
-				tableId: "fact1",
-				columnName: "net_position",
-				resolvedType: "DOUBLE",
-				temporalBehavior: "additive",
-			},
-		]);
-		const res = await resolveDrillAxes({ standardField: "revenue" });
-		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		expect(dateAxis).toBeDefined();
-		expect(dateAxis?.temporal).toBe("date");
-		expect(res.temporalGateReason).toBeUndefined();
-	});
-
-	it("FLOW GATE: a stale multi-measure snippet does NOT strip a safe measure's grain (scope leak, DAT-673)", async () => {
-		seed();
-		// The metric `gross_margin` names two extracts: `revenue` grounds to a
-		// promoted view and aggregates an additive FLOW; `cogs` is ACCEPTED but
-		// reads an UNPROMOTED relation (not in currentEnrichedViews) and sums a
-		// stock. The stale snippet's `debit_balance` must never reach the gate —
-		// otherwise it would strip grain from the whole node, including the
-		// genuinely-safe `revenue` measure.
-		rowsByTable.set(sqlSnippets, [
-			{
-				standardField: "revenue",
-				parts: {
-					select: [{ expr: "SUM(amount)", alias: "value" }],
-					from: ["enriched_invoices"],
-					where: [],
-				},
-				failureCount: 0,
-			},
-			{
-				standardField: "cogs",
-				parts: {
-					select: [{ expr: "SUM(debit_balance)", alias: "value" }],
-					from: ["enriched_stale_ledger"], // not a promoted view → ungrounded
-					where: [],
-				},
-				failureCount: 0,
-			},
-		]);
-		const res = await resolveDrillAxes({ metricKey: "gross_margin" });
-		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		// The safe measure keeps its grain: the stale snippet contributed nothing.
-		expect(dateAxis?.temporal).toBe("date");
-		expect(res.temporalGateReason).toBeUndefined();
-	});
-
-	it("FLOW GATE: a windowed measure among flows fails the WHOLE gate closed (F3 multi-expr, DAT-673)", async () => {
-		seed();
-		// Two GROUNDED measures on the same node: `revenue` is a normal additive
-		// FLOW; `cogs` is a WINDOW aggregate the AST read can't parse → empty
-		// aggregated set. The windowed measure's stock/flow status can't be
-		// confirmed, so the whole gate must fail closed — even though the flow
-		// sibling makes the aggregated-column total non-empty (the fail-OPEN the
-		// single-expr window guard alone missed).
-		rowsByTable.set(sqlSnippets, [
-			{
-				standardField: "revenue",
-				parts: {
-					select: [{ expr: "SUM(credit)", alias: "value" }],
-					from: ["enriched_invoices"],
-					where: [],
-				},
-				failureCount: 0,
-			},
-			{
-				standardField: "cogs",
-				parts: {
-					select: [
-						{
-							expr: "SUM(running_balance) OVER (PARTITION BY period)",
-							alias: "value",
-						},
-					],
-					from: ["enriched_invoices"],
-					where: [],
-				},
-				failureCount: 0,
-			},
-		]);
-		rowsByTable.set(columns, [
-			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
-			{
-				tableId: "fact1",
-				columnName: "credit",
-				resolvedType: "DOUBLE",
-				temporalBehavior: "additive",
-			},
-		]);
-		const res = await resolveDrillAxes({ metricKey: "gross_margin" });
-		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		// Grain stripped despite the additive-flow sibling — couldn't confirm.
-		expect(dateAxis).toBeDefined();
-		expect(dateAxis?.temporal).toBeNull();
-		expect(res.temporalGateReason).toContain("couldn't confirm");
-	});
-
-	it("ENGINE VERDICT (DAT-731): a persisted time_additive=false strips grain — and WINS over an additive-flow sibling", async () => {
-		seed();
-		// The local heuristic would PASS (seed's `amount` is additive), but the
-		// engine's DAG-aware verdict says the metric is a RATIO (non-additive on
-		// every axis) — the engine verdict is authoritative and strips the grain.
+		// The engine's DAG-aware verdict says the metric is a RATIO (non-additive
+		// on every axis) — authoritative, regardless of any column-level facts.
 		rowsByTable.set(currentMetricAdditivity, [
 			{
 				timeAdditive: false,
@@ -960,31 +677,10 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect(res.temporalGateSource).toBe("engine-verdict");
 	});
 
-	it("ENGINE VERDICT (DAT-731): a persisted time_additive=true keeps grain — and WINS over a stock sibling the heuristic would strip", async () => {
+	it("VERDICT-FLOW (DAT-731/725): a persisted time_additive=true keeps grain, source stamped engine-verdict", async () => {
 		seed();
-		// The extract sums a BALANCE (the local heuristic would strip the grain),
-		// but the engine's rolled-up verdict says time_additive=true — the engine
-		// wins and the grain stays. This is the user-visible richer-verdict path.
-		rowsByTable.set(sqlSnippets, [
-			{
-				standardField: "revenue",
-				parts: {
-					select: [{ expr: "SUM(debit_balance)", alias: "value" }],
-					from: ["enriched_invoices"],
-					where: [],
-				},
-				failureCount: 0,
-			},
-		]);
-		rowsByTable.set(columns, [
-			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
-			{
-				tableId: "fact1",
-				columnName: "debit_balance",
-				resolvedType: "DOUBLE",
-				temporalBehavior: "point_in_time",
-			},
-		]);
+		// The engine's rolled-up verdict says time_additive=true — the DAG-aware
+		// verdict is authoritative over any column-level facts.
 		rowsByTable.set(currentMetricAdditivity, [
 			{
 				timeAdditive: true,
@@ -995,19 +691,22 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		]);
 		const res = await resolveDrillAxes({ standardField: "revenue" });
 		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		expect(dateAxis?.temporal).toBe("date"); // grain KEPT — the engine verdict wins
+		expect(dateAxis?.temporal).toBe("date"); // grain KEPT
 		expect(res.temporalGateReason).toBeUndefined();
 		expect(res.temporalGateSource).toBe("engine-verdict");
 	});
 
-	it("FAIL-OPEN (DAT-731): no persisted verdict → the local heuristic runs, STAMPED heuristic-fallback (never silent)", async () => {
-		seed(); // no currentMetricAdditivity row → resolveTargetAdditivity returns null
+	it("VERDICT-MISSING / WITHHELD (DAT-725): no persisted verdict → time grain stripped with a visible reason, never silently recomputed from a local heuristic (replaces the DAT-731 fail-open fallback)", async () => {
+		seed();
+		rowsByTable.set(currentMetricAdditivity, []); // no row → resolveTargetAdditivity returns null
 		const res = await resolveDrillAxes({ standardField: "revenue" });
 		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		// seed's `amount` is additive → the fallback gate passes, grain kept…
-		expect(dateAxis?.temporal).toBe("date");
-		// …and the fallback is STAMPED so its use is visible, not silent.
-		expect(res.temporalGateSource).toBe("heuristic-fallback");
+		expect(dateAxis).toBeDefined();
+		expect(dateAxis?.temporal).toBeNull(); // grain WITHHELD, not silently kept
+		expect(res.temporalGateSource).toBe("withheld-no-verdict");
+		expect(res.temporalGateReason).toContain(
+			"Additivity not determined for this target",
+		);
 	});
 
 	it("UNIT GATE (DAT-731): a measure measured_in a MULTI-valued unit column flags a cross-unit aggregation", async () => {
@@ -1020,7 +719,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				tableId: "fact1",
 				columnName: "amount",
 				resolvedType: "DOUBLE",
-				temporalBehavior: "additive",
 				unitSourceColumn: "currency",
 			},
 			{
@@ -1034,7 +732,8 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect(res.unitGateReason).toContain("currency");
 		expect(res.unitGateReason).toContain("4");
 		expect(res.unitGateReason).toContain("conversion");
-		// The time grain is orthogonal — `amount` is a clean flow, so it stays.
+		// The time gate is orthogonal to the unit gate — seed()'s time-additive
+		// verdict keeps the grain regardless of the cross-unit flag.
 		expect(
 			res.axes.find((a) => a.column === "customer__segment")?.temporal,
 		).toBe("date");
@@ -1048,7 +747,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				tableId: "fact1",
 				columnName: "amount",
 				resolvedType: "DOUBLE",
-				temporalBehavior: "additive",
 				unitSourceColumn: "currency",
 			},
 			{
@@ -1094,7 +792,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				tableId: "fact1",
 				columnName: "amount",
 				resolvedType: "DOUBLE",
-				temporalBehavior: "additive",
 				unitSourceColumn: "currency",
 			},
 			{
@@ -1107,7 +804,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				tableId: "fact2",
 				columnName: "cost",
 				resolvedType: "DOUBLE",
-				temporalBehavior: "additive",
 				unitSourceColumn: "currency",
 			},
 			{

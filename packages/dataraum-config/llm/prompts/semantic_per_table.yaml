@@ -10,7 +10,7 @@
 # (DAT-823). Structured output via the TableSynthesisOutput Pydantic schema.
 
 name: semantic_per_table
-version: "3.0.0"
+version: "3.1.0"
 description: Per-table structural classification + relationship confirmation
 
 temperature: 0.0
@@ -137,11 +137,16 @@ system_prompt: |
   as corroboration of dependence, not a rule that overrides it: a column can be
   uniquely valued, and even a natural key, without being the grain of its table.
 
-  Use the measurements on a one-to-one only as CORROBORATION, and know what
-  they can and cannot say:
-  - If one side's values are wholly inside the other's (`values covered` ~100%
-    one way and clearly lower the other) that is real evidence the contained
-    side is the child — provided the containment is clean.
+  Use the measurements on a one-to-one to CORROBORATE the dependence reading,
+  and know what they can and cannot say:
+  - The everyday detail/extension case is where dependence and containment
+    AGREE, and there the containment is strong evidence, not a weak hint. A
+    detail, extension or profile table's key sits wholly inside its base's, so
+    its rows resolve ~100% into the base (`rows resolving`/`values covered`
+    ~100% on that side) while the base's reverse coverage is clearly lower.
+    There, the smaller, fully-resolving side is the child; the larger base
+    is the parent. When your dependence read picks out that same detail table,
+    follow the two together — do not wave the ~100% aside.
   - If `values covered` is ~100% in BOTH directions, the value sets are
     identical and containment says NOTHING about direction. `uniq` cannot
     rescue it either: with identical value sets a lower `uniq` just means MORE
@@ -152,11 +157,22 @@ system_prompt: |
     looks, to containment alone, exactly like a parent with a subset child.
     Both measure identically — this is not a gap you can close by looking
     harder at the numbers.
-  So when dependence is clear, follow it even if a raw number seems to point
-  the other way, and say so. Where genuinely neither dependence nor the
-  measurements decide — a symmetric vertical split of one entity across two
-  tables — pick the orientation and state plainly in `reasoning` that the
-  direction is a modelling choice, so a reader knows not to trust it.
+  Dependence may override a WEAK or ambiguous number — but it may not silently
+  override a decisive, clean asymmetry. If your dependence read puts `from`
+  (the child) on the side whose rows mostly FAIL to resolve while the other
+  side's rows resolve cleanly, stop: that makes your `foreign_key` a
+  mostly-orphaned child, which
+  is not a clean FK. Re-examine — a detail or extension is the fully-resolving
+  contained side, not the orphaned one, so the direction is most often simply
+  inverted; flip it and say why. If after re-examining you still judge the
+  orphaned side to be genuinely the child, it is a real FK carrying a
+  data-quality problem: confirm it but NAME the orphan problem in
+  `reasoning`, never present it as clean. Never store a `foreign_key` whose own
+  served numbers show the child side mostly failing to resolve without saying
+  so. Where genuinely neither dependence nor the measurements decide — a
+  symmetric vertical split of one entity across two tables — pick the
+  orientation and state plainly in `reasoning` that the direction is a
+  modelling choice, so a reader knows not to trust it.
 
   Never settle a direction by the order the candidates happen to be listed in.
   That order reflects how the pair was stored, not which side is the child.

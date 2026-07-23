@@ -72,6 +72,50 @@ class TestOverview:
         assert out.startswith("# Data Catalog: dataset")
 
 
+class TestAbsenceFallsLoud:
+    """DAT-853 at the serving layer: absence-of-analysis must never render
+    byte-identically to analyzed-and-clean (the silent-substitute rule). The
+    LLM reading the served document is a consumer like any user."""
+
+    def test_unmeasured_column_states_absence_not_clean(self) -> None:
+        col = _column(entropy_scores={"readiness": "ready", "coverage": "unmeasured"})
+        out = format_served_context(GraphExecutionContext(tables=[_table(columns=[col])]))
+        assert "◌ unmeasured — no quality measurements exist for this column." in out
+
+    def test_measured_clean_column_renders_no_absence_marker(self) -> None:
+        col = _column(entropy_scores={"readiness": "ready", "coverage": "measured"})
+        out = format_served_context(GraphExecutionContext(tables=[_table(columns=[col])]))
+        assert "◌" not in out
+
+    def test_partial_coverage_rides_with_the_readiness_band(self) -> None:
+        col = _column(entropy_scores={"readiness": "investigate", "coverage": "partial"})
+        out = format_served_context(GraphExecutionContext(tables=[_table(columns=[col])]))
+        assert "⚠ investigate." in out
+        assert "◌ partially measured." in out
+
+    def test_om_absent_sections_state_not_yet_analyzed(self) -> None:
+        # Default flags are False — a context built without an operating-model
+        # run must SAY so instead of omitting the sections wholesale.
+        out = format_served_context(GraphExecutionContext(tables=[_table()]))
+        assert "## Business Processes" in out
+        assert "## Validation Results" in out
+        assert out.count("(not yet analyzed — no operating-model run for this workspace)") == 2
+        assert "## Relationships" in out
+        assert "(not analyzed — the operating-model graph is not readable for this run)" in out
+
+    def test_analyzed_and_empty_omits_the_stubs(self) -> None:
+        # Ran-and-found-nothing keeps the pre-existing omission — the stub is
+        # ONLY for absence-of-analysis, never a new claim about empty results.
+        ctx = GraphExecutionContext(
+            tables=[_table()], operating_model_analyzed=True, graph_readable=True
+        )
+        out = format_served_context(ctx)
+        assert "not yet analyzed" not in out
+        assert "not analyzed" not in out
+        assert "## Business Processes" not in out
+        assert "## Validation Results" not in out
+
+
 class TestConceptGraph:
     """The traversal core rendered as structure (DAT-734)."""
 

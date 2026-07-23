@@ -398,6 +398,16 @@ class GraphExecutionContext:
     # Validation results (from validation analysis)
     validations: list[ValidationContext] = field(default_factory=list)
 
+    # DAT-853 abstention at the SECTION grain: "operating-model run absent —
+    # cycles/validations never analyzed" and "graph unreachable — refs not
+    # readable" must stay distinguishable from genuinely-empty results.
+    # format_served_context renders an explicit not-analyzed stub for the False
+    # cases instead of omitting the section (a served document that looks
+    # byte-identical either way is the silent-substitute defect). Defaults are
+    # False — absence is assumed until the builder proves otherwise.
+    operating_model_analyzed: bool = False
+    graph_readable: bool = False
+
     # Enriched views (pre-joined fact + dimension tables)
     enriched_views: list[EnrichedViewContext] = field(default_factory=list)
 
@@ -862,6 +872,14 @@ def build_execution_context(
             conventions = OntologyLoader().format_conventions_for_prompt(ontology_obj, "extraction")
         except Exception as e:
             logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
+            # A load FAILURE must never render as "the vertical declares none" —
+            # the prompt template asserts exactly that for an empty conventions
+            # slot, which would be affirmatively false here. Serve a labeled
+            # failure the agent can see instead of a silent empty.
+            conventions = (
+                f"(convention lookup FAILED for vertical '{vertical}' — conventions "
+                "may exist but could not be served; do not assume none apply)"
+            )
 
     # 14c. Garnish the graph-served concepts (DAT-734) with the ontology's
     # description/indicators/exclude_patterns — the definition surface the agent
@@ -1054,6 +1072,8 @@ def build_execution_context(
         conformed_dimensions=(graph_reads.conformed_dimensions if graph_reads else []),
         field_mappings=field_mappings,
         conventions=conventions,
+        operating_model_analyzed=om_run_id is not None,
+        graph_readable=graph_reads is not None,
     )
 
 
@@ -1765,6 +1785,12 @@ def format_served_context(
     _append_drivers(lines, context)
 
     # --- Relationships (the graph's refs edges) ---
+    if not context.relationships and not context.graph_readable:
+        # Unreadable graph ≠ zero relationships — state the absence (DAT-853).
+        lines.append("")
+        lines.append("## Relationships")
+        lines.append("")
+        lines.append("(not analyzed — the operating-model graph is not readable for this run)")
     if context.relationships:
         lines.append("")
         lines.append("## Relationships")
@@ -1833,12 +1859,25 @@ def format_served_context(
                 lines.append(f"Slice dimensions: {names} — see Value sets for the values.")
 
     # --- Business Processes ---
+    if not context.business_cycles and not context.operating_model_analyzed:
+        # No promoted operating-model run: cycles were never analyzed. Omitting
+        # the section would be byte-identical to "analyzed, none detected" —
+        # the LLM must be able to tell the two apart (DAT-853).
+        lines.append("")
+        lines.append("## Business Processes")
+        lines.append("")
+        lines.append("(not yet analyzed — no operating-model run for this workspace)")
     if context.business_cycles:
         lines.append("")
         lines.append("## Business Processes")
         _append_business_processes(lines, context)
 
     # --- Validation Results ---
+    if not context.validations and not context.operating_model_analyzed:
+        lines.append("")
+        lines.append("## Validation Results")
+        lines.append("")
+        lines.append("(not yet analyzed — no operating-model run for this workspace)")
     if context.validations:
         lines.append("")
         lines.append("## Validation Results")
@@ -2078,13 +2117,22 @@ def _build_column_notes(col: ColumnContext) -> str:
     if col.is_derived and col.derived_formula:
         notes.append(f"Derived: {col.derived_formula}.")
 
-    # Entropy readiness indicator
+    # Entropy readiness indicator. DAT-853 abstention: a column the detectors never
+    # measured must NOT render like one measured clean — its readiness band is
+    # vacuous, so it is withheld and the absence stated; a partially-measured
+    # column keeps its band but says what it rests on.
     if col.entropy_scores:
+        coverage = col.entropy_scores.get("coverage")
         readiness = col.entropy_scores.get("readiness", "ready")
-        if readiness == "blocked":
-            notes.append("⛔ blocked.")
-        elif readiness == "investigate":
-            notes.append("⚠ investigate.")
+        if coverage == "unmeasured":
+            notes.append("◌ unmeasured — no quality measurements exist for this column.")
+        else:
+            if readiness == "blocked":
+                notes.append("⛔ blocked.")
+            elif readiness == "investigate":
+                notes.append("⚠ investigate.")
+            if coverage == "partial":
+                notes.append("◌ partially measured.")
 
     if col.flags:
         notes.append(f"Flags: {', '.join(col.flags)}.")

@@ -240,6 +240,41 @@ class TestValidationLifecycleFlow:
     @patch("dataraum.analysis.validation.agent.ValidationAgent.execute_validation")
     @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
     @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
+    def test_missing_declared_convention_reaches_the_rendered_verdict(
+        self,
+        mock_load: MagicMock,
+        mock_bind: MagicMock,
+        mock_execute: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """DAT-865 fall-loud contract: a declared convention id resolving to no
+        active convention lands on the result MESSAGE and the artifact's
+        state_reason — a log line alone is not loud (silent-substitute rule)."""
+        spec = _spec("double_entry")
+        spec.relevant_conventions = ["ghost_rule"]
+        mock_load.return_value = {"double_entry": spec}
+        generated = MagicMock(sql_query="SELECT 1")
+        mock_bind.side_effect = [(generated, None)]
+        mock_execute.return_value = _result("double_entry", ValidationStatus.PASSED, "balanced")
+
+        result = ValidationPhase()._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id]))
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        artifacts = _artifacts(session, "run-om-1")
+        note = "[declared convention(s) not served: ghost_rule]"
+        # The check still executes (missing dependency degrades, never blocks) —
+        # but every rendered surface says the verdict is not fully informed.
+        assert artifacts["double_entry"].state == ArtifactState.EXECUTED.value
+        assert note in (artifacts["double_entry"].state_reason or "")
+        assert note in mock_execute.return_value.message
+
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.execute_validation")
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
+    @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
     def test_execution_error_stays_grounded_with_reason(
         self,
         mock_load: MagicMock,

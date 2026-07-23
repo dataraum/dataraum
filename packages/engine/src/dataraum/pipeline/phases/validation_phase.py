@@ -233,13 +233,16 @@ class ValidationPhase(BasePhase):
             {c.id for c in ontology.conventions} if ontology is not None else set()
         )
         conventions_by_id: dict[str, str] = {}
+        # A declared dependency that resolves to no active convention (e.g. a kept
+        # generated set outliving a frame rename/supersede) must fall LOUD — and
+        # "loud" means the RENDERED verdict, not a log line: the ids land on the
+        # result message + the artifact's state_reason below, the same channels
+        # the ungroundable/error reasons ride (silent-substitute rule).
+        missing_conventions: dict[str, list[str]] = {}
         for validation_id, spec in specs.items():
-            # A declared dependency that resolves to no active convention (e.g. a
-            # kept generated set outliving a frame rename/supersede) must fall
-            # LOUD: the check still binds, but with that judgment missing — the
-            # exact degradation DAT-865 is about, so it is never free.
             missing = [c for c in spec.relevant_conventions if c not in served_convention_ids]
             if missing:
+                missing_conventions[validation_id] = missing
                 _log.warning(
                     "validation_declared_conventions_missing",
                     validation_id=validation_id,
@@ -305,13 +308,24 @@ class ValidationPhase(BasePhase):
         for validation_id in specs:
             artifact = artifacts[validation_id]
             generated, bind_failure, exec_result = collected[validation_id]
+            # The missing-dependency note rides EVERY outcome of this check —
+            # a verdict computed without a judgment the check declared it needs
+            # is never presented as fully-informed (DAT-865 fall-loud contract).
+            missing_note = (
+                f" [declared convention(s) not served: "
+                f"{', '.join(missing_conventions[validation_id])}]"
+                if validation_id in missing_conventions
+                else ""
+            )
             if bind_failure is not None:
                 # Ungroundable: stays declared, reason on the row.
+                bind_failure.message += missing_note
                 artifact.state_reason = bind_failure.message
                 results.append(bind_failure)
                 continue
             assert generated is not None  # bind contract: exactly one side set
             assert exec_result is not None
+            exec_result.message += missing_note
             transition(artifact, operation="bind", stage=_STAGE, grounded_against=grounded_against)
             if exec_result.status == ValidationStatus.ERROR:
                 # Execution error OR inconclusive evaluation (the SQL ran but its
@@ -320,6 +334,8 @@ class ValidationPhase(BasePhase):
                 artifact.state_reason = exec_result.message
             else:
                 transition(artifact, operation="execute", stage=_STAGE)
+                if missing_note:
+                    artifact.state_reason = missing_note.strip()
             results.append(exec_result)
 
         run_result = ValidationRunResult.from_results(

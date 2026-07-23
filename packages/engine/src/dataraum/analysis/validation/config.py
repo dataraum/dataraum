@@ -41,9 +41,14 @@ def load_all_validation_specs(
     Production (``session`` given): reads the active ``validations`` rows (seed ``⊕``
     generated) as the config→DB base, then layers the ``validation`` teach overlay
     over it (upsert-replace by ``validation_id``, the same
-    :func:`~dataraum.core.overlay.apply_overlay` machinery). An unknown / framed
-    vertical with no rows and no overlay resolves to an EMPTY dict, never raises —
-    "no declared validations" is the phase tier's loud outcome.
+    :func:`~dataraum.core.overlay.apply_overlay` machinery). Replacement is
+    WHOLESALE — deliberately: an overlay row is a full respec of the check, so one
+    that omits ``relevant_conventions`` validates to ``[]`` and drops a generated
+    row's declared convention dependencies (the bind then falls back to
+    targets-routed conventions only, and ``validation_phase`` has no missing-id to
+    warn about). An unknown / framed vertical with no rows and no overlay resolves
+    to an EMPTY dict, never raises — "no declared validations" is the phase tier's
+    loud outcome.
 
     Tests (``verticals_dir`` given): reads raw YAML under that root and bypasses BOTH
     the DB home and the overlay.

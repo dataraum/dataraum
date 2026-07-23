@@ -12,11 +12,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+from dataraum.analysis.semantic.ontology import OntologyConvention
 from dataraum.analysis.validation.induction import (
     InducedValidation,
     InducedValidations,
     ValidationInductionAgent,
     _is_clean,
+    _render_conventions,
     _to_spec,
     membership_violations,
     served_membership,
@@ -85,10 +87,11 @@ def test_served_membership_accepts_bare_and_qualified() -> None:
     assert "journal_entries.debit" in m.columns  # qualified (logical)
     assert "src__journal_entries.credit" in m.columns  # qualified (duckdb)
     assert m.concepts == {"debit", "credit"}
-    assert m.conventions == {"sign_natural_balance"}
+    # A _norm(id) → canonical-id map (the save-side canonicalization home).
+    assert m.conventions == {"sign_natural_balance": "sign_natural_balance"}
     # No conventions served (fresh vertical) ⇒ empty vocabulary, every declared
     # dependency is a fabrication.
-    assert served_membership(_context()).conventions == set()
+    assert served_membership(_context()).conventions == {}
 
 
 def test_membership_violations_flags_fabricated() -> None:
@@ -144,9 +147,6 @@ def test_render_conventions_serves_ids() -> None:
     membership-validated against these ids); statement + group lines stay in the
     binder-side format.
     """
-    from dataraum.analysis.semantic.ontology import OntologyConvention
-    from dataraum.analysis.validation.induction import _render_conventions
-
     rendered = _render_conventions(
         [
             OntologyConvention(
@@ -280,6 +280,48 @@ def test_induce_empty_is_legitimate() -> None:
     result = _agent(provider).induce("<graph>", "conv", served_membership(_context()))
     assert result.success
     assert result.unwrap() == []
+
+
+def test_induce_canonicalizes_declared_convention_variants() -> None:
+    """A tolerated case/quote variant persists as the CANONICAL id (DAT-865).
+
+    The membership gate is tolerant (``_norm``) but the bind-time pull matches the
+    persisted string exactly against ``Convention.name`` — a variant persisted raw
+    would select nothing at bind and silently reproduce the empty-conventions
+    defect this lane closes.
+    """
+    m = served_membership(_context(), conventions=["sign_natural_balance"])
+    provider = _FakeProvider(
+        InducedValidations(
+            validations=[
+                _induced(
+                    "bal",
+                    referenced_columns=["debit"],
+                    relevant_conventions=["'Sign_Natural_Balance'"],
+                )
+            ]
+        )
+    )
+    result = _agent(provider).induce("<graph>", "conv", m)
+    assert result.success
+    assert provider.calls == 1  # the variant is tolerated, not a fabrication
+    (spec,) = result.unwrap()
+    assert spec.relevant_conventions == ["sign_natural_balance"]
+    # …and the canonical id resolves at the bind-time pull.
+    from dataraum.analysis.semantic.ontology import OntologyDefinition, OntologyLoader
+
+    ont = OntologyDefinition.model_construct(
+        name="t",
+        conventions=[
+            OntologyConvention(
+                id="sign_natural_balance", targets=["extraction"], statement="the sign rule"
+            )
+        ],
+    )
+    rendered = OntologyLoader().format_conventions_for_prompt(
+        ont, "validation", qualifier="bal", include_ids=spec.relevant_conventions
+    )
+    assert "the sign rule" in rendered
 
 
 # --- served-graph enrichment: metric DAG + additivity (DAT-735 owner ruling) ------

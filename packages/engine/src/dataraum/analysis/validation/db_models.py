@@ -138,8 +138,8 @@ class Validation(Base):
 
     # cycle types this validation applies to; empty/NULL = universal.
     relevant_cycles: Mapped[list[str] | None] = mapped_column(JSON)
-    # Convention names (``conventions.name``) this check's LOGIC relies on — the
-    # typed validation→convention dependency edge (DAT-865). A convention's own
+    # Convention ids (= ``conventions.name``, the prompt-facing id) this check's
+    # LOGIC relies on — the typed validation→convention dependency edge (DAT-865). A convention's own
     # ``targets`` can only route to checks that exist at authoring time; a
     # GENERATED check therefore declares its dependencies from the other side, and
     # the SQL binder serves the union (targets-routed ∪ declared) — so a sign or

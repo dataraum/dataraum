@@ -229,15 +229,28 @@ class ValidationPhase(BasePhase):
         # the sign rule its legs rely on) arrive through its own declaration —
         # membership-validated at induction, resolved here. Seed rows declare
         # nothing by default, so the shipped checks render exactly as before.
-        conventions_by_id = {
-            validation_id: ontology_loader.format_conventions_for_prompt(
+        served_convention_ids = (
+            {c.id for c in ontology.conventions} if ontology is not None else set()
+        )
+        conventions_by_id: dict[str, str] = {}
+        for validation_id, spec in specs.items():
+            # A declared dependency that resolves to no active convention (e.g. a
+            # kept generated set outliving a frame rename/supersede) must fall
+            # LOUD: the check still binds, but with that judgment missing — the
+            # exact degradation DAT-865 is about, so it is never free.
+            missing = [c for c in spec.relevant_conventions if c not in served_convention_ids]
+            if missing:
+                _log.warning(
+                    "validation_declared_conventions_missing",
+                    validation_id=validation_id,
+                    missing=missing,
+                )
+            conventions_by_id[validation_id] = ontology_loader.format_conventions_for_prompt(
                 ontology,
                 "validation",
                 qualifier=validation_id,
                 include_ids=spec.relevant_conventions,
             )
-            for validation_id, spec in specs.items()
-        }
 
         def _bind_and_execute(
             validation_id: str, spec: ValidationSpec, duckdb_conn: Any

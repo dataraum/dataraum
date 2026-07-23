@@ -132,9 +132,13 @@ class Membership:
     concepts: set[str] = field(default_factory=set)
     # Served convention ids (DAT-865): `relevant_conventions` is membership-validated
     # like the referenced_* trio — a declared dependency on an unserved convention is
-    # a fabrication (repaired once, then dropped), so a persisted check's convention
-    # dependencies always resolve at bind time.
-    conventions: set[str] = field(default_factory=set)
+    # a fabrication (repaired once, then dropped). A MAP, not a set: ``_norm(id) →
+    # canonical id``. The validator is tolerant (``_norm``) but the bind-time pull
+    # (``format_conventions_for_prompt include_ids``) matches EXACTLY, so ``induce()``
+    # rewrites every kept declaration to the canonical id before persist — a
+    # case/quote variant must never pass the gate and then silently select nothing
+    # at bind (that empty-conventions bind is the DAT-865 defect itself).
+    conventions: dict[str, str] = field(default_factory=dict)
 
 
 def _norm(token: str) -> str:
@@ -150,9 +154,10 @@ def served_membership(
     Accepts a column by its bare name AND its ``table.column`` qualifier (in either the
     logical table_name or the duckdb_name form): membership catches FABRICATED entities,
     it does not enforce a reference style. ``conventions`` are the served convention
-    ids (DAT-865) — the vocabulary ``relevant_conventions`` is judged against.
+    ids (DAT-865) — the vocabulary ``relevant_conventions`` is judged against, kept
+    as a ``_norm(id) → canonical id`` map so a tolerated variant canonicalizes at save.
     """
-    membership = Membership(conventions={_norm(c) for c in conventions})
+    membership = Membership(conventions={_norm(c): c for c in conventions})
     for table in context.tables:
         table_forms = [n for n in (table.table_name, table.duckdb_name) if n]
         for form in table_forms:
@@ -200,9 +205,14 @@ def membership_violations(output: InducedValidations, membership: Membership) ->
                 )
         for convention in validation.relevant_conventions:
             if _norm(convention) not in membership.conventions:
+                # The repair turn sees ONLY the violation lines (no vocabulary
+                # re-serve), and the served convention set is a handful — inline it
+                # so a near-miss can be FIXED rather than amputated (dropping the
+                # reference loses the declared judgment the check relies on).
+                served = ", ".join(sorted(membership.conventions.values())) or "none"
                 violations.append(
                     f"validation '{vid}' relies on convention '{convention}' not in "
-                    "the served domain conventions"
+                    f"the served domain conventions (served ids: {served})"
                 )
     return violations
 
@@ -462,6 +472,15 @@ class ValidationInductionAgent(LLMFeature):
                 output = repaired.unwrap()
 
         clean = [v for v in output.validations if _is_clean(v, membership)]
+        # Canonicalize the declared convention ids before persist (DAT-865): the
+        # membership gate tolerates case/quote variants (``_norm``), but the
+        # bind-time pull matches the persisted string EXACTLY against
+        # ``Convention.name`` — a tolerated variant that persisted raw would select
+        # nothing at bind, silently reproducing the empty-conventions defect.
+        for v in clean:
+            v.relevant_conventions = [
+                membership.conventions[_norm(c)] for c in v.relevant_conventions
+            ]
         dropped = len(output.validations) - len(clean)
         if dropped:
             logger.warning("validation_induction_dropped_fabricated", dropped=dropped)

@@ -10,7 +10,7 @@
 # (DAT-823). Structured output via the TableSynthesisOutput Pydantic schema.
 
 name: semantic_per_table
-version: "3.1.0"
+version: "3.2.0"
 description: Per-table structural classification + relationship confirmation
 
 temperature: 0.0
@@ -120,8 +120,11 @@ system_prompt: |
   measurements below refer to the two columns in the order they are printed on
   the candidate line: `L` is the first, `R` is the second.
 
-  For a MANY-TO-ONE candidate the measurement settles it: the FK is the
-  non-unique side (lower `uniq`). Read it off; do not re-derive it from names.
+  For a MANY-TO-ONE candidate the measurement settles the DIRECTION: the FK is
+  the non-unique side (lower `uniq`). Read it off; do not re-derive it from
+  names. Direction is not the whole verdict, though — the measurement fixes
+  which side would be the child, never whether the pair is a clean foreign key
+  at all. Carry that reading into the claim check below before you emit it.
 
   For a ONE-TO-ONE candidate, decide from DEPENDENCE first — this is the
   reliable test, and it is a judgment only you can make. The foreign key lives
@@ -157,22 +160,41 @@ system_prompt: |
     looks, to containment alone, exactly like a parent with a subset child.
     Both measure identically — this is not a gap you can close by looking
     harder at the numbers.
-  Dependence may override a WEAK or ambiguous number — but it may not silently
-  override a decisive, clean asymmetry. If your dependence read puts `from`
-  (the child) on the side whose rows mostly FAIL to resolve while the other
-  side's rows resolve cleanly, stop: that makes your `foreign_key` a
-  mostly-orphaned child, which
-  is not a clean FK. Re-examine — a detail or extension is the fully-resolving
-  contained side, not the orphaned one, so the direction is most often simply
-  inverted; flip it and say why. If after re-examining you still judge the
-  orphaned side to be genuinely the child, it is a real FK carrying a
-  data-quality problem: confirm it but NAME the orphan problem in
-  `reasoning`, never present it as clean. Never store a `foreign_key` whose own
-  served numbers show the child side mostly failing to resolve without saying
-  so. Where genuinely neither dependence nor the measurements decide — a
-  symmetric vertical split of one entity across two tables — pick the
-  orientation and state plainly in `reasoning` that the direction is a
-  modelling choice, so a reader knows not to trust it.
+
+  CLAIM CHECK — run this at EVERY cardinality, after the direction is settled
+  (by the measurement for a many-to-one, by dependence for a one-to-one). A
+  `foreign_key` asserts more than a direction: it asserts that the child's rows
+  actually resolve into the parent. So read the `rows resolving` for the side
+  you are about to place on `from`. If that side's rows mostly FAIL to resolve
+  into the other, this is NOT a clean foreign key, whatever the cardinality — a
+  child that lands only a small fraction of the way into its claimed parent is
+  mostly orphaned. What to do then turns on whether the direction can honestly
+  be turned around:
+  - one-to-one: dependence may override a WEAK or ambiguous number, but not a
+    decisive clean asymmetry. When the OTHER side's rows resolve cleanly, the
+    direction is most often simply inverted — a detail or extension is the
+    fully-resolving contained side, not the orphaned one. Flip it and say why.
+  - many-to-one: you cannot flip — the non-unique side cannot become a clean
+    parent. When both tables read as fact/transaction tables — two events
+    meeting on a shared id, neither a dimension nor a master of the other —
+    they are sharing an axis, not referencing one another: decline the
+    `foreign_key` claim (do not confirm it) and say in `reasoning` that the
+    tables share an axis. Two tells reinforce it: a `to` side that is only
+    NEAR-unique (its `uniq` below 1 — a few duplicate keys) is a weak key, not
+    the clean unique key a real dimension presents; and the claimed parent's
+    OWN rows resolving cleanly into the child while the child does not resolve
+    back means the `to` side is itself the contained one — between two facts,
+    the contained side is not a parent.
+  - either cardinality: if instead one table genuinely references the other — a
+    real dimension or master the child depends on — and the unresolved rows are
+    a real data-quality problem, it is a real FK carrying orphans; confirm it
+    but NAME the orphan problem in `reasoning`, never present it as clean.
+  Never store a `foreign_key` whose own served numbers show the child side
+  mostly failing to resolve without saying so. Where genuinely neither
+  dependence nor the measurements decide — a symmetric vertical split of one
+  entity across two tables — pick the orientation and state plainly in
+  `reasoning` that the direction is a modelling choice, so a reader knows not to
+  trust it.
 
   Never settle a direction by the order the candidates happen to be listed in.
   That order reflects how the pair was stored, not which side is the child.

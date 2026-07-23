@@ -49,7 +49,14 @@ features:
   validation:
     enabled: true
     model_tier: balanced
-    effort: low
+    # medium, not low (DAT-870, same phenomenon as slicing_analysis/DAT-720):
+    # at effort:low the binder scopes to the spec's literal prose — a
+    # confidently wrong hint ("cumulative…", "must exist in the activity
+    # table") out-pulled the served grain facts in live probes even with the
+    # facts-over-hints rule stated as a critical requirement. Binding requires
+    # cross-referencing the spec against the schema's measured facts; that
+    # duty needs medium.
+    effort: medium
 
   # DAT-735: agentic validation induction over the served graph. One dedicated home
   # (mirrors `validation`'s balanced tier today — zero behaviour change; the induction

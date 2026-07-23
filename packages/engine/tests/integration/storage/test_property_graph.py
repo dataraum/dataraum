@@ -96,6 +96,9 @@ _COLUMNS = [
     ("c_k1", "t1", "account_id", 2),
     ("c_k2", "t2", "account_id", 1),
     ("c_at", "t2", "account_type", 2),  # accounts dim attribute — a DAT-811 dim-column source
+    # accounts dim date — ec_od's typed source (DAT-866): profiled as tp_od, its window
+    # serves the enriched-resolved coverage edge THROUGH source_column_id.
+    ("c_od", "t2", "open_date", 3),
     ("c_k3", "t3", "group_id", 1),
     ("c_k3b", "t3", "account_id", 2),  # t3's own account_id — a cross-LEVEL accounts slice
     ("c_k4", "t4", "statement_id", 1),
@@ -164,9 +167,14 @@ def _seed(engine: Engine) -> None:
     #            semantic_role='measure' + materialization='flow' from its source.
     #   ec_at  — joined dim column account_id__account_type (origin='dimension') sourced
     #            from the accounts attribute c_at (unannotated → NULL semantics).
+    #   ec_od  — joined dim date account_id__open_date (origin='dimension') sourced
+    #            from the accounts date c_od: t1 DECLARES it a time column but it has
+    #            no typed row on t1 — the DAT-866 enriched-fallback coverage case;
+    #            its observed profile resolves THROUGH c_od (tp_od).
     for cid, name, pos, origin, src in [
         ("ec_amt", "amount", 0, "fact", "c_amt"),
         ("ec_at", "account_id__account_type", 1, "dimension", "c_at"),
+        ("ec_od", "account_id__open_date", 2, "dimension", "c_od"),
     ]:
         stmts.append(
             "INSERT INTO columns "
@@ -313,6 +321,8 @@ def _seed(engine: Engine) -> None:
         '{"column": "txn_date", "aspect": "txn", "role": "event", '
         '"is_anchor": true, "note": "x"}, '
         '{"column": "due_date", "aspect": "due", "role": "attribute", '
+        '"is_anchor": false, "note": "x"}, '
+        '{"column": "account_id__open_date", "aspect": "opened", "role": "attribute", '
         '"is_anchor": false, "note": "x"}]'
     )
     time_cols_by_entity = {"t1": t1_time_columns}
@@ -537,6 +547,17 @@ def _coverage_and_rollup_stmts() -> list[str]:
         " actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps) "
         f"VALUES ('tp_created', 'c_created', '{RUN}', '{TS}', '2024-01-01', '2024-03-31', 90, "
         f"'day', 0.9, 0.9, 91, 82, 3, 5, false, false, '[]'::json)"
+    )
+    # c_od (accounts.open_date): a YEARLY profile — served by the DAT-866
+    # enriched-fallback edge (t1 declares 'account_id__open_date', which exists only
+    # as t_enr's ec_od; the observation resolves THROUGH source_column_id = c_od).
+    stmts.append(
+        "INSERT INTO temporal_column_profiles "
+        "(profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, "
+        " detected_granularity, granularity_confidence, completeness_ratio, expected_periods, "
+        " actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps) "
+        f"VALUES ('tp_od', 'c_od', '{RUN}', '{TS}', '2015-06-01', '2023-06-01', 2922, "
+        f"'year', 0.8, 1.0, 9, 9, 0, NULL, true, false, '[]'::json)"
     )
     # due_date (c_due): NO temporal profile — the LEFT JOIN yields NULL observed_*.
     # A drill-down hierarchy c_k1 (lvl2, finest) → c_k2 (lvl1) → c_k3 (lvl0, coarsest),
@@ -1017,6 +1038,8 @@ def test_enriched_view_columns_carry_source_resolved_semantics(graph_engine: Eng
         ("ec_amt", "amount", "measure", "flow"),
         # joined dim column: surfaces with its own id; source c_at is unannotated → NULL.
         ("ec_at", "account_id__account_type", None, None),
+        # joined dim date (DAT-866 coverage source): own id, source c_od unannotated.
+        ("ec_od", "account_id__open_date", None, None),
     }
 
 
@@ -1607,7 +1630,8 @@ def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:
         cov = conn.execute(text(cov_sql)).scalar_one()
         conn.execute(text("RESET ROLE"))
     assert n == 6
-    assert cov == 3  # t1's three declared time columns — the new element is reader-visible
+    # t1's three typed time columns + the DAT-866 enriched-resolved one — reader-visible.
+    assert cov == 4
 
 
 def test_bootstrap_is_idempotent(graph_engine: Engine) -> None:
@@ -1692,17 +1716,19 @@ def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engin
     carrying the PERSISTED profile — role/aspect/declared_anchor from time_columns,
     observed grain = detected_granularity, plus last_period_complete."""
     sql = (
-        f"SELECT src, col, role, aspect, danchor, grain, ratio, lpc "
+        f"SELECT src, col, cid, role, aspect, danchor, grain, ratio, lpc "
         f"FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (t IS table_node)-[cov IS temporal_coverage]->(c IS column_node) "
-        "COLUMNS (t.table_name AS src, c.column_name AS col, cov.role AS role, "
+        "COLUMNS (t.table_name AS src, c.column_name AS col, c.column_id AS cid, "
+        "cov.role AS role, "
         "cov.aspect AS aspect, cov.declared_anchor AS danchor, cov.observed_grain AS grain, "
         "cov.completeness_ratio AS ratio, cov.last_period_complete AS lpc))"
     )
     with graph_engine.connect() as conn:
         rows = {r.col: r for r in conn.execute(text(sql))}
-    # Only t1 (journal) declares time_columns → exactly its three date axes.
-    assert set(rows) == {"txn_date", "created_date", "due_date"}
+    # Only t1 (journal) declares time_columns → its three typed date axes plus the
+    # enriched-resolved joined dim date (DAT-866).
+    assert set(rows) == {"txn_date", "created_date", "due_date", "account_id__open_date"}
     assert all(r.src == "journal" for r in rows.values())
     # The declared-anchor event axis: a COMPLETE monthly series.
     txn = rows["txn_date"]
@@ -1714,6 +1740,16 @@ def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engin
     created = rows["created_date"]
     assert (created.role, created.danchor, created.grain) == ("event", False, "day")
     assert created.lpc is False
+    # DAT-866: 'account_id__open_date' has NO typed row on t1 — it resolves against
+    # the enriched view's served columns, and its observation rides THROUGH the typed
+    # source c_od's profile (yearly, complete). Before the layered resolution this
+    # edge was silently dropped: the graph said "no such axis" while og_columns
+    # carried it — the self-contradiction the fix closes.
+    opened = rows["account_id__open_date"]
+    assert opened.cid == "ec_od"  # the enriched column's OWN vertex (DAT-811), never c_od
+    assert (opened.role, opened.aspect, opened.danchor) == ("attribute", "opened", False)
+    assert opened.grain == "year"
+    assert opened.ratio == 1.0
 
 
 def test_declared_anchor_is_not_the_operating_model_anchor(graph_engine: Engine) -> None:

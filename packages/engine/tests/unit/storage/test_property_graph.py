@@ -156,6 +156,25 @@ def test_filtered_by_is_additive_where_stays_on_the_grounding_node() -> None:
     assert "json_build_array(bm.conformed_group" in filtered_by_sql
 
 
+def test_temporal_coverage_resolves_declared_names_on_both_layers() -> None:
+    """DAT-866: a declared time column resolves typed-FIRST, else against the table's
+    enriched view's served columns — an FK-joined header date (the default warehouse
+    shape) must keep its coverage edge instead of silently dropping it while og_columns
+    still carries the anchor axis."""
+    sql = dict(graph_statements())["og_temporal_coverage"]
+    # The layered resolution: typed branch + enriched fallback over the SAME name.
+    assert "current_columns" in sql
+    assert "current_enriched_views" in sql
+    assert "current_enriched_columns" in sql
+    # Typed-first is EXCLUSIVE — the enriched f.* copy of a typed column must never
+    # steal (or duplicate) the edge.
+    assert "NOT EXISTS" in sql
+    # The enriched branch keeps the enriched column's OWN vertex id (DAT-811) but
+    # resolves the observed profile THROUGH its typed source.
+    assert "ec.source_column_id AS profile_column_id" in sql
+    assert "tp.column_id = res.profile_column_id" in sql
+
+
 def test_dump_drops_graph_before_its_element_views() -> None:
     """Idempotent teardown respects the dependency order (graph depends on views)."""
     ddl = dump_graph_ddl()

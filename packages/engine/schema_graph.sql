@@ -331,10 +331,10 @@ WHERE c.status_column IS NOT NULL
   AND c.completion_rate IS NOT NULL;
 
 CREATE VIEW __READ__.og_temporal_coverage AS
-SELECT DISTINCT ON (te.table_id, col.column_id)
-       (te.table_id || '_' || col.column_id)::text AS coverage_key,
-       te.table_id::text AS table_id, col.column_id::text AS column_id,
-       col.column_name, tc.role, tc.aspect, tc.declared_anchor,
+SELECT DISTINCT ON (te.table_id, res.column_id)
+       (te.table_id || '_' || res.column_id)::text AS coverage_key,
+       te.table_id::text AS table_id, res.column_id::text AS column_id,
+       res.column_name, tc.role, tc.aspect, tc.declared_anchor,
        tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,
        tp.span_days, tp.detected_granularity AS observed_grain,
        tp.completeness_ratio, tp.expected_periods, tp.actual_periods,
@@ -346,11 +346,26 @@ CROSS JOIN LATERAL (
            (elem->>'is_anchor')::boolean AS declared_anchor
     FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem
   ) tc
-JOIN __READ__.current_columns col
-  ON col.table_id = te.table_id AND col.column_name = tc.column_name
+CROSS JOIN LATERAL (
+    SELECT col.column_id, col.column_name,
+           col.column_id AS profile_column_id
+    FROM __READ__.current_columns col
+    WHERE col.table_id = te.table_id AND col.column_name = tc.column_name
+    UNION ALL
+    SELECT ec.column_id, ec.column_name,
+           ec.source_column_id AS profile_column_id
+    FROM __READ__.current_enriched_views ev
+    JOIN __READ__.current_enriched_columns ec
+      ON ec.table_id = ev.view_table_id AND ec.column_name = tc.column_name
+    WHERE ev.fact_table_id = te.table_id
+      AND NOT EXISTS (
+        SELECT 1 FROM __READ__.current_columns c2
+        WHERE c2.table_id = te.table_id
+          AND c2.column_name = tc.column_name)
+  ) res
 LEFT JOIN __READ__.current_temporal_column_profiles tp
-  ON tp.column_id = col.column_id
-ORDER BY te.table_id, col.column_id, tc.declared_anchor DESC NULLS LAST,
+  ON tp.column_id = res.profile_column_id
+ORDER BY te.table_id, res.column_id, tc.declared_anchor DESC NULLS LAST,
          tc.role, tc.aspect, tc.column_name;
 
 CREATE VIEW __READ__.og_rolls_up_to AS

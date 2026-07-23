@@ -789,10 +789,23 @@ def _element_view_sql(name: str) -> str:
         # to og_has_dimension (table → column). The ROLE home is
         # ``table_entities.time_columns`` (the event/attribute + single-anchor JSON,
         # enforced at the LLM seam): unnested to name each declared time column with
-        # its ``role`` / ``aspect`` / ``declared_anchor``. The name resolves to its
-        # ``column_id`` in current_columns (INNER — a graph edge needs a real column
-        # vertex; an unresolvable name is honest under-coverage, no dangling edge, the
-        # og_concept_edges discipline). The observed facts LEFT-join
+        # its ``role`` / ``aspect`` / ``declared_anchor``. The name resolves LAYERED
+        # (DAT-866): typed first (current_columns on the declaring table), else the
+        # table's enriched view's served columns (current_enriched_columns via
+        # current_enriched_views.fact_table_id) — a declared anchor is often an
+        # FK-JOINED header date (``entry_id__date``, the default warehouse shape)
+        # that exists ONLY on the enriched layer; before this branch the edge was
+        # silently dropped while og_columns still carried the anchor axis — a graph
+        # self-contradiction. The NOT EXISTS guard keeps typed-first exclusive: the
+        # enriched f.* COPY of a typed column must never steal (or duplicate) the
+        # edge. An enriched hit lands on the enriched column's OWN vertex (DAT-811
+        # key discipline) but resolves the OBSERVED profile THROUGH
+        # ``source_column_id`` — profiles are typed-column-grain. Grain nuance,
+        # stated not hidden: the served observation is the typed SOURCE's date set
+        # (e.g. a header-grain profile serving the line-grain joined column); the
+        # sets differ only by source periods no row joins to. A name resolving on
+        # NEITHER layer is honest under-coverage — no dangling edge, the
+        # og_concept_edges discipline. The observed facts LEFT-join
         # current_temporal_column_profiles: a declared time column that was never
         # temporally profiled (or an irregular/unknown grain) keeps its edge with NULL
         # observed_* — absence falls loud, NEVER a fabricated window (DAT-853
@@ -812,10 +825,10 @@ def _element_view_sql(name: str) -> str:
         # role/aspect/name) so the retained row is deterministic — the anchor row wins.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_temporal_coverage AS\n"
-            f"SELECT DISTINCT ON (te.table_id, col.column_id)\n"
-            f"       (te.table_id || '_' || col.column_id)::text AS coverage_key,\n"
-            f"       te.table_id::text AS table_id, col.column_id::text AS column_id,\n"
-            f"       col.column_name, tc.role, tc.aspect, tc.declared_anchor,\n"
+            f"SELECT DISTINCT ON (te.table_id, res.column_id)\n"
+            f"       (te.table_id || '_' || res.column_id)::text AS coverage_key,\n"
+            f"       te.table_id::text AS table_id, res.column_id::text AS column_id,\n"
+            f"       res.column_name, tc.role, tc.aspect, tc.declared_anchor,\n"
             f"       tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,\n"
             f"       tp.span_days, tp.detected_granularity AS observed_grain,\n"
             f"       tp.completeness_ratio, tp.expected_periods, tp.actual_periods,\n"
@@ -827,11 +840,26 @@ def _element_view_sql(name: str) -> str:
             f"           (elem->>'is_anchor')::boolean AS declared_anchor\n"
             f"    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem\n"
             f"  ) tc\n"
-            f"JOIN {READ_TOKEN}.current_columns col\n"
-            f"  ON col.table_id = te.table_id AND col.column_name = tc.column_name\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT col.column_id, col.column_name,\n"
+            f"           col.column_id AS profile_column_id\n"
+            f"    FROM {READ_TOKEN}.current_columns col\n"
+            f"    WHERE col.table_id = te.table_id AND col.column_name = tc.column_name\n"
+            f"    UNION ALL\n"
+            f"    SELECT ec.column_id, ec.column_name,\n"
+            f"           ec.source_column_id AS profile_column_id\n"
+            f"    FROM {READ_TOKEN}.current_enriched_views ev\n"
+            f"    JOIN {READ_TOKEN}.current_enriched_columns ec\n"
+            f"      ON ec.table_id = ev.view_table_id AND ec.column_name = tc.column_name\n"
+            f"    WHERE ev.fact_table_id = te.table_id\n"
+            f"      AND NOT EXISTS (\n"
+            f"        SELECT 1 FROM {READ_TOKEN}.current_columns c2\n"
+            f"        WHERE c2.table_id = te.table_id\n"
+            f"          AND c2.column_name = tc.column_name)\n"
+            f"  ) res\n"
             f"LEFT JOIN {READ_TOKEN}.current_temporal_column_profiles tp\n"
-            f"  ON tp.column_id = col.column_id\n"
-            f"ORDER BY te.table_id, col.column_id, tc.declared_anchor DESC NULLS LAST,\n"
+            f"  ON tp.column_id = res.profile_column_id\n"
+            f"ORDER BY te.table_id, res.column_id, tc.declared_anchor DESC NULLS LAST,\n"
             f"         tc.role, tc.aspect, tc.column_name;"
         )
     if name == "og_rolls_up_to":

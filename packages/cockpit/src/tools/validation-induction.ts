@@ -39,14 +39,17 @@
 // `toProposedValidation` folds it back to the map at ONE boundary
 // (`induceValidations` in frame.ts). The engine is untouched.
 //
-// The value space is not `unknown` — it is what the 9 shipped specs actually
-// hold, and nothing else:
+// The value space is not `unknown` — historically (before DAT-725 band 3
+// retired finance's nine shipped validation YAMLs) it was exactly what those
+// specs held, and nothing else:
 //   number      -> tolerance: 0.01 | 0.05 | 0.02 | 0.0,
 //                  max_violation_rate: 0.05, amount_tolerance_pct: 0.01,
 //                  quantity_tolerance_pct: 0.02
 //   string list -> asset_types / liability_types / equity_types /
 //                  revenue_types / expense_types (trial_balance.yaml)
-// So the parameter is a two-variant discriminated union, not `z.unknown()`.
+// Induction still only ever needs a numeric threshold or a classification
+// list, so the two-variant discriminated union stays the right shape even
+// with no shipped YAML left to enumerate against — not `z.unknown()`.
 //
 // SCHEMA BUDGET: 0 optional properties, 1 union-typed property, no recursion.
 

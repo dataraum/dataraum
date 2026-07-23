@@ -47,12 +47,14 @@ class Validation(Base):
     ``deviation <= tolerance``) — plus advisory ``guidance`` prose for the
     SQL-binding agent (the former free-text ``sql_hints``, which is NO LONGER the
     check's definition). Config→DB, the same cut :class:`~dataraum.analysis.
-    semantic.db_models.Convention` took (DAT-789): the shipped vertical YAML is the
-    *seed* (source='seed'), normalized into typed rows at connect; agentic
-    induction (:mod:`~dataraum.analysis.validation.induction`) proposes more rows
-    over the served graph (source='generated'). The validation phase reads these
-    rows (never the YAML directory walk), so a *framed* vertical whose validations
-    exist only as rows is served identically to a builtin.
+    semantic.db_models.Convention` took (DAT-789): a vertical's shipped YAML, when
+    one exists, seeds the *seed* rows (source='seed') normalized into typed rows
+    at connect — DAT-725 band 3 retired finance's, so no vertical ships a
+    ``validations/`` directory today. Agentic induction (:mod:`~dataraum.analysis.
+    validation.induction`) proposes more rows over the served graph
+    (source='generated') either way. The validation phase reads these rows (never
+    a YAML directory walk), so a *framed* vertical whose validations exist only as
+    rows is served identically to a builtin.
 
     **Identity contract — NOT run-versioned (the DAT-728 pattern).** A validation
     is a stable node keyed by ``(vertical, validation_id)``; ``row_id`` is a
@@ -103,10 +105,11 @@ class Validation(Base):
         # Check-type vocabulary (DAT-735, DAT-802 two-layer standard): derived from
         # :class:`ValidationCheckType`, the single home the cockpit's `validation-spec.ts`
         # CHECK_TYPES zod enum mirrors — a cross-package VOCABULARY contract. Enforced on
-        # the typed home because only seed (the shipped four-value YAMLs) and generated
-        # (the induction contract's four-value Literal) land here; the DAT-447
-        # `expected_formula` teach rides the config_overlay ⊕ layer, never this table, so
-        # it is deliberately NOT admitted by this CHECK.
+        # the typed home because only seed rows (a vertical's shipped YAML, when one
+        # ships — DAT-725 band 3 retired finance's four-value validations/ directory)
+        # and generated rows (the induction contract's four-value Literal) land here;
+        # the DAT-447 `expected_formula` teach rides the config_overlay ⊕ layer, never
+        # this table, so it is deliberately NOT admitted by this CHECK.
         CheckConstraint(
             "check_type IN (" + ", ".join(f"'{v}'" for v in _VALIDATION_CHECK_TYPE_VALUES) + ")",
             name="check_type",

@@ -1,17 +1,17 @@
-// Validation spec schema + shipped-spec reader for `teach_validation` (DAT-441).
+// Validation spec schema + seeded-spec shape for `teach_validation` (DAT-441).
 //
 // Split from `teach-validation.ts` so the schema + the pure shadow-detection are
 // importable without booting `config.ts` (test ergonomics — the `teach`/
 // `teach.validation` split precedent). `teach-validation.ts` owns the DB-bound
-// write + the shipped/seeded reads; this module owns the shape.
+// write + the seeded read; this module owns the shape.
 //
 // The shape MIRRORS the engine's typed `validations` home (analysis/validation/
 // db_models.py, DAT-735) and its Drizzle read view (db/metadata/schema.ts
 // ~validations): one `validation` overlay row carries a full spec, which
 // `core/overlay.py` `_apply_validation` upsert-replaces by `validation_id` into
 // the vertical's declared set. A teach declares a new INSTANCE or overrides a
-// shipped one — NEVER a new TYPE: `check_type` is closed here to the four values
-// used by the shipped validation YAMLs. The engine's `ValidationSpec.check_type`
+// seeded one — NEVER a new TYPE: `check_type` is closed here to the four values
+// the engine's typed home enforces. The engine's `ValidationSpec.check_type`
 // is a plain `str` (no runtime validation today), and the evaluator does not
 // branch on it — the user's words shape WHAT gets grounded, never HOW results
 // get scored (ADR-0017: one `deviation <= tolerance` judgement for every type).
@@ -24,13 +24,20 @@
 // rows written under the old shape (repo rule: no backwards-compat shims); a
 // pre-existing overlay row still carrying `parameters`/`sql_hints` is read by
 // the engine's legacy normalizer (untouched by this cockpit-only lane).
+//
+// DAT-725 band 3: finance's shipped `validations/*.yaml` are retired entirely
+// (no vertical ships one today), and `frame.ts`'s `induceValidations` no longer
+// draws few-shot from them (lead-ruled OUT as cross-vertical vocabulary
+// leakage) — so the fs-shipped reader + its narrow shape that once lived here
+// (`ShippedValidationSpec` / `narrowShippedSpec`) are gone. `SeededValidationSpec`
+// below (the DB-backed shape) is the only summary shape left.
 
 import { z } from "zod";
 
 // The CLOSED check-type vocabulary — the four values the engine's
-// `ValidationSpec.check_type` enumerates (analysis/validation/models.py) and the
-// only ones the shipped finance validation YAMLs use. The engine's
-// `evaluate_result` (analysis/validation/evaluate.py) does NOT branch on the
+// `ValidationSpec.check_type` enumerates (analysis/validation/models.py; DAT-725
+// band 3's now-retired finance YAMLs used these same four before deletion). The
+// engine's `evaluate_result` (analysis/validation/evaluate.py) does NOT branch on the
 // value — it judges every type by `deviation <= tolerance` (ADR-0017) and only
 // echoes check_type in the message — so this enum is a VOCABULARY contract with
 // the SQL-grounding prompt, not a dispatch table. A teach composes a new check
@@ -152,22 +159,6 @@ export const ValidationSpecSchema = z.object({
 });
 export type ValidationSpecInput = z.infer<typeof ValidationSpecSchema>;
 
-/** A shipped validation spec as read off a vertical's `validations/*.yaml`
- * (fs), in the few fields the FRAME induction's structural few-shot draws on
- * (`frame.ts`'s `induceValidations`, via `nearestSeedVertical`). The YAML seed
- * files still carry the LEGACY `parameters`/`sql_hints` shape (dataraum-config
- * is untouched by the teach-surface retire) — this stays their exact narrow,
- * NOT the typed `tolerance`/`guidance` shape `ValidationSpecSchema` writes. The
- * full YAML carries more; we only echo the summary keys. */
-export interface ShippedValidationSpec {
-	validation_id: string;
-	name: string | null;
-	description: string | null;
-	check_type: string | null;
-	severity: string | null;
-	parameters: Record<string, unknown> | null;
-}
-
 /** A validation as read off the workspace's typed `validations` view
  * (db/metadata/schema.ts), filtered to `source='seed'` rows only
  * (teach-surface retire, DAT-725) — the shadow-detection source of truth for
@@ -184,40 +175,12 @@ export interface SeededValidationSpec {
 	guidance: string | null;
 }
 
-function asString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
-}
-
-/** Narrow a parsed YAML doc (untrusted shape — rule 11) to a ShippedValidationSpec,
- * or null when it has no `validation_id` (not a validation spec file). Reads only
- * the summary keys, ignoring every other YAML field. Pure — no fs/YAML here, so
- * the reader's I/O stays mockable and this narrowing is unit-tested directly. */
-export function narrowShippedSpec(doc: unknown): ShippedValidationSpec | null {
-	if (!doc || typeof doc !== "object") return null;
-	const raw = doc as Record<string, unknown>;
-	const id = asString(raw.validation_id);
-	if (!id) return null;
-	const params =
-		raw.parameters && typeof raw.parameters === "object"
-			? (raw.parameters as Record<string, unknown>)
-			: null;
-	return {
-		validation_id: id,
-		name: asString(raw.name),
-		description: asString(raw.description),
-		check_type: asString(raw.check_type),
-		severity: asString(raw.severity),
-		parameters: params,
-	};
-}
-
 /**
  * Detect whether `validationId` shadows a spec in `pool`. Pure (no I/O), so the
- * override-vs-new decision is unit-tested directly; the caller supplies the
- * pool from either read path (fs-shipped or DB-seeded — generic over both
- * summary shapes, since the match is by `validation_id` alone). An exact id
- * match → the overlay upsert-replaces the matched spec (a VISIBLE override);
- * no match → a fresh declaration.
+ * override-vs-new decision is unit-tested directly. Generic over `T` (today
+ * always `SeededValidationSpec`, since band 3 retired the fs-shipped summary
+ * shape) — an exact id match → the overlay upsert-replaces the matched spec (a
+ * VISIBLE override); no match → a fresh declaration.
  */
 export function findShadowedSpec<T extends { validation_id: string }>(
 	pool: T[],

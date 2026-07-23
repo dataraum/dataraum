@@ -50,11 +50,16 @@ Identify the business domain and propose concepts that capture what exists in th
  * The frame VALIDATION induction instructions (DAT-469) — sibling to
  * `getFrameInstructions`. Describes the ValidationSpec field set + the CLOSED
  * `check_type` vocabulary the model must produce. Kept byte-stable so it ships as
- * a cached system block; the per-turn schema + framed concepts + the shipped
- * library's structural few-shot go in the user/context turn, never here.
+ * a cached system block; the per-turn schema + framed concepts go in the
+ * user/context turn, never here. UNLIKE the cycle/metric siblings below, no
+ * shipped-library few-shot rides the user turn either (DAT-725 band 3,
+ * lead-ruled): a finance few-shot example IS finance vocabulary, and leaking it
+ * into another vertical's induction is exactly the cross-vertical leakage the
+ * epic's band-6 zero-leakage goal forbids — validations propose from the
+ * schema + concepts alone, for every vertical.
  */
 export function getFrameValidationsInstructions(): string {
-	return `You are a data-quality expert helping a data practitioner frame the validations for their data. Given a source's tables (column names, types, sample values), the business concepts already framed over it, and example validation specs from a related vertical, you propose a set of validations — data-quality and business-rule checks the data should satisfy.
+	return `You are a data-quality expert helping a data practitioner frame the validations for their data. Given a source's tables (column names, types, sample values) and the business concepts already framed over it, you propose a set of validations — data-quality and business-rule checks the data should satisfy.
 
 <goal>
 Propose validations that fit THIS source's concepts and schema. A validation declares a check the engine grounds into SQL and executes later — it does not run here. Frame the INTENT (what rule, over which concepts), not the SQL. Only propose checks the data can plausibly support: a validation the data can never satisfy is noise.
@@ -85,7 +90,6 @@ Propose validations that fit THIS source's concepts and schema. A validation dec
 - Every other parameter is a hint the SQL-grounding step reads: numeric thresholds as { kind: "number", ... }, classification vocabularies (e.g. which account_type values count as assets) as { kind: "string_list", ... }
 - The description + sql_hints shape WHAT is checked; the check_type is HOW the result is scored — keep them consistent
 - Propose 3-12 validations depending on the data; quality over quantity — every validation should be one the data can support
-- Use any example specs only as a STRUCTURAL template (the field shape and the kind of rule); never copy their ids, names, or parameters
 - Do NOT propose validations that need data the schema doesn't surface
 </guidelines>`;
 }

@@ -15,7 +15,7 @@ from dataraum.analysis.validation.config import (
     get_validation_specs_for_cycles,
     load_all_validation_specs,
 )
-from dataraum.analysis.validation.validation_store import ensure_validations_seeded
+from dataraum.analysis.validation.db_models import Validation
 from dataraum.core.overlay import (
     OverlayRow,
     reset_overlay_resolver_for_tests,
@@ -25,18 +25,39 @@ from dataraum.core.overlay import (
 VERTICAL = "finance"
 
 
+def _seed_row(validation_id: str, **overrides) -> Validation:
+    """A synthetic ``source='seed'`` row — DAT-725 band 3 retired finance's
+    shipped ``validations/`` directory (no vertical ships one today), so these
+    tests seed the typed home directly rather than via
+    ``ensure_validations_seeded`` against the (now-deleted) real config tree."""
+    fields: dict = {
+        "vertical": VERTICAL,
+        "validation_id": validation_id,
+        "name": validation_id.replace("_", " ").title(),
+        "description": "synthetic seed check",
+        "category": "financial",
+        "severity": "critical",
+        "check_type": "balance",
+        "tolerance": 0.01,
+        "guidance": "Sum debit - credit per account_type.",
+        "source": "seed",
+    }
+    fields.update(overrides)
+    return Validation(**fields)
+
+
 class TestLoadAllValidationSpecs:
     """Loading the declared set from the typed DB home."""
 
     def test_loads_seeded_specs_from_db_home(self, session: Session):
-        """The shipped finance validations, once seeded, load from the typed home."""
-        ensure_validations_seeded(session, VERTICAL)
+        """A source='seed' row (synthetic — no vertical ships a validations/ dir
+        since DAT-725 band 3) loads from the typed home with its check
+        definition intact."""
+        session.add(_seed_row("double_entry_balance"))
+        session.flush()
         specs = load_all_validation_specs(VERTICAL, session)
 
-        assert len(specs) >= 4
         assert "double_entry_balance" in specs
-        assert "trial_balance" in specs
-        assert "sign_conventions" in specs
         # The check LOGIC is typed (DAT-735): tolerance is a float, not a dict entry.
         assert specs["double_entry_balance"].tolerance == 0.01
         # sql_hints is gone; the binding prose lives in guidance.
@@ -44,7 +65,8 @@ class TestLoadAllValidationSpecs:
 
     def test_each_load_returns_fresh_dict(self, session: Session):
         """Each call returns a new dict (no caching)."""
-        ensure_validations_seeded(session, VERTICAL)
+        session.add(_seed_row("double_entry_balance"))
+        session.flush()
         specs1 = load_all_validation_specs(VERTICAL, session)
         specs2 = load_all_validation_specs(VERTICAL, session)
 
@@ -81,7 +103,8 @@ class TestOverlayAwareLoading:
         reset_overlay_resolver_for_tests()
 
     def test_overlay_row_adds_a_spec(self, session: Session):
-        ensure_validations_seeded(session, VERTICAL)
+        session.add(_seed_row("double_entry_balance"))
+        session.flush()
         set_overlay_resolver(
             lambda: [OverlayRow(type="validation", payload=_spec_payload("taught_check"))]
         )
@@ -94,7 +117,8 @@ class TestOverlayAwareLoading:
 
     def test_overlay_row_replaces_seeded_spec_by_id(self, session: Session):
         """A teach row's legacy ``parameters.tolerance`` normalizes onto the typed field."""
-        ensure_validations_seeded(session, VERTICAL)
+        session.add(_seed_row("double_entry_balance", tolerance=0.01))
+        session.flush()
         set_overlay_resolver(
             lambda: [
                 OverlayRow(
@@ -123,7 +147,6 @@ class TestOverlayAwareLoading:
         assert list(specs) == ["framed_check"]
 
     def test_rows_for_other_verticals_ignored(self, session: Session):
-        ensure_validations_seeded(session, VERTICAL)
         set_overlay_resolver(
             lambda: [
                 OverlayRow(
@@ -156,45 +179,53 @@ class TestOverlayAwareLoading:
         reset_overlay_resolver_for_tests()
 
 
-# IDs of universal specs (relevant_cycles = [])
-UNIVERSAL_IDS = {
-    "stage_date_ordering",
-    # tb_gl_reconciliation is universal by design: no GL cycle exists in
-    # the finance cycles vocabulary, and the TB-GL identity holds regardless of
-    # which business cycles ground.
-    "tb_gl_reconciliation",
-    "orphan_transactions",
-}
+def _seed_cycle_scoped_rows(session: Session) -> None:
+    """Four synthetic seed rows spanning the cycle-filter shapes
+    ``get_validation_specs_for_cycles`` distinguishes — DAT-725 band 3 retired
+    finance's shipped validations/ directory (the original nine-spec fixture),
+    but the cycle-scoping MECHANISM is generic over any ``relevant_cycles``
+    shape, so a small synthetic set exercises it identically."""
+    rows = [
+        ("gl_check", ["journal_entry_cycle"]),
+        ("p2p_check", ["procure_to_pay"]),
+        ("universal_a", []),
+        ("universal_b", []),
+    ]
+    for validation_id, relevant_cycles in rows:
+        session.add(_seed_row(validation_id, relevant_cycles=relevant_cycles or None))
+    session.flush()
+
+
+# IDs of the universal synthetic rows (relevant_cycles = []).
+UNIVERSAL_IDS = {"universal_a", "universal_b"}
 
 
 class TestGetValidationSpecsForCycles:
     """Filtering the seeded specs by detected cycle types."""
 
     def test_returns_gl_specs_for_journal_entry_cycle(self, session: Session):
-        """journal_entry_cycle → double_entry, trial_balance, sign_conventions + universals."""
-        ensure_validations_seeded(session, VERTICAL)
+        """journal_entry_cycle → the GL-scoped spec + universals, not procure_to_pay's."""
+        _seed_cycle_scoped_rows(session)
         specs = get_validation_specs_for_cycles(["journal_entry_cycle"], VERTICAL, session)
         ids = {s.validation_id for s in specs}
 
-        assert "double_entry_balance" in ids
-        assert "trial_balance" in ids
-        assert "sign_conventions" in ids
+        assert "gl_check" in ids
+        assert "p2p_check" not in ids
         assert UNIVERSAL_IDS <= ids
 
     def test_returns_p2p_specs_for_procure_to_pay(self, session: Session):
-        """procure_to_pay → three_way_match + universals, no GL-specific specs."""
-        ensure_validations_seeded(session, VERTICAL)
+        """procure_to_pay → the P2P-scoped spec + universals, no GL-specific specs."""
+        _seed_cycle_scoped_rows(session)
         specs = get_validation_specs_for_cycles(["procure_to_pay"], VERTICAL, session)
         ids = {s.validation_id for s in specs}
 
-        assert "three_way_match" in ids
+        assert "p2p_check" in ids
         assert UNIVERSAL_IDS <= ids
-        assert "double_entry_balance" not in ids
-        assert "sign_conventions" not in ids
+        assert "gl_check" not in ids
 
     def test_universal_specs_always_included(self, session: Session):
         """Universal specs appear regardless of cycle type."""
-        ensure_validations_seeded(session, VERTICAL)
+        _seed_cycle_scoped_rows(session)
         specs = get_validation_specs_for_cycles(["some_unknown_cycle"], VERTICAL, session)
         ids = {s.validation_id for s in specs}
 
@@ -202,7 +233,7 @@ class TestGetValidationSpecsForCycles:
 
     def test_empty_cycle_list_returns_only_universal(self, session: Session):
         """No cycle types → only universal specs (empty relevant_cycles)."""
-        ensure_validations_seeded(session, VERTICAL)
+        _seed_cycle_scoped_rows(session)
         specs = get_validation_specs_for_cycles([], VERTICAL, session)
         ids = {s.validation_id for s in specs}
 

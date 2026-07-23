@@ -9,7 +9,9 @@ re-import, the SQL does not).
 Scope: table-level, with COLUMN-grain objects fanned out for failed checks
 (DAT-432): a failed reconciliation bands the columns its SQL actually
 touched (``columns_used``), so the band reaches the columns deliverable
-metrics flow through — not just an aggregate ``table:`` row nothing joins on.
+metrics flow through — not just an aggregate ``table:`` row. The table row is
+not inert either, though (DAT-865b correction below): ``readiness_context.py``
+rolls it up through the identical loss path as a column.
 
 Score semantics (DAT-442 honesty + the scoreboard finding below):
 - A failed CRITICAL check is CATEGORICAL: score 1.0. The spec's own tolerance
@@ -25,11 +27,49 @@ Score semantics (DAT-442 honesty + the scoreboard finding below):
   warning: an unassessed check is ignorance, not measured risk — the old 0.5
   turned LLM SQL-generation nondeterminism into clean-table false alarms.
 
-Aggregation: max() — worst validation failure drives the table's score.
+``_score`` itself is UNCHANGED by DAT-865b below — the measured evidence for a
+critical failure is still categorically 1.0. What changed is how that
+per-check evidence reaches BOTH the table object's and the column fan-out's
+score.
+
+Aggregation (DAT-865b, ADR-0009 witness pool): a sweep finding (DAT-865)
+caught one semantically-wrong GENERATED validation check — an LLM-authored
+rule from agentic induction (DAT-735), never human-reviewed — failing on
+CLEAN data and categorically blocking 15 columns, indistinguishable from a
+real SEEDED (shipped, human-reviewed) critical failure. The lead's ruling: the
+categorical 1.0 stays (it is the honest per-check evidence) — what must change
+is that a target's score comes from POOLING its failing checks as
+provenance-weighted witnesses, not from taking the raw worst one. Each failing
+check becomes a fully-confident ``Witness`` on a "broken vs intact" claim
+(a failed check is a definitive fact, not a graded uncertainty); its own
+evidence strength (``_score``'s value) and its provenance-derived trust
+(``ValidationSpec.source`` — 'seed' vs 'generated', DAT-735, already threaded
+through the existing ``_load_run_specs`` spec map, no new plumbing) both fold
+into the witness's ``reliability`` — pool()'s weighting axis — so the honest,
+ungraded magnitude (DAT-442) is never distorted by the claim-space entropy
+math. A LONE witness's only lever into the loss path is ``evidence_mass``
+(``pool()`` forces ``conflict=0.0`` at n=1): a lone unvetted (generated) check
+can no longer single-handedly block a target, a lone vetted (seed) critical
+failure still clears the blocked band, and independent corroboration (2+
+witnesses agreeing) escalates the risk additively with no hand-tuned special
+case.
+
+BOTH grains pool (senior review, DAT-865b): the TABLE-scoped object and the
+COLUMN fan-out (DAT-432) are NOT independent severities — ``readiness_context.py``
+rolls a ``table:`` target up the SAME loss table as a ``column:`` one (no
+special-casing), and the cockpit's per-table "why" tooling reads that row
+directly. Leaving the table grain on the raw ``max(scores)`` would have let the
+exact DAT-865 bug through a side door (one unvetted generated check still
+categorically blocking the table even after the column fan-out was fixed). The
+table object therefore pools ALL of this table's failing-check witnesses (one
+shared "is this table's cross-table reconciliation broken" claim); each column
+object pools the SUBSET whose check named that column — the same witnesses,
+grouped at two grains, never two different claims.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import select
@@ -43,9 +83,41 @@ from dataraum.analysis.validation.models import ValidationStatus
 from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import EntropyObject, WitnessClaim
+from dataraum.entropy.pooling import PoolResult, Witness, pool
 
 logger = get_logger(__name__)
+
+# The pooled claim (ADR-0009, DAT-865b): does this target's (table's or
+# column's) cross-table reconciliation hold? Every FAILING check is a witness
+# leaning fully "broken"; PASSING checks contribute nothing (score 0.0, no
+# witness) — same as before pooling existed, so an all-clean target still
+# bands nothing.
+CLAIM_SPACE: tuple[str, str] = ("broken", "intact")
+
+# Neutral fallback reliabilities — used only when the run has no calibrated
+# artifact threaded in (direct/test callers). The SHIPPED values live in
+# dataraum-config/entropy/reliabilities.yaml (placeholder priors, DAT-450/865b),
+# loaded via ``load_data`` and threaded through ``context.analysis_results``.
+# Keyed by the check's PROVENANCE (``ValidationSpec.source``, DAT-735): 'seed'
+# is the shipped, human-reviewed vertical config; 'generated' is agentic
+# induction's proposal over the served graph — unvetted until a human confirms
+# it (the DAT-865 finding this fixes).
+DEFAULT_RELIABILITIES: dict[str, float] = {
+    "seed": 0.95,
+    "generated": 0.5,
+}
+
+# A result whose validation_id has no resolvable spec, OR whose spec carries
+# neither 'seed' nor 'generated' (a deleted/superseded check; a frame-2
+# `validation` TEACH-authored check, DAT-441/core/overlay.py, which lands with
+# ValidationSpec's own "config" default since a teach payload carries no
+# `source` key — a LIVE production path, not merely a legacy/test artifact)
+# never inherits seed-level trust — fall back to the lower tier. This
+# under-trusts a genuine deliberate human teach relative to derived_value's
+# human_declaration (0.875); a documented, uncalibrated placeholder choice,
+# not a bug — see DEFAULT_RELIABILITIES above for the two calibrated tiers.
+_UNKNOWN_SOURCE_FALLBACK = "generated"
 
 
 def _score(verdict: ValidationVerdict, severity: str) -> float:
@@ -84,6 +156,70 @@ def _score(verdict: ValidationVerdict, severity: str) -> float:
     return min(1.0, deviation / magnitude)
 
 
+def _reliability_for_source(source: str | None, reliabilities: Mapping[str, float]) -> float:
+    """The pooling reliability for one check, keyed by its PROVENANCE.
+
+    ``source`` is the typed ``ValidationSpec.source`` the detector already
+    reads off the spec map — 'seed' or 'generated' (DAT-735) — never
+    string-sniffed. Anything else (no resolvable spec, or a spec whose
+    ``source`` is neither — e.g. a live frame-2 teach-authored check, see
+    ``_UNKNOWN_SOURCE_FALLBACK``) falls back to the GENERATED tier: unknown
+    provenance never gets seed-level trust.
+    """
+    key = source if source in DEFAULT_RELIABILITIES else _UNKNOWN_SOURCE_FALLBACK
+    return reliabilities.get(key, DEFAULT_RELIABILITIES[key])
+
+
+def _check_witness(
+    validation_id: str,
+    source: str | None,
+    check_score: float,
+    reliabilities: Mapping[str, float],
+) -> Witness:
+    """One failing check's witness on a target's "broken" claim (ADR-0009).
+
+    The distribution is always fully confident — ``(broken=1.0, intact=0.0)``
+    — because a FAILED check (beyond its declared tolerance) is a definitive
+    binary fact, not a graded uncertainty; grading lives in ``check_score``
+    itself (still 1.0 for a critical failure, the honest deviation/magnitude
+    ratio otherwise, per ``_score``). Both the check's own evidence strength
+    AND its provenance-derived trust fold into ``reliability`` — pool()'s
+    weighting axis — rather than the distribution: encoding magnitude into the
+    distribution instead would run it through the claim-space entropy math,
+    which is wildly nonlinear near 0.5 and would distort DAT-442's honest,
+    no-boost rate. Folding it into reliability instead keeps a witness's
+    contribution to ``evidence_mass`` exactly ``reliability(source) ×
+    check_score`` — linear, so independent corroboration escalates additively
+    (``Σ rᵢ·check_scoreᵢ``) with no hand-tuned special case, and a LONE
+    witness's only lever into the loss path is that same ``evidence_mass``
+    (``pool()`` forces ``conflict=0.0`` at n=1, DAT-865b).
+    """
+    reliability = _reliability_for_source(source, reliabilities) * max(0.0, min(1.0, check_score))
+    return Witness(
+        witness_id=f"validation:{validation_id}",
+        distribution=(1.0, 0.0),
+        reliability=reliability,
+    )
+
+
+def _witness_claims(witnesses: list[Witness]) -> list[WitnessClaim]:
+    """The persisted provenance trace (ADR-0009) for one target's witnesses.
+
+    Shared by the table-scoped object and every column fan-out object — both
+    grains pool the same underlying witnesses (DAT-865b), just grouped
+    differently, so they share one claim_field.
+    """
+    return [
+        WitnessClaim(
+            claim_field="cross_table_consistency",
+            witness_id=w.witness_id,
+            distribution=dict(zip(CLAIM_SPACE, w.distribution, strict=True)),
+            reliability=w.reliability,
+        )
+        for w in witnesses
+    ]
+
+
 def _load_run_specs(context: DetectorContext) -> dict[str, Any]:
     """Load this run's validation specs (severity + tolerance) from config.
 
@@ -120,9 +256,12 @@ def _load_run_specs(context: DetectorContext) -> dict[str, Any]:
 class CrossTableConsistencyDetector(EntropyDetector):
     """Detect entropy from cross-table validation failures.
 
-    Table-scoped detector that scores validation check results.
-    Produces one EntropyObject per table with the worst validation
-    failure as the score.
+    Table-scoped detector that scores validation check results. Produces one
+    EntropyObject per table PLUS one per COLUMN a failing check touched
+    (DAT-432) — both pooled, provenance-weighted evidence_mass over the
+    checks each grain covers (DAT-865b; ``readiness_context.py`` rolls a
+    ``table:`` target up identically to a ``column:`` one, so both grains
+    must resist a lone unvetted check the same way).
     """
 
     detector_id = "cross_table_consistency"
@@ -134,11 +273,12 @@ class CrossTableConsistencyDetector(EntropyDetector):
     description = "Cross-table reconciliation failures from validation checks"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load validation results that involve this table."""
+        """Load validation results that involve this table + calibrated reliabilities."""
         if context.session is None or not context.table_id:
             return
 
         from dataraum.analysis.validation.db_models import ValidationResultRecord
+        from dataraum.entropy.reliabilities import get_reliability_config
 
         # ValidationResultRecord.table_ids is a JSON list of table_ids involved.
         # We need results where our table_id appears in that list.
@@ -156,10 +296,22 @@ class CrossTableConsistencyDetector(EntropyDetector):
         if matching:
             context.analysis_results["validation"] = matching
 
+        # Calibrated witness reliabilities (DAT-450/865b); empty → the
+        # detector's neutral DEFAULT_RELIABILITIES fallback.
+        context.analysis_results["reliabilities"] = get_reliability_config().for_measurement(
+            self.detector_id
+        )
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Score validation results for this table.
 
-        Returns a single EntropyObject with score = max(per-check scores).
+        Both the TABLE-scoped object and the COLUMN fan-out objects (below)
+        pool their failing checks as provenance-weighted witnesses (DAT-865b):
+        the table object pools EVERY failing witness (one shared "is this
+        table's cross-table reconciliation broken" claim); each column object
+        pools the subset whose check named that column. Same witnesses, two
+        groupings — see the module docstring for why the table grain can't be
+        left on the raw worst-score.
         """
         results: list[Any] = context.get_analysis("validation", [])
         if not results:
@@ -175,11 +327,13 @@ class CrossTableConsistencyDetector(EntropyDetector):
         # (ADR-0017), read from the spec — never stored on the record. The run's
         # vertical comes from a validation lifecycle artifact via the shared session.
         specs = _load_run_specs(context)
+        reliabilities: Mapping[str, float] = context.get_analysis("reliabilities", None) or {}
 
-        scores: list[float] = []
         evidence: list[dict[str, Any]] = []
-        # Worst failed-check score + entries per column the failing SQL touched.
-        per_column: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        table_witnesses: list[Witness] = []
+        # Per column: the check-level evidence entries + the witnesses pooled
+        # from them (DAT-865b) — replaces the old (worst_score, entries) pair.
+        per_column: dict[str, tuple[list[dict[str, Any]], list[Witness]]] = {}
 
         for result in results:
             spec = specs.get(result.validation_id)
@@ -189,6 +343,10 @@ class CrossTableConsistencyDetector(EntropyDetector):
                 else DEFAULT_TOLERANCE
             )
             severity = spec.severity.value if spec is not None else "info"
+            # Provenance (DAT-735, no new plumbing — already on the spec the
+            # detector reads): 'seed' (shipped, human-reviewed) vs 'generated'
+            # (agentic induction's unvetted proposal). Unknown → the lower tier.
+            source = spec.source if spec is not None else _UNKNOWN_SOURCE_FALLBACK
 
             # Recompute the verdict on demand (ADR-0017): re-run the run-versioned
             # ``sql_used`` against current data rather than read a stored pass/fail
@@ -202,32 +360,40 @@ class CrossTableConsistencyDetector(EntropyDetector):
                     validation_id=result.validation_id,
                     table=context.table_name,
                 )
-            scores.append(score)
             entry = {
                 "validation_id": result.validation_id,
                 "status": verdict.status.value,
                 "severity": severity,
+                "source": source,
                 "passed": verdict.passed,
                 "score": score,
                 "message": verdict.message,
             }
             evidence.append(entry)
             if score > 0.0:
+                witness = _check_witness(result.validation_id, source, score, reliabilities)
+                table_witnesses.append(witness)
                 for col_name in self._own_columns_used(context, result):
-                    worst, entries = per_column.get(col_name, (0.0, []))
+                    entries, witnesses = per_column.get(col_name, ([], []))
                     entries.append(dict(entry))
-                    per_column[col_name] = (max(worst, score), entries)
+                    witnesses.append(witness)
+                    per_column[col_name] = (entries, witnesses)
 
-        # max() — worst failure drives the score
-        final_score = max(scores) if scores else 0.0
+        # Pooled evidence_mass (DAT-865b) — the same lever as the column
+        # fan-out: a lone unvetted (generated) check can't saturate the
+        # table's score either, and corroborating failures escalate
+        # additively. Clamp: evidence_mass is unbounded above.
+        table_result: PoolResult = pool(table_witnesses)
+        final_score = min(1.0, table_result.evidence_mass)
 
-        objects = [
-            self.create_entropy_object(
-                context=context,
-                score=final_score,
-                evidence=evidence,
-            )
-        ]
+        table_object = self.create_entropy_object(
+            context=context,
+            score=final_score,
+            evidence=evidence,
+        )
+        table_object.witnesses = _witness_claims(table_witnesses)
+
+        objects = [table_object]
         objects.extend(self._column_objects(context, per_column))
         return objects
 
@@ -240,26 +406,45 @@ class CrossTableConsistencyDetector(EntropyDetector):
         single exact match is correct and unambiguous: there is exactly one table
         of a given name in the workspace, so this can't cross-claim another
         source's same-named table.
+
+        Deduplicated (DAT-865b, senior review): nothing upstream guarantees a
+        check's declared ``columns_used`` names a column at most once — the
+        pre-pooling code took ``max(worst, score)`` per occurrence (idempotent
+        under a repeat), but pooling SUMS a witness's reliability contribution
+        into ``evidence_mass``, so a repeated name would double-count one
+        check as two independent witnesses (defeating "a lone unvetted check
+        never blocks alone") and collide on ``ClaimWitnessRecord``'s
+        ``(target, claim_field, witness_id, run_id)`` unique constraint at
+        persistence. One witness per check per column, always.
         """
         table_name = context.table_name or ""
         out: list[str] = []
+        seen: set[str] = set()
         for ref in getattr(result, "columns_used", None) or []:
             table_part, _, column_part = ref.partition(".")
-            if column_part and table_part == table_name:
+            if column_part and table_part == table_name and column_part not in seen:
+                seen.add(column_part)
                 out.append(column_part)
         return out
 
     def _column_objects(
         self,
         context: DetectorContext,
-        per_column: dict[str, tuple[float, list[dict[str, Any]]]],
+        per_column: dict[str, tuple[list[dict[str, Any]], list[Witness]]],
     ) -> list[EntropyObject]:
         """Column-grain objects for the columns failing checks touched.
 
         The band must reach the columns deliverable metrics flow through —
-        a ``table:`` row joins to nothing downstream. ``column_id`` rides in
-        evidence so the engine anchors the record; names the LLM declared but
-        the table doesn't have are dropped (hallucination guard).
+        readiness is read per-column far more often than per-table (DAT-432).
+        ``column_id`` rides in evidence so the engine anchors the record;
+        names the LLM declared but the table doesn't have are dropped
+        (hallucination guard).
+
+        The score is the POOLED ``evidence_mass`` of the column's failing-check
+        witnesses (DAT-865b, ADR-0009), not the raw worst score: a lone
+        unvetted (generated) check can no longer single-handedly saturate a
+        column's score, a lone vetted (seed) critical failure still does, and
+        corroborating witnesses escalate additively — see ``_check_witness``.
         """
         if context.session is None or not context.table_id or not per_column:
             return []
@@ -273,20 +458,24 @@ class CrossTableConsistencyDetector(EntropyDetector):
             ).scalars()
         }
         objects: list[EntropyObject] = []
-        for col_name, (worst, entries) in sorted(per_column.items()):
+        for col_name, (entries, witnesses) in sorted(per_column.items()):
             column_id = col_ids.get(col_name)
             if column_id is None:
                 logger.warning(
                     "validation_column_unknown", table=context.table_name, column=col_name
                 )
                 continue
+            result: PoolResult = pool(witnesses)
+            # Clamp: evidence_mass is unbounded above (corroborating witnesses
+            # sum), but EntropyObject.score is a [0, 1] risk measure.
+            score = min(1.0, result.evidence_mass)
             objects.append(
                 EntropyObject(
                     layer=self.layer,
                     dimension=self.dimension,
                     sub_dimension=self.sub_dimension,
                     target=f"column:{context.table_name}.{col_name}",
-                    score=worst,
+                    score=score,
                     evidence=[
                         {
                             **entry,
@@ -299,9 +488,15 @@ class CrossTableConsistencyDetector(EntropyDetector):
                             "table_id": context.table_id,
                             "_table_name": context.table_name,
                             "_column_name": col_name,
+                            # Pooled provenance (DAT-865b): one pool per column,
+                            # so the same numbers ride every entry it covers.
+                            "pool_evidence_mass": result.evidence_mass,
+                            "pool_ignorance": result.ignorance,
+                            "pool_conflict": result.conflict,
                         }
                         for entry in entries
                     ],
+                    witnesses=_witness_claims(witnesses),
                     detector_id=self.detector_id,
                 )
             )

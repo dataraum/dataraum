@@ -1,4 +1,4 @@
-"""Tests for cross_table_consistency entropy detector (ADR-0017, DAT-865b).
+"""Tests for cross_table_consistency entropy detector (ADR-0017, DAT-865b/871).
 
 The verdict is recomputed on demand: ``detect`` re-runs each record's
 ``sql_used`` via ``verdict_from_sql``, and reads the declared ``tolerance`` +
@@ -8,10 +8,14 @@ The verdict is recomputed on demand: ``detect`` re-runs each record's
 scoring + fan-out logic is tested in isolation; ``_score`` is tested directly
 against verdicts.
 
-``TestProvenancePooling`` pins DAT-865b's acceptance at the READINESS-BAND
-level (through ``entropy/loss.py`` + ``entropy/views/readiness_context.py``,
-the REAL shipped ``loss.yaml`` weights), not just the detector's raw score —
-mirroring the precedent in ``tests/unit/entropy/views/test_readiness_context.py``.
+``TestProvenancePooling`` pins DAT-865b's + DAT-871's acceptance at the
+READINESS-BAND level (through ``entropy/loss.py`` +
+``entropy/views/readiness_context.py``, the REAL shipped ``loss.yaml``
+weights), not just the detector's raw score — mirroring the precedent in
+``tests/unit/entropy/views/test_readiness_context.py``. DAT-871 caps the
+GENERATED tier's contribution at its strongest single witness instead of
+summing (same generator + served context ≠ independent evidence); the SEED
+tier still sums.
 """
 
 from __future__ import annotations
@@ -366,12 +370,16 @@ class TestColumnFanOut:
 
 
 class TestProvenancePooling:
-    """DAT-865b acceptance, pinned at the READINESS-BAND level.
+    """DAT-865b + DAT-871 acceptance, pinned at the READINESS-BAND level.
 
     Feeds the real detector's output through the REAL shipped
     ``entropy/loss.yaml`` weights (``assemble_readiness_context``) — not just
     the detector's raw score — mirroring the precedent in
-    ``tests/unit/entropy/views/test_readiness_context.py``.
+    ``tests/unit/entropy/views/test_readiness_context.py``. DAT-871 corrects
+    DAT-865b's original additive-corroboration assumption for the GENERATED
+    tier specifically (``test_generated_failures_cap_at_strongest_witness``)
+    — same-draw generated checks share one generator + served context, so
+    they are not independent evidence the way distinct seed templates are.
     """
 
     _CREDIT = "column:journal_lines.credit"
@@ -438,60 +446,165 @@ class TestProvenancePooling:
         assert readiness.columns[self._CREDIT].readiness == "investigate"
         assert readiness.columns[self._TABLE].readiness == "investigate"
 
-    def test_corroborated_generated_failures_escalate(
+    @pytest.mark.parametrize("n_generated", [2, 3])
+    def test_generated_failures_cap_at_strongest_witness(
+        self,
+        detector: ctc.CrossTableConsistencyDetector,
+        session,
+        monkeypatch,
+        n_generated: int,
+    ) -> None:  # noqa: ANN001
+        """(2/5, DAT-871) Two-or-more full-strength GENERATED failures
+        corroborating the SAME claim do NOT escalate additively — a sweep
+        re-run found exactly this (two semantically-wrong generated checks
+        pooling 0.5+0.5=1.0, categorically blocking clean data: the DAT-865
+        bug reopened through corroboration). Same-draw generated checks share
+        one generator + one served context, so they are not independent
+        logic; the detector caps their contribution at the single strongest
+        witness. Pinned at N=2 AND N=3 to prove the cap holds "at any N", not
+        just the reported N=2 case — score stays exactly 0.5 (never grows
+        with N), NEVER crosses into 'blocked' at either grain, and every
+        witness still persists (no evidence hiding)."""
+        _seed_journal_lines(session)
+        specs = {f"v{i}": _spec("critical", source="generated") for i in range(n_generated)}
+        verdicts = {
+            f"s{i}": _verdict(ValidationStatus.FAILED, deviation=1) for i in range(n_generated)
+        }
+        _install_specs(monkeypatch, specs)
+        _install_verdicts(monkeypatch, verdicts)
+        ctx = _column_context(
+            session,
+            [
+                _make_result(
+                    validation_id=f"v{i}", sql_used=f"s{i}", columns_used=["journal_lines.credit"]
+                )
+                for i in range(n_generated)
+            ],
+        )
+        objects = detector.detect(ctx)
+        column_obj = next(o for o in objects if o.target == self._CREDIT)
+        table_obj = next(o for o in objects if o.target == self._TABLE)
+        # N generated witnesses (reliability 0.5 each, full check_score 1.0)
+        # cap at their single strongest: evidence_mass = max(0.5, ...) = 0.5,
+        # NOT a sum — regardless of N.
+        assert column_obj.score == pytest.approx(0.5, abs=1e-6)
+        assert table_obj.score == pytest.approx(0.5, abs=1e-6)
+        # (5) All N witnesses persisted at both grains — the cap changes how
+        # mass reaches the score, never whether a witness is recorded.
+        assert len(column_obj.witnesses) == n_generated
+        assert len(table_obj.witnesses) == n_generated
+        # Persisted evidence stays honest about the CAPPED mass regardless of
+        # N: pool_evidence_mass never reports the uncapped sum (would be
+        # n_generated × 0.5), and pool_ignorance is derived from that SAME
+        # capped 0.5 (1 / (1 + 0.5)), never from the uncapped figure.
+        assert column_obj.evidence[0]["pool_evidence_mass"] == pytest.approx(0.5, abs=1e-6)
+        assert column_obj.evidence[0]["pool_ignorance"] == pytest.approx(1 / 1.5, abs=1e-6)
+        assert column_obj.evidence[0]["pool_conflict"] == 0.0
+        readiness = assemble_readiness_context(objects)
+        # risk = 0.8 (aggregation_intent weight) × 0.5 = 0.4 ≤ medium_upper
+        # (0.6) → 'investigate', never 'blocked', at either grain.
+        assert readiness.columns[self._CREDIT].readiness == "investigate"
+        assert readiness.columns[self._TABLE].readiness == "investigate"
+
+    def test_seed_and_generated_escalate_additively(
         self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
-        """(3) A generated failure corroborated by a second independent
-        witness escalates per pool semantics — pinned as whatever the pool
-        actually yields with 2 witnesses, no hand-tuned special case."""
+        """(3) A seeded critical failure PLUS a generated failure still
+        escalates past 'blocked' additively — only within-generated-tier
+        corroboration is capped (DAT-871), seed-tier mass still sums with
+        anything else. evidence_mass = 0.95 (seed) + 0.5 (generated) = 1.45,
+        clamped to the existing [0, 1] score range → 1.0 → blocked."""
         _seed_journal_lines(session)
         _install_specs(
             monkeypatch,
             {
-                "v1": _spec("critical", source="generated"),
-                "v2": _spec("critical", source="generated"),
+                "v_seed": _spec("critical", source="seed"),
+                "v_gen": _spec("critical", source="generated"),
             },
         )
         _install_verdicts(
             monkeypatch,
             {
-                "s1": _verdict(ValidationStatus.FAILED, deviation=1),
-                "s2": _verdict(ValidationStatus.FAILED, deviation=1),
+                "s_seed": _verdict(ValidationStatus.FAILED, deviation=1),
+                "s_gen": _verdict(ValidationStatus.FAILED, deviation=1),
             },
         )
         ctx = _column_context(
             session,
             [
                 _make_result(
-                    validation_id="v1", sql_used="s1", columns_used=["journal_lines.credit"]
+                    validation_id="v_seed",
+                    sql_used="s_seed",
+                    columns_used=["journal_lines.credit"],
                 ),
                 _make_result(
-                    validation_id="v2", sql_used="s2", columns_used=["journal_lines.credit"]
+                    validation_id="v_gen", sql_used="s_gen", columns_used=["journal_lines.credit"]
                 ),
             ],
         )
         objects = detector.detect(ctx)
         column_obj = next(o for o in objects if o.target == self._CREDIT)
         table_obj = next(o for o in objects if o.target == self._TABLE)
-        # Two independent generated witnesses (reliability 0.5 each, full
-        # check_score 1.0) pool additively: evidence_mass = 0.5 + 0.5 = 1.0 —
-        # whatever the pool yields, pinned exactly, not hand-picked. Same
-        # underlying witnesses at both grains here (one column, one table).
         assert column_obj.score == pytest.approx(1.0, abs=1e-6)
         assert table_obj.score == pytest.approx(1.0, abs=1e-6)
+        assert len(column_obj.witnesses) == 2
+        assert len(table_obj.witnesses) == 2
+        # The persisted mass is the UNCLAMPED 1.45 (0.95 + 0.5) — score clamps
+        # to [0, 1], but pool_evidence_mass stays honest about the actual
+        # (unbounded) capped mass, per PoolResult's own evidence_mass
+        # contract; ignorance is derived from that same 1.45.
+        assert column_obj.evidence[0]["pool_evidence_mass"] == pytest.approx(1.45, abs=1e-6)
+        assert column_obj.evidence[0]["pool_ignorance"] == pytest.approx(1 / 2.45, abs=1e-6)
+        assert column_obj.evidence[0]["pool_conflict"] == 0.0
         readiness = assemble_readiness_context(objects)
         assert readiness.columns[self._CREDIT].readiness == "blocked"
         assert readiness.columns[self._TABLE].readiness == "blocked"
 
-    def test_duplicate_columns_used_does_not_double_count(
+    def test_duplicate_columns_used_does_not_double_count_seed(
         self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
-        """A single check naming the same column twice in ``columns_used``
-        (nothing upstream forbids it) must contribute exactly ONE witness to
-        that column — not two — or a lone generated check could silently
-        double its own evidence_mass and cross into 'blocked' alone (senior
-        review, DAT-865b), and would collide on ``ClaimWitnessRecord``'s
-        ``(target, claim_field, witness_id, run_id)`` unique constraint."""
+        """A single SEED check naming the same column twice in ``columns_used``
+        (nothing upstream forbids it) must contribute exactly ONE witness —
+        not two — or it would silently double its own evidence_mass (0.95 →
+        clamped 1.0): the seed tier still sums additively (DAT-871), so
+        double-counting one check as two witnesses is a live SCORING bug for
+        THIS tier (unlike the generated tier below, whose max-cap makes a
+        duplicate score-inert) — and it would collide on
+        ``ClaimWitnessRecord``'s ``(target, claim_field, witness_id,
+        run_id)`` unique constraint regardless of tier."""
+        _seed_journal_lines(session)
+        _install_specs(monkeypatch, {"v1": _spec("critical", source="seed")})
+        _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
+        ctx = _column_context(
+            session,
+            [
+                _make_result(
+                    validation_id="v1",
+                    sql_used="s1",
+                    columns_used=["journal_lines.credit", "journal_lines.credit"],
+                )
+            ],
+        )
+        objects = detector.detect(ctx)
+        column_obj = next(o for o in objects if o.target == self._CREDIT)
+        # Exactly one witness (reliability 0.95), not two (which would double
+        # to 1.9, clamped to 1.0 — a different exact score, still 'blocked'
+        # either way at this severity, so the score assertion is what bites).
+        assert len(column_obj.witnesses) == 1
+        assert column_obj.score == pytest.approx(0.95, abs=1e-6)
+        readiness = assemble_readiness_context(objects)
+        assert readiness.columns[self._CREDIT].readiness == "blocked"
+
+    def test_duplicate_columns_used_does_not_double_count_generated(
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """Same guard for a GENERATED check. The tier's MAX cap (DAT-871)
+        means a duplicate name can't inflate the SCORE here (``max(0.5, 0.5)
+        == 0.5`` either way) — but persistence must still record exactly ONE
+        witness, not two, or it collides on ``ClaimWitnessRecord``'s unique
+        constraint and silently overstates how many checks corroborated this
+        column if a second, genuinely distinct generated check later joins
+        it."""
         _seed_journal_lines(session)
         _install_specs(monkeypatch, {"v1": _spec("critical", source="generated")})
         _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
@@ -507,8 +620,6 @@ class TestProvenancePooling:
         )
         objects = detector.detect(ctx)
         column_obj = next(o for o in objects if o.target == self._CREDIT)
-        # Exactly one witness (reliability 0.5), not two (which would double
-        # to 1.0 and cross into 'blocked').
         assert len(column_obj.witnesses) == 1
         assert column_obj.score == pytest.approx(0.5, abs=1e-6)
         readiness = assemble_readiness_context(objects)

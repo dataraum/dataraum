@@ -148,12 +148,19 @@ def test_filtered_by_is_additive_where_stays_on_the_grounding_node() -> None:
     # Members un-nest the TYPED filter_members, never parse where[] text.
     assert "filter_members" in dim_members_sql
     assert "filter_members" in filtered_by_sql
-    # The dimension-axis-only gate: a referenced slice identity is required.
+    # The dimension-axis gate joins the bus matrix on BOTH attachments (DAT-787/867).
     assert "current_bus_matrix" in dim_members_sql
-    assert "dimension_table_id IS NOT NULL" in dim_members_sql
-    # Vertex KEY and edge destination KEY are the SAME expression (no drift).
-    assert "json_build_array(bm.conformed_group" in dim_members_sql
-    assert "json_build_array(bm.conformed_group" in filtered_by_sql
+    assert "bm.attachment = 'referenced'" in dim_members_sql  # referenced leg
+    assert "dimension_table_id IS NOT NULL" in dim_members_sql  # referenced leg
+    assert "bm.attachment = 'folded'" in dim_members_sql  # DAT-867 folded leg
+    assert "dimension_table_id IS NULL" in dim_members_sql  # DAT-867 folded leg
+    # Vertex KEY and edge destination KEY are the SAME expression (no drift), now
+    # over the normalized UNION alias ``m``; the folded axis identity REUSES
+    # bus_matrix's own fields (conformed_group ▸ signature), never a parallel scheme.
+    key = "json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)"
+    assert key in dim_members_sql
+    assert key in filtered_by_sql
+    assert "COALESCE(bm.conformed_group, bm.signature)" in dim_members_sql
 
 
 def test_temporal_coverage_resolves_declared_names_on_both_layers() -> None:

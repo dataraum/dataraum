@@ -39,8 +39,8 @@ class ValidationStatus(StrEnum):
 class ValidationCheckType(StrEnum):
     """The generic check SHAPE — a cross-package VOCABULARY contract (DAT-735).
 
-    CLOSED to the four values the shipped validation YAMLs use, mirrored EXACTLY by the
-    cockpit's ``validation-spec.ts`` ``CHECK_TYPES`` zod enum — a new value is engine
+    CLOSED to these four values, mirrored EXACTLY by the cockpit's
+    ``validation-spec.ts`` ``CHECK_TYPES`` zod enum — a new value is engine
     evolution, NEVER a teach (the cockpit rejects an unlisted value at spec parse). The
     single home the typed ``validations`` CHECK and the induction contract's Literal
     both derive from. ``check_type`` is a LABEL the ADR-0017 evaluator never branches on
@@ -48,8 +48,9 @@ class ValidationCheckType(StrEnum):
 
     (A ``referential`` value was cut here: referential-integrity checks are
     ``constraint``-shaped by the enum's own "zero violating rows" definition — the
-    shipped ``orphan_transactions`` shape — and the fifth value would break the
-    cockpit's closed enum.)
+    historical ``orphan_transactions`` seed check's shape, before DAT-725 band 3
+    retired finance's shipped validation YAMLs — and the fifth value would break
+    the cockpit's closed enum.)
     """
 
     BALANCE = "balance"
@@ -120,8 +121,10 @@ class ValidationSpec(BaseModel):
         ``parameters: {table, column, formula}`` by contract (core/overlay.py
         ``_apply_validation``); the parameters→guidance fold is how that
         declaration reaches the SQL binder. The two former producers are gone —
-        the nine seed YAMLs were migrated to native ``tolerance``/``guidance``
-        and the cockpit's ``teach_validation`` writes the typed shape
+        finance's nine seed YAMLs used the native ``tolerance``/``guidance`` shape
+        before DAT-725 band 3 retired them entirely (no vertical ships a
+        ``validations/`` directory today; LLM induction is the sole source), and
+        the cockpit's ``teach_validation`` writes the typed shape natively too
         (teach-surface retire). Retiring this normalizer = retyping the
         expected-formula teach contract first (parked, closeout triage).
         Normalization: ``parameters.tolerance`` → ``tolerance``; ``sql_hints`` →

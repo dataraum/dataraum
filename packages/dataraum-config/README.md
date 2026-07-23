@@ -23,7 +23,7 @@ dataraum-config/
 │   └── prompts/             # one YAML per prompt template
 ├── phases/                  # per-phase pipeline config (phases/<name>.yaml)
 ├── verticals/               # domain definitions
-│   └── finance/             # ontology, metrics, validations, cycles
+│   └── finance/             # ontology, metrics, cycles
 ├── null_values.yaml         # global null-token vocabulary
 └── pipeline.yaml            # active phases, parallelism, retry config
 ```

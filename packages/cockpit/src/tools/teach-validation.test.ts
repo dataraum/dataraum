@@ -9,8 +9,9 @@
 //     `sql_hints` bag);
 //   - `readSeededValidations` queries the typed `validations` view filtered to
 //     `source='seed'` and degrades to `[]` on a failed read, never throwing;
-//   - findShadowedSpec is an exact id match → the override flag is honest,
-//     generic over both the fs-shipped and DB-seeded summary shapes.
+//   - findShadowedSpec is an exact id match → the override flag is honest
+//     (band 3 retired the fs-shipped summary shape it used to also cover —
+//     `SeededValidationSpec` is the only pool shape left).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -48,7 +49,6 @@ import {
 	findShadowedSpec,
 	SEVERITIES,
 	type SeededValidationSpec,
-	type ShippedValidationSpec,
 	ValidationSpecSchema,
 } from "./validation-spec";
 
@@ -158,14 +158,15 @@ describe("ValidationSpecSchema (DAT-441 / DAT-725)", () => {
 });
 
 describe("findShadowedSpec (DAT-441)", () => {
-	const shipped: ShippedValidationSpec[] = [
+	const seeded: SeededValidationSpec[] = [
 		{
 			validation_id: "trial_balance",
 			name: "Trial Balance",
 			description: "…",
 			check_type: "balance",
 			severity: "critical",
-			parameters: { tolerance: 0.01 },
+			tolerance: 0.01,
+			guidance: "Sum debit - credit.",
 		},
 		{
 			validation_id: "gl_invoice_match",
@@ -173,39 +174,24 @@ describe("findShadowedSpec (DAT-441)", () => {
 			description: "…",
 			check_type: "aggregate",
 			severity: "warning",
-			parameters: null,
+			tolerance: null,
+			guidance: null,
 		},
 	];
 
-	it("returns the shipped spec when the id matches (an override)", () => {
-		const shadowed = findShadowedSpec(shipped, "trial_balance");
+	it("returns the seeded spec when the id matches (an override)", () => {
+		const shadowed = findShadowedSpec(seeded, "trial_balance");
 		expect(shadowed?.validation_id).toBe("trial_balance");
-		expect(shadowed?.parameters).toEqual({ tolerance: 0.01 });
+		expect(shadowed?.tolerance).toBe(0.01);
+		expect(shadowed?.guidance).toBe("Sum debit - credit.");
 	});
 
 	it("returns null when the id is new (a fresh declaration)", () => {
-		expect(findShadowedSpec(shipped, "invoice_reconciliation")).toBeNull();
+		expect(findShadowedSpec(seeded, "invoice_reconciliation")).toBeNull();
 	});
 
-	it("returns null against an empty shipped set", () => {
+	it("returns null against an empty seeded set", () => {
 		expect(findShadowedSpec([], "trial_balance")).toBeNull();
-	});
-
-	it("is generic over the DB-seeded summary shape too (DAT-725)", () => {
-		const seeded: SeededValidationSpec[] = [
-			{
-				validation_id: "trial_balance",
-				name: "Trial Balance",
-				description: "…",
-				check_type: "balance",
-				severity: "critical",
-				tolerance: 0.01,
-				guidance: "Sum debit - credit.",
-			},
-		];
-		const shadowed = findShadowedSpec(seeded, "trial_balance");
-		expect(shadowed?.tolerance).toBe(0.01);
-		expect(shadowed?.guidance).toBe("Sum debit - credit.");
 	});
 });
 

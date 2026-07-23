@@ -18,34 +18,28 @@
 // SHADOWING affordance: declaring with a shipped spec's id is an upsert-REPLACE,
 // surfaced visibly (the shadowed shipped spec is echoed back), never silent.
 //
-// SHADOW-DETECTION SOURCE (teach-surface retire, DAT-725): shadow detection now
+// SHADOW-DETECTION SOURCE (teach-surface retire, DAT-725): shadow detection
 // reads the typed `validations` Drizzle view (`readSeededValidations`, DB-bound,
 // filtered to `source='seed'` rows) instead of the vertical's shipped YAML —
-// the audit-flagged blocker to band 3's planned deletion of
+// the audit-flagged blocker to band 3's deletion of
 // `verticals/<v>/validations/*.yaml` (a live fs read against a file the epic
-// plans to delete would silently degrade every future override to
-// `override:false`, never loud). `readShippedValidations` (fs, unchanged) stays
-// exported for `frame.ts`'s `induceValidations`, which needs cross-vertical
-// enumeration + the full YAML body as structural few-shot BEFORE the
-// workspace's vertical is bound — the DB view resolves from
-// `workspace_settings.active_vertical`, which is not yet set at frame time, so
-// it cannot serve that consumer.
+// deleted would have silently degraded every future override to
+// `override:false`, never loud). The fs-shipped reader this replaced
+// (`readShippedValidations`) is GONE — band 3 also cut `frame.ts`'s only other
+// consumer of it (the finance few-shot seeding an onboarding induction call
+// used, lead-ruled OUT as cross-vertical vocabulary leakage) — so there is no
+// remaining fs read anywhere in this module.
 
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { toolDefinition } from "@tanstack/ai";
 import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { validations } from "../db/metadata/schema";
 import { teach } from "./teach";
 import {
 	findShadowedSpec,
-	narrowShippedSpec,
 	type SeededValidationSpec,
-	type ShippedValidationSpec,
 	ValidationSpecSchema,
 } from "./validation-spec";
 
@@ -61,50 +55,6 @@ export interface TeachValidationResult {
 	// guidance), echoed so the UX can show WHAT the user is replacing. null for
 	// a brand-new declaration (no seeded spec under that id).
 	shadowed_spec: SeededValidationSpec | null;
-}
-
-/**
- * Read the validation specs a vertical SHIPS on disk (verticals/<v>/validations/
- * *.yaml), narrowed to the shadow-summary fields. Mirrors `list_verticals`'
- * config-tree read: Bun's YAML, imported lazily so merely importing this tool
- * doesn't pull "bun" into the node-run test workers. A missing/unreadable
- * directory (no shipped validations, or the tree isn't mounted) yields [].
- *
- * NOT `teach_validation`'s shadow-detection default anymore (see
- * `readSeededValidations` below, DAT-725) — this fs reader's sole remaining
- * consumer is `frame.ts`'s `induceValidations`, which needs the full YAML body
- * across an ENUMERATED set of shipped verticals (`nearestSeedVertical`) before
- * the workspace's vertical is bound, which the DB-backed reader cannot serve.
- *
- * Degradation note: a swallowed read failure yields `[]` — never throws. */
-export async function readShippedValidations(
-	vertical: string,
-): Promise<ShippedValidationSpec[]> {
-	const dir = join(
-		config.dataraumConfigPath,
-		"verticals",
-		vertical,
-		"validations",
-	);
-	let files: string[];
-	try {
-		files = await readdir(dir, { encoding: "utf8" });
-	} catch {
-		return [];
-	}
-	const { YAML } = await import("bun");
-	const specs: ShippedValidationSpec[] = [];
-	for (const file of files) {
-		if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
-		try {
-			const text = await readFile(join(dir, file), "utf8");
-			const spec = narrowShippedSpec(YAML.parse(text));
-			if (spec) specs.push(spec);
-		} catch {
-			// A single unparseable file must not sink the whole read — skip it.
-		}
-	}
-	return specs;
 }
 
 /**
@@ -127,26 +77,25 @@ export async function readShippedValidations(
  * workspace's bound `active_vertical` server-side) — this does NOT re-filter
  * by the `vertical` argument client-side (it would be redundant against, and
  * could disagree with, the view's own scope). The `vertical` parameter stays
- * for signature parity with the other shipped/seeded readers (and the tool's
+ * for signature parity with the other seeded readers (and the tool's
  * injectable-reader precedent) but is unused in the query: if the caller's
  * declared `vertical` (e.g. `teachValidation`'s `input.vertical`) ever
  * diverges from the workspace's actually-bound `active_vertical`, shadow
  * detection silently checks against the BOUND vertical, not the declared
  * one — no error surfaces. Low-probability (a workspace's `active_vertical`
- * is a pin-once value for its whole life) but silent, same failure shape
- * this migration retired on the fs side; flagged here rather than asserted
- * against, since asserting would need its own `workspace_settings` read and
- * a new failure mode not otherwise called for.
+ * is a pin-once value for its whole life) but silent; flagged here rather
+ * than asserted against, since asserting would need its own
+ * `workspace_settings` read and a new failure mode not otherwise called for.
  *
- * This is the shadow-detection source of truth going forward (teach-surface
- * retire, DAT-725) — `readShippedValidations` above (fs) stays for `frame.ts`'s
- * pre-binding cross-vertical seed, an unrelated consumer this swap must not
- * regress (see the module header).
+ * This is THE shadow-detection source of truth (teach-surface retire,
+ * DAT-725) — the fs-shipped reader this replaced (`readShippedValidations`)
+ * is gone entirely; band 3 retired its only other consumer too (see the
+ * module header).
  *
- * Degradation note: identical contract to `readShippedValidations` above — a
- * failed query degrades to `[]` (an actual override then LOOKS like a fresh
- * declaration, `override:false`), never throws. The write itself is unaffected
- * (the engine applier upsert-replaces by `validation_id` regardless).
+ * Degradation note: a failed query degrades to `[]` (an actual override then
+ * LOOKS like a fresh declaration, `override:false`), never throws. The write
+ * itself is unaffected (the engine applier upsert-replaces by
+ * `validation_id` regardless).
  */
 export async function readSeededValidations(
 	_vertical: string,

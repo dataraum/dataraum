@@ -139,16 +139,25 @@ class TestConventions:
         """A convention renders only for a target it lists — broad or specific."""
         loader = OntologyLoader()
         ontology = loader.load("finance")
-        # finance's sign convention targets `extraction` (broad) + `qa` (broad, the
-        # cockpit Q&A agent) + the SPECIFIC `validation:sign_conventions` — NOT every
-        # validation.
+        # finance's conventions target `extraction` (broad) + `qa` (broad, the
+        # cockpit Q&A agent) only — no convention carries a validation-scoped
+        # target since DAT-725 band 3 retired the shipped validation YAMLs (a
+        # GENERATED check that needs a convention now declares the dependency
+        # from its own side via `relevant_conventions`, see
+        # `test_include_ids_pulls_regardless_of_targets` below). The per-spec
+        # qualifier ROUND-TRIP mechanism itself is pinned on synthetic fixtures
+        # in `test_qualifier_matches_specific_target` below.
         assert loader.format_conventions_for_prompt(ontology, "extraction")
         assert loader.format_conventions_for_prompt(ontology, "qa")
-        # Broad `validation` (no qualifier) does NOT match the scoped target.
+        # Broad `validation` (no qualifier) does NOT match — no convention opts in.
         assert loader.format_conventions_for_prompt(ontology, "validation") == ""
-        # The named validation gets it; an unrelated one does not.
-        assert loader.format_conventions_for_prompt(
-            ontology, "validation", qualifier="sign_conventions"
+        # No convention carries a validation-scoped target anymore — every
+        # qualifier resolves empty against the real finance data.
+        assert (
+            loader.format_conventions_for_prompt(
+                ontology, "validation", qualifier="sign_conventions"
+            )
+            == ""
         )
         assert (
             loader.format_conventions_for_prompt(ontology, "validation", qualifier="trial_balance")

@@ -15,9 +15,13 @@
 // `concepts` AND the executable knowledge over them — `validations` (DAT-469),
 // `cycles` (DAT-470), and `metrics` (DAT-471). Each family runs through the
 // shared frame-a-family core (frame-family.ts) two ways:
-//   - induce: no edited set → the LLM proposes that family's set (validations,
-//     cycles, and metrics induce OVER the same-call concepts, seeded with the
-//     nearest shipped vertical's specs as structural few-shot).
+//   - induce: no edited set → the LLM proposes that family's set, OVER the
+//     same-call concepts. Cycles and metrics seed with the nearest shipped
+//     vertical's specs as structural few-shot; validations do NOT (DAT-725 band
+//     3 — a finance few-shot example IS finance vocabulary, and leaking it into
+//     another vertical's induction is exactly the cross-vertical leakage the
+//     epic's band-6 goal forbids), so they propose from the schema + concepts
+//     alone, same as every vertical.
 //   - declare: an edited set → written verbatim, no LLM. This is how the
 //     ModelFrame widget's accept/edit round-trips: the agent re-invokes frame
 //     with the edited concepts and/or validations and/or cycles and/or metrics.
@@ -61,15 +65,11 @@ import { InducedMetrics, toProposedMetric } from "./metric-induction";
 import { MetricSpecSchema, type ShippedMetricSpec } from "./metric-spec";
 import { readShippedCycles } from "./teach-cycle";
 import { readShippedMetrics } from "./teach-metric";
-import { readShippedValidations } from "./teach-validation";
 import {
 	InducedValidations,
 	toProposedValidation,
 } from "./validation-induction";
-import {
-	type ShippedValidationSpec,
-	ValidationSpecSchema,
-} from "./validation-spec";
+import { ValidationSpecSchema } from "./validation-spec";
 
 // The fallback vertical when frame isn't given a name — the cold-start ontology
 // the engine resolves against when nothing else is declared.
@@ -369,23 +369,24 @@ export async function induceConcepts(
  * map the payload uses — and `toProposedValidation` folds it back to the engine's
  * `dict[str, Any]` here, at the single conversion boundary. Induced OVER the
  * framed concept vocabulary — the concepts are part of the context, so the
- * proposed checks anchor to them rather than to guessed column names. The induce
- * prompt is seeded with the nearest shipped vertical's specs as STRUCTURAL
- * few-shot (DAT-468) — the framing that makes the proposed shape reliable.
- * Returns the proposed validations; does NOT write anything. The shipped-spec
- * reader is injectable so the seed wiring is unit-testable without the config
- * tree; production uses the default. `signal` bridges the tool-context abort.
+ * proposed checks anchor to them rather than to guessed column names. Returns
+ * the proposed validations; does NOT write anything. `signal` bridges the
+ * tool-context abort.
+ *
+ * NO shipped-vertical few-shot (DAT-725 band 3, lead-ruled): a finance few-shot
+ * example IS finance vocabulary, and seeding a newly-onboarded vertical's
+ * induction with it is exactly the cross-vertical leakage the epic's band-6
+ * zero-leakage goal forbids — unlike cycles/metrics (`induceCycles` /
+ * `induceMetrics` below), which still read a shipped library because no
+ * cross-vertical-leakage concern was raised for them. A brand-new vertical's
+ * validations are proposed from the schema + concepts alone, same as any other
+ * vertical's.
  */
 export async function induceValidations(
 	schema: ConnectSchema,
 	concepts: ProposedConcept[],
-	vertical: string,
 	signal?: AbortSignal,
-	readSeed: (
-		v: string,
-	) => Promise<ShippedValidationSpec[]> = readShippedValidations,
 ): Promise<ProposedValidation[]> {
-	const seed = await nearestSeedVertical(vertical, readSeed);
 	const { validations } = await induceNative({
 		instructions: getFrameValidationsInstructions(),
 		userMessage:
@@ -393,11 +394,7 @@ export async function induceValidations(
 			"source, over the framed concept vocabulary. Only propose checks the data " +
 			"can support.\n\n" +
 			`<concepts>\n${JSON.stringify(concepts, null, 2)}\n</concepts>\n\n` +
-			`<schema>\n${JSON.stringify(schema, null, 2)}\n</schema>\n\n` +
-			formatSeedExamples(seed.specs, {
-				vertical: seed.vertical,
-				family: "validation",
-			}),
+			`<schema>\n${JSON.stringify(schema, null, 2)}\n</schema>`,
 		outputSchema: InducedValidations,
 		signal,
 	});
@@ -611,7 +608,7 @@ export async function frame(
 	const validations = await frameFamily<ProposedValidation>({
 		teachType: "validation",
 		itemSchema: ProposedValidation,
-		induce: (sig) => induceValidations(schema, concepts.items, vertical, sig),
+		induce: (sig) => induceValidations(schema, concepts.items, sig),
 		toPayload: (v) => ({ vertical, ...stripUndefined(v) }),
 		edited: input.validations,
 		signal,

@@ -51,9 +51,11 @@ def test_seed_finance_creates_typed_rows(session: Session) -> None:
     assert sign.source == "seed"
     # The statement is served verbatim (a non-empty prose blob the engine never parses).
     assert sign.statement.strip()
-    # The routing envelope round-trips typed (JSON list), including the per-spec qualifier.
-    assert "validation:sign_conventions" in sign.targets
-    assert "qa" in sign.targets
+    # The routing envelope round-trips typed (JSON list). No validation-scoped
+    # qualifier here (DAT-725 band 3 retired the sign_conventions check this once
+    # routed to) — the per-spec qualifier ROUND-TRIP mechanism itself is pinned
+    # generically in test_ontology_loader.py.
+    assert sign.targets == ["extraction", "qa"]
     # The concept_groups partition round-trips typed (JSON object).
     assert set(sign.concept_groups) == {"credit_normal", "debit_normal"}
     assert "revenue" in sign.concept_groups["credit_normal"]

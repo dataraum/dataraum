@@ -3,18 +3,27 @@
 // Split from `teach-validation.ts` so the schema + the pure shadow-detection are
 // importable without booting `config.ts` (test ergonomics — the `teach`/
 // `teach.validation` split precedent). `teach-validation.ts` owns the DB-bound
-// write + the config-tree read; this module owns the shape.
+// write + the shipped/seeded reads; this module owns the shape.
 //
-// The shape MIRRORS the engine's `ValidationSpec` (analysis/validation/models.py)
-// and the finance vertical YAML (verticals/finance/validations/*.yaml): one
-// `validation` overlay row carries a full spec, which `core/overlay.py`
-// `_apply_validation` upsert-replaces by `validation_id` into the vertical's
-// declared set. A teach declares a new INSTANCE or overrides a shipped one —
-// NEVER a new TYPE: `check_type` is closed here to the four values used by the
-// shipped validation YAMLs. The engine's `ValidationSpec.check_type` is a plain
-// `str` (no runtime validation today), and the evaluator does not branch on it —
-// the user's words shape WHAT gets grounded, never HOW results get scored
-// (ADR-0017: one `deviation <= tolerance` judgement for every type).
+// The shape MIRRORS the engine's typed `validations` home (analysis/validation/
+// db_models.py, DAT-735) and its Drizzle read view (db/metadata/schema.ts
+// ~validations): one `validation` overlay row carries a full spec, which
+// `core/overlay.py` `_apply_validation` upsert-replaces by `validation_id` into
+// the vertical's declared set. A teach declares a new INSTANCE or overrides a
+// shipped one — NEVER a new TYPE: `check_type` is closed here to the four values
+// used by the shipped validation YAMLs. The engine's `ValidationSpec.check_type`
+// is a plain `str` (no runtime validation today), and the evaluator does not
+// branch on it — the user's words shape WHAT gets grounded, never HOW results
+// get scored (ADR-0017: one `deviation <= tolerance` judgement for every type).
+//
+// `tolerance`/`guidance` replace the legacy `parameters`/`sql_hints` fields
+// (teach-surface retire, DAT-725): the typed home's columns are
+// `tolerance: double precision` (the declared pass threshold) and
+// `guidance: text` (free-form SQL-grounding guidance) — a straight 1:1 typed
+// mirror, not a free-form bag. NO migration of existing legacy `config_overlay`
+// rows written under the old shape (repo rule: no backwards-compat shims); a
+// pre-existing overlay row still carrying `parameters`/`sql_hints` is read by
+// the engine's legacy normalizer (untouched by this cockpit-only lane).
 
 import { z } from "zod";
 
@@ -25,7 +34,7 @@ import { z } from "zod";
 // value — it judges every type by `deviation <= tolerance` (ADR-0017) and only
 // echoes check_type in the message — so this enum is a VOCABULARY contract with
 // the SQL-grounding prompt, not a dispatch table. A teach composes a new check
-// from these via description + sql_hints the LLM grounds at bind; adding a fifth
+// from these via description + guidance the LLM grounds at bind; adding a fifth
 // is engine evolution, not a teach. Surfaced as a `z.enum` so the tool's
 // `input_schema` constrains the model to exactly these — no free-text type.
 export const CHECK_TYPES = [
@@ -44,11 +53,11 @@ export type Severity = (typeof SEVERITIES)[number];
 
 // The validation spec the user declares — a top-level `z.object` so Anthropic's
 // `input_schema` is `type: object` (no top-level discriminated union; the closed
-// vocabularies ride as enum PROPERTIES, not a root union). `parameters` is a
-// free-form object (`tolerance`, account-type hints, …) the LLM reads at grounding
-// — it shapes WHAT, never the evaluator branch. `vertical` keys the overlay row to
-// the loading vertical (the engine applier filters `payload.vertical`), mirroring
-// the `concept` teach.
+// vocabularies ride as enum PROPERTIES, not a root union). `tolerance` is the
+// typed ADR-0017 pass threshold and `guidance` is free-form SQL-binding prose —
+// together they shape WHAT is checked, never the evaluator branch. `vertical`
+// keys the overlay row to the loading vertical (the engine applier filters
+// `payload.vertical`), mirroring the `concept` teach.
 export const ValidationSpecSchema = z.object({
 	vertical: z
 		.string()
@@ -77,7 +86,7 @@ export const ValidationSpecSchema = z.object({
 		.min(1)
 		.describe(
 			"What the check verifies, in business terms — the LLM grounds SQL from " +
-				"this + sql_hints at bind time, so be specific about the rule.",
+				"this + guidance at bind time, so be specific about the rule.",
 		),
 	category: z
 		.string()
@@ -97,17 +106,17 @@ export const ValidationSpecSchema = z.object({
 				"net to ~zero within tolerance), 'comparison' (two computed values " +
 				"must agree), 'constraint' (a query must return zero violating rows), " +
 				"'aggregate' (an aggregate must fall within bounds). Pick the branch " +
-				"whose semantics match; the description + sql_hints shape WHAT it checks.",
+				"whose semantics match; the description + guidance shape WHAT it checks.",
 		),
-	parameters: z
-		.record(z.string(), z.unknown())
+	tolerance: z
+		.number()
 		.optional()
 		.describe(
-			"Free-form check parameters the LLM reads when grounding SQL, e.g. " +
-				"{ tolerance: 0.01, asset_types: ['asset','assets'] }. Shapes WHAT is " +
-				"checked, never the evaluator branch.",
+			"The declared pass threshold: the check passes when the computed " +
+				"deviation is <= this value (ADR-0017's one `deviation <= tolerance` " +
+				"judgement, applied to every check_type). Omit to use the engine's default.",
 		),
-	sql_hints: z
+	guidance: z
 		.string()
 		.optional()
 		.describe(
@@ -131,9 +140,13 @@ export const ValidationSpecSchema = z.object({
 });
 export type ValidationSpecInput = z.infer<typeof ValidationSpecSchema>;
 
-/** A shipped validation spec as read off a vertical's `validations/*.yaml`, in
- * the few fields the shadowing affordance surfaces. The full YAML carries more;
- * we only echo what the UX shows when an override shadows a shipped check. */
+/** A shipped validation spec as read off a vertical's `validations/*.yaml`
+ * (fs), in the few fields the FRAME induction's structural few-shot draws on
+ * (`frame.ts`'s `induceValidations`, via `nearestSeedVertical`). The YAML seed
+ * files still carry the LEGACY `parameters`/`sql_hints` shape (dataraum-config
+ * is untouched by the teach-surface retire) — this stays their exact narrow,
+ * NOT the typed `tolerance`/`guidance` shape `ValidationSpecSchema` writes. The
+ * full YAML carries more; we only echo the summary keys. */
 export interface ShippedValidationSpec {
 	validation_id: string;
 	name: string | null;
@@ -141,6 +154,22 @@ export interface ShippedValidationSpec {
 	check_type: string | null;
 	severity: string | null;
 	parameters: Record<string, unknown> | null;
+}
+
+/** A validation as read off the workspace's typed `validations` view
+ * (db/metadata/schema.ts), filtered to `source='seed'` rows only
+ * (teach-surface retire, DAT-725) — the shadow-detection source of truth for
+ * `teach_validation` (`readSeededValidations` in `teach-validation.ts`). Typed
+ * 1:1 mirror of the DB columns: `tolerance`/`guidance` are the DAT-735 typed
+ * fields, never the legacy `parameters`/`sql_hints` bag. */
+export interface SeededValidationSpec {
+	validation_id: string;
+	name: string | null;
+	description: string | null;
+	check_type: string | null;
+	severity: string | null;
+	tolerance: number | null;
+	guidance: string | null;
 }
 
 function asString(v: unknown): string | null {
@@ -171,15 +200,16 @@ export function narrowShippedSpec(doc: unknown): ShippedValidationSpec | null {
 }
 
 /**
- * Detect whether `validationId` shadows a shipped spec in `shipped`. Pure (no
- * I/O), so the override-vs-new decision is unit-tested directly; the tool
- * supplies the list from the config-tree read. An exact id match → the overlay
- * upsert-replaces the shipped spec (a VISIBLE override); no match → a fresh
- * declaration.
+ * Detect whether `validationId` shadows a spec in `pool`. Pure (no I/O), so the
+ * override-vs-new decision is unit-tested directly; the caller supplies the
+ * pool from either read path (fs-shipped or DB-seeded — generic over both
+ * summary shapes, since the match is by `validation_id` alone). An exact id
+ * match → the overlay upsert-replaces the matched spec (a VISIBLE override);
+ * no match → a fresh declaration.
  */
-export function findShadowedSpec(
-	shipped: ShippedValidationSpec[],
+export function findShadowedSpec<T extends { validation_id: string }>(
+	pool: T[],
 	validationId: string,
-): ShippedValidationSpec | null {
-	return shipped.find((s) => s.validation_id === validationId) ?? null;
+): T | null {
+	return pool.find((s) => s.validation_id === validationId) ?? null;
 }

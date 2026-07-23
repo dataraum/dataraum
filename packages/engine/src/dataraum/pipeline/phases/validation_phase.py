@@ -222,11 +222,21 @@ class ValidationPhase(BasePhase):
         # the session mutations (transitions + state_reason + persist) are then
         # applied serially on the main thread, in deterministic spec order.
         # Conventions are read-only ontology text, pre-computed here (off the pool).
+        # Union routing (DAT-865): the convention-side `targets` push (broad
+        # "validation" / specific "validation:<id>") ∪ the check-side declared
+        # `relevant_conventions` pull. A convention's targets can only name checks
+        # that exist at authoring time, so a GENERATED check's dependencies (e.g.
+        # the sign rule its legs rely on) arrive through its own declaration —
+        # membership-validated at induction, resolved here. Seed rows declare
+        # nothing by default, so the shipped checks render exactly as before.
         conventions_by_id = {
             validation_id: ontology_loader.format_conventions_for_prompt(
-                ontology, "validation", qualifier=validation_id
+                ontology,
+                "validation",
+                qualifier=validation_id,
+                include_ids=spec.relevant_conventions,
             )
-            for validation_id in specs
+            for validation_id, spec in specs.items()
         }
 
         def _bind_and_execute(

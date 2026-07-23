@@ -12,6 +12,7 @@ table). Custom ``verticals_dir`` (test fixtures) bypasses the overlay.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
@@ -248,7 +249,12 @@ class OntologyLoader:
         return "\n".join(lines)
 
     def format_conventions_for_prompt(
-        self, ontology: OntologyDefinition | None, target: str, qualifier: str | None = None
+        self,
+        ontology: OntologyDefinition | None,
+        target: str,
+        qualifier: str | None = None,
+        *,
+        include_ids: Collection[str] = (),
     ) -> str:
         """Render the vertical's conventions for one consumer (DAT-645).
 
@@ -262,11 +268,19 @@ class OntologyLoader:
         engine's. The engine routes by the generic label only; it never interprets
         the group labels or the statement. Empty string when nothing applies.
 
+        ``include_ids`` is the pull side of the routing (DAT-865): a check's
+        declared ``relevant_conventions`` select a convention by id regardless of
+        its ``targets`` — the convention-side push can only name checks that exist
+        at authoring time, so a GENERATED check declares its dependencies from the
+        other side. Selection only; the rendering is identical either way.
+
         Args:
             ontology: Ontology definition, or None.
             target: Consumer label (e.g. ``"extraction"``, ``"validation"``).
             qualifier: Optional specific id (e.g. a validation's id) — a convention
                 also matches if its targets include ``f"{target}:{qualifier}"``.
+            include_ids: Convention ids to include regardless of ``targets`` (the
+                validation-side declared dependencies).
 
         Returns:
             Formatted conventions text, or "" when none target this consumer.
@@ -276,7 +290,11 @@ class OntologyLoader:
         specific = f"{target}:{qualifier}" if qualifier else None
         blocks: list[str] = []
         for conv in ontology.conventions:
-            if target not in conv.targets and (specific is None or specific not in conv.targets):
+            if (
+                target not in conv.targets
+                and (specific is None or specific not in conv.targets)
+                and conv.id not in include_ids
+            ):
                 continue
             lines = [conv.statement.strip()]
             for group, members in conv.concept_groups.items():

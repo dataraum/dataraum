@@ -138,6 +138,15 @@ class Validation(Base):
 
     # cycle types this validation applies to; empty/NULL = universal.
     relevant_cycles: Mapped[list[str] | None] = mapped_column(JSON)
+    # Convention names (``conventions.name``) this check's LOGIC relies on — the
+    # typed validation→convention dependency edge (DAT-865). A convention's own
+    # ``targets`` can only route to checks that exist at authoring time; a
+    # GENERATED check therefore declares its dependencies from the other side, and
+    # the SQL binder serves the union (targets-routed ∪ declared) — so a sign or
+    # netting judgment the check relies on arrives as declared prose, never
+    # re-guessed at bind time. Written by induction (membership-validated against
+    # the served conventions) or the seed YAML; empty/NULL = none declared.
+    relevant_conventions: Mapped[list[str] | None] = mapped_column(JSON)
     tags: Mapped[list[str] | None] = mapped_column(JSON)
     version: Mapped[str] = mapped_column(String, nullable=False, default="1.0")
 

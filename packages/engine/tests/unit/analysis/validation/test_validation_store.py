@@ -101,6 +101,28 @@ def test_generated_rows_persist_alongside_seed(session: Session) -> None:
     assert rows["double_entry_balance"].source == "seed"
 
 
+def test_relevant_conventions_roundtrip(session: Session) -> None:
+    """The declared convention dependency persists and loads back typed (DAT-865).
+
+    The validation→convention edge is what routes a convention to a GENERATED
+    check's SQL binder — losing it on either leg of the roundtrip silently
+    reverts the binder to an empty conventions block.
+    """
+    persist_generated_validations(
+        session,
+        VERTICAL,
+        [_gen_spec("induced_dep", relevant_conventions=["sign_natural_balance"])],
+    )
+    row = _active(session)["induced_dep"]
+    assert row.relevant_conventions == ["sign_natural_balance"]
+    specs = {s.validation_id: s for s in load_workspace_validations(session, VERTICAL)}
+    assert specs["induced_dep"].relevant_conventions == ["sign_natural_balance"]
+    # Undeclared ⇒ empty list (NULL in the row), never None on the spec.
+    persist_generated_validations(session, VERTICAL, [_gen_spec("induced_plain")])
+    plain = {s.validation_id: s for s in load_workspace_validations(session, VERTICAL)}
+    assert plain["induced_plain"].relevant_conventions == []
+
+
 def test_reinduction_supersedes_prior_generated(session: Session) -> None:
     """Re-induction supersedes the prior generated set, never duplicates."""
     persist_generated_validations(session, VERTICAL, [_gen_spec("induced_a")])

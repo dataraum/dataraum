@@ -61,6 +61,32 @@ def test_sql_prompt_renders_with_empty_conventions(prompt_name: str) -> None:
     renderer.render_split(prompt_name, _ctx_for(template))
 
 
+@pytest.mark.parametrize(
+    ("prompt_name", "anchor"),
+    [
+        # DAT-874: cross-measure temporal-form coherence — a movement (additive /
+        # flow) never compares directly against a level (point_in_time / stock).
+        # The rule lives at BOTH authoring layers: induction (don't propose the
+        # incoherent check) and the SQL binder (bind a coherent form or decline).
+        # Prompt text is config data — this tripwire pins that a later prompt
+        # edit cannot silently drop the discipline from either layer.
+        ("validation_induction", "TEMPORAL-FORM coherence"),
+        ("validation_sql", "Same temporal form"),
+    ],
+)
+def test_temporal_form_coherence_rule_is_pinned(prompt_name: str, anchor: str) -> None:
+    renderer = PromptRenderer()
+    template = renderer.load_template(prompt_name)
+
+    system, user, _temperature = renderer.render_split(prompt_name, _ctx_for(template))
+
+    assert anchor in (system + user), (
+        f"{prompt_name}: the DAT-874 temporal-form coherence rule (anchor "
+        f"'{anchor}') is missing from the rendered prompt — a movement-vs-level "
+        f"comparison would author/bind unchallenged again"
+    )
+
+
 def test_every_shipped_template_satisfies_the_schema() -> None:
     """Every prompt in dataraum-config loads under the strict schema.
 

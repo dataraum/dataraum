@@ -4,11 +4,12 @@
 # Emphasizes syntactic correctness and proper column quoting.
 
 name: validation_sql
-version: "3.0.0"
+version: "3.1.0"
 description: >
   Generate DuckDB SQL for validation checks (contracted deviation/magnitude output),
   honoring the catalog's table-grain facts: role/grain/temporal semantics are
-  authoritative over names, prose, and hints (DAT-870)
+  authoritative over names, prose, and hints (DAT-870); two measures compare only
+  in the same temporal form — never a movement directly against a level (DAT-874)
 
 # Temperature (0.0 = deterministic for SQL)
 temperature: 0.0
@@ -71,7 +72,10 @@ system_prompt: |
      - prose says an id "must exist" in a table whose role is fact or
        periodic_snapshot → not bindable there (see existence_checks);
      - prose says to sign-normalize one side of a reconciliation → normalize
-       both sides identically or neither (see comparison_discipline).
+       both sides identically or neither (see comparison_discipline);
+     - prose says to compare a per-period movement (temporal_behavior=
+       "additive") directly against a level (temporal_behavior="point_in_time")
+       → bind a coherent form or decline (see comparison_discipline).
      A binding that follows a hint against a measured fact fails on clean
      data — the exact defect this requirement exists to stop.
   </critical_requirements>
@@ -155,6 +159,10 @@ system_prompt: |
     compared value is point_in_time (a level), and then cumulate through the END of
     that row's period (see period_boundaries).
   - Never aggregate a point_in_time column across periods.
+  - Two MEASURE columns compare with each other only in the same temporal form —
+    movement vs movement, level vs level, or a coherent transform of one into
+    the other — never a movement directly against a level (see
+    comparison_discipline).
   - When the check's correctness depends on grain facts the schema does not provide
     for a table, set can_validate=false with the reason rather than guessing.
   </table_grain_semantics>
@@ -192,6 +200,20 @@ system_prompt: |
     ("or B - A depending on the entity's category") for the COMPUTED side of a
     reconciliation is exactly the one-sided normalization this rule forbids:
     compute both sides in one uniform convention and compare directly.
+  - Same temporal form: both sides must be the same KIND of quantity per the
+    served temporal_behavior facts — additive (movement) compares against
+    additive over the SAME period window; point_in_time (level) against
+    point_in_time at the SAME period. A per-period movement (or a net of
+    movements) NEVER compares directly against a level — they are different
+    quantities, and their direct comparison fails on clean data. When the
+    spec asks for exactly that, the coherent bindings are: the movement vs
+    the CHANGE in the level between consecutive periods (restricted to
+    periods where a prior level exists); or the movement CUMULATED through
+    end-of-period vs the level — ONLY when the served facts show the
+    movement history is complete from the level's origin (a cumulation that
+    starts mid-history is short by the starting level). If neither coherent
+    form is groundable from the served facts, set can_validate=false with
+    that reason — the spec's prose does not override the facts.
   </comparison_discipline>
 
   <existence_checks>

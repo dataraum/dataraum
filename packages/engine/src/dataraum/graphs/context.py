@@ -172,12 +172,20 @@ class DriverContext:
     high-signal HINT for which values carry data, NOT the complete value-set (recall<1;
     the value-set is `top_values`). `target_type` grounds the aggregation (flow→SUM,
     stock→end-of-period, ratio). Mirrors the cockpit `projectDriverRanking`.
+
+    `status`/`abstain_reason` (DAT-859) carry the persisted abstention pair verbatim
+    (plain strings — the DB row's own vocabulary, not the drivers module's enum):
+    `_append_drivers` is the ONE read-side convention point that skips a non-
+    "measured" ranking, so it never renders as prompt content; this dataclass still
+    carries it (loaded from every row) for that check to read.
     """
 
     measure_label: str
-    target_type: str  # flow | stock | ratio
+    target_type: str  # flow | stock | ratio; "" when abstained with no resolved type
     grain: str  # row | entity
     entity: str | None = None
+    status: str = "measured"  # measured | abstained (DAT-859)
+    abstain_reason: str | None = None
     ranked_dimensions: list[dict[str, Any]] = field(default_factory=list)  # [{dimension, gain}]
     interesting_slices: list[dict[str, Any]] = field(
         default_factory=list
@@ -213,6 +221,11 @@ class BusinessCycleContext:
 
     cycle_name: str
     cycle_type: str  # e.g., "order_to_cash", "procure_to_pay"
+    # Direction axis (DAT-856): the declared family + resolved direction. Both None for
+    # a non-family cycle; both set for a family cycle (a decided label, or 'undetermined'
+    # — the honest detected-but-undirected state, rendered as such, never a guessed label).
+    family: str | None = None
+    direction: str | None = None
     tables_involved: list[str] = field(default_factory=list)
     completion_rate: float | None = None  # What % of cycles complete
     description: str | None = None
@@ -220,8 +233,14 @@ class BusinessCycleContext:
     confidence: float = 0.0
     stages: list[CycleStageContext] = field(default_factory=list)
     entity_flows: list[EntityFlowContext] = field(default_factory=list)
-    status_column: str | None = None  # "invoices.status"
-    completion_value: str | None = None  # "paid"
+    # Bare parts (DAT-733): the status column + its table kept SEPARATE, not
+    # pre-combined — the default validity-scope resolver renders a bare-column
+    # predicate over the grounding's relation, and the narrative re-qualifies it
+    # (``<status_table>.<status_column>``) for reading.
+    status_table: str | None = None
+    status_column: str | None = None
+    # The served value that marks a cycle complete (the scope's right-hand side).
+    completion_value: str | None = None
 
     # Volume metrics (from DetectedBusinessCycle)
     total_records: int | None = None
@@ -378,6 +397,16 @@ class GraphExecutionContext:
 
     # Validation results (from validation analysis)
     validations: list[ValidationContext] = field(default_factory=list)
+
+    # DAT-853 abstention at the SECTION grain: "operating-model run absent —
+    # cycles/validations never analyzed" and "graph unreachable — refs not
+    # readable" must stay distinguishable from genuinely-empty results.
+    # format_served_context renders an explicit not-analyzed stub for the False
+    # cases instead of omitting the section (a served document that looks
+    # byte-identical either way is the silent-substitute defect). Defaults are
+    # False — absence is assumed until the builder proves otherwise.
+    operating_model_analyzed: bool = False
+    graph_readable: bool = False
 
     # Enriched views (pre-joined fact + dimension tables)
     enriched_views: list[EnrichedViewContext] = field(default_factory=list)
@@ -643,9 +672,14 @@ def build_execution_context(
             driver_contexts.append(
                 DriverContext(
                     measure_label=art.measure_label,
-                    target_type=art.target_type,
+                    # NULL only on an abstained ranking with no resolved type
+                    # (DAT-859); "" is the honest placeholder, never rendered
+                    # (_append_drivers skips non-"measured" rows outright).
+                    target_type=art.target_type or "",
                     grain=art.grain,
                     entity=art.entity,
+                    status=art.status,
+                    abstain_reason=art.abstain_reason,
                     ranked_dimensions=art.ranked_dimensions or [],
                     interesting_slices=art.interesting_slices or [],
                     secondary_dimensions=art.secondary_dimensions or [],
@@ -709,17 +743,12 @@ def build_execution_context(
             )
             for ef in (cycle.entity_flows or [])
         ]
-        # Combine status_table + status_column for concise reference
-        status_col = None
-        if cycle.status_table and cycle.status_column:
-            status_col = f"{cycle.status_table}.{cycle.status_column}"
-        elif cycle.status_column:
-            status_col = cycle.status_column
-
         business_cycle_contexts.append(
             BusinessCycleContext(
                 cycle_name=cycle.cycle_name,
                 cycle_type=cycle.canonical_type or cycle.cycle_type,
+                family=cycle.family,
+                direction=cycle.direction,
                 tables_involved=cycle.tables_involved,
                 completion_rate=cycle.completion_rate,
                 description=cycle.description,
@@ -727,7 +756,9 @@ def build_execution_context(
                 confidence=cycle.confidence,
                 stages=stages,
                 entity_flows=entity_flows,
-                status_column=status_col,
+                # Bare parts (DAT-733) — the resolver + narrative re-combine as needed.
+                status_table=cycle.status_table,
+                status_column=cycle.status_column,
                 completion_value=cycle.completion_value,
                 total_records=cycle.total_records,
                 completed_cycles=cycle.completed_cycles,
@@ -750,7 +781,7 @@ def build_execution_context(
     from dataraum.analysis.validation.db_models import ValidationResultRecord
     from dataraum.analysis.validation.evaluate import evaluate_validation
 
-    val_specs = load_all_validation_specs(vertical) if vertical else {}
+    val_specs = load_all_validation_specs(vertical, session) if vertical else {}
     validation_contexts: list[ValidationContext] = []
     # No specs (no vertical) ⇒ every row would be skipped at the spec lookup, so
     # skip the read entirely rather than scan validation_results for nothing.
@@ -833,12 +864,22 @@ def build_execution_context(
             from dataraum.analysis.semantic.concept_store import load_workspace_concepts
             from dataraum.analysis.semantic.ontology import OntologyLoader
 
-            # Concepts from the typed vocabulary table (DAT-728, config→DB);
-            # conventions still come from YAML (not config→DB in this phase).
+            # Concepts AND conventions from the typed vocabulary tables (DAT-728 /
+            # DAT-789, config→DB): load_workspace_concepts now carries the DB
+            # conventions on its OntologyDefinition, so the extraction render reads the
+            # typed `conventions` home, not the YAML.
             ontology_obj = load_workspace_concepts(session, vertical)
             conventions = OntologyLoader().format_conventions_for_prompt(ontology_obj, "extraction")
         except Exception as e:
             logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
+            # A load FAILURE must never render as "the vertical declares none" —
+            # the prompt template asserts exactly that for an empty conventions
+            # slot, which would be affirmatively false here. Serve a labeled
+            # failure the agent can see instead of a silent empty.
+            conventions = (
+                f"(convention lookup FAILED for vertical '{vertical}' — conventions "
+                "may exist but could not be served; do not assume none apply)"
+            )
 
     # 14c. Garnish the graph-served concepts (DAT-734) with the ontology's
     # description/indicators/exclude_patterns — the definition surface the agent
@@ -1031,6 +1072,8 @@ def build_execution_context(
         conformed_dimensions=(graph_reads.conformed_dimensions if graph_reads else []),
         field_mappings=field_mappings,
         conventions=conventions,
+        operating_model_analyzed=om_run_id is not None,
+        graph_readable=graph_reads is not None,
     )
 
 
@@ -1742,6 +1785,12 @@ def format_served_context(
     _append_drivers(lines, context)
 
     # --- Relationships (the graph's refs edges) ---
+    if not context.relationships and not context.graph_readable:
+        # Unreadable graph ≠ zero relationships — state the absence (DAT-853).
+        lines.append("")
+        lines.append("## Relationships")
+        lines.append("")
+        lines.append("(not analyzed — the operating-model graph is not readable for this run)")
     if context.relationships:
         lines.append("")
         lines.append("## Relationships")
@@ -1810,12 +1859,25 @@ def format_served_context(
                 lines.append(f"Slice dimensions: {names} — see Value sets for the values.")
 
     # --- Business Processes ---
+    if not context.business_cycles and not context.operating_model_analyzed:
+        # No promoted operating-model run: cycles were never analyzed. Omitting
+        # the section would be byte-identical to "analyzed, none detected" —
+        # the LLM must be able to tell the two apart (DAT-853).
+        lines.append("")
+        lines.append("## Business Processes")
+        lines.append("")
+        lines.append("(not yet analyzed — no operating-model run for this workspace)")
     if context.business_cycles:
         lines.append("")
         lines.append("## Business Processes")
         _append_business_processes(lines, context)
 
     # --- Validation Results ---
+    if not context.validations and not context.operating_model_analyzed:
+        lines.append("")
+        lines.append("## Validation Results")
+        lines.append("")
+        lines.append("(not yet analyzed — no operating-model run for this workspace)")
     if context.validations:
         lines.append("")
         lines.append("## Validation Results")
@@ -1881,6 +1943,13 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
         if concept.indicators:
             lines.append(f"  - indicators: {', '.join(concept.indicators)}")
         if concept.exclude_patterns:
+            # exclude_patterns are column-NAME match exclusions consumed HERE (the
+            # grounding prompt tells the model to honor them when matching a concept
+            # to a column, and NOT to improvise a substring row filter). DAT-733
+            # evaluated them as a second source for the canonical validity SCOPE and
+            # rejected it: they are not row predicates, so no faithful (column_id,
+            # operator, value) triple exists and fabricating one is forbidden. The
+            # validity scope sources solely from a measured cycle's completion status.
             lines.append(f"  - exclude: {', '.join(concept.exclude_patterns)}")
         if concept.part_of_parents:
             part_of = ", ".join(concept.part_of_parents)
@@ -2048,13 +2117,22 @@ def _build_column_notes(col: ColumnContext) -> str:
     if col.is_derived and col.derived_formula:
         notes.append(f"Derived: {col.derived_formula}.")
 
-    # Entropy readiness indicator
+    # Entropy readiness indicator. DAT-853 abstention: a column the detectors never
+    # measured must NOT render like one measured clean — its readiness band is
+    # vacuous, so it is withheld and the absence stated; a partially-measured
+    # column keeps its band but says what it rests on.
     if col.entropy_scores:
+        coverage = col.entropy_scores.get("coverage")
         readiness = col.entropy_scores.get("readiness", "ready")
-        if readiness == "blocked":
-            notes.append("⛔ blocked.")
-        elif readiness == "investigate":
-            notes.append("⚠ investigate.")
+        if coverage == "unmeasured":
+            notes.append("◌ unmeasured — no quality measurements exist for this column.")
+        else:
+            if readiness == "blocked":
+                notes.append("⛔ blocked.")
+            elif readiness == "investigate":
+                notes.append("⚠ investigate.")
+            if coverage == "partial":
+                notes.append("◌ partially measured.")
 
     if col.flags:
         notes.append(f"Flags: {', '.join(col.flags)}.")
@@ -2069,8 +2147,21 @@ def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
     dimensions/values move each measure. `interesting_slices` carry the actual
     dimension VALUES with signed effect + support — a HINT for which values carry
     data, never the complete value-set (that's the per-column Value sets).
+
+    The ONE read-side convention (DAT-859): gate on `status == "measured"` ONLY —
+    an abstained ranking (temporal_behavior undetermined, no enriched view, too few
+    candidates, no usable measure value) never surfaces as a driver, full stop.
+    This must NOT also gate on content, or "measured" behavior changes: a measured
+    ranking that found nothing (no ranked dims/slices/secondaries — a real "no
+    significant driver" answer) still renders its heading, with an explicit
+    absence line — "analyzed, nothing significant" is a visible grounding signal
+    in its own right, distinct from both abstention (never analyzed for a known
+    reason) and non-analysis (`context.drivers` empty altogether, DAT-853's
+    absence-falls-loud principle applied here). The raw artifact stays honest
+    either way — this is prompt-rendering only.
     """
-    if not context.drivers:
+    measured = [d for d in context.drivers if d.status == "measured"]
+    if not measured:
         return
 
     lines.append("")
@@ -2081,9 +2172,12 @@ def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
         "aggregation: flow→SUM across periods, stock→latest-period only, ratio→Σnum/Σden. "
         "`interesting_slices` are values that MOVE the measure — a hint, NOT the value-set."
     )
-    for d in context.drivers:
+    for d in measured:
         grain_note = f", grain {d.grain}" + (f"/{d.entity}" if d.entity else "")
         lines.append(f"\n### {d.measure_label} ({d.target_type}{grain_note})")
+        if not (d.ranked_dimensions or d.interesting_slices or d.secondary_dimensions):
+            lines.append("- No significant driver found.")
+            continue
         if d.ranked_dimensions:
             dims = ", ".join(
                 f"{r.get('dimension')} ({r.get('gain'):.2f})"
@@ -2135,7 +2229,14 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
             status = "UNVERIFIED"
             val_info = ""
 
-        lines.append(f"\n### {cycle.cycle_name} ({cycle.cycle_type}) — {status} {val_info}")
+        # A family cycle names its direction honestly (DAT-856): a decided direction
+        # reads as e.g. "accounts_payable, direction outgoing"; an undirected one reads
+        # as "settlement, direction undetermined" — the detected-but-undirected state
+        # served as exactly that, never a guessed label. A non-family cycle is unchanged.
+        type_label = cycle.cycle_type
+        if cycle.direction is not None:
+            type_label = f"{cycle.cycle_type}, direction {cycle.direction}"
+        lines.append(f"\n### {cycle.cycle_name} ({type_label}) — {status} {val_info}")
         lines.append("")
 
         if cycle.description:
@@ -2171,10 +2272,16 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
                 )
                 lines.append(f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}")
 
-        # Completion tracking
+        # Completion tracking (narrative — status_column is bare since DAT-733, so
+        # re-qualify with its table for a precise, readable reference).
         if cycle.status_column and cycle.completion_value:
+            status_ref = (
+                f"{cycle.status_table}.{cycle.status_column}"
+                if cycle.status_table
+                else cycle.status_column
+            )
             lines.append(
-                f'Completion: {cycle.status_column} = "{cycle.completion_value}"'
+                f'Completion: {status_ref} = "{cycle.completion_value}"'
                 + (
                     f", {cycle.completion_rate:.0%} complete"
                     if cycle.completion_rate is not None
@@ -2188,6 +2295,17 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
         # detection-confirmed value→concept binding the engine already has (≈ the cut
         # DAT-620 binding shape). The narrative above is for reading; THIS is for
         # grounding a filter. Covers lifecycle/status concepts, not P&L partitions.
+        #
+        # DAT-733: the status_column = completion_value binding is DELIBERATELY NOT
+        # emitted here anymore. That IS the canonical validity scope, and the engine
+        # now composes it deterministically by default (graphs/agent grounding path).
+        # With the imperative binding present, the LLM would author the predicate on
+        # every grounding, the engine's defer-on-existing-constraint bypass would
+        # always fire, and the typed default would never be the actual mechanism.
+        # Withholding it makes the deterministic guarantee the real path and a
+        # LLM-authored status constraint a GENUINE judgment (→ a visible bypass
+        # assumption). The stage bindings below are legitimate per-concept filters,
+        # not the validity scope, so they stay.
         binding_lines: list[str] = []
         for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
             if stage.indicator_column and stage.indicator_values:
@@ -2195,11 +2313,6 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
                 binding_lines.append(
                     f'  - "{stage.stage_name}" = WHERE {stage.indicator_column} IN ({vals})'
                 )
-        if cycle.status_column and cycle.completion_value:
-            binding_lines.append(
-                f'  - "{cycle.cycle_type} completed" = '
-                f"WHERE {cycle.status_column} = '{cycle.completion_value}'"
-            )
         if binding_lines:
             lines.append("Concept bindings (confirmed — use as the filter, do not improvise):")
             lines.extend(binding_lines)

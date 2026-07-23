@@ -1,11 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 
-// conventions.ts imports `config` at module load (env-validated at import) — stub
-// it so the unit test doesn't boot the real Zod env. The pure formatter under test
-// doesn't use config; this just keeps the import side-effect-free.
-vi.mock("#/config", () => ({ config: { dataraumConfigPath: "/unused" } }));
+// `buildConventionsBlock` lazily imports the reader-role metadata client (DAT-789) —
+// stub it so the unit test drives a fixed row set (or a forced read error) instead of a
+// real Postgres. The `#/` alias is load-bearing: a relative `./db/...` mock silently
+// would not intercept.
+const mockState = vi.hoisted(() => ({
+	rows: [] as Array<Record<string, unknown>>,
+	error: null as Error | null,
+}));
+vi.mock("#/db/metadata/client", () => ({
+	metadataDb: {
+		select: () => ({
+			from: () => ({
+				where: async () => {
+					if (mockState.error) throw mockState.error;
+					return mockState.rows;
+				},
+			}),
+		}),
+	},
+}));
 
-import { formatConventionsBlock } from "./conventions";
+import { buildConventionsBlock, formatConventionsBlock } from "./conventions";
 
 const conv = (over: Record<string, unknown> = {}) => [
 	{
@@ -64,5 +80,45 @@ describe("formatConventionsBlock", () => {
 		]);
 		expect(out).toContain("good: a");
 		expect(out).not.toContain("bad:");
+	});
+});
+
+describe("buildConventionsBlock (DAT-789 — reads the typed conventions home)", () => {
+	it("renders the active-vertical conventions targeting the consumer", async () => {
+		// The DB read shape: rows already scoped to the active vertical + un-superseded
+		// by the mirrored view; this fn only routes by label. `concept_groups` arrives
+		// under the snake alias the projection selects (`conventionsView.conceptGroups`).
+		mockState.error = null;
+		mockState.rows = [
+			{
+				targets: ["extraction", "qa"],
+				statement: "sign every measure to read positive",
+				concept_groups: { credit_normal: ["revenue"] },
+			},
+			{
+				targets: ["extraction"], // does NOT target qa → omitted
+				statement: "extraction-only rule",
+				concept_groups: null,
+			},
+		];
+		const out = await buildConventionsBlock("qa");
+		expect(out).toContain("<domain_conventions>");
+		expect(out).toContain("sign every measure to read positive");
+		expect(out).toContain("credit_normal: revenue");
+		expect(out).not.toContain("extraction-only rule");
+	});
+
+	it("returns '' when no row targets the consumer", async () => {
+		mockState.error = null;
+		mockState.rows = [
+			{ targets: ["extraction"], statement: "x", concept_groups: null },
+		];
+		expect(await buildConventionsBlock("qa")).toBe("");
+	});
+
+	it("never throws on a metadata-read blip — returns '' (an answer must not fail)", async () => {
+		mockState.error = new Error("connection reset");
+		expect(await buildConventionsBlock("qa")).toBe("");
+		mockState.error = null;
 	});
 });

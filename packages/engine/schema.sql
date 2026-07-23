@@ -28,12 +28,14 @@ CREATE TABLE concepts (
 	indicators JSON, 
 	exclude_patterns JSON, 
 	unit_from_concept VARCHAR, 
+	ordering VARCHAR, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_concepts PRIMARY KEY (concept_id), 
 	CONSTRAINT ck_concepts_kind CHECK (kind IN ('dimension', 'entity', 'measure', 'unit')), 
-	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame'))
+	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame')), 
+	CONSTRAINT ck_concepts_ordering CHECK (ordering IS NULL OR ordering IN ('nominal', 'ordered'))
 );
 
 CREATE UNIQUE INDEX uq_concept_active ON concepts (vertical, name) WHERE superseded_at IS NULL;
@@ -49,6 +51,36 @@ CREATE TABLE config_overlay (
 
 CREATE INDEX idx_config_overlay_active ON config_overlay (superseded_at, type);
 
+CREATE TABLE conventions (
+	convention_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	statement TEXT NOT NULL, 
+	targets JSON, 
+	concept_groups JSON, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_conventions PRIMARY KEY (convention_id), 
+	CONSTRAINT ck_conventions_source CHECK (source IS NULL OR source IN ('frame', 'seed'))
+);
+
+CREATE UNIQUE INDEX uq_convention_active ON conventions (vertical, name) WHERE superseded_at IS NULL;
+
+CREATE TABLE cycle_families (
+	family_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	family VARCHAR NOT NULL, 
+	directions JSON NOT NULL, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_cycle_families PRIMARY KEY (family_id), 
+	CONSTRAINT ck_cycle_families_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_cycle_family_active ON cycle_families (vertical, family) WHERE superseded_at IS NULL;
+
 CREATE TABLE detected_business_cycles (
 	cycle_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
@@ -56,6 +88,8 @@ CREATE TABLE detected_business_cycles (
 	cycle_type VARCHAR NOT NULL, 
 	canonical_type VARCHAR NOT NULL, 
 	is_known_type BOOLEAN NOT NULL, 
+	family VARCHAR, 
+	direction VARCHAR, 
 	description TEXT, 
 	business_value VARCHAR NOT NULL, 
 	confidence FLOAT NOT NULL, 
@@ -71,7 +105,8 @@ CREATE TABLE detected_business_cycles (
 	evidence JSON NOT NULL, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_detected_business_cycles PRIMARY KEY (cycle_id), 
-	CONSTRAINT uq_detected_cycle_run UNIQUE (canonical_type, run_id)
+	CONSTRAINT uq_detected_cycle_run UNIQUE (canonical_type, run_id), 
+	CONSTRAINT ck_detected_business_cycles_family_direction CHECK ((family IS NULL AND direction IS NULL) OR (family IS NOT NULL AND direction IS NOT NULL))
 );
 
 CREATE TABLE lifecycle_artifacts (
@@ -120,6 +155,56 @@ CREATE TABLE metric_additivity (
 CREATE INDEX ix_metric_additivity_run_id ON metric_additivity (run_id);
 
 CREATE INDEX ix_metric_additivity_target_key ON metric_additivity (target_key);
+
+CREATE TABLE metric_derives_from (
+	edge_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	graph_id VARCHAR NOT NULL, 
+	concept_name VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_metric_derives_from PRIMARY KEY (edge_id)
+);
+
+CREATE UNIQUE INDEX uq_metric_derives_from_active ON metric_derives_from (vertical, graph_id, concept_name) WHERE superseded_at IS NULL;
+
+CREATE TABLE metric_parameters (
+	parameter_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	graph_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	param_type VARCHAR NOT NULL, 
+	default_value JSON, 
+	options JSON, 
+	description TEXT, 
+	derivation VARCHAR, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_metric_parameters PRIMARY KEY (parameter_id), 
+	CONSTRAINT ck_metric_parameters_derivation CHECK (derivation IS NULL OR derivation IN ('period_grain')), 
+	CONSTRAINT ck_metric_parameters_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_metric_parameter_active ON metric_parameters (vertical, graph_id, name) WHERE superseded_at IS NULL;
+
+CREATE TABLE metrics (
+	metric_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	graph_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	category VARCHAR, 
+	unit VARCHAR, 
+	output_type VARCHAR, 
+	version VARCHAR, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_metrics PRIMARY KEY (metric_id), 
+	CONSTRAINT ck_metrics_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_metric_active ON metrics (vertical, graph_id) WHERE superseded_at IS NULL;
 
 CREATE TABLE sources (
 	source_id VARCHAR NOT NULL, 
@@ -184,6 +269,42 @@ CREATE TABLE validation_results (
 );
 
 CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
+
+CREATE TABLE validations (
+	row_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	validation_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description TEXT NOT NULL, 
+	category VARCHAR NOT NULL, 
+	severity VARCHAR NOT NULL, 
+	check_type VARCHAR NOT NULL, 
+	tolerance FLOAT, 
+	guidance TEXT, 
+	expected_outcome TEXT, 
+	relevant_cycles JSON, 
+	relevant_conventions JSON, 
+	tags JSON, 
+	version VARCHAR NOT NULL, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_validations PRIMARY KEY (row_id), 
+	CONSTRAINT ck_validations_source CHECK (source IS NULL OR source IN ('generated', 'seed')), 
+	CONSTRAINT ck_validations_severity CHECK (severity IN ('critical', 'error', 'info', 'warning')), 
+	CONSTRAINT ck_validations_check_type CHECK (check_type IN ('aggregate', 'balance', 'comparison', 'constraint'))
+);
+
+CREATE UNIQUE INDEX uq_validation_active ON validations (vertical, validation_id) WHERE superseded_at IS NULL;
+
+CREATE TABLE workspace_calendar (
+	pin BOOLEAN NOT NULL, 
+	fiscal_year_start_month INTEGER NOT NULL, 
+	declared_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_workspace_calendar PRIMARY KEY (pin), 
+	CONSTRAINT ck_workspace_calendar_pin CHECK (pin = TRUE), 
+	CONSTRAINT ck_workspace_calendar_fiscal_year_start_month CHECK (fiscal_year_start_month BETWEEN 1 AND 12)
+);
 
 CREATE TABLE workspace_settings (
 	pin BOOLEAN NOT NULL, 
@@ -477,7 +598,9 @@ CREATE TABLE driver_rankings (
 	measure_table_id VARCHAR NOT NULL, 
 	measure_column_id VARCHAR NOT NULL, 
 	measure_label VARCHAR NOT NULL, 
-	target_type VARCHAR NOT NULL, 
+	target_type VARCHAR, 
+	status VARCHAR NOT NULL, 
+	abstain_reason VARCHAR, 
 	grain VARCHAR NOT NULL, 
 	entity VARCHAR, 
 	n_rows INTEGER NOT NULL, 
@@ -488,6 +611,9 @@ CREATE TABLE driver_rankings (
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	CONSTRAINT pk_driver_rankings PRIMARY KEY (ranking_id), 
 	CONSTRAINT uq_driver_rankings_column_run UNIQUE (measure_column_id, run_id), 
+	CONSTRAINT ck_driver_rankings_status CHECK (status IN ('abstained', 'measured')), 
+	CONSTRAINT ck_driver_rankings_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('insufficient_candidates', 'insufficient_data', 'missing_inputs')), 
+	CONSTRAINT ck_driver_rankings_status_abstain_reason CHECK ((status = 'measured' AND abstain_reason IS NULL AND target_type IS NOT NULL) OR (status = 'abstained' AND abstain_reason IS NOT NULL)), 
 	CONSTRAINT fk_driver_rankings_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_driver_rankings_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id)
 );
@@ -754,6 +880,7 @@ CREATE TABLE temporal_column_profiles (
 	actual_periods INTEGER, 
 	gap_count INTEGER, 
 	largest_gap_days FLOAT, 
+	last_period_complete BOOLEAN, 
 	is_stale BOOLEAN, 
 	gaps JSON NOT NULL, 
 	CONSTRAINT pk_temporal_column_profiles PRIMARY KEY (profile_id), 

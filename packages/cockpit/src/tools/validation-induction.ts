@@ -2,9 +2,35 @@
 // payload (DAT-807). Sibling of `metric-induction.ts` — same separation, same
 // reason.
 //
-// `ValidationSpecSchema.parameters` (validation-spec.ts) is
-// `z.record(z.string(), z.unknown())` because that IS the persisted shape: the
-// engine's `ValidationSpec.parameters` is a `dict[str, Any]`
+// KNOWN GAP (teach-surface retire, DAT-725 — flagged by spec-compliance review,
+// deliberately NOT fixed in that lane): `validation-spec.ts`'s
+// `ValidationSpecSchema` migrated from the legacy `parameters`/`sql_hints` shape
+// to the engine's typed `tolerance`/`guidance` fields (DAT-735). This module's
+// `InducedValidation` schema was NOT migrated alongside it — it still emits the
+// legacy `parameters` (array) + `sql_hints` shape below. That is NOT a mechanical
+// rename: `getFrameValidationsInstructions()` (src/prompts/frame.ts) is a
+// byte-stable, LLM-facing CACHED prompt block describing this exact field set,
+// so migrating it is a semantically-graded prompt change needing a live
+// constrained-decoding probe to verify the new schema compiles — out of a
+// mechanical lane's scope/budget (no e2e without asking).
+//
+// PRODUCTION IMPACT TODAY: none on the primary path. `frame.ts`'s
+// `induceValidations` → `toProposedValidation` output is written to
+// `config_overlay` WITHOUT ever being parsed against the typed
+// `ProposedValidation` (== `ValidationSpecSchema.omit({vertical:true})`) —
+// `frameFamily` only runs `itemSchema.parse` on the SEPARATE "user-edited"
+// declare path (`opts.edited`), not the induce path — so the legacy
+// `parameters`/`sql_hints` keys survive verbatim into the overlay row, and the
+// engine's `ValidationSpec` `mode="before"` normalizer (models.py) accepts
+// EITHER wire shape. RISK NOT FULLY RULED OUT: if the frame UI ever resubmits
+// an induced-then-edited validation through `frameFamily`'s `opts.edited` path
+// carrying these legacy keys, `ValidationSpecSchema.parse` (non-strict) would
+// silently DROP them, losing any induced tolerance — unverified UI-layer risk,
+// out of this module's scope to confirm.
+//
+// `ValidationSpecSchema.parameters` used to be
+// `z.record(z.string(), z.unknown())` because that WAS the persisted shape: the
+// engine's `ValidationSpec.parameters` was a `dict[str, Any]`
 // (analysis/validation/models.py) with two real consumers —
 // `evaluate.py:122` reads `parameters["tolerance"]` as a float, and
 // `agent.py:320` JSON-dumps the whole map into the SQL-grounding prompt.
@@ -13,14 +39,17 @@
 // `toProposedValidation` folds it back to the map at ONE boundary
 // (`induceValidations` in frame.ts). The engine is untouched.
 //
-// The value space is not `unknown` — it is what the 9 shipped specs actually
-// hold, and nothing else:
+// The value space is not `unknown` — historically (before DAT-725 band 3
+// retired finance's nine shipped validation YAMLs) it was exactly what those
+// specs held, and nothing else:
 //   number      -> tolerance: 0.01 | 0.05 | 0.02 | 0.0,
 //                  max_violation_rate: 0.05, amount_tolerance_pct: 0.01,
 //                  quantity_tolerance_pct: 0.02
 //   string list -> asset_types / liability_types / equity_types /
 //                  revenue_types / expense_types (trial_balance.yaml)
-// So the parameter is a two-variant discriminated union, not `z.unknown()`.
+// Induction still only ever needs a numeric threshold or a classification
+// list, so the two-variant discriminated union stays the right shape even
+// with no shipped YAML left to enumerate against — not `z.unknown()`.
 //
 // SCHEMA BUDGET: 0 optional properties, 1 union-typed property, no recursion.
 

@@ -50,6 +50,7 @@ _VALID_OUTPUT = {
                     "measure_columns": ["amount"],
                     "filter_columns": ["account_type"],
                     "filter": "Income",
+                    "filter_members": [{"column": "account_type", "value": "Income"}],
                 },
             }
         ],
@@ -217,6 +218,7 @@ _BAD_MEMBERSHIP = _with_basis(
                 "measure_columns": ["amout"],
                 "filter_columns": ["account_type"],
                 "filter": "Income",
+                "filter_members": [{"column": "account_type", "value": "Income"}],
             },
         }
     ]
@@ -225,10 +227,49 @@ _INCOMPLETE = _with_basis(
     [
         {
             "concept": "revenue",
-            "basis": {"measure_columns": ["amount"], "filter_columns": [], "filter": ""},
+            "basis": {
+                "measure_columns": ["amount"],
+                "filter_columns": [],
+                "filter": "",
+                "filter_members": [],
+            },
         }
     ]
 )
+
+
+_BAD_MEMBER = _with_basis(
+    [
+        {
+            "concept": "revenue",
+            "basis": {
+                "measure_columns": ["amount"],
+                "filter_columns": ["account_type"],
+                "filter": "Income",
+                # DAT-787: a member whose column is NOT one of filter_columns — the
+                # value side of the contract, routed through the SAME repair turn.
+                "filter_members": [{"column": "amount", "value": "Income"}],
+            },
+        }
+    ]
+)
+
+
+def test_filter_member_violation_gets_a_contract_repair_turn(monkeypatch) -> None:
+    """DAT-787: a filter_members violation (a member on a column outside
+    filter_columns) rides the SAME repair path as the column-contract checks — the
+    repair prompt names the violation and the corrected members ground the extract."""
+    _patch_context(monkeypatch)
+    provider = _provider(_output_response(_BAD_MEMBER), _output_response(_VALID_OUTPUT))
+    agent = _agent_with(provider)
+
+    result = _generate(agent)
+
+    assert result.success
+    assert provider.converse.call_count == 2
+    content = provider.converse.call_args_list[1].args[0].messages[0].content
+    assert "Contract violations" in content
+    assert "filter_members" in content and "not in filter_columns" in content
 
 
 def test_membership_violation_gets_a_contract_repair_turn(monkeypatch) -> None:

@@ -77,6 +77,16 @@ class TemporalCompletenessAnalysis(BaseModel):
     ``unknown``: those have no bucket, so completeness over them is not computable and
     falls loud rather than resolving to a plausible 1.0/0.0. The gap fields stay
     populated — a gap is measured against the median gap, not against a grain.
+
+    ``last_period_complete`` (DAT-730) is the TRAILING-bucket signal the whole-column
+    ratio dilutes away: one partial final bucket (the AR-NULL-at-MAX-period bug class)
+    barely moves ``completeness_ratio`` and — with RECENT data — is not ``is_stale``
+    either, so neither surfaces it. Data-relative and wall-clock free: the final grain
+    bucket is complete iff its data reaches as far into its period as a typical prior
+    bucket did (:func:`~dataraum.analysis.temporal.detection.analyze_last_period_completeness`).
+    ``None`` when the grain has no bucket (irregular/unknown) or there is no prior
+    bucket to compare against — never a fabricated ``True``, matching the
+    ``completeness_ratio`` NULL discipline.
     """
 
     completeness_ratio: float | None  # 0-1, or None when the grain has no bucket
@@ -84,6 +94,7 @@ class TemporalCompletenessAnalysis(BaseModel):
     actual_periods: int | None
     gap_count: int
     largest_gap_days: float | None = None
+    last_period_complete: bool | None = None
     gaps: list[TemporalGapInfo] = Field(default_factory=list)
 
 

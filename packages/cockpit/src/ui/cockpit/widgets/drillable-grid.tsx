@@ -59,6 +59,11 @@ import type {
 } from "#/duckdb/drill";
 
 import { grainLabel, grainPresets, parseGrainToken } from "#/duckdb/grain";
+// Type-only (erased at compile time — the canvas-state.ts / tool-result-to-canvas.ts
+// precedent for pulling a server tool's RESULT shape without importing its runtime):
+// the wire contract for the axes route's response, kept in sync with the server's
+// actual return shape instead of hand-duplicated here.
+import type { DrillAxesResult } from "#/tools/drill-axes";
 import { ChartToolbarButton } from "#/ui/cockpit/widgets/chart-toolbar-button";
 import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 
@@ -299,11 +304,7 @@ export function DrillableGrid({
 
 	const axesQuery = useQuery({
 		queryKey: ["drill-axes", axesRequest],
-		queryFn: () =>
-			postJson<{ axes: DrillAxis[]; reason?: string }>(
-				"/api/drill/axes",
-				axesRequest,
-			),
+		queryFn: () => postJson<DrillAxesResult>("/api/drill/axes", axesRequest),
 		staleTime: 60_000,
 	});
 	const axes = axesQuery.data?.axes ?? [];
@@ -531,6 +532,33 @@ export function DrillableGrid({
 				>
 					<Badge color="gray" variant="light" size="sm">
 						no axes
+					</Badge>
+				</Tooltip>
+			)}
+			{axesQuery.data?.temporalGateReason && (
+				// The time gate has exactly two sources (DAT-725): the engine's
+				// persisted verdict, or an honest withhold when none exists yet — "if
+				// we do not have data, we honestly say so" (the lead's ruling that
+				// killed the old silent column-level heuristic this replaces). Either
+				// way the user must be able to tell WHY no grain control appeared for
+				// a date/timestamp axis, so this renders unconditionally whenever the
+				// gate fired — colored to distinguish a determined "no" (yellow, same
+				// hue as the refusal alert below) from an honest "not yet known" (gray,
+				// same hue as the "no axes" badge above).
+				<Tooltip label={axesQuery.data.temporalGateReason} maw={360} multiline>
+					<Badge
+						color={
+							axesQuery.data.temporalGateSource === "withheld-no-verdict"
+								? "gray"
+								: "yellow"
+						}
+						variant="light"
+						size="sm"
+						data-testid="drill-temporal-gate-reason"
+					>
+						{axesQuery.data.temporalGateSource === "withheld-no-verdict"
+							? "time grain withheld"
+							: "time grain off"}
 					</Badge>
 				</Tooltip>
 			)}

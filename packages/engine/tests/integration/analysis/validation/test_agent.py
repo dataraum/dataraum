@@ -489,6 +489,60 @@ class TestValidationAgentBindExecute:
         assert bind_failure.status == ValidationStatus.ERROR
         assert "Generated SQL is invalid" in bind_failure.message
 
+    def test_bind_reserved_word_identifier_fails_explain(
+        self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
+    ):
+        """DAT-858: a bare reserved-word identifier (DuckDB's ``natural``,
+        contextually reserved for ``NATURAL JOIN``) used unquoted as a CTE
+        name fails to parse. There is NO repair turn on this path — bind
+        must still fail loud with ERROR, the same fail-closed contract as
+        any other unplannable SQL, never a crash and never a silent rewrite
+        of the LLM's emitted text."""
+        table = table_with_data
+
+        spec = ValidationSpec(
+            validation_id="reserved_word_check",
+            name="Reserved Word Check",
+            description="LLM emits an unquoted reserved-word identifier",
+            category="test",
+            check_type="balance",
+        )
+
+        from dataraum.analysis.validation.resolver import (
+            get_multi_table_schema_for_llm,
+        )
+
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
+
+        # `natural` is unquoted here — DuckDB reserves it for NATURAL JOIN
+        # grammar, so an unquoted CTE/alias named `natural` fails to parse
+        # even though it reads like an ordinary identifier.
+        tool_input = {
+            "sql": (
+                "WITH natural AS ("
+                "SELECT SUM(debit) - SUM(credit) AS total FROM typed_journal_entries"
+                ") SELECT ABS(total) AS deviation, ABS(total) AS magnitude FROM natural"
+            ),
+            "columns_used": ["debit", "credit"],
+            "can_validate": True,
+            "skip_reason": "",
+        }
+        mock_provider.converse.return_value = Result.ok(_make_output_response(tool_input))
+
+        generated, bind_failure = validation_agent.bind_validation(
+            duckdb_conn, [table.table_id], spec, schema
+        )
+
+        assert generated is None
+        assert bind_failure is not None
+        assert bind_failure.status == ValidationStatus.ERROR
+        # Pin the actual parse reason, not just "some EXPLAIN failure" (which
+        # the sibling missing-table test already covers) — DuckDB 1.5.4's
+        # parser names the offending token. If a future DuckDB unreserves
+        # NATURAL this assertion fails loud, which is the correct signal to
+        # revisit the fix, not a flake to silence.
+        assert 'syntax error at or near "natural"' in bind_failure.message
+
     def test_execute_inconclusive_result_is_error(
         self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
     ):
@@ -533,3 +587,168 @@ class TestValidationAgentBindExecute:
         assert result.passed is False
         assert "inconclusive" in result.message
         assert "deviation" in result.message
+
+
+class TestGrainFacts:
+    """The grain-facts callout (DAT-870): measured facts restated next to the spec."""
+
+    def test_render_grain_facts_full(self):
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        schema = {
+            "tables": [
+                {
+                    "table_name": "snapshots",
+                    "duckdb_path": "snapshots",
+                    "table_role": "periodic_snapshot",
+                    "grain_columns": ["entity_id", "period"],
+                    "columns": [
+                        {
+                            "column_name": "period",
+                            "data_type": "DATE",
+                            "granularity": "month",
+                            "time": {"role": "event", "aspect": "period"},
+                        },
+                        {
+                            "column_name": "movement",
+                            "data_type": "DECIMAL",
+                            "semantic": {"temporal_behavior": "additive"},
+                        },
+                        {
+                            "column_name": "level",
+                            "data_type": "DECIMAL",
+                            "semantic": {"temporal_behavior": "point_in_time"},
+                        },
+                    ],
+                },
+                # A table with no facts contributes no line.
+                {
+                    "table_name": "bare",
+                    "duckdb_path": "bare",
+                    "columns": [{"column_name": "x", "data_type": "VARCHAR"}],
+                },
+            ],
+        }
+
+        rendered = _render_grain_facts(schema)
+
+        assert rendered.startswith("<grain_facts>")
+        assert rendered.endswith("</grain_facts>")
+        assert "- snapshots: role=periodic_snapshot; grain=(entity_id, period)" in rendered
+        assert "time granularity: period=month" in rendered
+        assert "additive (per-period movement): movement" in rendered
+        assert "point_in_time (level, never summed across periods): level" in rendered
+        assert "bare" not in rendered
+        # No dimension-role table is served ⇒ the existence-check universe fact fires
+        # (DAT-876): existence checks are unbindable against a fact/snapshot-only graph.
+        assert "existence-check universe: no served table has role=dimension" in rendered
+
+    def test_render_grain_facts_existence_fires_when_no_dimension(self):
+        """A single fact-role table with no other facts still renders the DAT-876
+        absence line — the block is no longer empty just because per-table grain
+        facts are sparse."""
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        schema = {
+            "tables": [
+                {
+                    "table_name": "activity",
+                    "duckdb_path": "activity",
+                    "table_role": "fact",
+                    "columns": [{"column_name": "x", "data_type": "VARCHAR"}],
+                }
+            ]
+        }
+
+        rendered = _render_grain_facts(schema)
+        assert rendered.startswith("<grain_facts>")
+        assert 'an existence check (an id "must exist") is unbindable here' in rendered
+
+    def test_render_grain_facts_existence_absent_when_dimension_present(self):
+        """A served dimension-role table IS an enumerator — the DAT-876 absence line
+        must NOT fire (legitimate existence checks against it still bind)."""
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        schema = {
+            "tables": [
+                {
+                    "table_name": "activity",
+                    "duckdb_path": "activity",
+                    "table_role": "fact",
+                    "columns": [{"column_name": "entity_id", "data_type": "VARCHAR"}],
+                },
+                {
+                    "table_name": "catalog",
+                    "duckdb_path": "catalog",
+                    "table_role": "dimension",
+                    "columns": [{"column_name": "entity_id", "data_type": "VARCHAR"}],
+                },
+            ]
+        }
+
+        rendered = _render_grain_facts(schema)
+        assert "- catalog: role=dimension" in rendered
+        assert "existence-check universe" not in rendered
+
+    def test_render_grain_facts_empty_when_no_tables(self):
+        """Zero served tables ⇒ empty block (nothing to state, existence fact too)."""
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        assert _render_grain_facts({"tables": []}) == ""
+
+    def test_render_grain_facts_existence_fires_when_role_unclassified(self):
+        """A table with no table_role key (unpinned/unclassified catalogue) is not a
+        dimension enumerator ⇒ the DAT-876 absence line fires (conservative decline)."""
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        schema = {
+            "tables": [
+                {
+                    "table_name": "activity",
+                    "duckdb_path": "activity",
+                    "columns": [{"column_name": "entity_id", "data_type": "VARCHAR"}],
+                }
+            ]
+        }
+
+        assert "existence-check universe: no served table has role=dimension" in (
+            _render_grain_facts(schema)
+        )
+
+    def test_generate_sql_passes_grain_facts_to_renderer(
+        self, validation_agent, mock_provider, mock_prompt_renderer
+    ):
+        """The rendered callout rides the prompt context as ``grain_facts``."""
+        spec = ValidationSpec(
+            validation_id="test_check",
+            name="Test Check",
+            description="A test validation",
+            category="test",
+            check_type="balance",
+        )
+        schema = {
+            "tables": [
+                {
+                    "table_name": "snapshots",
+                    "duckdb_path": "snapshots",
+                    "table_role": "periodic_snapshot",
+                    "grain_columns": ["entity_id", "period"],
+                    "columns": [{"column_name": "period", "data_type": "DATE"}],
+                }
+            ],
+            "relationships": [],
+        }
+        payload = {
+            "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+            "columns_used": [],
+            "can_validate": True,
+            "skip_reason": "",
+        }
+        mock_provider.converse.return_value = Result.ok(_make_output_response(payload))
+
+        result = validation_agent._generate_sql(spec, schema)
+
+        assert result.success
+        context = mock_prompt_renderer.render_split.call_args[0][1]
+        assert "role=periodic_snapshot" in context["grain_facts"]
+        assert context["grain_facts"].startswith("<grain_facts>")

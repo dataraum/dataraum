@@ -72,6 +72,13 @@ class ParameterDef:
     default: Any
     description: str | None = None
     options: list[Any] | None = None  # For enum-like parameters
+    # A DECLARED marker naming the rule a parameter's value belongs to (DAT-732):
+    # ``period_grain`` for ``days_in_period``, NULL for a plain constant. Declared in the
+    # vertical YAML (a DATA marker, never inferred by name in engine code) and persisted
+    # to the ``metric_parameters`` typed home / ``og_metric_parameters`` as graph
+    # structure. It is NOT read by the resolver at runtime — ``period_resolver`` keys its
+    # override on the parameter NAME today, not this marker (see MetricParameterDerivation).
+    derivation: str | None = None  # MetricParameterDerivation value, or None
 
 
 @dataclass
@@ -323,6 +330,47 @@ class GraphAssumptionOutput(BaseModel):
     )
 
 
+class FilterMember(BaseModel):
+    """One dimension member a grounding's WHERE predicates select (DAT-787).
+
+    The typed ``(column, value)`` pair the operating-model graph's ``filtered_by``
+    edge un-nests into a ``DimMember`` vertex — the VALUE analog of
+    ``filter_columns`` (which types only the columns a filter touches, never which
+    values it selects). Same enforced-at-authoring discipline as the rest of
+    contract v2: the model declares it, and parsing the rendered SQL as a *source*
+    of the value stays forbidden — the value comes from the model's own committed
+    selection, cross-checked (never sourced) against the SQL.
+
+    Enforced at save (``validate_grounding_basis``): ``column`` must be one of this
+    concept's ``filter_columns``; ``value`` must be a SERVED value where a complete
+    served value-set exists for the column (the served representation is the
+    equality anchor — ``'posted'`` is not ``'Posted'``; no casing/whitespace
+    folding); and ``value`` must appear in the rendered ``where`` predicates (a
+    lexical cross-check, VALIDATOR-only). The graph emits a member + edge only when
+    ``column`` resolves to a REFERENCED dimension axis (DAT-788 role-separated
+    identity); a filter on a non-dimension or folded column contributes no member —
+    ``where[]`` stays lossless on the grounding vertex regardless.
+
+    Frozen at authoring: an existing grounding carries no ``filter_members`` until
+    it is re-authored on a later run (honest absence — no edges, never a
+    retroactively-improved row). No backfill; a dedicated update surface and the
+    full-axis (all-members, not just referenced) enumeration are out of scope
+    (DAT-864).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(
+        description="The relation column the predicate filters on — one of this concept's "
+        "filter_columns, a bare served name, no table qualifier.",
+    )
+    value: str = Field(
+        description="The exact served value the predicate selects on that column, verbatim "
+        "from its Value set (the equality anchor). ONE member per selected value: an IN-list "
+        "of three values is three filter_members.",
+    )
+
+
 class ConceptGroundingBasis(BaseModel):
     """How ONE concept grounds to the relation's columns — provenance contract v2 (DAT-727).
 
@@ -341,7 +389,9 @@ class ConceptGroundingBasis(BaseModel):
     provenance-level ``field_resolution`` DAT-781 deleted as write-only —
     self-reported, read by nothing. ``filter`` stays: it IS the value→concept
     decision ``_build_prior_context`` feeds back (DAT-616) and the cockpit
-    answer agent reuses.
+    answer agent reuses. ``filter_members`` (DAT-787) types the VALUE side of
+    that decision — the operating-model graph's ``filtered_by`` substrate,
+    un-nested exactly as ``uses`` un-nests the column arrays.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -358,6 +408,13 @@ class ConceptGroundingBasis(BaseModel):
     filter: str = Field(
         description="The exact served values the filter selects (the value→concept decision), "
         'e.g. "account_type IN (\'revenue\')". "" when unfiltered.',
+    )
+    filter_members: list[FilterMember] = Field(
+        description="The specific dimension members the where predicates select — one "
+        "{column, value} per selected value (an IN-list of N values is N members). [] when "
+        "the concept needs no filter, or filters only on a non-dimension column. Each column "
+        "must be one of filter_columns; each value must be a served value (DAT-787). The graph "
+        "turns each into a DimMember + filtered_by edge when the column is a dimension axis.",
     )
 
 
@@ -463,7 +520,8 @@ class HealthySnippetProvenance(BaseModel):
     only sql_snippets writer — and un-nested by the operating-model graph's
     ``og_uses`` element view, so the persisted shape IS this model's
     ``model_dump``: ``{column_mappings_basis: {concept: {measure_columns[],
-    filter_columns[], filter}}, assumptions: [{assumption, basis, confidence}]}``.
+    filter_columns[], filter, filter_members: [{column, value}]}},
+    assumptions: [{assumption, basis, confidence}]}``.
 
     Deliberately still a MAP, while the LLM-facing ``GraphProvenanceOutput`` is a
     LIST of ``{concept, basis}`` entries (DAT-807 — constrained decoding forbids an

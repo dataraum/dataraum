@@ -110,6 +110,15 @@ export function CycleWhyWidget({
 						{why.is_known_type ? "Known type" : "Novel type"}
 					</Text>
 				)}
+				{/* Direction axis (DAT-856): a family cycle names its direction — an
+				    "undetermined" reads as exactly that, the detected-but-undirected
+				    state, never a guessed label. Absent for a non-family cycle. */}
+				{why.direction !== null && (
+					<Text size="xs" c="dimmed" data-testid="canvas-cycle-why-direction">
+						{why.family ? `${humanizeIdentifier(why.family)} · ` : ""}direction{" "}
+						{why.direction}
+					</Text>
+				)}
 			</Group>
 
 			{/* The measurement's provenance: the status column completion was read

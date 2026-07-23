@@ -831,6 +831,23 @@ class OperatingModelWorkflow:
         # at resolve (``scope.table_ids``, ADR-0008), not the live catalog head, so
         # a concurrent begin_session promote cannot shift the set mid-run.
         scoped = OperatingModelScopedInput(run=run, scope=scope, vertical=vertical)
+
+        # Validation induction (DAT-735): generate validations over the served graph
+        # BEFORE the validation family declares — the validation phase then reads the
+        # typed home (seed ⊕ generated ⊕ teach). Its outcome is DELIBERATELY discarded:
+        # induction reports a `generated` count, never a `declared` one, so zero
+        # generated validations on a thin graph cannot flip a workspace into
+        # `nothing_declared` (the generated count and the declared count are different
+        # facts). A degraded induction succeeds with generated=0 and never sinks the run.
+        self._progress.phase = "validation_induction"
+        await workflow.execute_activity(
+            "validation_induction",
+            scoped,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_LLM_RETRY,
+        )
+
         self._progress.phase = "validation"
         validation_outcome = await workflow.execute_activity(
             "validation",

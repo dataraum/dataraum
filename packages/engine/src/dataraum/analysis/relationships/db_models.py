@@ -280,6 +280,23 @@ class Relationship(Base):
         judge is later shown — so its ``from`` side is a presentation the judge
         inherits, not a fact it derived.
 
+        No persist-time direction FLAG guards this either, for the same reason
+        the swap was removed (DAT-872). A tempting backstop would fire when a
+        stored ``foreign_key``'s child side fails to resolve while the reverse
+        orientation is clean — the shape of a backwards 1:1. But that shape is
+        containment-identical to a CORRECT child→parent FK whose child merely
+        carries orphans (a real, confirmable data-quality problem): both measure
+        the same, so such a flag cannot tell a backwards edge from a dirty one
+        and would cry wolf on the very child-with-orphans FKs the judge is
+        meant to confirm and name. The honesty signal is authored by the JUDGE
+        in its ``reasoning`` instead — ``semantic_per_table``'s orientation
+        section runs a CLAIM CHECK at EVERY cardinality (the measured
+        ``many-to-one`` fast path settles direction, never the claim): when the
+        child side mostly fails to resolve the judge must flip (one-to-one),
+        decline the reference as a shared axis (many-to-one, where the
+        non-unique side cannot become a clean parent), or confirm and NAME the
+        orphan problem — never recomputed from containment here.
+
         Direction only — the judge's EXISTENCE verdict is never touched here.
         ``many-to-many``/``None`` cannot be oriented. The DB backstop is
         ``ck_relationships_cardinality_oriented``: a mis-oriented ``one-to-many``

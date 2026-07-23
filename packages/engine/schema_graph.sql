@@ -10,6 +10,7 @@ DROP VIEW IF EXISTS __READ__.og_tables;
 DROP VIEW IF EXISTS __READ__.og_columns;
 DROP VIEW IF EXISTS __READ__.og_concepts;
 DROP VIEW IF EXISTS __READ__.og_grounding;
+DROP VIEW IF EXISTS __READ__.og_period_grain;
 DROP VIEW IF EXISTS __READ__.og_references;
 DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
@@ -17,6 +18,20 @@ DROP VIEW IF EXISTS __READ__.og_concept_edges;
 DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
 DROP VIEW IF EXISTS __READ__.og_grounded_by;
 DROP VIEW IF EXISTS __READ__.og_uses;
+DROP VIEW IF EXISTS __READ__.og_dim_members;
+DROP VIEW IF EXISTS __READ__.og_filtered_by;
+DROP VIEW IF EXISTS __READ__.og_validity_filter;
+DROP VIEW IF EXISTS __READ__.og_scoped_by;
+DROP VIEW IF EXISTS __READ__.og_temporal_coverage;
+DROP VIEW IF EXISTS __READ__.og_rolls_up_to;
+DROP VIEW IF EXISTS __READ__.og_period_rolls_up_to;
+DROP VIEW IF EXISTS __READ__.og_additivity;
+DROP VIEW IF EXISTS __READ__.og_has_additivity;
+DROP VIEW IF EXISTS __READ__.og_measured_in;
+DROP VIEW IF EXISTS __READ__.og_metrics;
+DROP VIEW IF EXISTS __READ__.og_metric_parameters;
+DROP VIEW IF EXISTS __READ__.og_derives_from;
+DROP VIEW IF EXISTS __READ__.og_has_parameter;
 
 CREATE VIEW __READ__.og_tables AS
 SELECT t.table_id::text AS table_id, t.table_name, t.layer,
@@ -74,7 +89,7 @@ LEFT JOIN LATERAL (
   ) declared_anchor ON TRUE;
 
 CREATE VIEW __READ__.og_concepts AS
-SELECT concept_id::text AS concept_id, vertical, name, kind
+SELECT concept_id::text AS concept_id, vertical, name, kind, ordering
 FROM __READ__.concepts
 WHERE superseded_at IS NULL;
 
@@ -83,6 +98,15 @@ SELECT g.snippet_id::text AS snippet_id,
        g.concept, g.statement, g.aggregation, g.description,
        g.relation, g.select_expr, g.where_predicates, g.failed
 FROM __READ__.current_groundings g;
+
+CREATE VIEW __READ__.og_period_grain AS
+SELECT g.grain::text AS grain, g.ordinal,
+       COALESCE(wc.fiscal_year_start_month, 1) AS fiscal_year_start_month,
+       CASE WHEN wc.fiscal_year_start_month IS NULL THEN 'default'
+            ELSE 'declared' END AS calendar_source
+FROM (VALUES ('day', 0), ('month', 1), ('quarter', 2), ('year', 3))
+       AS g(grain, ordinal)
+LEFT JOIN __READ__.workspace_calendar wc ON TRUE;
 
 CREATE VIEW __READ__.og_references AS
 SELECT relationship_id::text AS relationship_id,
@@ -135,11 +159,24 @@ SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,
        s1.dimension_table_id::text AS dimension_table_id,
        s1.dimension_attribute AS dimension_attribute
 FROM __READ__.current_slice_definitions s1
+JOIN __READ__.current_bus_matrix b1
+  ON b1.attachment = 'referenced'
+ AND b1.fact_table_id = s1.table_id
+ AND b1.dimension_table_id = s1.dimension_table_id
+ AND EXISTS (SELECT 1 FROM json_array_elements_text(b1.roles) AS r(role)
+             WHERE r.role = COALESCE(NULLIF(s1.fk_role, ''), s1.column_name))
 JOIN __READ__.current_slice_definitions s2
-  ON s1.dimension_table_id = s2.dimension_table_id
- AND COALESCE(s1.dimension_attribute, '') = COALESCE(s2.dimension_attribute, '')
- AND s1.table_id <> s2.table_id
-WHERE s1.dimension_table_id IS NOT NULL;
+  ON s2.dimension_table_id = s1.dimension_table_id
+ AND COALESCE(s2.dimension_attribute, '') = COALESCE(s1.dimension_attribute, '')
+ AND s2.table_id <> s1.table_id
+JOIN __READ__.current_bus_matrix b2
+  ON b2.attachment = 'referenced'
+ AND b2.fact_table_id = s2.table_id
+ AND b2.dimension_table_id = s2.dimension_table_id
+ AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)
+             WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))
+WHERE s1.dimension_table_id IS NOT NULL
+ AND b1.conformed_group = b2.conformed_group;
 
 CREATE VIEW __READ__.og_grounded_by AS
 SELECT (c.concept_id || '_' || g.snippet_id)::text AS edge_key,
@@ -189,6 +226,332 @@ WHERE NOT g.failed
 ORDER BY g.snippet_id, col.column_id,
          CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;
 
+CREATE VIEW __READ__.og_dim_members AS
+SELECT DISTINCT ON (json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text)
+       json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text AS dim_member_key,
+       m.conformed_group AS conformed_group,
+       m.dimension_attribute AS dimension_attribute,
+       m.member_value AS member_value
+FROM (
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.dimension_attribute AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         s.dimension_attribute AS dimension_attribute
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NOT NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'referenced'
+   AND bm.fact_table_id = s.table_id
+   AND bm.dimension_table_id = s.dimension_table_id
+   AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+               WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
+  WHERE NOT g.failed
+  UNION ALL
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.column_name AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         NULL AS dimension_attribute
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'folded'
+   AND bm.fact_table_id = s.table_id
+   AND (EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+                WHERE r.role = s.column_name)
+        OR EXISTS (SELECT 1 FROM json_array_elements_text(bm.attributes) AS a(attr)
+                   WHERE a.attr = s.column_name))
+  WHERE NOT g.failed
+) m
+ORDER BY json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text;
+
+CREATE VIEW __READ__.og_filtered_by AS
+SELECT DISTINCT ON (m.snippet_id, json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text)
+       (m.snippet_id || '_' || json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text)::text AS edge_key,
+       m.snippet_id::text AS snippet_id,
+       json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text AS dim_member_key,
+       (m.concept)::varchar AS concept
+FROM (
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.dimension_attribute AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         s.dimension_attribute AS dimension_attribute
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NOT NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'referenced'
+   AND bm.fact_table_id = s.table_id
+   AND bm.dimension_table_id = s.dimension_table_id
+   AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+               WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
+  WHERE NOT g.failed
+  UNION ALL
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.column_name AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         NULL AS dimension_attribute
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'folded'
+   AND bm.fact_table_id = s.table_id
+   AND (EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+                WHERE r.role = s.column_name)
+        OR EXISTS (SELECT 1 FROM json_array_elements_text(bm.attributes) AS a(attr)
+                   WHERE a.attr = s.column_name))
+  WHERE NOT g.failed
+) m
+ORDER BY m.snippet_id, json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text, m.concept;
+
+CREATE VIEW __READ__.og_validity_filter AS
+SELECT c.cycle_id::text AS filter_id,
+       col.table_id::text AS table_id,
+       col.column_id::text AS column_id,
+       col.column_name AS column_name,
+       '=' AS operator,
+       c.completion_value AS value
+FROM __READ__.current_detected_business_cycles c
+JOIN __READ__.current_tables t
+  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)
+JOIN __READ__.current_columns col
+  ON col.table_id = t.table_id AND col.column_name = c.status_column
+WHERE c.status_column IS NOT NULL
+  AND c.completion_value IS NOT NULL
+  AND c.completion_rate IS NOT NULL;
+
+CREATE VIEW __READ__.og_scoped_by AS
+SELECT (col.table_id || '_' || c.cycle_id)::text AS edge_key,
+       col.table_id::text AS table_id,
+       c.cycle_id::text AS filter_id,
+       col.column_id::text AS column_id
+FROM __READ__.current_detected_business_cycles c
+JOIN __READ__.current_tables t
+  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)
+JOIN __READ__.current_columns col
+  ON col.table_id = t.table_id AND col.column_name = c.status_column
+WHERE c.status_column IS NOT NULL
+  AND c.completion_value IS NOT NULL
+  AND c.completion_rate IS NOT NULL;
+
+CREATE VIEW __READ__.og_temporal_coverage AS
+SELECT DISTINCT ON (te.table_id, res.column_id)
+       (te.table_id || '_' || res.column_id)::text AS coverage_key,
+       te.table_id::text AS table_id, res.column_id::text AS column_id,
+       res.column_name, tc.role, tc.aspect, tc.declared_anchor,
+       tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,
+       tp.span_days, tp.detected_granularity AS observed_grain,
+       tp.completeness_ratio, tp.expected_periods, tp.actual_periods,
+       tp.gap_count, tp.is_stale, tp.last_period_complete
+FROM __READ__.current_table_entities te
+CROSS JOIN LATERAL (
+    SELECT elem->>'column' AS column_name, elem->>'role' AS role,
+           elem->>'aspect' AS aspect,
+           (elem->>'is_anchor')::boolean AS declared_anchor
+    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem
+  ) tc
+CROSS JOIN LATERAL (
+    SELECT col.column_id, col.column_name,
+           col.column_id AS profile_column_id
+    FROM __READ__.current_columns col
+    WHERE col.table_id = te.table_id AND col.column_name = tc.column_name
+    UNION ALL
+    SELECT ec.column_id, ec.column_name,
+           ec.source_column_id AS profile_column_id
+    FROM __READ__.current_enriched_views ev
+    JOIN __READ__.current_enriched_columns ec
+      ON ec.table_id = ev.view_table_id AND ec.column_name = tc.column_name
+    WHERE ev.fact_table_id = te.table_id
+      AND NOT EXISTS (
+        SELECT 1 FROM __READ__.current_columns c2
+        WHERE c2.table_id = te.table_id
+          AND c2.column_name = tc.column_name)
+  ) res
+LEFT JOIN __READ__.current_temporal_column_profiles tp
+  ON tp.column_id = res.profile_column_id
+ORDER BY te.table_id, res.column_id, tc.declared_anchor DESC NULLS LAST,
+         tc.role, tc.aspect, tc.column_name;
+
+CREATE VIEW __READ__.og_rolls_up_to AS
+SELECT (h.hierarchy_id || '_' || fine.lvl || '_' || coarse.lvl)::text
+         AS edge_key,
+       fine.col_id::text AS from_column_id,
+       coarse.col_id::text AS to_column_id,
+       h.hierarchy_id::text AS hierarchy_id,
+       fine.lvl AS from_level, coarse.lvl AS to_level
+FROM __READ__.current_dimension_hierarchies h
+CROSS JOIN LATERAL (
+    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl
+    FROM json_array_elements(h.members) AS m
+  ) fine
+CROSS JOIN LATERAL (
+    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl
+    FROM json_array_elements(h.members) AS m
+  ) coarse
+WHERE h.kind = 'drilldown'
+  AND coarse.lvl = fine.lvl - 1
+  AND fine.col_id <> '' AND coarse.col_id <> '';
+
+CREATE VIEW __READ__.og_period_rolls_up_to AS
+SELECT (l.from_grain || '_' || l.to_grain)::text AS edge_key,
+       l.from_grain::text AS from_grain, l.to_grain::text AS to_grain
+FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))
+       AS l(from_grain, to_grain);
+
+CREATE VIEW __READ__.og_additivity AS
+SELECT additivity_id::text AS additivity_id, target_kind, target_key,
+       categorical_additive, time_additive, categorical_reason, time_reason
+FROM __READ__.current_metric_additivity;
+
+CREATE VIEW __READ__.og_has_additivity AS
+SELECT (c.concept_id || '_' || a.additivity_id)::text AS edge_key,
+       c.concept_id::text AS concept_id,
+       a.additivity_id::text AS additivity_id,
+       a.target_key
+FROM __READ__.current_metric_additivity a
+JOIN __READ__.concepts c
+  ON c.name = a.target_key AND c.superseded_at IS NULL
+WHERE a.target_kind = 'measure';
+
+CREATE VIEW __READ__.og_measured_in AS
+SELECT (cc.column_id || '_' || unit_col.column_id)::text AS edge_key,
+       cc.column_id::text AS measure_column_id,
+       unit_col.column_id::text AS unit_column_id,
+       cc.unit_source_column AS unit_source,
+       (cc.column_id = unit_col.column_id) AS self_denominated
+FROM __READ__.current_column_concepts cc
+JOIN __READ__.current_columns mc ON mc.column_id = cc.column_id
+JOIN __READ__.current_tables mt ON mt.table_id = mc.table_id
+CROSS JOIN LATERAL (
+    SELECT
+      CASE WHEN position('.' in cc.unit_source_column) > 0
+           THEN split_part(cc.unit_source_column, '.', 1)
+           ELSE mt.table_name END AS tbl,
+      CASE WHEN position('.' in cc.unit_source_column) > 0
+           THEN split_part(cc.unit_source_column, '.', 2)
+           ELSE cc.unit_source_column END AS col
+  ) ref
+JOIN __READ__.current_tables ut ON ut.table_name = ref.tbl
+JOIN __READ__.current_columns unit_col
+  ON unit_col.table_id = ut.table_id AND unit_col.column_name = ref.col
+WHERE cc.unit_source_column IS NOT NULL
+  AND cc.unit_source_column <> ''
+  AND cc.unit_source_column <> 'dimensionless';
+
+CREATE VIEW __READ__.og_metrics AS
+SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type
+FROM __READ__.metrics
+WHERE superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_metric_parameters AS
+SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id, name,
+       param_type, default_value::text AS default_value,
+       options::text AS options, derivation, description
+FROM __READ__.metric_parameters
+WHERE superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_derives_from AS
+SELECT df.edge_id::text AS edge_id,
+       df.graph_id::text AS from_graph_id,
+       c.concept_id::text AS to_concept_id,
+       df.concept_name
+FROM __READ__.metric_derives_from df
+JOIN __READ__.concepts c
+  ON c.vertical = df.vertical AND c.name = df.concept_name
+ AND c.superseded_at IS NULL
+WHERE df.superseded_at IS NULL;
+
+CREATE VIEW __READ__.og_has_parameter AS
+SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id
+FROM __READ__.metric_parameters
+WHERE superseded_at IS NULL;
+
 CREATE PROPERTY GRAPH __READ__.operating_model
   VERTEX TABLES (
     __READ__.og_tables KEY (table_id) LABEL table_node
@@ -197,10 +560,24 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
                   anchor_time_axis),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
-      PROPERTIES (concept_id, vertical, name, kind),
+      PROPERTIES (concept_id, vertical, name, kind, ordering),
     __READ__.og_grounding KEY (snippet_id) LABEL grounding_node
       PROPERTIES (snippet_id, concept, statement, aggregation,
-                  relation, select_expr, where_predicates, description, failed)
+                  relation, select_expr, where_predicates, description, failed),
+    __READ__.og_period_grain KEY (grain) LABEL period_grain
+      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),
+    __READ__.og_additivity KEY (additivity_id) LABEL additivity_verdict
+      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,
+                  time_additive, categorical_reason, time_reason),
+    __READ__.og_metrics KEY (graph_id) LABEL metric_node
+      PROPERTIES (graph_id, vertical, name, category, unit, output_type),
+    __READ__.og_metric_parameters KEY (parameter_id) LABEL parameter_node
+      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,
+                  options, derivation, description),
+    __READ__.og_validity_filter KEY (filter_id) LABEL validity_filter
+      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value),
+    __READ__.og_dim_members KEY (dim_member_key) LABEL dim_member
+      PROPERTIES (dim_member_key, conformed_group, dimension_attribute, member_value)
   )
   EDGE TABLES (
     __READ__.og_references KEY (relationship_id)
@@ -239,5 +616,53 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)
       DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
       LABEL uses
-      PROPERTIES (role)
+      PROPERTIES (role),
+    __READ__.og_temporal_coverage KEY (coverage_key)
+      SOURCE KEY (table_id) REFERENCES og_tables (table_id)
+      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
+      LABEL temporal_coverage
+      PROPERTIES (column_name, role, aspect, declared_anchor, observed_min,
+                  observed_max, span_days, observed_grain, completeness_ratio,
+                  expected_periods, actual_periods, gap_count, is_stale,
+                  last_period_complete),
+    __READ__.og_rolls_up_to KEY (edge_key)
+      SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)
+      DESTINATION KEY (to_column_id) REFERENCES og_columns (column_id)
+      LABEL rolls_up_to
+      PROPERTIES (hierarchy_id, from_level, to_level),
+    __READ__.og_period_rolls_up_to KEY (edge_key)
+      SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)
+      DESTINATION KEY (to_grain) REFERENCES og_period_grain (grain)
+      LABEL period_rolls_up_to
+      PROPERTIES (from_grain, to_grain),
+    __READ__.og_has_additivity KEY (edge_key)
+      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)
+      DESTINATION KEY (additivity_id) REFERENCES og_additivity (additivity_id)
+      LABEL has_additivity
+      PROPERTIES (target_key),
+    __READ__.og_measured_in KEY (edge_key)
+      SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)
+      DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)
+      LABEL measured_in
+      PROPERTIES (unit_source, self_denominated),
+    __READ__.og_derives_from KEY (edge_id)
+      SOURCE KEY (from_graph_id) REFERENCES og_metrics (graph_id)
+      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)
+      LABEL derives_from
+      PROPERTIES (concept_name),
+    __READ__.og_has_parameter KEY (parameter_id)
+      SOURCE KEY (graph_id) REFERENCES og_metrics (graph_id)
+      DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)
+      LABEL has_parameter
+      PROPERTIES (graph_id),
+    __READ__.og_scoped_by KEY (edge_key)
+      SOURCE KEY (table_id) REFERENCES og_tables (table_id)
+      DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)
+      LABEL scoped_by
+      PROPERTIES (column_id),
+    __READ__.og_filtered_by KEY (edge_key)
+      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)
+      DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)
+      LABEL filtered_by
+      PROPERTIES (concept)
   );

@@ -19,6 +19,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -72,6 +73,30 @@ class TableRole(StrEnum):
     DIMENSION = "dimension"
 
 
+class DimensionOrdering(StrEnum):
+    """Whether a dimension concept's axis carries an ORDER (DAT-730).
+
+    A typed fact on a ``kind=dimension`` concept: does its axis have a meaningful
+    order along which ranges/windows can be formed, or is it a bare set of labels?
+
+    - ``ORDERED`` — an ordinal axis (an authored severity ladder, a size scale);
+      window/range logic MAY apply.
+    - ``NOMINAL`` — an unordered categorical (region, colour); window logic is
+      WITHHELD — a range over nominal labels is meaningless.
+
+    The safe default is ``nominal``: an absent/NULL fact withholds windows rather
+    than enabling a wrong one. TIME dimensions carry NO stored fact — time is
+    ordered by construction (the ``og_temporal_coverage`` / period-grain machinery
+    owns time windows); this fact governs the NON-time categorical dimensions only,
+    which is exactly why ``SliceDefinition`` — which excludes timestamp-role columns
+    — is not its home. Seed-declarable via the vertical ontology (``OntologyConcept.
+    ordering``); the cockpit ``frame`` authoring path is a later lane.
+    """
+
+    ORDERED = "ordered"
+    NOMINAL = "nominal"
+
+
 class ConceptEdgePredicate(StrEnum):
     """The typed relation a concept edge asserts (DAT-729).
 
@@ -106,6 +131,7 @@ _TABLE_ROLE_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in TableRole))
 _CONCEPT_EDGE_PREDICATE_VALUES: tuple[str, ...] = tuple(
     sorted(v.value for v in ConceptEdgePredicate)
 )
+_DIMENSION_ORDERING_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in DimensionOrdering))
 
 
 def derive_table_role(
@@ -182,6 +208,18 @@ class Concept(Base):
         # onto this column; each column's set is its own writers, not a shared
         # template.
         CheckConstraint("source IS NULL OR source IN ('seed', 'frame')", name="source"),
+        # Dimension-ordering vocabulary (DAT-730, the DAT-781 two-layer standard):
+        # derived from :class:`DimensionOrdering` so the CHECK and enum can never
+        # drift. NULL-or-IN: the fact is meaningful only on ``kind=dimension`` rows
+        # and is absent (⇒ treated as nominal, windows withheld) until a seed or the
+        # later ``frame`` authoring path declares it — the same NULL-until-a-writer
+        # discipline ``ConceptEdge.source='frame'`` uses.
+        CheckConstraint(
+            "ordering IS NULL OR ordering IN ("
+            + ", ".join(f"'{v}'" for v in _DIMENSION_ORDERING_VALUES)
+            + ")",
+            name="ordering",
+        ),
     )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -193,6 +231,12 @@ class Concept(Base):
     indicators: Mapped[list[str] | None] = mapped_column(JSON)
     exclude_patterns: Mapped[list[str] | None] = mapped_column(JSON)
     unit_from_concept: Mapped[str | None] = mapped_column(String)
+    # Ordered vs nominal dimension axis (DAT-730): meaningful on ``kind=dimension``,
+    # governs whether window/range logic applies to a NON-time categorical axis. NULL
+    # (the default) ⇒ nominal ⇒ windows withheld — the safe default that never enables
+    # a wrong window. Time dimensions carry no fact (ordered by construction). Closed
+    # vocab: see ck_concepts_ordering. Exposed as the ``og_concepts.ordering`` property.
+    ordering: Mapped[str | None] = mapped_column(String)  # DimensionOrdering
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     # Closed vocab: see ck_concepts_source — 'seed' | 'frame' are the two live writers.
@@ -290,6 +334,96 @@ class ConceptEdge(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class Convention(Base):
+    """The workspace's typed domain conventions — one home (DAT-789).
+
+    A convention is vertical-specific guidance piped VERBATIM to the SQL-authoring
+    agents (the ``statement`` prose), routed to consumers by ``targets`` and carrying
+    an optional ``concept_groups`` partition. Config→DB, the same cut :class:`Concept`
+    took (DAT-728): the shipped vertical YAML is the *seed*, normalized into typed rows
+    at connect (:func:`~dataraum.analysis.semantic.convention_store.ensure_conventions_seeded`);
+    all THREE SQL authors — extraction (``graphs/context.py``), validation
+    (``validation_phase``), and the cockpit Q&A agent (``prompts/conventions.ts``, via
+    the Drizzle mirror) — read these rows, never the YAML, so a *framed* vertical whose
+    conventions exist only as rows is served identically to a builtin. ``frame`` writes
+    declared/edited rows through the same table (the cockpit's write surface).
+
+    **The engine never interprets the content (DAT-789 keeps conventions PROSE).**
+    ``statement`` is opaque, LLM-facing, declared human judgment served verbatim — it is
+    NOT linted for content; the engine only ROUTES by the generic ``targets`` label and
+    renders the ``concept_groups`` labels. Mirrors
+    :class:`~dataraum.analysis.semantic.ontology.OntologyConvention`, the YAML-load
+    envelope, whose ``id`` is this row's ``name``.
+
+    **Identity contract — NOT run-versioned (the DAT-728 pattern).** A convention is a
+    stable node keyed by ``(vertical, name)`` (``name`` = the YAML ``id``);
+    ``convention_id`` is a workspace-stable surrogate minted once at seed, NOT a per-run
+    uuid. Edits supersede rather than collide: the ``uq_convention_active`` partial-unique
+    index keeps at most one *active* row per ``(vertical, name)`` so a head-free read is
+    unambiguous. Workspace identity IS the ``ws_<id>`` schema (no ``workspace_id`` column);
+    the read surface scopes to the workspace's bound ``active_vertical``
+    (``_VERTICAL_SCOPED`` in ``storage/read_views.py``).
+
+    The ``concept_groups`` partition is ALSO consumed at seed time by
+    ``concept_edge_store`` to derive ``disjoint_with`` edges — off the shared YAML
+    envelope, not this row; this table is the runtime home the renderers read.
+    """
+
+    __tablename__ = "conventions"
+    __table_args__ = (
+        # At most one ACTIVE row per (vertical, name); superseded history rows are
+        # exempt. The deterministic single-active-row guarantee the head-free reads and
+        # the seed's ON CONFLICT DO NOTHING rely on — the same shape as
+        # Concept.uq_concept_active.
+        Index(
+            "uq_convention_active",
+            "vertical",
+            "name",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+        # Lifecycle-source vocabulary (DAT-802, the two-layer standard): every admitted
+        # value has a LIVE writer — 'seed'
+        # (``convention_store.ensure_conventions_seeded``, engine) and 'frame' (cockpit
+        # ``convention-write.ts``'s ``writeConvention()``, a real Drizzle supersede+insert
+        # exercised by ``convention-write.integration.test.ts``). NOT 'teach': conventions
+        # never had a teach type and DAT-728 retired that route for typed homes — a CHECK
+        # admitting a value no writer produces is the exact DAT-802 defect. Mirrors
+        # :class:`Concept`'s source set exactly (two live writers, seed + frame).
+        CheckConstraint("source IS NULL OR source IN ('frame', 'seed')", name="source"),
+    )
+
+    convention_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    # The convention's stable identifier within `vertical` (the YAML `id`).
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Verbatim LLM-facing guidance — the engine NEVER interprets it (served as-is to the
+    # SQL authors). Declared human judgment; not content-linted (DAT-789).
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    # Per-consumer routing labels (extraction | validation[:<id>] | qa) — the generic
+    # envelope the engine routes by; a broad label ("validation") or a per-spec qualifier
+    # ("validation:sign_conventions"). JSON list; NULL == none (reaches no consumer). Kept
+    # typed at every writer via the OntologyConvention / ProposedConvention submodels — the
+    # engine stores the validated list, never a free dict.
+    targets: Mapped[list[str] | None] = mapped_column(JSON)
+    # label -> concept names: the disjoint partition the renderer appends after the
+    # statement (and the shared YAML envelope concept_edge_store derives disjoint_with
+    # from). JSON object; NULL == none (a statement-only convention). Typed via the same
+    # submodels.
+    concept_groups: Mapped[dict[str, list[str]] | None] = mapped_column(JSON)
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    # Closed vocab: see ck_conventions_source — 'seed' | 'frame' are the two live writers.
+    source: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class WorkspaceSettings(Base):
     """The workspace's bound active vertical — the one home DAT-848 was missing.
 
@@ -343,6 +477,54 @@ class WorkspaceSettings(Base):
     # no permissive default on a load-bearing scalar).
     active_vertical: Mapped[str] = mapped_column(String, nullable=False)
     bound_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class WorkspaceCalendar(Base):
+    """The workspace's DECLARED reporting calendar — one home (DAT-730).
+
+    A domain-free, per-workspace declaration of where the fiscal year begins, so
+    period-grain roll-ups (the ``og_period_grain`` ladder: day→month→quarter→year)
+    can place fiscal-quarter/fiscal-year boundaries. Generic substrate: ANY dataset
+    with year-based temporality uses it — a finance fiscal year is one instance, and
+    NO engine code bakes a domain into it.
+
+    **Declared, never detected.** DAT-783 deleted fiscal-year *inference* after the
+    corpus validation found it wrong (false positives on any span that isn't a whole
+    number of years); it is not revived. This table is set only by an explicit
+    declaration (the cockpit authoring path is a later lane, riding the DAT-789
+    pattern); the engine merely CONSUMES it.
+
+    **Default is stamped, never silent (DAT-730).** ``fiscal_year_start_month`` is
+    1–12 (1 = January = a calendar year). An UNSET workspace has zero rows: every
+    consumer ``COALESCE``s the start to 1 (calendar year) AND marks the fallback
+    visibly (the ladder's ``calendar_source='default'`` vs ``'declared'``), the
+    structural analogue of ``period_resolver``'s flagged-fallback — a default is
+    applied but never passed off as a declaration.
+
+    **Identity.** Workspace identity IS the ``ws_<id>`` schema (no ``workspace_id``
+    column, as :class:`WorkspaceSettings`). Singleton: ``pin`` is a boolean PK
+    checked ``= TRUE``, so at most one row exists — the ladder's correlated read is a
+    well-defined scalar.
+    """
+
+    __tablename__ = "workspace_calendar"
+    __table_args__ = (
+        # Singleton guard, mirroring WorkspaceSettings: at most one row per schema.
+        CheckConstraint("pin = TRUE", name="pin"),
+        # The declared fiscal-year start MONTH, 1 (January = calendar year) .. 12.
+        # A closed numeric range, the DAT-802 v4 born-loud discipline for a
+        # load-bearing scalar (no permissive out-of-range value).
+        CheckConstraint("fiscal_year_start_month BETWEEN 1 AND 12", name="fiscal_year_start_month"),
+    )
+
+    pin: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
+    # 1 = January (calendar year) .. 12 = December. NOT NULL: a row exists only when a
+    # calendar is DECLARED, so an unset workspace has no row and consumers stamp the
+    # calendar-year default themselves (never a permissive default here — v4).
+    fiscal_year_start_month: Mapped[int] = mapped_column(Integer, nullable=False)
+    declared_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
 
@@ -606,9 +788,12 @@ __all__ = [
     "ConceptEdge",
     "ConceptEdgePredicate",
     "ConceptKind",
+    "Convention",
+    "DimensionOrdering",
     "SemanticAnnotation",
     "TableEntity",
     "TableRole",
+    "WorkspaceCalendar",
     "WorkspaceSettings",
     "derive_table_role",
 ]

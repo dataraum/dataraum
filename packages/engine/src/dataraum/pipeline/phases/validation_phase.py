@@ -18,9 +18,12 @@ lifecycle:
 
 A re-run supersedes: everything is re-declared and re-flowed under the fresh
 ``run_id`` (no skip-if-already-ran — the prior run's rows coexist untouched,
-and the promoted head names the current run). The engine induces no
-validations: with no vertical or no declared specs the phase succeeds loudly
-with an explicit ``no_declared_validations`` outcome.
+and the promoted head names the current run). The declared set is the typed
+``validations`` home (shipped seed ``⊕`` agentic-induction generated rows, DAT-735)
+``⊕`` the ``validation`` teach overlay: induction runs in the prior
+``validation_induction`` phase and lands ``source='generated'`` rows this phase then
+reads. With no vertical or an empty declared set the phase succeeds loudly with an
+explicit ``no_declared_validations`` outcome.
 """
 
 from __future__ import annotations
@@ -30,7 +33,8 @@ from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
-from dataraum.analysis.semantic.ontology import OntologyLoader
+from dataraum.analysis.semantic.convention_store import load_workspace_conventions
+from dataraum.analysis.semantic.ontology import OntologyDefinition, OntologyLoader
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.config import load_all_validation_specs
 from dataraum.analysis.validation.db_models import ValidationResultRecord
@@ -106,12 +110,13 @@ class ValidationPhase(BasePhase):
                 "session's typed table selection (ctx.table_ids)."
             )
 
-        # Declared set: shipped vertical YAML ⊕ validation overlay teach rows.
-        # No vertical / no specs is a LOUD explicit outcome, not a silent skip:
-        # the engine induces no validations (declares come from the vertical
-        # now; user declares arrive via frame-2 teach rows, DAT-441).
+        # Declared set: the typed `validations` home (shipped seed ⊕ agentic-induction
+        # generated rows, DAT-735) ⊕ the `validation` teach overlay. Induction (the
+        # prior `validation_induction` phase) already landed this run's generated rows;
+        # user declares arrive via frame-2 teach rows (DAT-441). No vertical / empty
+        # declared set is a LOUD explicit outcome, not a silent skip.
         vertical = ctx.config.get("vertical")
-        specs = load_all_validation_specs(vertical) if vertical else {}
+        specs = load_all_validation_specs(vertical, ctx.session) if vertical else {}
         if not specs:
             outcome = "no_vertical" if not vertical else "no_declared_validations"
             _log.warning("validation_nothing_declared", vertical=vertical, outcome=outcome)
@@ -190,14 +195,25 @@ class ValidationPhase(BasePhase):
             )
         table_names = ", ".join(t["table_name"] for t in schema.get("tables", []))
 
-        # DAT-645: the vertical's conventions, piped verbatim into the SQL
-        # generation of the validations they target. A convention is routed
-        # PER-SPEC (qualifier = the validation id), so a sign rule reaches only the
-        # validations that name it (e.g. `validation:sign_conventions`) and stays
-        # out of unrelated checks. Same source of truth the graph agent uses for
-        # extraction. Empty when the vertical declares none.
+        # DAT-645 → DAT-789: the vertical's conventions, piped verbatim into the SQL
+        # generation of the validations they target. A convention is routed PER-SPEC
+        # (qualifier = the validation id), so a sign rule reaches only the validations
+        # that name it (e.g. `validation:sign_conventions`) and stays out of unrelated
+        # checks. This phase was the LAST convention consumer still doing a raw
+        # `OntologyLoader.load(vertical)` (YAML-only) — it now reads the typed
+        # `conventions` home, the same source extraction + Q&A read, so a
+        # `frame`-authored convention finally reaches validation prompts (the asymmetry
+        # DAT-789 fixes). model_construct skips the concept↔group lint: a stale-but-served
+        # convention must never crash the read. Empty when the vertical declares none.
         ontology_loader = OntologyLoader()
-        ontology = ontology_loader.load(vertical) if vertical else None
+        ontology = (
+            OntologyDefinition.model_construct(
+                name=vertical,
+                conventions=load_workspace_conventions(ctx.session, vertical),
+            )
+            if vertical
+            else None
+        )
 
         # bind → execute per declared spec, parallelized (DAT-651). The per-spec
         # work is PURE compute — one LLM bind + EXPLAIN, then a pure-DuckDB
@@ -206,12 +222,38 @@ class ValidationPhase(BasePhase):
         # the session mutations (transitions + state_reason + persist) are then
         # applied serially on the main thread, in deterministic spec order.
         # Conventions are read-only ontology text, pre-computed here (off the pool).
-        conventions_by_id = {
-            validation_id: ontology_loader.format_conventions_for_prompt(
-                ontology, "validation", qualifier=validation_id
+        # Union routing (DAT-865): the convention-side `targets` push (broad
+        # "validation" / specific "validation:<id>") ∪ the check-side declared
+        # `relevant_conventions` pull. A convention's targets can only name checks
+        # that exist at authoring time, so a GENERATED check's dependencies (e.g.
+        # the sign rule its legs rely on) arrive through its own declaration —
+        # membership-validated at induction, resolved here. Seed rows declare
+        # nothing by default, so the shipped checks render exactly as before.
+        served_convention_ids = (
+            {c.id for c in ontology.conventions} if ontology is not None else set()
+        )
+        conventions_by_id: dict[str, str] = {}
+        # A declared dependency that resolves to no active convention (e.g. a kept
+        # generated set outliving a frame rename/supersede) must fall LOUD — and
+        # "loud" means the RENDERED verdict, not a log line: the ids land on the
+        # result message + the artifact's state_reason below, the same channels
+        # the ungroundable/error reasons ride (silent-substitute rule).
+        missing_conventions: dict[str, list[str]] = {}
+        for validation_id, spec in specs.items():
+            missing = [c for c in spec.relevant_conventions if c not in served_convention_ids]
+            if missing:
+                missing_conventions[validation_id] = missing
+                _log.warning(
+                    "validation_declared_conventions_missing",
+                    validation_id=validation_id,
+                    missing=missing,
+                )
+            conventions_by_id[validation_id] = ontology_loader.format_conventions_for_prompt(
+                ontology,
+                "validation",
+                qualifier=validation_id,
+                include_ids=spec.relevant_conventions,
             )
-            for validation_id in specs
-        }
 
         def _bind_and_execute(
             validation_id: str, spec: ValidationSpec, duckdb_conn: Any
@@ -266,13 +308,24 @@ class ValidationPhase(BasePhase):
         for validation_id in specs:
             artifact = artifacts[validation_id]
             generated, bind_failure, exec_result = collected[validation_id]
+            # The missing-dependency note rides EVERY outcome of this check —
+            # a verdict computed without a judgment the check declared it needs
+            # is never presented as fully-informed (DAT-865 fall-loud contract).
+            missing_note = (
+                f" [declared convention(s) not served: "
+                f"{', '.join(missing_conventions[validation_id])}]"
+                if validation_id in missing_conventions
+                else ""
+            )
             if bind_failure is not None:
                 # Ungroundable: stays declared, reason on the row.
+                bind_failure.message += missing_note
                 artifact.state_reason = bind_failure.message
                 results.append(bind_failure)
                 continue
             assert generated is not None  # bind contract: exactly one side set
             assert exec_result is not None
+            exec_result.message += missing_note
             transition(artifact, operation="bind", stage=_STAGE, grounded_against=grounded_against)
             if exec_result.status == ValidationStatus.ERROR:
                 # Execution error OR inconclusive evaluation (the SQL ran but its
@@ -281,6 +334,8 @@ class ValidationPhase(BasePhase):
                 artifact.state_reason = exec_result.message
             else:
                 transition(artifact, operation="execute", stage=_STAGE)
+                if missing_note:
+                    artifact.state_reason = missing_note.strip()
             results.append(exec_result)
 
         run_result = ValidationRunResult.from_results(

@@ -24,7 +24,9 @@ reification).** Vertices/edges:
                                             anchor_time_axis (witness axis ▸ declared anchor)
     table_node     (KEY table_id)    props: layer (typed | enriched), table_role
                                             (fact/periodic_snapshot/dimension)
-    concept_node   (KEY concept_id)  the typed vocabulary (DAT-728)
+    concept_node   (KEY concept_id)  the typed vocabulary (DAT-728); ``ordering``
+                                            (ordered | nominal | NULL) types a
+                                            dimension concept's axis (DAT-730)
     grounding_node (KEY snippet_id)  the reified grounding commitment (DAT-727):
                                             concept / relation / select_expr /
                                             where_predicates un-nested from the
@@ -32,13 +34,47 @@ reification).** Vertices/edges:
                                             (DAT-671) via current_groundings;
                                             ``failed`` discriminates a retained
                                             DAT-543 failure from knowledge
+    period_grain   (KEY grain)       the constant period ladder node (day/month/
+                                            quarter/year) carrying the workspace's
+                                            declared fiscal boundary (DAT-730)
+    additivity_verdict (KEY additivity_id) the 2-axis drill additivity verdict
+                                            (DAT-731) projected from
+                                            current_metric_additivity: categorical /
+                                            time additive + reason, per drill target
+                                            (a ``metric`` graph_id or a ``measure``
+                                            standard_field)
+    metric_node    (KEY graph_id)    a declared metric (DAT-732); props: name /
+                                            category / unit / output_type — the metric
+                                            DAG's typed home (metrics table)
+    parameter_node (KEY parameter_id) a metric's user-configurable parameter (DAT-732):
+                                            declared default + a ``derivation`` marker
+                                            (``period_grain`` for days_in_period)
+    validity_filter (KEY filter_id)  the canonical analytical-universe predicate
+                                            (DAT-733): a MEASURED cycle's typed
+                                            (column_id, operator, value) status scope
+                                            groundings compose by default
+    dim_member  (KEY dim_member_key) a dimension member a grounding's predicates
+                                            select (DAT-787), un-nested from
+                                            filter_members: axis identity × level ×
+                                            served value over BOTH the DAT-788
+                                            role-separated referenced axis and the
+                                            DAT-867 folded (own-column) axis
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
     concept_edge       concept → concept [concept_edges]      part_of/disjoint/reconciles
-    conformed_dimension table → table    [slice_definitions]  two facts sharing a dimension (DAT-756)
+    conformed_dimension table → table    [slice_definitions ▸ bus_matrix] two facts sharing a dimension AXIS in the SAME role (DAT-756/788)
     grounded_by        concept → grounding [current_groundings] a concept's groundings; >1 healthy = multi-grounding
     uses               grounding → column  [provenance contract v2] the columns a grounding touches
+    filtered_by        grounding → dim_member [provenance contract v2 ▸ filter_members] the dimension members a grounding's predicates select — referenced + folded axes (DAT-787/867)
+    scoped_by          table → validity_filter [detected_business_cycles] the table's default validity scope (DAT-733)
+    temporal_coverage  table → column    [temporal_column_profiles ▸ time_columns] observed window/grain/completeness per (relation × time col) (DAT-730)
+    rolls_up_to        column → column   [dimension_hierarchies] ordered drill level→level, finer→coarser (DAT-730)
+    period_rolls_up_to grain → grain     [constant + workspace_calendar] the calendar ladder day→month→quarter→year (DAT-730)
+    has_additivity     concept → additivity_verdict [current_metric_additivity] a MEASURE concept's 2-axis verdict (DAT-731)
+    measured_in        column → column   [column_concepts.unit_source_column] a measure column → the column that defines its unit (DAT-731)
+    derives_from       metric → concept   [metric_derives_from] a metric's extract leaves → the concepts they ground (DAT-732)
+    has_parameter      metric → parameter [metric_parameters]   a metric's user-configurable parameters (DAT-732)
 
 One vertex label spans both layers (DAT-774): typed source tables AND enriched-view
 tables are ``table_node``, discriminated by the ``layer`` property (the DD types "Table
@@ -46,21 +82,57 @@ tables are ``table_node``, discriminated by the ``layer`` property (the DD types
 every ``derived_from`` edge — whose source is always an enriched-view table — dangled at
 its source endpoint and none ever instantiated in a MATCH. See ``og_tables`` below.
 
-``rolls_up_to`` (dimension_hierarchies' JSON members) is not bound here — it
-lands with the consumer that reads it. The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
+``rolls_up_to`` (DAT-730) unnests ``dimension_hierarchies.members`` into ordered
+level→level column edges (``HierarchyMember.level`` is the SOLE direction carrier —
+level 0 coarsest, DAT-779 — never array position); the parallel ``period_rolls_up_to``
+constant ladder (day→month→quarter→year, fiscal boundaries from the declared
+``workspace_calendar``) is walkable by the SAME bounded recursive CTE the ``part_of``
+closure uses, so last-complete-quarter is derivable from last-complete-month.
+``temporal_coverage`` (DAT-730) exposes the persisted ``temporal_column_profiles``
+coverage per DECLARED time column (``table_entities.time_columns`` is the role home —
+event/attribute + single anchor); observed grain is ``detected_granularity`` (NEVER the
+``period_grain`` config echo), and an unmeasurable window stays NULL, never fabricated.
+The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
 ``part_of`` / ``disjoint_with`` / ``reconciles_with`` as a ``predicate`` property;
 its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 The ``uses`` edge un-nests the TYPED ``column_mappings_basis`` (provenance contract
 v2, DAT-727) — enforced at authoring, never parsed out of SQL; ``filtered_by →
-DimMember`` is deferred to DAT-787, with ``where[]`` carried losslessly on the
-grounding vertex meanwhile.
-``conformed_dimension`` (DAT-756) types two facts sharing a dimension AXIS — the same
-resolved ``(dimension_table_id, attribute)`` identity, NOT a column name — as a
-drill-across path (an alignable GROUP BY the SQL agents can author over). It is
-ATTRIBUTE grain (the actionable unit for SQL is a shared axis, not a shared table),
-deliberately DECOUPLED from the table-grain ``refs`` fan-trap exclusion below — the two
-serve different consumers, so a cross-level fan trap is excluded from ``refs`` yet
-correctly has no conformed edge (see the edge's own note).
+dim_member`` (DAT-787/867) un-nests the sibling TYPED ``filter_members`` the SAME
+way — one edge per dimension member the grounding's predicates select (referenced
+or folded axis), an ADDITIVE projection (``where[]`` STAYS lossless on the
+grounding vertex).
+``conformed_dimension`` (DAT-756/788) types two facts sharing a dimension AXIS — the
+same resolved ``(dimension_table_id, attribute)`` identity in the SAME ROLE, NOT a
+column name — as a drill-across path (an alignable GROUP BY the SQL agents can author
+over). It is ATTRIBUTE grain (the actionable unit for SQL is a shared axis, not a
+shared table), deliberately DECOUPLED from the table-grain ``refs`` fan-trap exclusion
+below — the two serve different consumers, so a cross-level fan trap is excluded from
+``refs`` yet correctly has no conformed edge (see the edge's own note). The role gate
+(DAT-788) resolves each slice through its referenced ``bus_matrix`` cell to the
+conform judge's role identity, so role-playing FKs (bill-to vs ship-to) are distinct
+axes unless the judge conformed them — the SAME LLM-authored decision layer the lineage
+witness reads, keeping the two post-judge consumers on one identity.
+
+**Additivity + units (DAT-731).** ``additivity_verdict`` is a small VERTEX projecting
+``current_metric_additivity`` — the deterministic 2-axis drill verdict (categorical /
+time additive + reason) the metrics phase persists per drill target (a ``metric``
+graph_id or a ``measure`` standard_field). A vertex (not a property on an existing
+node) because the two target kinds have NO common home: a ``measure`` target_key is a
+concept name, but a ``metric`` target_key is a formula ``graph_id`` with no vertex at
+all (metrics are not in the graph). One uniform vertex covers both and stays MATCH-able
+by property for the metric case; ``has_additivity`` (concept → verdict) makes the
+MEASURE case a traversal — ``MATCH (c:concept_node)-[:has_additivity]->(a)`` answers
+"can I sum concept X over time?". ``measured_in`` (column → column) projects the
+semantic-layer authored ``ColumnConcept.unit_source_column`` — a measure column → the
+column that defines its unit (a sibling ``currency`` dimension, or a ``table.column``
+across a confirmed FK, or the measure's OWN column for a self-denominated value). The
+authored pointer is the ONE home for a measure's unit: the typing-layer Pint
+``detected_unit`` (analysis/typing/units.py) is EVIDENCE the catalogue author already
+sees, never a second edge source — the two are not fused. ``dimensionless`` / NULL /
+'' carry no edge (no unit column to point at). Together they make a cross-unit
+aggregation REPRESENTABLE (a measure ``measured_in`` a multi-valued unit column cannot
+be summed raw without a conversion) — the conversion GROUNDING itself (an fx-rate
+table) is not a clean structural edge today and is left to the consumer's flag.
 
 **Bootstrap ordering is load-bearing.** A property graph *depends on* its element
 views, and an element view depends on the ``current_*`` views. Postgres refuses to
@@ -104,6 +176,7 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_columns",
     "og_concepts",
     "og_grounding",
+    "og_period_grain",
     "og_references",
     "og_has_dimension",
     "og_derived_from",
@@ -111,6 +184,159 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_conformed_dimension",
     "og_grounded_by",
     "og_uses",
+    "og_dim_members",
+    "og_filtered_by",
+    "og_validity_filter",
+    "og_scoped_by",
+    "og_temporal_coverage",
+    "og_rolls_up_to",
+    "og_period_rolls_up_to",
+    "og_additivity",
+    "og_has_additivity",
+    "og_measured_in",
+    # Metric DAG (DAT-732) — the declared-metric vertices + their edges.
+    "og_metrics",
+    "og_metric_parameters",
+    "og_derives_from",
+    "og_has_parameter",
+)
+
+
+# Shared FROM/JOIN/WHERE of the two DAT-733 validity-scope element views. They stay
+# INDEPENDENT views (no view-to-view dependency — the dump drops them in list order),
+# but re-derive the SAME rows: keeping the name resolution + measured gate in ONE
+# string stops the vertex and its edge silently drifting apart on a future edit
+# (e.g. tightening the measured gate must touch both).
+_VALIDITY_FILTER_SOURCE = (
+    f"FROM {READ_TOKEN}.current_detected_business_cycles c\n"
+    f"JOIN {READ_TOKEN}.current_tables t\n"
+    f"  ON (t.table_name = c.status_table OR t.duckdb_path = c.status_table)\n"
+    f"JOIN {READ_TOKEN}.current_columns col\n"
+    f"  ON col.table_id = t.table_id AND col.column_name = c.status_column\n"
+    f"WHERE c.status_column IS NOT NULL\n"
+    f"  AND c.completion_value IS NOT NULL\n"
+    f"  AND c.completion_rate IS NOT NULL;"
+)
+
+
+# The DimMember key (DAT-787 referenced + DAT-867 folded): the dimension-axis
+# identity × the level within it × the served value, over the normalized ``m``
+# columns the two attachment legs below UNION.
+#   ``axis_identity`` = ``COALESCE(bm.conformed_group, bm.signature)`` — bus_matrix's
+#     OWN identity fields, REUSED (never a parallel scheme):
+#       referenced — ``conformed_group`` is the DAT-788 role-group signature
+#         (``ref:{dim_table}:{roles}``), ALWAYS non-null (_ref_group_signature), so
+#         COALESCE returns it unchanged — the referenced key is BYTE-IDENTICAL to the
+#         referenced-only v1 (referenced ``signature`` is never reached);
+#       folded — ``conformed_group`` is the cross-fact conform signature
+#         (``conform:...``) when the judge merged the axis across facts, else NULL; the
+#         fallback is the cell's ``signature`` (``bus:folded:{fact}:{members}``, always
+#         non-null and fact-scoped) so two facts' UNconformed ``region='west'`` stay
+#         DISTINCT vertices (absence-falls-loud) instead of colliding on a NULL axis.
+#   ``axis_level`` = the referenced ``dimension_attribute`` (the enriched level; NULL ⇒
+#     the FK key itself, COALESCEd to '') or the folded ``column_name`` (a folded axis
+#     has no resolved dimension attribute — the fact column IS its level home).
+# ``json_build_array(...)::text`` is a collision-free composite (every component is
+# JSON-escaped — no delimiter a value could forge) and ``::text`` for the PGQ
+# varchar-equality rule. CONTENT-derived only: no per-run component (the
+# relationship_id bug class). The vertex KEY and the edge DESTINATION KEY inline this
+# SAME expression, so they can never drift.
+_DIM_MEMBER_KEY = (
+    "json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text"
+)
+
+# The grounding→member→fact resolution BOTH UNION legs re-derive: un-nest the TYPED
+# provenance ``filter_members`` (contract v2 / DAT-787) — one {column, value} per
+# selected member, ENFORCED at authoring (validate_grounding_basis), never parsed out
+# of SQL, exactly the og_uses discipline one grain finer (VALUE, not just column) —
+# then resolve the grounding's ``relation`` to its fact table (its enriched view's
+# fact, else the typed table of that name).
+_DIM_MEMBER_PREFIX = (
+    f"FROM {READ_TOKEN}.current_groundings g\n"
+    f"CROSS JOIN LATERAL json_each(\n"
+    f"     COALESCE(g.provenance->'column_mappings_basis', '{{}}'::json)\n"
+    f"     ) AS b(concept, entry)\n"
+    f"CROSS JOIN LATERAL json_array_elements(\n"
+    f"     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)\n"
+    f"CROSS JOIN LATERAL (\n"
+    f"  SELECT ev.fact_table_id AS fact_table_id\n"
+    f"  FROM {READ_TOKEN}.current_enriched_views ev\n"
+    f"  WHERE ev.view_name = g.relation\n"
+    f"  UNION ALL\n"
+    f"  SELECT t.table_id\n"
+    f"  FROM {READ_TOKEN}.current_tables t\n"
+    f"  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)\n"
+    f"    AND NOT EXISTS (\n"
+    f"      SELECT 1 FROM {READ_TOKEN}.current_enriched_views ev2\n"
+    f"      WHERE ev2.view_name = g.relation)\n"
+    f") rel\n"
+)
+
+# Referenced leg (DAT-787/788): a slice with a resolved REFERENCED identity
+# (``dimension_table_id IS NOT NULL``) → its bus-matrix cell via the role EXISTS (the
+# SAME join og_conformed_dimension uses). Level = the enriched ``dimension_attribute``.
+# The projected columns are IDENTICAL in shape to the folded leg so the UNION is total.
+_DIM_MEMBER_REFERENCED_LEG = (
+    "  SELECT g.snippet_id AS snippet_id, b.concept AS concept,\n"
+    "         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,\n"
+    "         s.dimension_attribute AS axis_level,\n"
+    "         fm.elem->>'value' AS member_value,\n"
+    "         bm.conformed_group AS conformed_group,\n"
+    "         s.dimension_attribute AS dimension_attribute\n"
+    + _DIM_MEMBER_PREFIX
+    + f"  JOIN {READ_TOKEN}.current_slice_definitions s\n"
+    f"    ON s.table_id = rel.fact_table_id\n"
+    f"   AND s.column_name = fm.elem->>'column'\n"
+    f"   AND s.dimension_table_id IS NOT NULL\n"
+    f"  JOIN {READ_TOKEN}.current_bus_matrix bm\n"
+    f"    ON bm.attachment = 'referenced'\n"
+    f"   AND bm.fact_table_id = s.table_id\n"
+    f"   AND bm.dimension_table_id = s.dimension_table_id\n"
+    f"   AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)\n"
+    f"               WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))\n"
+    f"  WHERE NOT g.failed\n"
+)
+
+# Folded leg (DAT-867): a folded slice (``dimension_table_id IS NULL`` — an own
+# categorical column, no FK identity — SliceDefinition) → its FOLDED bus-matrix cell,
+# matched when the slice's column is one of the cell's member columns (the fold key in
+# ``roles`` OR an inlined attribute in ``attributes``). Fold components are disjoint
+# per fact (bus_matrix union-finds member NAMES), so the column lands in at most one
+# cell. Level = the folded ``column_name`` (its own level home). No folded cell ⇒ no
+# member: the bus_matrix folded surface requires an enriched view + a discovered fold
+# hierarchy (bare categoricals have a slice but no cell) — honest under-coverage, the
+# og_concept_edges discipline, never a fabricated member.
+_DIM_MEMBER_FOLDED_LEG = (
+    "  SELECT g.snippet_id AS snippet_id, b.concept AS concept,\n"
+    "         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,\n"
+    "         s.column_name AS axis_level,\n"
+    "         fm.elem->>'value' AS member_value,\n"
+    "         bm.conformed_group AS conformed_group,\n"
+    "         NULL AS dimension_attribute\n"
+    + _DIM_MEMBER_PREFIX
+    + f"  JOIN {READ_TOKEN}.current_slice_definitions s\n"
+    f"    ON s.table_id = rel.fact_table_id\n"
+    f"   AND s.column_name = fm.elem->>'column'\n"
+    f"   AND s.dimension_table_id IS NULL\n"
+    f"  JOIN {READ_TOKEN}.current_bus_matrix bm\n"
+    f"    ON bm.attachment = 'folded'\n"
+    f"   AND bm.fact_table_id = s.table_id\n"
+    f"   AND (EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)\n"
+    f"                WHERE r.role = s.column_name)\n"
+    f"        OR EXISTS (SELECT 1 FROM json_array_elements_text(bm.attributes) AS a(attr)\n"
+    f"                   WHERE a.attr = s.column_name))\n"
+    f"  WHERE NOT g.failed\n"
+)
+
+# The DimMember source: the UNION of the two attachment legs, aliased ``m`` so ONE
+# key expression (_DIM_MEMBER_KEY) and both element views project the SAME normalized
+# columns. The DimMember vertex and the filtered_by edge stay INDEPENDENT views (the
+# dump drops them in list order) but keyed identically off ``m``, so a future edit to
+# the resolution touches ONE string. The engine-appended validity scope (DAT-733) is
+# composed AFTER authoring and never enters filter_members, so it never fabricates a
+# member; ``where[]`` stays lossless on the grounding node regardless of attachment.
+_DIM_MEMBER_SOURCE = (
+    "FROM (\n" + _DIM_MEMBER_REFERENCED_LEG + "  UNION ALL\n" + _DIM_MEMBER_FOLDED_LEG + ") m"
 )
 
 
@@ -253,7 +479,7 @@ def _element_view_sql(name: str) -> str:
         # `concept_edge` edge below (DAT-729) and `grounded_by` (DAT-727).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_concepts AS\n"
-            f"SELECT concept_id::text AS concept_id, vertical, name, kind\n"
+            f"SELECT concept_id::text AS concept_id, vertical, name, kind, ordering\n"
             f"FROM {READ_TOKEN}.concepts\n"
             f"WHERE superseded_at IS NULL;"
         )
@@ -268,8 +494,9 @@ def _element_view_sql(name: str) -> str:
         # `failed` property — "why is this concept ungrounded?" is a graph question
         # — but only healthy nodes get `uses` edges (a failed row's provenance
         # carries failure keys, no basis). where_predicates is the where[] JSON
-        # carried LOSSLESSLY on the node; its DimMember decomposition (filtered_by)
-        # is DAT-787. sql_snippets is workspace-persistent, so snippet_id is a
+        # carried LOSSLESSLY on the node — its DimMember decomposition (the
+        # filtered_by edge, DAT-787) is an ADDITIVE projection off the sibling typed
+        # filter_members, never a move. sql_snippets is workspace-persistent, so snippet_id is a
         # valid KEY as-is. Parity: relation/select_expr/where re-render through
         # compose_extract_sql to exactly the snippet's persisted sql (tested).
         return (
@@ -381,7 +608,7 @@ def _element_view_sql(name: str) -> str:
         # (DAT-756, rebuilding the reverted DAT-729 edge on referenced identity).
         # Derived by self-joining slice (has_dimension) rows on the SAME resolved
         # identity — (dimension_table_id, dimension_attribute), NEVER column names —
-        # of DIFFERENT tables.
+        # of DIFFERENT tables, THEN gated on the DAT-788 ROLE identity.
         #
         # ATTRIBUTE grain, and deliberately a DIFFERENT question from the edge-kind
         # owner (DAT-850: a relationship row's relationship_type, resolved at the
@@ -404,10 +631,23 @@ def _element_view_sql(name: str) -> str:
         # common axis to drill across); the facts' shared dimension is still visible
         # via their genuine fact→dim FKs. COALESCE pairs the slice-by-FK-key case (NULL
         # attribute) with itself. Folded slices (NULL dimension_table_id) have no dim
-        # table to conform over and are excluded. Symmetric — both directions emitted
-        # (edge_key = the ordered slice-id pair, '_'-joined, NOT ':' a bind-param sigil
-        # to text()). A fact with multiple role-playing FKs at one axis yields one edge
-        # per slice-row pair, so a table pair can carry several conformed edges.
+        # table to conform over and are excluded.
+        #
+        # ROLE identity (DAT-788): matching (dim table, attribute) is NOT enough — two
+        # role-playing FKs to one dim (bill-to vs ship-to) share the axis but are
+        # SEPARATE conformed dimensions unless the conform judge merged their roles.
+        # Each slice resolves through its referenced bus-matrix cell (fk_role ∈ the
+        # cell's role list) to the DAT-788 ``conformed_group``; two slices conform only
+        # when their groups match. Same-named FK roles across facts share a group
+        # structurally (the DAT-756 common case still fires), a judge ``conform``
+        # verdict merges differently-named roles, and ``role`` / ``distinct`` / abstain /
+        # unjudged keep them apart — the graph under-connects rather than inventing a
+        # cross-role conformance (absence-falls-loud). The bus matrix
+        # (``dimension_hierarchies`` phase) is the SAME LLM-authored decision layer the
+        # lineage witness reads, so the two post-judge consumers carry ONE identity.
+        # Symmetric — both directions emitted (edge_key = the ordered slice-id pair,
+        # '_'-joined, NOT ':' a bind-param sigil to text()). A fact with role-playing
+        # FKs at one axis yields at most one edge per conforming slice-row pair.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_conformed_dimension AS\n"
             f"SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,\n"
@@ -415,11 +655,27 @@ def _element_view_sql(name: str) -> str:
             f"       s1.dimension_table_id::text AS dimension_table_id,\n"
             f"       s1.dimension_attribute AS dimension_attribute\n"
             f"FROM {READ_TOKEN}.current_slice_definitions s1\n"
+            f"JOIN {READ_TOKEN}.current_bus_matrix b1\n"
+            f"  ON b1.attachment = 'referenced'\n"
+            f" AND b1.fact_table_id = s1.table_id\n"
+            f" AND b1.dimension_table_id = s1.dimension_table_id\n"
+            # ``COALESCE(NULLIF(fk_role,''), column_name)`` mirrors the Python role
+            # identity (``fk_role or column_name``) the cell's ``roles`` were built
+            # from, so an empty fk_role resolves the same on both sides — no divergence.
+            f" AND EXISTS (SELECT 1 FROM json_array_elements_text(b1.roles) AS r(role)\n"
+            f"             WHERE r.role = COALESCE(NULLIF(s1.fk_role, ''), s1.column_name))\n"
             f"JOIN {READ_TOKEN}.current_slice_definitions s2\n"
-            f"  ON s1.dimension_table_id = s2.dimension_table_id\n"
-            f" AND COALESCE(s1.dimension_attribute, '') = COALESCE(s2.dimension_attribute, '')\n"
-            f" AND s1.table_id <> s2.table_id\n"
-            f"WHERE s1.dimension_table_id IS NOT NULL;"
+            f"  ON s2.dimension_table_id = s1.dimension_table_id\n"
+            f" AND COALESCE(s2.dimension_attribute, '') = COALESCE(s1.dimension_attribute, '')\n"
+            f" AND s2.table_id <> s1.table_id\n"
+            f"JOIN {READ_TOKEN}.current_bus_matrix b2\n"
+            f"  ON b2.attachment = 'referenced'\n"
+            f" AND b2.fact_table_id = s2.table_id\n"
+            f" AND b2.dimension_table_id = s2.dimension_table_id\n"
+            f" AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)\n"
+            f"             WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))\n"
+            f"WHERE s1.dimension_table_id IS NOT NULL\n"
+            f" AND b1.conformed_group = b2.conformed_group;"
         )
     if name == "og_grounded_by":
         # grounded_by edge (concept → grounding, DAT-727): a grounding's `concept`
@@ -515,6 +771,433 @@ def _element_view_sql(name: str) -> str:
             f"ORDER BY g.snippet_id, col.column_id,\n"
             f"         CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;"
         )
+    if name == "og_validity_filter":
+        # validity_filter vertex (DAT-733): the canonical analytical-universe
+        # predicate reified as typed structure — the posted-/reconciled-/active-only
+        # scope a grounding composes BY DEFAULT. Sourced SOLELY from a detected
+        # business cycle's ``status_column = completion_value`` (analysis/cycles):
+        # a TYPED (column_id, operator, value) triple, never free text. Concept
+        # ``exclude_patterns`` were evaluated as a second source and rejected —
+        # they are column-NAME match exclusions consumed at the grounding-matching
+        # layer, not row predicates (see graphs/context.py), so no faithful triple
+        # exists and fabricating one is forbidden.
+        #
+        # ONE row per MEASURED cycle carrying both a status column and a completion
+        # value: ``completion_rate IS NOT NULL`` is the persisted proxy for the
+        # cycles contract's ``measured`` discriminator (unmeasured ⇒ the three
+        # metrics are NULL; _parse_output), and an unmeasured cycle contributes NO
+        # filter. The status_table/status_column NAMES resolve to a column_id via
+        # current_tables/current_columns (table_name OR duckdb_path, mirroring
+        # og_uses); the INNER JOINs drop a cycle whose names don't resolve —
+        # honest under-coverage, never a wrong edge, never a fabricated scope.
+        #
+        # HEAD/RUN ASYMMETRY (inherent to the run-versioned model): this element
+        # projects the PROMOTED operating_model head (current_*), the post-run read
+        # surface — like every og_* view. The DEFAULT-composition consumer
+        # (graphs/agent grounding) reads the SAME cycles RUN-SCOPED from
+        # rich_context instead, because mid-run the head is not yet promoted
+        # (metrics_phase passes om_run_id for exactly this). Two projections of one
+        # source (detected_business_cycles) at the two correct scopes.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_validity_filter AS\n"
+            f"SELECT c.cycle_id::text AS filter_id,\n"
+            f"       col.table_id::text AS table_id,\n"
+            f"       col.column_id::text AS column_id,\n"
+            f"       col.column_name AS column_name,\n"
+            f"       '=' AS operator,\n"
+            f"       c.completion_value AS value\n" + _VALIDITY_FILTER_SOURCE
+        )
+    if name == "og_scoped_by":
+        # scoped_by edge (table -> validity_filter, DAT-733): the table whose rows
+        # the validity predicate narrows. filter_id == cycle_id, so the edge
+        # re-derives the SAME resolution as og_validity_filter directly off the
+        # current_* surface rather than reading that element view — element views
+        # stay INDEPENDENT thin shapers (the dump drops them in list order, so a
+        # view depending on a sibling would fail to drop). One edge per measured,
+        # resolvable cycle. Absence is enumerable and loud: a table with no such
+        # cycle has NO scoped_by edge — never a default-true "scoped".
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_scoped_by AS\n"
+            f"SELECT (col.table_id || '_' || c.cycle_id)::text AS edge_key,\n"
+            f"       col.table_id::text AS table_id,\n"
+            f"       c.cycle_id::text AS filter_id,\n"
+            f"       col.column_id::text AS column_id\n" + _VALIDITY_FILTER_SOURCE
+        )
+    if name == "og_period_grain":
+        # period_grain vertex (DAT-730): the CONSTANT period-roll-up ladder nodes
+        # day/month/quarter/year, carrying the workspace's DECLARED fiscal-year start
+        # month so a consumer can place fiscal-quarter/year boundaries. The nodes are
+        # workspace-invariant; only ``fiscal_year_start_month`` varies, read from the
+        # singleton ``workspace_calendar`` (the ``pin`` CHECK keeps it one row, so the
+        # LEFT JOIN ON TRUE stays 1:1). Unset workspace ⇒ NO row ⇒ COALESCE to 1
+        # (January = calendar year) AND ``calendar_source='default'`` — the STAMPED,
+        # visible default (never a silent fallback), the structural analogue of
+        # ``period_resolver``'s flagged fallback. ``ordinal`` orders the ladder
+        # (day=0 finest .. year=3 coarsest) for a consumer that reads the nodes flat.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_period_grain AS\n"
+            f"SELECT g.grain::text AS grain, g.ordinal,\n"
+            f"       COALESCE(wc.fiscal_year_start_month, 1) AS fiscal_year_start_month,\n"
+            f"       CASE WHEN wc.fiscal_year_start_month IS NULL THEN 'default'\n"
+            f"            ELSE 'declared' END AS calendar_source\n"
+            f"FROM (VALUES ('day', 0), ('month', 1), ('quarter', 2), ('year', 3))\n"
+            f"       AS g(grain, ordinal)\n"
+            f"LEFT JOIN {READ_TOKEN}.workspace_calendar wc ON TRUE;"
+        )
+    if name == "og_temporal_coverage":
+        # temporal_coverage edge (table → column, DAT-730): one edge per (typed
+        # relation × DECLARED time column) exposing the PERSISTED
+        # ``temporal_column_profiles`` coverage as PGQ-queryable structure — parallel
+        # to og_has_dimension (table → column). The ROLE home is
+        # ``table_entities.time_columns`` (the event/attribute + single-anchor JSON,
+        # enforced at the LLM seam): unnested to name each declared time column with
+        # its ``role`` / ``aspect`` / ``declared_anchor``. The name resolves LAYERED
+        # (DAT-866): typed first (current_columns on the declaring table), else the
+        # table's enriched view's served columns (current_enriched_columns via
+        # current_enriched_views.fact_table_id) — a declared anchor is often an
+        # FK-JOINED header date (``entry_id__date``, the default warehouse shape)
+        # that exists ONLY on the enriched layer; before this branch the edge was
+        # silently dropped while og_columns still carried the anchor axis — a graph
+        # self-contradiction. The NOT EXISTS guard keeps typed-first exclusive: the
+        # enriched f.* COPY of a typed column must never steal (or duplicate) the
+        # edge. An enriched hit lands on the enriched column's OWN vertex (DAT-811
+        # key discipline) but resolves the OBSERVED profile THROUGH
+        # ``source_column_id`` — profiles are typed-column-grain. Grain nuance,
+        # stated not hidden: the served observation is the typed SOURCE's date set
+        # (e.g. a header-grain profile serving the line-grain joined column); the
+        # sets differ only by source periods no row joins to. A name resolving on
+        # NEITHER layer is honest under-coverage — no dangling edge, the
+        # og_concept_edges discipline. The observed facts LEFT-join
+        # current_temporal_column_profiles: a declared time column that was never
+        # temporally profiled (or an irregular/unknown grain) keeps its edge with NULL
+        # observed_* — absence falls loud, NEVER a fabricated window (DAT-853
+        # abstention discipline; completeness_ratio/last_period_complete already NULL
+        # at the source). The OBSERVED grain is ``detected_granularity`` — NEVER the
+        # ``measure_aggregation_lineage.period_grain`` config echo.
+        #
+        # ``declared_anchor`` is the time_columns ROLE flag — whether the LLM DECLARED
+        # this column the table's anchor — NOT the operating-model anchor. The ONE home
+        # of a measure's resolved anchor axis is ``og_columns.anchor_time_axis`` (witness
+        # ▸ declared precedence, DAT-780); a witness can override the declaration there,
+        # so declared_anchor here and anchor_time_axis there legitimately DIVERGE. Named
+        # ``declared_anchor`` (not ``is_anchor``) so the two are impossible to conflate.
+        #
+        # DISTINCT ON (table, column) guarantees the unique PGQ KEY even if a column were
+        # ever listed twice in the JSON; the tiebreak is TOTAL (declared_anchor DESC then
+        # role/aspect/name) so the retained row is deterministic — the anchor row wins.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_temporal_coverage AS\n"
+            f"SELECT DISTINCT ON (te.table_id, res.column_id)\n"
+            f"       (te.table_id || '_' || res.column_id)::text AS coverage_key,\n"
+            f"       te.table_id::text AS table_id, res.column_id::text AS column_id,\n"
+            f"       res.column_name, tc.role, tc.aspect, tc.declared_anchor,\n"
+            f"       tp.min_timestamp AS observed_min, tp.max_timestamp AS observed_max,\n"
+            f"       tp.span_days, tp.detected_granularity AS observed_grain,\n"
+            f"       tp.completeness_ratio, tp.expected_periods, tp.actual_periods,\n"
+            f"       tp.gap_count, tp.is_stale, tp.last_period_complete\n"
+            f"FROM {READ_TOKEN}.current_table_entities te\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT elem->>'column' AS column_name, elem->>'role' AS role,\n"
+            f"           elem->>'aspect' AS aspect,\n"
+            f"           (elem->>'is_anchor')::boolean AS declared_anchor\n"
+            f"    FROM json_array_elements(COALESCE(te.time_columns, '[]'::json)) AS elem\n"
+            f"  ) tc\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT col.column_id, col.column_name,\n"
+            f"           col.column_id AS profile_column_id\n"
+            f"    FROM {READ_TOKEN}.current_columns col\n"
+            f"    WHERE col.table_id = te.table_id AND col.column_name = tc.column_name\n"
+            f"    UNION ALL\n"
+            f"    SELECT ec.column_id, ec.column_name,\n"
+            f"           ec.source_column_id AS profile_column_id\n"
+            f"    FROM {READ_TOKEN}.current_enriched_views ev\n"
+            f"    JOIN {READ_TOKEN}.current_enriched_columns ec\n"
+            f"      ON ec.table_id = ev.view_table_id AND ec.column_name = tc.column_name\n"
+            f"    WHERE ev.fact_table_id = te.table_id\n"
+            f"      AND NOT EXISTS (\n"
+            f"        SELECT 1 FROM {READ_TOKEN}.current_columns c2\n"
+            f"        WHERE c2.table_id = te.table_id\n"
+            f"          AND c2.column_name = tc.column_name)\n"
+            f"  ) res\n"
+            f"LEFT JOIN {READ_TOKEN}.current_temporal_column_profiles tp\n"
+            f"  ON tp.column_id = res.profile_column_id\n"
+            f"ORDER BY te.table_id, res.column_id, tc.declared_anchor DESC NULLS LAST,\n"
+            f"         tc.role, tc.aspect, tc.column_name;"
+        )
+    if name == "og_rolls_up_to":
+        # rolls_up_to edge (column → column, DAT-730): the dimension drill-down
+        # hierarchy unnested into ordered level→level edges. ``HierarchyMember.level``
+        # is the SOLE direction carrier (level 0 coarsest, increasing = finer, DAT-779
+        # — array position is incidental and MUST NOT be read). "Rolls up to" is
+        # finer→coarser, so an edge goes from the level-N member (source) to the
+        # level-(N-1) member (destination): consecutive levels only (one drill step).
+        # kind='drilldown' ONLY — alias/role structures are peer sets with no
+        # coarse/fine axis (their ``level`` is a bare ordinal). members[].column_id is
+        # the catalog SliceDefinition's underlying column (og_columns vertex identity);
+        # a member with no catalog column ('' per HierarchyMember) is skipped — no
+        # dangling endpoint.
+        #
+        # edge_key = hierarchy_id + the two LEVELS ('_'-joined, NOT ':' a bind-param
+        # sigil). Keyed on LEVELS, not column ids: ``processor._validated_members``
+        # (DAT-779) asserts each drilldown's levels are a contiguous, UNIQUE ``0..n-1``
+        # at every write, so the (from_level, to_level) consecutive pair is unique within
+        # a hierarchy → the PGQ KEY is unique BY CONSTRUCTION. Column-uniqueness across
+        # levels is NOT enforced there, so a column id repeated at two consecutive levels
+        # would collide a column-keyed edge — keying on the validated levels sidesteps it
+        # without relying on an unenforced convention (the og_derived_from KEY-on-the-view
+        # discipline). Reads current_dimension_hierarchies (the promoted catalog head,
+        # DAT-537).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_rolls_up_to AS\n"
+            f"SELECT (h.hierarchy_id || '_' || fine.lvl || '_' || coarse.lvl)::text\n"
+            f"         AS edge_key,\n"
+            f"       fine.col_id::text AS from_column_id,\n"
+            f"       coarse.col_id::text AS to_column_id,\n"
+            f"       h.hierarchy_id::text AS hierarchy_id,\n"
+            f"       fine.lvl AS from_level, coarse.lvl AS to_level\n"
+            f"FROM {READ_TOKEN}.current_dimension_hierarchies h\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl\n"
+            f"    FROM json_array_elements(h.members) AS m\n"
+            f"  ) fine\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT m->>'column_id' AS col_id, (m->>'level')::int AS lvl\n"
+            f"    FROM json_array_elements(h.members) AS m\n"
+            f"  ) coarse\n"
+            f"WHERE h.kind = 'drilldown'\n"
+            f"  AND coarse.lvl = fine.lvl - 1\n"
+            f"  AND fine.col_id <> '' AND coarse.col_id <> '';"
+        )
+    if name == "og_period_rolls_up_to":
+        # period_rolls_up_to edge (period_grain → period_grain, DAT-730): the CONSTANT
+        # calendar ladder day→month→quarter→year. Workspace-invariant structure (the
+        # fiscal boundary rides the period_grain VERTEX, read from workspace_calendar);
+        # here the three roll-up steps are literal. Walkable by the SAME bounded
+        # recursive CTE the part_of closure uses, so last-complete-quarter follows from
+        # last-complete-month. ``::text`` keys for the PGQ varchar-equality rule; '_'
+        # delimiter (not ':' — a bind-param sigil to text()).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_period_rolls_up_to AS\n"
+            f"SELECT (l.from_grain || '_' || l.to_grain)::text AS edge_key,\n"
+            f"       l.from_grain::text AS from_grain, l.to_grain::text AS to_grain\n"
+            f"FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))\n"
+            f"       AS l(from_grain, to_grain);"
+        )
+    if name == "og_additivity":
+        # additivity_verdict vertex (DAT-731): the 2-axis drill additivity verdict, a
+        # ::text projection of current_metric_additivity (read_views.py, the
+        # operating_model metrics-phase head). One row per drill TARGET — a `metric`
+        # (target_key = the formula graph_id / lifecycle artifact_key) or a `measure`
+        # (target_key = the concept standard_field). categorical_/time_additive say
+        # whether a breakdown by that axis class reconciles to the unsliced total;
+        # the *_reason names the cause when it does not (stock / average /
+        # distinct_count / snapshot_count / min_max / ratio / unknown_*), NULL when it
+        # reconciles. additivity_id is a per-run uuid4 but UNIQUE within one promoted
+        # state (the current view resolves one run), so it is a valid LOCAL vertex KEY
+        # — the og_references relationship_id discipline ("a fine local edge key inside
+        # one promoted state"). target_kind discriminates the two kinds for a consumer
+        # that MATCHes the metric case by property (no metric vertex to traverse from).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_additivity AS\n"
+            f"SELECT additivity_id::text AS additivity_id, target_kind, target_key,\n"
+            f"       categorical_additive, time_additive, categorical_reason, time_reason\n"
+            f"FROM {READ_TOKEN}.current_metric_additivity;"
+        )
+    if name == "og_has_additivity":
+        # has_additivity edge (concept → additivity_verdict, DAT-731): a MEASURE
+        # verdict's target_key IS a concept name (the standard_field), so the edge
+        # resolves it to the ACTIVE concept row — the same (name, superseded_at IS
+        # NULL) resolution og_grounded_by uses, and the same INNER-JOIN discipline
+        # (the graph never dangles: a verdict whose target_key names no active concept
+        # simply has no edge). METRIC-kind verdicts are excluded here — a formula
+        # graph_id is not a concept, so a metric verdict is reachable only by property
+        # on the vertex, never by this traversal (honest under-coverage, documented).
+        # concepts is the vertical-scoped read view (read_views.py _VERTICAL_SCOPED),
+        # so cross-vertical names never bind. edge_key = (concept_id, additivity_id) —
+        # unique because a measure verdict resolves to at most one active concept per
+        # name under the vertical scope; '_'-joined, NOT ':' (a bind-param sigil).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_has_additivity AS\n"
+            f"SELECT (c.concept_id || '_' || a.additivity_id)::text AS edge_key,\n"
+            f"       c.concept_id::text AS concept_id,\n"
+            f"       a.additivity_id::text AS additivity_id,\n"
+            f"       a.target_key\n"
+            f"FROM {READ_TOKEN}.current_metric_additivity a\n"
+            f"JOIN {READ_TOKEN}.concepts c\n"
+            f"  ON c.name = a.target_key AND c.superseded_at IS NULL\n"
+            f"WHERE a.target_kind = 'measure';"
+        )
+    if name == "og_measured_in":
+        # measured_in edge (column → column, DAT-731): a measure column → the column
+        # that DEFINES its unit, projecting the semantic-layer authored
+        # ColumnConcept.unit_source_column (catalogue_semantics writes it; this is its
+        # ONE home — the typing-layer Pint detected_unit is evidence the author saw,
+        # never a second edge source). The pointer's value shapes (catalogue_semantics
+        # prompt): a bare sibling column name in the measure's OWN table (e.g.
+        # `currency`), a 'table.column' reachable via a confirmed FK, or the measure's
+        # own column name (a self-denominated value → a self-loop, honest). NULL / ''
+        # / 'dimensionless' carry NO edge (nothing to point at). Name → column_id
+        # resolution is INNER (the og_uses / og_temporal_coverage discipline: an
+        # unresolvable name is honest under-coverage, never a dangling edge). A bare
+        # name resolves in the measure column's own table; a qualified name splits on
+        # '.' and resolves the table by name (typed tables — current_tables is
+        # layer='typed'). edge_key = (measure_column_id, unit_column_id), unique per
+        # pair; '_'-joined, NOT ':'. self_denominated flags the measure==unit self-loop
+        # so a consumer can tell "carries its own unit" from "points at a sibling".
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_measured_in AS\n"
+            f"SELECT (cc.column_id || '_' || unit_col.column_id)::text AS edge_key,\n"
+            f"       cc.column_id::text AS measure_column_id,\n"
+            f"       unit_col.column_id::text AS unit_column_id,\n"
+            f"       cc.unit_source_column AS unit_source,\n"
+            f"       (cc.column_id = unit_col.column_id) AS self_denominated\n"
+            f"FROM {READ_TOKEN}.current_column_concepts cc\n"
+            f"JOIN {READ_TOKEN}.current_columns mc ON mc.column_id = cc.column_id\n"
+            f"JOIN {READ_TOKEN}.current_tables mt ON mt.table_id = mc.table_id\n"
+            f"CROSS JOIN LATERAL (\n"
+            f"    SELECT\n"
+            f"      CASE WHEN position('.' in cc.unit_source_column) > 0\n"
+            f"           THEN split_part(cc.unit_source_column, '.', 1)\n"
+            f"           ELSE mt.table_name END AS tbl,\n"
+            f"      CASE WHEN position('.' in cc.unit_source_column) > 0\n"
+            f"           THEN split_part(cc.unit_source_column, '.', 2)\n"
+            f"           ELSE cc.unit_source_column END AS col\n"
+            f"  ) ref\n"
+            f"JOIN {READ_TOKEN}.current_tables ut ON ut.table_name = ref.tbl\n"
+            f"JOIN {READ_TOKEN}.current_columns unit_col\n"
+            f"  ON unit_col.table_id = ut.table_id AND unit_col.column_name = ref.col\n"
+            f"WHERE cc.unit_source_column IS NOT NULL\n"
+            f"  AND cc.unit_source_column <> ''\n"
+            f"  AND cc.unit_source_column <> 'dimensionless';"
+        )
+    if name == "og_metrics":
+        # metric_node vertex (DAT-732): one node per DECLARED metric, over the typed
+        # home (metrics table). Active rows only (superseded_at IS NULL) of the
+        # workspace's bound vertical (the __READ__.metrics view is _VERTICAL_SCOPED),
+        # so graph_id is unique among them → a valid KEY. Carries the declared output
+        # metadata so a graph consumer reads the node's shape without re-parsing YAML.
+        # graph_id (NOT the metric_id surrogate) is the vertex KEY: it is the metric's
+        # stable identity AND the key the derives_from / has_parameter edges carry.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_metrics AS\n"
+            f"SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type\n"
+            f"FROM {READ_TOKEN}.metrics\n"
+            f"WHERE superseded_at IS NULL;"
+        )
+    if name == "og_metric_parameters":
+        # parameter_node vertex (DAT-732): a metric's user-configurable parameter node.
+        # parameter_id (the surrogate PK) is the KEY — unique among active rows. Carries
+        # the DECLARED default (typed metadata) + the ``derivation`` marker naming the
+        # rule that overrides it at runtime (``period_grain`` for days_in_period; NULL
+        # for a plain constant). default_value/options are JSON in the base table; cast
+        # ::text so they are PGQ-safe scalar properties (the reader sees the declared
+        # default as text, e.g. '30'), mirroring og_grounding's where_predicates::text.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_metric_parameters AS\n"
+            f"SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id, name,\n"
+            f"       param_type, default_value::text AS default_value,\n"
+            f"       options::text AS options, derivation, description\n"
+            f"FROM {READ_TOKEN}.metric_parameters\n"
+            f"WHERE superseded_at IS NULL;"
+        )
+    if name == "og_derives_from":
+        # derives_from edge (metric → concept, DAT-732): the metric's extract leaves
+        # reified at concept grain. concept_name is the extract's standard_field (the
+        # stable (vertical, name) concept key); resolve it to the ACTIVE Concept for the
+        # PGQ vertex binding — the SAME (vertical, name) INNER-JOIN discipline
+        # og_grounded_by / og_concept_edges use, so an edge whose concept is
+        # superseded/absent drops (the graph never dangles). Both the edge and the
+        # concept views are _VERTICAL_SCOPED to the one bound vertical, and the join
+        # pins vertical explicitly (belt-and-braces). This makes the walk
+        # ``metric → concept → grounded_by → grounding → uses → column`` one MATCH.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_derives_from AS\n"
+            f"SELECT df.edge_id::text AS edge_id,\n"
+            f"       df.graph_id::text AS from_graph_id,\n"
+            f"       c.concept_id::text AS to_concept_id,\n"
+            f"       df.concept_name\n"
+            f"FROM {READ_TOKEN}.metric_derives_from df\n"
+            f"JOIN {READ_TOKEN}.concepts c\n"
+            f"  ON c.vertical = df.vertical AND c.name = df.concept_name\n"
+            f" AND c.superseded_at IS NULL\n"
+            f"WHERE df.superseded_at IS NULL;"
+        )
+    if name == "og_has_parameter":
+        # has_parameter edge (metric → parameter, DAT-732): connects each parameter
+        # vertex to its metric. parameter_id is unique per parameter (one parameter
+        # belongs to one metric), so it doubles as the edge KEY and the destination
+        # endpoint key; graph_id is the source endpoint (resolves to the og_metrics
+        # vertex). Active rows of the bound vertical only (the __READ__ view is scoped).
+        # No explicit JOIN to og_metrics (unlike og_derives_from's dangling guard): a
+        # parameter is seeded in the SAME savepoint as its metric node with no
+        # independent supersession, so its graph_id always resolves to a metric vertex.
+        # Once a ``frame`` editor can supersede a Metric without its parameters, this
+        # should gain the same INNER-JOIN discipline (a source endpoint resolving to no
+        # vertex simply won't traverse in a MATCH, so the graph stays honest meanwhile).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_has_parameter AS\n"
+            f"SELECT parameter_id::text AS parameter_id, graph_id::text AS graph_id\n"
+            f"FROM {READ_TOKEN}.metric_parameters\n"
+            f"WHERE superseded_at IS NULL;"
+        )
+    if name == "og_dim_members":
+        # dim_member vertex (DAT-787/867): one node per (dimension-axis identity ×
+        # level × served value) any current grounding's predicates SELECT — un-nested
+        # from the TYPED provenance ``filter_members`` (never from parsing SQL), over
+        # BOTH the referenced (DAT-788 role-separated) and folded (DAT-867 own-column)
+        # axes. DISTINCT ON the key over ALL groundings folds a member referenced by
+        # many groundings into ONE vertex; the properties are functionally determined
+        # by the key, so the tiebreak is irrelevant but TOTAL (deterministic dump).
+        # ``conformed_group`` is the RAW bus_matrix cross-fact identity — the
+        # referenced role-group signature (``ref:{dim_table}:{roles}``), the folded
+        # conform signature (``conform:...``), or NULL for an unconformed folded axis
+        # (the KEY's ``axis_identity`` falls back to the cell ``signature`` there, see
+        # _DIM_MEMBER_KEY). ``dimension_attribute`` is the referenced level (NULL = the
+        # FK key itself; NULL for a folded axis — its level rides ``axis_level`` =
+        # column_name in the key). ``member_value`` is the served value — the equality
+        # anchor, exact string equality, no casing/whitespace folding
+        # (validate_grounding_basis pins the value to a served representation at
+        # authoring). See _DIM_MEMBER_SOURCE for the resolution + the two attachment
+        # legs.
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_dim_members AS\n"
+            f"SELECT DISTINCT ON ({_DIM_MEMBER_KEY})\n"
+            f"       {_DIM_MEMBER_KEY} AS dim_member_key,\n"
+            f"       m.conformed_group AS conformed_group,\n"
+            f"       m.dimension_attribute AS dimension_attribute,\n"
+            f"       m.member_value AS member_value\n"
+            + _DIM_MEMBER_SOURCE
+            + f"\nORDER BY {_DIM_MEMBER_KEY};"
+        )
+    if name == "og_filtered_by":
+        # filtered_by edge (grounding → dim_member, DAT-787/867): one edge per
+        # (grounding, member) pair the grounding's predicates reference — an ADDITIVE
+        # projection, never a move (``where[]`` stays lossless on og_grounding). Same
+        # un-nest + resolution as og_dim_members (shared _DIM_MEMBER_SOURCE / key over
+        # the same referenced + folded legs), so the DESTINATION KEY matches the vertex
+        # KEY by construction. DISTINCT ON
+        # (snippet, member) collapses a member two of the grounding's concepts both
+        # select into ONE edge, keeping the first ``concept`` (the tiebreak is TOTAL);
+        # ``concept`` rides as the edge property (which concept's filter selected the
+        # member). Consumer caveat (the og_uses role-collision parallel): when two of a
+        # grounding's concepts select the SAME member, the surviving edge names only the
+        # alphabetically-first concept — a consumer keying strictly on the other concept
+        # can under-report it. edge_key = snippet + the member key ('_'-joined, NOT ':' a
+        # bind-param sigil to text()). Failed groundings carry no basis and are
+        # excluded (the WHERE in the shared source).
+        return (
+            f"CREATE VIEW {READ_TOKEN}.og_filtered_by AS\n"
+            f"SELECT DISTINCT ON (m.snippet_id, {_DIM_MEMBER_KEY})\n"
+            f"       (m.snippet_id || '_' || {_DIM_MEMBER_KEY})::text AS edge_key,\n"
+            f"       m.snippet_id::text AS snippet_id,\n"
+            f"       {_DIM_MEMBER_KEY} AS dim_member_key,\n"
+            # ``concept`` is a shared PGQ property (og_grounding / og_grounded_by carry
+            # it as varchar); json_each's key is text, so cast to match — PGQ requires a
+            # property of one name to have one type across every label.
+            f"       (m.concept)::varchar AS concept\n"
+            + _DIM_MEMBER_SOURCE
+            + f"\nORDER BY m.snippet_id, {_DIM_MEMBER_KEY}, m.concept;"
+        )
     raise AssertionError(f"unreachable: {name} not an element view")
 
 
@@ -537,10 +1220,24 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,\n"
         f"                  anchor_time_axis),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
-        f"      PROPERTIES (concept_id, vertical, name, kind),\n"
+        f"      PROPERTIES (concept_id, vertical, name, kind, ordering),\n"
         f"    {READ_TOKEN}.og_grounding KEY (snippet_id) LABEL grounding_node\n"
         f"      PROPERTIES (snippet_id, concept, statement, aggregation,\n"
-        f"                  relation, select_expr, where_predicates, description, failed)\n"
+        f"                  relation, select_expr, where_predicates, description, failed),\n"
+        f"    {READ_TOKEN}.og_period_grain KEY (grain) LABEL period_grain\n"
+        f"      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),\n"
+        f"    {READ_TOKEN}.og_additivity KEY (additivity_id) LABEL additivity_verdict\n"
+        f"      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,\n"
+        f"                  time_additive, categorical_reason, time_reason),\n"
+        f"    {READ_TOKEN}.og_metrics KEY (graph_id) LABEL metric_node\n"
+        f"      PROPERTIES (graph_id, vertical, name, category, unit, output_type),\n"
+        f"    {READ_TOKEN}.og_metric_parameters KEY (parameter_id) LABEL parameter_node\n"
+        f"      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,\n"
+        f"                  options, derivation, description),\n"
+        f"    {READ_TOKEN}.og_validity_filter KEY (filter_id) LABEL validity_filter\n"
+        f"      PROPERTIES (filter_id, table_id, column_id, column_name, operator, value),\n"
+        f"    {READ_TOKEN}.og_dim_members KEY (dim_member_key) LABEL dim_member\n"
+        f"      PROPERTIES (dim_member_key, conformed_group, dimension_attribute, member_value)\n"
         f"  )\n"
         f"  EDGE TABLES (\n"
         f"    {READ_TOKEN}.og_references KEY (relationship_id)\n"
@@ -579,7 +1276,55 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"
         f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
         f"      LABEL uses\n"
-        f"      PROPERTIES (role)\n"
+        f"      PROPERTIES (role),\n"
+        f"    {READ_TOKEN}.og_temporal_coverage KEY (coverage_key)\n"
+        f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
+        f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
+        f"      LABEL temporal_coverage\n"
+        f"      PROPERTIES (column_name, role, aspect, declared_anchor, observed_min,\n"
+        f"                  observed_max, span_days, observed_grain, completeness_ratio,\n"
+        f"                  expected_periods, actual_periods, gap_count, is_stale,\n"
+        f"                  last_period_complete),\n"
+        f"    {READ_TOKEN}.og_rolls_up_to KEY (edge_key)\n"
+        f"      SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)\n"
+        f"      DESTINATION KEY (to_column_id) REFERENCES og_columns (column_id)\n"
+        f"      LABEL rolls_up_to\n"
+        f"      PROPERTIES (hierarchy_id, from_level, to_level),\n"
+        f"    {READ_TOKEN}.og_period_rolls_up_to KEY (edge_key)\n"
+        f"      SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)\n"
+        f"      DESTINATION KEY (to_grain) REFERENCES og_period_grain (grain)\n"
+        f"      LABEL period_rolls_up_to\n"
+        f"      PROPERTIES (from_grain, to_grain),\n"
+        f"    {READ_TOKEN}.og_has_additivity KEY (edge_key)\n"
+        f"      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)\n"
+        f"      DESTINATION KEY (additivity_id) REFERENCES og_additivity (additivity_id)\n"
+        f"      LABEL has_additivity\n"
+        f"      PROPERTIES (target_key),\n"
+        f"    {READ_TOKEN}.og_measured_in KEY (edge_key)\n"
+        f"      SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)\n"
+        f"      DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)\n"
+        f"      LABEL measured_in\n"
+        f"      PROPERTIES (unit_source, self_denominated),\n"
+        f"    {READ_TOKEN}.og_derives_from KEY (edge_id)\n"
+        f"      SOURCE KEY (from_graph_id) REFERENCES og_metrics (graph_id)\n"
+        f"      DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)\n"
+        f"      LABEL derives_from\n"
+        f"      PROPERTIES (concept_name),\n"
+        f"    {READ_TOKEN}.og_has_parameter KEY (parameter_id)\n"
+        f"      SOURCE KEY (graph_id) REFERENCES og_metrics (graph_id)\n"
+        f"      DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)\n"
+        f"      LABEL has_parameter\n"
+        f"      PROPERTIES (graph_id),\n"
+        f"    {READ_TOKEN}.og_scoped_by KEY (edge_key)\n"
+        f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
+        f"      DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)\n"
+        f"      LABEL scoped_by\n"
+        f"      PROPERTIES (column_id),\n"
+        f"    {READ_TOKEN}.og_filtered_by KEY (edge_key)\n"
+        f"      SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"
+        f"      DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)\n"
+        f"      LABEL filtered_by\n"
+        f"      PROPERTIES (concept)\n"
         f"  );"
     )
 

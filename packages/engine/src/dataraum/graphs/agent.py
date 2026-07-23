@@ -202,6 +202,37 @@ class ExecutionContext:
         )
 
 
+def _served_value_sets(context: ExecutionContext) -> dict[str, set[str]]:
+    """Column name → its COMPLETE served value-set (the DAT-787 member reference).
+
+    Only columns whose ``top_values`` are the COMPLETE enumeration
+    (``distinct_count <= len(top_values)``) — the completeness half of the gate the
+    prompt's Value sets render on (``_build_value_sets``). It deliberately does NOT
+    replicate that renderer's near-constant EXCLUSION: a near-constant categorical
+    stays in this reference, so a member on it is still validated against its served
+    values (stricter, not looser — and harmless, since the prompt already tells the
+    model never to filter on such a column). High-cardinality
+    (``search_values``-resolved) and unprofiled columns are omitted, so
+    ``validate_grounding_basis`` treats a member on them as honest under-coverage
+    rather than a false rejection. Keyed by bare column name; a name that collides
+    across tables unions their served values (accept-if-served-anywhere — a
+    validator, never a source).
+    """
+    served: dict[str, set[str]] = {}
+    rich = context.rich_context
+    if rich is None:
+        return served
+    for table in rich.tables:
+        for col in table.columns:
+            top = col.top_values
+            if not top or col.distinct_count is None or col.distinct_count > len(top):
+                continue
+            values = {str(tv["value"]) for tv in top if tv.get("value") is not None}
+            if values:
+                served.setdefault(col.column_name, set()).update(values)
+    return served
+
+
 class GraphAgent(LLMFeature):
     """Unified agent for executing any graph type.
 
@@ -248,8 +279,8 @@ class GraphAgent(LLMFeature):
         """
         parameters = parameters or {}
 
-        # Resolve parameters with defaults
-        resolved_params = self._resolve_parameters(graph, parameters)
+        # Resolve parameters against the typed home (declared defaults), provided wins.
+        resolved_params = self._resolve_parameters(session, graph, parameters)
 
         schema_mapping_id = context.schema_mapping_id or "default"
 
@@ -410,7 +441,7 @@ class GraphAgent(LLMFeature):
         """
         from dataraum.graphs.node_warming import node_key
 
-        resolved_params = self._resolve_parameters(graph, parameters or {})
+        resolved_params = self._resolve_parameters(session, graph, parameters or {})
         schema_mapping_id = context.schema_mapping_id or "default"
 
         # Collect EVERY ungroundable dependency — born-loud, no re-authoring. A
@@ -947,10 +978,16 @@ class GraphAgent(LLMFeature):
             schema_tables_from_info,
             validate_grounding_basis,
         )
+        from dataraum.graphs.validity_scope import compose_scoped_where
         from dataraum.llm.contract_repair import repair_tool_contract
 
         schema_tables = schema_tables_from_info(schema_info)
-        violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+        # DAT-787: the value reference for filter_members — the complete served
+        # value-sets, the same enumeration the prompt's Value sets render.
+        served_values = _served_value_sets(context)
+        violations = validate_grounding_basis(
+            output, schema_tables, context.duckdb_conn, served_values
+        )
         if violations:
             repaired = repair_tool_contract(
                 self.provider,
@@ -964,7 +1001,9 @@ class GraphAgent(LLMFeature):
             if not repaired.success:
                 return Result.fail(repaired.error or "grounding contract repair failed")
             output = repaired.unwrap()
-            violations = validate_grounding_basis(output, schema_tables, context.duckdb_conn)
+            violations = validate_grounding_basis(
+                output, schema_tables, context.duckdb_conn, served_values
+            )
 
         # Bind the one generated grounding to the graph's own leaf id (the model
         # never names a step — DAT-664's id-paraphrase class is gone by
@@ -977,7 +1016,26 @@ class GraphAgent(LLMFeature):
         # relation="" rather than an omitted/None key. Normalize the sentinel back to
         # None here so the PERSISTED parts keep their existing shape.
         relation = output.relation or None
-        rendered_sql = compose_extract_sql(output.select_expr, relation, output.where)
+
+        # DAT-733: compose the canonical validity scope BY DEFAULT. The composer
+        # resolves the measured-cycle status predicate(s) applicable to this relation
+        # (run-scoped from the served context) and appends them as additional typed
+        # WHERE parts, so they ride the SAME parts/where_predicates substrate every
+        # consumer reads. Explicit, VISIBLE opt-out: when the grounding already
+        # constrains the status column (the LLM's own judgment), the scope defers and
+        # is recorded as a typed assumption instead of silently double-filtering.
+        # Absence falls loud — no applicable cycle appends nothing.
+        where_parts, scope_assumptions = compose_scoped_where(
+            output,
+            relation,
+            schema_tables.get(relation, set()) if relation is not None else set(),
+            context.rich_context.business_cycles,
+            context.rich_context.enriched_views,
+            context.rich_context.tables,
+            context.duckdb_conn,
+        )
+
+        rendered_sql = compose_extract_sql(output.select_expr, relation, where_parts)
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
@@ -987,12 +1045,12 @@ class GraphAgent(LLMFeature):
                     "step_id": leaf.step_id,
                     "sql": rendered_sql,
                     "description": output.description,
-                    "parts": extract_parts_dict(output.select_expr, relation, output.where),
+                    "parts": extract_parts_dict(output.select_expr, relation, where_parts),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
             provenance=output.provenance,
-            assumptions=output.assumptions or [],
+            assumptions=(output.assumptions or []) + scope_assumptions,
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),
@@ -1341,13 +1399,30 @@ class GraphAgent(LLMFeature):
         return yaml.dump(graph_dict, default_flow_style=False, allow_unicode=True)
 
     def _resolve_parameters(
-        self, graph: TransformationGraph, provided: dict[str, Any]
+        self, session: Session, graph: TransformationGraph, provided: dict[str, Any]
     ) -> dict[str, Any]:
-        """Merge provided parameters with graph defaults."""
-        resolved = {}
+        """Merge provided parameters with the DECLARED defaults from the typed home.
+
+        The parameter DEFAULT is read from the ``metric_parameters`` typed home
+        (DAT-732) — the authority — not the raw parsed graph. A provided value (e.g. the
+        DAT-785 ``period_resolver``'s data-derived ``days_in_period``) always wins over
+        the declared default. When the typed home has no row for a parameter (an
+        unseeded substrate, or a metric declared but not yet seeded), fall back to the
+        parsed graph's declared default: YAML is the SEED, the DB is the authority once
+        seeded. In every real pipeline run the seed committed in add_source, so the DB
+        row exists and wins; the fallback is the load-bearing path only for an
+        as-yet-unseeded graph (a new parameter added to YAML between deploys) and for
+        ad-hoc graphs built directly in tests.
+        """
+        from dataraum.graphs.metric_store import metric_parameter_defaults
+
+        db_defaults = metric_parameter_defaults(session, graph.graph_id)
+        resolved: dict[str, Any] = {}
         for param in graph.parameters:
             if param.name in provided:
                 resolved[param.name] = provided[param.name]
+            elif db_defaults.get(param.name) is not None:
+                resolved[param.name] = db_defaults[param.name]
             elif param.default is not None:
                 resolved[param.name] = param.default
         return resolved

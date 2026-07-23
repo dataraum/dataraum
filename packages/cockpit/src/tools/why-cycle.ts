@@ -47,6 +47,11 @@ const WhyCycleResult = z.object({
 	grounded_against: z.string(),
 	// Detection facts — null when not detected.
 	is_known_type: z.boolean().nullable(),
+	// Direction axis (DAT-856): the declared family + resolved direction. Both null
+	// for a non-family cycle; for a family cycle, `direction` is a declared label or
+	// "undetermined" — the honest detected-but-undirected state, rendered verbatim.
+	family: z.string().nullable(),
+	direction: z.string().nullable(),
 	business_value: z.string().nullable(),
 	confidence: z.number().nullable(),
 	description: z.string().nullable(),
@@ -78,6 +83,8 @@ export type WhyCycleArtifactRow = LifecycleArtifactDetail;
 export interface WhyCycleDetectionRow {
 	cycleName: string | null;
 	isKnownType: boolean | null;
+	family: string | null;
+	direction: string | null;
 	businessValue: string | null;
 	confidence: number | null;
 	description: string | null;
@@ -122,6 +129,8 @@ export function projectWhyCycle(
 		strictness: artifact?.strictness ?? null,
 		grounded_against: renderEvidenceDetail(artifact?.groundedAgainst),
 		is_known_type: detected?.isKnownType ?? null,
+		family: detected?.family ?? null,
+		direction: detected?.direction ?? null,
 		business_value: detected?.businessValue ?? null,
 		confidence: detected?.confidence ?? null,
 		description:
@@ -171,6 +180,8 @@ export async function whyCycle(input: WhyCycleInput): Promise<WhyCycleResult> {
 		.select({
 			cycleName: currentDetectedBusinessCycles.cycleName,
 			isKnownType: currentDetectedBusinessCycles.isKnownType,
+			family: currentDetectedBusinessCycles.family,
+			direction: currentDetectedBusinessCycles.direction,
 			businessValue: currentDetectedBusinessCycles.businessValue,
 			confidence: currentDetectedBusinessCycles.confidence,
 			description: currentDetectedBusinessCycles.description,

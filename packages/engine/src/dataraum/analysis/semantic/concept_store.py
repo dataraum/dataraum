@@ -3,9 +3,11 @@
 The runtime home for a workspace's concepts. The shipped vertical YAML is the
 *seed*, normalized into ``concepts`` rows once per workspace; runtime consumers
 read the typed rows (never the YAML) so a *framed* vertical — whose concepts exist
-only as rows — is served identically to a builtin. Conventions remain YAML
-(:class:`~dataraum.analysis.semantic.ontology.OntologyLoader`); they are not
-concepts and are out of config→DB's scope in this phase.
+only as rows — is served identically to a builtin. Conventions moved config→DB the
+same way (DAT-789): they are read from the typed ``conventions`` table via
+:mod:`~dataraum.analysis.semantic.convention_store`, so ``load_workspace_concepts``
+returns an :class:`OntologyDefinition` whose concepts AND conventions both come off
+the DB home, never the YAML.
 
 The seam replacing the retired ``config_overlay(type='concept')`` merge: the
 engine no longer reads concept overlay rows — it reads this table, which the seed
@@ -20,7 +22,13 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.semantic.db_models import Concept, ConceptKind, WorkspaceSettings
+from dataraum.analysis.semantic.convention_store import load_workspace_conventions
+from dataraum.analysis.semantic.db_models import (
+    Concept,
+    ConceptKind,
+    DimensionOrdering,
+    WorkspaceSettings,
+)
 from dataraum.analysis.semantic.ontology import (
     OntologyConcept,
     OntologyDefinition,
@@ -33,6 +41,7 @@ from dataraum.storage.upsert import insert_if_absent
 logger = get_logger(__name__)
 
 _VALID_KINDS: frozenset[str] = frozenset(k.value for k in ConceptKind)
+_VALID_ORDERINGS: frozenset[str] = frozenset(o.value for o in DimensionOrdering)
 
 
 def _active_vertical(session: Session) -> str | None:
@@ -129,6 +138,14 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 f"concept '{c.name}' in vertical '{vertical}' declares no valid kind "
                 f"(got {c.kind!r}); one of {sorted(_VALID_KINDS)} is required to seed."
             )
+        # ordering (DAT-730): OPTIONAL, and if present must be a valid DimensionOrdering
+        # value — born-loud (the config is wrong, not the data), the same discipline as
+        # ``kind``. None ⇒ NULL ⇒ nominal (windows withheld); never inferred here.
+        if c.ordering is not None and c.ordering not in _VALID_ORDERINGS:
+            raise ValueError(
+                f"concept '{c.name}' in vertical '{vertical}' declares an invalid ordering "
+                f"(got {c.ordering!r}); one of {sorted(_VALID_ORDERINGS)} or omit it."
+            )
         rows.append(
             {
                 "vertical": vertical,
@@ -138,6 +155,7 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 "indicators": c.indicators or None,
                 "exclude_patterns": c.exclude_patterns or None,
                 "unit_from_concept": c.unit_from_concept,
+                "ordering": c.ordering,
                 "source": "seed",
             }
         )
@@ -158,11 +176,11 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
 def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefinition:
     """The workspace's concept vocabulary as an ``OntologyDefinition``.
 
-    Concepts come from the typed ``concepts`` table (the config→DB home); the
-    vertical's conventions come from YAML (conventions are not config→DB in this
-    phase). The returned definition is the same shape existing prompt/context
-    consumers already accept — only the concept SOURCE moved off the YAML/overlay
-    merge onto the typed table.
+    Concepts come from the typed ``concepts`` table AND conventions from the typed
+    ``conventions`` table (both config→DB homes; conventions moved in DAT-789 via
+    :func:`~dataraum.analysis.semantic.convention_store.load_workspace_conventions`).
+    The returned definition is the same shape existing prompt/context consumers already
+    accept — only the SOURCE moved off the YAML/overlay merge onto the typed tables.
 
     **Scoped to the workspace's bound active vertical (DAT-848).** The read filters
     on the ``workspace_settings.active_vertical`` binding, NOT blindly on the
@@ -191,6 +209,7 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
             indicators=list(r.indicators or []),
             exclude_patterns=list(r.exclude_patterns or []),
             unit_from_concept=r.unit_from_concept,
+            ordering=r.ordering,
         )
         for r in rows
     ]
@@ -199,13 +218,15 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
     # already ran when yaml_def loaded. Re-linting here would be wrong — the active
     # concept set is a legitimate SUBSET (a superseded concept a convention still
     # names is stale text, not an authoring error), and re-validation would crash
-    # the runtime read the moment a referenced concept is superseded.
+    # the runtime read the moment a referenced concept is superseded. This bypass now
+    # ALSO covers the DB conventions (DAT-789): they are served verbatim, never
+    # re-linted against the live concept set.
     return OntologyDefinition.model_construct(
         name=yaml_def.name if yaml_def else effective,
         version=yaml_def.version if yaml_def else "1.0.0",
         description=yaml_def.description if yaml_def else None,
         concepts=concepts,
-        conventions=yaml_def.conventions if yaml_def else [],
+        conventions=load_workspace_conventions(session, effective),
     )
 
 

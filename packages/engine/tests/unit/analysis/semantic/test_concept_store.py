@@ -19,6 +19,7 @@ from dataraum.analysis.semantic.concept_store import (
     ensure_concepts_seeded,
     load_workspace_concepts,
 )
+from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
 from dataraum.analysis.semantic.db_models import Concept
 from dataraum.analysis.semantic.ontology import OntologyConcept, OntologyDefinition
 
@@ -101,14 +102,74 @@ def test_seed_born_loud_on_missing_kind(session: Session, monkeypatch: pytest.Mo
         ensure_concepts_seeded(session, "x")
 
 
+def test_seed_passes_dimension_ordering_through(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seed MAY declare ``ordering`` on a dimension concept; it lands typed (DAT-730).
+
+    Absent ⇒ NULL ⇒ nominal (windows withheld); never inferred. Uses a mock definition
+    so no engine code carries a domain name — the ordered concept is a generic ordinal.
+    """
+    definition = OntologyDefinition(
+        name="x",
+        concepts=[
+            OntologyConcept(name="severity", kind="dimension", ordering="ordered"),
+            OntologyConcept(name="region", kind="dimension"),  # no ordering ⇒ NULL
+            OntologyConcept(name="revenue", kind="measure"),  # non-dim, no ordering
+        ],
+    )
+    loader = MagicMock()
+    loader.load.return_value = definition
+    monkeypatch.setattr("dataraum.analysis.semantic.concept_store.OntologyLoader", lambda: loader)
+
+    assert ensure_concepts_seeded(session, "x") == 3
+    rows = {
+        r.name: r.ordering
+        for r in session.execute(select(Concept).where(Concept.vertical == "x")).scalars()
+    }
+    assert rows == {"severity": "ordered", "region": None, "revenue": None}
+    # The round-trip read preserves it.
+    read = {c.name: c.ordering for c in load_workspace_concepts(session, "x").concepts}
+    assert read["severity"] == "ordered"
+    assert read["region"] is None
+
+
+def test_seed_born_loud_on_invalid_ordering(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = OntologyDefinition(
+        name="x",
+        concepts=[OntologyConcept(name="severity", kind="dimension", ordering="ascending")],
+    )
+    loader = MagicMock()
+    loader.load.return_value = bad
+    monkeypatch.setattr("dataraum.analysis.semantic.concept_store.OntologyLoader", lambda: loader)
+    with pytest.raises(ValueError, match="invalid ordering"):
+        ensure_concepts_seeded(session, "x")
+
+
 def test_load_workspace_concepts_reads_typed_rows(session: Session) -> None:
     ensure_concepts_seeded(session, "finance")
+    ensure_conventions_seeded(session, "finance")
     definition = load_workspace_concepts(session, "finance")
     by_name = {c.name: c for c in definition.concepts}
     assert len(by_name) == 22
     assert by_name["revenue"].kind == "measure"
-    # Conventions still come from YAML (not config→DB in this phase).
+    # Conventions ALSO come from the typed home now (DAT-789), carried on the same
+    # OntologyDefinition — read from the DB, not the YAML.
     assert any(conv.id == "sign_natural_balance" for conv in definition.conventions)
+
+
+def test_load_workspace_concepts_conventions_empty_without_convention_seed(
+    session: Session,
+) -> None:
+    """Conventions come ONLY from the typed home now (DAT-789).
+
+    Concepts seeded but conventions NOT — the definition carries no conventions until
+    they are seeded into the ``conventions`` table (the YAML is no longer a runtime read).
+    """
+    ensure_concepts_seeded(session, "finance")
+    assert load_workspace_concepts(session, "finance").conventions == []
 
 
 def test_load_excludes_superseded_rows(session: Session) -> None:

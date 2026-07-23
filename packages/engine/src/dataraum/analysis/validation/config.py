@@ -1,44 +1,76 @@
-"""Configuration loader for validation specs.
+"""Loader for validation specs — the typed DB home, overlay-aware (DAT-735).
 
-Loads validation specifications from YAML files in
-config/verticals/<vertical>/validations/, layered with workspace
-``validation`` overlay rows (DAT-438) — the OntologyLoader dual-path
-pattern: the production path is overlay-aware (teach rows merge over the
-shipped vertical; a *framed* vertical with no on-disk directory resolves
-overlay-only), while an explicit ``verticals_dir`` (tests / fixtures)
-reads raw YAML and bypasses the overlay.
+Reads the workspace's validation vocabulary from the typed ``validations`` home
+(:mod:`~dataraum.analysis.validation.validation_store`: seed ``⊕`` generated rows)
+``⊕`` the ``validation`` teach overlay applied at read time. This replaces the raw
+YAML directory walk: the shipped YAML is now the SEED source, normalized into typed
+rows at connect (``ensure_validations_seeded``), and agentic induction adds
+``source='generated'`` rows — so a *framed* vertical whose validations exist only as
+rows is served identically to a builtin, and the teach overlay ``⊕`` layer keeps
+working.
+
+An explicit ``verticals_dir`` (tests / fixtures) reads raw YAML and bypasses BOTH the
+DB home and the overlay — the same escape hatch the pre-DAT-735 loader offered.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from dataraum.analysis.validation.models import (
-    ValidationSpec,
-)
+from dataraum.analysis.validation.models import ValidationSpec
+from dataraum.analysis.validation.validation_store import load_workspace_validations
 from dataraum.core.logging import get_logger
+from dataraum.core.overlay import apply_overlay
 from dataraum.core.vertical_loader import Family, VerticalLoader
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 logger = get_logger(__name__)
 
 
 def load_all_validation_specs(
-    vertical: str, verticals_dir: Path | None = None
+    vertical: str,
+    session: Session | None = None,
+    *,
+    verticals_dir: Path | None = None,
 ) -> dict[str, ValidationSpec]:
-    """Load a vertical's validation specs, layered with overlay teach rows.
+    """Load a vertical's validation specs — DB home ``⊕`` teach overlay (DAT-735).
 
-    Thin wrapper over :class:`~dataraum.core.vertical_loader.VerticalLoader`
-    (DAT-481): the shipped ``validations/`` directory (empty base when the
-    vertical is framed — declared via the cockpit, no on-disk directory) ⊕
-    active ``validation`` overlay rows (upsert by ``validation_id``). An unknown
-    vertical resolves to an EMPTY dict, never raises — "no declared validations"
-    is a loud, explicit outcome at the phase tier. An explicit ``verticals_dir``
-    reads raw YAML and bypasses the overlay (tests).
+    Production (``session`` given): reads the active ``validations`` rows (seed ``⊕``
+    generated) as the config→DB base, then layers the ``validation`` teach overlay
+    over it (upsert-replace by ``validation_id``, the same
+    :func:`~dataraum.core.overlay.apply_overlay` machinery). Replacement is
+    WHOLESALE — deliberately: an overlay row is a full respec of the check, so one
+    that omits ``relevant_conventions`` validates to ``[]`` and drops a generated
+    row's declared convention dependencies (the bind then falls back to
+    targets-routed conventions only, and ``validation_phase`` has no missing-id to
+    warn about). An unknown / framed vertical with no rows and no overlay resolves
+    to an EMPTY dict, never raises — "no declared validations" is the phase tier's
+    loud outcome.
+
+    Tests (``verticals_dir`` given): reads raw YAML under that root and bypasses BOTH
+    the DB home and the overlay.
+
+    Neither given: returns EMPTY (a caller with no DB session has no typed home to
+    read) — fail-quiet, mirroring the framed-vertical contract.
 
     Returns:
         Dict mapping validation_id to ValidationSpec.
     """
-    collection = VerticalLoader(vertical, verticals_dir).collection(Family.VALIDATIONS)
+    if verticals_dir is not None:
+        collection = VerticalLoader(vertical, verticals_dir).collection(Family.VALIDATIONS)
+    elif session is not None:
+        base = {
+            "validations": [
+                spec.model_dump(mode="json")
+                for spec in load_workspace_validations(session, vertical)
+            ]
+        }
+        collection = apply_overlay(f"verticals/{vertical}/validations", base)
+    else:
+        return {}
 
     specs: dict[str, ValidationSpec] = {}
     for data in collection.get("validations") or []:
@@ -50,36 +82,9 @@ def load_all_validation_specs(
     return specs
 
 
-def get_validation_specs_by_category(category: str, vertical: str) -> list[ValidationSpec]:
-    """Get all validation specs for a specific category.
-
-    Args:
-        category: Category name (e.g., 'financial', 'data_quality')
-        vertical: Vertical name (e.g. 'finance')
-
-    Returns:
-        List of ValidationSpecs matching the category
-    """
-    all_specs = load_all_validation_specs(vertical)
-    return [spec for spec in all_specs.values() if spec.category == category]
-
-
-def get_validation_specs_by_tags(tags: list[str], vertical: str) -> list[ValidationSpec]:
-    """Get all validation specs that have any of the specified tags.
-
-    Args:
-        tags: List of tags to filter by
-        vertical: Vertical name (e.g. 'finance')
-
-    Returns:
-        List of ValidationSpecs that have at least one matching tag
-    """
-    all_specs = load_all_validation_specs(vertical)
-    tag_set = set(tags)
-    return [spec for spec in all_specs.values() if set(spec.tags) & tag_set]
-
-
-def get_validation_specs_for_cycles(cycle_types: list[str], vertical: str) -> list[ValidationSpec]:
+def get_validation_specs_for_cycles(
+    cycle_types: list[str], vertical: str, session: Session | None = None
+) -> list[ValidationSpec]:
     """Get validation specs relevant to detected cycle types.
 
     Returns specs that either:
@@ -89,11 +94,12 @@ def get_validation_specs_for_cycles(cycle_types: list[str], vertical: str) -> li
     Args:
         cycle_types: Detected cycle canonical types (e.g. ['journal_entry_cycle'])
         vertical: Vertical name (e.g. 'finance')
+        session: DB session for the typed home read (production).
 
     Returns:
         List of matching ValidationSpecs
     """
-    all_specs = load_all_validation_specs(vertical)
+    all_specs = load_all_validation_specs(vertical, session)
     cycle_set = set(cycle_types)
     return [
         spec
@@ -102,24 +108,7 @@ def get_validation_specs_for_cycles(cycle_types: list[str], vertical: str) -> li
     ]
 
 
-def get_validation_spec(validation_id: str, vertical: str) -> ValidationSpec | None:
-    """Get a specific validation spec by ID.
-
-    Args:
-        validation_id: ID of the validation spec
-        vertical: Vertical name (e.g. 'finance')
-
-    Returns:
-        ValidationSpec or None if not found
-    """
-    all_specs = load_all_validation_specs(vertical)
-    return all_specs.get(validation_id)
-
-
 __all__ = [
     "load_all_validation_specs",
-    "get_validation_specs_by_category",
-    "get_validation_specs_by_tags",
     "get_validation_specs_for_cycles",
-    "get_validation_spec",
 ]

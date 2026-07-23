@@ -17,6 +17,7 @@ user declares arrive via frame-2 teach rows.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,28 @@ from dataraum.core.logging import get_logger
 from dataraum.core.vertical_loader import Family, VerticalLoader
 
 logger = get_logger(__name__)
+
+# The honest state a family cycle carries when the served evidence does not decide
+# its direction — NEVER coerced to a declared direction (DAT-856). A statically-known
+# sentinel (unlike the per-vertical direction labels), so it is the one direction
+# value the DB and a reader can name without loading the declaration.
+UNDETERMINED_DIRECTION = "undetermined"
+
+
+@dataclass(frozen=True)
+class CycleIdentity:
+    """The persisted identity axes resolved from the judge's cycle output (DAT-856).
+
+    ``canonical_type`` is the artifact identity (the ``(canonical_type, run_id)``
+    key). ``family`` / ``direction`` are the direction axis: both ``None`` for a
+    non-family cycle, both set for a family cycle (a decided label, or
+    ``UNDETERMINED_DIRECTION``).
+    """
+
+    canonical_type: str | None
+    is_known_type: bool
+    family: str | None
+    direction: str | None
 
 
 def get_cycles_config(vertical: str, verticals_dir: Path | None = None) -> dict[str, Any]:
@@ -98,6 +121,91 @@ def map_to_canonical_type(cycle_type: str, vertical: str) -> tuple[str | None, b
     # No vocabulary match — preserve the LLM's type as canonical so the cycle
     # can still be health-scored using universal validations.
     return cycle_type_lower, False
+
+
+def resolve_cycle_identity(
+    *,
+    cycle_type: str,
+    family: str,
+    direction: str,
+    cycle_families: dict[str, dict[str, str]],
+    vertical: str,
+) -> CycleIdentity:
+    """Resolve the judge's ``(cycle_type, family, direction)`` to the persisted identity.
+
+    The two-layer resolution for the direction axis (DAT-856). For a cycle the judge
+    places in a DECLARED family (``cycle_families`` = ``{family: {label: member}}``, the
+    loaded declaration), the family is the identity axis and ``direction`` the honest
+    sub-axis:
+
+    * a decided direction (a label the family declares) resolves to its member cycle
+      type — ``canonical_type`` = that member (mapped through
+      :func:`map_to_canonical_type`, so a member keeps its vocabulary ``is_known_type``
+      and the validation↔cycle health linkage that keys on it);
+    * ``undetermined`` keeps the FAMILY as ``canonical_type`` — the detected-but-
+      undirected state, distinguishable from a missed cycle and from a directed one,
+      NEVER coerced to a direction.
+
+    Off-vocabulary references degrade LOUDLY rather than silently: a direction label the
+    family does NOT declare degrades to ``undetermined`` (the family detection is kept —
+    recall preserved — but the axis is left honestly open, never guessed); a family the
+    vertical does NOT declare falls to the non-family path (the judge named a family that
+    is not real). A non-family cycle (empty ``family``) keeps today's behavior:
+    ``cycle_type`` mapped via :func:`map_to_canonical_type`, ``family`` / ``direction``
+    ``None``.
+
+    This is the resolution counterpart of the DB co-occurrence CHECK — it is the ONLY
+    producer of the ``(family, direction)`` pair, so both are always set together or
+    both ``None``.
+    """
+    fam = family.strip()
+    # Case-insensitive family match, mirroring map_to_canonical_type's cycle_type
+    # matching AND the direction lower-casing below — an LLM that varies the family's
+    # casing ("Settlement") must NOT lose the whole axis (a strictly worse silent
+    # recall loss than an off-vocab direction). The DECLARED name is the persisted
+    # identity, so casing never fragments a family's rows across runs.
+    families_ci = {name.lower(): (name, dirs) for name, dirs in cycle_families.items()}
+    if fam and fam.lower() in families_ci:
+        declared_family, directions = families_ci[fam.lower()]
+        dir_norm = direction.strip().lower()
+        if dir_norm == UNDETERMINED_DIRECTION:
+            return CycleIdentity(
+                canonical_type=declared_family,
+                is_known_type=True,
+                family=declared_family,
+                direction=UNDETERMINED_DIRECTION,
+            )
+        if dir_norm in directions:
+            canonical, is_known = map_to_canonical_type(directions[dir_norm], vertical)
+            return CycleIdentity(
+                canonical_type=canonical,
+                is_known_type=is_known,
+                family=declared_family,
+                direction=dir_norm,
+            )
+        # A direction the family does not declare: keep the family detection but leave
+        # the axis honestly undetermined rather than guess a member (DAT-856 — recall
+        # over a coerced label). Loud so the prompt-contract miss is visible.
+        logger.warning(
+            "cycle_direction_off_vocab",
+            family=declared_family,
+            direction=direction,
+            declared=sorted(directions),
+        )
+        return CycleIdentity(
+            canonical_type=declared_family,
+            is_known_type=True,
+            family=declared_family,
+            direction=UNDETERMINED_DIRECTION,
+        )
+    if fam:
+        # The judge named a family the vertical does not declare — fall to the
+        # non-family path (resolve by cycle_type), loudly.
+        logger.warning("cycle_family_not_declared", family=fam)
+    canonical, is_known = map_to_canonical_type(cycle_type, vertical)
+    return CycleIdentity(
+        canonical_type=canonical, is_known_type=is_known, family=None, direction=None
+    )
 
 
 def format_cycle_vocabulary_for_context(*, vertical: str) -> str:

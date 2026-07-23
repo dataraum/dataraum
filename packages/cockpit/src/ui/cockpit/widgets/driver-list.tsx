@@ -8,7 +8,12 @@
 // Every value is the engine's persisted driver-ranking output verbatim (the
 // variance-reduction tree + permutation null, DAT-545/561/563) — never recomputed
 // here. A measure with no significant driver shows that honestly (the no-driver case
-// is first-class row content, not an empty cell).
+// is first-class row content, not an empty cell). An ABSTAINED measure (DAT-859 —
+// temporal_behavior undetermined, no enriched view, too few candidates, no usable
+// value) is a DIFFERENT honest case: the engine never attempted a ranking at all, so
+// it gets its own distinct "Abstained (reason)" badge rather than the measured-empty
+// "no significant driver" text — conflating the two would misreport "we tried and
+// found nothing" for a measure the engine never tried.
 
 import { Alert, Badge, Stack, Table, Text } from "@mantine/core";
 import { humanizeIdentifier } from "#/lib/display-names";
@@ -37,6 +42,13 @@ function grainLabel(r: DriverRanking): string {
 		return `per ${humanizeIdentifier(r.entity) || r.entity}`;
 	}
 	return "row";
+}
+
+/** "Abstained (missing inputs)" — the closed-vocabulary reason, humanized; falls
+ *  back to a bare "Abstained" badge if the reason is somehow absent. */
+function abstainLabel(reason: string | null): string {
+	const humanized = reason ? humanizeIdentifier(reason) : "";
+	return humanized ? `Abstained (${humanized})` : "Abstained";
 }
 
 export function DriverListWidget({
@@ -76,14 +88,21 @@ export function DriverListWidget({
 
 	const visible = look.rankings.slice(0, MAX_VISIBLE_ROWS);
 	const overflow = look.rankings.length - visible.length;
+	// DAT-859: an abstained measure was never ranked — it doesn't count toward
+	// "N ranked measures" (that would overstate what the engine actually found).
+	const measuredCount = look.rankings.filter(
+		(r) => r.status === "measured",
+	).length;
+	const abstainedCount = look.rankings.length - measuredCount;
 
 	return (
 		<Stack gap="sm" data-testid="canvas-driver-list">
 			<Text size="sm" fw={600}>
 				Drivers{" "}
 				<Text span c="dimmed" size="xs">
-					{look.rankings.length} ranked{" "}
-					{look.rankings.length === 1 ? "measure" : "measures"}
+					{measuredCount} ranked {measuredCount === 1 ? "measure" : "measures"}
+					{abstainedCount > 0 &&
+						` · ${abstainedCount} abstained ${abstainedCount === 1 ? "measure" : "measures"}`}
 				</Text>
 			</Text>
 
@@ -136,7 +155,21 @@ export function DriverListWidget({
 										</Text>
 									</Table.Td>
 									<Table.Td>
-										{named.length === 0 ? (
+										{r.status === "abstained" ? (
+											// DAT-859: the engine never attempted a ranking for this
+											// measure — a distinct badge, never the measured-empty
+											// "no significant driver" text (that would misreport an
+											// abstention as "we tried and found nothing").
+											<Badge
+												color="yellow"
+												variant="light"
+												size="sm"
+												tt="none"
+												styles={{ label: { overflow: "visible" } }}
+											>
+												{abstainLabel(r.abstain_reason)}
+											</Badge>
+										) : named.length === 0 ? (
 											// The honest no-driver case — nothing explained the measure
 											// at this sample size (first-class, not a blank cell).
 											<Text span size="xs" c="dimmed" fs="italic">

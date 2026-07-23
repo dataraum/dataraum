@@ -29,8 +29,11 @@ from dataraum.graphs.models import (
 from dataraum.graphs.period_resolver import (
     PeriodResolution,
     _apply_fencepost,
+    _AxisWindow,
     _default_days,
     _fallback,
+    _MeasureAxis,
+    _window_from_profile,
     resolve_days_in_period,
 )
 
@@ -161,3 +164,44 @@ def test_fencepost_refuses_a_degenerate_span() -> None:
     """A non-positive span (single-timestamp corpus) can't be corrected."""
     assert _apply_fencepost(0.0, 4) is None
     assert _apply_fencepost(-5.0, 4) is None
+
+
+def _axis(**kw: object) -> _MeasureAxis:
+    base = {
+        "materialization": "flow",
+        "axis": "period_date",
+        "grain": "month",
+        "persisted_span_days": 334.0,
+        "persisted_actual_periods": 12,
+        "axis_is_view_own": True,
+    }
+    base.update(kw)
+    return _MeasureAxis(**base)  # type: ignore[arg-type]
+
+
+def test_window_from_profile_collapses_to_the_persisted_span() -> None:
+    """DAT-812: an UNFILTERED flow's window is the persisted whole-column span,
+    fencepost-corrected exactly as the live empty-WHERE scan would — no DuckDB scan."""
+    window = _window_from_profile(_axis())
+    assert isinstance(window, _AxisWindow)
+    assert window.corrected_days == pytest.approx(_apply_fencepost(334.0, 12))
+    assert window.axis == "period_date"
+    assert window.actual_periods == 12
+
+
+def test_window_from_profile_falls_loud_on_unbucketable_grain() -> None:
+    """An irregular/unknown cadence has no clean period — a reason string, not a window."""
+    out = _window_from_profile(_axis(grain="irregular"))
+    assert isinstance(out, str) and "no clean period" in out
+
+
+def test_window_from_profile_falls_loud_on_single_period() -> None:
+    """One period gives no gap to fencepost-correct — fall loud, never a fabricated window."""
+    out = _window_from_profile(_axis(persisted_actual_periods=1))
+    assert isinstance(out, str) and "single-period" in out
+
+
+def test_window_from_profile_falls_loud_without_a_persisted_profile() -> None:
+    """Defensive: a missing persisted span yields a reason (the caller falls back to live)."""
+    out = _window_from_profile(_axis(persisted_span_days=None))
+    assert isinstance(out, str)

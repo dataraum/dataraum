@@ -41,10 +41,14 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Seven edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
-    # conformed_dimension (DAT-756), grounded_by + uses (DAT-727).
-    assert graph_sql.count("SOURCE KEY") == 7
-    assert graph_sql.count("DESTINATION KEY") == 7
+    # Sixteen edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
+    # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), the three
+    # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to — the
+    # two DAT-731 additions (has_additivity, measured_in), the two DAT-732
+    # metric-DAG edges (derives_from, has_parameter), the DAT-733 scoped_by, and the
+    # DAT-787 filtered_by (grounding → dim_member).
+    assert graph_sql.count("SOURCE KEY") == 16
+    assert graph_sql.count("DESTINATION KEY") == 16
     # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.
@@ -70,6 +74,112 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "DESTINATION KEY (column_id) REFERENCES og_columns (column_id)" in graph_sql
     assert "LABEL uses" in graph_sql
     assert "PROPERTIES (role)" in graph_sql
+    # DAT-730 — the concept vertex carries the dimension-ordering fact.
+    assert "PROPERTIES (concept_id, vertical, name, kind, ordering)" in graph_sql
+    # DAT-730 — the constant period-grain ladder vertex.
+    assert "KEY (grain) LABEL period_grain" in graph_sql
+    assert "PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source)" in graph_sql
+    # DAT-730 — temporal_coverage binds table → column with the observed coverage facts.
+    assert "SOURCE KEY (table_id) REFERENCES og_tables (table_id)" in graph_sql
+    assert "LABEL temporal_coverage" in graph_sql
+    assert "observed_grain, completeness_ratio" in graph_sql
+    assert "last_period_complete" in graph_sql
+    # DAT-730 — rolls_up_to binds column → column (dimension drill levels).
+    assert "SOURCE KEY (from_column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "LABEL rolls_up_to" in graph_sql
+    # DAT-730 — the calendar ladder binds grain → grain.
+    assert "SOURCE KEY (from_grain) REFERENCES og_period_grain (grain)" in graph_sql
+    assert "LABEL period_rolls_up_to" in graph_sql
+    # DAT-731 — the additivity_verdict vertex + its two edges.
+    assert "KEY (additivity_id) LABEL additivity_verdict" in graph_sql
+    assert "PROPERTIES (additivity_id, target_kind, target_key, categorical_additive," in graph_sql
+    # has_additivity binds concept → verdict; measured_in binds column → column.
+    assert "DESTINATION KEY (additivity_id) REFERENCES og_additivity (additivity_id)" in graph_sql
+    assert "LABEL has_additivity" in graph_sql
+    assert "SOURCE KEY (measure_column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "DESTINATION KEY (unit_column_id) REFERENCES og_columns (column_id)" in graph_sql
+    assert "LABEL measured_in" in graph_sql
+    assert "PROPERTIES (unit_source, self_denominated)" in graph_sql
+    # DAT-732 — the metric node + its parameter node (declared default + derivation).
+    assert "KEY (graph_id) LABEL metric_node" in graph_sql
+    assert "PROPERTIES (graph_id, vertical, name, category, unit, output_type)" in graph_sql
+    assert "KEY (parameter_id) LABEL parameter_node" in graph_sql
+    assert (
+        "param_type, default_value,\n                  options, derivation, description"
+        in graph_sql
+    )
+    # DAT-732 — derives_from binds metric → concept; has_parameter binds metric → parameter.
+    assert "SOURCE KEY (from_graph_id) REFERENCES og_metrics (graph_id)" in graph_sql
+    assert "DESTINATION KEY (to_concept_id) REFERENCES og_concepts (concept_id)" in graph_sql
+    assert "LABEL derives_from" in graph_sql
+    assert (
+        "DESTINATION KEY (parameter_id) REFERENCES og_metric_parameters (parameter_id)" in graph_sql
+    )
+    assert "LABEL has_parameter" in graph_sql
+
+    # DAT-733: the validity-filter vertex + the table→filter scoped_by edge.
+    assert "KEY (filter_id) LABEL validity_filter" in graph_sql
+    assert "PROPERTIES (filter_id, table_id, column_id, column_name, operator, value)" in graph_sql
+    assert "SOURCE KEY (table_id) REFERENCES og_tables (table_id)" in graph_sql
+    assert "DESTINATION KEY (filter_id) REFERENCES og_validity_filter (filter_id)" in graph_sql
+    assert "LABEL scoped_by" in graph_sql
+
+    # DAT-787: the dim_member vertex + the grounding→dim_member filtered_by edge.
+    assert "KEY (dim_member_key) LABEL dim_member" in graph_sql
+    assert (
+        "PROPERTIES (dim_member_key, conformed_group, dimension_attribute, member_value)"
+        in graph_sql
+    )
+    assert "SOURCE KEY (snippet_id) REFERENCES og_grounding (snippet_id)" in graph_sql
+    assert (
+        "DESTINATION KEY (dim_member_key) REFERENCES og_dim_members (dim_member_key)" in graph_sql
+    )
+    assert "LABEL filtered_by" in graph_sql
+    assert "PROPERTIES (concept)" in graph_sql
+
+
+def test_filtered_by_is_additive_where_stays_on_the_grounding_node() -> None:
+    """DAT-787: the filtered_by edge is an ADDITIVE projection — where_predicates
+    remains a property on the grounding vertex (never moved onto the edge)."""
+    graph_sql = dict(graph_statements())[PROPERTY_GRAPH_NAME]
+    assert "where_predicates" in graph_sql  # still a grounding_node property
+    dim_members_sql = dict(graph_statements())["og_dim_members"]
+    filtered_by_sql = dict(graph_statements())["og_filtered_by"]
+    # Members un-nest the TYPED filter_members, never parse where[] text.
+    assert "filter_members" in dim_members_sql
+    assert "filter_members" in filtered_by_sql
+    # The dimension-axis gate joins the bus matrix on BOTH attachments (DAT-787/867).
+    assert "current_bus_matrix" in dim_members_sql
+    assert "bm.attachment = 'referenced'" in dim_members_sql  # referenced leg
+    assert "dimension_table_id IS NOT NULL" in dim_members_sql  # referenced leg
+    assert "bm.attachment = 'folded'" in dim_members_sql  # DAT-867 folded leg
+    assert "dimension_table_id IS NULL" in dim_members_sql  # DAT-867 folded leg
+    # Vertex KEY and edge destination KEY are the SAME expression (no drift), now
+    # over the normalized UNION alias ``m``; the folded axis identity REUSES
+    # bus_matrix's own fields (conformed_group ▸ signature), never a parallel scheme.
+    key = "json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)"
+    assert key in dim_members_sql
+    assert key in filtered_by_sql
+    assert "COALESCE(bm.conformed_group, bm.signature)" in dim_members_sql
+
+
+def test_temporal_coverage_resolves_declared_names_on_both_layers() -> None:
+    """DAT-866: a declared time column resolves typed-FIRST, else against the table's
+    enriched view's served columns — an FK-joined header date (the default warehouse
+    shape) must keep its coverage edge instead of silently dropping it while og_columns
+    still carries the anchor axis."""
+    sql = dict(graph_statements())["og_temporal_coverage"]
+    # The layered resolution: typed branch + enriched fallback over the SAME name.
+    assert "current_columns" in sql
+    assert "current_enriched_views" in sql
+    assert "current_enriched_columns" in sql
+    # Typed-first is EXCLUSIVE — the enriched f.* copy of a typed column must never
+    # steal (or duplicate) the edge.
+    assert "NOT EXISTS" in sql
+    # The enriched branch keeps the enriched column's OWN vertex id (DAT-811) but
+    # resolves the observed profile THROUGH its typed source.
+    assert "ec.source_column_id AS profile_column_id" in sql
+    assert "tp.column_id = res.profile_column_id" in sql
 
 
 def test_dump_drops_graph_before_its_element_views() -> None:

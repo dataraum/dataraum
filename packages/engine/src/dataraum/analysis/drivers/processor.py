@@ -12,6 +12,8 @@ Binds the engine (:mod:`tree`) to the begin_session substrate:
   SQL would be hundreds of scans).
 - **Target type** = the measure's ``ColumnConcept.temporal_behavior`` (DAT-637)
   (``additive`` → flow, ``point_in_time`` → stock) via :func:`resolve_target_type`.
+  NULL/unmapped behavior ABSTAINS (DAT-859) rather than defaulting to flow — a
+  measure whose type we don't know is never silently ranked as one.
 
 On-demand and pure: returns a :class:`DriverRanking`, persists nothing (DAT-546).
 """
@@ -30,7 +32,14 @@ from dataraum.analysis.drivers.criterion import (
     DEFAULT_MISSINGNESS_GATE,
     intraclass_correlation,
 )
-from dataraum.analysis.drivers.models import DriverRanking, Measure, SecondaryDriver
+from dataraum.analysis.drivers.models import (
+    AbstainReason,
+    DriverRanking,
+    Measure,
+    RankingStatus,
+    SecondaryDriver,
+    TargetTypeResolution,
+)
 from dataraum.analysis.drivers.targets import (
     EntityDemeanedRatioTarget,
     EntityMeanTarget,
@@ -79,13 +88,34 @@ DEFAULT_MAX_ROWS = 2_400_000
 _TEMPORAL_TO_TARGET = {"additive": "flow", "point_in_time": "stock"}
 
 
-def resolve_target_type(session: Session, *, column_id: str, run_id: str) -> str:
-    """Map the measure column's ``temporal_behavior`` to a driver target type.
+def resolve_target_type_for_behavior(behavior: str | None) -> TargetTypeResolution:
+    """Map a measure's catalog ``temporal_behavior`` to a target-type resolution (DAT-859).
 
-    ``additive`` → ``flow``, ``point_in_time`` → ``stock``; anything else (or no
-    annotation) defaults to ``flow`` — the additive reading, logged. Ratio is not a
-    ``temporal_behavior`` value: a ratio measure is constructed explicitly by the
-    caller (computed metric), not resolved here.
+    ``additive`` → ``flow``, ``point_in_time`` → ``stock``; anything else (NULL, or
+    an unrecognised value) ABSTAINS — reason ``missing_inputs`` — rather than
+    defaulting to ``"flow"``: post-DAT-847 the upstream deliberately fails closed to
+    undetermined, so silently ranking it as a flow was a landed-contract breach.
+    Ratio is not a ``temporal_behavior`` value: a ratio measure is constructed
+    explicitly by the caller (computed metric), never resolved here.
+
+    Pure — the DB-querying :func:`resolve_target_type` delegates here, and
+    ``persistence.persist_driver_rankings`` (which already has ``behavior`` from its
+    batched catalog read) calls this directly to avoid an N+1 re-query per measure.
+    """
+    target_type = _TEMPORAL_TO_TARGET.get(behavior or "")
+    if target_type is None:
+        logger.info("driver_target_type_undetermined", behavior=behavior)
+        return TargetTypeResolution(
+            status=RankingStatus.ABSTAINED, abstain_reason=AbstainReason.MISSING_INPUTS
+        )
+    return TargetTypeResolution(status=RankingStatus.MEASURED, target_type=target_type)
+
+
+def resolve_target_type(session: Session, *, column_id: str, run_id: str) -> TargetTypeResolution:
+    """Resolve the measure column's ``temporal_behavior`` to a driver target type.
+
+    DB-querying convenience wrapper over :func:`resolve_target_type_for_behavior`
+    (see there for the mapping + the DAT-859 fail-closed abstention).
     """
     # temporal_behavior is catalogue-grain (DAT-637): on ColumnConcept, written by
     # the table agent under THIS begin_session run earlier in the session spine.
@@ -95,10 +125,7 @@ def resolve_target_type(session: Session, *, column_id: str, run_id: str) -> str
             ColumnConcept.run_id == run_id,
         )
     ).scalar_one_or_none()
-    target = _TEMPORAL_TO_TARGET.get(behavior or "", "flow")
-    if behavior not in _TEMPORAL_TO_TARGET:
-        logger.info("driver_target_type_defaulted", column_id=column_id, behavior=behavior)
-    return target
+    return resolve_target_type_for_behavior(behavior)
 
 
 def _enriched_view_name(session: Session, fact_table_id: str, run_id: str) -> str | None:
@@ -406,16 +433,25 @@ def discover_drivers(
     the sample, so FDR holds — it degrades to a miss, never a fabricated driver). DAT-580
     (arrow-backed load) will raise the ceiling so sampling becomes a rare fallback.
     """
-    empty = DriverRanking(measure=measure.label, target_type=measure.target_type, n_rows=0)
+
+    def abstain(reason: AbstainReason) -> DriverRanking:
+        """The honest-empty ranking (DAT-859): known target_type, no ranked content."""
+        return DriverRanking(
+            measure=measure.label,
+            target_type=measure.target_type,
+            n_rows=0,
+            status=RankingStatus.ABSTAINED,
+            abstain_reason=reason,
+        )
 
     view = _enriched_view_name(session, fact_table_id, run_id)
     if view is None:
         logger.info("driver_no_enriched_view", fact_table_id=fact_table_id, run_id=run_id)
-        return empty
+        return abstain(AbstainReason.MISSING_INPUTS)
     dims = _candidate_dims(session, fact_table_id, run_id)
     if len(dims) < 2:
         logger.info("driver_too_few_candidates", fact_table_id=fact_table_id, n=len(dims))
-        return empty
+        return abstain(AbstainReason.INSUFFICIENT_CANDIDATES)
 
     def quote(name: str) -> str:
         return '"' + name.replace('"', '""') + '"'
@@ -428,9 +464,12 @@ def discover_drivers(
     }  # noqa: S608
     present_dims = [d for d in dims if d in view_cols]
     measure_cols = _measure_columns(measure)
-    if len(present_dims) < 2 or any(c not in view_cols for c in measure_cols):
+    if len(present_dims) < 2:
         logger.info("driver_view_skew", view=view, present=present_dims, measure_cols=measure_cols)
-        return empty
+        return abstain(AbstainReason.INSUFFICIENT_CANDIDATES)
+    if any(c not in view_cols for c in measure_cols):
+        logger.info("driver_view_skew", view=view, present=present_dims, measure_cols=measure_cols)
+        return abstain(AbstainReason.MISSING_INPUTS)
 
     # Resolve the clustering identities (DAT-563). An explicit ``cluster_keys`` list is a
     # caller override (tests) used verbatim; otherwise read the fact's persisted
@@ -790,7 +829,11 @@ def _routed_ranking(
     # honest empty ranking rather than index into nothing (DAT-695 review).
     if not families:
         return DriverRanking(
-            measure=measure.label, target_type=measure.target_type, n_rows=frame.height
+            measure=measure.label,
+            target_type=measure.target_type,
+            n_rows=frame.height,
+            status=RankingStatus.ABSTAINED,
+            abstain_reason=AbstainReason.INSUFFICIENT_CANDIDATES,
         )
     # The headline must carry content: an empty high-ICC entity family ahead of
     # a non-empty row family would bury every real driver in ``secondary`` and
@@ -886,14 +929,18 @@ def _entity_grain_ranking(
     Single-level (``max_depth=1``): recursion at entity grain is low-power and a
     follow-up.
     """
-    empty = DriverRanking(
-        measure=measure.label, target_type=measure.target_type, n_rows=0, grain="entity"
-    )
     values, sizes, codes_by_dim, labels_by_dim = _collapse_to_entity(
         frame, cluster_key, measure, entity_dims
     )
     if values.size == 0:  # every entity has no usable measure — nothing to rank
-        return empty
+        return DriverRanking(
+            measure=measure.label,
+            target_type=measure.target_type,
+            n_rows=0,
+            grain="entity",
+            status=RankingStatus.ABSTAINED,
+            abstain_reason=AbstainReason.INSUFFICIENT_DATA,
+        )
 
     target = EntityMeanTarget(values, sizes, target_type=measure.target_type)
     return discover_tree(

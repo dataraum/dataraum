@@ -58,6 +58,9 @@ vi.mock("./query-context", () => ({
 	buildCatalogBlock: async () => "<catalog/>",
 	buildRelationshipsBlock: async () => "<relationships/>",
 	buildDriversBlock: async () => "<drivers/>",
+	// DAT-793: the compose-time grain guardrail — joins the same Promise.all as
+	// the other session-stable blocks.
+	buildGrainBlock: async () => "<grain/>",
 }));
 vi.mock("./snippet-search", () => ({
 	buildVocabularyBlock: async () => "<vocabulary/>",
@@ -108,6 +111,20 @@ describe("query sub-agent — combined tools + structured output", () => {
 
 		// ...and the envelope tool is gone. Its return is the regression to catch.
 		expect(toolNames).not.toContain("emit_result");
+	});
+
+	it("folds the compose-time grain block into the cached stable-context system prompt (DAT-793)", async () => {
+		await querySubAgent("what is revenue");
+		const systemPrompts = callOptions().systemPrompts as Array<{
+			content: string;
+			metadata?: { cache_control?: { type: string } };
+		}>;
+		// stableContext is the second system prompt (query.ts) — cached alongside
+		// the other session-stable blocks (schema, entities, catalog, ...), NOT the
+		// per-question user message.
+		const stable = systemPrompts[1];
+		expect(stable?.content).toContain("<grain/>");
+		expect(stable?.metadata?.cache_control?.type).toBe("ephemeral");
 	});
 
 	it("keeps the args guard — unlike the tool-less sites, this one has a real tool boundary", async () => {

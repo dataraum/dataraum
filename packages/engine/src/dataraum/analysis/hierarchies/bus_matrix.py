@@ -3,12 +3,17 @@
 Runs inside the ``dimension_hierarchies`` phase AFTER structure discovery, over
 the same session scope. Two legs, one writer:
 
-- **referenced** — purely structural: this run's ``SliceDefinition`` rows with a
-  resolved ``dimension_table_id`` (DAT-756), grouped per (fact, dim table);
-  ``roles`` carries the FK-role multiplicity and ``confirmation_source`` is the
-  WEAKEST source across the roles' underlying relationships (the honest floor,
-  read through ``EnrichedView.relationship_ids`` — the slicing-phase
-  convention, never name-inferred).
+- **referenced** — this run's ``SliceDefinition`` rows with a resolved
+  ``dimension_table_id`` (DAT-756), grouped per (fact, dim table, ROLE identity).
+  Role-playing FKs to one dim (bill-to vs ship-to) are SEPARATE cells (DAT-788)
+  unless the conform judge merges their roles: same-named roles across facts
+  auto-conform structurally (no LLM), differently-named cross-fact pairs are
+  judged, and ``role`` / ``distinct`` / ``abstain`` / unjudged keep them apart.
+  ``conformed_group`` carries the content-derived role identity, ``roles`` the
+  fact's FK roles in that identity, and ``confirmation_source`` the WEAKEST source
+  across their underlying relationships (the honest structural floor, read through
+  ``EnrichedView.relationship_ids`` — the slicing-phase convention, never
+  name-inferred; orthogonal to the conform decision).
 - **folded** — the stats group, the judge decides identity (DAT-762 posture):
   fold components are connected sets of this run's discovered structures whose
   members are all fact-own, non-referenced columns; the conform judge decides
@@ -66,7 +71,7 @@ class BusMatrixStats:
     never die silently either.
     """
 
-    status: str = "ran"  # ran | failed (the conform lane)
+    status: str = "ran"  # ran | failed (the FOLDED conform lane)
     referenced: int = 0
     folded: int = 0
     conform_pairs: int = 0
@@ -75,6 +80,18 @@ class BusMatrixStats:
     # Pairs the judge returned NO verdict for (a truncating model must be
     # visible in the phase outputs, not uphold-by-omission).
     unanswered: int = 0
+    # Referenced-role conform metrics (DAT-788), kept SEPARATE from the folded
+    # counters above: the referenced leg judges differently-named cross-fact
+    # FK-role pairs to decide whether role-playing FKs (bill-to vs ship-to)
+    # conform to ONE identity or stay distinct axes. Same-named roles auto-conform
+    # structurally (no LLM call), so these count only the genuinely ambiguous pairs.
+    # ``ref_status`` is the referenced lane's own outcome — the two judge calls fail
+    # INDEPENDENTLY, so a single conflated flag would hide which lane died.
+    ref_status: str = "ran"  # ran | failed (the REFERENCED conform lane)
+    ref_conform_pairs: int = 0
+    ref_conformed: int = 0
+    ref_abstained: int = 0
+    ref_unanswered: int = 0
 
     def as_output(self) -> dict[str, object]:
         return {
@@ -85,6 +102,11 @@ class BusMatrixStats:
             "conformed": self.conformed,
             "abstained": self.abstained,
             "unanswered": self.unanswered,
+            "ref_status": self.ref_status,
+            "ref_conform_pairs": self.ref_conform_pairs,
+            "ref_conformed": self.ref_conformed,
+            "ref_abstained": self.ref_abstained,
+            "ref_unanswered": self.ref_unanswered,
         }
 
 
@@ -118,6 +140,44 @@ class _FoldComponent:
     def attributes(self) -> list[str]:
         key = self.fold_key
         return sorted(c for c in self.members if c != key)
+
+
+@dataclass
+class _RefExposure:
+    """One fact's referenced exposure of a dimension table via ONE FK role (DAT-788).
+
+    The role-conform unit: ``(fact, dim table, fk role)``. Several slices at
+    different attributes (``account_id__type``, ``account_id__name``) collapse
+    here — the role identity is attribute-invariant. The conform pass assigns
+    ``conformed_group`` (the content-derived identity signature) and, when the
+    judge abstained on a differently-named pair touching this role,
+    ``needs_confirmation``. ``sources`` are the FK relationship confirmation
+    sources across the role's slices (the referenced provenance floor, unchanged
+    by the conform decision — who confirmed the STRUCTURE is orthogonal to whether
+    the judge conformed the cross-role IDENTITY).
+    """
+
+    fact_table_id: str
+    fact_table_name: str
+    dim_table_id: str
+    fk_role: str
+    attributes: list[str]
+    sources: list[str]
+    conformed_group: str | None = None
+    needs_confirmation: bool = False
+
+
+def _ref_group_signature(dim_table_id: str, role_names: set[str]) -> str:
+    """The referenced role-group's content-derived identity signature (DAT-788).
+
+    Keyed on the dim table id + the sorted DISTINCT FK-role NAMES in the conform
+    component — never a per-run uuid (the ``relationship_id`` bug class). Two
+    exposures share an identity iff they land in the same component: same-named
+    roles across facts (structural auto-conform) or a judge ``conform`` verdict
+    over differently-named roles. Bill-to and ship-to (distinct names, no conform
+    edge) get distinct signatures — separate axes, the DAT-788 fix.
+    """
+    return f"ref:{dim_table_id}:" + "|".join(sorted(role_names))
 
 
 def derive_bus_matrix(
@@ -159,7 +219,9 @@ def derive_bus_matrix(
     }
 
     rows: list[dict[str, object]] = []
-    rows += _referenced_cells(session, enriched, slices, name_of, run_id=run_id, stats=stats)
+    exposures = _referenced_exposures(session, enriched, slices, name_of)
+    _referenced_conform_pass(session, exposures, run_id=run_id, judge=judge, stats=stats)
+    rows += _referenced_cells(exposures, name_of, run_id=run_id, stats=stats)
     referenced_key_cols = {s.column_id for s in slices if s.dimension_table_id is not None}
     components = _fold_components(
         session, fact_ids, name_of, run_id=run_id, referenced_key_cols=referenced_key_cols
@@ -167,16 +229,16 @@ def derive_bus_matrix(
     _conform_pass(session, components, run_id=run_id, judge=judge, stats=stats)
     rows += _folded_cells(components, run_id=run_id, stats=stats)
 
-    # Retry stability: a folded cell's signature carries its component's member
-    # set, which is derived from this run's discovered structures — and those
-    # include the user's teach overlay, which can change BETWEEN activity
-    # attempts (a teach landing after a crash shifts component membership →
-    # member_key → signature). A redelivery would then strand the first
-    # attempt's cells under the same run_id — invisible to the upsert, visible
-    # through ``current_bus_matrix``. Delete-then-insert in ONE transaction
-    # replaces the run's cell set wholesale, so no cell this derivation did not
-    # emit can survive; the upsert + unique constraint stay as the in-batch
-    # backstop.
+    # Retry stability: a cell's signature is judge-verdict-dependent on BOTH legs —
+    # a folded cell's carries its component's member set (which includes the user's
+    # teach overlay, changeable between attempts), and a referenced cell's carries
+    # its role set (DAT-788: a conform verdict merging differently-named roles shifts
+    # ``roles`` → signature between attempts). A redelivery could then strand the
+    # first attempt's cells under the same run_id — invisible to the upsert, visible
+    # through ``current_bus_matrix``. Delete-then-insert in ONE transaction replaces
+    # the run's cell set wholesale (unconditional on ``run_id + fact_table_id``, not
+    # signature-scoped), so no cell this derivation did not emit can survive; the
+    # upsert + unique constraint stay as the in-batch backstop.
     session.execute(
         delete(BusMatrixEntry).where(
             BusMatrixEntry.run_id == run_id, BusMatrixEntry.fact_table_id.in_(fact_ids)
@@ -187,16 +249,20 @@ def derive_bus_matrix(
     return len(rows), stats
 
 
-def _referenced_cells(
+def _referenced_exposures(
     session: Session,
     enriched: Sequence[EnrichedView],
     slices: Sequence[SliceDefinition],
     name_of: dict[str, str],
-    *,
-    run_id: str,
-    stats: BusMatrixStats,
-) -> list[dict[str, object]]:
-    """One cell per (fact, referenced dimension table), roles = FK multiplicity."""
+) -> list[_RefExposure]:
+    """This run's referenced exposures, one per (fact, dim table, FK role).
+
+    Groups the run's dimension-resolved slices by their FK role (DAT-788): the
+    role identity is attribute-invariant, so ``account_id__type`` and
+    ``account_id__name`` are ONE exposure. Each carries the FK relationship
+    confirmation sources (the referenced provenance floor). Name-stable order so
+    the conform pair refs and prompt order never depend on uuids.
+    """
     # FK column -> the underlying relationship's confirmation_source, through the
     # views' relationship provenance (the slicing-phase convention).
     rel_ids = sorted({rid for ev in enriched for rid in (ev.relationship_ids or [])})
@@ -209,18 +275,220 @@ def _referenced_cells(
         ).scalars():
             source_by_fk_col[rel.from_column_id] = rel.confirmation_source
 
-    grouped: dict[tuple[str, str], list[SliceDefinition]] = {}
+    # (fact, dim, fk_role) -> the collapsing slices.
+    grouped: dict[tuple[str, str, str], list[SliceDefinition]] = {}
     for s in slices:
-        if s.dimension_table_id is not None:
-            grouped.setdefault((s.table_id, s.dimension_table_id), []).append(s)
+        if s.dimension_table_id is None:
+            continue
+        role = s.fk_role or s.column_name or ""
+        if not role:
+            continue
+        grouped.setdefault((s.table_id, s.dimension_table_id, role), []).append(s)
+
+    exposures = [
+        _RefExposure(
+            fact_table_id=fact_id,
+            fact_table_name=name_of.get(fact_id, fact_id),
+            dim_table_id=dim_id,
+            fk_role=role,
+            attributes=sorted({s.dimension_attribute for s in group if s.dimension_attribute}),
+            sources=[source_by_fk_col.get(s.column_id, "unconfirmed") for s in group],
+        )
+        for (fact_id, dim_id, role), group in grouped.items()
+    ]
+    # Name-stable order: the conform pair refs and prompt order must not depend on
+    # DB row order or uuids (the _fold_components discipline).
+    exposures.sort(
+        key=lambda e: (
+            e.fact_table_name,
+            name_of.get(e.dim_table_id, e.dim_table_id),
+            e.fk_role,
+            e.fact_table_id,
+        )
+    )
+    return exposures
+
+
+def _referenced_conform_pass(
+    session: Session,
+    exposures: list[_RefExposure],
+    *,
+    run_id: str,
+    judge: DimensionIdentityJudge,
+    stats: BusMatrixStats,
+) -> None:
+    """Resolve role identity over the referenced exposures (DAT-788).
+
+    A union-find whose edges come from two sources, in strictly asymmetric
+    directions so conformance is never invented (absence-falls-loud):
+
+    - **Structural floor** — same ``(dim table, FK-role NAME)`` across facts is
+      auto-conformed with NO LLM call. This is the DAT-756 common case
+      (``account_id`` ⇄ ``account_id``); it must never regress or cost a judgment.
+    - **Judge overlay** — differently-named cross-fact pairs sharing a dim table
+      are submitted to the conform judge (the cross-fact framing the prompt is
+      built for; no prompt/logic change). Only ``conform`` adds an edge;
+      ``role`` / ``distinct`` / ``abstain`` / unjudged add nothing — the safe
+      default keeps the roles separate. An ``abstain`` on a pair marks its
+      exposures ``needs_confirmation`` unless the judge conformed them elsewhere.
+
+    Each exposure's ``conformed_group`` is then the component's content-derived
+    signature. A judge failure keeps the STRUCTURAL floor (same-name groups still
+    form) and is recorded — the referenced identity degrades to name-only, never
+    to nothing.
+    """
+    n = len(exposures)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Structural floor: same (dim, role name) across facts — deterministic order.
+    by_dim_role: dict[tuple[str, str], list[int]] = {}
+    for k, e in enumerate(exposures):
+        by_dim_role.setdefault((e.dim_table_id, e.fk_role), []).append(k)
+    for members in by_dim_role.values():
+        for a, b in zip(members, members[1:], strict=False):
+            union(a, b)
+
+    # Judge overlay: differently-named cross-fact pairs sharing a dim table.
+    # Exposures are name-sorted, so ``pair:{i}:{j}`` refs are deterministic.
+    pairs = [
+        (i, j)
+        for i in range(n)
+        for j in range(i + 1, n)
+        if exposures[i].dim_table_id == exposures[j].dim_table_id
+        and exposures[i].fact_table_id != exposures[j].fact_table_id
+        and exposures[i].fk_role != exposures[j].fk_role
+    ]
+    stats.ref_conform_pairs = len(pairs)
+    judge_conformed: set[int] = set()
+    abstain_touched: set[int] = set()
+    if pairs:
+        fact_ids = sorted({e.fact_table_id for e in exposures})
+        concepts = load_column_concepts(session, fact_ids, run_id)
+        meaning_by_col: dict[tuple[str, str], str] = {}
+        for col in session.execute(select(Column).where(Column.table_id.in_(fact_ids))).scalars():
+            concept = concepts.get(col.column_id)
+            if concept is not None and concept.meaning:
+                meaning_by_col[(col.table_id, col.column_name)] = concept.meaning
+
+        def side(e: _RefExposure) -> dict[str, object]:
+            meaning = meaning_by_col.get((e.fact_table_id, e.fk_role))
+            return {
+                "fact_table": e.fact_table_name,
+                "key": e.fk_role,
+                "attributes": e.attributes,
+                "meanings": {e.fk_role: meaning} if meaning else {},
+            }
+
+        by_ref = {f"pair:{i}:{j}": (i, j) for i, j in pairs}
+        candidates = [
+            {"ref": f"pair:{i}:{j}", "left": side(exposures[i]), "right": side(exposures[j])}
+            for i, j in pairs
+        ]
+        verdicts: list[ConformVerdict] = []
+        for start in range(0, len(candidates), _CONFORM_BATCH_MAX):
+            chunk = candidates[start : start + _CONFORM_BATCH_MAX]
+            try:
+                result = judge.conform(candidates=chunk)
+            except PermanentProviderError as exc:
+                logger.warning("bus_matrix_ref_conform_skipped", reason=str(exc))
+                stats.ref_status = "failed"
+                verdicts = []
+                break
+            if not result.success:
+                logger.warning("bus_matrix_ref_conform_skipped", reason=result.error)
+                stats.ref_status = "failed"
+                verdicts = []
+                break
+            verdicts.extend(result.unwrap())
+
+        seen_refs: set[str] = set()
+        for verdict in verdicts:
+            pair = by_ref.get(verdict.pair_ref)
+            if pair is None:
+                logger.warning("bus_matrix_ref_conform_unknown_ref", ref=verdict.pair_ref)
+                continue
+            if verdict.pair_ref in seen_refs:
+                continue
+            seen_refs.add(verdict.pair_ref)
+            i, j = pair
+            logger.info(
+                "bus_matrix_ref_conform",
+                left=f"{exposures[i].fact_table_name}.{exposures[i].fk_role}",
+                right=f"{exposures[j].fact_table_name}.{exposures[j].fk_role}",
+                dim=exposures[i].dim_table_id,
+                verdict=verdict.verdict,
+                reason=verdict.reason,
+            )
+            if verdict.verdict == "conform":
+                stats.ref_conformed += 1
+                judge_conformed.update(pair)
+                union(i, j)
+            elif verdict.verdict == "abstain":
+                stats.ref_abstained += 1
+                abstain_touched.update(pair)
+            # 'role' / 'distinct': separate axes — no edge (the judge answered).
+
+        if verdicts:
+            missing = sorted(set(by_ref) - seen_refs)
+            if missing:
+                stats.ref_unanswered = len(missing)
+                logger.warning("bus_matrix_ref_conform_unanswered", refs=missing)
+
+    # Assign each exposure its component's content-derived signature + abstain flag.
+    comp_roles: dict[int, set[str]] = {}
+    for k, e in enumerate(exposures):
+        comp_roles.setdefault(find(k), set()).add(e.fk_role)
+    for k, e in enumerate(exposures):
+        e.conformed_group = _ref_group_signature(e.dim_table_id, comp_roles[find(k)])
+    # An abstain flags needs_confirmation UNLESS the exposure's final component was
+    # judge-conformed — TRANSITIVELY (the folded leg's discipline): an exposure can
+    # join a conformed component through the same-name floor without being a direct
+    # party to a conform verdict, and its identity is then resolved, not pending.
+    conformed_roots = {find(i) for i in judge_conformed}
+    for k in abstain_touched:
+        if find(k) not in conformed_roots:
+            exposures[k].needs_confirmation = True
+
+
+def _referenced_cells(
+    exposures: list[_RefExposure],
+    name_of: dict[str, str],
+    *,
+    run_id: str,
+    stats: BusMatrixStats,
+) -> list[dict[str, object]]:
+    """One cell per (fact, dim table, role identity) — DAT-788 role-separated grain.
+
+    Role-playing FKs to one dim (bill-to vs ship-to) are DISTINCT cells unless
+    the conform pass merged their roles into one ``conformed_group``. ``roles``
+    holds this fact's FK roles in the group (one, unless a fact's own roles were
+    transitively conformed); ``confirmation_source`` is the weakest FK-relationship
+    floor across them (structural provenance, unchanged by the conform decision).
+    """
+    # (fact, dim, group signature) -> the fact's exposures in that identity.
+    grouped: dict[tuple[str, str, str], list[_RefExposure]] = {}
+    for e in exposures:
+        grouped.setdefault((e.fact_table_id, e.dim_table_id, e.conformed_group or ""), []).append(e)
 
     out: list[dict[str, object]] = []
-    for (fact_id, dim_id), group in sorted(grouped.items()):
-        roles = sorted({s.fk_role or s.column_name or "" for s in group} - {""})
-        attributes = sorted({s.dimension_attribute for s in group if s.dimension_attribute})
+    for (fact_id, dim_id, group), members in sorted(grouped.items()):
+        roles = sorted({e.fk_role for e in members})
+        attributes = sorted({a for e in members for a in e.attributes})
         source = min(
-            (source_by_fk_col.get(s.column_id, "unconfirmed") for s in group),
+            (s for e in members for s in e.sources),
             key=lambda v: _SOURCE_RANK.get(v, 0),
+            default="unconfirmed",
         )
         out.append(
             {
@@ -232,9 +500,9 @@ def _referenced_cells(
                 "roles": roles,
                 "attributes": attributes,
                 "confirmation_source": source,
-                "conformed_group": None,
-                "needs_confirmation": False,
-                "signature": f"bus:referenced:{fact_id}:{dim_id}",
+                "conformed_group": group,
+                "needs_confirmation": any(e.needs_confirmation for e in members),
+                "signature": f"bus:referenced:{fact_id}:{dim_id}:" + "|".join(roles),
             }
         )
     stats.referenced = len(out)

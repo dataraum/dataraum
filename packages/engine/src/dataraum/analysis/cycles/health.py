@@ -125,7 +125,7 @@ def compute_cycle_health(
         relevant_spec_ids: set[str] = set()
         spec_by_id: dict[str, ValidationSpec] = {}
         if canonical:
-            relevant_specs = get_validation_specs_for_cycles([canonical], vertical)
+            relevant_specs = get_validation_specs_for_cycles([canonical], vertical, session)
             relevant_spec_ids = {s.validation_id for s in relevant_specs}
             spec_by_id = {s.validation_id: s for s in relevant_specs}
 

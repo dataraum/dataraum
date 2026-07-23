@@ -96,12 +96,34 @@ _COLUMNS = [
     ("c_k1", "t1", "account_id", 2),
     ("c_k2", "t2", "account_id", 1),
     ("c_at", "t2", "account_type", 2),  # accounts dim attribute — a DAT-811 dim-column source
+    # accounts dim date — ec_od's typed source (DAT-866): profiled as tp_od, its window
+    # serves the enriched-resolved coverage edge THROUGH source_column_id.
+    ("c_od", "t2", "open_date", 3),
+    # accounts dim date with NO temporal profile — ec_cd's source: the enriched-branch
+    # source-never-profiled degrade case (edge survives, observed_* NULL).
+    ("c_cd", "t2", "close_date", 4),
     ("c_k3", "t3", "group_id", 1),
     ("c_k3b", "t3", "account_id", 2),  # t3's own account_id — a cross-LEVEL accounts slice
     ("c_k4", "t4", "statement_id", 1),
     ("c_k4b", "t4", "account_id", 2),  # t4's own account_id — a 2nd fact→accounts slice
     ("c_k5", "t5", "division_id", 1),
     ("c_k6", "t6", "root_id", 1),
+    # DAT-788 role-playing FKs to accounts (t2): journal bills-to, statement ships-to.
+    # Same dim + attribute (region), DIFFERENTLY-NAMED roles the judge never merged.
+    ("c_billto", "t1", "billto_acct", 4),
+    ("c_shipto", "t4", "shipto_acct", 3),
+    # Differently-named roles the judge DID conform (one shared group) — the positive
+    # judge→graph path: these MUST produce a conformed edge on accounts.segment.
+    ("c_seg1", "t1", "seg1_acct", 5),
+    ("c_seg2", "t4", "seg2_acct", 4),
+    # DAT-867: a FOLDED own-categorical column on the journal fact (no FK identity) —
+    # the OBT shape. Its slice has NULL dimension_table_id and it is a member of a
+    # folded bus-matrix cell, so a grounding filtering on it yields a folded dim_member.
+    ("c_rf", "t1", "region_flat", 6),
+    # DAT-867: a SAME-NAMED folded column on a SECOND fact (statement) — used to prove
+    # two facts' UNCONFORMED region_flat='west' stay DISTINCT vertices (the axis
+    # identity falls back to the fact-scoped bus_matrix signature, never a shared NULL).
+    ("c_rf2", "t4", "region_flat", 5),
 ]
 # (relationship_id, from_table, from_col, to_table, to_col)
 _REFS = [
@@ -156,15 +178,31 @@ def _seed(engine: Engine) -> None:
     #            semantic_role='measure' + materialization='flow' from its source.
     #   ec_at  — joined dim column account_id__account_type (origin='dimension') sourced
     #            from the accounts attribute c_at (unannotated → NULL semantics).
+    #   ec_od  — joined dim date account_id__open_date (origin='dimension') sourced
+    #            from the accounts date c_od: t1 DECLARES it a time column but it has
+    #            no typed row on t1 — the DAT-866 enriched-fallback coverage case;
+    #            its observed profile resolves THROUGH c_od (tp_od).
+    #   ec_cd  — joined dim date whose source c_cd was NEVER profiled: the enriched
+    #            coverage edge must survive with NULL observed_* (absence falls loud).
     for cid, name, pos, origin, src in [
         ("ec_amt", "amount", 0, "fact", "c_amt"),
         ("ec_at", "account_id__account_type", 1, "dimension", "c_at"),
+        ("ec_od", "account_id__open_date", 2, "dimension", "c_od"),
+        ("ec_cd", "account_id__close_date", 3, "dimension", "c_cd"),
     ]:
         stmts.append(
             "INSERT INTO columns "
             "(column_id, table_id, column_name, column_position, origin, source_column_id) "
             f"VALUES ('{cid}', 't_enr', '{name}', {pos}, '{origin}', '{src}')"
         )
+    # ec_orph — an enriched column whose typed source was TORN DOWN (the FK's
+    # ON DELETE SET NULL end-state): declared a time column below, its coverage edge
+    # must survive with NULL observed_*, never drop (DAT-866 review finding).
+    stmts.append(
+        "INSERT INTO columns "
+        "(column_id, table_id, column_name, column_position, origin, source_column_id) "
+        "VALUES ('ec_orph', 't_enr', 'orphaned__date', 4, 'dimension', NULL)"
+    )
     # has_role: amount / amount_declared are measures, account_id a key.
     for cid, role in [("c_amt", "measure"), ("c_amt2", "measure"), ("c_k1", "key")]:
         stmts.append(
@@ -176,9 +214,13 @@ def _seed(engine: Engine) -> None:
     # is the data-reconciled posterior and outranks the concept claim 'point_in_time'
     # (→ stock); the view normalizes both and the COALESCE prefers the posterior, so
     # materialization = 'flow'. (Neither raw value is ever 'flow'/'stock' in the DB.)
+    # unit_source_column='currency' (DAT-731): the headline finance case — a measure
+    # whose unit is a sibling `currency` dimension in its OWN table → a measured_in
+    # edge c_amt → c_ccy (both seeded in _units_and_additivity_stmts).
     stmts.append(
-        "INSERT INTO column_concepts (concept_id, column_id, run_id, temporal_behavior, annotated_at) "
-        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', '{TS}')"
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, temporal_behavior, unit_source_column, annotated_at) "
+        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', 'currency', '{TS}')"
     )
     # measure_time_axis_column_id / event_time_axis_column_id are left NULL — this
     # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
@@ -216,17 +258,76 @@ def _seed(engine: Engine) -> None:
     # (region) → shares the dim TABLE but NOT the axis, so it does NOT conform (the
     # conformed edge is ATTRIBUTE grain). fk_role is the FK column name, carried but not
     # a Phase-A identity key.
-    for sid, tid, cid, colname, attr in [
-        ("sl_1", "t1", "c_k1", "account_id__account_type", "account_type"),
-        ("sl_2", "t4", "c_k4b", "account_id__account_type", "account_type"),
-        ("sl_3", "t3", "c_k3b", "account_id__region", "region"),
+    for sid, tid, cid, colname, attr, role in [
+        ("sl_1", "t1", "c_k1", "account_id__account_type", "account_type", "account_id"),
+        ("sl_2", "t4", "c_k4b", "account_id__account_type", "account_type", "account_id"),
+        ("sl_3", "t3", "c_k3b", "account_id__region", "region", "account_id"),
+        # DAT-788 role-playing FKs at accounts.region — bill-to vs ship-to (unmerged).
+        ("sl_4", "t1", "c_billto", "billto_acct__region", "region", "billto_acct"),
+        ("sl_5", "t4", "c_shipto", "shipto_acct__region", "region", "shipto_acct"),
+        # Differently-named roles at accounts.segment the judge CONFORMED (merged).
+        ("sl_6", "t1", "c_seg1", "seg1_acct__segment", "segment", "seg1_acct"),
+        ("sl_7", "t4", "c_seg2", "seg2_acct__segment", "segment", "seg2_acct"),
     ]:
         stmts.append(
             "INSERT INTO slice_definitions "
             "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
             " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', '{colname}', 't2', "
-            f"'{attr}', 'account_id', 1, 'categorical', 'llm', '{TS}')"
+            f"'{attr}', '{role}', 1, 'categorical', 'llm', '{TS}')"
+        )
+    # DAT-867 FOLDED slice: journal's own categorical region_flat — dimension_table_id /
+    # dimension_attribute / fk_role ALL NULL (no FK identity, SliceDefinition contract).
+    # The folded dim-member leg keys on the column itself, resolved through its folded
+    # bus-matrix cell below.
+    for sid, tid, cid in [("sl_fold", "t1", "c_rf"), ("sl_fold2", "t4", "c_rf2")]:
+        stmts.append(
+            "INSERT INTO slice_definitions "
+            "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
+            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', 'region_flat', NULL, "
+            f"NULL, NULL, 1, 'categorical', 'structural', '{TS}')"
+        )
+    # Referenced bus-matrix cells carry the DAT-788 role identity the graph joins on
+    # (og_conformed_dimension). Same-named FK roles across facts auto-conform to one
+    # group (account_id → 'ref:t2:account_id'), so journal↔statement still conform on
+    # account_type; the differently-named bill-to/ship-to roles get SEPARATE groups,
+    # so no conformed edge forms across them on region — role-separated axes. The
+    # seg1/seg2 roles are differently-named but share ONE group (as the judge assigns
+    # after a CONFORM verdict), so they DO conform on segment — the positive path.
+    for eid, tid, role, group in [
+        ("bm_1", "t1", "account_id", "ref:t2:account_id"),
+        ("bm_2", "t4", "account_id", "ref:t2:account_id"),
+        ("bm_3", "t3", "account_id", "ref:t2:account_id"),
+        ("bm_4", "t1", "billto_acct", "ref:t2:billto_acct"),
+        ("bm_5", "t4", "shipto_acct", "ref:t2:shipto_acct"),
+        ("bm_6", "t1", "seg1_acct", "ref:t2:seg1_acct|seg2_acct"),
+        ("bm_7", "t4", "seg2_acct", "ref:t2:seg1_acct|seg2_acct"),
+    ]:
+        stmts.append(
+            "INSERT INTO bus_matrix "
+            "(entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, "
+            " roles, attributes, confirmation_source, conformed_group, needs_confirmation, "
+            " signature, created_at) "
+            f"VALUES ('{eid}', '{RUN}', '{tid}', 'referenced', 'accounts', 't2', "
+            f"'[\"{role}\"]', '[]', 'unconfirmed', '{group}', false, "
+            f"'bus:referenced:{tid}:t2:{role}', '{TS}')"
+        )
+    # DAT-867 FOLDED bus-matrix cells for the region_flat fold on TWO facts (journal,
+    # statement). Each is UNCONFORMED (conformed_group NULL — no cross-fact conform
+    # verdict), so the folded dim-member axis identity falls back to the cell's
+    # ``signature`` — which is FACT-SCOPED (``bus:folded:{fact}:{members}``), keeping
+    # the two facts' region_flat='west' members DISTINCT vertices. roles carries the
+    # fold key; attributes the inlined levels (none here); dimension_table_id NULL.
+    for eid, tid in [("bm_fold", "t1"), ("bm_fold2", "t4")]:
+        stmts.append(
+            "INSERT INTO bus_matrix "
+            "(entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, "
+            " roles, attributes, confirmation_source, conformed_group, needs_confirmation, "
+            " signature, created_at) "
+            f"VALUES ('{eid}', '{RUN}', '{tid}', 'folded', 'region_flat', NULL, "
+            f"'[\"region_flat\"]', '[]', 'unconfirmed', NULL, false, "
+            f"'bus:folded:{tid}:region_flat', '{TS}')"
         )
     # Fact↔fact MEETINGS between account_id slice columns (the DAT-723 fan trap),
     # persisted the way the write site now produces them (DAT-850): the judge's fk
@@ -270,6 +371,12 @@ def _seed(engine: Engine) -> None:
         '{"column": "txn_date", "aspect": "txn", "role": "event", '
         '"is_anchor": true, "note": "x"}, '
         '{"column": "due_date", "aspect": "due", "role": "attribute", '
+        '"is_anchor": false, "note": "x"}, '
+        '{"column": "account_id__open_date", "aspect": "opened", "role": "attribute", '
+        '"is_anchor": false, "note": "x"}, '
+        '{"column": "account_id__close_date", "aspect": "closed", "role": "attribute", '
+        '"is_anchor": false, "note": "x"}, '
+        '{"column": "orphaned__date", "aspect": "orphaned", "role": "attribute", '
         '"is_anchor": false, "note": "x"}]'
     )
     time_cols_by_entity = {"t1": t1_time_columns}
@@ -359,10 +466,265 @@ def _seed(engine: Engine) -> None:
             "(edge_id, vertical, predicate, from_concept, to_concept, source, created_at) "
             f"VALUES ('{eid}', 'finance', 'part_of', '{frm}', '{to}', 'seed', '{TS}')"
         )
+    stmts.extend(_coverage_and_rollup_stmts())
+    stmts.extend(_units_and_additivity_stmts())
     stmts.extend(_grounding_stmts())
+    stmts.extend(_metric_dag_stmts())
+    stmts.extend(_validity_scope_stmts())
     with engine.begin() as conn:
         for s in stmts:
             conn.execute(text(s))
+
+
+def _metric_dag_stmts() -> list[str]:
+    """DAT-732 fixture rows: the metric DAG typed home (nodes / params / edges).
+
+    One declared metric ``working_capital_metric`` that:
+
+    * derives_from TWO concepts that hold healthy groundings — ``account_balance``
+      (con_bal, grounded by sn_tb + sn_bs) and ``revenue`` (con_rev, grounded by
+      sn_rev + the retained-failure sn_fail) — so the full walk
+      ``metric → concept → grounded_by → grounding (→ uses → column)`` returns rows;
+    * plus a derives_from row naming a concept with NO active row
+      (``ghost_concept``) — the og_derives_from INNER JOIN must DROP it (the graph
+      never dangles, the og_grounded_by discipline);
+    * carries a ``days_in_period`` parameter whose ``derivation`` marker is
+      ``period_grain`` and whose declared default (30) round-trips as a property.
+
+    All rows are ``vertical='finance'`` so the _VERTICAL_SCOPED read views (bound to
+    finance in this seed) surface them.
+    """
+    return [
+        "INSERT INTO metrics (metric_id, vertical, graph_id, name, category, unit, "
+        " output_type, version, source, created_at) "
+        f"VALUES ('m_wc', 'finance', 'working_capital_metric', 'Working Capital Metric', "
+        f"'working_capital', 'days', 'scalar', '1.0', 'seed', '{TS}')",
+        "INSERT INTO metric_parameters (parameter_id, vertical, graph_id, name, param_type, "
+        " default_value, options, description, derivation, source, created_at) "
+        f"VALUES ('mp_dip', 'finance', 'working_capital_metric', 'days_in_period', 'integer', "
+        f"'30'::json, '[30, 90, 365]'::json, 'Analysis period length', 'period_grain', "
+        f"'seed', '{TS}')",
+        "INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name, created_at) "
+        f"VALUES ('mdf_bal', 'finance', 'working_capital_metric', 'account_balance', '{TS}')",
+        "INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name, created_at) "
+        f"VALUES ('mdf_rev', 'finance', 'working_capital_metric', 'revenue', '{TS}')",
+        # No active concept named 'ghost_concept' → the INNER-JOIN og_derives_from view
+        # drops this edge (honest under-coverage, never a dangling edge).
+        "INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name, created_at) "
+        f"VALUES ('mdf_ghost', 'finance', 'working_capital_metric', 'ghost_concept', '{TS}')",
+    ]
+
+
+def _validity_scope_stmts() -> list[str]:
+    """DAT-733 fixture rows: the canonical validity-scope surface (og_validity_filter).
+
+    Three cycles, one edge:
+      * cyc_post  — MEASURED (completion_rate non-NULL), status_column resolves on
+        ``journal`` (t1) → ONE og_validity_filter row + ONE scoped_by edge:
+        journal.status = 'posted'.
+      * cyc_recon — UNMEASURED (completion_rate NULL): its status column
+        ``ledger.recon_status`` exists and would resolve, so the ONLY thing
+        withholding the edge is the measured gate — proving an unmeasured cycle
+        contributes NO filter, not a coincidental non-resolution.
+      * cyc_ghost — MEASURED but names ``paylog.missing_col`` which no column row
+        backs → the INNER JOIN drops it (honest under-coverage, no dangling edge).
+    ``accounts`` (t2) carries no cycle at all → enumerable absence (no edge).
+    """
+    return [
+        # A real status column on journal + a recon status on ledger.
+        "INSERT INTO columns (column_id, table_id, column_name, column_position) VALUES ('c_status', 't1', 'status', 4)",
+        "INSERT INTO columns (column_id, table_id, column_name, column_position) VALUES ('c_recon', 't7', 'recon_status', 2)",
+        # cyc_post: measured, resolves → the one validity filter.
+        "INSERT INTO detected_business_cycles "
+        "(cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, "
+        " business_value, confidence, tables_involved, stages, entity_flows, evidence, "
+        " status_table, status_column, completion_value, completion_rate, total_records, "
+        " completed_cycles, detected_at) "
+        f"VALUES ('cyc_post', '{RUN}', 'Posting Cycle', 'posting_cycle', 'posting', false, "
+        f"'medium', 0.9, '[]', '[]', '[]', '[]', 'journal', 'status', 'posted', 0.9, 100, 90, "
+        f"'{TS}')",
+        # cyc_recon: UNMEASURED (completion_rate NULL) → contributes no filter.
+        "INSERT INTO detected_business_cycles "
+        "(cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, "
+        " business_value, confidence, tables_involved, stages, entity_flows, evidence, "
+        " status_table, status_column, completion_value, completion_rate, detected_at) "
+        f"VALUES ('cyc_recon', '{RUN}', 'Reconciliation', 'recon_cycle', 'reconciliation', "
+        f"false, 'medium', 0.5, '[]', '[]', '[]', '[]', 'ledger', 'recon_status', "
+        f"'reconciled', NULL, '{TS}')",
+        # cyc_ghost: measured but its status column does not resolve → no row/edge.
+        "INSERT INTO detected_business_cycles "
+        "(cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, "
+        " business_value, confidence, tables_involved, stages, entity_flows, evidence, "
+        " status_table, status_column, completion_value, completion_rate, detected_at) "
+        f"VALUES ('cyc_ghost', '{RUN}', 'Ghost', 'ghost_cycle', 'ghost', false, 'medium', "
+        f"0.5, '[]', '[]', '[]', '[]', 'paylog', 'missing_col', 'done', 0.5, '{TS}')",
+    ]
+
+
+def _coverage_and_rollup_stmts() -> list[str]:
+    """DAT-730 fixture rows: temporal coverage, drill-down roll-up, dimension ordering.
+
+    - t1's three DECLARED time columns (txn_date anchor/event, created_date event,
+      due_date attribute) become real ``columns`` rows so the time_columns JSON names
+      resolve to og_columns vertices. txn_date carries a COMPLETE monthly profile,
+      created_date a partial-trailing DAILY profile, due_date NO profile at all — the
+      absence-falls-loud case (coverage edge with NULL observed_*).
+    - a ``drilldown`` dimension_hierarchies row over c_k1→c_k2→c_k3 (levels 2→1→0,
+      finer→coarser) plus a level-3 member with NO catalog column ('') to prove the
+      skip, and an ``alias`` row to prove kind!='drilldown' emits no rolls_up_to.
+    - a ``dimension`` concept carrying ordering='ordered' (the DAT-730 typed fact).
+    """
+    import json
+
+    stmts: list[str] = []
+    for cid, name in [("c_txn", "txn_date"), ("c_created", "created_date"), ("c_due", "due_date")]:
+        stmts.append(
+            f"INSERT INTO columns (column_id, table_id, column_name, column_position) "
+            f"VALUES ('{cid}', 't1', '{name}', 10)"
+        )
+    # txn_date: a COMPLETE monthly series (last_period_complete=true, ratio 1.0).
+    stmts.append(
+        "INSERT INTO temporal_column_profiles "
+        "(profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, "
+        " detected_granularity, granularity_confidence, completeness_ratio, expected_periods, "
+        " actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps) "
+        f"VALUES ('tp_txn', 'c_txn', '{RUN}', '{TS}', '2023-01-31', '2023-12-31', 334, "
+        f"'month', 0.9, 1.0, 12, 12, 0, NULL, true, false, '[]'::json)"
+    )
+    # created_date: a partial-trailing DAILY series (last_period_complete=false).
+    stmts.append(
+        "INSERT INTO temporal_column_profiles "
+        "(profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, "
+        " detected_granularity, granularity_confidence, completeness_ratio, expected_periods, "
+        " actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps) "
+        f"VALUES ('tp_created', 'c_created', '{RUN}', '{TS}', '2024-01-01', '2024-03-31', 90, "
+        f"'day', 0.9, 0.9, 91, 82, 3, 5, false, false, '[]'::json)"
+    )
+    # c_od (accounts.open_date): a YEARLY profile — served by the DAT-866
+    # enriched-fallback edge (t1 declares 'account_id__open_date', which exists only
+    # as t_enr's ec_od; the observation resolves THROUGH source_column_id = c_od).
+    stmts.append(
+        "INSERT INTO temporal_column_profiles "
+        "(profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, "
+        " detected_granularity, granularity_confidence, completeness_ratio, expected_periods, "
+        " actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps) "
+        f"VALUES ('tp_od', 'c_od', '{RUN}', '{TS}', '2015-06-01', '2023-06-01', 2922, "
+        f"'year', 0.8, 1.0, 9, 9, 0, NULL, true, false, '[]'::json)"
+    )
+    # due_date (c_due): NO temporal profile — the LEFT JOIN yields NULL observed_*.
+    # A drill-down hierarchy c_k1 (lvl2, finest) → c_k2 (lvl1) → c_k3 (lvl0, coarsest),
+    # plus a level-3 member with '' column_id (skipped) — level is the SOLE direction.
+    dh_members = json.dumps(
+        [
+            {"column_name": "group_id", "column_id": "c_k3", "distinct_count": 5, "level": 0},
+            {"column_name": "account_id", "column_id": "c_k2", "distinct_count": 50, "level": 1},
+            {"column_name": "acct_own", "column_id": "c_k1", "distinct_count": 500, "level": 2},
+            {"column_name": "orphan", "column_id": "", "distinct_count": None, "level": 3},
+        ]
+    ).replace("'", "''")
+    stmts.append(
+        "INSERT INTO dimension_hierarchies "
+        "(hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, "
+        " detection_source, needs_confirmation, created_at) "
+        f"VALUES ('dh_1', '{RUN}', 't1', 'drilldown', '{dh_members}'::json, "
+        f"'group → account → acct', 'drilldown:t1:acct', 'g3', false, '{TS}')"
+    )
+    # An ALIAS structure over the same members must emit NO rolls_up_to edge.
+    alias_members = json.dumps(
+        [
+            {"column_name": "division_id", "column_id": "c_k5", "distinct_count": 3, "level": 0},
+            {"column_name": "statement_id", "column_id": "c_k4", "distinct_count": 3, "level": 1},
+        ]
+    ).replace("'", "''")
+    stmts.append(
+        "INSERT INTO dimension_hierarchies "
+        "(hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, "
+        " detection_source, needs_confirmation, created_at) "
+        f"VALUES ('dh_2', '{RUN}', 't4', 'alias', '{alias_members}'::json, "
+        f"'division_id', 'alias:t4:division', 'g3', false, '{TS}')"
+    )
+    # A dimension concept carrying the DAT-730 ordering fact (og_concepts.ordering).
+    stmts.append(
+        "INSERT INTO concepts (concept_id, vertical, name, kind, ordering, created_at) "
+        f"VALUES ('con_sev', 'finance', 'severity', 'dimension', 'ordered', '{TS}')"
+    )
+    return stmts
+
+
+def _units_and_additivity_stmts() -> list[str]:
+    """DAT-731 fixture rows: measured_in edges + additivity_verdict vertices.
+
+    - A ``currency`` unit column c_ccy on t1 (journal) and a ``fee`` measure column
+      c_amt3 on t2 (accounts). c_amt already carries unit_source_column='currency'
+      (a bare sibling name → same-table resolution, the finance headline), c_amt3
+      carries 'journal.currency' (a QUALIFIED table.column → the split_part cross-table
+      branch, resolving t1's c_ccy), c_self (price_usd) carries its OWN name (a
+      self-denominated value → a self-loop, self_denominated=true), and c_amt2
+      (amount_declared) carries 'dimensionless' (the exclusion — NO edge). No
+      semantic_annotation on c_ccy / c_amt3 / c_self, so the measure→materialization
+      MATCH (semantic_role='measure') is untouched — og_measured_in fires purely off
+      column_concepts.unit_source_column.
+    - Two ``metric_additivity`` verdicts under a fresh operating_model head: a MEASURE
+      verdict keyed by the concept name 'revenue' (→ a has_additivity edge from the
+      revenue concept) and a METRIC verdict keyed by a formula graph_id 'mk_margin'
+      (no concept → vertex only, reachable by property, never by has_additivity).
+    """
+    stmts: list[str] = []
+    for cid, tid, name, pos in [
+        ("c_ccy", "t1", "currency", 20),
+        ("c_amt3", "t2", "fee", 3),
+        # A self-denominated measure (a Pint-style "100 USD" value carrying its own
+        # unit): unit_source_column names its OWN column → a self-loop edge.
+        ("c_self", "t1", "price_usd", 21),
+    ]:
+        stmts.append(
+            "INSERT INTO columns (column_id, table_id, column_name, column_position) "
+            f"VALUES ('{cid}', '{tid}', '{name}', {pos})"
+        )
+    # c_amt2 (amount_declared): dimensionless → excluded from measured_in. temporal_behavior
+    # stays NULL so its materialization MATCH result (amount_declared → None) is unchanged.
+    stmts.append(
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
+        f"VALUES ('cc_amt2', 'c_amt2', '{RUN}', 'dimensionless', '{TS}')"
+    )
+    # c_amt3 (fee on accounts): a QUALIFIED 'journal.currency' pointer → split_part
+    # resolves the journal (t1) table by name, then its currency column (c_ccy).
+    stmts.append(
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
+        f"VALUES ('cc_amt3', 'c_amt3', '{RUN}', 'journal.currency', '{TS}')"
+    )
+    # c_self (price_usd): its unit_source_column is its OWN name → a self-loop edge
+    # c_self → c_self with self_denominated=true (the measure carries its own unit).
+    stmts.append(
+        "INSERT INTO column_concepts "
+        "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
+        f"VALUES ('cc_self', 'c_self', '{RUN}', 'price_usd', '{TS}')"
+    )
+    # The operating_model head that promotes metric_additivity (read_views _CATALOG_GRAIN
+    # maps it to (catalog, 'operating_model')). The existing seed only has (catalog,
+    # 'catalog') — without this head current_metric_additivity resolves zero rows.
+    stmts.append(
+        "INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at) "
+        f"VALUES ('h_om', 'catalog', 'operating_model', '{RUN}', '{TS}')"
+    )
+    for aid, kind, key, cat_add, time_add, cat_reason, time_reason in [
+        # revenue: an active finance concept → gets a has_additivity edge. A summed
+        # balance reconciles across categories but not across time (STOCK).
+        ("ma_rev", "measure", "revenue", "true", "false", "NULL", "'stock'"),
+        # mk_margin: a formula graph_id (no concept) → vertex only, no has_additivity.
+        # A ratio reconciles on NEITHER axis.
+        ("ma_margin", "metric", "mk_margin", "false", "false", "'ratio'", "'ratio'"),
+    ]:
+        stmts.append(
+            "INSERT INTO metric_additivity "
+            "(additivity_id, run_id, target_kind, target_key, categorical_additive, "
+            " time_additive, categorical_reason, time_reason, created_at) "
+            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', {cat_add}, {time_add}, "
+            f"{cat_reason}, {time_reason}, '{TS}')"
+        )
+    return stmts
 
 
 # Grounding fixtures (DAT-727): the snippet-KB rows current_groundings
@@ -401,6 +763,12 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
                     "measure_columns": ["amount"],
                     "filter_columns": ["account_id__account_type"],
                     "filter": "asset, liability",
+                    # DAT-787: two typed members on the account_type axis (group
+                    # ref:t2:account_id) — the multi-member case.
+                    "filter_members": [
+                        {"column": "account_id__account_type", "value": "asset"},
+                        {"column": "account_id__account_type", "value": "liability"},
+                    ],
                 }
             },
             "assumptions": [],
@@ -455,6 +823,143 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
         # Retained DAT-543 failure: the typed failed payload — no basis.
         {"failure_mode": "verifier_rejected", "failure_reason": "no support"},
         True,
+    ),
+    # DAT-787 role-play (bill-to, t1). Non-active concept name → no grounded_by /
+    # concept perturbation. where[] carries a NON-dimension predicate (posted) whose
+    # member must NOT resolve (posted is no referenced slice) — the dimension-axis-only
+    # gate. Only billto_acct__region='north' becomes a member: group ref:t2:billto_acct.
+    (
+        "sn_billto",
+        "regional_billed",
+        "billed_by_region",
+        "enriched_journal",
+        "SUM(amount)",
+        ["billto_acct__region = 'north'", "posted = true"],
+        {
+            "column_mappings_basis": {
+                "regional_billed": {
+                    "measure_columns": ["amount"],
+                    "filter_columns": ["billto_acct__region", "posted"],
+                    "filter": "north",
+                    "filter_members": [
+                        {"column": "billto_acct__region", "value": "north"},
+                        # Non-dimension column (no referenced slice) — must yield NO edge.
+                        {"column": "posted", "value": "true"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    # DAT-787 role-play (ship-to, the TYPED statement fact t4 — no enriched view needed;
+    # the slice resolves by column_name) + the P8 scope pin: where[] carries an
+    # engine-appended-style scope predicate (status = 'posted') that is DELIBERATELY
+    # absent from filter_members — so it fabricates no member. Only shipto_acct__region=
+    # 'north' becomes a member: group ref:t2:shipto_acct — the SAME value 'north' as
+    # sn_billto but a DISTINCT member (role-separated axis). COUNT(*) reads no column, so
+    # this contrived grounding adds no uses edge (t4 has no amount column).
+    (
+        "sn_shipto",
+        "regional_shipped",
+        "shipped_by_region",
+        "statement",
+        "COUNT(*)",
+        ["shipto_acct__region = 'north'", "status = 'posted'"],
+        {
+            "column_mappings_basis": {
+                "regional_shipped": {
+                    "measure_columns": [],
+                    "filter_columns": ["shipto_acct__region"],
+                    "filter": "north",
+                    "filter_members": [
+                        {"column": "shipto_acct__region", "value": "north"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    # DAT-787 the "one home" fold: a SECOND grounding selecting the SAME member as
+    # sn_billto (bill-to region='north'). og_dim_members must fold both references to
+    # ONE vertex (DISTINCT ON the key); og_filtered_by keeps BOTH edges. COUNT(*) + a
+    # non-enriched filter column → no uses edge (nothing else perturbed).
+    (
+        "sn_billto2",
+        "regional_billed_again",
+        "billed_by_region_again",
+        "enriched_journal",
+        "COUNT(*)",
+        ["billto_acct__region = 'north'"],
+        {
+            "column_mappings_basis": {
+                "regional_billed_again": {
+                    "measure_columns": [],
+                    "filter_columns": ["billto_acct__region"],
+                    "filter": "north",
+                    "filter_members": [
+                        {"column": "billto_acct__region", "value": "north"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    # DAT-867 FOLDED axis: a grounding filtering on journal's own categorical
+    # region_flat (dimension_table_id NULL, no FK). It must yield a folded dim_member
+    # keyed on the folded bus-matrix cell's signature (unconformed → conformed_group
+    # NULL). Non-active concept → no grounded_by edge; region_flat is NOT an enriched
+    # column of enriched_journal → no uses edge (the dim-member path resolves through
+    # slice_definitions, NOT enriched_columns — the intended asymmetry).
+    (
+        "sn_folded",
+        "folded_region",
+        "regional_folded",
+        "enriched_journal",
+        "COUNT(*)",
+        ["region_flat = 'west'"],
+        {
+            "column_mappings_basis": {
+                "folded_region": {
+                    "measure_columns": [],
+                    "filter_columns": ["region_flat"],
+                    "filter": "west",
+                    "filter_members": [
+                        {"column": "region_flat", "value": "west"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    # DAT-867 SECOND fact's folded axis: statement (t4, TYPED relation) filtering the
+    # SAME region_flat='west'. Its folded member is a DISTINCT vertex from sn_folded's
+    # (fact-scoped signature). The typed relation resolves region_flat to t4's own
+    # column, so — unlike sn_folded's enriched relation — it DOES add a uses edge.
+    (
+        "sn_folded2",
+        "folded_region2",
+        "regional_folded2",
+        "statement",
+        "COUNT(*)",
+        ["region_flat = 'west'"],
+        {
+            "column_mappings_basis": {
+                "folded_region2": {
+                    "measure_columns": [],
+                    "filter_columns": ["region_flat"],
+                    "filter": "west",
+                    "filter_members": [
+                        {"column": "region_flat", "value": "west"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
     ),
 ]
 
@@ -639,6 +1144,11 @@ def test_enriched_view_columns_carry_source_resolved_semantics(graph_engine: Eng
         ("ec_amt", "amount", "measure", "flow"),
         # joined dim column: surfaces with its own id; source c_at is unannotated → NULL.
         ("ec_at", "account_id__account_type", None, None),
+        # joined dim dates (DAT-866 coverage sources): own ids, sources unannotated;
+        # ec_orph's source is NULL (torn down) — semantics degrade to NULL, row stays.
+        ("ec_od", "account_id__open_date", None, None),
+        ("ec_cd", "account_id__close_date", None, None),
+        ("ec_orph", "orphaned__date", None, None),
     }
 
 
@@ -735,12 +1245,59 @@ def test_has_dimension_edge(graph_engine: Engine) -> None:
     )
     with graph_engine.connect() as conn:
         rows = {(r.tname, r.cname, r.dim) for r in conn.execute(text(sql))}
-    # All three facts slice their own account_id, each bound to the accounts dim (t2).
+    # All three facts slice their own account_id, each bound to the accounts dim (t2);
+    # journal + statement additionally carry role-playing bill-to/ship-to and
+    # seg1/seg2 FKs (DAT-788). journal also carries a FOLDED own-column slice
+    # (region_flat, NULL dim identity — DAT-867): a has_dimension edge with NULL
+    # dimension_table_id, the OBT axis the folded dim-member leg reads.
     assert rows == {
         ("journal", "account_id", "t2"),
         ("statement", "account_id", "t2"),
         ("account_group", "account_id", "t2"),
+        ("journal", "billto_acct", "t2"),
+        ("statement", "shipto_acct", "t2"),
+        ("journal", "seg1_acct", "t2"),
+        ("statement", "seg2_acct", "t2"),
+        ("journal", "region_flat", None),
+        ("statement", "region_flat", None),
     }
+
+
+def test_scoped_by_enumerates_the_default_validity_scope(graph_engine: Engine) -> None:
+    """scoped_by: a table points at its canonical validity filter (DAT-733).
+
+    Only the MEASURED, resolvable cycle instantiates — journal.status = 'posted'.
+    The unmeasured recon cycle (completion_rate NULL) and the ghost cycle (a status
+    column no row backs) yield no filter; accounts carries no cycle at all. So the
+    edge set proves BOTH the default scope AND its enumerable absence — a table
+    without a measured status cycle is never a default-true 'scoped'.
+    """
+    sql = (
+        f"SELECT tname, cname, op, val FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[e IS scoped_by]->(v IS validity_filter) "
+        "COLUMNS (t.table_name AS tname, v.column_name AS cname, "
+        "v.operator AS op, v.value AS val))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.tname, r.cname, r.op, r.val) for r in conn.execute(text(sql))}
+    assert rows == {("journal", "status", "=", "posted")}
+
+
+def test_validity_filter_vertex_resolves_the_status_column_id(graph_engine: Engine) -> None:
+    """The validity_filter vertex resolves the cycle's status column to a real column_id.
+
+    A MATCH over the bare vertex (not the edge) proves the node instantiates: the
+    measured gate admits exactly cyc_post, and the status_table/status_column NAMES
+    resolved to the seeded c_status column vertex under journal.
+    """
+    sql = (
+        f"SELECT cid, colname, tid FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (v IS validity_filter) "
+        "COLUMNS (v.column_id AS cid, v.column_name AS colname, v.table_id AS tid))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.cid, r.colname, r.tid) for r in conn.execute(text(sql))}
+    assert rows == {("c_status", "status", "t1")}
 
 
 def test_conformed_dimension_is_attribute_grain(graph_engine: Engine) -> None:
@@ -758,10 +1315,42 @@ def test_conformed_dimension_is_attribute_grain(graph_engine: Engine) -> None:
     )
     with graph_engine.connect() as conn:
         rows = {(r.src, r.dst, r.dim, r.attr) for r in conn.execute(text(sql))}
+    # account_type conforms via the shared account_id role; segment conforms via the
+    # judge-merged seg1/seg2 roles (DAT-788). region does NOT (bill-to vs ship-to,
+    # unmerged) — see test_conformed_dimension_gates_on_role_identity.
     assert rows == {
         ("journal", "statement", "t2", "account_type"),
         ("statement", "journal", "t2", "account_type"),
+        ("journal", "statement", "t2", "segment"),
+        ("statement", "journal", "t2", "segment"),
     }
+
+
+def test_conformed_dimension_gates_on_role_identity(graph_engine: Engine) -> None:
+    """DAT-788: the role gate decides which role-playing FKs conform, end to end.
+
+    Three shapes over accounts (t2), all sharing (dim, attribute):
+    - account_type via the SAME account_id role across facts → conforms (structural).
+    - segment via DIFFERENTLY-NAMED seg1/seg2 roles the judge CONFORMED (one shared
+      conformed_group) → conforms — the full judge-verdict → bus_matrix → graph path.
+    - region via DIFFERENTLY-NAMED bill-to/ship-to roles in SEPARATE groups → does
+      NOT conform. Before DAT-788 the (dim, attribute)-only join emitted a spurious
+      region edge; the gate separates the axes without disabling the real ones."""
+    sql = (
+        f"SELECT src, dst, attr FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst, e.dimension_attribute AS attr))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst, r.attr) for r in conn.execute(text(sql))}
+    # Same-role account_id → conformed on account_type (both directions).
+    assert ("journal", "statement", "account_type") in rows
+    assert ("statement", "journal", "account_type") in rows
+    # Judge-merged differently-named roles → conformed on segment (the positive path).
+    assert ("journal", "statement", "segment") in rows
+    assert ("statement", "journal", "segment") in rows
+    # Bill-to vs ship-to on accounts.region → separate roles, NEVER a conformed edge.
+    assert not any(attr == "region" for _, _, attr in rows), "role-playing FKs conformed spuriously"
 
 
 def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:
@@ -871,7 +1460,19 @@ def test_current_groundings_is_graph_authored_extracts_only(graph_engine: Engine
     sql = f'SELECT snippet_id, concept, relation, failed FROM "{_read_schema()}".current_groundings'
     with graph_engine.connect() as conn:
         rows = {r.snippet_id: r for r in conn.execute(text(sql))}
-    assert set(rows) == {"sn_tb", "sn_bs", "sn_rev", "sn_old", "sn_fail", "sn_nul"}
+    assert set(rows) == {
+        "sn_tb",
+        "sn_bs",
+        "sn_rev",
+        "sn_old",
+        "sn_fail",
+        "sn_nul",
+        "sn_billto",
+        "sn_shipto",
+        "sn_billto2",
+        "sn_folded",  # DAT-867 folded-axis grounding (journal)
+        "sn_folded2",  # DAT-867 folded-axis grounding (statement — second fact)
+    }
     assert rows["sn_tb"].concept == "account_balance"
     assert rows["sn_tb"].relation == "enriched_journal"
     assert rows["sn_rev"].relation == "journal"
@@ -896,6 +1497,11 @@ def test_grounding_vertices_carry_the_failed_discriminator(graph_engine: Engine)
         "sn_old": False,
         "sn_fail": True,
         "sn_nul": False,
+        "sn_billto": False,
+        "sn_shipto": False,
+        "sn_billto2": False,
+        "sn_folded": False,  # DAT-867 folded-axis grounding (journal)
+        "sn_folded2": False,  # DAT-867 folded-axis grounding (statement)
     }
 
 
@@ -918,7 +1524,18 @@ def test_grounding_parts_round_trip_vs_compose_extract_sql(graph_engine: Engine)
         persisted = dict(
             conn.execute(text(f'SELECT snippet_id, sql FROM "{_read_schema()}".sql_snippets')).all()
         )
-    assert set(props) == {"sn_tb", "sn_bs", "sn_rev", "sn_old", "sn_fail"}
+    assert set(props) == {
+        "sn_tb",
+        "sn_bs",
+        "sn_rev",
+        "sn_old",
+        "sn_fail",
+        "sn_billto",
+        "sn_shipto",
+        "sn_billto2",
+        "sn_folded",  # DAT-867 folded-axis grounding (journal)
+        "sn_folded2",  # DAT-867 folded-axis grounding (statement)
+    }
     for sid, row in props.items():
         rendered = compose_extract_sql(
             row.select_expr, row.relation, json.loads(row.where_predicates)
@@ -991,7 +1608,157 @@ def test_uses_edges_land_on_the_served_relations_columns(graph_engine: Engine) -
         ("sn_tb", "ec_at", "account_id__account_type", "filter"),
         ("sn_bs", "ec_amt", "amount", "measure"),
         ("sn_rev", "c_amt", "amount", "measure"),
+        # sn_billto reads amount too (enriched_journal); its dimension/non-dimension
+        # filter names are not served enriched columns → no filter uses-edges.
+        ("sn_billto", "ec_amt", "amount", "measure"),
+        # DAT-867 sn_folded2 filters region_flat on the TYPED relation 'statement', so
+        # the name resolves to t4's own column → a filter uses-edge (sn_folded's
+        # enriched relation has no such enriched column, so it adds none).
+        ("sn_folded2", "c_rf2", "region_flat", "filter"),
     }
+
+
+def test_filtered_by_projects_the_referenced_dimension_members(graph_engine: Engine) -> None:
+    """DAT-787 filtered_by (grounding → dim_member): one edge per referenced
+    member a grounding's predicates SELECT, un-nested from the TYPED filter_members.
+
+    Also the DAT-867 NEGATIVE PIN: the REFERENCED edge set is EXACTLY unchanged with
+    a folded axis present in the SAME graph — the folded leg is purely additive
+    (folded edges asserted in test_filtered_by_projects_the_folded_dimension_member).
+
+    The exact edge set proves the whole contract at once:
+    * MULTI-MEMBER — sn_tb's IN ('asset','liability') on the account_type axis is
+      two members (group ref:t2:account_id);
+    * ROLE SEPARATION (DAT-788) — sn_billto and sn_shipto both select region='north',
+      but bill-to (ref:t2:billto_acct) and ship-to (ref:t2:shipto_acct) are DISTINCT
+      members — the same value on different role identities never collapses;
+    * DIMENSION-AXIS-ONLY GATE — sn_billto also declares a member on ``posted`` (a
+      non-dimension column, no referenced slice): it yields NO edge;
+    * P8 SCOPE PIN — sn_shipto's where[] carries ``status = 'posted'`` (an
+      engine-appended-style validity scope) that is absent from filter_members, so
+      it fabricates NO member. The edges reflect the model's dimensional selections
+      only; where[] stays lossless on the grounding node regardless.
+    """
+    sql = (
+        f"SELECT sid, cg, attr, val, concept FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS grounding_node)-[e IS filtered_by]->(m IS dim_member) "
+        "COLUMNS (g.snippet_id AS sid, m.conformed_group AS cg, "
+        "m.dimension_attribute AS attr, m.member_value AS val, e.concept AS concept))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.sid, r.cg, r.attr, r.val, r.concept) for r in conn.execute(text(sql))}
+    # Referenced identities carry the ``ref:`` signature; isolate them — the additive
+    # folded leg (conformed_group NULL here) must not shift this set by one edge.
+    referenced = {r for r in rows if (r[1] or "").startswith("ref:")}
+    assert referenced == {
+        ("sn_tb", "ref:t2:account_id", "account_type", "asset", "account_balance"),
+        ("sn_tb", "ref:t2:account_id", "account_type", "liability", "account_balance"),
+        ("sn_billto", "ref:t2:billto_acct", "region", "north", "regional_billed"),
+        ("sn_shipto", "ref:t2:shipto_acct", "region", "north", "regional_shipped"),
+        # sn_billto2 selects the SAME member as sn_billto — a SECOND edge to it.
+        ("sn_billto2", "ref:t2:billto_acct", "region", "north", "regional_billed_again"),
+    }
+    # No non-dimension / scope value ever leaks in as a member (posted / true).
+    assert not {(sid, val) for sid, _, _, val, _ in rows if val in ("posted", "true")}
+    # The "one home" fold: bill-to region='north' is selected by TWO groundings but
+    # remains ONE member (the vertex-side fold is asserted in the vertex test).
+    billto_north = {
+        sid for sid, cg, _, val, _ in referenced if cg == "ref:t2:billto_acct" and val == "north"
+    }
+    assert billto_north == {"sn_billto", "sn_billto2"}
+
+
+def test_filtered_by_projects_the_folded_dimension_member(graph_engine: Engine) -> None:
+    """DAT-867: a grounding filtering on a FOLDED own-column axis (region_flat, NULL
+    dimension_table_id) projects a filtered_by edge to a folded dim_member — the
+    referenced-only v1 zeroed the whole surface on an OBT corpus.
+
+    The folded member's axis identity is the folded bus-matrix cell's ``signature``
+    (unconformed ⇒ conformed_group NULL), so it is keyed distinctly from any
+    referenced member; ``dimension_attribute`` is NULL (a folded axis has no resolved
+    dimension attribute — its level rides the key). where[] stays lossless regardless.
+
+    ABSENCE-FALLS-LOUD (the lane's core safety property): sn_folded (journal) and
+    sn_folded2 (statement) both select region_flat='west', but on UNCONFORMED folded
+    axes of DIFFERENT facts — so they are DISTINCT members. The axis identity falls
+    back to the FACT-SCOPED ``signature`` (bus:folded:t1:… vs bus:folded:t4:…), never a
+    shared NULL that would wrongly conform them.
+    """
+    sql = (
+        f"SELECT sid, mkey, cg, attr, val, concept FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS grounding_node)-[e IS filtered_by]->(m IS dim_member) "
+        "COLUMNS (g.snippet_id AS sid, m.dim_member_key AS mkey, m.conformed_group AS cg, "
+        "m.dimension_attribute AS attr, m.member_value AS val, e.concept AS concept))"
+    )
+    with graph_engine.connect() as conn:
+        by_sid = {r.sid: r for r in conn.execute(text(sql)) if r.sid in ("sn_folded", "sn_folded2")}
+    # One folded edge per grounding, each carrying NULL conformed_group + attribute.
+    assert set(by_sid) == {"sn_folded", "sn_folded2"}
+    assert (by_sid["sn_folded"].cg, by_sid["sn_folded"].attr, by_sid["sn_folded"].val) == (
+        None,
+        None,
+        "west",
+    )
+    assert by_sid["sn_folded"].concept == "folded_region"
+    assert by_sid["sn_folded2"].concept == "folded_region2"
+    # The key REUSES the folded cell's fact-scoped signature as its axis identity —
+    # bus_matrix's own field, not a parallel scheme — carries the own-column level,
+    # and carries no per-run id.
+    assert "bus:folded:t1:region_flat" in by_sid["sn_folded"].mkey
+    assert "bus:folded:t4:region_flat" in by_sid["sn_folded2"].mkey
+    assert all("region_flat" in r.mkey and "west" in r.mkey for r in by_sid.values())
+    assert all(RUN not in r.mkey for r in by_sid.values())
+    # Same column name + same value, DIFFERENT facts (both unconformed) → DISTINCT keys.
+    assert by_sid["sn_folded"].mkey != by_sid["sn_folded2"].mkey
+
+
+def test_dim_member_vertices_are_distinct_per_role(graph_engine: Engine) -> None:
+    """DAT-787 dim_member vertices: one node per (DAT-788 role-separated axis
+    identity × served value). The two region='north' members are SEPARATE vertices
+    (distinct dim_member_key) because bill-to and ship-to are unmerged role axes —
+    the content-derived key never folds them, and never carries a per-run component.
+
+    Conversely, the "one home" fold: sn_billto and sn_billto2 BOTH select bill-to
+    region='north', yet it is ONE vertex — the DISTINCT ON the key collapses the two
+    references (were it not, the duplicate key would fail graph materialization).
+
+    DAT-867 negative pin: the REFERENCED vertex set is EXACTLY unchanged with folded
+    axes present. Two facts' unconformed region_flat='west' share the SAME visible
+    properties (NULL conformed_group + attribute, value 'west') yet are DISTINCT
+    vertices — the fact-scoped signature fallback keeps their KEYS apart, so the
+    folded leg never collides with a referenced one nor conforms two facts by
+    accident."""
+    sql = (
+        f"SELECT mkey, cg, attr, val FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS dim_member) "
+        "COLUMNS (m.dim_member_key AS mkey, m.conformed_group AS cg, "
+        "m.dimension_attribute AS attr, m.member_value AS val))"
+    )
+    with graph_engine.connect() as conn:
+        rows = list(conn.execute(text(sql)))
+    members = {(r.cg, r.attr, r.val) for r in rows}
+    # Referenced members (``ref:`` signature) are EXACTLY the four v1 vertices.
+    referenced = {m for m in members if (m[0] or "").startswith("ref:")}
+    assert referenced == {
+        ("ref:t2:account_id", "account_type", "asset"),
+        ("ref:t2:account_id", "account_type", "liability"),
+        ("ref:t2:billto_acct", "region", "north"),
+        ("ref:t2:shipto_acct", "region", "north"),
+    }
+    # The two folded members share ONE visible property tuple (they differ ONLY in the
+    # key's fact-scoped signature) → 5 distinct property tuples, but 6 distinct KEYS.
+    assert (None, None, "west") in members
+    assert len(members) == 5
+    keys = [r.mkey for r in rows]
+    assert len(keys) == len(set(keys)) == 6
+    assert all(RUN not in k for k in keys)  # content-derived, no per-run id
+    # Same value 'north', different role → DISTINCT keys (the DAT-788 guarantee).
+    north = {r.cg: r.mkey for r in rows if r.val == "north"}
+    assert north["ref:t2:billto_acct"] != north["ref:t2:shipto_acct"]
+    # Same column+value 'west', different FACT (unconformed folded) → DISTINCT keys
+    # (the DAT-867 absence-falls-loud guarantee — the signature fallback in action).
+    folded_west = [r.mkey for r in rows if r.cg is None and r.val == "west"]
+    assert len(folded_west) == len(set(folded_west)) == 2
 
 
 def test_derived_reconciles_with_self_loop_resolves_in_the_graph(graph_engine: Engine) -> None:
@@ -1030,17 +1797,30 @@ def test_concept_groundings_and_their_columns_in_one_match(graph_engine: Engine)
 
 
 def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:
-    """The workspace reader role (ADR-0008) can run GRAPH_TABLE — the grant reached it."""
+    """The workspace reader role (ADR-0008) can run GRAPH_TABLE — the grant reached it.
+
+    Also covers a DAT-730 element (temporal_coverage): the single
+    ``GRANT SELECT ON PROPERTY GRAPH`` covers every label, and
+    ``GRANT SELECT ON ALL TABLES`` the new og_* views — so no per-element grant is
+    needed (the empirical answer to the module docstring's caution)."""
     reader = reader_role_for(schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"]))
     sql = (
         f"SELECT count(*) AS n FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (a IS table_node)-[e IS refs]->(b IS table_node) COLUMNS (1 AS one))"
     )
+    cov_sql = (
+        f"SELECT count(*) AS n FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[c IS temporal_coverage]->(col IS column_node) "
+        "COLUMNS (1 AS one))"
+    )
     with graph_engine.connect() as conn:
         conn.execute(text(f"SET ROLE {reader}"))
         n = conn.execute(text(sql)).scalar_one()
+        cov = conn.execute(text(cov_sql)).scalar_one()
         conn.execute(text("RESET ROLE"))
     assert n == 6
+    # t1's three typed time columns + the three DAT-866 enriched-resolved ones.
+    assert cov == 6
 
 
 def test_bootstrap_is_idempotent(graph_engine: Engine) -> None:
@@ -1115,3 +1895,352 @@ def test_fixed_depth_unroll_agrees_with_closure_at_depth_four(graph_engine: Engi
         reached = {r.reached for r in conn.execute(text(sql))}
     # t5 = 'division' is the closure's depth-4 node from t1 (see the closure test).
     assert reached == {"division"}
+
+
+# --- DAT-730: temporal coverage, roll-up, period ladder, dimension ordering ---
+
+
+def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engine) -> None:
+    """temporal_coverage (DAT-730): one edge per (relation × DECLARED time column),
+    carrying the PERSISTED profile — role/aspect/declared_anchor from time_columns,
+    observed grain = detected_granularity, plus last_period_complete."""
+    sql = (
+        f"SELECT src, col, cid, role, aspect, danchor, grain, ratio, lpc "
+        f"FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[cov IS temporal_coverage]->(c IS column_node) "
+        "COLUMNS (t.table_name AS src, c.column_name AS col, c.column_id AS cid, "
+        "cov.role AS role, "
+        "cov.aspect AS aspect, cov.declared_anchor AS danchor, cov.observed_grain AS grain, "
+        "cov.completeness_ratio AS ratio, cov.last_period_complete AS lpc))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {r.col: r for r in conn.execute(text(sql))}
+    # Only t1 (journal) declares time_columns → its three typed date axes plus the
+    # three enriched-resolved joined dim dates (DAT-866).
+    assert set(rows) == {
+        "txn_date",
+        "created_date",
+        "due_date",
+        "account_id__open_date",
+        "account_id__close_date",
+        "orphaned__date",
+    }
+    assert all(r.src == "journal" for r in rows.values())
+    # The declared-anchor event axis: a COMPLETE monthly series.
+    txn = rows["txn_date"]
+    assert (txn.role, txn.aspect, txn.danchor) == ("event", "txn", True)
+    assert txn.grain == "month"  # observed = detected_granularity, NOT a config echo
+    assert txn.ratio == 1.0
+    assert txn.lpc is True
+    # A non-anchor event axis with a PARTIAL trailing period.
+    created = rows["created_date"]
+    assert (created.role, created.danchor, created.grain) == ("event", False, "day")
+    assert created.lpc is False
+    # DAT-866: 'account_id__open_date' has NO typed row on t1 — it resolves against
+    # the enriched view's served columns, and its observation rides THROUGH the typed
+    # source c_od's profile (yearly, complete). Before the layered resolution this
+    # edge was silently dropped: the graph said "no such axis" while og_columns
+    # carried it — the self-contradiction the fix closes.
+    opened = rows["account_id__open_date"]
+    assert opened.cid == "ec_od"  # the enriched column's OWN vertex (DAT-811), never c_od
+    assert (opened.role, opened.aspect, opened.danchor) == ("attribute", "opened", False)
+    assert opened.grain == "year"
+    assert opened.ratio == 1.0
+    # Enriched-branch degrade paths (DAT-866 review): the edge SURVIVES with NULL
+    # observed_* when the source was never profiled (ec_cd) and when the source was
+    # torn down entirely (ec_orph, source_column_id NULL via the SET NULL FK).
+    closed = rows["account_id__close_date"]
+    assert (closed.cid, closed.grain, closed.ratio) == ("ec_cd", None, None)
+    orphaned = rows["orphaned__date"]
+    assert (orphaned.cid, orphaned.grain, orphaned.ratio) == ("ec_orph", None, None)
+
+
+def test_declared_anchor_is_not_the_operating_model_anchor(graph_engine: Engine) -> None:
+    """DAT-730: coverage.declared_anchor is the time_columns ROLE flag (the LLM's
+    declaration), NOT the operating-model anchor. The ONE home of a measure's resolved
+    anchor is og_columns.anchor_time_axis (witness ▸ declared, DAT-780) — and a lineage
+    witness can override the declaration, so the two legitimately DIVERGE.
+
+    The fixture seeds exactly that: t1 declares its anchor as 'txn_date', but the amount
+    measure (c_amt) has a lineage witness axis 'period_date'. So the coverage edge's
+    declared_anchor points at txn_date (the declaration) while the measure's resolved
+    anchor is period_date (the witness) — the same-name conflation the rename prevents."""
+    declared_sql = (
+        f"SELECT col, danchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node WHERE t.table_name = 'journal')"
+        "-[cov IS temporal_coverage]->(c IS column_node) "
+        "COLUMNS (c.column_name AS col, cov.declared_anchor AS danchor))"
+    )
+    resolved_sql = (
+        f"SELECT anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS column_node WHERE c.column_name = 'amount' AND c.table_id = 't1') "
+        "COLUMNS (c.anchor_time_axis AS anchor))"
+    )
+    with graph_engine.connect() as conn:
+        declared = [r.col for r in conn.execute(text(declared_sql)) if r.danchor]
+        resolved = conn.execute(text(resolved_sql)).scalar_one()
+    assert declared == ["txn_date"]  # the DECLARED anchor (time_columns role home)
+    assert resolved == "period_date"  # the WITNESS-resolved operating-model anchor
+    assert declared[0] != resolved  # the two homes diverge — never conflate them
+
+
+def test_temporal_coverage_absence_falls_loud(graph_engine: Engine) -> None:
+    """A declared time column with NO temporal profile keeps its coverage edge but with
+    NULL observed_* — absence is visible, never a fabricated window (DAT-730 / DAT-853)."""
+    sql = (
+        f"SELECT grain, ratio, lpc, span FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (t IS table_node)-[cov IS temporal_coverage]->(c IS column_node "
+        "WHERE c.column_name = 'due_date') "
+        "COLUMNS (cov.observed_grain AS grain, cov.completeness_ratio AS ratio, "
+        "cov.last_period_complete AS lpc, cov.span_days AS span))"
+    )
+    with graph_engine.connect() as conn:
+        rows = conn.execute(text(sql)).all()
+    # due_date is a declared ATTRIBUTE axis that was never profiled → the edge exists
+    # (the column is a declared time column) but every observed fact is NULL.
+    assert rows == [(None, None, None, None)]
+
+
+def test_rolls_up_to_edges_follow_drilldown_levels(graph_engine: Engine) -> None:
+    """rolls_up_to (DAT-730): a drill-down's members become ordered level→level edges,
+    finer→coarser, keyed on column_id (level is the sole direction carrier). An alias
+    structure emits none, and a member with no catalog column ('') is skipped."""
+    sql = (
+        f"SELECT a_id, b_id, fl, tl FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS column_node)-[e IS rolls_up_to]->(b IS column_node) "
+        "COLUMNS (a.column_id AS a_id, b.column_id AS b_id, "
+        "e.from_level AS fl, e.to_level AS tl))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.a_id, r.b_id, r.fl, r.tl) for r in conn.execute(text(sql))}
+    # c_k1 (lvl2, finest) → c_k2 (lvl1) → c_k3 (lvl0, coarsest). The alias dh_2 and the
+    # level-3 orphan ('' column_id) contribute nothing.
+    assert rows == {("c_k1", "c_k2", 2, 1), ("c_k2", "c_k3", 1, 0)}
+
+
+def test_period_grain_ladder_default_then_declared(graph_engine: Engine) -> None:
+    """period_grain (DAT-730): the constant day/month/quarter/year nodes carry the
+    workspace fiscal boundary — an UNSET workspace stamps the calendar-year default
+    VISIBLY (calendar_source='default'); a declaration flips it to 'declared'."""
+    grain_sql = (
+        f"SELECT grain, ord, fym, src FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS period_grain) COLUMNS (g.grain AS grain, g.ordinal AS ord, "
+        "g.fiscal_year_start_month AS fym, g.calendar_source AS src))"
+    )
+    with graph_engine.connect() as conn:
+        default_rows = {r.grain: r for r in conn.execute(text(grain_sql))}
+    assert set(default_rows) == {"day", "month", "quarter", "year"}
+    assert default_rows["month"].ord == 1 and default_rows["year"].ord == 3
+    # Unset workspace: calendar-year default, stamped visibly (never silent).
+    assert all(r.fym == 1 and r.src == "default" for r in default_rows.values())
+
+    # The ladder edges day→month→quarter→year.
+    edge_sql = (
+        f"SELECT from_grain, to_grain FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS period_grain)-[e IS period_rolls_up_to]->(b IS period_grain) "
+        "COLUMNS (a.grain AS from_grain, b.grain AS to_grain))"
+    )
+    with graph_engine.connect() as conn:
+        edges = {(r.from_grain, r.to_grain) for r in conn.execute(text(edge_sql))}
+    assert edges == {("day", "month"), ("month", "quarter"), ("quarter", "year")}
+
+    # Declare a fiscal calendar (April start): the boundary flips to 'declared'.
+    with graph_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO workspace_calendar (pin, fiscal_year_start_month, declared_at) "
+                f"VALUES (true, 4, '{TS}')"
+            )
+        )
+    with graph_engine.connect() as conn:
+        declared = {r.grain: r for r in conn.execute(text(grain_sql))}
+    assert all(r.fym == 4 and r.src == "declared" for r in declared.values())
+
+
+def test_period_ladder_is_walkable_by_recursive_cte(graph_engine: Engine) -> None:
+    """The calendar ladder is walkable by the SAME bounded recursive CTE the part_of
+    closure uses, so last-complete-quarter is derivable from last-complete-month: a walk
+    up from 'month' reaches 'quarter' then 'year'."""
+    read = _read_schema()
+    sql = (
+        "WITH RECURSIVE reach(src, dst, depth, path) AS ("
+        f"  SELECT from_grain, to_grain, 1, ARRAY[from_grain, to_grain] "
+        f'  FROM "{read}".og_period_rolls_up_to '
+        "  UNION ALL "
+        "  SELECT r.src, e.to_grain, r.depth + 1, r.path || e.to_grain "
+        f'  FROM reach r JOIN "{read}".og_period_rolls_up_to e ON e.from_grain = r.dst '
+        "  WHERE r.depth < 4 AND NOT e.to_grain = ANY(r.path)"
+        ") SELECT dst, depth FROM reach WHERE src = 'month' ORDER BY depth, dst"
+    )
+    with graph_engine.connect() as conn:
+        rows = [(r.dst, r.depth) for r in conn.execute(text(sql))]
+    assert rows == [("quarter", 1), ("year", 2)]
+
+
+def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
+    """ordering (DAT-730): the dimension-axis fact rides the concept vertex — 'ordered'
+    where declared, NULL (⇒ nominal, windows withheld) otherwise."""
+    sql = (
+        f"SELECT name, ordering FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node) COLUMNS (c.name AS name, c.ordering AS ordering))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {r.name: r.ordering for r in conn.execute(text(sql))}
+    assert rows["severity"] == "ordered"
+    # A measure concept carries no ordering fact.
+    assert rows["accounts_payable"] is None
+
+
+# --- DAT-731: additivity projection + measured_in units ---------------------------
+
+
+def test_additivity_verdict_vertices_carry_the_two_axis_verdict(graph_engine: Engine) -> None:
+    """additivity_verdict (DAT-731): both drill-target kinds project as one uniform
+    vertex — a MEASURE (target_key = a concept name) and a METRIC (target_key = a
+    formula graph_id with no vertex of its own) — each carrying the 2-axis verdict
+    (categorical / time additive + reason), MATCH-able by property."""
+    sql = (
+        f"SELECT kind, key, cadd, tadd, creason, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS additivity_verdict) "
+        "COLUMNS (a.target_kind AS kind, a.target_key AS key, a.categorical_additive AS cadd, "
+        "a.time_additive AS tadd, a.categorical_reason AS creason, a.time_reason AS treason))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {
+            (r.kind, r.key, r.cadd, r.tadd, r.creason, r.treason) for r in conn.execute(text(sql))
+        }
+    assert rows == {
+        # revenue: a summed balance reconciles across categories, not across time (stock).
+        ("measure", "revenue", True, False, None, "stock"),
+        # mk_margin: a ratio reconciles on neither axis.
+        ("metric", "mk_margin", False, False, "ratio", "ratio"),
+    }
+
+
+def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Engine) -> None:
+    """has_additivity (DAT-731): the headline consumer traversal — "can I sum concept X
+    over time?" resolves concept → verdict for a MEASURE. Only the measure verdict links
+    (its target_key 'revenue' names an active concept); the metric verdict (mk_margin, a
+    formula graph_id) names no concept and is reachable only by property on the vertex —
+    the graph never dangles (the og_grounded_by INNER-join discipline)."""
+    sql = (
+        f"SELECT cname, tadd, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node)-[e IS has_additivity]->(a IS additivity_verdict) "
+        "COLUMNS (c.name AS cname, a.time_additive AS tadd, a.time_reason AS treason))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.cname, r.tadd, r.treason) for r in conn.execute(text(sql))}
+    # revenue is the only measure verdict; mk_margin (metric) never surfaces here.
+    assert rows == {("revenue", False, "stock")}
+
+
+def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None:
+    """measured_in (DAT-731): a measure column → the column that defines its unit,
+    projecting ColumnConcept.unit_source_column. c_amt (amount) carries a BARE sibling
+    name 'currency' → its own table's currency column; c_amt3 (fee) carries a QUALIFIED
+    'journal.currency' → the split_part cross-table resolution to the SAME currency
+    column; c_self (price_usd) carries its OWN name → a self-loop with
+    self_denominated=true (a value that carries its own unit). c_amt2 (amount_declared)
+    is 'dimensionless' → NO edge (nothing to point at)."""
+    sql = (
+        f"SELECT mname, uname, usrc, selfd FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS column_node)-[e IS measured_in]->(u IS column_node) "
+        "COLUMNS (m.column_name AS mname, u.column_name AS uname, "
+        "e.unit_source AS usrc, e.self_denominated AS selfd))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.mname, r.uname, r.usrc, r.selfd) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("amount", "currency", "currency", False),
+        ("fee", "currency", "journal.currency", False),
+        # A self-denominated value: the measure IS its own unit column (self-loop).
+        ("price_usd", "price_usd", "price_usd", True),
+    }
+    # The dimensionless measure contributes nothing — an explicit no-edge assertion.
+    assert not any(m == "amount_declared" for m, *_ in rows)
+
+
+# --- Metric DAG (DAT-732): metric_node + derives_from + has_parameter ---
+
+
+def test_metric_node_carries_its_declared_metadata(graph_engine: Engine) -> None:
+    """metric_node: one vertex per declared metric, over the typed home."""
+    sql = (
+        f"SELECT gid, name, unit, otype FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node) "
+        "COLUMNS (m.graph_id AS gid, m.name AS name, m.unit AS unit, "
+        "m.output_type AS otype))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.name, r.unit, r.otype) for r in conn.execute(text(sql))}
+    assert rows == {("working_capital_metric", "Working Capital Metric", "days", "scalar")}
+
+
+def test_derives_from_binds_metric_to_its_extracted_concepts(graph_engine: Engine) -> None:
+    """derives_from: metric → concept, resolved on the ACTIVE concept name. The
+    edge naming a concept with no active row (ghost_concept) is DROPPED by the
+    INNER JOIN — the graph never dangles."""
+    sql = (
+        f"SELECT gid, cname FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[d IS derives_from]->(c IS concept_node) "
+        "COLUMNS (m.graph_id AS gid, c.name AS cname))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.cname) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "account_balance"),
+        ("working_capital_metric", "revenue"),
+    }
+
+
+def test_has_parameter_edge_carries_declared_default_and_derivation(
+    graph_engine: Engine,
+) -> None:
+    """has_parameter: metric → parameter. The parameter node carries the DECLARED
+    default (as a property) and the ``derivation`` marker pointing at the
+    period-grain rule (DAT-732 — days_in_period is the first instance)."""
+    sql = (
+        f"SELECT pname, dflt, deriv FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[h IS has_parameter]->(p IS parameter_node) "
+        "COLUMNS (p.name AS pname, p.default_value AS dflt, p.derivation AS deriv))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.pname, r.dflt, r.deriv) for r in conn.execute(text(sql))}
+    assert rows == {("days_in_period", "30", "period_grain")}
+
+
+def test_metric_dag_walks_to_its_healthy_groundings(graph_engine: Engine) -> None:
+    """The DAT-732 acceptance walk: metric → extracts (derives_from) → concepts →
+    groundings, one PGQ MATCH. Filtering healthy groundings surfaces the concrete
+    groundings each extracted concept resolves to (revenue's retained-FAILURE sn_fail
+    is excluded by the vertex filter)."""
+    sql = (
+        f"SELECT gid, cname, sid FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[d IS derives_from]->(c IS concept_node)"
+        "-[gb IS grounded_by]->(g IS grounding_node WHERE NOT g.failed) "
+        "COLUMNS (m.graph_id AS gid, c.name AS cname, g.snippet_id AS sid))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.cname, r.sid) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "account_balance", "sn_tb"),
+        ("working_capital_metric", "account_balance", "sn_bs"),
+        ("working_capital_metric", "revenue", "sn_rev"),
+    }
+
+
+def test_metric_dag_walks_all_the_way_to_columns(graph_engine: Engine) -> None:
+    """The full metric → concept → grounding → column chain in one MATCH: the metric
+    DAG is walkable end-to-end onto the served relation's column vertices (og_uses)."""
+    sql = (
+        f"SELECT gid, colname, role FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (m IS metric_node)-[d IS derives_from]->(c IS concept_node)"
+        "-[gb IS grounded_by]->(g IS grounding_node)-[u IS uses]->(col IS column_node) "
+        "COLUMNS (m.graph_id AS gid, col.column_name AS colname, u.role AS role))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.gid, r.colname, r.role) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "amount", "measure"),  # sn_tb + sn_bs + sn_rev
+        ("working_capital_metric", "account_id__account_type", "filter"),  # sn_tb
+    }

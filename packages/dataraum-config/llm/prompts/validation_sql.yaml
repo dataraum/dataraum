@@ -4,8 +4,16 @@
 # Emphasizes syntactic correctness and proper column quoting.
 
 name: validation_sql
-version: "2.0.0"
-description: Generate syntactically correct DuckDB SQL for validation checks (contracted deviation/magnitude output)
+version: "3.2.0"
+description: >
+  Generate DuckDB SQL for validation checks (contracted deviation/magnitude output),
+  honoring the catalog's table-grain facts: role/grain/temporal semantics are
+  authoritative over names, prose, and hints (DAT-870); two measures compare only
+  in the same temporal form — never a movement directly against a level (DAT-874);
+  an existence check binds only against a dimension-role enumerator — a served
+  relationship qualifies its target only when that target is itself dimension-role,
+  so a self-referential edge on an activity table never makes existence bindable
+  there (DAT-876)
 
 # Temperature (0.0 = deterministic for SQL)
 temperature: 0.0
@@ -20,11 +28,23 @@ system_prompt: |
   <critical_requirements>
   SYNTACTIC CORRECTNESS IS PARAMOUNT. Invalid SQL is worse than no SQL.
 
-  1. COLUMN NAMES: Many column names contain spaces or special characters.
+  1. IDENTIFIERS: quote EVERY identifier with double quotes — schema column
+     names AND any alias, CTE name, or derived/computed column name you
+     introduce yourself. This is not just about spaces or special characters:
+     DuckDB reserves ordinary English words as keywords in some grammar
+     positions (e.g. NATURAL, ORDER, GROUP, USER) — an unquoted identifier
+     that happens to match one fails to parse even though it reads like a
+     perfectly ordinary name you made up.
      - ALWAYS quote column names with double quotes: "Column Name"
-     - NEVER use unquoted column names unless you are certain they contain only alphanumeric and underscore
+     - ALWAYS quote every alias and CTE name you define, not just ones that
+       look unusual: SUM(x) AS "running_total", WITH "prior_period" AS (...)
+     - NEVER use an unquoted identifier anywhere — table references, column
+       references, aliases, and CTE names alike.
      - Example: "Transaction date" NOT transaction_date
      - Example: "Customer ID" NOT customer_id
+     - Example: WITH "totals" AS (...) NOT WITH totals AS (...) — an
+       unquoted CTE name or bare alias is a parse failure, not just a style
+       slip.
 
   2. TABLE REFERENCES: Use the exact duckdb_path provided in the schema.
      - Tables are referenced by their duckdb_path, not table_name
@@ -42,6 +62,26 @@ system_prompt: |
   5. TYPE CASTING: Use DuckDB syntax for casts.
      - CAST(x AS INTEGER), TRY_CAST(x AS DATE)
      - For date arithmetic: DATE '2024-01-01' + INTERVAL '1 day'
+
+  6. FACTS OVER HINTS. The <schema> carries MEASURED catalog facts — table
+     role, grain, temporal_behavior, granularity (see table_grain_semantics).
+     The validation_spec's description, sql_hints, and expected_outcome are
+     ADVISORY prose authored WITHOUT these facts: when any of them contradicts
+     a measured fact, the prose is wrong about the data — however confidently
+     or repeatedly it asserts itself. Before writing SQL, CHECK the spec
+     against the facts and resolve every conflict IN THE FACTS' FAVOR:
+     - prose says "cumulative"/"running total" but the table is a
+       periodic_snapshot with temporal_behavior="additive" columns → bind a
+       SAME-PERIOD comparison, never a cumulative one;
+     - prose says an id "must exist" in a table whose role is fact or
+       periodic_snapshot → not bindable there (see existence_checks);
+     - prose says to sign-normalize one side of a reconciliation → normalize
+       both sides identically or neither (see comparison_discipline);
+     - prose says to compare a per-period movement (temporal_behavior=
+       "additive") directly against a level (temporal_behavior="point_in_time")
+       → bind a coherent form or decline (see comparison_discipline).
+     A binding that follows a hint against a measured fact fails on clean
+     data — the exact defect this requirement exists to stop.
   </critical_requirements>
 
   <output_contract>
@@ -91,16 +131,124 @@ system_prompt: |
   Use a single SELECT (with CTEs/subqueries as needed; UNION ALL for
   multi-subject checks) that produces this summary shape. Example (one
   subject):
-      WITH sides AS (SELECT SUM(...) AS a, SUM(...) AS b FROM ...)
-      SELECT ABS(a - b) AS deviation, GREATEST(ABS(a), ABS(b)) AS magnitude FROM sides
+      WITH "sides" AS (SELECT SUM(...) AS "a", SUM(...) AS "b" FROM ...)
+      SELECT ABS("a" - "b") AS "deviation", GREATEST(ABS("a"), ABS("b")) AS "magnitude" FROM "sides"
   </output_contract>
+
+  <table_grain_semantics>
+  The schema annotates tables and columns with MEASURED catalog facts from the same run:
+  - table role="fact | periodic_snapshot | dimension": a fact table records events; a
+    periodic_snapshot table stores one row per grain per period — each row is that
+    period's OWN value, labeled by its period column; a dimension table enumerates
+    entities.
+  - table grain="...": the columns that uniquely identify one row.
+  - column temporal_behavior="additive | point_in_time": additive = the value is a
+    per-period movement/amount (values of different periods may be summed into a
+    range total); point_in_time = the value is a LEVEL as of its period — NEVER sum
+    it across periods (a sum of levels double-counts every period); restrict to one
+    period first, or take the latest.
+  - column granularity / time_role / time_aspect / time_note: what a time or period
+    column means and its detected cadence.
+
+  These facts are AUTHORITATIVE — they override column NAMES, description prose, and
+  the check's advisory hints (critical requirement 6). A name or description that
+  reads like "cumulative" or "running" does not make a value cumulative when the
+  facts say the table is a periodic snapshot with additive columns. When a hint
+  conflicts with the facts, follow the facts.
+
+  Apply the consequences:
+  - Comparing a periodic_snapshot row's additive value against detail records means
+    comparing against the SAME period's records only — never a running total from
+    the beginning of the data. Build a cumulative/through-time total ONLY when the
+    compared value is point_in_time (a level), and then cumulate through the END of
+    that row's period (see period_boundaries; subject to the same-temporal-form
+    history-completeness condition in comparison_discipline).
+  - Never aggregate a point_in_time column across periods.
+  - Two MEASURE columns compare with each other only in the same temporal form —
+    movement vs movement, level vs level, or a coherent transform of one into
+    the other — never a movement directly against a level (see
+    comparison_discipline).
+  - When the check's correctness depends on grain facts the schema does not provide
+    for a table, set can_validate=false with the reason rather than guessing.
+  </table_grain_semantics>
+
+  <period_boundaries>
+  A period-label column (granularity g, e.g. month) names an ENTIRE period, not an
+  instant — regardless of whether its label happens to be the period's first or last
+  day. Never compare an event date against a period label with a bare <= or >=:
+  that cuts the period at the label's timestamp and silently drops (or includes)
+  most of one period's activity.
+  - Same-period matching: DATE_TRUNC('<g>', "event_date") = DATE_TRUNC('<g>', "period_label")
+  - Through end-of-period (cumulating up to a level's period):
+    "event_date" < DATE_TRUNC('<g>', "period_label") + INTERVAL '1 <g>'
+  Take g from the period column's granularity attribute. If the boundary matters
+  and no granularity is served, set can_validate=false rather than guessing.
+  </period_boundaries>
+
+  <comparison_discipline>
+  A balance/comparison/reconciliation check judges whether two INDEPENDENTLY
+  computed quantities agree. They can only agree when both sides are computed over
+  the SAME scope and expressed in the SAME convention:
+  - Same entity scope: both sides over the same set of entities — join/restrict
+    both sides to the entities they share; never a full-population aggregate on one
+    side against a partial subset on the other. (A check explicitly about
+    COMPLETENESS judges missing entities as their own subject rows instead —
+    never as a value deviation.)
+  - Same period scope: both sides over the same period window.
+  - Same sign convention: normalize BOTH sides identically or NEITHER. A sign
+    normalization rule (e.g. a sign-convention rule supplied in <domain_conventions>)
+    says how a measure is REPORTED — apply it when the check is ABOUT that
+    convention, not as a transformation of one side of a reconciliation. Stored
+    values may already carry a signed storage convention; when one side is a
+    stored signed value, express the other side in that SAME stored convention
+    instead of normalizing either. A hint suggesting a conditional sign flip
+    ("or B - A depending on the entity's category") for the COMPUTED side of a
+    reconciliation is exactly the one-sided normalization this rule forbids:
+    compute both sides in one uniform convention and compare directly.
+  - Same temporal form: both sides must be the same KIND of quantity per the
+    served temporal_behavior facts — additive (movement) compares against
+    additive over the SAME period window; point_in_time (level) against
+    point_in_time at the SAME period. A per-period movement (or a net of
+    movements) NEVER compares directly against a level — they are different
+    quantities, and their direct comparison fails on clean data. When the
+    spec asks for exactly that, the coherent bindings are: the movement vs
+    the CHANGE in the level between consecutive periods (restricted to
+    periods where a prior level exists); or the movement CUMULATED through
+    end-of-period vs the level — ONLY when the served facts show the
+    movement history is complete from the level's origin (a cumulation that
+    starts mid-history is short by the starting level). If neither coherent
+    form is groundable from the served facts, set can_validate=false with
+    that reason — the spec's prose does not override the facts.
+  </comparison_discipline>
+
+  <existence_checks>
+  A check that an identifier "must exist" (a parent id, a referenced key) is
+  bindable only against a table that AUTHORITATIVELY ENUMERATES that entity — a
+  table whose role is dimension (role="dimension"), a master/reference table that
+  holds the entity's whole population. A served relationship qualifies its TARGET
+  table as such an enumerator ONLY when that target is itself role="dimension": a
+  relationship whose target is a fact or periodic_snapshot table — INCLUDING a
+  self-referential edge whose target is the SAME activity table (an id column
+  pointing back into its own table) — does NOT establish an enumerating universe,
+  because the target still records only activity. Fact and periodic_snapshot tables
+  record ACTIVITY: an entity absent from them may simply have no activity there, so
+  absence is not nonexistence. If the schema serves no dimension-role table that
+  enumerates the referenced entity, set can_validate=false with that reason — even
+  when the guidance explicitly says to check existence within the activity table
+  itself, or points at a self-referential relationship on that table. That guidance
+  is the known-bad pattern this rule exists to stop (it grades structural absence as
+  a violation and fails on clean data); declining to bind is the correct outcome,
+  not a failure.
+  </existence_checks>
 
   <domain_conventions>
   The active vertical may supply authoritative conventions in the <domain_conventions> block of
   the task. When present, they govern how a measure is computed or expressed and OVERRIDE any
   default you would otherwise assume. Apply every convention whose terms match the columns/values
   this check operates on, composing its rule into the SQL. These are the vertical's words, not
-  yours — honor them literally.
+  yours — honor them literally, and honor equally their own scope limits: a convention about how
+  a measure is expressed composes with the comparison_discipline above (both sides or neither),
+  never against it.
   </domain_conventions>
 
   Emit your response in the required output structure; emitting it ends the turn.
@@ -120,6 +268,8 @@ user_prompt: |
   {expected_outcome}
   </validation_spec>
 
+  {grain_facts}
+
   <schema>
   The following tables and columns are available.
   IMPORTANT: Use the exact column names as shown, with proper quoting.
@@ -133,15 +283,21 @@ user_prompt: |
 
   <instructions>
   1. Identify which columns from the schema are needed for this validation
-  2. Use the duckdb_path for table references
-  3. Quote ALL column names with double quotes
-  4. Return the contracted rows: `deviation` and `magnitude`, one row per
+  2. Apply the table_grain_semantics, period_boundaries, comparison_discipline,
+     and existence_checks rules — the schema's role/grain/temporal facts are
+     measured and authoritative over the spec's advisory hints
+  3. Use the duckdb_path for table references
+  4. Quote every identifier with double quotes — schema columns, tables, and
+     any alias or CTE name you introduce yourself
+  5. Return the contracted rows: `deviation` and `magnitude`, one row per
      judged subject plus a `leg` label when there is more than one (see the
      output_contract) — never a boolean verdict, never the raw rows, never
      subjects pooled into one number
-  5. If the required columns don't exist, set can_validate=false
-  6. If enriched views are available, prefer them over manual JOINs
-  7. Emit your response in the required output structure
+  6. If the required columns don't exist — or the check depends on a grain,
+     period-boundary, or entity-enumeration fact the schema does not provide —
+     set can_validate=false with the reason
+  7. If enriched views are available, prefer them over manual JOINs
+  8. Emit your response in the required output structure
   </instructions>
 
 # Input variable definitions
@@ -164,6 +320,14 @@ inputs:
 
   sql_hints:
     description: Optional hints for SQL generation
+    required: false
+    default: ""
+
+  grain_facts:
+    description: >
+      Measured grain facts for the served tables (role/grain/temporal_behavior/
+      granularity), rendered adjacent to the spec as the authoritative
+      counterweight to its advisory prose; empty when the catalog served none
     required: false
     default: ""
 

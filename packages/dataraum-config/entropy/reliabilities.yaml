@@ -30,6 +30,7 @@ provenance:
     temporal_behavior: { calibrated: true } # all three witnesses measured (wave-2: structural 0.889, events-backed corpus)
     relationship_discovery: { calibrated: true } # all four witnesses measured (teach protocol closed the circuit); keeper's 0.5 is a documented stance on real silence atop its measured 0.857 plumbing ceiling
     derived_value: { calibrated: true } # wave-2 rig, detection-derived-cal-v1 (2026-06-11)
+    cross_table_consistency: { calibrated: false } # DAT-865b placeholder priors, not rig-measured
   source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
   corpus_version: null_tokens-v2
   estimator: Laplace-smoothed accuracy on opinionated votes; abstentions excluded
@@ -155,3 +156,31 @@ witnesses:
     # until the teach protocol measures this witness; the derived_value
     # calibrated flag above vouches for the two rig-measured witnesses only.
     human_declaration: 0.875
+
+  # cross_table_consistency (DAT-865b/DAT-871): PLACEHOLDER priors, NOT
+  # rig-measured — the pool's reliability axis is check PROVENANCE
+  # (Validation.source, DAT-735), not a witness role name. 'seed' is the
+  # shipped, human-reviewed vertical validation config; 'generated' is
+  # agentic induction's proposal over the served graph, unvetted until a
+  # human confirms it. DAT-865 caught one semantically-wrong generated check
+  # categorically blocking 15 clean columns (identical treatment to a seeded
+  # critical failure) — these priors are shaped so a LONE generated failure
+  # (any severity) can only ever reach 'investigate' (evidence_mass ≤ 0.5,
+  # loss.yaml aggregation weight 0.8 → risk ≤ 0.4) while a lone seeded
+  # critical failure still clears 'blocked' (evidence_mass 0.95 → risk 0.76).
+  # DAT-871 correction: generated witnesses do NOT corroborate additively —
+  # a sweep re-run found two semantically-wrong generated checks (same
+  # generator, same served context, not independent logic) pooling
+  # additively to evidence_mass 1.0 and categorically blocking clean data,
+  # the DAT-865 failure mode reopened through corroboration instead of a
+  # lone witness. The detector now caps the generated tier's contribution at
+  # its single strongest witness instead of summing (any N generated-only
+  # failures → evidence_mass stays ≤ 0.5, never blocked); the seed tier still
+  # sums (distinct, human-reviewed templates ARE independent logic), and a
+  # seeded critical plus a generated failure still escalates past 'blocked'
+  # additively — only within-generated-tier corroboration is capped. Same
+  # "quite low but not zero" class as relationship keeper_retention / derived_value
+  # human_declaration — never tuned to a metric, calibrated later (DAT-450 rig).
+  cross_table_consistency:
+    seed: 0.95
+    generated: 0.5

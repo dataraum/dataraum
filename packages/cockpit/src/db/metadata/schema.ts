@@ -48,11 +48,12 @@ export const concepts = pgView("concepts", {
 	indicators: json(),
 	excludePatterns: json("exclude_patterns"),
 	unitFromConcept: varchar("unit_from_concept"),
+	ordering: varchar(),
 	source: varchar(),
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, ordering, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const configOverlay = pgView("config_overlay", {
@@ -63,6 +64,20 @@ export const configOverlay = pgView("config_overlay", {
 	supersededAt: timestamp("superseded_at"),
 }).as(
 	sql`SELECT overlay_id, type, payload, created_at, superseded_at FROM engine.config_overlay`,
+);
+
+export const conventions = pgView("conventions", {
+	conventionId: varchar("convention_id"),
+	vertical: varchar(),
+	name: varchar(),
+	statement: text(),
+	targets: json(),
+	conceptGroups: json("concept_groups"),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT convention_id, vertical, name, statement, targets, concept_groups, source, created_at, superseded_at FROM engine.conventions WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const currentBusMatrix = pgView("current_bus_matrix", {
@@ -179,6 +194,8 @@ export const currentDetectedBusinessCycles = pgView(
 		cycleType: varchar("cycle_type"),
 		canonicalType: varchar("canonical_type"),
 		isKnownType: boolean("is_known_type"),
+		family: varchar(),
+		direction: varchar(),
 		description: text(),
 		businessValue: varchar("business_value"),
 		confidence: doublePrecision(),
@@ -195,7 +212,7 @@ export const currentDetectedBusinessCycles = pgView(
 		detectedAt: timestamp("detected_at"),
 	},
 ).as(
-	sql`SELECT cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM engine.detected_business_cycles r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, family, direction, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM engine.detected_business_cycles r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentDimensionHierarchies = pgView(
@@ -227,6 +244,8 @@ export const currentDriverRankings = pgView("current_driver_rankings", {
 	measureColumnId: varchar("measure_column_id"),
 	measureLabel: varchar("measure_label"),
 	targetType: varchar("target_type"),
+	status: varchar(),
+	abstainReason: varchar("abstain_reason"),
 	grain: varchar(),
 	entity: varchar(),
 	nRows: integer("n_rows"),
@@ -236,7 +255,7 @@ export const currentDriverRankings = pgView("current_driver_rankings", {
 	secondaryDimensions: json("secondary_dimensions"),
 	createdAt: timestamp("created_at", { withTimezone: true }),
 }).as(
-	sql`SELECT ranking_id, run_id, measure_table_id, measure_column_id, measure_label, target_type, grain, entity, n_rows, ranked_dimensions, driver_paths, interesting_slices, secondary_dimensions, created_at FROM engine.driver_rankings r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT ranking_id, run_id, measure_table_id, measure_column_id, measure_label, target_type, status, abstain_reason, grain, entity, n_rows, ranked_dimensions, driver_paths, interesting_slices, secondary_dimensions, created_at FROM engine.driver_rankings r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentEnrichedColumns = pgView("current_enriched_columns", {
@@ -581,11 +600,12 @@ export const currentTemporalColumnProfiles = pgView(
 		actualPeriods: integer("actual_periods"),
 		gapCount: integer("gap_count"),
 		largestGapDays: doublePrecision("largest_gap_days"),
+		lastPeriodComplete: boolean("last_period_complete"),
 		isStale: boolean("is_stale"),
 		gaps: json(),
 	},
 ).as(
-	sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, detected_granularity, granularity_confidence, completeness_ratio, expected_periods, actual_periods, gap_count, largest_gap_days, is_stale, gaps FROM engine.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM engine.columns c JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, span_days, detected_granularity, granularity_confidence, completeness_ratio, expected_periods, actual_periods, gap_count, largest_gap_days, last_period_complete, is_stale, gaps FROM engine.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM engine.columns c JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentTypeCandidates = pgView("current_type_candidates", {
@@ -633,6 +653,18 @@ export const currentValidationResults = pgView("current_validation_results", {
 	sql`SELECT result_id, run_id, validation_id, table_ids, columns_used, sql_used, executed_at FROM engine.validation_results r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
+export const cycleFamilies = pgView("cycle_families", {
+	familyId: varchar("family_id"),
+	vertical: varchar(),
+	family: varchar(),
+	directions: json(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT family_id, vertical, family, directions, source, created_at, superseded_at FROM engine.cycle_families WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
 export const metadataSnapshotHead = pgView("metadata_snapshot_head", {
 	headId: varchar("head_id"),
 	target: varchar(),
@@ -641,6 +673,50 @@ export const metadataSnapshotHead = pgView("metadata_snapshot_head", {
 	promotedAt: timestamp("promoted_at"),
 }).as(
 	sql`SELECT head_id, target, stage, run_id, promoted_at FROM engine.metadata_snapshot_head`,
+);
+
+export const metricDerivesFrom = pgView("metric_derives_from", {
+	edgeId: varchar("edge_id"),
+	vertical: varchar(),
+	graphId: varchar("graph_id"),
+	conceptName: varchar("concept_name"),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT edge_id, vertical, graph_id, concept_name, created_at, superseded_at FROM engine.metric_derives_from WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
+export const metricParameters = pgView("metric_parameters", {
+	parameterId: varchar("parameter_id"),
+	vertical: varchar(),
+	graphId: varchar("graph_id"),
+	name: varchar(),
+	paramType: varchar("param_type"),
+	defaultValue: json("default_value"),
+	options: json(),
+	description: text(),
+	derivation: varchar(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT parameter_id, vertical, graph_id, name, param_type, default_value, options, description, derivation, source, created_at, superseded_at FROM engine.metric_parameters WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
+export const metrics = pgView("metrics", {
+	metricId: varchar("metric_id"),
+	vertical: varchar(),
+	graphId: varchar("graph_id"),
+	name: varchar(),
+	category: varchar(),
+	unit: varchar(),
+	outputType: varchar("output_type"),
+	version: varchar(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const runTables = pgView("run_tables", {
@@ -698,6 +774,37 @@ export const tables = pgView("tables", {
 	lastProfiledAt: timestamp("last_profiled_at"),
 }).as(
 	sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM engine.tables`,
+);
+
+export const validations = pgView("validations", {
+	rowId: varchar("row_id"),
+	vertical: varchar(),
+	validationId: varchar("validation_id"),
+	name: varchar(),
+	description: text(),
+	category: varchar(),
+	severity: varchar(),
+	checkType: varchar("check_type"),
+	tolerance: doublePrecision(),
+	guidance: text(),
+	expectedOutcome: text("expected_outcome"),
+	relevantCycles: json("relevant_cycles"),
+	relevantConventions: json("relevant_conventions"),
+	tags: json(),
+	version: varchar(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT row_id, vertical, validation_id, name, description, category, severity, check_type, tolerance, guidance, expected_outcome, relevant_cycles, relevant_conventions, tags, version, source, created_at, superseded_at FROM engine.validations WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
+export const workspaceCalendar = pgView("workspace_calendar", {
+	pin: boolean(),
+	fiscalYearStartMonth: integer("fiscal_year_start_month"),
+	declaredAt: timestamp("declared_at"),
+}).as(
+	sql`SELECT pin, fiscal_year_start_month, declared_at FROM engine.workspace_calendar`,
 );
 
 export const workspaceSettings = pgView("workspace_settings", {

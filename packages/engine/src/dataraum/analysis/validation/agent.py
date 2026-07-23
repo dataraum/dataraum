@@ -41,6 +41,74 @@ logger = get_logger(__name__)
 SQL_GENERATION_TEMPLATE_NAME = "validation_sql"
 
 
+def _render_grain_facts(schema: dict[str, Any]) -> str:
+    """Compact per-table grain callout, served ADJACENT to the spec (DAT-870).
+
+    The same measured facts the schema XML carries as attributes, restated as
+    one dense block right after the validation_spec — where the spec's advisory
+    prose lives. Probe evidence: with the facts only as schema attributes, a
+    confidently wrong hint ("cumulative…") out-pulled them; proximity is the
+    structural counterweight. Deterministic presentation of served facts —
+    no SQL is generated or rewritten here.
+
+    The block also states the existence-check universe (DAT-876): a positive
+    projection of the closed ``table_role`` fact. An existence check ("this id
+    must exist") binds only against a table that authoritatively enumerates the
+    entity — a ``role=dimension`` table. When no served table carries that role,
+    say so, so a declared existence check is DECLINED here rather than graded
+    against a fact/snapshot table's own activity (an id absent from an activity
+    table may simply have no activity there, not be nonexistent). Absence falls
+    loud, never inferred from the omission of a DIMENSION label.
+    """
+    tables = schema.get("tables", [])
+    lines: list[str] = []
+    for table in tables:
+        parts: list[str] = []
+        if table.get("table_role"):
+            parts.append(f"role={table['table_role']}")
+        if table.get("grain_columns"):
+            parts.append(f"grain=({', '.join(table['grain_columns'])})")
+        time_cols = [
+            f"{col['column_name']}={col['granularity']}"
+            for col in table.get("columns", [])
+            if col.get("granularity")
+        ]
+        if time_cols:
+            parts.append(f"time granularity: {', '.join(time_cols)}")
+        by_behavior: dict[str, list[str]] = {}
+        for col in table.get("columns", []):
+            behavior = (col.get("semantic") or {}).get("temporal_behavior")
+            if behavior:
+                by_behavior.setdefault(behavior, []).append(col["column_name"])
+        if "additive" in by_behavior:
+            parts.append(f"additive (per-period movement): {', '.join(by_behavior['additive'])}")
+        if "point_in_time" in by_behavior:
+            parts.append(
+                f"point_in_time (level, never summed across periods): "
+                f"{', '.join(by_behavior['point_in_time'])}"
+            )
+        if parts:
+            lines.append(f"- {table['table_name']}: {'; '.join(parts)}")
+    # Existence-check universe (DAT-876): fire when the served schema carries at
+    # least one table but none has role=dimension — a typed projection, no heuristic.
+    if tables and not any(t.get("table_role") == "dimension" for t in tables):
+        lines.append(
+            "- existence-check universe: no served table has role=dimension — none "
+            "authoritatively enumerates an entity's whole population, so an existence "
+            'check (an id "must exist") is unbindable here (decline it; other check '
+            "kinds are unaffected)"
+        )
+    if not lines:
+        return ""
+    header = (
+        "<grain_facts>\n"
+        "Measured catalog facts for the tables in <schema> — AUTHORITATIVE over the\n"
+        "validation_spec's description/hints (the facts-over-hints requirement).\n"
+        "Resolve every conflict in these facts' favor before writing SQL:\n"
+    )
+    return header + "\n".join(lines) + "\n</grain_facts>"
+
+
 class ValidationAgent(LLMFeature):
     """LLM-powered validation agent.
 
@@ -305,8 +373,12 @@ class ValidationAgent(LLMFeature):
         # Format schema for prompt with emphasis on exact column names
         schema_text = format_multi_table_schema_for_prompt(schema)
 
-        # Build context for template
-        sql_hints = f"<sql_hints>{spec.sql_hints}</sql_hints>" if spec.sql_hints else ""
+        # Build context for template. ``guidance`` is the advisory binding hint
+        # (the former sql_hints); it fills the ``sql_hints`` prompt slot unchanged.
+        # ``parameters`` now carries ONLY the typed tolerance (the check's other
+        # params folded into guidance at load, DAT-735), keeping the prompt
+        # structure identical to minimize bind drift.
+        sql_hints = f"<sql_hints>{spec.guidance}</sql_hints>" if spec.guidance else ""
         expected = (
             f"<expected_outcome>{spec.expected_outcome}</expected_outcome>"
             if spec.expected_outcome
@@ -317,9 +389,14 @@ class ValidationAgent(LLMFeature):
             "spec_name": spec.name,
             "spec_description": spec.description,
             "check_type": spec.check_type,
-            "parameters": json.dumps(spec.parameters) if spec.parameters else "None",
+            "parameters": (
+                json.dumps({"tolerance": spec.tolerance}) if spec.tolerance is not None else "None"
+            ),
             "sql_hints": sql_hints,
             "expected_outcome": expected,
+            # DAT-870: the measured grain facts restated NEXT TO the spec's
+            # advisory prose (empty when the catalog served none).
+            "grain_facts": _render_grain_facts(schema),
             "schema": schema_text,
             # DAT-645: the vertical's conventions, piped verbatim (engine never
             # interprets them) — the same source of truth extraction uses.

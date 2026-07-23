@@ -72,6 +72,50 @@ class TestOverview:
         assert out.startswith("# Data Catalog: dataset")
 
 
+class TestAbsenceFallsLoud:
+    """DAT-853 at the serving layer: absence-of-analysis must never render
+    byte-identically to analyzed-and-clean (the silent-substitute rule). The
+    LLM reading the served document is a consumer like any user."""
+
+    def test_unmeasured_column_states_absence_not_clean(self) -> None:
+        col = _column(entropy_scores={"readiness": "ready", "coverage": "unmeasured"})
+        out = format_served_context(GraphExecutionContext(tables=[_table(columns=[col])]))
+        assert "◌ unmeasured — no quality measurements exist for this column." in out
+
+    def test_measured_clean_column_renders_no_absence_marker(self) -> None:
+        col = _column(entropy_scores={"readiness": "ready", "coverage": "measured"})
+        out = format_served_context(GraphExecutionContext(tables=[_table(columns=[col])]))
+        assert "◌" not in out
+
+    def test_partial_coverage_rides_with_the_readiness_band(self) -> None:
+        col = _column(entropy_scores={"readiness": "investigate", "coverage": "partial"})
+        out = format_served_context(GraphExecutionContext(tables=[_table(columns=[col])]))
+        assert "⚠ investigate." in out
+        assert "◌ partially measured." in out
+
+    def test_om_absent_sections_state_not_yet_analyzed(self) -> None:
+        # Default flags are False — a context built without an operating-model
+        # run must SAY so instead of omitting the sections wholesale.
+        out = format_served_context(GraphExecutionContext(tables=[_table()]))
+        assert "## Business Processes" in out
+        assert "## Validation Results" in out
+        assert out.count("(not yet analyzed — no operating-model run for this workspace)") == 2
+        assert "## Relationships" in out
+        assert "(not analyzed — the operating-model graph is not readable for this run)" in out
+
+    def test_analyzed_and_empty_omits_the_stubs(self) -> None:
+        # Ran-and-found-nothing keeps the pre-existing omission — the stub is
+        # ONLY for absence-of-analysis, never a new claim about empty results.
+        ctx = GraphExecutionContext(
+            tables=[_table()], operating_model_analyzed=True, graph_readable=True
+        )
+        out = format_served_context(ctx)
+        assert "not yet analyzed" not in out
+        assert "not analyzed" not in out
+        assert "## Business Processes" not in out
+        assert "## Validation Results" not in out
+
+
 class TestConceptGraph:
     """The traversal core rendered as structure (DAT-734)."""
 
@@ -332,13 +376,71 @@ class TestDrivers:
     def test_no_drivers_section_when_empty(self) -> None:
         assert "## Drivers" not in format_served_context(GraphExecutionContext())
 
+    def test_abstained_ranking_never_renders(self) -> None:
+        """DAT-859: an abstained ranking must never surface as a driver, even if
+        it somehow carried content (defense in depth — the engine's own
+        DriverRanking invariant should already make that impossible)."""
+        abstained = DriverContext(
+            measure_label="unclassified_amount",
+            target_type="",
+            grain="row",
+            status="abstained",
+            abstain_reason="missing_inputs",
+            ranked_dimensions=[{"dimension": "region", "gain": 0.9}],
+        )
+        out = format_served_context(GraphExecutionContext(drivers=[abstained]))
+        assert "## Drivers" not in out
+        assert "unclassified_amount" not in out
+
+    def test_measured_but_content_free_ranking_renders_explicit_absence(self) -> None:
+        """A measured ranking with no ranked dims/slices/secondaries (a real "no
+        significant driver found" answer) still renders its heading — status
+        gates ONLY on "measured" (never on content, which would silently change
+        measured-ranking behavior) — with an explicit absence line, so "analyzed,
+        nothing significant" stays a visible grounding signal distinct from both
+        abstention (skipped entirely) and never-analyzed (no ## Drivers section
+        at all, DAT-859 review)."""
+        barren = DriverContext(measure_label="flat_amount", target_type="flow", grain="row")
+        out = format_served_context(GraphExecutionContext(drivers=[barren]))
+        assert "## Drivers" in out
+        assert "### flat_amount (flow, grain row)" in out
+        assert "- No significant driver found." in out
+
+    def test_measured_and_abstained_mix_only_renders_the_measured_one(self) -> None:
+        measured = DriverContext(
+            measure_label="revenue",
+            target_type="flow",
+            grain="row",
+            ranked_dimensions=[{"dimension": "region", "gain": 0.42}],
+        )
+        abstained = DriverContext(
+            measure_label="unclassified_amount",
+            target_type="",
+            grain="row",
+            status="abstained",
+            abstain_reason="missing_inputs",
+        )
+        out = format_served_context(GraphExecutionContext(drivers=[measured, abstained]))
+        assert "## Drivers" in out
+        assert "### revenue" in out
+        assert "unclassified_amount" not in out
+
 
 class TestBusinessProcesses:
-    def test_concept_bindings_rendered_as_filters(self) -> None:
+    def test_stage_bindings_render_but_status_scope_is_not_an_imperative_binding(self) -> None:
+        """DAT-733: stage bindings stay; the status=completion binding is withheld.
+
+        The status_column = completion_value pair IS the canonical validity scope,
+        now composed deterministically by the engine — so it is no longer emitted as
+        a "use as the filter" imperative (which would make the LLM always author it
+        and the typed default never fire). It still appears in the READING narrative,
+        re-qualified from the bare parts.
+        """
         cycle = BusinessCycleContext(
             cycle_name="Order to Cash",
             cycle_type="order_to_cash",
-            status_column="invoices.status",
+            status_table="invoices",
+            status_column="status",
             completion_value="paid",
             stages=[
                 CycleStageContext(
@@ -351,9 +453,44 @@ class TestBusinessProcesses:
         )
         out = format_served_context(GraphExecutionContext(business_cycles=[cycle]))
         assert "## Business Processes" in out
+        # Stage bindings remain — legitimate per-concept filters.
         assert "Concept bindings (confirmed — use as the filter, do not improvise):" in out
         assert "\"Invoiced\" = WHERE status IN ('open', 'sent')" in out
-        assert "\"order_to_cash completed\" = WHERE invoices.status = 'paid'" in out
+        # The status/completion scope is NOT an imperative binding anymore.
+        assert "order_to_cash completed" not in out
+        assert "WHERE status = 'paid'" not in out
+        # It still reads in the narrative, re-qualified from the bare parts.
+        assert 'Completion: invoices.status = "paid"' in out
+
+    def test_undirected_family_cycle_renders_direction_honestly(self) -> None:
+        """DAT-856: a detected-but-undirected family cycle reads as exactly that — the
+        family with its direction undetermined, never a guessed member label."""
+        undirected = BusinessCycleContext(
+            cycle_name="Settlement",
+            cycle_type="settlement",
+            family="settlement",
+            direction="undetermined",
+        )
+        out = format_served_context(GraphExecutionContext(business_cycles=[undirected]))
+        assert "### Settlement (settlement, direction undetermined)" in out
+
+    def test_directed_family_cycle_names_its_direction(self) -> None:
+        """A decided family cycle names the resolved member + its direction."""
+        directed = BusinessCycleContext(
+            cycle_name="Payables",
+            cycle_type="accounts_payable",
+            family="settlement",
+            direction="outgoing",
+        )
+        out = format_served_context(GraphExecutionContext(business_cycles=[directed]))
+        assert "### Payables (accounts_payable, direction outgoing)" in out
+
+    def test_non_family_cycle_render_is_unchanged(self) -> None:
+        """A cycle outside any declared family renders with no direction clause."""
+        plain = BusinessCycleContext(cycle_name="Order to Cash", cycle_type="order_to_cash")
+        out = format_served_context(GraphExecutionContext(business_cycles=[plain]))
+        assert "### Order to Cash (order_to_cash)" in out
+        assert "direction" not in out.split("### Order to Cash")[1].split("\n")[0]
 
 
 class TestValidations:

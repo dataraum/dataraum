@@ -125,7 +125,7 @@ def evaluate_validation(
     return verdict_from_sql(
         duckdb_conn,
         sql_used,
-        tolerance=float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE)),
+        tolerance=spec.tolerance if spec.tolerance is not None else DEFAULT_TOLERANCE,
         check_type=spec.check_type,
     )
 
@@ -137,7 +137,7 @@ def evaluate_result(
     """Pure judgement over already-fetched rows, keyed off a spec."""
     return _judge(
         spec.check_type,
-        float(spec.parameters.get("tolerance", DEFAULT_TOLERANCE)),
+        spec.tolerance if spec.tolerance is not None else DEFAULT_TOLERANCE,
         result_rows,
     )
 

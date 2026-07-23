@@ -349,6 +349,26 @@ cycle_types:
       - "cleared"
 
 # =============================================================================
+# CYCLE FAMILIES — the direction axis
+# =============================================================================
+# A family groups direction-typed cycle types that differ ONLY in who-owes-whom.
+# The judge names the family plus the direction the served evidence decides (or
+# "undetermined" when it does not); a decided direction resolves to the member
+# cycle type declared below (whose prose lives in cycle_types above, unchanged).
+# This block is the DECLARATION — seeded into the typed `cycle_families` table
+# (DAT-856); the descriptions/hints stay prompt data, this is the axis of record.
+#   settlement: an invoice-to-payment flow is receivable (incoming, the
+#     counterparty owes us) or payable (outgoing, we owe the counterparty); the
+#     two differ only in direction, which the served counterparty/flow evidence
+#     decides — undetermined when it does not.
+
+cycle_families:
+  settlement:
+    directions:
+      incoming: accounts_receivable
+      outgoing: accounts_payable
+
+# =============================================================================
 # ANALYSIS HINTS
 # =============================================================================
 # Guidance for the agent on what to look for.

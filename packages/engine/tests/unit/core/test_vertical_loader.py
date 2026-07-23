@@ -29,15 +29,21 @@ def _clean_resolver() -> Iterator[None]:
 
 
 class TestShipped:
-    """The shipped finance vertical resolves all four families off disk."""
+    """The shipped finance vertical resolves off disk (metrics/cycles/concepts;
+    validations degrades to empty — DAT-725 band 3 retired that family's dir)."""
 
     def test_metrics(self) -> None:
         metrics = VerticalLoader("finance").collection(Family.METRICS)["metrics"]
         assert any(m.get("graph_id") == "dso" for m in metrics)
 
-    def test_validations(self) -> None:
+    def test_validations_empty_since_band_3_retirement(self) -> None:
+        """DAT-725 band 3 retired finance's shipped ``validations/`` directory
+        entirely — the family degrades to empty cleanly (FileNotFoundError →
+        the empty base, no loader code change), exactly like any vertical with
+        no on-disk source for a family. LLM induction is the sole validation
+        source now."""
         validations = VerticalLoader("finance").collection(Family.VALIDATIONS)["validations"]
-        assert len(validations) >= 1
+        assert validations == []
 
     def test_cycles(self) -> None:
         cycles = VerticalLoader("finance").collection(Family.CYCLES)

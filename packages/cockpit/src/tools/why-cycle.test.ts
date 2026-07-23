@@ -32,6 +32,8 @@ const executedArtifact: WhyCycleArtifactRow = {
 const executedDetection: WhyCycleDetectionRow = {
 	cycleName: "Order-to-Cash Cycle",
 	isKnownType: true,
+	family: null,
+	direction: null,
 	businessValue: "high",
 	confidence: 0.92,
 	description: "Revenue cycle from order through collection.",
@@ -65,6 +67,8 @@ describe("projectWhyCycle (DAT-465)", () => {
 			strictness: 0.8,
 			grounded_against: JSON.stringify({ detect: "run-7", typing: "run-3" }),
 			is_known_type: true,
+			family: null,
+			direction: null,
 			business_value: "high",
 			confidence: 0.92,
 			description: "Revenue cycle from order through collection.",
@@ -80,6 +84,28 @@ describe("projectWhyCycle (DAT-465)", () => {
 			evidence: JSON.stringify({ signal: "status column present" }),
 			pending_teaches: 2,
 		});
+	});
+
+	it("surfaces a family cycle's undetermined direction verbatim (DAT-856)", () => {
+		const projected = projectWhyCycle(
+			"settlement",
+			{
+				state: "executed",
+				stateReason: null,
+				strictness: null,
+				groundedAgainst: null,
+			},
+			{
+				...executedDetection,
+				cycleName: "Settlement Cycle",
+				family: "settlement",
+				direction: "undetermined",
+			},
+			0,
+		);
+		// The detected-but-undirected state is surfaced as exactly that, never coerced.
+		expect(projected.family).toBe("settlement");
+		expect(projected.direction).toBe("undetermined");
 	});
 
 	it("found=false for an unknown cycle — all fields null/empty, nothing invented", () => {
@@ -133,6 +159,8 @@ describe("projectWhyCycle (DAT-465)", () => {
 			{
 				cycleName: `Flow over inventory`,
 				isKnownType: false,
+				family: null,
+				direction: null,
 				businessValue: "low",
 				confidence: 0.5,
 				description: `Cycle through inventory`,

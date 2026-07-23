@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.cycles.cycle_family_store import ensure_cycle_families_seeded
 from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 from dataraum.analysis.cycles.models import BusinessCycleAnalysis, DetectedCycle
 from dataraum.core.models.base import Result
@@ -108,6 +109,8 @@ def _detected(
     completion_rate: float | None = 0.85,
     confidence: float = 0.9,
     tables: list[str] | None = None,
+    family: str | None = None,
+    direction: str | None = None,
 ) -> DetectedCycle:
     return DetectedCycle(
         cycle_id=str(uuid4()),
@@ -115,6 +118,8 @@ def _detected(
         cycle_type=canonical_type,
         canonical_type=canonical_type,
         is_known_type=True,
+        family=family,
+        direction=direction,
         description="test cycle",
         tables_involved=tables if tables is not None else ["invoices"],
         status_column="status",
@@ -388,6 +393,127 @@ class TestCycleLifecycleFlow:
         # The kept emission is intact — no table it cannot account for.
         assert cycles[0].tables_involved == ["trial_balance", "general_ledger"]
         assert cycles[0].completion_rate == 0.9
+
+    @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
+    @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
+    def test_undetermined_family_cycle_grounds_the_family_artifact(
+        self,
+        mock_types: MagicMock,
+        mock_ground: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """A detected-but-undirected settlement cycle grounds the FAMILY artifact and
+        persists direction='undetermined' — the honest state, never coerced to a member
+        (DAT-856). The directed member artifacts stay declared."""
+        ensure_cycle_families_seeded(session, "finance")
+        session.commit()
+        mock_types.return_value = {
+            "accounts_receivable": {"business_value": "high"},
+            "accounts_payable": {"business_value": "high"},
+        }
+        mock_ground.return_value = Result.ok(
+            _analysis([_detected("settlement", family="settlement", direction="undetermined")])
+        )
+
+        result = BusinessCyclesPhase()._run(
+            _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        )
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        artifacts = _artifacts(session, "run-om-1")
+        # The family artifact grounds + executes; the directed members stay declared.
+        assert artifacts["settlement"].state == ArtifactState.EXECUTED.value
+        assert artifacts["accounts_receivable"].state == ArtifactState.DECLARED.value
+        assert artifacts["accounts_payable"].state == ArtifactState.DECLARED.value
+        # The persisted row records the family + the honest undetermined direction.
+        (cycle,) = session.execute(select(DetectedBusinessCycle)).scalars().all()
+        assert cycle.canonical_type == "settlement"
+        assert cycle.family == "settlement"
+        assert cycle.direction == "undetermined"
+
+    @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
+    @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
+    def test_decided_family_cycle_grounds_the_member_artifact(
+        self,
+        mock_types: MagicMock,
+        mock_ground: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """A decided settlement/outgoing cycle grounds the accounts_payable MEMBER
+        artifact (canonical = the member) and persists direction='outgoing'; the family
+        artifact stays declared (the undirected identity was not what grounded)."""
+        ensure_cycle_families_seeded(session, "finance")
+        session.commit()
+        mock_types.return_value = {
+            "accounts_receivable": {"business_value": "high"},
+            "accounts_payable": {"business_value": "high"},
+        }
+        mock_ground.return_value = Result.ok(
+            _analysis([_detected("accounts_payable", family="settlement", direction="outgoing")])
+        )
+
+        result = BusinessCyclesPhase()._run(
+            _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        )
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        artifacts = _artifacts(session, "run-om-1")
+        assert artifacts["accounts_payable"].state == ArtifactState.EXECUTED.value
+        assert artifacts["settlement"].state == ArtifactState.DECLARED.value
+        (cycle,) = session.execute(select(DetectedBusinessCycle)).scalars().all()
+        assert cycle.canonical_type == "accounts_payable"
+        assert cycle.family == "settlement"
+        assert cycle.direction == "outgoing"
+
+    @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
+    @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
+    def test_two_cycles_in_one_family_keep_the_decided_one(
+        self,
+        mock_types: MagicMock,
+        mock_ground: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """The prompt forbids >1 cycle per family; if the judge violates it (an
+        undetermined AND a decided settlement cycle, different canonical_types), the
+        phase keeps the DECIDED one and drops the undetermined — no double-count
+        (DAT-856, senior-review guard)."""
+        ensure_cycle_families_seeded(session, "finance")
+        session.commit()
+        mock_types.return_value = {
+            "accounts_receivable": {"business_value": "high"},
+            "accounts_payable": {"business_value": "high"},
+        }
+        mock_ground.return_value = Result.ok(
+            _analysis(
+                [
+                    _detected("settlement", family="settlement", direction="undetermined"),
+                    _detected("accounts_payable", family="settlement", direction="outgoing"),
+                ]
+            )
+        )
+
+        result = BusinessCyclesPhase()._run(
+            _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        )
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        # Exactly ONE persisted row for the family — the decided one.
+        cycles = session.execute(select(DetectedBusinessCycle)).scalars().all()
+        assert len(cycles) == 1
+        assert cycles[0].canonical_type == "accounts_payable"
+        assert cycles[0].direction == "outgoing"
 
     @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
     @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")

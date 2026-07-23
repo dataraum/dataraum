@@ -1,9 +1,16 @@
 // The validation induction -> overlay payload conversion (DAT-807).
 //
-// The only shape difference is `parameters`: a typed LIST in the LLM-facing
+// The shape difference is `parameters`: a typed LIST in the LLM-facing
 // schema (an open map is inexpressible under constrained decoding), the
-// `dict[str, Any]` the engine reads in the payload. Everything else passes
-// through untouched.
+// `dict[str, Any]` the engine's LEGACY normalizer reads in the payload.
+// Everything else passes through untouched.
+//
+// KNOWN GAP (DAT-725, see validation-induction.ts header): `parameters`/
+// `sql_hints` are the PRE-DAT-735 wire shape — `ValidationSpecSchema` itself
+// migrated to typed `tolerance`/`guidance`, but this induction schema did not
+// (a deliberate, flagged deferral — migrating it is a prompt-content change
+// needing a live probe, not a mechanical rename). The last test below documents
+// the consequence honestly rather than asserting a false "it round-trips".
 
 import { describe, expect, it } from "vitest";
 
@@ -113,19 +120,23 @@ describe("toProposedValidation — array parameters -> the engine's dict", () =>
 		expect(JSON.stringify(v)).not.toContain('"kind"');
 	});
 
-	it("produces a payload that re-parses as the persisted validation shape", () => {
-		for (const induced of [
-			trialBalance(),
-			trialBalance({
-				parameters: [
-					{ kind: "number", name: "tolerance", value: 0.05 },
-					{ kind: "string_list", name: "equity_types", values: ["equity"] },
-				],
-			}),
-		]) {
-			expect(() =>
-				ProposedValidation.parse(toProposedValidation(induced)),
-			).not.toThrow();
-		}
+	it("re-parses as the persisted validation shape WITHOUT throwing — but this does NOT prove tolerance survives typed (DAT-725 known gap)", () => {
+		// `ProposedValidation` (== `ValidationSpecSchema.omit({vertical:true})`) is a
+		// non-strict z.object since DAT-735/DAT-725: it silently DROPS the unrecognized
+		// legacy `parameters`/`sql_hints` keys rather than throwing, so "doesn't throw"
+		// is a weak assertion — the induced tolerance is LOST at this parse boundary
+		// (parses to `tolerance: undefined`), not carried through as the typed field.
+		// The primary write path (frame.ts's `induceValidations`) never actually calls
+		// this parse (see the module header) — this only matters on the separate
+		// "user-edited" declare path (`frameFamily`'s `opts.edited`), an unverified
+		// UI-layer risk flagged for the owner, not fixed here (see validation-induction.ts
+		// header: migrating this induction schema is a semantically-graded prompt
+		// change needing a live probe, out of this mechanical lane's scope).
+		const induced = trialBalance({
+			parameters: [{ kind: "number", name: "tolerance", value: 0.05 }],
+		});
+		const parsed = ProposedValidation.parse(toProposedValidation(induced));
+		expect(parsed.tolerance).toBeUndefined();
+		expect((parsed as Record<string, unknown>).parameters).toBeUndefined();
 	});
 });

@@ -1,6 +1,14 @@
-"""SQLAlchemy models for validation results.
+"""SQLAlchemy models for validation.
 
-Contains database models for storing validation check results.
+Two homes with different lifecycles:
+
+* :class:`Validation` — the workspace's typed *validation vocabulary* (DAT-735):
+  declaration-versioned, keyed ``(vertical, validation_id)``, written by the seed
+  (shipped YAML) and by agentic induction. The DAT-789 ``Convention`` typed-home
+  pattern applied to validation specs, so the check LOGIC gets a typed home
+  instead of living as free ``sql_hints`` text.
+* :class:`ValidationResultRecord` — one run-versioned grounded SQL per check
+  (ADR-0017), the pure SQL store whose verdict is recomputed on demand.
 """
 
 from __future__ import annotations
@@ -8,10 +16,150 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    Float,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
+from dataraum.analysis.validation.models import ValidationCheckType, ValidationSeverity
 from dataraum.storage import Base
+
+# Closed-vocabulary CHECK values (DAT-802 enum-standard sweep): each vocabulary
+# derives from its single-home enum so the CHECK and the enum can never drift (the
+# DAT-784 pattern). Sorted for a deterministic offline DDL dump.
+_VALIDATION_SEVERITY_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in ValidationSeverity))
+_VALIDATION_CHECK_TYPE_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in ValidationCheckType))
+
+
+class Validation(Base):
+    """The workspace's typed validation vocabulary — one home (DAT-735).
+
+    A validation is a named data-quality/business rule with a TYPED check
+    definition — ``check_type`` + ``tolerance`` (the ADR-0017 verdict param,
+    ``deviation <= tolerance``) — plus advisory ``guidance`` prose for the
+    SQL-binding agent (the former free-text ``sql_hints``, which is NO LONGER the
+    check's definition). Config→DB, the same cut :class:`~dataraum.analysis.
+    semantic.db_models.Convention` took (DAT-789): a vertical's shipped YAML, when
+    one exists, seeds the *seed* rows (source='seed') normalized into typed rows
+    at connect — DAT-725 band 3 retired finance's, so no vertical ships a
+    ``validations/`` directory today. Agentic induction (:mod:`~dataraum.analysis.
+    validation.induction`) proposes more rows over the served graph
+    (source='generated') either way. The validation phase reads these rows (never
+    a YAML directory walk), so a *framed* vertical whose validations exist only as
+    rows is served identically to a builtin.
+
+    **Identity contract — NOT run-versioned (the DAT-728 pattern).** A validation
+    is a stable node keyed by ``(vertical, validation_id)``; ``row_id`` is a
+    workspace-stable surrogate minted once, NOT a per-run uuid. Re-induction
+    supersedes rather than collides: the ``uq_validation_active`` partial-unique
+    index keeps at most one *active* row per ``(vertical, validation_id)`` so a
+    head-free read is unambiguous. Workspace identity IS the ``ws_<id>`` schema (no
+    ``workspace_id`` column); the read surface scopes to the workspace's bound
+    ``active_vertical`` (``_VERTICAL_SCOPED`` in ``storage/read_views.py``).
+
+    The teach overlay (frame-2 ``validation`` config_overlay rows, DAT-441) is a
+    SEPARATE layer ``⊕``'d over these rows at read time — it is NOT a ``source``
+    here, because no writer lands teach rows in THIS table yet (the DAT-802
+    live-writer discipline: admit only sources a writer produces).
+    """
+
+    __tablename__ = "validations"
+    __table_args__ = (
+        # At most one ACTIVE row per (vertical, validation_id); superseded history
+        # rows are exempt. The deterministic single-active-row guarantee the
+        # head-free reads and the seed's ON CONFLICT DO NOTHING rely on — the same
+        # shape as Convention.uq_convention_active.
+        Index(
+            "uq_validation_active",
+            "vertical",
+            "validation_id",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+        # Lifecycle-source vocabulary (DAT-802, the two-layer standard): every
+        # admitted value has a LIVE writer — 'seed'
+        # (``validation_store.ensure_validations_seeded``, engine) and 'generated'
+        # (``validation_store.persist_generated_validations``, the agentic-induction
+        # writer). NOT 'frame'/'teach': the cockpit teach path writes config_overlay
+        # rows (the ⊕ layer), not this table — a CHECK admitting a value no writer
+        # produces is the exact DAT-802 defect. Widening is one line + a re-dump in
+        # the PR that adds the writer.
+        CheckConstraint("source IS NULL OR source IN ('generated', 'seed')", name="source"),
+        # Severity vocabulary (DAT-802, the two-layer standard): derived from
+        # :class:`ValidationSeverity`, the single home, so the CHECK and enum can
+        # never drift. NOT NULL — every validation declares a severity (the seed and
+        # induction both always supply one).
+        CheckConstraint(
+            "severity IN (" + ", ".join(f"'{v}'" for v in _VALIDATION_SEVERITY_VALUES) + ")",
+            name="severity",
+        ),
+        # Check-type vocabulary (DAT-735, DAT-802 two-layer standard): derived from
+        # :class:`ValidationCheckType`, the single home the cockpit's `validation-spec.ts`
+        # CHECK_TYPES zod enum mirrors — a cross-package VOCABULARY contract. Enforced on
+        # the typed home because only seed rows (a vertical's shipped YAML, when one
+        # ships — DAT-725 band 3 retired finance's four-value validations/ directory)
+        # and generated rows (the induction contract's four-value Literal) land here;
+        # the DAT-447 `expected_formula` teach rides the config_overlay ⊕ layer, never
+        # this table, so it is deliberately NOT admitted by this CHECK.
+        CheckConstraint(
+            "check_type IN (" + ", ".join(f"'{v}'" for v in _VALIDATION_CHECK_TYPE_VALUES) + ")",
+            name="check_type",
+        ),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    # The validation's stable identifier within `vertical` (the YAML `validation_id`).
+    validation_id: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    # Open vocabulary (induction/teach may extend), validated at the Pydantic
+    # contract layer, not the DB — mirrors ValidationSpec keeping these free.
+    category: Mapped[str] = mapped_column(String, nullable=False)
+    # Closed vocab: see ck_validations_severity (ValidationSeverity).
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    # Closed vocab: see ck_validations_check_type (ValidationCheckType, the cockpit
+    # CHECK_TYPES contract).
+    check_type: Mapped[str] = mapped_column(String, nullable=False)
+
+    # The TYPED check definition (DAT-735). ``tolerance`` is the ADR-0017 verdict
+    # param (``deviation <= tolerance``); NULL ⇒ the evaluator's DEFAULT_TOLERANCE.
+    tolerance: Mapped[float | None] = mapped_column(Float)
+    # Advisory SQL-binding hint prose — the former ``sql_hints``. Served to the
+    # binding agent, NEVER the check's definition (that is check_type + tolerance).
+    guidance: Mapped[str | None] = mapped_column(Text)
+    expected_outcome: Mapped[str | None] = mapped_column(Text)
+
+    # cycle types this validation applies to; empty/NULL = universal.
+    relevant_cycles: Mapped[list[str] | None] = mapped_column(JSON)
+    # Convention ids (= ``conventions.name``, the prompt-facing id) this check's
+    # LOGIC relies on — the typed validation→convention dependency edge (DAT-865). A convention's own
+    # ``targets`` can only route to checks that exist at authoring time; a
+    # GENERATED check therefore declares its dependencies from the other side, and
+    # the SQL binder serves the union (targets-routed ∪ declared) — so a sign or
+    # netting judgment the check relies on arrives as declared prose, never
+    # re-guessed at bind time. Written by induction (membership-validated against
+    # the served conventions) or the seed YAML; empty/NULL = none declared.
+    relevant_conventions: Mapped[list[str] | None] = mapped_column(JSON)
+    tags: Mapped[list[str] | None] = mapped_column(JSON)
+    version: Mapped[str] = mapped_column(String, nullable=False, default="1.0")
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    # Closed vocab: see ck_validations_source — 'seed' | 'generated' are the live writers.
+    source: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class ValidationResultRecord(Base):
@@ -50,5 +198,6 @@ class ValidationResultRecord(Base):
 
 
 __all__ = [
+    "Validation",
     "ValidationResultRecord",
 ]

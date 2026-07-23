@@ -124,7 +124,37 @@ _ALWAYS_PASSTHROUGH: tuple[str, ...] = ("metadata_snapshot_head", "run_tables")
 # (they read ``__READ__.concepts`` / ``__READ__.concept_edges``) and the cockpit
 # mirror never surface cross-vertical rows. Scoped here in ONE place instead of on
 # each downstream view.
-_VERTICAL_SCOPED: tuple[str, ...] = ("concepts", "concept_edges")
+# The metric-DAG typed home (DAT-732) is declared PER VERTICAL, keyed the same way
+# (declaration-versioned, ``superseded_at`` the only lifecycle axis) — so it scopes to
+# the workspace's bound active vertical exactly like the concept vocabulary. The
+# ``og_metrics`` / ``og_metric_parameters`` / ``og_derives_from`` element views read
+# ``__READ__.metrics`` / ``.metric_parameters`` / ``.metric_derives_from``.
+# The convention typed home (DAT-789) is likewise declaration-versioned and PER VERTICAL
+# (keyed ``(vertical, name)``, ``superseded_at`` the only lifecycle axis), so it scopes
+# the same way — the cockpit Q&A agent reads ``__READ__.conventions`` via the Drizzle
+# mirror, seeing only the workspace's bound active vertical's conventions.
+_VERTICAL_SCOPED: tuple[str, ...] = (
+    "concepts",
+    "concept_edges",
+    "conventions",
+    "metrics",
+    "metric_parameters",
+    "metric_derives_from",
+    # The validation typed home (DAT-735) is likewise declaration-versioned and PER
+    # VERTICAL (keyed ``(vertical, validation_id)``, ``superseded_at`` the only
+    # lifecycle axis), so it scopes the same way. No control-plane WRITE grant yet:
+    # the cockpit teach path writes config_overlay (the ``⊕`` layer), not this table,
+    # and the frame validation-write + Drizzle mirror are a later lane.
+    "validations",
+    # The cycle-family declaration (DAT-856) is likewise declaration-versioned and PER
+    # VERTICAL (keyed ``(vertical, family)``, ``superseded_at`` the only lifecycle
+    # axis), so it scopes the same way — cross-vertical rows from a wrong ``--vertical``
+    # never leak into any ``__READ__.cycle_families`` reader. Engine-internal today (the
+    # store reads the base table with an active-vertical filter; the cockpit surfaces
+    # family/direction off the detected-cycle columns, not this table). No control-plane
+    # WRITE grant: 'seed' is the only writer until a frame-family path lands.
+    "cycle_families",
+)
 
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the
 # failure contract's exempt list (DAT-502 / ADR-0010). The contract: Postgres
@@ -623,6 +653,12 @@ _CONTROL_WRITE_GRANTS: dict[str, str] = {
     # (concept_id) and the seed's rows are written engine-side; the cockpit's writes
     # ride the same narrow surface as config_overlay did before the cut.
     "concepts": "SELECT, INSERT, UPDATE",
+    # conventions (DAT-789, config→DB): the typed domain-convention home. `frame`
+    # declares/edits conventions as an edit = supersede active (UPDATE superseded_at)
+    # + INSERT a new active row — the same narrow surface as concepts. Identity
+    # (convention_id) is minted cockpit-side (uuid); `source='frame'` marks the
+    # user-declared rows (vs the engine seed's `source='seed'`).
+    "conventions": "SELECT, INSERT, UPDATE",
     # save-on-clean (DAT-486): the cockpit query tool saves learned `query:`
     # snippets. SELECT for the IS-NULL-aware key lookup (the unique key has
     # nullable columns and Postgres is NULLS DISTINCT, so dedup is app-level,

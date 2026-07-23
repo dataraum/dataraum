@@ -328,6 +328,35 @@ def _render_metric_dag(session: Session, vertical: str) -> str:
     return "\n".join(lines)
 
 
+def _render_existence_universe(context: GraphExecutionContext) -> str:
+    """The existence-check universe fact (DAT-876) — a projection of table_role.
+
+    An existence check ("this id must exist") binds only against a table that
+    authoritatively enumerates the entity: a DIMENSION-role table. When the served
+    graph has tables but none is dimension-role, no such enumerator exists — state
+    it as a POSITIVE fact so the induction DECLINES the class rather than inferring
+    existability from a fact/snapshot table (an id absent from an activity table may
+    simply have no activity there, not be nonexistent). Absence falls loud, never
+    inferred from the omission of a DIMENSION label. Empty when a dimension-role
+    table is served (existence checks bind normally) or no tables are served.
+
+    Served in ``build_served_context`` (induction-owned), NOT ``format_served_context``:
+    that assembler is SHARED with the metric grounding agent, which proposes no
+    existence checks — this validation-scoped fact would only be noise there.
+    """
+    tables = context.tables
+    if not tables or any(t.table_role == "dimension" for t in tables):
+        return ""
+    return (
+        "\n## Existence-check universe\n"
+        "No served table has role=dimension — none authoritatively enumerates an "
+        "entity's whole population. An existence check (a parent id or referenced "
+        'key "must exist") is UNBINDABLE against this graph: a fact or snapshot '
+        "table records activity, so an id absent from it may simply have no activity "
+        "there, not be nonexistent. Do not propose existence checks here."
+    )
+
+
 def _render_conventions(conventions: list[OntologyConvention]) -> str:
     """Render the workspace conventions WITH their stable ids (DAT-865).
 
@@ -362,9 +391,11 @@ def build_served_context(
     Reuses the shared graph assembler (``build_execution_context`` +
     ``format_served_context`` — the SAME served graph the metric grounding agent
     reads: concepts + part_of, references, cycles, per-column materialization = the
-    additivity signal, reconciles_with), then APPENDS two induction-specific
-    sections the balance-check class needs made explicit (DAT-735): the additivity
-    verdicts and the metric DAG.
+    additivity signal, reconciles_with), then APPENDS induction-specific sections
+    the served graph leaves implicit: the additivity verdicts and the metric DAG
+    the balance-check class needs (DAT-735), and the existence-check universe fact
+    (DAT-876) — a positive statement when no served table is dimension-role, so the
+    existence class is declined rather than bound against an activity table.
 
     The conventions slot is induction's OWN (DAT-865): ALL active conventions,
     rendered WITH their stable ids — not ``context.conventions`` (the
@@ -397,7 +428,11 @@ def build_served_context(
     effective_vertical = (
         session.execute(select(WorkspaceSettings.active_vertical)).scalar_one_or_none() or vertical
     )
-    served += _render_additivity(session, om_head) + _render_metric_dag(session, effective_vertical)
+    served += (
+        _render_additivity(session, om_head)
+        + _render_metric_dag(session, effective_vertical)
+        + _render_existence_universe(context)
+    )
     ws_conventions = load_workspace_conventions(session, vertical)
     return (
         served,

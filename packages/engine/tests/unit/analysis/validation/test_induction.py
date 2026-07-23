@@ -19,6 +19,7 @@ from dataraum.analysis.validation.induction import (
     ValidationInductionAgent,
     _is_clean,
     _render_conventions,
+    _render_existence_universe,
     _to_spec,
     membership_violations,
     served_membership,
@@ -163,6 +164,44 @@ def test_render_conventions_serves_ids() -> None:
     assert "Sign every measure by its natural balance." in rendered
     assert "credit_normal: revenue, equity" in rendered
     assert _render_conventions([]) == ""
+
+
+def _table(role: str | None) -> TableContext:
+    return TableContext(
+        table_id=f"t_{role or 'none'}",
+        table_name=f"tbl_{role or 'none'}",
+        columns=[ColumnContext(column_id="c1", column_name="entity_id", table_name="tbl")],
+        table_role=role,
+    )
+
+
+def test_existence_universe_fires_when_no_dimension() -> None:
+    """No dimension-role table served ⇒ the existence-check universe fact fires
+    (DAT-876), stating existence checks are unbindable — absence falls loud."""
+    ctx = GraphExecutionContext(tables=[_table("fact"), _table("periodic_snapshot")])
+    rendered = _render_existence_universe(ctx)
+    assert "## Existence-check universe" in rendered
+    assert "No served table has role=dimension" in rendered
+    assert "Do not propose existence checks here." in rendered
+
+
+def test_existence_universe_silent_when_dimension_present() -> None:
+    """A served dimension-role table IS an enumerator ⇒ the fact is silent, so
+    legitimate existence checks against it are still proposed (DAT-876)."""
+    ctx = GraphExecutionContext(tables=[_table("fact"), _table("dimension")])
+    assert _render_existence_universe(ctx) == ""
+
+
+def test_existence_universe_silent_when_no_tables() -> None:
+    """No served tables ⇒ nothing to state; the fact is silent (DAT-876)."""
+    assert _render_existence_universe(GraphExecutionContext(tables=[])) == ""
+
+
+def test_existence_universe_fires_when_role_unclassified() -> None:
+    """An unclassified table (no TableEntity ⇒ table_role None) is not an enumerator,
+    so the fact fires — the conservative decline, which IS the DAT-876 scenario."""
+    ctx = GraphExecutionContext(tables=[_table(None)])
+    assert "No served table has role=dimension" in _render_existence_universe(ctx)
 
 
 def test_contract_is_constrained_decoding_safe() -> None:

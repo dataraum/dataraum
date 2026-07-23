@@ -639,21 +639,81 @@ class TestGrainFacts:
         assert "additive (per-period movement): movement" in rendered
         assert "point_in_time (level, never summed across periods): level" in rendered
         assert "bare" not in rendered
+        # No dimension-role table is served ⇒ the existence-check universe fact fires
+        # (DAT-876): existence checks are unbindable against a fact/snapshot-only graph.
+        assert "existence-check universe: no served table has role=dimension" in rendered
 
-    def test_render_grain_facts_empty_when_no_facts(self):
+    def test_render_grain_facts_existence_fires_when_no_dimension(self):
+        """A single fact-role table with no other facts still renders the DAT-876
+        absence line — the block is no longer empty just because per-table grain
+        facts are sparse."""
         from dataraum.analysis.validation.agent import _render_grain_facts
 
         schema = {
             "tables": [
                 {
-                    "table_name": "bare",
-                    "duckdb_path": "bare",
+                    "table_name": "activity",
+                    "duckdb_path": "activity",
+                    "table_role": "fact",
                     "columns": [{"column_name": "x", "data_type": "VARCHAR"}],
                 }
             ]
         }
 
-        assert _render_grain_facts(schema) == ""
+        rendered = _render_grain_facts(schema)
+        assert rendered.startswith("<grain_facts>")
+        assert 'an existence check (an id "must exist") is unbindable here' in rendered
+
+    def test_render_grain_facts_existence_absent_when_dimension_present(self):
+        """A served dimension-role table IS an enumerator — the DAT-876 absence line
+        must NOT fire (legitimate existence checks against it still bind)."""
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        schema = {
+            "tables": [
+                {
+                    "table_name": "activity",
+                    "duckdb_path": "activity",
+                    "table_role": "fact",
+                    "columns": [{"column_name": "entity_id", "data_type": "VARCHAR"}],
+                },
+                {
+                    "table_name": "catalog",
+                    "duckdb_path": "catalog",
+                    "table_role": "dimension",
+                    "columns": [{"column_name": "entity_id", "data_type": "VARCHAR"}],
+                },
+            ]
+        }
+
+        rendered = _render_grain_facts(schema)
+        assert "- catalog: role=dimension" in rendered
+        assert "existence-check universe" not in rendered
+
+    def test_render_grain_facts_empty_when_no_tables(self):
+        """Zero served tables ⇒ empty block (nothing to state, existence fact too)."""
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        assert _render_grain_facts({"tables": []}) == ""
+
+    def test_render_grain_facts_existence_fires_when_role_unclassified(self):
+        """A table with no table_role key (unpinned/unclassified catalogue) is not a
+        dimension enumerator ⇒ the DAT-876 absence line fires (conservative decline)."""
+        from dataraum.analysis.validation.agent import _render_grain_facts
+
+        schema = {
+            "tables": [
+                {
+                    "table_name": "activity",
+                    "duckdb_path": "activity",
+                    "columns": [{"column_name": "entity_id", "data_type": "VARCHAR"}],
+                }
+            ]
+        }
+
+        assert "existence-check universe: no served table has role=dimension" in (
+            _render_grain_facts(schema)
+        )
 
     def test_generate_sql_passes_grain_facts_to_renderer(
         self, validation_agent, mock_provider, mock_prompt_renderer

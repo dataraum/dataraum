@@ -50,9 +50,19 @@ def _render_grain_facts(schema: dict[str, Any]) -> str:
     confidently wrong hint ("cumulative…") out-pulled them; proximity is the
     structural counterweight. Deterministic presentation of served facts —
     no SQL is generated or rewritten here.
+
+    The block also states the existence-check universe (DAT-876): a positive
+    projection of the closed ``table_role`` fact. An existence check ("this id
+    must exist") binds only against a table that authoritatively enumerates the
+    entity — a ``role=dimension`` table. When no served table carries that role,
+    say so, so a declared existence check is DECLINED here rather than graded
+    against a fact/snapshot table's own activity (an id absent from an activity
+    table may simply have no activity there, not be nonexistent). Absence falls
+    loud, never inferred from the omission of a DIMENSION label.
     """
+    tables = schema.get("tables", [])
     lines: list[str] = []
-    for table in schema.get("tables", []):
+    for table in tables:
         parts: list[str] = []
         if table.get("table_role"):
             parts.append(f"role={table['table_role']}")
@@ -79,6 +89,15 @@ def _render_grain_facts(schema: dict[str, Any]) -> str:
             )
         if parts:
             lines.append(f"- {table['table_name']}: {'; '.join(parts)}")
+    # Existence-check universe (DAT-876): fire when the served schema carries at
+    # least one table but none has role=dimension — a typed projection, no heuristic.
+    if tables and not any(t.get("table_role") == "dimension" for t in tables):
+        lines.append(
+            "- existence-check universe: no served table has role=dimension — none "
+            "authoritatively enumerates an entity's whole population, so an existence "
+            'check (an id "must exist") is unbindable here (decline it; other check '
+            "kinds are unaffected)"
+        )
     if not lines:
         return ""
     header = (

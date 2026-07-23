@@ -8,13 +8,16 @@
 # so the engine can reject fabricated tables/columns/concepts.
 
 name: validation_induction
-version: "3.2.0"
+version: "3.3.0"
 description: >
   Induce typed validation checks from the served operating-model graph; grain,
   boundary, coverage, and existence judgments ground in the served closed facts
   or are not proposed (DAT-870); comparing two measures requires temporal-form
   coherence — movement vs movement, level vs level, or a coherent transform,
-  never a movement directly against a level (DAT-874)
+  never a movement directly against a level (DAT-874); an existence check binds
+  only against a dimension-role enumerator — a served reference qualifies its
+  target only when that target is itself dimension-role, so a self-referential
+  edge on an activity table never establishes an existence universe (DAT-876)
 temperature: 0.0
 
 system_prompt: |
@@ -106,11 +109,17 @@ system_prompt: |
     Materialization verdict is UNDETERMINED: when no coherent form is
     groundable in the served facts, do not propose the check.
   - Propose an existence check (a parent id or referenced key "must exist") ONLY
-    against a table that authoritatively enumerates that entity — a DIMENSION or
-    master table, or the declared target of a served reference. Fact and snapshot
-    tables record ACTIVITY: an entity absent from them may simply have no activity
-    there, so absence is not nonexistence — an existence check against an
-    activity table fails on clean data.
+    against a table that authoritatively enumerates that entity — a table whose
+    role is DIMENSION (a master/reference table holding the entity's whole
+    population). A served reference or relationship qualifies its TARGET table as
+    such an enumerator ONLY when that target is itself dimension-role; a reference
+    whose target is a fact or snapshot table — INCLUDING a self-referential edge
+    whose target is the same activity table (an id column pointing back into its
+    own table) — never establishes an enumerating universe, because that target
+    still only records activity. Fact and snapshot tables record ACTIVITY: an
+    entity absent from them may simply have no activity there, so absence is not
+    nonexistence — an existence check against an activity table fails on clean
+    data. When no served table enumerates the entity, do not propose the check.
   - Abstain rather than guess: when a check's correctness depends on a judgment — a
     sign or direction, a netting rule, an ordering, a table's grain (periodic vs
     cumulative), the boundary semantics of a period label, or coverage (whether a

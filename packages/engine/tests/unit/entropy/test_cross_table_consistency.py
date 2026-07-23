@@ -1,11 +1,17 @@
-"""Tests for cross_table_consistency entropy detector (ADR-0017).
+"""Tests for cross_table_consistency entropy detector (ADR-0017, DAT-865b).
 
 The verdict is recomputed on demand: ``detect`` re-runs each record's
 ``sql_used`` via ``verdict_from_sql``, and reads the declared ``tolerance`` +
-``severity`` from the spec (loaded via ``_load_run_specs``, not the record). The
-unit tests patch BOTH — the verdict (keyed by ``sql_used``) and the spec map
-(keyed by ``validation_id``) — so the scoring + fan-out logic is tested in
-isolation; ``_score`` is tested directly against verdicts.
+``severity`` + ``source`` (provenance, DAT-735) from the spec (loaded via
+``_load_run_specs``, not the record). The unit tests patch BOTH — the verdict
+(keyed by ``sql_used``) and the spec map (keyed by ``validation_id``) — so the
+scoring + fan-out logic is tested in isolation; ``_score`` is tested directly
+against verdicts.
+
+``TestProvenancePooling`` pins DAT-865b's acceptance at the READINESS-BAND
+level (through ``entropy/loss.py`` + ``entropy/views/readiness_context.py``,
+the REAL shipped ``loss.yaml`` weights), not just the detector's raw score —
+mirroring the precedent in ``tests/unit/entropy/views/test_readiness_context.py``.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import dataraum.entropy.detectors.computational.cross_table_consistency as ctc
 from dataraum.analysis.validation.evaluate import ValidationVerdict
 from dataraum.analysis.validation.models import ValidationStatus
 from dataraum.entropy.detectors.base import DetectorContext
+from dataraum.entropy.views.readiness_context import assemble_readiness_context
 
 
 @pytest.fixture
@@ -36,13 +43,18 @@ def _verdict(
     )
 
 
-def _spec(severity: str = "critical", tolerance: float = 0.01) -> MagicMock:
+def _spec(severity: str = "critical", tolerance: float = 0.01, source: str = "seed") -> MagicMock:
     spec = MagicMock()
     spec.severity = MagicMock()
     spec.severity.value = severity
     # The typed check definition (DAT-735): tolerance is a float field, not a
     # `parameters` dict entry — mirror the real ValidationSpec the detector reads.
     spec.tolerance = tolerance
+    # Provenance (DAT-735/865b): 'seed' (shipped, human-reviewed) is the
+    # default here since most tests exercise the pre-865b fan-out/scoring
+    # logic, which is provenance-agnostic; provenance-specific tests below
+    # pass ``source`` explicitly.
+    spec.source = source
     return spec
 
 
@@ -65,7 +77,7 @@ def _install_verdicts(monkeypatch, mapping: dict[str, ValidationVerdict]) -> Non
 
 
 def _install_specs(monkeypatch, mapping: dict[str, MagicMock]) -> None:
-    """Patch the spec load: validation_id → spec (severity + tolerance)."""
+    """Patch the spec load: validation_id → spec (severity + tolerance + source)."""
     monkeypatch.setattr(ctc, "_load_run_specs", lambda _ctx: mapping)
 
 
@@ -77,6 +89,39 @@ def _make_context(
     ctx = DetectorContext(table_id=table_id, table_name=table_name, duckdb_conn=MagicMock())
     if validations is not None:
         ctx.analysis_results["validation"] = validations
+    return ctx
+
+
+def _seed_journal_lines(session) -> tuple[str, dict[str, str]]:  # noqa: ANN001
+    """Seed a ``journal_lines`` table with credit/debit/account_id columns."""
+    from dataraum.storage import Column, Source, Table
+
+    session.add(Source(source_id="src_v", name="src_v", source_type="csv"))
+    table = Table(
+        table_id="jl",
+        source_id="src_v",
+        table_name="journal_lines",  # narrow, workspace-unique (DAT-639)
+        layer="typed",
+    )
+    session.add(table)
+    session.flush()
+    ids: dict[str, str] = {}
+    for pos, name in enumerate(("credit", "debit", "account_id")):
+        col = Column(table_id="jl", column_name=name, column_position=pos, resolved_type="DOUBLE")
+        session.add(col)
+        session.flush()
+        ids[name] = col.column_id
+    return "jl", ids
+
+
+def _column_context(session, validations: list) -> DetectorContext:  # noqa: ANN001
+    ctx = DetectorContext(
+        table_id="jl",
+        table_name="journal_lines",
+        session=session,
+        duckdb_conn=MagicMock(),
+    )
+    ctx.analysis_results["validation"] = validations
     return ctx
 
 
@@ -129,17 +174,20 @@ class TestDetectFailures:
     def test_single_critical_failure(
         self, detector: ctc.CrossTableConsistencyDetector, monkeypatch
     ) -> None:
+        """A lone (default seed-source) critical failure pools to reliability ×
+        check_score = 0.95 × 1.0 (DAT-865b), not the raw categorical 1.0."""
         _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
         ctx = _make_context(validations=[_make_result(sql_used="s1", validation_id="v1")])
         objects = detector.detect(ctx)
         assert len(objects) == 1
-        assert objects[0].score == 1.0
+        assert objects[0].score == pytest.approx(0.95, abs=1e-6)
 
-    def test_max_aggregation(
+    def test_passed_check_contributes_nothing(
         self, detector: ctc.CrossTableConsistencyDetector, monkeypatch
     ) -> None:
-        """Worst failure drives the score (honest rate, no boost)."""
+        """A passed check alongside a failed one contributes no witness — the
+        table's score comes entirely from the failing check's pooled evidence."""
         _install_specs(monkeypatch, {"v1": _spec("critical"), "v2": _spec("high")})
         _install_verdicts(
             monkeypatch,
@@ -155,7 +203,37 @@ class TestDetectFailures:
             ]
         )
         objects = detector.detect(ctx)
-        assert objects[0].score == pytest.approx(0.05, abs=1e-6)
+        # One seed witness: reliability 0.95 × honest rate 0.05.
+        assert objects[0].score == pytest.approx(0.0475, abs=1e-6)
+
+    def test_two_failures_pool_additively_at_table_grain(
+        self, detector: ctc.CrossTableConsistencyDetector, monkeypatch
+    ) -> None:
+        """Two independent failing checks corroborate the SAME table-level
+        "broken" claim (DAT-865b, senior review) — the table object pools
+        every failing witness, not just the worst one, exactly like the
+        column fan-out; ``readiness_context.py`` reads a ``table:`` target the
+        same way it reads a ``column:`` one, so leaving this grain on the raw
+        worst-score would let an unvetted check block the table through a
+        side door even after the column fan-out was fixed."""
+        _install_specs(monkeypatch, {"v_rate": _spec("high"), "v_critical": _spec("critical")})
+        _install_verdicts(
+            monkeypatch,
+            {
+                "rate": _verdict(ValidationStatus.FAILED, deviation=0.05, magnitude=1.0),
+                "crit": _verdict(ValidationStatus.FAILED, deviation=1.0),
+            },
+        )
+        ctx = _make_context(
+            validations=[
+                _make_result(sql_used="rate", validation_id="v_rate"),
+                _make_result(sql_used="crit", validation_id="v_critical"),
+            ]
+        )
+        objects = detector.detect(ctx)
+        # Two seed witnesses: 0.95×0.05 + 0.95×1.0 = 0.9975 (same pooled
+        # additive math as the column fan-out — same underlying witnesses).
+        assert objects[0].score == pytest.approx(0.9975, abs=1e-6)
 
     def test_evidence_per_check(
         self, detector: ctc.CrossTableConsistencyDetector, monkeypatch
@@ -186,50 +264,23 @@ class TestColumnFanOut:
     The band must reach the columns deliverable metrics flow through — a
     ``table:`` row joins to nothing downstream (scoreboard baseline:
     0 prevented / 8 wrong-delivered with the GL unbanded).
+
+    Column scores are now the pooled evidence_mass (DAT-865b) — with the
+    default ``source="seed"`` spec (reliability 0.95, the detector's
+    ``DEFAULT_RELIABILITIES`` fallback), a single fully-confident witness
+    (check_score 1.0) pools to ``0.95``, not the raw ``1.0`` — see
+    ``TestProvenancePooling`` for the seed-vs-generated readiness-band tests.
     """
-
-    @staticmethod
-    def _seed(session) -> tuple[str, dict[str, str]]:  # noqa: ANN001 — conftest fixture
-        from dataraum.storage import Column, Source, Table
-
-        session.add(Source(source_id="src_v", name="src_v", source_type="csv"))
-        table = Table(
-            table_id="jl",
-            source_id="src_v",
-            table_name="journal_lines",  # narrow, workspace-unique (DAT-639)
-            layer="typed",
-        )
-        session.add(table)
-        session.flush()
-        ids: dict[str, str] = {}
-        for pos, name in enumerate(("credit", "debit", "account_id")):
-            col = Column(
-                table_id="jl", column_name=name, column_position=pos, resolved_type="DOUBLE"
-            )
-            session.add(col)
-            session.flush()
-            ids[name] = col.column_id
-        return "jl", ids
-
-    def _context(self, session, validations: list) -> DetectorContext:  # noqa: ANN001
-        ctx = DetectorContext(
-            table_id="jl",
-            table_name="journal_lines",
-            session=session,
-            duckdb_conn=MagicMock(),
-        )
-        ctx.analysis_results["validation"] = validations
-        return ctx
 
     def test_failed_check_bands_its_columns(
         self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
         """Own-table columns matched by exact narrow name; foreign tables ignored;
         hallucinated columns dropped; column_id rides in evidence."""
-        _, ids = self._seed(session)
+        _, ids = _seed_journal_lines(session)
         _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=0.1)})
-        ctx = self._context(
+        ctx = _column_context(
             session,
             [
                 _make_result(
@@ -251,16 +302,20 @@ class TestColumnFanOut:
         assert "column:journal_lines.debit" in by_target
         assert len(objects) == 3  # table object + 2 columns (ghost + foreign dropped)
         credit = by_target["column:journal_lines.credit"]
-        assert credit.score == 1.0  # critical → categorical
+        # critical → categorical check_score 1.0, pooled through the default
+        # seed reliability (0.95): a lone witness's evidence_mass = r × score.
+        assert credit.score == pytest.approx(0.95, abs=1e-6)
         assert credit.evidence[0]["column_id"] == ids["credit"]
+        assert credit.evidence[0]["source"] == "seed"
+        assert credit.witnesses[0].reliability == pytest.approx(0.95, abs=1e-6)
 
     def test_passed_checks_band_nothing(
         self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
-        self._seed(session)
+        _seed_journal_lines(session)
         _install_specs(monkeypatch, {"v1": _spec("critical")})
         _install_verdicts(monkeypatch, {"sp": _verdict(ValidationStatus.PASSED)})
-        ctx = self._context(
+        ctx = _column_context(
             session,
             [
                 _make_result(
@@ -275,9 +330,9 @@ class TestColumnFanOut:
     def test_worst_score_wins_per_column(
         self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
-        """Two failing checks touching the same column → one object, worst score,
-        both checks in evidence."""
-        _, ids = self._seed(session)
+        """Two failing checks touching the same column → one object, pooled
+        score (DAT-865b), both checks in evidence."""
+        _, ids = _seed_journal_lines(session)
         _install_specs(monkeypatch, {"v_rate": _spec("high"), "v_critical": _spec("critical")})
         _install_verdicts(
             monkeypatch,
@@ -286,7 +341,7 @@ class TestColumnFanOut:
                 "crit": _verdict(ValidationStatus.FAILED, deviation=1.0),
             },
         )
-        ctx = self._context(
+        ctx = _column_context(
             session,
             [
                 _make_result(
@@ -304,8 +359,160 @@ class TestColumnFanOut:
         objects = detector.detect(ctx)
         column_objs = [o for o in objects if o.target.startswith("column:")]
         assert len(column_objs) == 1
-        assert column_objs[0].score == 1.0
+        # Two seed witnesses pool additively: evidence_mass = 0.95×0.05 +
+        # 0.95×1.0 = 0.9975 (both checks corroborate the same "broken" claim).
+        assert column_objs[0].score == pytest.approx(0.9975, abs=1e-6)
         assert {e["validation_id"] for e in column_objs[0].evidence} == {"v_rate", "v_critical"}
+
+
+class TestProvenancePooling:
+    """DAT-865b acceptance, pinned at the READINESS-BAND level.
+
+    Feeds the real detector's output through the REAL shipped
+    ``entropy/loss.yaml`` weights (``assemble_readiness_context``) — not just
+    the detector's raw score — mirroring the precedent in
+    ``tests/unit/entropy/views/test_readiness_context.py``.
+    """
+
+    _CREDIT = "column:journal_lines.credit"
+    # The TABLE-scoped target (DAT-865b, senior review): readiness_context.py
+    # rolls a ``table:`` target up through the identical loss path as a
+    # ``column:`` one (no special-casing) — and the cockpit's per-table "why"
+    # tooling reads exactly this row — so a fix scoped only to the column
+    # fan-out would leave the original DAT-865 bug live at table grain.
+    _TABLE = "table:journal_lines"
+
+    def test_seeded_critical_alone_blocks(
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """(1) A seeded critical check failing alone → blocked (today's
+        behavior), at BOTH the column and table grain."""
+        _seed_journal_lines(session)
+        _install_specs(monkeypatch, {"v1": _spec("critical", source="seed")})
+        _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
+        ctx = _column_context(
+            session,
+            [
+                _make_result(
+                    validation_id="v1", sql_used="s1", columns_used=["journal_lines.credit"]
+                )
+            ],
+        )
+        readiness = assemble_readiness_context(detector.detect(ctx))
+        assert readiness.columns[self._CREDIT].readiness == "blocked"
+        assert readiness.columns[self._TABLE].readiness == "blocked"
+
+    @pytest.mark.parametrize(
+        ("severity", "deviation"),
+        [
+            ("critical", 1.0),  # categorical check_score 1.0 — the worst case
+            ("high", 0.9),  # a severe but non-critical honest rate
+        ],
+    )
+    def test_generated_failure_alone_never_blocks(
+        self,
+        detector: ctc.CrossTableConsistencyDetector,
+        session,
+        monkeypatch,
+        severity: str,
+        deviation: float,
+    ) -> None:  # noqa: ANN001
+        """(2) A generated check failing alone (any severity) → investigate,
+        NEVER blocked — the DAT-865 clean-corpus scenario — at BOTH the
+        column and table grain (the table grain is the exact surface DAT-865
+        originally hit: a lone unvetted check categorically blocking)."""
+        _seed_journal_lines(session)
+        _install_specs(monkeypatch, {"v1": _spec(severity, source="generated")})
+        _install_verdicts(
+            monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=deviation)}
+        )
+        ctx = _column_context(
+            session,
+            [
+                _make_result(
+                    validation_id="v1", sql_used="s1", columns_used=["journal_lines.credit"]
+                )
+            ],
+        )
+        readiness = assemble_readiness_context(detector.detect(ctx))
+        assert readiness.columns[self._CREDIT].readiness == "investigate"
+        assert readiness.columns[self._TABLE].readiness == "investigate"
+
+    def test_corroborated_generated_failures_escalate(
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """(3) A generated failure corroborated by a second independent
+        witness escalates per pool semantics — pinned as whatever the pool
+        actually yields with 2 witnesses, no hand-tuned special case."""
+        _seed_journal_lines(session)
+        _install_specs(
+            monkeypatch,
+            {
+                "v1": _spec("critical", source="generated"),
+                "v2": _spec("critical", source="generated"),
+            },
+        )
+        _install_verdicts(
+            monkeypatch,
+            {
+                "s1": _verdict(ValidationStatus.FAILED, deviation=1),
+                "s2": _verdict(ValidationStatus.FAILED, deviation=1),
+            },
+        )
+        ctx = _column_context(
+            session,
+            [
+                _make_result(
+                    validation_id="v1", sql_used="s1", columns_used=["journal_lines.credit"]
+                ),
+                _make_result(
+                    validation_id="v2", sql_used="s2", columns_used=["journal_lines.credit"]
+                ),
+            ],
+        )
+        objects = detector.detect(ctx)
+        column_obj = next(o for o in objects if o.target == self._CREDIT)
+        table_obj = next(o for o in objects if o.target == self._TABLE)
+        # Two independent generated witnesses (reliability 0.5 each, full
+        # check_score 1.0) pool additively: evidence_mass = 0.5 + 0.5 = 1.0 —
+        # whatever the pool yields, pinned exactly, not hand-picked. Same
+        # underlying witnesses at both grains here (one column, one table).
+        assert column_obj.score == pytest.approx(1.0, abs=1e-6)
+        assert table_obj.score == pytest.approx(1.0, abs=1e-6)
+        readiness = assemble_readiness_context(objects)
+        assert readiness.columns[self._CREDIT].readiness == "blocked"
+        assert readiness.columns[self._TABLE].readiness == "blocked"
+
+    def test_duplicate_columns_used_does_not_double_count(
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """A single check naming the same column twice in ``columns_used``
+        (nothing upstream forbids it) must contribute exactly ONE witness to
+        that column — not two — or a lone generated check could silently
+        double its own evidence_mass and cross into 'blocked' alone (senior
+        review, DAT-865b), and would collide on ``ClaimWitnessRecord``'s
+        ``(target, claim_field, witness_id, run_id)`` unique constraint."""
+        _seed_journal_lines(session)
+        _install_specs(monkeypatch, {"v1": _spec("critical", source="generated")})
+        _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
+        ctx = _column_context(
+            session,
+            [
+                _make_result(
+                    validation_id="v1",
+                    sql_used="s1",
+                    columns_used=["journal_lines.credit", "journal_lines.credit"],
+                )
+            ],
+        )
+        objects = detector.detect(ctx)
+        column_obj = next(o for o in objects if o.target == self._CREDIT)
+        # Exactly one witness (reliability 0.5), not two (which would double
+        # to 1.0 and cross into 'blocked').
+        assert len(column_obj.witnesses) == 1
+        assert column_obj.score == pytest.approx(0.5, abs=1e-6)
+        readiness = assemble_readiness_context(objects)
+        assert readiness.columns[self._CREDIT].readiness == "investigate"
 
 
 class TestDetectorProperties:

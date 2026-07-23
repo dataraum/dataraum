@@ -47,7 +47,15 @@ class PoolResult:
             qualified has weighed in. Routes to "collect more evidence".
         n_witnesses: Number of witnesses pooled.
         evidence_mass: Effective informative evidence ``Σ rᵢ·certaintyᵢ`` that
-            drives ``U``. Exposed for provenance / debugging (loud, not silent).
+            drives ``U``. Exposed for provenance / debugging (loud, not silent) —
+            most consumers (``derived_value``, ``null_semantics``) read
+            ``conflict``/``ignorance`` instead. One exception:
+            ``cross_table_consistency`` (DAT-865b) reads ``evidence_mass``
+            directly as its primary score — its witnesses are always one-hot
+            "this check asserts broken" (only failing checks are witnessed, all
+            leaning the same way), so ``conflict`` is structurally always 0 for
+            that claim shape and evidence_mass — reliability-weighted,
+            additive-under-corroboration — is the informative signal instead.
     """
 
     posterior: tuple[float, ...]

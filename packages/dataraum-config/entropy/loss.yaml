@@ -178,6 +178,14 @@ measurements:
     reporting_intent: { score: 0.7 }
   cross_table_consistency:
     # Cross-table reconciliation breaks: worst for aggregation + reporting.
+    # "score" here is the COLUMN fan-out's pooled evidence_mass (DAT-865b,
+    # ADR-0009 witness pool over entropy/reliabilities.yaml's
+    # cross_table_consistency priors), not the raw per-check score: a lone
+    # unvetted (generated) failing check is reliability-discounted so it can
+    # only reach 'investigate' here (0.8 × 0.5 = 0.4), never 'blocked', while a
+    # lone vetted (seed) critical failure still clears it (0.8 × 0.95 = 0.76).
+    # No weight change needed — the discount lives entirely in the pooled
+    # score these weights read.
     aggregation_intent: { score: 0.8 }
     reporting_intent: { score: 0.7 }
   # dimensional_entropy is NOT in the loss table (DEMOTED 2026-06-16): an INFORMATIVE

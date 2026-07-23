@@ -49,10 +49,25 @@ into the witness's ``reliability`` — pool()'s weighting axis — so the honest
 ungraded magnitude (DAT-442) is never distorted by the claim-space entropy
 math. A LONE witness's only lever into the loss path is ``evidence_mass``
 (``pool()`` forces ``conflict=0.0`` at n=1): a lone unvetted (generated) check
-can no longer single-handedly block a target, a lone vetted (seed) critical
-failure still clears the blocked band, and independent corroboration (2+
-witnesses agreeing) escalates the risk additively with no hand-tuned special
-case.
+can no longer single-handedly block a target, and a lone vetted (seed)
+critical failure still clears the blocked band.
+
+Correlated corroboration is NOT independent evidence (DAT-871): a sweep
+re-run caught TWO semantically-wrong generated checks pooling additively to
+0.5+0.5=1.0 — categorically blocked, the exact DAT-865 failure mode reopened
+through corroboration instead of a lone witness. The checks were never
+independent: same generator (agentic induction, DAT-735), same served
+context, drawn in the same run — sibling checks over the same graph, not
+separately-reviewed logic. SEED checks corroborate additively (distinct,
+human-reviewed templates ARE independent logic — ``Σ rᵢ·check_scoreᵢ``, no
+hand-tuned special case). GENERATED-tier checks (including the
+provenance-unknown fallback, ``_UNKNOWN_SOURCE_FALLBACK``) contribute at most
+their single STRONGEST witness — ``max(rᵢ·check_scoreᵢ)``, never a sum — so N
+generated-only failures can never band a target blocked, at any N. The two
+tiers still combine additively WITH each other (a seeded critical plus a
+generated failure escalates past the blocked band, DAT-871 acceptance #3) —
+only the within-generated-tier sum is replaced by a max. See
+``_capped_evidence_mass``.
 
 BOTH grains pool (senior review, DAT-865b): the TABLE-scoped object and the
 COLUMN fan-out (DAT-432) are NOT independent severities — ``readiness_context.py``
@@ -69,8 +84,9 @@ grouped at two grains, never two different claims.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+import math
+from collections.abc import Mapping, Sequence
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
@@ -156,6 +172,21 @@ def _score(verdict: ValidationVerdict, severity: str) -> float:
     return min(1.0, deviation / magnitude)
 
 
+def _tier(source: str | None) -> str:
+    """Resolve a check's POOLING TIER from its provenance (DAT-871).
+
+    Literal 'seed' (shipped, human-reviewed — distinct templates, independent
+    logic) is the seed tier; everything else — 'generated' and any provenance
+    without a dedicated calibrated entry (``_UNKNOWN_SOURCE_FALLBACK``) —
+    falls into the generated tier: same generator + same served context,
+    correlated rather than independent. This is the same key resolution
+    ``_reliability_for_source`` uses to look up a NUMBER; here it decides
+    which side of the additive/max split (``_capped_evidence_mass``) a
+    witness's mass falls on.
+    """
+    return source if source in DEFAULT_RELIABILITIES else _UNKNOWN_SOURCE_FALLBACK
+
+
 def _reliability_for_source(source: str | None, reliabilities: Mapping[str, float]) -> float:
     """The pooling reliability for one check, keyed by its PROVENANCE.
 
@@ -166,8 +197,22 @@ def _reliability_for_source(source: str | None, reliabilities: Mapping[str, floa
     ``_UNKNOWN_SOURCE_FALLBACK``) falls back to the GENERATED tier: unknown
     provenance never gets seed-level trust.
     """
-    key = source if source in DEFAULT_RELIABILITIES else _UNKNOWN_SOURCE_FALLBACK
+    key = _tier(source)
     return reliabilities.get(key, DEFAULT_RELIABILITIES[key])
+
+
+class _TieredWitness(NamedTuple):
+    """A check's witness plus its pooling TIER (DAT-871).
+
+    ``pool()`` itself stays generic (ADR-0009 machinery other detectors are
+    calibrated on) and knows nothing of tiers — this wrapper is local to this
+    detector's OWN consumption of ``Witness``, letting ``_capped_evidence_mass``
+    split additive (seed) from capped (generated) contributions without
+    threading a tier concept through the pooling engine.
+    """
+
+    witness: Witness
+    tier: str
 
 
 def _check_witness(
@@ -175,7 +220,7 @@ def _check_witness(
     source: str | None,
     check_score: float,
     reliabilities: Mapping[str, float],
-) -> Witness:
+) -> _TieredWitness:
     """One failing check's witness on a target's "broken" claim (ADR-0009).
 
     The distribution is always fully confident — ``(broken=1.0, intact=0.0)``
@@ -189,34 +234,76 @@ def _check_witness(
     which is wildly nonlinear near 0.5 and would distort DAT-442's honest,
     no-boost rate. Folding it into reliability instead keeps a witness's
     contribution to ``evidence_mass`` exactly ``reliability(source) ×
-    check_score`` — linear, so independent corroboration escalates additively
-    (``Σ rᵢ·check_scoreᵢ``) with no hand-tuned special case, and a LONE
-    witness's only lever into the loss path is that same ``evidence_mass``
-    (``pool()`` forces ``conflict=0.0`` at n=1, DAT-865b).
+    check_score`` — linear. Independent (seed) corroboration escalates
+    additively (``Σ rᵢ·check_scoreᵢ``); correlated (generated) corroboration
+    does NOT — it is capped at its single strongest witness instead
+    (``_capped_evidence_mass``, DAT-871). A LONE witness's only lever into the
+    loss path is that same effective mass (``pool()`` forces ``conflict=0.0``
+    at n=1, DAT-865b).
     """
     reliability = _reliability_for_source(source, reliabilities) * max(0.0, min(1.0, check_score))
-    return Witness(
+    witness = Witness(
         witness_id=f"validation:{validation_id}",
         distribution=(1.0, 0.0),
         reliability=reliability,
     )
+    return _TieredWitness(witness=witness, tier=_tier(source))
 
 
-def _witness_claims(witnesses: list[Witness]) -> list[WitnessClaim]:
+def _capped_evidence_mass(witnesses: Sequence[_TieredWitness]) -> float:
+    """The effective evidence mass driving CTC's score (DAT-871).
+
+    Seed-tier witnesses are distinct, human-reviewed templates — independent
+    logic — so they corroborate additively, exactly like ``pool()``'s own
+    ``evidence_mass`` would compute: ``Σ reliability``. (Every CTC witness
+    carries a one-hot ``(1.0, 0.0)`` distribution — a failed check is a
+    definitive fact, never a graded uncertainty — so ``pool()``'s per-witness
+    ``certainty`` term is always exactly 1, and its ``evidence_mass``
+    contribution collapses to just ``reliability``; this lets the sum be
+    computed directly here without duplicating pool()'s certainty math or
+    touching ``pool()`` itself.)
+
+    Generated-tier witnesses (agentic induction's own proposals, DAT-735,
+    including the provenance-unknown fallback) are NOT independent evidence:
+    a same-draw batch shares one generator and one served context, so a
+    sweep re-run found two semantically-wrong generated checks corroborating
+    additively to a categorical block on clean data (DAT-871) — the DAT-865
+    bug reopened through corroboration. Their contribution is capped at the
+    single STRONGEST generated witness instead of summed, so N generated-only
+    failures can never band a target blocked, at any N.
+
+    The two tiers still combine additively WITH each other — a seeded
+    critical plus a generated failure escalates past the blocked band
+    (acceptance #3) — only the within-generated-tier sum becomes a max.
+
+    Unbounded above (like ``pool()``'s own ``evidence_mass`` — see
+    ``PoolResult``); callers clamp to ``[0, 1]`` for the ``EntropyObject``
+    score.
+    """
+    seed_mass = math.fsum(tw.witness.reliability for tw in witnesses if tw.tier == "seed")
+    generated_masses = [tw.witness.reliability for tw in witnesses if tw.tier != "seed"]
+    generated_mass = max(generated_masses) if generated_masses else 0.0
+    return seed_mass + generated_mass
+
+
+def _witness_claims(witnesses: Sequence[_TieredWitness]) -> list[WitnessClaim]:
     """The persisted provenance trace (ADR-0009) for one target's witnesses.
 
     Shared by the table-scoped object and every column fan-out object — both
     grains pool the same underlying witnesses (DAT-865b), just grouped
-    differently, so they share one claim_field.
+    differently, so they share one claim_field. ALL witnesses persist here
+    regardless of tier or the DAT-871 cap — the cap changes how a witness's
+    mass reaches the SCORE, never whether it is recorded (no evidence
+    hiding).
     """
     return [
         WitnessClaim(
             claim_field="cross_table_consistency",
-            witness_id=w.witness_id,
-            distribution=dict(zip(CLAIM_SPACE, w.distribution, strict=True)),
-            reliability=w.reliability,
+            witness_id=tw.witness.witness_id,
+            distribution=dict(zip(CLAIM_SPACE, tw.witness.distribution, strict=True)),
+            reliability=tw.witness.reliability,
         )
-        for w in witnesses
+        for tw in witnesses
     ]
 
 
@@ -330,10 +417,10 @@ class CrossTableConsistencyDetector(EntropyDetector):
         reliabilities: Mapping[str, float] = context.get_analysis("reliabilities", None) or {}
 
         evidence: list[dict[str, Any]] = []
-        table_witnesses: list[Witness] = []
+        table_witnesses: list[_TieredWitness] = []
         # Per column: the check-level evidence entries + the witnesses pooled
         # from them (DAT-865b) — replaces the old (worst_score, entries) pair.
-        per_column: dict[str, tuple[list[dict[str, Any]], list[Witness]]] = {}
+        per_column: dict[str, tuple[list[dict[str, Any]], list[_TieredWitness]]] = {}
 
         for result in results:
             spec = specs.get(result.validation_id)
@@ -379,12 +466,14 @@ class CrossTableConsistencyDetector(EntropyDetector):
                     witnesses.append(witness)
                     per_column[col_name] = (entries, witnesses)
 
-        # Pooled evidence_mass (DAT-865b) — the same lever as the column
-        # fan-out: a lone unvetted (generated) check can't saturate the
-        # table's score either, and corroborating failures escalate
-        # additively. Clamp: evidence_mass is unbounded above.
-        table_result: PoolResult = pool(table_witnesses)
-        final_score = min(1.0, table_result.evidence_mass)
+        # Capped evidence mass (DAT-865b + DAT-871) — the same lever as the
+        # column fan-out: a lone unvetted (generated) check can't saturate the
+        # table's score, seed failures still escalate additively, and
+        # corroborating GENERATED failures cap at their strongest single
+        # witness rather than summing (see ``_capped_evidence_mass``). No
+        # ``pool()`` call needed at this grain — nothing here reads
+        # conflict/ignorance. Clamp: the mass itself is unbounded above.
+        final_score = min(1.0, _capped_evidence_mass(table_witnesses))
 
         table_object = self.create_entropy_object(
             context=context,
@@ -430,7 +519,7 @@ class CrossTableConsistencyDetector(EntropyDetector):
     def _column_objects(
         self,
         context: DetectorContext,
-        per_column: dict[str, tuple[list[dict[str, Any]], list[Witness]]],
+        per_column: dict[str, tuple[list[dict[str, Any]], list[_TieredWitness]]],
     ) -> list[EntropyObject]:
         """Column-grain objects for the columns failing checks touched.
 
@@ -440,11 +529,18 @@ class CrossTableConsistencyDetector(EntropyDetector):
         names the LLM declared but the table doesn't have are dropped
         (hallucination guard).
 
-        The score is the POOLED ``evidence_mass`` of the column's failing-check
-        witnesses (DAT-865b, ADR-0009), not the raw worst score: a lone
-        unvetted (generated) check can no longer single-handedly saturate a
-        column's score, a lone vetted (seed) critical failure still does, and
-        corroborating witnesses escalate additively — see ``_check_witness``.
+        The score is the column's CAPPED evidence mass (DAT-865b + DAT-871,
+        ``_capped_evidence_mass``), not the raw worst score: a lone unvetted
+        (generated) check can no longer single-handedly saturate a column's
+        score, a lone vetted (seed) critical failure still does, seed
+        witnesses corroborate additively, and corroborating GENERATED
+        witnesses cap at their strongest single one rather than summing —
+        see ``_check_witness`` / ``_capped_evidence_mass``. ``pool()`` is
+        still called (unmodified) for ``conflict``/``ignorance`` — informative
+        provenance fields nothing in the loss path reads for this detector —
+        but its ``evidence_mass`` is discarded in favor of the capped one, so
+        the persisted ``pool_evidence_mass`` stays honest about what actually
+        produced the score.
         """
         if context.session is None or not context.table_id or not per_column:
             return []
@@ -465,10 +561,13 @@ class CrossTableConsistencyDetector(EntropyDetector):
                     "validation_column_unknown", table=context.table_name, column=col_name
                 )
                 continue
-            result: PoolResult = pool(witnesses)
-            # Clamp: evidence_mass is unbounded above (corroborating witnesses
-            # sum), but EntropyObject.score is a [0, 1] risk measure.
-            score = min(1.0, result.evidence_mass)
+            # conflict/ignorance only (DAT-871): the score comes from the
+            # capped mass below, not this PoolResult's own evidence_mass.
+            result: PoolResult = pool([tw.witness for tw in witnesses])
+            capped_mass = _capped_evidence_mass(witnesses)
+            # Clamp: the capped mass is unbounded above (seed contributions
+            # still sum), but EntropyObject.score is a [0, 1] risk measure.
+            score = min(1.0, capped_mass)
             objects.append(
                 EntropyObject(
                     layer=self.layer,
@@ -488,9 +587,13 @@ class CrossTableConsistencyDetector(EntropyDetector):
                             "table_id": context.table_id,
                             "_table_name": context.table_name,
                             "_column_name": col_name,
-                            # Pooled provenance (DAT-865b): one pool per column,
-                            # so the same numbers ride every entry it covers.
-                            "pool_evidence_mass": result.evidence_mass,
+                            # Pooled provenance (DAT-865b/DAT-871): one pool per
+                            # column, so the same numbers ride every entry it
+                            # covers. ``pool_evidence_mass`` is the CAPPED mass
+                            # (what actually produced ``score``), not pool()'s
+                            # raw uncapped sum — persisted evidence must not
+                            # claim more mass than the score was computed from.
+                            "pool_evidence_mass": capped_mass,
                             "pool_ignorance": result.ignorance,
                             "pool_conflict": result.conflict,
                         }

@@ -493,6 +493,13 @@ class TestProvenancePooling:
         # mass reaches the score, never whether a witness is recorded.
         assert len(column_obj.witnesses) == n_generated
         assert len(table_obj.witnesses) == n_generated
+        # Persisted evidence stays honest about the CAPPED mass regardless of
+        # N: pool_evidence_mass never reports the uncapped sum (would be
+        # n_generated × 0.5), and pool_ignorance is derived from that SAME
+        # capped 0.5 (1 / (1 + 0.5)), never from the uncapped figure.
+        assert column_obj.evidence[0]["pool_evidence_mass"] == pytest.approx(0.5, abs=1e-6)
+        assert column_obj.evidence[0]["pool_ignorance"] == pytest.approx(1 / 1.5, abs=1e-6)
+        assert column_obj.evidence[0]["pool_conflict"] == 0.0
         readiness = assemble_readiness_context(objects)
         # risk = 0.8 (aggregation_intent weight) × 0.5 = 0.4 ≤ medium_upper
         # (0.6) → 'investigate', never 'blocked', at either grain.
@@ -542,19 +549,62 @@ class TestProvenancePooling:
         assert table_obj.score == pytest.approx(1.0, abs=1e-6)
         assert len(column_obj.witnesses) == 2
         assert len(table_obj.witnesses) == 2
+        # The persisted mass is the UNCLAMPED 1.45 (0.95 + 0.5) — score clamps
+        # to [0, 1], but pool_evidence_mass stays honest about the actual
+        # (unbounded) capped mass, per PoolResult's own evidence_mass
+        # contract; ignorance is derived from that same 1.45.
+        assert column_obj.evidence[0]["pool_evidence_mass"] == pytest.approx(1.45, abs=1e-6)
+        assert column_obj.evidence[0]["pool_ignorance"] == pytest.approx(1 / 2.45, abs=1e-6)
+        assert column_obj.evidence[0]["pool_conflict"] == 0.0
         readiness = assemble_readiness_context(objects)
         assert readiness.columns[self._CREDIT].readiness == "blocked"
         assert readiness.columns[self._TABLE].readiness == "blocked"
 
-    def test_duplicate_columns_used_does_not_double_count(
+    def test_duplicate_columns_used_does_not_double_count_seed(
         self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
     ) -> None:  # noqa: ANN001
-        """A single check naming the same column twice in ``columns_used``
-        (nothing upstream forbids it) must contribute exactly ONE witness to
-        that column — not two — or a lone generated check could silently
-        double its own evidence_mass and cross into 'blocked' alone (senior
-        review, DAT-865b), and would collide on ``ClaimWitnessRecord``'s
-        ``(target, claim_field, witness_id, run_id)`` unique constraint."""
+        """A single SEED check naming the same column twice in ``columns_used``
+        (nothing upstream forbids it) must contribute exactly ONE witness —
+        not two — or it would silently double its own evidence_mass (0.95 →
+        clamped 1.0): the seed tier still sums additively (DAT-871), so
+        double-counting one check as two witnesses is a live SCORING bug for
+        THIS tier (unlike the generated tier below, whose max-cap makes a
+        duplicate score-inert) — and it would collide on
+        ``ClaimWitnessRecord``'s ``(target, claim_field, witness_id,
+        run_id)`` unique constraint regardless of tier."""
+        _seed_journal_lines(session)
+        _install_specs(monkeypatch, {"v1": _spec("critical", source="seed")})
+        _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
+        ctx = _column_context(
+            session,
+            [
+                _make_result(
+                    validation_id="v1",
+                    sql_used="s1",
+                    columns_used=["journal_lines.credit", "journal_lines.credit"],
+                )
+            ],
+        )
+        objects = detector.detect(ctx)
+        column_obj = next(o for o in objects if o.target == self._CREDIT)
+        # Exactly one witness (reliability 0.95), not two (which would double
+        # to 1.9, clamped to 1.0 — a different exact score, still 'blocked'
+        # either way at this severity, so the score assertion is what bites).
+        assert len(column_obj.witnesses) == 1
+        assert column_obj.score == pytest.approx(0.95, abs=1e-6)
+        readiness = assemble_readiness_context(objects)
+        assert readiness.columns[self._CREDIT].readiness == "blocked"
+
+    def test_duplicate_columns_used_does_not_double_count_generated(
+        self, detector: ctc.CrossTableConsistencyDetector, session, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """Same guard for a GENERATED check. The tier's MAX cap (DAT-871)
+        means a duplicate name can't inflate the SCORE here (``max(0.5, 0.5)
+        == 0.5`` either way) — but persistence must still record exactly ONE
+        witness, not two, or it collides on ``ClaimWitnessRecord``'s unique
+        constraint and silently overstates how many checks corroborated this
+        column if a second, genuinely distinct generated check later joins
+        it."""
         _seed_journal_lines(session)
         _install_specs(monkeypatch, {"v1": _spec("critical", source="generated")})
         _install_verdicts(monkeypatch, {"s1": _verdict(ValidationStatus.FAILED, deviation=1)})
@@ -570,8 +620,6 @@ class TestProvenancePooling:
         )
         objects = detector.detect(ctx)
         column_obj = next(o for o in objects if o.target == self._CREDIT)
-        # Exactly one witness (reliability 0.5), not two (which would double
-        # to 1.0 and cross into 'blocked').
         assert len(column_obj.witnesses) == 1
         assert column_obj.score == pytest.approx(0.5, abs=1e-6)
         readiness = assemble_readiness_context(objects)

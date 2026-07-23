@@ -100,7 +100,7 @@ from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, WitnessClaim
-from dataraum.entropy.pooling import PoolResult, Witness, pool
+from dataraum.entropy.pooling import Witness
 
 logger = get_logger(__name__)
 
@@ -278,12 +278,39 @@ def _capped_evidence_mass(witnesses: Sequence[_TieredWitness]) -> float:
 
     Unbounded above (like ``pool()``'s own ``evidence_mass`` — see
     ``PoolResult``); callers clamp to ``[0, 1]`` for the ``EntropyObject``
-    score.
+    score. Each witness's reliability is clamped to ``[0, 1]`` here too
+    (``_check_witness`` already produces values in range under the shipped
+    priors, but this mirrors ``pool()``'s own defensive clamp on ``rels``
+    rather than assume it forever).
     """
-    seed_mass = math.fsum(tw.witness.reliability for tw in witnesses if tw.tier == "seed")
-    generated_masses = [tw.witness.reliability for tw in witnesses if tw.tier != "seed"]
+    clamped = [(tw.tier, min(1.0, max(0.0, tw.witness.reliability))) for tw in witnesses]
+    seed_mass = math.fsum(r for tier, r in clamped if tier == "seed")
+    generated_masses = [r for tier, r in clamped if tier != "seed"]
     generated_mass = max(generated_masses) if generated_masses else 0.0
     return seed_mass + generated_mass
+
+
+# pool()'s own default prior_strength (κ in ``U = κ / (κ + m)``, pool.py) —
+# CTC never overrides it, so the ignorance recomputed against the CAPPED mass
+# (below) uses the identical constant, never introducing a second knob.
+_PRIOR_STRENGTH = 1.0
+
+
+def _capped_ignorance(capped_mass: float) -> float:
+    """Ignorance consistent with the CAPPED mass (DAT-871).
+
+    Re-applies ``pool()``'s own documented ``U = κ / (κ + m)`` formula
+    (``entropy/pooling/pool.py`` module docstring) against the CAPPED mass
+    instead of calling ``pool()`` and reading its raw UNCAPPED sum: the two
+    would silently disagree (e.g. two generated witnesses cap to mass 0.5,
+    but ``pool()`` would report ignorance for mass 1.0) — a debugger could
+    invert the ``pool()``-derived ignorance to recover the uncapped sum the
+    persisted ``pool_evidence_mass`` field was fixed specifically to stop
+    exposing. Not a change to ``pool()`` itself — a consumer-side reuse of
+    its own published formula, same as ``_capped_evidence_mass`` reuses its
+    certainty-collapse identity.
+    """
+    return _PRIOR_STRENGTH / (_PRIOR_STRENGTH + capped_mass)
 
 
 def _witness_claims(witnesses: Sequence[_TieredWitness]) -> list[WitnessClaim]:
@@ -497,14 +524,19 @@ class CrossTableConsistencyDetector(EntropyDetector):
         source's same-named table.
 
         Deduplicated (DAT-865b, senior review): nothing upstream guarantees a
-        check's declared ``columns_used`` names a column at most once — the
-        pre-pooling code took ``max(worst, score)`` per occurrence (idempotent
-        under a repeat), but pooling SUMS a witness's reliability contribution
-        into ``evidence_mass``, so a repeated name would double-count one
-        check as two independent witnesses (defeating "a lone unvetted check
-        never blocks alone") and collide on ``ClaimWitnessRecord``'s
-        ``(target, claim_field, witness_id, run_id)`` unique constraint at
-        persistence. One witness per check per column, always.
+        check's declared ``columns_used`` names a column at most once. Two
+        reasons this must never happen, one tier-independent and one not:
+        persistence always collides on ``ClaimWitnessRecord``'s
+        ``(target, claim_field, witness_id, run_id)`` unique constraint
+        regardless of tier — a repeated name is always a persistence bug.
+        For SCORING, a repeated SEED name would silently double-count one
+        check as two independent witnesses (the seed tier still sums,
+        DAT-871) and defeat "a lone unvetted check never blocks alone"'s
+        seed-side counterpart; a repeated GENERATED name would NOT
+        double-count the score (the generated tier caps at its strongest
+        witness, so ``max(r, r) == r``) but would still miscount
+        ``len(witnesses)`` in persisted evidence. One witness per check per
+        column, always — for both reasons, at every tier.
         """
         table_name = context.table_name or ""
         out: list[str] = []
@@ -535,12 +567,15 @@ class CrossTableConsistencyDetector(EntropyDetector):
         score, a lone vetted (seed) critical failure still does, seed
         witnesses corroborate additively, and corroborating GENERATED
         witnesses cap at their strongest single one rather than summing —
-        see ``_check_witness`` / ``_capped_evidence_mass``. ``pool()`` is
-        still called (unmodified) for ``conflict``/``ignorance`` — informative
-        provenance fields nothing in the loss path reads for this detector —
-        but its ``evidence_mass`` is discarded in favor of the capped one, so
-        the persisted ``pool_evidence_mass`` stays honest about what actually
-        produced the score.
+        see ``_check_witness`` / ``_capped_evidence_mass``. No ``pool()``
+        call at this grain either (DAT-871, symmetric with the table grain):
+        ``conflict`` is provably always ``0.0`` for this claim shape (every
+        witness is one-hot and leans the same "broken" direction — see
+        ``PoolResult.conflict``'s docstring), and ``ignorance`` is
+        recomputed against the CAPPED mass via ``_capped_ignorance`` instead
+        of reading ``pool()``'s own UNCAPPED figure — the two would
+        otherwise silently disagree in the persisted evidence, undoing the
+        honesty ``pool_evidence_mass`` was fixed to restore.
         """
         if context.session is None or not context.table_id or not per_column:
             return []
@@ -561,9 +596,6 @@ class CrossTableConsistencyDetector(EntropyDetector):
                     "validation_column_unknown", table=context.table_name, column=col_name
                 )
                 continue
-            # conflict/ignorance only (DAT-871): the score comes from the
-            # capped mass below, not this PoolResult's own evidence_mass.
-            result: PoolResult = pool([tw.witness for tw in witnesses])
             capped_mass = _capped_evidence_mass(witnesses)
             # Clamp: the capped mass is unbounded above (seed contributions
             # still sum), but EntropyObject.score is a [0, 1] risk measure.
@@ -593,9 +625,14 @@ class CrossTableConsistencyDetector(EntropyDetector):
                             # (what actually produced ``score``), not pool()'s
                             # raw uncapped sum — persisted evidence must not
                             # claim more mass than the score was computed from.
+                            # ``pool_ignorance`` is recomputed against that SAME
+                            # capped mass (``_capped_ignorance``) so the two
+                            # fields never disagree; ``pool_conflict`` is the
+                            # structural constant this claim shape always
+                            # yields (one-hot, single-direction witnesses).
                             "pool_evidence_mass": capped_mass,
-                            "pool_ignorance": result.ignorance,
-                            "pool_conflict": result.conflict,
+                            "pool_ignorance": _capped_ignorance(capped_mass),
+                            "pool_conflict": 0.0,
                         }
                         for entry in entries
                     ],

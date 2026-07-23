@@ -183,7 +183,7 @@ system_prompt: |
     never as a value deviation.)
   - Same period scope: both sides over the same period window.
   - Same sign convention: normalize BOTH sides identically or NEITHER. A sign
-    normalization rule (e.g. a natural-balance convention in <domain_conventions>)
+    normalization rule (e.g. a sign-convention rule supplied in <domain_conventions>)
     says how a measure is REPORTED — apply it when the check is ABOUT that
     convention, not as a transformation of one side of a reconciliation. Stored
     values may already carry a signed storage convention; when one side is a

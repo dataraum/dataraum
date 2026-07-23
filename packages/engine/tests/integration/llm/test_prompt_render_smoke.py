@@ -25,26 +25,30 @@ def _ctx_for(template, **extra) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    ("prompt_name", "conventions_key"),
+    ("prompt_name", "piped_key"),
     [
         ("graph_sql_generation", "vertical_conventions"),
         ("validation_sql", "conventions"),
+        # DAT-870: the grain-facts callout is an optional input like conventions —
+        # a renamed/undeclared key is silently dropped (default "" fills the slot)
+        # while every mocked-renderer test stays green, so pin the real piping.
+        ("validation_sql", "grain_facts"),
     ],
 )
-def test_sql_prompt_renders_and_pipes_conventions(prompt_name: str, conventions_key: str) -> None:
+def test_sql_prompt_renders_and_pipes_optional_inputs(prompt_name: str, piped_key: str) -> None:
     renderer = PromptRenderer()
     template = renderer.load_template(prompt_name)
-    # The conventions key MUST be a declared (optional) input — else it is dropped and
+    # The piped key MUST be a declared (optional) input — else it is dropped and
     # the {placeholder} in the body raises KeyError at render.
-    assert conventions_key in template.inputs, (
-        f"{prompt_name}: '{conventions_key}' placeholder is in the body but not declared "
+    assert piped_key in template.inputs, (
+        f"{prompt_name}: '{piped_key}' placeholder is in the body but not declared "
         f"in inputs: — the renderer would drop it and KeyError at substitution"
     )
-    ctx = _ctx_for(template, **{conventions_key: _MARKER})
+    ctx = _ctx_for(template, **{piped_key: _MARKER})
 
     system, user, _temperature = renderer.render_split(prompt_name, ctx)
 
-    # Real substitution happened (no KeyError) and the conventions reached the prompt.
+    # Real substitution happened (no KeyError) and the value reached the prompt.
     assert _MARKER in (system + user)
 
 

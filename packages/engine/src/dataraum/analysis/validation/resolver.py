@@ -12,6 +12,7 @@ cross-run (fail-closed, DAT-429).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -280,7 +281,7 @@ def get_multi_table_schema_for_llm(
 
 def _load_pinned_annotations(
     session: Session,
-    tables: list[Table] | Any,
+    tables: Sequence[Table],
     semantic_runs: dict[str, str],
 ) -> dict[str, SemanticAnnotation]:
     """Load each table's semantic annotations at its PINNED run, keyed by column_id.
@@ -344,7 +345,7 @@ def _load_pinned_table_entities(
 
 def _load_pinned_granularities(
     session: Session,
-    tables: list[Table] | Any,
+    tables: Sequence[Table],
     semantic_runs: dict[str, str],
 ) -> dict[str, str]:
     """Detected time-column cadence per column_id, at each table's PINNED run.
@@ -457,6 +458,16 @@ def _format_table_schema(
     return result
 
 
+def _attr(value: str) -> str:
+    """Escape prose for an XML-ish attribute — an embedded ``"`` would terminate it.
+
+    The consumer is an LLM, not an XML parser, so this is prompt-clarity
+    protection, applied uniformly to every free-text attribute (LLM-authored
+    prose and data values); closed-vocabulary attributes need none.
+    """
+    return value.replace('"', "&quot;")
+
+
 def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
     """Format multi-table schema dict as text for LLM prompt.
 
@@ -505,13 +516,13 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                 if sem.get("entity_type"):
                     col_line += f' entity="{sem["entity_type"]}"'
                 if sem.get("business_name"):
-                    col_line += f' business_name="{sem["business_name"]}"'
+                    col_line += f' business_name="{_attr(sem["business_name"])}"'
                 if sem.get("meaning"):
-                    col_line += f' meaning="{sem["meaning"]}"'
+                    col_line += f' meaning="{_attr(sem["meaning"])}"'
                 if sem.get("temporal_behavior"):
                     col_line += f' temporal_behavior="{sem["temporal_behavior"]}"'
                 if sem.get("business_description"):
-                    desc = sem["business_description"][:500]
+                    desc = _attr(sem["business_description"][:500])
                     col_line += f' description="{desc}"'
 
             # Time-column semantics (DAT-870): the catalogue's reading of what
@@ -526,11 +537,11 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                 if tf.get("aspect"):
                     col_line += f' time_aspect="{tf["aspect"]}"'
                 if tf.get("note"):
-                    col_line += f' time_note="{tf["note"]}"'
+                    col_line += f' time_note="{_attr(tf["note"])}"'
 
             # Distinct values from slicing phase (categorical columns)
             if col.get("distinct_values"):
-                vals = ", ".join(col["distinct_values"])
+                vals = _attr(", ".join(col["distinct_values"]))
                 col_line += f' distinct_values="{vals}"'
 
             col_line += " />"

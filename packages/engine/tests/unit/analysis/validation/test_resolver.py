@@ -599,6 +599,35 @@ class TestFormatMultiTableSchemaForPrompt:
         # New XML format
         assert "<error>No tables found</error>" in result
 
+    def test_format_escapes_quotes_in_prose_attributes(self):
+        """LLM-authored prose with embedded quotes must not terminate the attribute."""
+        schema = {
+            "tables": [
+                {
+                    "table_name": "t",
+                    "duckdb_path": "t",
+                    "columns": [
+                        {
+                            "column_name": "d",
+                            "data_type": "DATE",
+                            "semantic": {
+                                "role": "dimension",
+                                "meaning": 'the "as of" moment',
+                            },
+                            "time": {"note": 'the "as of" label'},
+                        },
+                    ],
+                },
+            ],
+            "relationships": [],
+        }
+
+        result = format_multi_table_schema_for_prompt(schema)
+
+        assert 'time_note="the &quot;as of&quot; label"' in result
+        assert 'meaning="the &quot;as of&quot; moment"' in result
+        assert '"as of"' not in result
+
     def test_format_table_grain_and_time_facts(self):
         """DAT-870: role/grain render as table attrs, time facts as column attrs."""
         schema = {

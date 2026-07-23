@@ -84,8 +84,8 @@ def _render_grain_facts(schema: dict[str, Any]) -> str:
     header = (
         "<grain_facts>\n"
         "Measured catalog facts for the tables in <schema> — AUTHORITATIVE over the\n"
-        "validation_spec's description/hints (critical requirement 6). Resolve every\n"
-        "conflict in these facts' favor before writing SQL:\n"
+        "validation_spec's description/hints (the facts-over-hints requirement).\n"
+        "Resolve every conflict in these facts' favor before writing SQL:\n"
     )
     return header + "\n".join(lines) + "\n</grain_facts>"
 

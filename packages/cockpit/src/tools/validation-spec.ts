@@ -137,6 +137,18 @@ export const ValidationSpecSchema = z.object({
 		.describe(
 			"Optional accounting/process cycle types this applies to; empty = universal.",
 		),
+	// DAT-865: the engine's typed validation→convention dependency. An overlay row
+	// REPLACES the check wholesale, so omitting this on a respec of a generated
+	// check silently drops its declared sign/netting dependencies — carry them.
+	relevant_conventions: z
+		.array(z.string())
+		.optional()
+		.describe(
+			"Convention ids this check's logic relies on (e.g. a sign rule). When " +
+				"respecifying an existing check, COPY its current list unless the " +
+				"change deliberately alters what the check depends on; omitting drops " +
+				"them.",
+		),
 });
 export type ValidationSpecInput = z.infer<typeof ValidationSpecSchema>;
 

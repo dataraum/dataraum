@@ -8,11 +8,13 @@
 # so the engine can reject fabricated tables/columns/concepts.
 
 name: validation_induction
-version: "3.1.0"
+version: "3.2.0"
 description: >
   Induce typed validation checks from the served operating-model graph; grain,
   boundary, coverage, and existence judgments ground in the served closed facts
-  or are not proposed (DAT-870)
+  or are not proposed (DAT-870); comparing two measures requires temporal-form
+  coherence — movement vs movement, level vs level, or a coherent transform,
+  never a movement directly against a level (DAT-874)
 temperature: 0.0
 
 system_prompt: |
@@ -82,10 +84,27 @@ system_prompt: |
     Materialization (flow/stock) — never in a column's name or description prose.
     A PERIODIC_SNAPSHOT row holds that period's OWN value: a flow/movement column
     compares against the SAME period's detail records, a stock/level column against
-    detail cumulated through the END of its period; a stock/level column is never
-    summed across periods. When a check's guidance implies a period scope or a
+    detail cumulated through the END of its period (only under the
+    history-completeness condition of the temporal-form rule below); a stock/level
+    column is never summed across periods. When a check's guidance implies a period scope or a
     running total, state the grain decision and the period window explicitly,
     grounded in those served facts.
+  - Comparing two MEASURE columns with each other (a balance/comparison/
+    reconciliation across tables or aggregates) additionally requires
+    TEMPORAL-FORM coherence, grounded in the served Materialization facts:
+    flow = a per-period movement (additive across periods); stock = a level as
+    of its period. The coherent forms: flow vs flow over the SAME period
+    window; stock vs stock at the SAME period; flow vs the CHANGE in a stock
+    between consecutive periods (only periods where a prior level exists); or
+    flow CUMULATED through the end of a period
+    vs the stock at that period — the last ONLY when the served facts
+    establish the flow's history is complete from the stock's origin (a
+    cumulation that starts mid-history is short by the starting level and
+    fails on clean data). NEVER compare a per-period flow (or a net of flows)
+    directly against a stock level — a movement and a level are different
+    quantities. State the chosen form in the guidance. A measure with no
+    Materialization verdict is UNDETERMINED: when no coherent form is
+    groundable in the served facts, do not propose the check.
   - Propose an existence check (a parent id or referenced key "must exist") ONLY
     against a table that authoritatively enumerates that entity — a DIMENSION or
     master table, or the declared target of a served reference. Fact and snapshot

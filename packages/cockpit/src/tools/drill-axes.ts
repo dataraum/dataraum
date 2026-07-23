@@ -241,90 +241,6 @@ async function targetFields(req: DrillAxesRequest): Promise<string[]> {
 	return measureFieldsFromDag(row?.dag ?? null);
 }
 
-/** A column's stock/flow adjudication as the flow gate reads it: the
- *  `temporal_behavior` verdict. The reconciled verdict is authoritative on its
- *  own (DAT-786) — the stock/flow resolve pass already adjudicates the LLM
- *  claim vs the structural witness, so there is no separate "contested" doubt
- *  to second-guess it with downstream. */
-export interface TemporalBehavior {
-	behavior: string | null;
-}
-
-/** Why an aggregated column disqualifies the node's grain: a point-in-time
- *  `stock`, or `unclassified` (no — or a non-flow — stock/flow classification). */
-export type OffendingCause = "stock" | "unclassified";
-
-/** An aggregated column that fails the flow gate, with the reason it fails —
- *  so the caller can phrase an accurate refusal per cause (DAT-673). */
-export interface OffendingColumn {
-	column: string;
-	cause: OffendingCause;
-}
-
-/** Why a non-flow column offends (pure): a plain `point_in_time` is a stock;
- *  anything else — null, missing, or an unrecognized value — is unclassified. */
-function offendingCause(b: TemporalBehavior | undefined): OffendingCause {
-	if (b?.behavior === "point_in_time") return "stock";
-	return "unclassified";
-}
-
-/**
- * The FLOW GATE (DAT-673, contested handling reversed by DAT-786): a node's
- * measures may be summed into time buckets only when every base column they
- * aggregate is a summable FLOW — `temporal_behavior = additive`. A stock
- * (point-in-time balance) summed per period double-counts — arithmetically
- * consistent, semantically fabricated. Unclassified (null) fails CLOSED for
- * the same reason. The reconciled `additive` verdict is trusted at face value
- * — the resolve pass already adjudicated it, so there is no separate
- * contested state to gate on here. Returns the offending columns WITH their
- * cause so the caller phrases an accurate refusal. Pure → unit-tested; the
- * aggregated-column extraction is the AST read (`sql-ast.ts`).
- */
-export function temporalGate(
-	aggregatedCols: ReadonlySet<string>,
-	behaviorByColumn: ReadonlyMap<string, TemporalBehavior>,
-): { safe: boolean; offending: OffendingColumn[] } {
-	if (aggregatedCols.size === 0) {
-		// Couldn't determine what's aggregated (unparseable expr) → fail closed.
-		return { safe: false, offending: [] };
-	}
-	const offending: OffendingColumn[] = [];
-	for (const column of aggregatedCols) {
-		const b = behaviorByColumn.get(column);
-		// A flow — additive — is the ONLY safe shape.
-		if (b !== undefined && b.behavior === "additive") continue;
-		offending.push({ column, cause: offendingCause(b) });
-	}
-	return { safe: offending.length === 0, offending };
-}
-
-/** One offending column's honest phrasing — an unclassified column has no
- *  classification at all. */
-function phraseOffender({ column, cause }: OffendingColumn): string {
-	switch (cause) {
-		case "stock":
-			return `${column} is a balance (point-in-time stock), not a flow`;
-		case "unclassified":
-			return `${column} has no stock/flow classification`;
-	}
-}
-
-/** Phrase the flow-gate refusal from the per-column causes (pure). The empty
- *  case (nothing aggregated — unparseable or windowed expr, DAT-673) can only
- *  say it couldn't confirm a flow. */
-export function describeTemporalGate(
-	offending: readonly OffendingColumn[],
-): string {
-	if (offending.length === 0) {
-		return "Time grain is off: couldn't confirm this measure is a summable flow.";
-	}
-	return `Time grain is off: this measure aggregates ${offending
-		.map(phraseOffender)
-		.join(
-			"; ",
-		)}. Only a summable flow can be bucketed by period without double-counting.`;
-}
-
 /** The engine's persisted additivity verdict for one drill target, as the drill's
  *  TIME gate consumes it (`metric_additivity`, DAT-716). Only the time axis is read
  *  here: the drill AXES resolver decides whether to offer a time grain, and the
@@ -339,12 +255,10 @@ export interface PersistedAdditivity {
 
 /**
  * Phrase the engine's `time_reason` as a drill refusal (pure; DAT-731). The
- * engine's reason vocabulary (dataraum.graphs.additivity) is RICHER than the
- * local flow gate's two causes — it rolls the whole metric DAG up, so it can
- * name a ratio, an average, a distinct/snapshot count, or an unresolved
- * aggregate, none of which the column-level temporal_behavior heuristic can see.
- * An unrecognized/None reason falls back to the same honest "couldn't confirm a
- * summable flow" the empty local gate uses.
+ * engine's reason vocabulary (dataraum.graphs.additivity) rolls the whole
+ * metric DAG up, so it can name a ratio, an average, a distinct/snapshot
+ * count, or an unresolved aggregate. An unrecognized/None reason falls back to
+ * the honest "couldn't be confirmed to sum across periods".
  */
 export function describeEngineTimeVerdict(reason: string | null): string {
 	const cause = ((): string => {
@@ -385,9 +299,11 @@ function additivityTarget(req: DrillAxesRequest): {
 }
 
 /** Read the engine's persisted additivity verdict for the target, or `null` when
- *  none exists (a not-yet-classified target — the drill fails OPEN to the local
- *  heuristic, never silently blocks). One row by the `(target_kind, target_key)`
- *  UNIQUE, resolved to the current operating_model run by the read view. */
+ *  none exists (a not-yet-classified target). A `null` here is the WITHHOLD signal
+ *  (DAT-725): `resolveDrillAxes` strips the time grain and surfaces a visible
+ *  reason rather than silently falling back to a weaker local re-derivation. One
+ *  row by the `(target_kind, target_key)` UNIQUE, resolved to the current
+ *  operating_model run by the read view. */
 async function resolveTargetAdditivity(
 	req: DrillAxesRequest,
 ): Promise<PersistedAdditivity | null> {
@@ -407,7 +323,7 @@ async function resolveTargetAdditivity(
 		.limit(1);
 	// `timeAdditive` is NOT NULL on the base table; the null-check narrows the
 	// view's nullable column type AND doubles as the "no row" guard (absent verdict
-	// → null → fail open to the local heuristic).
+	// → null → the caller withholds the time grain, visibly).
 	if (!row || row.timeAdditive === null) return null;
 	return { timeAdditive: row.timeAdditive, timeReason: row.timeReason };
 }
@@ -511,20 +427,23 @@ export function describeUnitGate(
 export interface DrillAxesResult {
 	axes: DrillAxis[];
 	reason?: string;
-	/** Set when the flow gate stripped time grain from the temporal axes — the
-	 *  node aggregates a stock / unclassified measure that can't be summed into
-	 *  periods (DAT-673). The date axis stays as a raw slice. This is a
-	 *  SERVER-SIDE signal only — no client reads it yet; surfacing it in the
-	 *  drill UI (so the missing grain chip reads as a decision, not a gap) is
-	 *  deferred to DAT-715. */
+	/** Set when the time gate stripped time grain from the temporal axes — either
+	 *  the engine's DAG-aware verdict says the target is non-additive over time
+	 *  (a stock, a ratio, a snapshot count, …), or the verdict is missing and the
+	 *  grain is WITHHELD rather than guessed (DAT-725). The date axis stays as a
+	 *  raw slice. Wired to the client rendering near the time-grain control
+	 *  (drillable-grid.tsx's toolbar). */
 	temporalGateReason?: string;
-	/** Which path decided the time gate (DAT-731), STAMPED so a fail-open fallback
-	 *  is never silent: `engine-verdict` = the engine's persisted, DAG-aware
-	 *  `metric_additivity.time_additive`; `heuristic-fallback` = the target had NO
-	 *  persisted verdict, so the local temporal_behavior flow-gate ran instead
-	 *  (absence must not silently block a drill). Set only when a temporal axis was
-	 *  actually offered (the gate ran). SERVER-SIDE signal, like temporalGateReason. */
-	temporalGateSource?: "engine-verdict" | "heuristic-fallback";
+	/** Which path decided the time gate (DAT-725, replacing the DAT-731 fail-open
+	 *  fallback): `engine-verdict` = the engine's persisted, DAG-aware
+	 *  `metric_additivity.time_additive`; `withheld-no-verdict` = the target has
+	 *  NO persisted verdict yet — the system's principle is "if we do not have
+	 *  data, we honestly say so", so a missing verdict strips the time grain with
+	 *  a user-visible reason instead of silently recomputing a weaker local
+	 *  heuristic. Set only when a temporal axis was actually offered (the gate
+	 *  ran). SERVER-SIDE signal, wired to the client rendering near the
+	 *  time-grain control (drillable-grid.tsx). */
+	temporalGateSource?: "engine-verdict" | "withheld-no-verdict";
 	/** Set when the UNIT gate flagged a cross-unit aggregation (DAT-731): the node
 	 *  aggregates a measure `measured_in` a unit column that carries MORE THAN ONE
 	 *  distinct unit (e.g. a multi-currency amount), so a raw SUM across the whole
@@ -689,10 +608,6 @@ export async function resolveDrillAxes(
 				tableId: columns.tableId,
 				columnName: columns.columnName,
 				resolvedType: columns.resolvedType,
-				// The adjudicated stock/flow verdict for the flow gate (DAT-673) —
-				// null when the column has no concept (unclassified → fail closed).
-				// Trusted at face value (DAT-786) — no separate contested flag.
-				temporalBehavior: currentColumnConcepts.temporalBehavior,
 				// The unit gate (DAT-731): the measure's authored unit_source_column
 				// (catalogue_semantics) + the distinct-value count of a column, so a
 				// measure whose unit column carries >1 distinct unit is flaggable.
@@ -749,38 +664,32 @@ export async function resolveDrillAxes(
 	let gatedAxes = axes;
 
 	// The node's aggregated base measure columns (AST read), scoped to grounded
-	// facts — shared by the time-gate FALLBACK and the unit gate below. A
-	// stale/unpromoted snippet contributes nothing (its relation resolves to no kept
-	// fact). couldNotDetermine = an expr we couldn't read (window / COUNT(*) /
-	// unparseable): the TIME fallback fails CLOSED on it (a windowed stock must never
-	// slip through), while the unit gate simply has no column to check for that expr.
+	// facts — feeds the UNIT gate below. A stale/unpromoted snippet contributes
+	// nothing (its relation resolves to no kept fact); an unparseable expr
+	// (window / COUNT(*)) yields no columns and simply has nothing for the unit
+	// gate to check for that expr.
 	const factIdSet = new Set(factIds);
-	const aggCols = new Set<string>();
 	// The aggregated measures WITH their fact id (the unit gate keys per fact, so a
 	// same-named unit column on a different fact can't answer for this measure).
 	const aggMeasures: AggMeasure[] = [];
-	let couldNotDetermine = false;
 	for (const { relation, selectExpr } of acceptedExprs) {
 		const factId = viewByName.get(relation)?.factTableId;
 		if (!factId || !factIdSet.has(factId)) continue;
 		const cols = await aggregatedColumns(selectExpr);
-		if (cols.size === 0) {
-			couldNotDetermine = true;
-			continue;
-		}
 		for (const c of cols) {
-			aggCols.add(c);
 			aggMeasures.push({ tableId: factId, column: c });
 		}
 	}
 
-	// TIME GATE (DAT-673 → DAT-731): only when a temporal axis is offered. The
-	// engine's persisted, DAG-aware additivity verdict (metric_additivity) is now
-	// AUTHORITATIVE — it rolls the whole metric formula up (ratios, averages,
-	// snapshot counts) where the local column-level temporal_behavior heuristic sees
-	// only stock/flow per base column. The heuristic survives ONLY as the fail-open
-	// fallback for a target with no persisted verdict (absence must never silently
-	// block a drill), stamped so that fallback is visible, never silent.
+	// TIME GATE (DAT-673 → DAT-731 → DAT-725): only when a temporal axis is
+	// offered. Exactly TWO sources decide it, never a third: the engine's
+	// persisted, DAG-aware additivity verdict (metric_additivity.time_additive),
+	// or — when no verdict has been persisted yet — an honest WITHHOLD. The
+	// lead's ruling that retired the old column-level temporal_behavior
+	// heuristic here: "if we do not have data, we honestly say so" — a missing
+	// verdict is NOT license to guess a weaker local answer, so the grain is
+	// stripped with a user-visible reason instead (the DAT-731 fail-open
+	// fallback was the epic's core silent-judge-swap failure mode).
 	if (axes.some((a) => a.temporal !== null)) {
 		const verdict = await resolveTargetAdditivity(req);
 		if (verdict !== null) {
@@ -792,39 +701,12 @@ export async function resolveDrillAxes(
 				);
 			}
 		} else {
-			// FAIL-OPEN: no persisted verdict → the local temporal_behavior flow gate,
-			// STAMPED + logged. Gate the grain on the aggregated columns' stock/flow.
-			result.temporalGateSource = "heuristic-fallback";
-			console.warn(
-				"drill additivity verdict missing — falling back to the temporal_behavior heuristic",
-				additivityTarget(req),
-			);
-			const behaviorByColumn = new Map<string, TemporalBehavior>();
-			for (const r of columnRows) {
-				if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
-				// First-wins per name (rows are ordered); an OFFENDING verdict (stock or
-				// unclassified) is sticky — never overwritten by a later flow-safe
-				// (additive) row for the same name, so a shared column can only lose
-				// grain, never regain it across facts.
-				const current = behaviorByColumn.get(r.columnName);
-				const currentFlowSafe =
-					current !== undefined && current.behavior === "additive";
-				if (current === undefined || currentFlowSafe) {
-					behaviorByColumn.set(r.columnName, {
-						behavior: r.temporalBehavior ?? null,
-					});
-				}
-			}
-			// An empty set makes temporalGate fail closed with no column to name — the
-			// "could not confirm a summable flow" verdict couldNotDetermine warrants.
-			const gate = temporalGate(
-				couldNotDetermine ? new Set<string>() : aggCols,
-				behaviorByColumn,
-			);
-			if (!gate.safe) {
-				gatedAxes = stripTimeGrain(gatedAxes);
-				result.temporalGateReason = describeTemporalGate(gate.offending);
-			}
+			// WITHHELD (DAT-725): no persisted verdict — the engine hasn't
+			// classified this target yet. Strip the grain and say so, visibly.
+			result.temporalGateSource = "withheld-no-verdict";
+			gatedAxes = stripTimeGrain(gatedAxes);
+			result.temporalGateReason =
+				"Additivity not determined for this target — time-grain drill withheld until the engine classifies it.";
 		}
 	}
 

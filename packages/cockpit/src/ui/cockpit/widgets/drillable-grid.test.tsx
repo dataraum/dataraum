@@ -86,7 +86,7 @@ let composeQueue: Array<(r: Response) => void>;
 /** The body of each compose POST, in call order — the wire-contract probe. */
 let composeBodies: unknown[];
 
-function stubFetch() {
+function stubFetch(axesResponse?: unknown) {
 	composeQueue = [];
 	composeBodies = [];
 	vi.stubGlobal(
@@ -94,13 +94,15 @@ function stubFetch() {
 		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
 			const u = String(url);
 			if (u.endsWith("/api/drill/axes")) {
-				return jsonResponse({
-					axes: [
-						axis("region"),
-						axis("product"),
-						axis("entry_id__date", "date"),
-					],
-				});
+				return jsonResponse(
+					axesResponse ?? {
+						axes: [
+							axis("region"),
+							axis("product"),
+							axis("entry_id__date", "date"),
+						],
+					},
+				);
 			}
 			if (u.endsWith("/api/drill/compose") || u.endsWith("/api/drill/node")) {
 				composeBodies.push({
@@ -119,8 +121,9 @@ const BASE_SQL = "SELECT SUM(x) AS value FROM t";
 function renderGrid(
 	nodeRef?: { metricKey: string },
 	onPinnedRow?: (row: Record<string, unknown> | null) => void,
+	axesResponse?: unknown,
 ) {
-	stubFetch();
+	stubFetch(axesResponse);
 	return render(
 		<TestQueryProvider>
 			<MantineProvider theme={theme} env="test">
@@ -346,5 +349,49 @@ describe("DrillableGrid — time grain", () => {
 		// Clearing the drill releases the lock.
 		fireEvent.click(screen.getByTestId("drill-clear"));
 		expect(onPinnedRow).toHaveBeenLastCalledWith(null);
+	});
+});
+
+// --- temporal gate reason (DAT-725) -----------------------------------------
+
+describe("DrillableGrid — temporal gate reason", () => {
+	it("renders the withhold reason near the Slice control when the axes resolver has no persisted verdict", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("entry_id__date", "date")],
+			temporalGateReason:
+				"Additivity not determined for this target — time-grain drill withheld until the engine classifies it.",
+			temporalGateSource: "withheld-no-verdict",
+		});
+		const badge = await screen.findByTestId("drill-temporal-gate-reason");
+		expect(badge.textContent).toBe("time grain withheld");
+		// Gray — the "we don't know yet" hue, matching the neutral "no axes" badge.
+		expect(badge.style.getPropertyValue("--badge-bg")).toContain(
+			"mantine-color-gray",
+		);
+	});
+
+	it("renders the engine's non-additive reason distinctly from a withhold", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("entry_id__date", "date")],
+			temporalGateReason:
+				"Time grain is off: this measure is a ratio, which does not sum across periods.",
+			temporalGateSource: "engine-verdict",
+		});
+		const badge = await screen.findByTestId("drill-temporal-gate-reason");
+		expect(badge.textContent).toBe("time grain off");
+		// Yellow — a determined "no", matching the refusal Alert's hue.
+		expect(badge.style.getPropertyValue("--badge-bg")).toContain(
+			"mantine-color-yellow",
+		);
+	});
+
+	it("renders nothing when the gate never fired (no temporalGateReason)", async () => {
+		renderGrid(); // the default axes stub carries no gate fields
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("drill-slice-button").hasAttribute("disabled"),
+			).toBe(false),
+		);
+		expect(screen.queryByTestId("drill-temporal-gate-reason")).toBeNull();
 	});
 });

@@ -23,10 +23,9 @@ relevant_cycles:
 
 check_type: aggregate
 
-parameters:
-  tolerance: 0.05
+tolerance: 0.05
 
-sql_hints: >
+guidance: >
   Compare payment amounts with bank transaction amounts.
 
   IMPORTANT: Use the FK join path first. Look for a payment_id column

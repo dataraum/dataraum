@@ -23,10 +23,9 @@ relevant_cycles:
 
 check_type: aggregate
 
-parameters:
-  tolerance: 0.05
+tolerance: 0.05
 
-sql_hints: >
+guidance: >
   Compare invoice amounts with journal line totals.
 
   IMPORTANT: Use the FK join path. Invoices have an entry_id column that

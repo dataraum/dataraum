@@ -25,13 +25,12 @@ relevant_cycles: []
 
 check_type: aggregate
 
-parameters:
-  # The judged pass threshold per relationship leg (the ADR-0017 judgement
-  # reads `tolerance`; the former `max_orphan_rate` name was never read by the
-  # judge, which silently fell back to the 0.01 default).
-  tolerance: 0.02
+# The judged pass threshold per relationship leg (the ADR-0017 judgement
+# reads `tolerance`; the former `max_orphan_rate` name was never read by the
+# judge, which silently fell back to the 0.01 default).
+tolerance: 0.02
 
-sql_hints: >
+guidance: >
   Use the confirmed relationships provided in the schema context to identify
   the foreign-key legs to check: ONLY entries whose type is 'foreign_key'. A
   'conformed_dimension' entry is two fact tables meeting at a shared dimension

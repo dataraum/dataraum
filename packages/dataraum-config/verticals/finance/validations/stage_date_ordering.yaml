@@ -24,11 +24,10 @@ relevant_cycles: []
 
 check_type: constraint
 
-parameters:
-  # Maximum acceptable percentage of rows with ordering violations
-  max_violation_rate: 0.05
-
-sql_hints: >
+# No typed tolerance: the judge reads the violation threshold from the guidance
+# prose below (the former max_violation_rate parameter, folded in verbatim when
+# the legacy parameters/sql_hints shape was retired).
+guidance: >
   Look for date columns within the same table that represent different
   stages of a business process. Use semantic annotations (temporal_behavior,
   column meanings) and column names to identify date pairs that should
@@ -53,6 +52,9 @@ sql_hints: >
   - violation_count (INTEGER): rows where ordering is violated
   - total_rows (INTEGER): rows where both dates are non-NULL
   - violation_rate (DOUBLE): violation_count / total_rows
+
+
+  Parameters: {"max_violation_rate": 0.05}
 
 expected_outcome: >
   Violation rate should be below the max_violation_rate threshold (5%).

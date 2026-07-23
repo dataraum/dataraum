@@ -113,14 +113,20 @@ class ValidationSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_legacy_check_fields(cls, data: Any) -> Any:
-        """Map the legacy ``parameters`` + ``sql_hints`` wire shape onto typed fields.
+        """Map the ``parameters`` + ``sql_hints`` wire shape onto the typed fields.
 
-        The YAML seed files and the cockpit ``validation`` teach overlay both carry
-        the pre-DAT-735 shape. Rather than break that live contract, normalize on
-        read: ``parameters.tolerance`` → ``tolerance``; ``sql_hints`` → ``guidance``,
-        with any NON-tolerance ``parameters`` folded into ``guidance`` (they only ever
-        reached the SQL-binding prompt as a JSON blob — keep the binding agent equally
-        informed). Explicit typed fields always win over the legacy inference.
+        NOT a dead shim — one LIVE producer remains: the DAT-447
+        ``expected_formula`` teach overlay, whose spec-shaped payload carries
+        ``parameters: {table, column, formula}`` by contract (core/overlay.py
+        ``_apply_validation``); the parameters→guidance fold is how that
+        declaration reaches the SQL binder. The two former producers are gone —
+        the nine seed YAMLs were migrated to native ``tolerance``/``guidance``
+        and the cockpit's ``teach_validation`` writes the typed shape
+        (teach-surface retire). Retiring this normalizer = retyping the
+        expected-formula teach contract first (parked, closeout triage).
+        Normalization: ``parameters.tolerance`` → ``tolerance``; ``sql_hints`` →
+        ``guidance``, with any NON-tolerance ``parameters`` folded into
+        ``guidance``. Explicit typed fields always win over the legacy inference.
         """
         if not isinstance(data, dict):
             return data

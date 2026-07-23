@@ -29,16 +29,9 @@ relevant_cycles:
 
 check_type: balance
 
-parameters:
-  tolerance: 0.01
-  # Account type classifications (hints for LLM)
-  asset_types: ["asset", "assets"]
-  liability_types: ["liability", "liabilities"]
-  equity_types: ["equity", "stockholders equity", "shareholders equity", "capital"]
-  revenue_types: ["revenue", "income", "sales"]
-  expense_types: ["expense", "expenses", "cost"]
+tolerance: 0.01
 
-sql_hints: >
+guidance: >
   Join the trial balance table with the chart of accounts to get account types.
   Sum (debit_balance - credit_balance) as net_balance per account_type.
 
@@ -56,6 +49,12 @@ sql_hints: >
   IMPORTANT: Use ALL five account types (asset, liability, equity, revenue, expense),
   not just asset/liability/equity. The basic equation only balances after year-end
   closing entries. The expanded equation always balances.
+
+
+  Parameters: {"asset_types": ["asset", "assets"], "liability_types": ["liability",
+  "liabilities"], "equity_types": ["equity", "stockholders equity", "shareholders
+  equity", "capital"], "revenue_types": ["revenue", "income", "sales"],
+  "expense_types": ["expense", "expenses", "cost"]}
 
 expected_outcome: >
   Total debits must equal total credits across all account types.

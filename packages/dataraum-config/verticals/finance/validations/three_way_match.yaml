@@ -27,13 +27,10 @@ relevant_cycles:
 
 check_type: comparison
 
-parameters:
-  # Acceptable tolerance for amount matching (percentage)
-  amount_tolerance_pct: 0.01
-  # Acceptable tolerance for quantity matching (percentage)
-  quantity_tolerance_pct: 0.02
-
-sql_hints: >
+# No typed tolerance: the amount/quantity thresholds ride the guidance prose
+# below (the former parameters, folded in verbatim when the legacy shape was
+# retired).
+guidance: >
   Look for tables and columns that represent the three documents in a
   procurement cycle: purchase orders, goods receipts (or receiving),
   and vendor invoices. Use semantic annotations and relationships to
@@ -57,6 +54,9 @@ sql_hints: >
   If the data does not contain enough information for three-way matching
   (e.g., no PO table or no receipt data), use the skip mechanism — set
   can_validate to false and provide a skip_reason.
+
+
+  Parameters: {"amount_tolerance_pct": 0.01, "quantity_tolerance_pct": 0.02}
 
 expected_outcome: >
   Match rate should exceed 95% for both amount and quantity comparisons.

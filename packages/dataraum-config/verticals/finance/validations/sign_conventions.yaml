@@ -28,7 +28,7 @@ relevant_cycles:
 
 check_type: constraint
 
-sql_hints: >
+guidance: >
   Apply the account sign convention from <domain_conventions> — that block is the
   single source of truth for which account families are credit- vs debit-normal; do
   not hardcode your own lists.

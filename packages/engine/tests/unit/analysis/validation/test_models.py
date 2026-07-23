@@ -1,8 +1,11 @@
 """ValidationSpec — the typed check definition + legacy normalizer (DAT-735).
 
-Pins the ``mode="before"`` normalizer that maps the legacy YAML + cockpit teach-overlay
-wire shape (``parameters``/``sql_hints``, a live cross-package contract) onto the typed
-``tolerance``/``guidance`` fields, and the "explicit typed fields always win" rule.
+Pins the ``mode="before"`` normalizer that maps the ``parameters``/``sql_hints``
+wire shape onto the typed ``tolerance``/``guidance`` fields, and the "explicit
+typed fields always win" rule. The normalizer's one remaining LIVE producer is
+the DAT-447 ``expected_formula`` teach overlay (``parameters: {table, column,
+formula}``) — the seed YAMLs and the cockpit teach_validation write the typed
+shape natively since the teach-surface retire.
 """
 
 from __future__ import annotations

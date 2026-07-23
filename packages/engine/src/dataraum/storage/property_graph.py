@@ -53,10 +53,12 @@ reification).** Vertices/edges:
                                             (DAT-733): a MEASURED cycle's typed
                                             (column_id, operator, value) status scope
                                             groundings compose by default
-    dim_member  (KEY dim_member_key) a referenced dimension member (DAT-788
-                                            role-separated axis identity × served
-                                            value) a grounding's predicates select
-                                            (DAT-787), un-nested from filter_members
+    dim_member  (KEY dim_member_key) a dimension member a grounding's predicates
+                                            select (DAT-787), un-nested from
+                                            filter_members: axis identity × level ×
+                                            served value over BOTH the DAT-788
+                                            role-separated referenced axis and the
+                                            DAT-867 folded (own-column) axis
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
     has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
@@ -64,7 +66,7 @@ reification).** Vertices/edges:
     conformed_dimension table → table    [slice_definitions ▸ bus_matrix] two facts sharing a dimension AXIS in the SAME role (DAT-756/788)
     grounded_by        concept → grounding [current_groundings] a concept's groundings; >1 healthy = multi-grounding
     uses               grounding → column  [provenance contract v2] the columns a grounding touches
-    filtered_by        grounding → dim_member [provenance contract v2 ▸ filter_members] the referenced dimension members a grounding's predicates select (DAT-787)
+    filtered_by        grounding → dim_member [provenance contract v2 ▸ filter_members] the dimension members a grounding's predicates select — referenced + folded axes (DAT-787/867)
     scoped_by          table → validity_filter [detected_business_cycles] the table's default validity scope (DAT-733)
     temporal_coverage  table → column    [temporal_column_profiles ▸ time_columns] observed window/grain/completeness per (relation × time col) (DAT-730)
     rolls_up_to        column → column   [dimension_hierarchies] ordered drill level→level, finer→coarser (DAT-730)
@@ -95,9 +97,10 @@ The ``concept_edge`` edge (DAT-729) carries the vocabulary relations
 its transitive closure (``part_of`` ancestry) is walked by the bounded recursive CTE.
 The ``uses`` edge un-nests the TYPED ``column_mappings_basis`` (provenance contract
 v2, DAT-727) — enforced at authoring, never parsed out of SQL; ``filtered_by →
-dim_member`` (DAT-787) un-nests the sibling TYPED ``filter_members`` the SAME way —
-one edge per referenced dimension member the grounding's predicates select, an
-ADDITIVE projection (``where[]`` STAYS lossless on the grounding vertex).
+dim_member`` (DAT-787/867) un-nests the sibling TYPED ``filter_members`` the SAME
+way — one edge per dimension member the grounding's predicates select (referenced
+or folded axis), an ADDITIVE projection (``where[]`` STAYS lossless on the
+grounding vertex).
 ``conformed_dimension`` (DAT-756/788) types two facts sharing a dimension AXIS — the
 same resolved ``(dimension_table_id, attribute)`` identity in the SAME ROLE, NOT a
 column name — as a drill-across path (an alignable GROUP BY the SQL agents can author
@@ -216,36 +219,39 @@ _VALIDITY_FILTER_SOURCE = (
 )
 
 
-# The DimMember key (DAT-787): the DAT-788 role-separated axis identity ×
-# the served value. ``conformed_group`` (the referenced role-group signature,
-# ``ref:{dim_table}:{roles}``) already carries the dim table + role; the level is
-# ``dimension_attribute`` (COALESCEd so a NULL FK-key level keys deterministically);
-# the value is the grounding's declared member value. ``json_build_array(...)::text``
-# is a collision-free, unambiguous composite (every component is JSON-escaped — no
-# delimiter a value could forge) and ``::text`` for the PGQ varchar-equality rule.
-# CONTENT-derived only: no per-run component (the relationship_id bug class). The
-# vertex KEY and the edge DESTINATION KEY inline this SAME expression, so they can
-# never drift.
+# The DimMember key (DAT-787 referenced + DAT-867 folded): the dimension-axis
+# identity × the level within it × the served value, over the normalized ``m``
+# columns the two attachment legs below UNION.
+#   ``axis_identity`` = ``COALESCE(bm.conformed_group, bm.signature)`` — bus_matrix's
+#     OWN identity fields, REUSED (never a parallel scheme):
+#       referenced — ``conformed_group`` is the DAT-788 role-group signature
+#         (``ref:{dim_table}:{roles}``), ALWAYS non-null (_ref_group_signature), so
+#         COALESCE returns it unchanged — the referenced key is BYTE-IDENTICAL to the
+#         referenced-only v1 (referenced ``signature`` is never reached);
+#       folded — ``conformed_group`` is the cross-fact conform signature
+#         (``conform:...``) when the judge merged the axis across facts, else NULL; the
+#         fallback is the cell's ``signature`` (``bus:folded:{fact}:{members}``, always
+#         non-null and fact-scoped) so two facts' UNconformed ``region='west'`` stay
+#         DISTINCT vertices (absence-falls-loud) instead of colliding on a NULL axis.
+#   ``axis_level`` = the referenced ``dimension_attribute`` (the enriched level; NULL ⇒
+#     the FK key itself, COALESCEd to '') or the folded ``column_name`` (a folded axis
+#     has no resolved dimension attribute — the fact column IS its level home).
+# ``json_build_array(...)::text`` is a collision-free composite (every component is
+# JSON-escaped — no delimiter a value could forge) and ``::text`` for the PGQ
+# varchar-equality rule. CONTENT-derived only: no per-run component (the
+# relationship_id bug class). The vertex KEY and the edge DESTINATION KEY inline this
+# SAME expression, so they can never drift.
 _DIM_MEMBER_KEY = (
-    "json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''),"
-    " fm.elem->>'value')::text"
+    "json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text"
 )
 
-# Shared FROM/JOIN/WHERE the DimMember vertex and the filtered_by edge re-derive
-# (INDEPENDENT views — the dump drops them in list order — but keyed identically via
-# _DIM_MEMBER_KEY, so a future edit to the resolution touches ONE string). Un-nests
-# the TYPED provenance ``filter_members`` (contract v2 / DAT-787) — one {column,
-# value} per selected member, ENFORCED at authoring (validate_grounding_basis),
-# never parsed out of SQL — exactly the og_uses discipline one grain finer (VALUE,
-# not just column). The member's column resolves to a slice on the grounding's
-# relation, and the DIMENSION-AXIS-ONLY gate stands: only a slice with a resolved
-# REFERENCED identity (``dimension_table_id IS NOT NULL``, then the DAT-788 bus-matrix
-# ``conformed_group`` via the role EXISTS — the SAME join og_conformed_dimension uses)
-# yields a member. A folded slice (no referenced identity — DAT-757) or a
-# non-dimension column contributes NO member/edge; ``where[]`` stays lossless on the
-# grounding node regardless. The engine-appended validity scope (DAT-733) is composed
-# AFTER authoring and never enters filter_members, so it never fabricates a member.
-_DIM_MEMBER_SOURCE = (
+# The grounding→member→fact resolution BOTH UNION legs re-derive: un-nest the TYPED
+# provenance ``filter_members`` (contract v2 / DAT-787) — one {column, value} per
+# selected member, ENFORCED at authoring (validate_grounding_basis), never parsed out
+# of SQL, exactly the og_uses discipline one grain finer (VALUE, not just column) —
+# then resolve the grounding's ``relation`` to its fact table (its enriched view's
+# fact, else the typed table of that name).
+_DIM_MEMBER_PREFIX = (
     f"FROM {READ_TOKEN}.current_groundings g\n"
     f"CROSS JOIN LATERAL json_each(\n"
     f"     COALESCE(g.provenance->'column_mappings_basis', '{{}}'::json)\n"
@@ -264,17 +270,73 @@ _DIM_MEMBER_SOURCE = (
     f"      SELECT 1 FROM {READ_TOKEN}.current_enriched_views ev2\n"
     f"      WHERE ev2.view_name = g.relation)\n"
     f") rel\n"
-    f"JOIN {READ_TOKEN}.current_slice_definitions s\n"
-    f"  ON s.table_id = rel.fact_table_id\n"
-    f" AND s.column_name = fm.elem->>'column'\n"
-    f" AND s.dimension_table_id IS NOT NULL\n"
-    f"JOIN {READ_TOKEN}.current_bus_matrix bm\n"
-    f"  ON bm.attachment = 'referenced'\n"
-    f" AND bm.fact_table_id = s.table_id\n"
-    f" AND bm.dimension_table_id = s.dimension_table_id\n"
-    f" AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)\n"
-    f"             WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))\n"
-    f"WHERE NOT g.failed"
+)
+
+# Referenced leg (DAT-787/788): a slice with a resolved REFERENCED identity
+# (``dimension_table_id IS NOT NULL``) → its bus-matrix cell via the role EXISTS (the
+# SAME join og_conformed_dimension uses). Level = the enriched ``dimension_attribute``.
+# The projected columns are IDENTICAL in shape to the folded leg so the UNION is total.
+_DIM_MEMBER_REFERENCED_LEG = (
+    "  SELECT g.snippet_id AS snippet_id, b.concept AS concept,\n"
+    "         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,\n"
+    "         s.dimension_attribute AS axis_level,\n"
+    "         fm.elem->>'value' AS member_value,\n"
+    "         bm.conformed_group AS conformed_group,\n"
+    "         s.dimension_attribute AS dimension_attribute\n"
+    + _DIM_MEMBER_PREFIX
+    + f"  JOIN {READ_TOKEN}.current_slice_definitions s\n"
+    f"    ON s.table_id = rel.fact_table_id\n"
+    f"   AND s.column_name = fm.elem->>'column'\n"
+    f"   AND s.dimension_table_id IS NOT NULL\n"
+    f"  JOIN {READ_TOKEN}.current_bus_matrix bm\n"
+    f"    ON bm.attachment = 'referenced'\n"
+    f"   AND bm.fact_table_id = s.table_id\n"
+    f"   AND bm.dimension_table_id = s.dimension_table_id\n"
+    f"   AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)\n"
+    f"               WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))\n"
+    f"  WHERE NOT g.failed\n"
+)
+
+# Folded leg (DAT-867): a folded slice (``dimension_table_id IS NULL`` — an own
+# categorical column, no FK identity — SliceDefinition) → its FOLDED bus-matrix cell,
+# matched when the slice's column is one of the cell's member columns (the fold key in
+# ``roles`` OR an inlined attribute in ``attributes``). Fold components are disjoint
+# per fact (bus_matrix union-finds member NAMES), so the column lands in at most one
+# cell. Level = the folded ``column_name`` (its own level home). No folded cell ⇒ no
+# member: the bus_matrix folded surface requires an enriched view + a discovered fold
+# hierarchy (bare categoricals have a slice but no cell) — honest under-coverage, the
+# og_concept_edges discipline, never a fabricated member.
+_DIM_MEMBER_FOLDED_LEG = (
+    "  SELECT g.snippet_id AS snippet_id, b.concept AS concept,\n"
+    "         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,\n"
+    "         s.column_name AS axis_level,\n"
+    "         fm.elem->>'value' AS member_value,\n"
+    "         bm.conformed_group AS conformed_group,\n"
+    "         NULL AS dimension_attribute\n"
+    + _DIM_MEMBER_PREFIX
+    + f"  JOIN {READ_TOKEN}.current_slice_definitions s\n"
+    f"    ON s.table_id = rel.fact_table_id\n"
+    f"   AND s.column_name = fm.elem->>'column'\n"
+    f"   AND s.dimension_table_id IS NULL\n"
+    f"  JOIN {READ_TOKEN}.current_bus_matrix bm\n"
+    f"    ON bm.attachment = 'folded'\n"
+    f"   AND bm.fact_table_id = s.table_id\n"
+    f"   AND (EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)\n"
+    f"                WHERE r.role = s.column_name)\n"
+    f"        OR EXISTS (SELECT 1 FROM json_array_elements_text(bm.attributes) AS a(attr)\n"
+    f"                   WHERE a.attr = s.column_name))\n"
+    f"  WHERE NOT g.failed\n"
+)
+
+# The DimMember source: the UNION of the two attachment legs, aliased ``m`` so ONE
+# key expression (_DIM_MEMBER_KEY) and both element views project the SAME normalized
+# columns. The DimMember vertex and the filtered_by edge stay INDEPENDENT views (the
+# dump drops them in list order) but keyed identically off ``m``, so a future edit to
+# the resolution touches ONE string. The engine-appended validity scope (DAT-733) is
+# composed AFTER authoring and never enters filter_members, so it never fabricates a
+# member; ``where[]`` stays lossless on the grounding node regardless of attachment.
+_DIM_MEMBER_SOURCE = (
+    "FROM (\n" + _DIM_MEMBER_REFERENCED_LEG + "  UNION ALL\n" + _DIM_MEMBER_FOLDED_LEG + ") m"
 )
 
 
@@ -1079,35 +1141,41 @@ def _element_view_sql(name: str) -> str:
             f"WHERE superseded_at IS NULL;"
         )
     if name == "og_dim_members":
-        # dim_member vertex (DAT-787): one node per (DAT-788 role-separated
-        # referenced axis identity × served value) any current grounding's
-        # predicates SELECT — un-nested from the TYPED provenance ``filter_members``
-        # (never from parsing SQL). DISTINCT ON the key over ALL groundings folds a
-        # member referenced by many groundings into ONE vertex; the properties are
-        # functionally determined by the key, so the tiebreak is irrelevant but
-        # TOTAL (deterministic dump). ``conformed_group`` is the referenced
-        # role-group signature (bus_matrix, ``ref:{dim_table}:{roles}``);
-        # ``dimension_attribute`` is the level (NULL = the FK key itself);
-        # ``member_value`` is the served value — the equality anchor, exact string
-        # equality, no casing/whitespace folding (validate_grounding_basis pins the
-        # value to a served representation at authoring). See _DIM_MEMBER_SOURCE for
-        # the resolution + the dimension-axis-only gate.
+        # dim_member vertex (DAT-787/867): one node per (dimension-axis identity ×
+        # level × served value) any current grounding's predicates SELECT — un-nested
+        # from the TYPED provenance ``filter_members`` (never from parsing SQL), over
+        # BOTH the referenced (DAT-788 role-separated) and folded (DAT-867 own-column)
+        # axes. DISTINCT ON the key over ALL groundings folds a member referenced by
+        # many groundings into ONE vertex; the properties are functionally determined
+        # by the key, so the tiebreak is irrelevant but TOTAL (deterministic dump).
+        # ``conformed_group`` is the RAW bus_matrix cross-fact identity — the
+        # referenced role-group signature (``ref:{dim_table}:{roles}``), the folded
+        # conform signature (``conform:...``), or NULL for an unconformed folded axis
+        # (the KEY's ``axis_identity`` falls back to the cell ``signature`` there, see
+        # _DIM_MEMBER_KEY). ``dimension_attribute`` is the referenced level (NULL = the
+        # FK key itself; NULL for a folded axis — its level rides ``axis_level`` =
+        # column_name in the key). ``member_value`` is the served value — the equality
+        # anchor, exact string equality, no casing/whitespace folding
+        # (validate_grounding_basis pins the value to a served representation at
+        # authoring). See _DIM_MEMBER_SOURCE for the resolution + the two attachment
+        # legs.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_dim_members AS\n"
             f"SELECT DISTINCT ON ({_DIM_MEMBER_KEY})\n"
             f"       {_DIM_MEMBER_KEY} AS dim_member_key,\n"
-            f"       bm.conformed_group AS conformed_group,\n"
-            f"       s.dimension_attribute AS dimension_attribute,\n"
-            f"       fm.elem->>'value' AS member_value\n"
+            f"       m.conformed_group AS conformed_group,\n"
+            f"       m.dimension_attribute AS dimension_attribute,\n"
+            f"       m.member_value AS member_value\n"
             + _DIM_MEMBER_SOURCE
             + f"\nORDER BY {_DIM_MEMBER_KEY};"
         )
     if name == "og_filtered_by":
-        # filtered_by edge (grounding → dim_member, DAT-787): one edge per
+        # filtered_by edge (grounding → dim_member, DAT-787/867): one edge per
         # (grounding, member) pair the grounding's predicates reference — an ADDITIVE
         # projection, never a move (``where[]`` stays lossless on og_grounding). Same
-        # un-nest + resolution as og_dim_members (shared _DIM_MEMBER_SOURCE / key), so
-        # the DESTINATION KEY matches the vertex KEY by construction. DISTINCT ON
+        # un-nest + resolution as og_dim_members (shared _DIM_MEMBER_SOURCE / key over
+        # the same referenced + folded legs), so the DESTINATION KEY matches the vertex
+        # KEY by construction. DISTINCT ON
         # (snippet, member) collapses a member two of the grounding's concepts both
         # select into ONE edge, keeping the first ``concept`` (the tiebreak is TOTAL);
         # ``concept`` rides as the edge property (which concept's filter selected the
@@ -1119,16 +1187,16 @@ def _element_view_sql(name: str) -> str:
         # excluded (the WHERE in the shared source).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_filtered_by AS\n"
-            f"SELECT DISTINCT ON (g.snippet_id, {_DIM_MEMBER_KEY})\n"
-            f"       (g.snippet_id || '_' || {_DIM_MEMBER_KEY})::text AS edge_key,\n"
-            f"       g.snippet_id::text AS snippet_id,\n"
+            f"SELECT DISTINCT ON (m.snippet_id, {_DIM_MEMBER_KEY})\n"
+            f"       (m.snippet_id || '_' || {_DIM_MEMBER_KEY})::text AS edge_key,\n"
+            f"       m.snippet_id::text AS snippet_id,\n"
             f"       {_DIM_MEMBER_KEY} AS dim_member_key,\n"
             # ``concept`` is a shared PGQ property (og_grounding / og_grounded_by carry
             # it as varchar); json_each's key is text, so cast to match — PGQ requires a
             # property of one name to have one type across every label.
-            f"       (b.concept)::varchar AS concept\n"
+            f"       (m.concept)::varchar AS concept\n"
             + _DIM_MEMBER_SOURCE
-            + f"\nORDER BY g.snippet_id, {_DIM_MEMBER_KEY}, b.concept;"
+            + f"\nORDER BY m.snippet_id, {_DIM_MEMBER_KEY}, m.concept;"
         )
     raise AssertionError(f"unreachable: {name} not an element view")
 

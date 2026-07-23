@@ -116,6 +116,14 @@ _COLUMNS = [
     # judge→graph path: these MUST produce a conformed edge on accounts.segment.
     ("c_seg1", "t1", "seg1_acct", 5),
     ("c_seg2", "t4", "seg2_acct", 4),
+    # DAT-867: a FOLDED own-categorical column on the journal fact (no FK identity) —
+    # the OBT shape. Its slice has NULL dimension_table_id and it is a member of a
+    # folded bus-matrix cell, so a grounding filtering on it yields a folded dim_member.
+    ("c_rf", "t1", "region_flat", 6),
+    # DAT-867: a SAME-NAMED folded column on a SECOND fact (statement) — used to prove
+    # two facts' UNCONFORMED region_flat='west' stay DISTINCT vertices (the axis
+    # identity falls back to the fact-scoped bus_matrix signature, never a shared NULL).
+    ("c_rf2", "t4", "region_flat", 5),
 ]
 # (relationship_id, from_table, from_col, to_table, to_col)
 _REFS = [
@@ -268,6 +276,18 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', '{colname}', 't2', "
             f"'{attr}', '{role}', 1, 'categorical', 'llm', '{TS}')"
         )
+    # DAT-867 FOLDED slice: journal's own categorical region_flat — dimension_table_id /
+    # dimension_attribute / fk_role ALL NULL (no FK identity, SliceDefinition contract).
+    # The folded dim-member leg keys on the column itself, resolved through its folded
+    # bus-matrix cell below.
+    for sid, tid, cid in [("sl_fold", "t1", "c_rf"), ("sl_fold2", "t4", "c_rf2")]:
+        stmts.append(
+            "INSERT INTO slice_definitions "
+            "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
+            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', 'region_flat', NULL, "
+            f"NULL, NULL, 1, 'categorical', 'structural', '{TS}')"
+        )
     # Referenced bus-matrix cells carry the DAT-788 role identity the graph joins on
     # (og_conformed_dimension). Same-named FK roles across facts auto-conform to one
     # group (account_id → 'ref:t2:account_id'), so journal↔statement still conform on
@@ -292,6 +312,22 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{eid}', '{RUN}', '{tid}', 'referenced', 'accounts', 't2', "
             f"'[\"{role}\"]', '[]', 'unconfirmed', '{group}', false, "
             f"'bus:referenced:{tid}:t2:{role}', '{TS}')"
+        )
+    # DAT-867 FOLDED bus-matrix cells for the region_flat fold on TWO facts (journal,
+    # statement). Each is UNCONFORMED (conformed_group NULL — no cross-fact conform
+    # verdict), so the folded dim-member axis identity falls back to the cell's
+    # ``signature`` — which is FACT-SCOPED (``bus:folded:{fact}:{members}``), keeping
+    # the two facts' region_flat='west' members DISTINCT vertices. roles carries the
+    # fold key; attributes the inlined levels (none here); dimension_table_id NULL.
+    for eid, tid in [("bm_fold", "t1"), ("bm_fold2", "t4")]:
+        stmts.append(
+            "INSERT INTO bus_matrix "
+            "(entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id, "
+            " roles, attributes, confirmation_source, conformed_group, needs_confirmation, "
+            " signature, created_at) "
+            f"VALUES ('{eid}', '{RUN}', '{tid}', 'folded', 'region_flat', NULL, "
+            f"'[\"region_flat\"]', '[]', 'unconfirmed', NULL, false, "
+            f"'bus:folded:{tid}:region_flat', '{TS}')"
         )
     # Fact↔fact MEETINGS between account_id slice columns (the DAT-723 fan trap),
     # persisted the way the write site now produces them (DAT-850): the judge's fk
@@ -873,6 +909,60 @@ _SNIPPETS: list[tuple[str, str, str, str, str, list[str], dict | None, bool]] = 
         },
         False,
     ),
+    # DAT-867 FOLDED axis: a grounding filtering on journal's own categorical
+    # region_flat (dimension_table_id NULL, no FK). It must yield a folded dim_member
+    # keyed on the folded bus-matrix cell's signature (unconformed → conformed_group
+    # NULL). Non-active concept → no grounded_by edge; region_flat is NOT an enriched
+    # column of enriched_journal → no uses edge (the dim-member path resolves through
+    # slice_definitions, NOT enriched_columns — the intended asymmetry).
+    (
+        "sn_folded",
+        "folded_region",
+        "regional_folded",
+        "enriched_journal",
+        "COUNT(*)",
+        ["region_flat = 'west'"],
+        {
+            "column_mappings_basis": {
+                "folded_region": {
+                    "measure_columns": [],
+                    "filter_columns": ["region_flat"],
+                    "filter": "west",
+                    "filter_members": [
+                        {"column": "region_flat", "value": "west"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
+    # DAT-867 SECOND fact's folded axis: statement (t4, TYPED relation) filtering the
+    # SAME region_flat='west'. Its folded member is a DISTINCT vertex from sn_folded's
+    # (fact-scoped signature). The typed relation resolves region_flat to t4's own
+    # column, so — unlike sn_folded's enriched relation — it DOES add a uses edge.
+    (
+        "sn_folded2",
+        "folded_region2",
+        "regional_folded2",
+        "statement",
+        "COUNT(*)",
+        ["region_flat = 'west'"],
+        {
+            "column_mappings_basis": {
+                "folded_region2": {
+                    "measure_columns": [],
+                    "filter_columns": ["region_flat"],
+                    "filter": "west",
+                    "filter_members": [
+                        {"column": "region_flat", "value": "west"},
+                    ],
+                }
+            },
+            "assumptions": [],
+        },
+        False,
+    ),
 ]
 
 
@@ -1159,7 +1249,9 @@ def test_has_dimension_edge(graph_engine: Engine) -> None:
         rows = {(r.tname, r.cname, r.dim) for r in conn.execute(text(sql))}
     # All three facts slice their own account_id, each bound to the accounts dim (t2);
     # journal + statement additionally carry role-playing bill-to/ship-to and
-    # seg1/seg2 FKs (DAT-788).
+    # seg1/seg2 FKs (DAT-788). journal also carries a FOLDED own-column slice
+    # (region_flat, NULL dim identity — DAT-867): a has_dimension edge with NULL
+    # dimension_table_id, the OBT axis the folded dim-member leg reads.
     assert rows == {
         ("journal", "account_id", "t2"),
         ("statement", "account_id", "t2"),
@@ -1168,6 +1260,8 @@ def test_has_dimension_edge(graph_engine: Engine) -> None:
         ("statement", "shipto_acct", "t2"),
         ("journal", "seg1_acct", "t2"),
         ("statement", "seg2_acct", "t2"),
+        ("journal", "region_flat", None),
+        ("statement", "region_flat", None),
     }
 
 
@@ -1378,6 +1472,8 @@ def test_current_groundings_is_graph_authored_extracts_only(graph_engine: Engine
         "sn_billto",
         "sn_shipto",
         "sn_billto2",
+        "sn_folded",  # DAT-867 folded-axis grounding (journal)
+        "sn_folded2",  # DAT-867 folded-axis grounding (statement — second fact)
     }
     assert rows["sn_tb"].concept == "account_balance"
     assert rows["sn_tb"].relation == "enriched_journal"
@@ -1406,6 +1502,8 @@ def test_grounding_vertices_carry_the_failed_discriminator(graph_engine: Engine)
         "sn_billto": False,
         "sn_shipto": False,
         "sn_billto2": False,
+        "sn_folded": False,  # DAT-867 folded-axis grounding (journal)
+        "sn_folded2": False,  # DAT-867 folded-axis grounding (statement)
     }
 
 
@@ -1437,6 +1535,8 @@ def test_grounding_parts_round_trip_vs_compose_extract_sql(graph_engine: Engine)
         "sn_billto",
         "sn_shipto",
         "sn_billto2",
+        "sn_folded",  # DAT-867 folded-axis grounding (journal)
+        "sn_folded2",  # DAT-867 folded-axis grounding (statement)
     }
     for sid, row in props.items():
         rendered = compose_extract_sql(
@@ -1513,12 +1613,20 @@ def test_uses_edges_land_on_the_served_relations_columns(graph_engine: Engine) -
         # sn_billto reads amount too (enriched_journal); its dimension/non-dimension
         # filter names are not served enriched columns → no filter uses-edges.
         ("sn_billto", "ec_amt", "amount", "measure"),
+        # DAT-867 sn_folded2 filters region_flat on the TYPED relation 'statement', so
+        # the name resolves to t4's own column → a filter uses-edge (sn_folded's
+        # enriched relation has no such enriched column, so it adds none).
+        ("sn_folded2", "c_rf2", "region_flat", "filter"),
     }
 
 
 def test_filtered_by_projects_the_referenced_dimension_members(graph_engine: Engine) -> None:
     """DAT-787 filtered_by (grounding → dim_member): one edge per referenced
     member a grounding's predicates SELECT, un-nested from the TYPED filter_members.
+
+    Also the DAT-867 NEGATIVE PIN: the REFERENCED edge set is EXACTLY unchanged with
+    a folded axis present in the SAME graph — the folded leg is purely additive
+    (folded edges asserted in test_filtered_by_projects_the_folded_dimension_member).
 
     The exact edge set proves the whole contract at once:
     * MULTI-MEMBER — sn_tb's IN ('asset','liability') on the account_type axis is
@@ -1541,7 +1649,10 @@ def test_filtered_by_projects_the_referenced_dimension_members(graph_engine: Eng
     )
     with graph_engine.connect() as conn:
         rows = {(r.sid, r.cg, r.attr, r.val, r.concept) for r in conn.execute(text(sql))}
-    assert rows == {
+    # Referenced identities carry the ``ref:`` signature; isolate them — the additive
+    # folded leg (conformed_group NULL here) must not shift this set by one edge.
+    referenced = {r for r in rows if (r[1] or "").startswith("ref:")}
+    assert referenced == {
         ("sn_tb", "ref:t2:account_id", "account_type", "asset", "account_balance"),
         ("sn_tb", "ref:t2:account_id", "account_type", "liability", "account_balance"),
         ("sn_billto", "ref:t2:billto_acct", "region", "north", "regional_billed"),
@@ -1554,9 +1665,53 @@ def test_filtered_by_projects_the_referenced_dimension_members(graph_engine: Eng
     # The "one home" fold: bill-to region='north' is selected by TWO groundings but
     # remains ONE member (the vertex-side fold is asserted in the vertex test).
     billto_north = {
-        sid for sid, cg, _, val, _ in rows if cg == "ref:t2:billto_acct" and val == "north"
+        sid for sid, cg, _, val, _ in referenced if cg == "ref:t2:billto_acct" and val == "north"
     }
     assert billto_north == {"sn_billto", "sn_billto2"}
+
+
+def test_filtered_by_projects_the_folded_dimension_member(graph_engine: Engine) -> None:
+    """DAT-867: a grounding filtering on a FOLDED own-column axis (region_flat, NULL
+    dimension_table_id) projects a filtered_by edge to a folded dim_member — the
+    referenced-only v1 zeroed the whole surface on an OBT corpus.
+
+    The folded member's axis identity is the folded bus-matrix cell's ``signature``
+    (unconformed ⇒ conformed_group NULL), so it is keyed distinctly from any
+    referenced member; ``dimension_attribute`` is NULL (a folded axis has no resolved
+    dimension attribute — its level rides the key). where[] stays lossless regardless.
+
+    ABSENCE-FALLS-LOUD (the lane's core safety property): sn_folded (journal) and
+    sn_folded2 (statement) both select region_flat='west', but on UNCONFORMED folded
+    axes of DIFFERENT facts — so they are DISTINCT members. The axis identity falls
+    back to the FACT-SCOPED ``signature`` (bus:folded:t1:… vs bus:folded:t4:…), never a
+    shared NULL that would wrongly conform them.
+    """
+    sql = (
+        f"SELECT sid, mkey, cg, attr, val, concept FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (g IS grounding_node)-[e IS filtered_by]->(m IS dim_member) "
+        "COLUMNS (g.snippet_id AS sid, m.dim_member_key AS mkey, m.conformed_group AS cg, "
+        "m.dimension_attribute AS attr, m.member_value AS val, e.concept AS concept))"
+    )
+    with graph_engine.connect() as conn:
+        by_sid = {r.sid: r for r in conn.execute(text(sql)) if r.sid in ("sn_folded", "sn_folded2")}
+    # One folded edge per grounding, each carrying NULL conformed_group + attribute.
+    assert set(by_sid) == {"sn_folded", "sn_folded2"}
+    assert (by_sid["sn_folded"].cg, by_sid["sn_folded"].attr, by_sid["sn_folded"].val) == (
+        None,
+        None,
+        "west",
+    )
+    assert by_sid["sn_folded"].concept == "folded_region"
+    assert by_sid["sn_folded2"].concept == "folded_region2"
+    # The key REUSES the folded cell's fact-scoped signature as its axis identity —
+    # bus_matrix's own field, not a parallel scheme — carries the own-column level,
+    # and carries no per-run id.
+    assert "bus:folded:t1:region_flat" in by_sid["sn_folded"].mkey
+    assert "bus:folded:t4:region_flat" in by_sid["sn_folded2"].mkey
+    assert all("region_flat" in r.mkey and "west" in r.mkey for r in by_sid.values())
+    assert all(RUN not in r.mkey for r in by_sid.values())
+    # Same column name + same value, DIFFERENT facts (both unconformed) → DISTINCT keys.
+    assert by_sid["sn_folded"].mkey != by_sid["sn_folded2"].mkey
 
 
 def test_dim_member_vertices_are_distinct_per_role(graph_engine: Engine) -> None:
@@ -1567,8 +1722,14 @@ def test_dim_member_vertices_are_distinct_per_role(graph_engine: Engine) -> None
 
     Conversely, the "one home" fold: sn_billto and sn_billto2 BOTH select bill-to
     region='north', yet it is ONE vertex — the DISTINCT ON the key collapses the two
-    references (were it not, the duplicate key would fail graph materialization). The
-    exactly-4 unique keys below prove the fold held."""
+    references (were it not, the duplicate key would fail graph materialization).
+
+    DAT-867 negative pin: the REFERENCED vertex set is EXACTLY unchanged with folded
+    axes present. Two facts' unconformed region_flat='west' share the SAME visible
+    properties (NULL conformed_group + attribute, value 'west') yet are DISTINCT
+    vertices — the fact-scoped signature fallback keeps their KEYS apart, so the
+    folded leg never collides with a referenced one nor conforms two facts by
+    accident."""
     sql = (
         f"SELECT mkey, cg, attr, val FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (m IS dim_member) "
@@ -1578,19 +1739,28 @@ def test_dim_member_vertices_are_distinct_per_role(graph_engine: Engine) -> None
     with graph_engine.connect() as conn:
         rows = list(conn.execute(text(sql)))
     members = {(r.cg, r.attr, r.val) for r in rows}
-    assert members == {
+    # Referenced members (``ref:`` signature) are EXACTLY the four v1 vertices.
+    referenced = {m for m in members if (m[0] or "").startswith("ref:")}
+    assert referenced == {
         ("ref:t2:account_id", "account_type", "asset"),
         ("ref:t2:account_id", "account_type", "liability"),
         ("ref:t2:billto_acct", "region", "north"),
         ("ref:t2:shipto_acct", "region", "north"),
     }
-    # Keys are unique (a valid PGQ vertex KEY) and content-derived (no run id).
+    # The two folded members share ONE visible property tuple (they differ ONLY in the
+    # key's fact-scoped signature) → 5 distinct property tuples, but 6 distinct KEYS.
+    assert (None, None, "west") in members
+    assert len(members) == 5
     keys = [r.mkey for r in rows]
-    assert len(keys) == len(set(keys)) == 4
-    assert all(RUN not in k for k in keys)
+    assert len(keys) == len(set(keys)) == 6
+    assert all(RUN not in k for k in keys)  # content-derived, no per-run id
     # Same value 'north', different role → DISTINCT keys (the DAT-788 guarantee).
     north = {r.cg: r.mkey for r in rows if r.val == "north"}
     assert north["ref:t2:billto_acct"] != north["ref:t2:shipto_acct"]
+    # Same column+value 'west', different FACT (unconformed folded) → DISTINCT keys
+    # (the DAT-867 absence-falls-loud guarantee — the signature fallback in action).
+    folded_west = [r.mkey for r in rows if r.cg is None and r.val == "west"]
+    assert len(folded_west) == len(set(folded_west)) == 2
 
 
 def test_derived_reconciles_with_self_loop_resolves_in_the_graph(graph_engine: Engine) -> None:

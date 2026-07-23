@@ -227,11 +227,18 @@ ORDER BY g.snippet_id, col.column_id,
          CASE u.role WHEN 'measure' THEN 0 ELSE 1 END;
 
 CREATE VIEW __READ__.og_dim_members AS
-SELECT DISTINCT ON (json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text)
-       json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text AS dim_member_key,
-       bm.conformed_group AS conformed_group,
-       s.dimension_attribute AS dimension_attribute,
-       fm.elem->>'value' AS member_value
+SELECT DISTINCT ON (json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text)
+       json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text AS dim_member_key,
+       m.conformed_group AS conformed_group,
+       m.dimension_attribute AS dimension_attribute,
+       m.member_value AS member_value
+FROM (
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.dimension_attribute AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         s.dimension_attribute AS dimension_attribute
 FROM __READ__.current_groundings g
 CROSS JOIN LATERAL json_each(
      COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
@@ -250,25 +257,70 @@ CROSS JOIN LATERAL (
       SELECT 1 FROM __READ__.current_enriched_views ev2
       WHERE ev2.view_name = g.relation)
 ) rel
-JOIN __READ__.current_slice_definitions s
-  ON s.table_id = rel.fact_table_id
- AND s.column_name = fm.elem->>'column'
- AND s.dimension_table_id IS NOT NULL
-JOIN __READ__.current_bus_matrix bm
-  ON bm.attachment = 'referenced'
- AND bm.fact_table_id = s.table_id
- AND bm.dimension_table_id = s.dimension_table_id
- AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
-             WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
-WHERE NOT g.failed
-ORDER BY json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text;
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NOT NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'referenced'
+   AND bm.fact_table_id = s.table_id
+   AND bm.dimension_table_id = s.dimension_table_id
+   AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+               WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
+  WHERE NOT g.failed
+  UNION ALL
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.column_name AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         NULL AS dimension_attribute
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'folded'
+   AND bm.fact_table_id = s.table_id
+   AND (EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+                WHERE r.role = s.column_name)
+        OR EXISTS (SELECT 1 FROM json_array_elements_text(bm.attributes) AS a(attr)
+                   WHERE a.attr = s.column_name))
+  WHERE NOT g.failed
+) m
+ORDER BY json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text;
 
 CREATE VIEW __READ__.og_filtered_by AS
-SELECT DISTINCT ON (g.snippet_id, json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text)
-       (g.snippet_id || '_' || json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text)::text AS edge_key,
-       g.snippet_id::text AS snippet_id,
-       json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text AS dim_member_key,
-       (b.concept)::varchar AS concept
+SELECT DISTINCT ON (m.snippet_id, json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text)
+       (m.snippet_id || '_' || json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text)::text AS edge_key,
+       m.snippet_id::text AS snippet_id,
+       json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text AS dim_member_key,
+       (m.concept)::varchar AS concept
+FROM (
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.dimension_attribute AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         s.dimension_attribute AS dimension_attribute
 FROM __READ__.current_groundings g
 CROSS JOIN LATERAL json_each(
      COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
@@ -287,18 +339,56 @@ CROSS JOIN LATERAL (
       SELECT 1 FROM __READ__.current_enriched_views ev2
       WHERE ev2.view_name = g.relation)
 ) rel
-JOIN __READ__.current_slice_definitions s
-  ON s.table_id = rel.fact_table_id
- AND s.column_name = fm.elem->>'column'
- AND s.dimension_table_id IS NOT NULL
-JOIN __READ__.current_bus_matrix bm
-  ON bm.attachment = 'referenced'
- AND bm.fact_table_id = s.table_id
- AND bm.dimension_table_id = s.dimension_table_id
- AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
-             WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
-WHERE NOT g.failed
-ORDER BY g.snippet_id, json_build_array(bm.conformed_group, COALESCE(s.dimension_attribute, ''), fm.elem->>'value')::text, b.concept;
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NOT NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'referenced'
+   AND bm.fact_table_id = s.table_id
+   AND bm.dimension_table_id = s.dimension_table_id
+   AND EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+               WHERE r.role = COALESCE(NULLIF(s.fk_role, ''), s.column_name))
+  WHERE NOT g.failed
+  UNION ALL
+  SELECT g.snippet_id AS snippet_id, b.concept AS concept,
+         COALESCE(bm.conformed_group, bm.signature) AS axis_identity,
+         s.column_name AS axis_level,
+         fm.elem->>'value' AS member_value,
+         bm.conformed_group AS conformed_group,
+         NULL AS dimension_attribute
+FROM __READ__.current_groundings g
+CROSS JOIN LATERAL json_each(
+     COALESCE(g.provenance->'column_mappings_basis', '{}'::json)
+     ) AS b(concept, entry)
+CROSS JOIN LATERAL json_array_elements(
+     COALESCE(b.entry->'filter_members', '[]'::json)) AS fm(elem)
+CROSS JOIN LATERAL (
+  SELECT ev.fact_table_id AS fact_table_id
+  FROM __READ__.current_enriched_views ev
+  WHERE ev.view_name = g.relation
+  UNION ALL
+  SELECT t.table_id
+  FROM __READ__.current_tables t
+  WHERE (t.table_name = g.relation OR t.duckdb_path = g.relation)
+    AND NOT EXISTS (
+      SELECT 1 FROM __READ__.current_enriched_views ev2
+      WHERE ev2.view_name = g.relation)
+) rel
+  JOIN __READ__.current_slice_definitions s
+    ON s.table_id = rel.fact_table_id
+   AND s.column_name = fm.elem->>'column'
+   AND s.dimension_table_id IS NULL
+  JOIN __READ__.current_bus_matrix bm
+    ON bm.attachment = 'folded'
+   AND bm.fact_table_id = s.table_id
+   AND (EXISTS (SELECT 1 FROM json_array_elements_text(bm.roles) AS r(role)
+                WHERE r.role = s.column_name)
+        OR EXISTS (SELECT 1 FROM json_array_elements_text(bm.attributes) AS a(attr)
+                   WHERE a.attr = s.column_name))
+  WHERE NOT g.failed
+) m
+ORDER BY m.snippet_id, json_build_array(m.axis_identity, COALESCE(m.axis_level, ''), m.member_value)::text, m.concept;
 
 CREATE VIEW __READ__.og_validity_filter AS
 SELECT c.cycle_id::text AS filter_id,

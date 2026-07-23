@@ -99,6 +99,9 @@ _COLUMNS = [
     # accounts dim date — ec_od's typed source (DAT-866): profiled as tp_od, its window
     # serves the enriched-resolved coverage edge THROUGH source_column_id.
     ("c_od", "t2", "open_date", 3),
+    # accounts dim date with NO temporal profile — ec_cd's source: the enriched-branch
+    # source-never-profiled degrade case (edge survives, observed_* NULL).
+    ("c_cd", "t2", "close_date", 4),
     ("c_k3", "t3", "group_id", 1),
     ("c_k3b", "t3", "account_id", 2),  # t3's own account_id — a cross-LEVEL accounts slice
     ("c_k4", "t4", "statement_id", 1),
@@ -171,16 +174,27 @@ def _seed(engine: Engine) -> None:
     #            from the accounts date c_od: t1 DECLARES it a time column but it has
     #            no typed row on t1 — the DAT-866 enriched-fallback coverage case;
     #            its observed profile resolves THROUGH c_od (tp_od).
+    #   ec_cd  — joined dim date whose source c_cd was NEVER profiled: the enriched
+    #            coverage edge must survive with NULL observed_* (absence falls loud).
     for cid, name, pos, origin, src in [
         ("ec_amt", "amount", 0, "fact", "c_amt"),
         ("ec_at", "account_id__account_type", 1, "dimension", "c_at"),
         ("ec_od", "account_id__open_date", 2, "dimension", "c_od"),
+        ("ec_cd", "account_id__close_date", 3, "dimension", "c_cd"),
     ]:
         stmts.append(
             "INSERT INTO columns "
             "(column_id, table_id, column_name, column_position, origin, source_column_id) "
             f"VALUES ('{cid}', 't_enr', '{name}', {pos}, '{origin}', '{src}')"
         )
+    # ec_orph — an enriched column whose typed source was TORN DOWN (the FK's
+    # ON DELETE SET NULL end-state): declared a time column below, its coverage edge
+    # must survive with NULL observed_*, never drop (DAT-866 review finding).
+    stmts.append(
+        "INSERT INTO columns "
+        "(column_id, table_id, column_name, column_position, origin, source_column_id) "
+        "VALUES ('ec_orph', 't_enr', 'orphaned__date', 4, 'dimension', NULL)"
+    )
     # has_role: amount / amount_declared are measures, account_id a key.
     for cid, role in [("c_amt", "measure"), ("c_amt2", "measure"), ("c_k1", "key")]:
         stmts.append(
@@ -323,6 +337,10 @@ def _seed(engine: Engine) -> None:
         '{"column": "due_date", "aspect": "due", "role": "attribute", '
         '"is_anchor": false, "note": "x"}, '
         '{"column": "account_id__open_date", "aspect": "opened", "role": "attribute", '
+        '"is_anchor": false, "note": "x"}, '
+        '{"column": "account_id__close_date", "aspect": "closed", "role": "attribute", '
+        '"is_anchor": false, "note": "x"}, '
+        '{"column": "orphaned__date", "aspect": "orphaned", "role": "attribute", '
         '"is_anchor": false, "note": "x"}]'
     )
     time_cols_by_entity = {"t1": t1_time_columns}
@@ -1038,8 +1056,11 @@ def test_enriched_view_columns_carry_source_resolved_semantics(graph_engine: Eng
         ("ec_amt", "amount", "measure", "flow"),
         # joined dim column: surfaces with its own id; source c_at is unannotated → NULL.
         ("ec_at", "account_id__account_type", None, None),
-        # joined dim date (DAT-866 coverage source): own id, source c_od unannotated.
+        # joined dim dates (DAT-866 coverage sources): own ids, sources unannotated;
+        # ec_orph's source is NULL (torn down) — semantics degrade to NULL, row stays.
         ("ec_od", "account_id__open_date", None, None),
+        ("ec_cd", "account_id__close_date", None, None),
+        ("ec_orph", "orphaned__date", None, None),
     }
 
 
@@ -1630,8 +1651,8 @@ def test_reader_role_can_query_the_graph(graph_engine: Engine) -> None:
         cov = conn.execute(text(cov_sql)).scalar_one()
         conn.execute(text("RESET ROLE"))
     assert n == 6
-    # t1's three typed time columns + the DAT-866 enriched-resolved one — reader-visible.
-    assert cov == 4
+    # t1's three typed time columns + the three DAT-866 enriched-resolved ones.
+    assert cov == 6
 
 
 def test_bootstrap_is_idempotent(graph_engine: Engine) -> None:
@@ -1727,8 +1748,15 @@ def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engin
     with graph_engine.connect() as conn:
         rows = {r.col: r for r in conn.execute(text(sql))}
     # Only t1 (journal) declares time_columns → its three typed date axes plus the
-    # enriched-resolved joined dim date (DAT-866).
-    assert set(rows) == {"txn_date", "created_date", "due_date", "account_id__open_date"}
+    # three enriched-resolved joined dim dates (DAT-866).
+    assert set(rows) == {
+        "txn_date",
+        "created_date",
+        "due_date",
+        "account_id__open_date",
+        "account_id__close_date",
+        "orphaned__date",
+    }
     assert all(r.src == "journal" for r in rows.values())
     # The declared-anchor event axis: a COMPLETE monthly series.
     txn = rows["txn_date"]
@@ -1750,6 +1778,13 @@ def test_temporal_coverage_edges_expose_the_persisted_window(graph_engine: Engin
     assert (opened.role, opened.aspect, opened.danchor) == ("attribute", "opened", False)
     assert opened.grain == "year"
     assert opened.ratio == 1.0
+    # Enriched-branch degrade paths (DAT-866 review): the edge SURVIVES with NULL
+    # observed_* when the source was never profiled (ec_cd) and when the source was
+    # torn down entirely (ec_orph, source_column_id NULL via the SET NULL FK).
+    closed = rows["account_id__close_date"]
+    assert (closed.cid, closed.grain, closed.ratio) == ("ec_cd", None, None)
+    orphaned = rows["orphaned__date"]
+    assert (orphaned.cid, orphaned.grain, orphaned.ratio) == ("ec_orph", None, None)
 
 
 def test_declared_anchor_is_not_the_operating_model_anchor(graph_engine: Engine) -> None:

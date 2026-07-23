@@ -58,6 +58,7 @@ def _row_values(vertical: str, spec: ValidationSpec, *, source: str) -> dict[str
         "guidance": spec.guidance,
         "expected_outcome": spec.expected_outcome,
         "relevant_cycles": spec.relevant_cycles or None,
+        "relevant_conventions": spec.relevant_conventions or None,
         "tags": spec.tags or None,
         "version": spec.version,
         "source": source,
@@ -78,6 +79,7 @@ def _row_to_spec(row: Validation) -> ValidationSpec:
         expected_outcome=row.expected_outcome,
         tags=list(row.tags or []),
         relevant_cycles=list(row.relevant_cycles or []),
+        relevant_conventions=list(row.relevant_conventions or []),
         version=row.version,
         source=row.source or "config",
     )

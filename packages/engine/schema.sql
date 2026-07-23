@@ -283,6 +283,7 @@ CREATE TABLE validations (
 	guidance TEXT, 
 	expected_outcome TEXT, 
 	relevant_cycles JSON, 
+	relevant_conventions JSON, 
 	tags JSON, 
 	version VARCHAR NOT NULL, 
 	source VARCHAR, 

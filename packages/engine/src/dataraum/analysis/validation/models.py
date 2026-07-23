@@ -99,6 +99,14 @@ class ValidationSpec(BaseModel):
     relevant_cycles: list[str] = Field(
         default_factory=list
     )  # cycle types this applies to; empty = universal
+    # Convention ids (= `Convention.name`, the prompt-facing id) this check's LOGIC
+    # relies on — the typed
+    # validation→convention dependency (DAT-865). The SQL binder receives exactly
+    # these (∪ the convention-side `targets` routing), so a judgment the check
+    # depends on (e.g. a sign rule) arrives declared, never re-guessed at bind
+    # time. Declared by induction (membership-validated) or the seed YAML; empty =
+    # only targets-routed conventions reach the binder.
+    relevant_conventions: list[str] = Field(default_factory=list)
     version: str = "1.0"
     source: str = "config"
 

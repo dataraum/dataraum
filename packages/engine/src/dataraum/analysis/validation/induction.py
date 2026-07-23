@@ -18,12 +18,14 @@ live call proves a schema compiles — the induction call is real-LLM.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from dataraum.analysis.semantic.convention_store import load_workspace_conventions
 from dataraum.analysis.semantic.db_models import WorkspaceSettings
 from dataraum.analysis.validation.models import ValidationSeverity, ValidationSpec
 from dataraum.core.logging import get_logger
@@ -42,6 +44,8 @@ from dataraum.storage.snapshot_head import catalog_head_target, head_run_id
 if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
+
+    from dataraum.analysis.semantic.ontology import OntologyConvention
 
 logger = get_logger(__name__)
 
@@ -93,6 +97,13 @@ class InducedValidation(BaseModel):
     relevant_cycles: list[str] = Field(
         description="Cycle types this validation applies to; [] means universal."
     )
+    relevant_conventions: list[str] = Field(
+        description=(
+            "Ids of the served domain conventions this check's logic relies on (e.g. "
+            "a sign or netting rule) — the SQL author binding the check receives "
+            "EXACTLY these conventions. [] when the check relies on none."
+        )
+    )
     referenced_tables: list[str] = Field(
         description="Tables from the served graph this check reads; [] when none."
     )
@@ -119,6 +130,15 @@ class Membership:
     tables: set[str] = field(default_factory=set)
     columns: set[str] = field(default_factory=set)
     concepts: set[str] = field(default_factory=set)
+    # Served convention ids (DAT-865): `relevant_conventions` is membership-validated
+    # like the referenced_* trio — a declared dependency on an unserved convention is
+    # a fabrication (repaired once, then dropped). A MAP, not a set: ``_norm(id) →
+    # canonical id``. The validator is tolerant (``_norm``) but the bind-time pull
+    # (``format_conventions_for_prompt include_ids``) matches EXACTLY, so ``induce()``
+    # rewrites every kept declaration to the canonical id before persist — a
+    # case/quote variant must never pass the gate and then silently select nothing
+    # at bind (that empty-conventions bind is the DAT-865 defect itself).
+    conventions: dict[str, str] = field(default_factory=dict)
 
 
 def _norm(token: str) -> str:
@@ -126,14 +146,18 @@ def _norm(token: str) -> str:
     return token.strip().strip('"').strip("'").lower()
 
 
-def served_membership(context: GraphExecutionContext) -> Membership:
+def served_membership(
+    context: GraphExecutionContext, conventions: Iterable[str] = ()
+) -> Membership:
     """Build the reference vocabulary from the served graph.
 
     Accepts a column by its bare name AND its ``table.column`` qualifier (in either the
     logical table_name or the duckdb_name form): membership catches FABRICATED entities,
-    it does not enforce a reference style.
+    it does not enforce a reference style. ``conventions`` are the served convention
+    ids (DAT-865) — the vocabulary ``relevant_conventions`` is judged against, kept
+    as a ``_norm(id) → canonical id`` map so a tolerated variant canonicalizes at save.
     """
-    membership = Membership()
+    membership = Membership(conventions={_norm(c): c for c in conventions})
     for table in context.tables:
         table_forms = [n for n in (table.table_name, table.duckdb_name) if n]
         for form in table_forms:
@@ -153,6 +177,7 @@ def _is_clean(validation: InducedValidation, membership: Membership) -> bool:
         all(_norm(t) in membership.tables for t in validation.referenced_tables)
         and all(_norm(c) in membership.columns for c in validation.referenced_columns)
         and all(_norm(c) in membership.concepts for c in validation.referenced_concepts)
+        and all(_norm(c) in membership.conventions for c in validation.relevant_conventions)
     )
 
 
@@ -178,6 +203,17 @@ def membership_violations(output: InducedValidations, membership: Membership) ->
                 violations.append(
                     f"validation '{vid}' references concept '{concept}' not in the graph"
                 )
+        for convention in validation.relevant_conventions:
+            if _norm(convention) not in membership.conventions:
+                # The repair turn sees ONLY the violation lines (no vocabulary
+                # re-serve), and the served convention set is a handful — inline it
+                # so a near-miss can be FIXED rather than amputated (dropping the
+                # reference loses the declared judgment the check relies on).
+                served = ", ".join(sorted(membership.conventions.values())) or "none"
+                violations.append(
+                    f"validation '{vid}' relies on convention '{convention}' not in "
+                    f"the served domain conventions (served ids: {served})"
+                )
     return violations
 
 
@@ -194,6 +230,7 @@ def _to_spec(validation: InducedValidation) -> ValidationSpec:
         guidance=validation.guidance or None,
         expected_outcome=validation.expected_outcome or None,
         relevant_cycles=validation.relevant_cycles,
+        relevant_conventions=validation.relevant_conventions,
         source="generated",
     )
 
@@ -291,6 +328,25 @@ def _render_metric_dag(session: Session, vertical: str) -> str:
     return "\n".join(lines)
 
 
+def _render_conventions(conventions: list[OntologyConvention]) -> str:
+    """Render the workspace conventions WITH their stable ids (DAT-865).
+
+    The induction DECLARES the conventions a check's logic relies on
+    (``relevant_conventions``), so each block is headed by the convention's id —
+    the referenceable name membership is judged against. The statement + group
+    lines render exactly like the binder-side ``format_conventions_for_prompt``
+    blocks; only the id header is added, and only on this serving (extraction and
+    the binder keep their id-less rendering).
+    """
+    blocks: list[str] = []
+    for conv in conventions:
+        lines = [f"[convention: {conv.id}]", conv.statement.strip()]
+        for group, members in conv.concept_groups.items():
+            lines.append(f"{group}: {', '.join(members)}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 def build_served_context(
     session: Session,
     table_ids: list[str],
@@ -305,10 +361,18 @@ def build_served_context(
 
     Reuses the shared graph assembler (``build_execution_context`` +
     ``format_served_context`` — the SAME served graph the metric grounding agent
-    reads: concepts + part_of, references, conventions, cycles, per-column
-    materialization = the additivity signal, reconciles_with), then APPENDS two
-    induction-specific sections the balance-check class needs made explicit (DAT-735):
-    the additivity verdicts and the metric DAG.
+    reads: concepts + part_of, references, cycles, per-column materialization = the
+    additivity signal, reconciles_with), then APPENDS two induction-specific
+    sections the balance-check class needs made explicit (DAT-735): the additivity
+    verdicts and the metric DAG.
+
+    The conventions slot is induction's OWN (DAT-865): ALL active conventions,
+    rendered WITH their stable ids — not ``context.conventions`` (the
+    extraction-routed, id-less set). The induction is the vertical's judgment pass:
+    it sees the whole declared judgment and DECLARES per check which conventions
+    the check relies on (``relevant_conventions``, membership-validated against
+    these ids); the ``targets`` routing keeps narrowing what a bound SQL prompt
+    sees, it no longer gates what the induction may know.
 
     This-run cycles/additivity are not yet promoted when induction runs (it precedes
     them in the spine), so those reflect the PRIOR operating_model head — **empty on a
@@ -334,7 +398,12 @@ def build_served_context(
         session.execute(select(WorkspaceSettings.active_vertical)).scalar_one_or_none() or vertical
     )
     served += _render_additivity(session, om_head) + _render_metric_dag(session, effective_vertical)
-    return served, context.conventions, served_membership(context)
+    ws_conventions = load_workspace_conventions(session, vertical)
+    return (
+        served,
+        _render_conventions(ws_conventions),
+        served_membership(context, conventions=[c.id for c in ws_conventions]),
+    )
 
 
 class ValidationInductionAgent(LLMFeature):
@@ -403,6 +472,15 @@ class ValidationInductionAgent(LLMFeature):
                 output = repaired.unwrap()
 
         clean = [v for v in output.validations if _is_clean(v, membership)]
+        # Canonicalize the declared convention ids before persist (DAT-865): the
+        # membership gate tolerates case/quote variants (``_norm``), but the
+        # bind-time pull matches the persisted string EXACTLY against
+        # ``Convention.name`` — a tolerated variant that persisted raw would select
+        # nothing at bind, silently reproducing the empty-conventions defect.
+        for v in clean:
+            v.relevant_conventions = [
+                membership.conventions[_norm(c)] for c in v.relevant_conventions
+            ]
         dropped = len(output.validations) - len(clean)
         if dropped:
             logger.warning("validation_induction_dropped_fabricated", dropped=dropped)

@@ -12,11 +12,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+from dataraum.analysis.semantic.ontology import OntologyConvention
 from dataraum.analysis.validation.induction import (
     InducedValidation,
     InducedValidations,
     ValidationInductionAgent,
     _is_clean,
+    _render_conventions,
     _to_spec,
     membership_violations,
     served_membership,
@@ -44,6 +46,7 @@ def _induced(validation_id: str = "v1", **overrides: Any) -> InducedValidation:
         "guidance": "ground it",
         "expected_outcome": "",
         "relevant_cycles": [],
+        "relevant_conventions": [],
         "referenced_tables": [],
         "referenced_columns": [],
         "referenced_concepts": [],
@@ -77,43 +80,89 @@ def _context() -> GraphExecutionContext:
 
 
 def test_served_membership_accepts_bare_and_qualified() -> None:
-    m = served_membership(_context())
+    m = served_membership(_context(), conventions=["sign_natural_balance"])
     assert "journal_entries" in m.tables
     assert "src__journal_entries" in m.tables  # both forms
     assert "debit" in m.columns  # bare
     assert "journal_entries.debit" in m.columns  # qualified (logical)
     assert "src__journal_entries.credit" in m.columns  # qualified (duckdb)
     assert m.concepts == {"debit", "credit"}
+    # A _norm(id) → canonical-id map (the save-side canonicalization home).
+    assert m.conventions == {"sign_natural_balance": "sign_natural_balance"}
+    # No conventions served (fresh vertical) ⇒ empty vocabulary, every declared
+    # dependency is a fabrication.
+    assert served_membership(_context()).conventions == {}
 
 
 def test_membership_violations_flags_fabricated() -> None:
-    m = served_membership(_context())
+    m = served_membership(_context(), conventions=["sign_natural_balance"])
     output = InducedValidations(
         validations=[
             _induced("ok", referenced_columns=["journal_entries.debit"]),
             _induced("bad", referenced_tables=["ghost_table"], referenced_concepts=["revenue"]),
+            _induced("dep", relevant_conventions=["ghost_convention"]),
         ]
     )
     violations = membership_violations(output, m)
     assert any("ghost_table" in v for v in violations)
     assert any("revenue" in v for v in violations)
+    # A declared dependency on an unserved convention is a fabrication (DAT-865).
+    assert any("ghost_convention" in v for v in violations)
     # The clean validation raises no violation.
     assert not any("'ok'" in v for v in violations)
 
 
 def test_is_clean() -> None:
-    m = served_membership(_context())
+    m = served_membership(_context(), conventions=["sign_natural_balance"])
     assert _is_clean(_induced(referenced_columns=["debit"]), m)
     assert not _is_clean(_induced(referenced_columns=["fabricated_col"]), m)
+    assert _is_clean(_induced(relevant_conventions=["sign_natural_balance"]), m)
+    assert not _is_clean(_induced(relevant_conventions=["ghost_convention"]), m)
 
 
 def test_to_spec_maps_typed_fields() -> None:
-    spec = _to_spec(_induced("mycheck", tolerance=0.0, guidance="g", severity="critical"))
+    spec = _to_spec(
+        _induced(
+            "mycheck",
+            tolerance=0.0,
+            guidance="g",
+            severity="critical",
+            relevant_conventions=["sign_natural_balance"],
+        )
+    )
     assert spec.validation_id == "mycheck"
     assert spec.tolerance == 0.0
     assert spec.guidance == "g"
     assert spec.severity == ValidationSeverity.CRITICAL
     assert spec.source == "generated"
+    # The declared convention dependency persists onto the spec (DAT-865) — the
+    # binder resolves it back to the convention prose at SQL-generation time.
+    assert spec.relevant_conventions == ["sign_natural_balance"]
+
+
+def test_render_conventions_serves_ids() -> None:
+    """The induction conventions render carries each convention's stable id (DAT-865).
+
+    The id header is what makes a convention DECLARABLE (`relevant_conventions` is
+    membership-validated against these ids); statement + group lines stay in the
+    binder-side format.
+    """
+    rendered = _render_conventions(
+        [
+            OntologyConvention(
+                id="sign_rule",
+                targets=["extraction"],
+                statement="Sign every measure by its natural balance.",
+                concept_groups={"credit_normal": ["revenue", "equity"]},
+            ),
+            OntologyConvention(id="netting", targets=[], statement="Net the legs."),
+        ]
+    )
+    assert "[convention: sign_rule]" in rendered
+    assert "[convention: netting]" in rendered
+    assert "Sign every measure by its natural balance." in rendered
+    assert "credit_normal: revenue, equity" in rendered
+    assert _render_conventions([]) == ""
 
 
 def test_contract_is_constrained_decoding_safe() -> None:
@@ -231,6 +280,48 @@ def test_induce_empty_is_legitimate() -> None:
     result = _agent(provider).induce("<graph>", "conv", served_membership(_context()))
     assert result.success
     assert result.unwrap() == []
+
+
+def test_induce_canonicalizes_declared_convention_variants() -> None:
+    """A tolerated case/quote variant persists as the CANONICAL id (DAT-865).
+
+    The membership gate is tolerant (``_norm``) but the bind-time pull matches the
+    persisted string exactly against ``Convention.name`` — a variant persisted raw
+    would select nothing at bind and silently reproduce the empty-conventions
+    defect this lane closes.
+    """
+    m = served_membership(_context(), conventions=["sign_natural_balance"])
+    provider = _FakeProvider(
+        InducedValidations(
+            validations=[
+                _induced(
+                    "bal",
+                    referenced_columns=["debit"],
+                    relevant_conventions=["'Sign_Natural_Balance'"],
+                )
+            ]
+        )
+    )
+    result = _agent(provider).induce("<graph>", "conv", m)
+    assert result.success
+    assert provider.calls == 1  # the variant is tolerated, not a fabrication
+    (spec,) = result.unwrap()
+    assert spec.relevant_conventions == ["sign_natural_balance"]
+    # …and the canonical id resolves at the bind-time pull.
+    from dataraum.analysis.semantic.ontology import OntologyDefinition, OntologyLoader
+
+    ont = OntologyDefinition.model_construct(
+        name="t",
+        conventions=[
+            OntologyConvention(
+                id="sign_natural_balance", targets=["extraction"], statement="the sign rule"
+            )
+        ],
+    )
+    rendered = OntologyLoader().format_conventions_for_prompt(
+        ont, "validation", qualifier="bal", include_ids=spec.relevant_conventions
+    )
+    assert "the sign rule" in rendered
 
 
 # --- served-graph enrichment: metric DAG + additivity (DAT-735 owner ruling) ------

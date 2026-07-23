@@ -187,6 +187,39 @@ class TestConventions:
         assert loader.format_conventions_for_prompt(ont, "validation")
         assert loader.format_conventions_for_prompt(ont, "validation", qualifier="anything")
 
+    def test_include_ids_pulls_regardless_of_targets(self) -> None:
+        """A check's declared `relevant_conventions` pull a convention in by id
+        (DAT-865) — the convention-side targets can only name checks that exist at
+        authoring time, so a GENERATED check selects its dependencies from the
+        other side. Selection only: an unrelated id still renders nothing."""
+        loader = OntologyLoader()
+        ont = OntologyDefinition(
+            **self._ontology(
+                [
+                    {
+                        "id": "sign_rule",
+                        "targets": ["validation:sign_conventions"],
+                        "statement": "the sign rule",
+                        "concept_groups": {},
+                    }
+                ]
+            )
+        )
+        # An unqualified generated check without the declaration sees nothing…
+        assert loader.format_conventions_for_prompt(ont, "validation", qualifier="gen_check") == ""
+        # …and pulls the convention by declaring it.
+        pulled = loader.format_conventions_for_prompt(
+            ont, "validation", qualifier="gen_check", include_ids=["sign_rule"]
+        )
+        assert "the sign rule" in pulled
+        # A declared id that names no convention selects nothing (no fabrication path).
+        assert (
+            loader.format_conventions_for_prompt(
+                ont, "validation", qualifier="gen_check", include_ids=["ghost"]
+            )
+            == ""
+        )
+
     def test_format_conventions_none(self) -> None:
         assert OntologyLoader().format_conventions_for_prompt(None, "extraction") == ""
 

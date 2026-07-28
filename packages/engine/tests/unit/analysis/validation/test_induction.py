@@ -27,12 +27,12 @@ from dataraum.analysis.validation.induction import (
 )
 from dataraum.analysis.validation.models import ValidationSeverity
 from dataraum.core.models.base import Result
+from dataraum.graphs.context_format import format_served_context
 from dataraum.graphs.context_models import (
     ColumnContext,
     ConceptContext,
     GraphExecutionContext,
     TableContext,
-    format_served_context,
 )
 from dataraum.llm.providers.base import ConversationResponse
 

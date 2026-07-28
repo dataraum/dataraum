@@ -471,3 +471,105 @@ describe("DrillableGrid — temporal gate reason", () => {
 		expect(screen.queryByTestId("drill-temporal-gate-reason")).toBeNull();
 	});
 });
+
+// --- axis guidance badge (DAT-673) ------------------------------------------
+
+describe("DrillableGrid — axis guidance badge", () => {
+	it("shows the driver-gain badge on an axis with a measured ranking", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { driverGain: 0.1 }), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(await screen.findByText("Driver · 0.10")).toBeTruthy();
+	});
+
+	it("shows nothing for a bare substrate axis with no catalog or driver signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.queryByText(/Driver|Primary|Supporting|Unjudged/)).toBeNull();
+	});
+});
+
+// --- hierarchy descent suggestion (DAT-673) ---------------------------------
+
+describe("DrillableGrid — hierarchy descent suggestion", () => {
+	it("shows no suggestion before any pin is committed", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+			],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
+	});
+
+	it("suggests the hierarchy's next level after a pin on its coarser member", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+				axis("entry_id__date", "date"),
+			],
+		});
+		await sliceBy("region", "SQL1");
+
+		// Pin region=EU via the row-click path.
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		const suggestion = await screen.findByTestId(
+			"drill-hierarchy-suggestion-product",
+		);
+		expect(suggestion.textContent).toContain("Descend to product");
+	});
+
+	it("hides the suggestion once its target column is itself already sliced", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+			],
+		});
+		await sliceBy("region", "SQL1");
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		// Slice "product" directly — it's now active, so it can no longer be
+		// the suggestion (the affordance would be a shortcut to a no-op).
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		fireEvent.click(await screen.findByText("product"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_BOTH", params: [] }),
+		);
+		await screen.findByTestId("drill-step-slice-product");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
+	});
+});

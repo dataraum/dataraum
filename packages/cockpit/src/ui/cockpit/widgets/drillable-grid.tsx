@@ -55,7 +55,7 @@ import {
 	Tooltip,
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, Layers, X } from "lucide-react";
+import { Check, ChevronDown, ChevronsDown, Layers, X } from "lucide-react";
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
 import type {
@@ -72,6 +72,7 @@ import { grainLabel, grainPresets, parseGrainToken } from "#/duckdb/grain";
 // the wire contract for the axes route's response, kept in sync with the server's
 // actual return shape instead of hand-duplicated here.
 import type { DrillAxesResult } from "#/tools/drill-axes";
+import { AxisGuidanceBadge } from "#/ui/cockpit/widgets/axis-guidance";
 import { ChartToolbarButton } from "#/ui/cockpit/widgets/chart-toolbar-button";
 import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 
@@ -531,6 +532,21 @@ export function DrillableGrid({
 		);
 	};
 
+	// Hierarchy descent (DAT-673): the LAST committed pin governs the
+	// suggestion — each new pin refines it further, matching the AC "after a
+	// pin, the hierarchy's next level is the first suggestion." Derived during
+	// render (idiom #1) — no effect, no memo (cheap over a handful of steps/
+	// axes and not a dependency of any hook here, so memoizing it wouldn't
+	// earn its line per idiom #6).
+	const lastPin = [...steps].reverse().find((s) => s.kind === "pin");
+	const hierarchyNextColumn = lastPin
+		? axisByColumn.get(lastPin.column)?.hierarchyNext
+		: undefined;
+	const hierarchySuggestion =
+		hierarchyNextColumn && !slicedColumns.has(hierarchyNextColumn)
+			? axisByColumn.get(hierarchyNextColumn)
+			: undefined;
+
 	// The drill controls live in the GRID's toolbar-left slot (where the row
 	// count used to sit — iteration 3), not on their own row above it.
 	const drillControls = (
@@ -549,6 +565,22 @@ export function DrillableGrid({
 					</Button>
 				</Menu.Target>
 				<Menu.Dropdown>
+					{hierarchySuggestion && (
+						<>
+							<Menu.Label>Suggested</Menu.Label>
+							<Menu.Item
+								key={`suggested:${hierarchySuggestion.column}`}
+								leftSection={<ChevronsDown size={13} />}
+								onClick={() =>
+									hierarchySuggestion && slice(hierarchySuggestion)
+								}
+								data-testid={`drill-hierarchy-suggestion-${hierarchySuggestion.column}`}
+							>
+								<Text size="sm">Descend to {hierarchySuggestion.column}</Text>
+							</Menu.Item>
+							<Menu.Divider />
+						</>
+					)}
 					{axes.map((axis) => (
 						<Menu.Item
 							key={axis.column}
@@ -566,7 +598,10 @@ export function DrillableGrid({
 								) : undefined
 							}
 						>
-							<Text size="sm">{axis.column}</Text>
+							<Group gap={6} wrap="nowrap">
+								<Text size="sm">{axis.column}</Text>
+								<AxisGuidanceBadge axis={axis} />
+							</Group>
 							{axis.businessContext && (
 								<Text size="xs" c="dimmed" lineClamp={1}>
 									{axis.businessContext}

@@ -43,6 +43,8 @@ import {
 } from "../db/metadata/schema";
 import { LAKE_ALIAS, withLakeConnection } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
+import { formatConceptContext } from "./concept-graph";
+import { loadConceptGraph } from "./concept-graph-load";
 import { loadNearUniqueColumns } from "./grain-note";
 import { type DriverRanking, lookDrivers } from "./look-drivers";
 import { projectTableEntity, type TableEntity } from "./look-table";
@@ -1243,6 +1245,38 @@ export async function buildGrainBlock(): Promise<string> {
 	} catch (err) {
 		console.warn(
 			`[cockpit] buildGrainBlock failed — omitting grain context: ${err}`,
+		);
+		return "";
+	}
+}
+
+// --- Business concepts (DAT-737) ---------------------------------------------
+//
+// Parity with the engine's GraphAgent (DAT-701 precedent: both are SQL
+// authors reasoning over ONE structure): the engine renders each vocabulary
+// concept's `part_of`/`disjoint_with`/`reconciles_with` neighbourhood and its
+// groundings (`graphs/context_format.py::_append_concepts`) into its own
+// prompt; nothing equivalent reached this sub-agent before. `buildConceptGraph`
+// (`concept-graph.ts`) is the SAME model the Model route's Concepts view
+// renders — one structure, two consumers, matching the ticket's own framing.
+
+/**
+ * Read the concept vocabulary graph and format it as the sub-agent's
+ * `<business_concepts>` block. Empty-artifact convention (matches
+ * `formatGrainBlock`/`formatConventionsBlock`): a workspace with no framed
+ * concepts yet omits the section entirely (`formatConceptContext` returns
+ * "" for an empty graph) — no content-free heading. Soft-fail like
+ * `buildGrainBlock`: this is degradable context (an answer without it falls
+ * back to `<schema>`'s `[meaning:]` tags alone), so a metadata read failure
+ * must not fail the whole answer.
+ */
+export async function buildConceptContextBlock(): Promise<string> {
+	try {
+		const graph = await loadConceptGraph();
+		return formatConceptContext(graph);
+	} catch (err) {
+		console.warn(
+			`[cockpit] buildConceptContextBlock failed — omitting concept context: ${err}`,
 		);
 		return "";
 	}

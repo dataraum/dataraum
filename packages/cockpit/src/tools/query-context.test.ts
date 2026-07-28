@@ -13,6 +13,7 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 import type { DriverRanking } from "./look-drivers";
 import type { TableEntity } from "./look-table";
 import {
+	buildConceptContextBlock,
 	buildGrainBlock,
 	type CatalogAxisRow,
 	type CatalogHierarchyRow,
@@ -938,5 +939,14 @@ describe("buildGrainBlock (DAT-793) — soft-fail", () => {
 		// boundary stub) — any Drizzle call off it throws, exercising the same
 		// soft-fail contract as buildDriversBlock without a bespoke DB mock.
 		await expect(buildGrainBlock()).resolves.toBe("");
+	});
+});
+
+describe("buildConceptContextBlock (DAT-737) — soft-fail", () => {
+	it("resolves to '' rather than throwing when the metadata read fails", async () => {
+		// Same {}-stubbed metadataDb boundary as buildGrainBlock above — this is
+		// degradable context (an answer without it falls back to <schema>'s
+		// [meaning:] tags alone), so a read failure must not fail the answer.
+		await expect(buildConceptContextBlock()).resolves.toBe("");
 	});
 });

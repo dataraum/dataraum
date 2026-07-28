@@ -2,12 +2,14 @@
 //
 // Render tests for ConceptGraphView (DAT-737): every concept renders as a row
 // regardless of grounding status ("no ungrounded-node regressions"), the
-// grounding-count badge is honest (ungrounded / singular / plural), the
-// neighbourhood detail (part_of/disjoint/reconciles/groundings) expands, and
-// the empty-workspace state is distinguishable from "has concepts."
+// grounding-count badge is honest (ungrounded / singular / plural), a healthy-
+// but-relation-less grounding gets a DISTINCT badge (not "grounded" — it isn't
+// reusable), the neighbourhood detail (part_of/disjoint/reconciles/groundings)
+// is present, and the empty-workspace state is distinguishable from "has
+// concepts."
 
 import { MantineProvider } from "@mantine/core";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ConceptGraph, ConceptGraphNode } from "#/tools/concept-graph";
@@ -46,7 +48,7 @@ afterEach(cleanup);
 
 describe("ConceptGraphView (DAT-737)", () => {
 	it("shows the empty state when the workspace has no concepts yet", () => {
-		renderView({ nodes: [], edges: [] });
+		renderView({ nodes: [] });
 		expect(screen.getByTestId("concept-graph-empty")).toBeTruthy();
 	});
 
@@ -56,7 +58,6 @@ describe("ConceptGraphView (DAT-737)", () => {
 				node({ name: "revenue", kind: "measure" }),
 				node({ name: "unmeasured_concept" }),
 			],
-			edges: [],
 		});
 		expect(screen.getByTestId("concept-graph-view")).toBeTruthy();
 		expect(screen.getByText("revenue")).toBeTruthy();
@@ -80,6 +81,8 @@ describe("ConceptGraphView (DAT-737)", () => {
 							selectExpr: "SUM(x)",
 							wherePredicates: [],
 							failed: false,
+							failureMode: null,
+							failureReason: null,
 						},
 					],
 				}),
@@ -93,6 +96,8 @@ describe("ConceptGraphView (DAT-737)", () => {
 							selectExpr: "SUM(y)",
 							wherePredicates: [],
 							failed: false,
+							failureMode: null,
+							failureReason: null,
 						},
 						{
 							snippetId: "s3",
@@ -101,11 +106,12 @@ describe("ConceptGraphView (DAT-737)", () => {
 							selectExpr: "SUM(y)",
 							wherePredicates: [],
 							failed: false,
+							failureMode: null,
+							failureReason: null,
 						},
 					],
 				}),
 			],
-			edges: [],
 		});
 		expect(
 			screen.getByTestId("concept-grounding-count-one_grounding").textContent,
@@ -115,7 +121,13 @@ describe("ConceptGraphView (DAT-737)", () => {
 		).toBe("2 groundings");
 	});
 
-	it("expands to show part_of ancestry, disjoint_with, reconciles, and groundings", () => {
+	// Mantine's Accordion.Panel uses Collapse with `keepMounted: true` by
+	// default (panel content stays in the DOM — React 19 Activity preserves
+	// it, visibility toggles via CSS) — so the neighbourhood detail below is
+	// ALREADY queryable without ever clicking the row. No `fireEvent.click`
+	// here: it would be theater, asserting on content the click didn't cause
+	// to appear.
+	it("renders part_of ancestry, disjoint_with, reconciles, and groundings in the (always-mounted) panel content", () => {
 		renderView({
 			nodes: [
 				node({
@@ -132,13 +144,13 @@ describe("ConceptGraphView (DAT-737)", () => {
 							selectExpr: "SUM(ending_balance)",
 							wherePredicates: ["account_type = 'asset'"],
 							failed: false,
+							failureMode: null,
+							failureReason: null,
 						},
 					],
 				}),
 			],
-			edges: [],
 		});
-		fireEvent.click(screen.getByText("cash"));
 		expect(screen.getByText(/current_assets/)).toBeTruthy();
 		expect(screen.getByText(/→ assets/)).toBeTruthy();
 		expect(screen.getByText(/liability/)).toBeTruthy();
@@ -147,16 +159,78 @@ describe("ConceptGraphView (DAT-737)", () => {
 	});
 
 	it("shows the honest not-grounded note when a concept has zero groundings", () => {
-		renderView({ nodes: [node({ name: "aspirational_concept" })], edges: [] });
-		fireEvent.click(screen.getByText("aspirational_concept"));
+		renderView({ nodes: [node({ name: "aspirational_concept" })] });
 		expect(screen.getByTestId("concept-ungrounded")).toBeTruthy();
 	});
 
-	it("caps rendering and shows an overflow note past the visible limit", () => {
+	it("gives a healthy-but-relation-less grounding a DISTINCT badge, never the plain 'grounded' one", () => {
+		renderView({
+			nodes: [
+				node({
+					name: "unresolved_grounding",
+					groundings: [
+						{
+							snippetId: "s1",
+							statement: "ending balance",
+							relation: null,
+							selectExpr: "SUM(ending_balance)",
+							wherePredicates: [],
+							failed: false,
+							failureMode: null,
+							failureReason: null,
+						},
+					],
+				}),
+			],
+		});
+		const badge = screen.getByTestId("concept-grounding-badge");
+		expect(badge.textContent).toBe("not reusable — no relation");
+		expect(badge.textContent).not.toBe("grounded");
+	});
+
+	it("shows a failed grounding's mode/reason, and the honest fallback when neither is recorded", () => {
+		renderView({
+			nodes: [
+				node({
+					name: "failed_concept",
+					groundings: [
+						{
+							snippetId: "s1",
+							statement: null,
+							relation: null,
+							selectExpr: null,
+							wherePredicates: [],
+							failed: true,
+							failureMode: "no_support",
+							failureReason: "0 rows matched",
+						},
+					],
+				}),
+			],
+		});
+		expect(screen.getByText("[no_support] 0 rows matched")).toBeTruthy();
+	});
+
+	it("caps groundings shown per concept and reports the overflow", () => {
+		const groundings = Array.from({ length: 25 }, (_, i) => ({
+			snippetId: `s${i}`,
+			statement: null,
+			relation: `relation_${i}`,
+			selectExpr: null,
+			wherePredicates: [],
+			failed: false,
+			failureMode: null,
+			failureReason: null,
+		}));
+		renderView({ nodes: [node({ name: "many_groundings", groundings })] });
+		expect(screen.getByText("…and 5 more groundings not shown.")).toBeTruthy();
+	});
+
+	it("caps rendering and shows an overflow note past the visible concept limit", () => {
 		const nodes = Array.from({ length: 205 }, (_, i) =>
 			node({ name: `concept_${String(i).padStart(3, "0")}` }),
 		);
-		renderView({ nodes, edges: [] });
+		renderView({ nodes });
 		expect(screen.getByTestId("concept-graph-overflow").textContent).toContain(
 			"5 more",
 		);

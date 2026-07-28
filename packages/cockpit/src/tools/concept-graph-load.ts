@@ -20,6 +20,12 @@
 // server-side. `superseded_at` filtering is NOT done by these views (unlike
 // the engine's own `og_concepts`/`og_concept_edges`), so it happens in
 // `buildConceptGraph` instead.
+//
+// tsc-bounded, test-unexecuted (matches `operating-model-load.ts`'s own
+// convention): this is thin DB-read glue with no branching logic of its own —
+// `buildConceptGraph` (concept-graph.ts) carries the actual behaviour and is
+// the one covered by unit tests. The metadata client's own connection/query
+// wiring is what would need an integration-style test, not a unit one.
 
 import { metadataDb } from "../db/metadata/client";
 import {
@@ -61,6 +67,7 @@ export async function loadConceptGraph(): Promise<ConceptGraph> {
 				selectExpr: currentGroundings.selectExpr,
 				wherePredicates: currentGroundings.wherePredicates,
 				failed: currentGroundings.failed,
+				provenance: currentGroundings.provenance,
 			})
 			.from(currentGroundings),
 	]);
@@ -91,6 +98,7 @@ export async function loadConceptGraph(): Promise<ConceptGraph> {
 			selectExpr: g.selectExpr ?? null,
 			wherePredicates: g.wherePredicates ?? null,
 			failed: g.failed ?? false,
+			provenance: g.provenance,
 		})),
 	});
 }

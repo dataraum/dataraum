@@ -4,7 +4,8 @@
 // assertions, and its groundings (a concept can be measured on SEVERAL
 // relations — "multi-groundings"). A pure render of already-fetched values
 // (React idiom 12) — no recomputation, the `concept-graph.ts` builder already
-// did that server-side.
+// did that server-side, INCLUDING the sort order (`graph.nodes` arrives
+// already sorted by name — this view must not re-sort it).
 //
 // Deliberately NOT the xyflow canvas the Metrics view uses: that canvas's node
 // model (`OMNodeKind`/`layout.ts`'s dagre auto-layout) is purpose-built for the
@@ -21,13 +22,20 @@ import {
 	ScrollArea,
 	Stack,
 	Text,
+	Title,
 } from "@mantine/core";
 import type { ConceptGraph, ConceptGraphNode } from "#/tools/concept-graph";
+import { isReusableGrounding } from "#/tools/concept-graph";
 
-// Cap the rows rendered into the DOM (rule 15) — a vertical ships a bounded
-// vocabulary (tens, not thousands of concepts), but the cap keeps this
-// consistent with every other list surface in the cockpit.
+// Cap the CONCEPTS rendered into the DOM (rule 15) — a vertical ships a
+// bounded vocabulary (tens, not thousands of concepts), but the cap keeps
+// this consistent with every other list surface in the cockpit.
 const MAX_VISIBLE_CONCEPTS = 200;
+// Separately cap the GROUNDINGS shown per concept — this bound is per-row,
+// not "vocabulary scale": a single concept accruing hundreds of groundings
+// (a runaway re-grounding loop, say) must not blow up one accordion panel
+// even though the concept count itself stays small.
+const MAX_VISIBLE_GROUNDINGS = 20;
 
 function GroundingRow({
 	grounding,
@@ -38,15 +46,25 @@ function GroundingRow({
 		grounding.statement && grounding.relation
 			? `${grounding.statement} @ ${grounding.relation}`
 			: (grounding.relation ?? grounding.statement ?? "(unresolved relation)");
+	// Three states, not two: failed / reusable-grounded / healthy-but-not-
+	// reusable (no relation — the engine's own grounding_relation_missing skip,
+	// see `isReusableGrounding`). Collapsing the third into "grounded" would
+	// tell a practitioner they can reuse a query the answer agent's prompt
+	// block has already excluded.
+	const state = grounding.failed
+		? { color: "orange", text: "failed" }
+		: isReusableGrounding(grounding)
+			? { color: "cyan", text: "grounded" }
+			: { color: "gray", text: "not reusable — no relation" };
 	return (
 		<Group gap="xs" wrap="nowrap" align="flex-start">
 			<Badge
-				color={grounding.failed ? "orange" : "cyan"}
+				color={state.color}
 				variant="light"
 				size="sm"
 				data-testid="concept-grounding-badge"
 			>
-				{grounding.failed ? "failed" : "grounded"}
+				{state.text}
 			</Badge>
 			<Stack gap={0}>
 				<Text size="sm">{label}</Text>
@@ -58,14 +76,21 @@ function GroundingRow({
 							: ""}
 					</Text>
 				)}
+				{grounding.failed && (
+					<Text size="xs" c="orange">
+						[{grounding.failureMode ?? "failed"}]{" "}
+						{grounding.failureReason ?? "(no reason recorded)"}
+					</Text>
+				)}
 			</Stack>
 		</Group>
 	);
 }
 
 function ConceptDetail({ concept }: { concept: ConceptGraphNode }) {
-	const healthy = concept.groundings.filter((g) => !g.failed);
-	const failed = concept.groundings.filter((g) => g.failed);
+	const visibleGroundings = concept.groundings.slice(0, MAX_VISIBLE_GROUNDINGS);
+	const groundingOverflow =
+		concept.groundings.length - visibleGroundings.length;
 	return (
 		<Stack gap="xs">
 			{concept.description && (
@@ -128,18 +153,17 @@ function ConceptDetail({ concept }: { concept: ConceptGraphNode }) {
 					tie out
 				</Text>
 			))}
-			{healthy.length === 0 && failed.length === 0 && (
+			{concept.groundings.length === 0 && (
 				<Text size="xs" c="dimmed" data-testid="concept-ungrounded">
 					Not grounded — this concept has no committed extract yet.
 				</Text>
 			)}
-			{healthy.map((g) => (
+			{visibleGroundings.map((g) => (
 				<GroundingRow key={g.snippetId} grounding={g} />
 			))}
-			{failed.length > 0 && (
-				<Text size="xs" c="orange">
-					{failed.length} failed grounding attempt
-					{failed.length === 1 ? "" : "s"}
+			{groundingOverflow > 0 && (
+				<Text size="xs" c="dimmed">
+					…and {groundingOverflow} more groundings not shown.
 				</Text>
 			)}
 		</Stack>
@@ -156,18 +180,20 @@ export function ConceptGraphView({ graph }: { graph: ConceptGraph }) {
 		);
 	}
 
-	const sorted = [...graph.nodes].sort((a, b) => a.name.localeCompare(b.name));
-	const visible = sorted.slice(0, MAX_VISIBLE_CONCEPTS);
-	const overflow = sorted.length - visible.length;
+	// graph.nodes is ALREADY sorted by name (buildConceptGraph's contract) —
+	// no re-sort here (the one-source-of-truth-for-order rule this lane's spec
+	// review asked for).
+	const visible = graph.nodes.slice(0, MAX_VISIBLE_CONCEPTS);
+	const overflow = graph.nodes.length - visible.length;
 
 	return (
 		<Stack gap="sm" h="100%" data-testid="concept-graph-view">
-			<Text size="sm" fw={600}>
+			<Title order={3} size="sm">
 				Business Concepts{" "}
-				<Text span c="dimmed" size="xs">
-					{sorted.length} in this vertical
+				<Text span c="dimmed" size="xs" fw={400}>
+					{graph.nodes.length} in this vertical
 				</Text>
-			</Text>
+			</Title>
 			<ScrollArea.Autosize mah="100%" style={{ flex: 1 }}>
 				<Accordion multiple variant="separated" data-testid="concept-accordion">
 					{visible.map((c) => (

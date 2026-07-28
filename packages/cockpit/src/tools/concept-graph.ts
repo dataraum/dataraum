@@ -13,13 +13,20 @@
 // PARITY (DAT-737's own words: "the same graph the GraphAgent reads... one
 // structure"): this mirrors the engine's traversal in
 // `graphs/context_reads.py`/`context_format.py` (the ONLY place this
-// neighbourhood is rendered today) — same fields, same wording where the data
-// allows it. The engine reads `og_concepts`/`og_concept_edges` (SQL/PGQ
-// element views, active rows only) via a bounded recursive CTE for `part_of`
-// ancestry (depth 2..4); this module gets the same ANSWER over the same raw
-// ingredient rows (`concepts`, `concept_edges`, `current_groundings` — all
-// already Drizzle-mirrored) computed in memory instead, since the whole
-// vocabulary is small enough to hold at once and TS has no PGQ.
+// neighbourhood is rendered today) — concept definition fields, the
+// part_of/disjoint_with/reconciles_with structure, deterministic ordering
+// (see `compareGroundings` etc. below, matching `context_reads.py:1190-1198`
+// key-for-key), and each grounding INCLUDING its failure_mode/failure_reason.
+// ONE deliberate gap: the engine's per-grounding column-level `uses:` breakdown
+// (which measure/filter columns a grounding reads) is NOT modeled here — no
+// reader needs it yet, and `current_groundings` doesn't mirror `og_uses`
+// (parked as a read-views candidate). The engine reads `og_concepts`/
+// `og_concept_edges` (SQL/PGQ element views, active rows only) via a bounded
+// recursive CTE for `part_of` ancestry (depth 2..4); this module gets the same
+// ANSWER over the same raw ingredient rows (`concepts`, `concept_edges`,
+// `current_groundings` — all already Drizzle-mirrored) computed in memory
+// instead, since the whole vocabulary is small enough to hold at once and TS
+// has no PGQ.
 //
 // IDENTITY: concepts/concept_edges are NOT run-versioned (unlike most of this
 // package's `current_*` views) — they're versioned by `superseded_at`
@@ -87,6 +94,12 @@ export interface GroundingRow {
 	 *  cast — parsed defensively by `parseWherePredicates`, never regex'd. */
 	wherePredicates: string | null;
 	failed: boolean;
+	/** `unknown` at the DB boundary (a `json` column) — the snippet's
+	 *  `provenance` blob, whose `failure_mode`/`failure_reason` keys the engine
+	 *  itself reads the same way (`context_reads.py`'s `provenance->>'…'`
+	 *  columns) to discriminate a failed grounding's detail. Narrowed
+	 *  defensively by `parseFailureDetail` (rule 11). */
+	provenance: unknown;
 }
 
 export interface ConceptGraphInput {
@@ -109,7 +122,11 @@ export interface ConceptReconciliation {
 	tolerance: number | null;
 }
 
-/** One healthy or failed prior grounding of a concept. */
+/** One healthy or failed prior grounding of a concept. A HEALTHY grounding
+ *  with `relation === null` is a real but distinct third state — see
+ *  `isReusableGrounding` — the engine skips it from reuse entirely (a pre-parts
+ *  row it can't address), so neither consumer here treats it as an ordinary
+ *  reusable grounding either. */
 export interface ConceptGrounding {
 	snippetId: string;
 	statement: string | null;
@@ -117,6 +134,8 @@ export interface ConceptGrounding {
 	selectExpr: string | null;
 	wherePredicates: string[];
 	failed: boolean;
+	failureMode: string | null;
+	failureReason: string | null;
 }
 
 export interface ConceptGraphNode {
@@ -128,33 +147,35 @@ export interface ConceptGraphNode {
 	description: string | null;
 	indicators: string[];
 	excludePatterns: string[];
-	/** 1-hop `part_of` targets (this concept IS PART OF these). */
+	/** 1-hop `part_of` targets (this concept IS PART OF these), sorted. */
 	partOfParents: string[];
-	/** 1-hop `part_of` sources (these concepts ARE PART OF this one). */
+	/** 1-hop `part_of` sources (these concepts ARE PART OF this one), sorted. */
 	partOfChildren: string[];
-	/** Transitive `part_of` ancestry beyond the 1-hop parents, nearest-first,
-	 *  bounded at `PART_OF_ANCESTRY_DEPTH` hops — mirrors the engine's bounded
-	 *  recursive CTE (ADR-0021's closure mechanism), never an unbounded walk. */
+	/** Transitive `part_of` ancestry beyond the 1-hop parents, nearest-first
+	 *  (NOT sorted — order is the walk's own distance, matching the engine's
+	 *  `part_of_ancestry` field), bounded at `PART_OF_ANCESTRY_DEPTH` hops —
+	 *  mirrors the engine's bounded recursive CTE (ADR-0021's closure
+	 *  mechanism), never an unbounded walk. */
 	partOfAncestry: string[];
+	/** Sorted. */
 	disjointWith: string[];
+	/** Sorted by partner name. */
 	reconcilesWith: ConceptReconciliation[];
-	/** Every prior grounding of this concept — ZERO is a valid, honest state
-	 *  (an ungrounded concept still appears as a node; "no ungrounded-node
-	 *  regressions" — never dropped, never silently hidden). */
+	/** Every prior grounding of this concept, sorted `(failed, relation,
+	 *  snippetId)` (matching `context_reads.py`'s `groundings` sort key
+	 *  exactly, so DB physical-row order can never drift the answer). ZERO is
+	 *  a valid, honest state (an ungrounded concept still appears as a node;
+	 *  "no ungrounded-node regressions" — never dropped, never silently
+	 *  hidden). */
 	groundings: ConceptGrounding[];
 }
 
-export interface ConceptGraphEdge {
-	id: string;
-	source: string;
-	target: string;
-	kind: ConceptEdgeKind;
-	tolerance: number | null;
-}
-
 export interface ConceptGraph {
+	/** Sorted by name — the ONE place this ordering is decided; no consumer
+	 *  should re-sort (this is also why the cached `<business_concepts>`
+	 *  prompt block stays byte-stable across a run: DB row order can never
+	 *  leak into it). */
 	nodes: ConceptGraphNode[];
-	edges: ConceptGraphEdge[];
 }
 
 const conceptNodeId = (name: string): string => `concept:${name}`;
@@ -163,7 +184,15 @@ const conceptNodeId = (name: string): string => `concept:${name}`;
  *  2..N hops, nearest-first, cycle-safe. Mirrors the engine's recursive-CTE
  *  depth cap (ADR-0021) — the whole vocabulary is in memory here, so an
  *  unbounded walk would be easy to write and wrong to ship (a `part_of` typo
- *  loop must not hang the render). */
+ *  loop must not hang the render).
+ *
+ *  READS LIKE AN OFF-BY-ONE vs the engine's `_PART_OF_MAX_DEPTH = 4` — it
+ *  isn't: the 1-hop parent is `partOfParents` (computed separately, hop 1),
+ *  and this constant is the number of ADDITIONAL hops walked beyond it, so
+ *  `PART_OF_ANCESTRY_DEPTH = 3` reaches hops 2, 3, 4 — the SAME total depth
+ *  as `_PART_OF_MAX_DEPTH`. `concept-graph.test.ts`'s 5-deep-chain test pins
+ *  this boundary (the 5th ancestor excluded) so the two constants can never
+ *  silently drift apart. */
 const PART_OF_ANCESTRY_DEPTH = 3;
 
 function asStringArray(v: unknown): string[] {
@@ -185,6 +214,48 @@ export function parseWherePredicates(raw: string | null): string[] {
 	}
 }
 
+/** Narrow a grounding's `provenance` json blob to its `failure_mode`/
+ *  `failure_reason` strings (rule 11) — the same keys the engine reads via
+ *  `provenance->>'failure_mode'`/`provenance->>'failure_reason'`
+ *  (`context_reads.py`). Anything else (absent, non-object, non-string
+ *  values) renders as "no detail recorded" rather than throwing. */
+function parseFailureDetail(provenance: unknown): {
+	failureMode: string | null;
+	failureReason: string | null;
+} {
+	if (typeof provenance !== "object" || provenance === null) {
+		return { failureMode: null, failureReason: null };
+	}
+	const rec = provenance as Record<string, unknown>;
+	return {
+		failureMode: typeof rec.failure_mode === "string" ? rec.failure_mode : null,
+		failureReason:
+			typeof rec.failure_reason === "string" ? rec.failure_reason : null,
+	};
+}
+
+/** A healthy grounding with no resolved relation can't be reused as a prior
+ *  computation — the engine SKIPS it entirely (with a warn,
+ *  `context_reads.py`'s `grounding_relation_missing`, e.g. a pre-parts
+ *  snippet row) rather than rendering it as an ordinary grounding. Both
+ *  consumers here honor the same distinction (a failed grounding is handled
+ *  on its own separate path regardless of `relation`). */
+export function isReusableGrounding(g: ConceptGrounding): boolean {
+	return !g.failed && g.relation !== null;
+}
+
+/** `context_reads.py`'s exact groundings sort key: `(failed, relation or "",
+ *  snippet_id)` — Python's `False < True`, so healthy groundings sort before
+ *  failed ones. */
+function compareGroundings(a: ConceptGrounding, b: ConceptGrounding): number {
+	if (a.failed !== b.failed) return a.failed ? 1 : -1;
+	const relA = a.relation ?? "";
+	const relB = b.relation ?? "";
+	if (relA !== relB) return relA < relB ? -1 : 1;
+	if (a.snippetId !== b.snippetId) return a.snippetId < b.snippetId ? -1 : 1;
+	return 0;
+}
+
 /**
  * Assemble the concept vocabulary graph from already-fetched rows. Pure: no
  * DB, no IO. Contracts:
@@ -200,6 +271,12 @@ export function parseWherePredicates(raw: string | null): string[] {
  *    engine writes it symmetrically (both directions), so no client-side
  *    symmetrization is needed; duplicating it here would double the effort
  *    for the same answer.
+ *  - Every list the engine sorts is sorted here to the SAME key (see
+ *    `compareGroundings` + the inline `.sort()` calls below) — this is the
+ *    determinism that keeps the `<business_concepts>` prompt block (the TAIL
+ *    of a `cache_control: ephemeral` system block) byte-stable across a run;
+ *    without it, DB physical-row-order drift would silently bust the whole
+ *    cached prefix.
  */
 export function buildConceptGraph(input: ConceptGraphInput): ConceptGraph {
 	const activeConcepts = input.concepts.filter((c) => c.supersededAt === null);
@@ -270,6 +347,7 @@ export function buildConceptGraph(input: ConceptGraphInput): ConceptGraph {
 	const groundingsByName = new Map<string, ConceptGrounding[]>();
 	for (const g of input.groundings) {
 		if (!byName.has(g.concept)) continue;
+		const { failureMode, failureReason } = parseFailureDetail(g.provenance);
 		const grounding: ConceptGrounding = {
 			snippetId: g.snippetId,
 			statement: g.statement,
@@ -277,50 +355,52 @@ export function buildConceptGraph(input: ConceptGraphInput): ConceptGraph {
 			selectExpr: g.selectExpr,
 			wherePredicates: parseWherePredicates(g.wherePredicates),
 			failed: g.failed,
+			failureMode,
+			failureReason,
 		};
 		const list = groundingsByName.get(g.concept);
 		if (list) list.push(grounding);
 		else groundingsByName.set(g.concept, [grounding]);
 	}
 
-	const nodes: ConceptGraphNode[] = activeConcepts.map((c) => ({
-		id: conceptNodeId(c.name),
-		conceptId: c.conceptId,
-		name: c.name,
-		kind: c.kind,
-		description: c.description,
-		indicators: asStringArray(c.indicators),
-		excludePatterns: asStringArray(c.excludePatterns),
-		partOfParents: partOfParents.get(c.name) ?? [],
-		partOfChildren: partOfChildren.get(c.name) ?? [],
-		partOfAncestry: ancestryOf(c.name),
-		disjointWith: disjointWith.get(c.name) ?? [],
-		reconcilesWith: reconcilesWith.get(c.name) ?? [],
-		groundings: groundingsByName.get(c.name) ?? [],
-	}));
+	const nodes: ConceptGraphNode[] = activeConcepts
+		.map((c) => ({
+			id: conceptNodeId(c.name),
+			conceptId: c.conceptId,
+			name: c.name,
+			kind: c.kind,
+			description: c.description,
+			indicators: asStringArray(c.indicators),
+			excludePatterns: asStringArray(c.excludePatterns),
+			partOfParents: [...(partOfParents.get(c.name) ?? [])].sort(),
+			partOfChildren: [...(partOfChildren.get(c.name) ?? [])].sort(),
+			partOfAncestry: ancestryOf(c.name),
+			disjointWith: [...(disjointWith.get(c.name) ?? [])].sort(),
+			reconcilesWith: [...(reconcilesWith.get(c.name) ?? [])].sort((a, b) =>
+				a.partner.localeCompare(b.partner),
+			),
+			groundings: [...(groundingsByName.get(c.name) ?? [])].sort(
+				compareGroundings,
+			),
+		}))
+		.sort((a, b) => a.name.localeCompare(b.name));
 
-	const edges: ConceptGraphEdge[] = activeEdges.map((e) => ({
-		id: e.edgeId,
-		source: conceptNodeId(e.fromConcept),
-		target: conceptNodeId(e.toConcept),
-		kind: e.predicate as ConceptEdgeKind,
-		tolerance: e.tolerance,
-	}));
-
-	return { nodes, edges };
+	return { nodes };
 }
 
 // --- Answer-agent prompt rendering (DAT-737: parity with the engine's own
 // concept-neighbourhood render, `graphs/context_format.py::_append_concepts`)
 // -----------------------------------------------------------------------------
 
-/** One healthy grounding, formatted `statement @ relation: select_expr WHERE
- *  ...` — mirrors the engine's `_format_grounding` wording exactly. */
+/** One healthy, reusable grounding, formatted `statement @ relation:
+ *  select_expr WHERE ...` — mirrors the engine's `_format_grounding` wording
+ *  exactly. Only called on groundings `isReusableGrounding` already passed,
+ *  so `relation` is never null here. */
 function formatGrounding(g: ConceptGrounding): string {
 	const label =
 		g.statement && g.relation
 			? `${g.statement} @ ${g.relation}`
-			: (g.relation ?? g.statement ?? "(unresolved relation)");
+			: (g.relation ?? "");
 	const withExpr = g.selectExpr ? `${label}: ${g.selectExpr}` : label;
 	return g.wherePredicates.length > 0
 		? `${withExpr} WHERE ${g.wherePredicates.join(" AND ")}`
@@ -331,9 +411,19 @@ function formatGrounding(g: ConceptGrounding): string {
  * Format the concept graph as the answer sub-agent's `<business_concepts>`
  * prompt block (pure). Empty graph → "" (the block is OMITTED entirely, the
  * same convention `conventionsBlock`/`grainBlock` already use in
- * `query.ts` — never an empty-but-present tag). Concepts sorted by name for a
- * deterministic prompt (cache-friendly, matching `stableContext`'s other
- * blocks).
+ * `query.ts` — never an empty-but-present tag). `graph.nodes` arrives already
+ * sorted by name (the builder's contract) — this function does NOT re-sort,
+ * so a caller passing an already-built `ConceptGraph` gets the same
+ * deterministic order the builder decided, once.
+ *
+ * DELIBERATE WORDING ADAPTATION: the engine's own render points the model at
+ * "the Value sets below" (`context_format.py`'s own comment) — a value-set
+ * catalog section that exists in ITS prompt. This cockpit's answer sub-agent
+ * doesn't carry an equivalent standalone value-set block; its per-column
+ * `[meaning:]` tags on the `<schema>` block (`query-context.ts::formatSchema`)
+ * are the closest analogue, so the wording below points there instead. Same
+ * intent (ground the concept in real column values, don't improvise a
+ * substring filter), different concrete pointer — not an oversight.
  */
 export function formatConceptContext(graph: ConceptGraph): string {
 	if (graph.nodes.length === 0) return "";
@@ -351,8 +441,7 @@ export function formatConceptContext(graph: ConceptGraph): string {
 		"",
 	];
 
-	const sorted = [...graph.nodes].sort((a, b) => a.name.localeCompare(b.name));
-	for (const c of sorted) {
+	for (const c of graph.nodes) {
 		let line = `- ${c.name}`;
 		if (c.kind) line += ` (${c.kind})`;
 		if (c.description) line += `: ${c.description}`;
@@ -381,16 +470,29 @@ export function formatConceptContext(graph: ConceptGraph): string {
 			);
 		}
 
-		const healthy = c.groundings.filter((g) => !g.failed);
+		// Match the engine's skip (context_reads.py's grounding_relation_missing):
+		// a healthy grounding with no relation can't be reused, so it's excluded
+		// from "grounded by:" — but the skip is DISCLOSED (a count), never a
+		// silent drop, matching the failed-attempts collapse just below.
+		const reusable = c.groundings.filter(isReusableGrounding);
+		const nonReusable = c.groundings.filter(
+			(g) => !g.failed && g.relation === null,
+		);
 		const failed = c.groundings.filter((g) => g.failed);
-		if (healthy.length > 0) {
+		if (reusable.length > 0) {
 			lines.push("  - grounded by:");
-			for (const g of healthy) lines.push(`    - ${formatGrounding(g)}`);
+			for (const g of reusable) lines.push(`    - ${formatGrounding(g)}`);
 		}
-		if (failed.length > 0)
+		if (nonReusable.length > 0)
 			lines.push(
-				`  - ${failed.length} failed grounding attempt(s) not shown here`,
+				`  - ${nonReusable.length} grounding(s) recorded with no relation — ` +
+					"not reusable, omitted",
 			);
+		for (const g of failed) {
+			const mode = g.failureMode ?? "failed";
+			const reason = g.failureReason ?? "(no reason recorded)";
+			lines.push(`  - failed attempt [${mode}]: ${reason}`);
+		}
 	}
 	lines.push("</business_concepts>");
 	return lines.join("\n");

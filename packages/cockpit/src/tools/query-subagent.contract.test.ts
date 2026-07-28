@@ -129,6 +129,20 @@ describe("query sub-agent — combined tools + structured output", () => {
 		expect(stable?.metadata?.cache_control?.type).toBe("ephemeral");
 	});
 
+	it("folds the concept vocabulary block into the cached stable-context system prompt (DAT-737)", async () => {
+		await querySubAgent("what is revenue");
+		const systemPrompts = callOptions().systemPrompts as Array<{
+			content: string;
+			metadata?: { cache_control?: { type: string } };
+		}>;
+		const stable = systemPrompts[1];
+		// Mutation-sentinel: deleting query.ts's buildConceptContextBlock() call
+		// (the Promise.all entry) or its stableContext template tail must fail
+		// THIS assertion — it was previously invisible to biome/tsc/every other
+		// test (spec-review CRITICAL-1).
+		expect(stable?.content).toContain("<business_concepts/>");
+	});
+
 	it("keeps the args guard — unlike the tool-less sites, this one has a real tool boundary", async () => {
 		await querySubAgent("what is revenue");
 		const middleware = callOptions().middleware as Array<{ name?: string }>;

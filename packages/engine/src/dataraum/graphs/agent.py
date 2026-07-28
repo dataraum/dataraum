@@ -1902,16 +1902,35 @@ class GraphAgent(LLMFeature):
                     prov = rec.provenance or {}
                     mode = prov.get("failure_mode", "failed")
                     why = prov.get("failure_reason", "(no reason recorded)")
+                    if mode == SnippetFailureMode.DISJOINT_COLLISION:
+                        # DAT-709: the cross-concept guard already named the disjoint
+                        # partner(s) in `why`, and the prior SQL above is the statement
+                        # BOTH concepts produced. What this turn needs is the
+                        # DISTINGUISHING evidence — the generic "revise or abstain"
+                        # tail below invites exactly the re-derivation that collided.
+                        guidance = (
+                            "Ground THIS concept on the evidence that distinguishes it from "
+                            "the named disjoint concept(s) — a different discriminator value "
+                            "set, a different measure column, or the vertical's sign/side "
+                            "convention. If the served evidence genuinely cannot distinguish "
+                            "them, fall loud (select_expr NULL, no relation, LOW-confidence "
+                            "assumption naming the concept it could not be separated from). "
+                            "Never re-emit the colliding extract, and never hand back the "
+                            "other concept's."
+                        )
+                    else:
+                        guidance = (
+                            "Revise to address the reason, or abstain (low-confidence). If the "
+                            "prior SQL aggregated to NULL, decide from the schema evidence which "
+                            "case applies: the concept has no supporting rows (abstain — never "
+                            "mask absence as 0), or the filter matches rows and one aggregated "
+                            "operand is legitimately empty (one-sided data — combine the "
+                            "operands with row-guarded NULL-safety per the empty-aggregation "
+                            "rule)."
+                        )
                     parts.append(
                         f"Your prior attempt to ground this extract was {mode}: {why}\n"
-                        f"Prior SQL (do NOT re-emit unchanged):\n{rec.sql}\n"
-                        "Revise to address the reason, or abstain (low-confidence). If the "
-                        "prior SQL aggregated to NULL, decide from the schema evidence which "
-                        "case applies: the concept has no supporting rows (abstain — never "
-                        "mask absence as 0), or the filter matches rows and one aggregated "
-                        "operand is legitimately empty (one-sided data — combine the "
-                        "operands with row-guarded NULL-safety per the empty-aggregation "
-                        "rule)."
+                        f"Prior SQL (do NOT re-emit unchanged):\n{rec.sql}\n{guidance}"
                     )
         except Exception as e:
             # Feedback is best-effort — a lookup hiccup must not fail metric authoring

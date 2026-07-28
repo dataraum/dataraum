@@ -555,3 +555,188 @@ class TestWarmingPrimesCache:
             by_source["graph:gross_profit"].snippet_id != by_source["graph:net_income"].snippet_id
         )
         assert by_source["graph:gross_profit"].sql.lstrip().startswith("WITH")
+
+
+# ---------------------------------------------------------------------------
+# DAT-709: two disjoint concepts may not silently ground to the SAME extract
+# ---------------------------------------------------------------------------
+
+# What the live bug produced: current_assets and current_liabilities grounded to
+# one statement, so current_ratio computed a confident 1.0.
+_COLLIDING = "SELECT 1 AS value"
+
+
+def _collision_generate(authored: list[str], retry_sql: dict[str, str] | None = None):
+    """GraphAgent._generate_sql stand-in that grounds every concept identically.
+
+    A RE-authoring (the concept has been authored once already this run) returns
+    ``retry_sql[concept]`` when given — that is how a stubbed LLM models "the
+    re-ground with the collision named found the distinguishing evidence". With
+    no ``retry_sql`` the retry repeats itself, which is the abstention path.
+    """
+    seen: set[str] = set()
+
+    def _gen(session, graph, context, parameters, cached_snippets=None, *, workspace_id=None):  # noqa: ANN001
+        step_id, step = next(iter(graph.steps.items()))
+        concept = step.source.standard_field
+        authored.append(concept)
+        sql = _COLLIDING
+        if concept in seen and retry_sql is not None:
+            sql = retry_sql.get(concept, _COLLIDING)
+        seen.add(concept)
+        return Result.ok(
+            GeneratedCode(
+                code_id=str(uuid4()),
+                graph_id=graph.graph_id,
+                summary="fake",
+                steps=[{"step_id": step_id, "sql": sql, "description": concept}],
+                final_sql=f"SELECT value FROM {step_id}",
+                llm_model="fake",
+                prompt_hash="x",
+                generated_at=datetime.now(UTC),
+            )
+        )
+
+    return _gen
+
+
+class TestGroundingCollisionGuard:
+    """DAT-709 end-to-end over the real authoring pass, LLM stubbed at its boundary."""
+
+    def _ratio_graph(self) -> TransformationGraph:
+        return _wm_graph(
+            "current_ratio",
+            {
+                "ca": _wm_extract("ca", "current_assets"),
+                "cl": _wm_extract("cl", "current_liabilities"),
+                "cr": _wm_formula("cr", "ca / cl", ["ca", "cl"]),
+            },
+        )
+
+    def _warm(
+        self,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+        authored: list[str],
+        retry_sql: dict[str, str] | None,
+    ):
+        from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_seeded
+
+        # The disjointness the guard reads — seeded from finance's own
+        # concept_groups partitions, exactly as the semantic phase seeds it.
+        ensure_concept_edges_seeded(session, "finance")
+        session.flush()
+
+        agent = GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+        agent._generate_sql = _collision_generate(authored, retry_sql)  # type: ignore[method-assign]
+        monkeypatch.setattr(
+            ExecutionContext,
+            "with_rich_context",
+            classmethod(
+                lambda cls, **kw: ExecutionContext(
+                    duckdb_conn=duckdb_conn, schema_mapping_id=kw["schema_mapping_id"]
+                )
+            ),
+        )
+        ctx = _WarmStubCtx(session, duckdb_conn)
+        bindings = gep._warm_shared_nodes(
+            {"current_ratio": self._ratio_graph()},
+            ctx,  # type: ignore[arg-type]
+            agent,
+            "ws-collide",
+            ["t1"],
+            "finance",
+            om_run_id="run-collide",
+        )
+        session.flush()
+        return agent, bindings
+
+    def test_unresolved_collision_abstains_and_the_ratio_honest_fails(
+        self,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The bug, closed: no silent identical pair survives the authoring pass.
+
+        Both concepts ground to one statement; the guard re-grounds both with the
+        collision named (the LLM boundary is called AGAIN — proof the demotion
+        unblocked the cache), the retry repeats itself, so both abstain typed and
+        current_ratio can no longer be assembled at all. An honest-failed ratio is
+        the fix; a confident 1.0 was the bug.
+        """
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        authored: list[str] = []
+        agent, bindings = self._warm(session, duckdb_conn, monkeypatch, authored, retry_sql=None)
+
+        # Each concept authored twice: the initial grounding + the one re-ground.
+        assert sorted(authored) == [
+            "current_assets",
+            "current_assets",
+            "current_liabilities",
+            "current_liabilities",
+        ]
+        assert bindings and not any(d.grounded for d in bindings.values())
+        for decision in bindings.values():
+            assert decision.reason is not None and "disjoint" in decision.reason
+
+        rows = {
+            s.standard_field: s
+            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
+            if s.snippet_type == "extract"
+        }
+        for concept in ("current_assets", "current_liabilities"):
+            assert rows[concept].failure_count == 1, "retained, but excluded from reuse"
+            assert rows[concept].provenance["failure_mode"] == "disjoint_collision"
+
+        # The user-visible half: the metric built on the pair cannot be composed.
+        exec_ctx = ExecutionContext(duckdb_conn=duckdb_conn, schema_mapping_id="ws-collide")
+        assembled = agent.assemble(
+            session, self._ratio_graph(), exec_ctx, bindings, workspace_id="ws-collide"
+        )
+        assert not assembled.success
+
+    def test_re_ground_that_distinguishes_them_keeps_both_grounded(
+        self,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The repair path: told what it collided with, the retry separates them.
+
+        Both concepts keep a healthy, now-distinct snippet and the metric composes
+        — the guard re-prompts, it does not punish.
+        """
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        authored: list[str] = []
+        agent, bindings = self._warm(
+            session,
+            duckdb_conn,
+            monkeypatch,
+            authored,
+            retry_sql={
+                "current_assets": "SELECT 2 AS value",
+                "current_liabilities": "SELECT 3 AS value",
+            },
+        )
+
+        assert len(authored) == 4, "one re-ground round, both members"
+        assert bindings and all(d.grounded for d in bindings.values())
+
+        rows = {
+            s.standard_field: s
+            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
+            if s.snippet_type == "extract"
+        }
+        assert rows["current_assets"].failure_count == 0
+        assert rows["current_liabilities"].failure_count == 0
+        assert rows["current_assets"].sql != rows["current_liabilities"].sql
+
+        exec_ctx = ExecutionContext(duckdb_conn=duckdb_conn, schema_mapping_id="ws-collide")
+        assembled = agent.assemble(
+            session, self._ratio_graph(), exec_ctx, bindings, workspace_id="ws-collide"
+        )
+        assert assembled.success

@@ -492,11 +492,19 @@ class SnippetFailureMode(StrEnum):
       violation of contract v2 after its repair turn (DAT-727): the SQL may be
       fine, but the operating-model graph cannot ground ``uses`` edges on an
       unenforced enumeration.
+    - ``DISJOINT_COLLISION`` — the extract is byte-identical (modulo SQL syntax
+      noise) to the one grounded for a concept this one is ``disjoint_with``
+      (DAT-709). Disjoint concepts cannot select the same rows, so at most one
+      of the two groundings can be right and nothing here can tell which: the
+      SQL may execute and verify perfectly and still be the wrong concept's.
+      Written by the cross-concept guard, never by a single grounding call —
+      it is the ONE failure mode no per-concept check can reach.
     """
 
     EXECUTION_FAILED = "execution_failed"
     VERIFIER_REJECTED = "verifier_rejected"
     PROVENANCE_INVALID = "provenance_invalid"
+    DISJOINT_COLLISION = "disjoint_collision"
 
 
 class SnippetAssumption(BaseModel):

@@ -1253,6 +1253,50 @@ class TestPriorContextFeedback:
         assert "concept has no supporting rows (abstain" in out
         assert "one-sided data" in out
 
+    def test_disjoint_collision_gets_distinguishing_guidance(
+        self, session: Session, sample_graph
+    ) -> None:
+        """DAT-709: a collision retry is told to DISTINGUISH, not just to revise.
+
+        The generic retained-failure steer ("revise, or abstain if it aggregated
+        to NULL") invites exactly the re-derivation that collided. A
+        ``disjoint_collision`` row instead feeds the guard's reason — which names
+        the partner concept — plus the one instruction that can resolve it: find
+        the evidence separating the two, or fall loud.
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        SnippetLibrary(session, workspace_id=baseline_run_id()).save_snippet(
+            snippet_type="extract",
+            sql='SELECT SUM("amount") AS value FROM enriched_gl',
+            description="collided attempt",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance={
+                "failure_mode": "disjoint_collision",
+                "failure_reason": (
+                    "'test_field' grounded to the same extract as disjoint concept(s) "
+                    "SENTINEL_PARTNER"
+                ),
+            },
+            failed=True,
+        )
+        session.flush()
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "disjoint_collision" in out
+        assert "SENTINEL_PARTNER" in out, "the retry must know WHICH concept to separate from"
+        assert "do NOT re-emit unchanged" in out
+        assert "distinguishes it from" in out
+        assert "fall loud" in out
+        # The NULL-aggregation steer belongs to the other failure modes — serving it
+        # here would answer a question this failure never asked.
+        assert "one-sided data" not in out
+
     def test_retained_failure_reuse_excluded_but_fed_back(
         self, session: Session, sample_graph
     ) -> None:

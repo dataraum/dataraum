@@ -600,7 +600,14 @@ def _warm_shared_nodes(
     reads this map and never re-authors: a metric with an ungroundable dependency
     honest-fails immediately, no LLM. A cyclic metric set yields an empty map
     (every metric then honest-fails born-loud at assembly).
+
+    The pass closes with the CROSS-CONCEPT guard (DAT-709): grounding is one call
+    per concept, so this is the only scope in the run where every concept's
+    decision coexists, and therefore the only place two disjoint concepts sharing
+    one extract can be seen at all. Collisions are re-grounded once with the
+    collision named, then abstain typed — see ``graphs.grounding_collision``.
     """
+    from dataraum.graphs.grounding_collision import resolve_grounding_collisions
     from dataraum.graphs.node_warming import build_warm_dag, warming_generations
 
     try:
@@ -619,11 +626,12 @@ def _warm_shared_nodes(
         generations=len(generations),
     )
 
-    if ctx.manager is not None:
-        return _warm_generations_parallel(
+    manager = ctx.manager
+    if manager is not None:
+        bindings = _warm_generations_parallel(
             generations,
             nodes,
-            ctx.manager,
+            manager,
             agent,
             schema_mapping_id,
             table_ids,
@@ -631,17 +639,60 @@ def _warm_shared_nodes(
             om_run_id,
             catalogue_run_id,
         )
-    return _warm_generations_serial(
-        generations,
+    else:
+        bindings = _warm_generations_serial(
+            generations,
+            nodes,
+            ctx.session,
+            ctx.duckdb_conn,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
+            catalogue_run_id,
+        )
+
+    def _reauthor(key: NodeKey, reason: str) -> NodeDecision:
+        """Demote the collided snippet and re-author the node, in ONE unit of work.
+
+        The demotion must be visible to the re-authoring's own snippet lookup —
+        a healthy row is assembled from cache with no LLM call, which would make
+        the re-ground silently inert — so both happen in the same session.
+        """
+        if manager is not None:
+            return _warm_isolated(
+                nodes[key],
+                manager,
+                agent,
+                schema_mapping_id,
+                table_ids,
+                vertical,
+                om_run_id,
+                catalogue_run_id,
+                demote_reason=reason,
+            )
+        return _warm_in_session(
+            nodes[key],
+            ctx.session,
+            ctx.duckdb_conn,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
+            catalogue_run_id,
+            demote_reason=reason,
+        )
+
+    return resolve_grounding_collisions(
+        bindings,
         nodes,
-        ctx.session,
-        ctx.duckdb_conn,
-        agent,
-        schema_mapping_id,
-        table_ids,
-        vertical,
-        om_run_id,
-        catalogue_run_id,
+        session=ctx.session,
+        workspace_id=schema_mapping_id,
+        schema_mapping_id=schema_mapping_id,
+        vertical=vertical,
+        reauthor=_reauthor,
     )
 
 
@@ -715,23 +766,72 @@ def _warm_isolated(
     vertical: str,
     om_run_id: str,
     catalogue_run_id: str | None = None,
+    *,
+    demote_reason: str | None = None,
 ) -> NodeDecision:
     """Author one node with an isolated session + cursor; return its decision."""
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        return _warm_in_session(
+            node,
+            session,
+            cursor,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
+            catalogue_run_id,
+            demote_reason=demote_reason,
+        )
+
+
+def _warm_in_session(
+    node: WarmNode,
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+    catalogue_run_id: str | None = None,
+    *,
+    demote_reason: str | None = None,
+) -> NodeDecision:
+    """Author one node against an already-open session + cursor.
+
+    ``demote_reason`` turns this into a RE-authoring (DAT-709): the node's
+    existing snippet is flagged with that reason FIRST, in this same session, so
+    the lookup inside ``execute`` no longer finds a healthy row and the LLM is
+    actually called — and so the reason reaches the new prompt through the
+    retained-failure feedback channel.
+    """
     from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.grounding_collision import flag_collision
     from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
 
-    mini = build_mini_graph(node)
-    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        exec_ctx = ExecutionContext.with_rich_context(
-            session=session,
-            duckdb_conn=cursor,
-            table_ids=table_ids,
+    if demote_reason is not None:
+        # workspace_id IS schema_mapping_id on the authoring path — the same value
+        # ``execute`` is handed below as its snippet-library write-path guard.
+        flag_collision(
+            session,
+            node,
+            workspace_id=schema_mapping_id,
             schema_mapping_id=schema_mapping_id,
-            om_run_id=om_run_id,
-            catalogue_run_id=catalogue_run_id,
-            vertical=vertical,
+            reason=demote_reason,
         )
-        result = agent.execute(session, mini, exec_ctx, workspace_id=schema_mapping_id)
+    exec_ctx = ExecutionContext.with_rich_context(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        table_ids=table_ids,
+        schema_mapping_id=schema_mapping_id,
+        om_run_id=om_run_id,
+        catalogue_run_id=catalogue_run_id,
+        vertical=vertical,
+    )
+    result = agent.execute(
+        session, build_mini_graph(node), exec_ctx, workspace_id=schema_mapping_id
+    )
     if result.success:
         return NodeDecision(grounded=True)
     # Ungroundable (e.g. an extract with genuinely no support): recorded, not an

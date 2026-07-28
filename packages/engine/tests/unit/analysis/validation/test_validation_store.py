@@ -122,30 +122,6 @@ def test_seeded_row_carries_the_typed_check_definition(session: Session) -> None
     assert de.severity == "critical"
 
 
-def test_seed_folds_nontolerance_params_into_guidance(session: Session) -> None:
-    """A spec built from the legacy parameters/sql_hints shape (the normalizer's
-    remaining live producer shape, DAT-447) still folds non-tolerance params
-    into guidance before it reaches a seed row — the same fold
-    ensure_validations_seeded ran per-doc against the now-retired shipped YAML."""
-    spec = ValidationSpec.model_validate(
-        {
-            "validation_id": "trial_balance",
-            "name": "Trial Balance",
-            "description": "Assets + expenses equal liabilities + equity + revenue",
-            "category": "financial",
-            "check_type": "balance",
-            "sql_hints": "classify accounts",
-            "parameters": {"tolerance": 0.01, "asset_types": ["asset", "assets"]},
-        }
-    )
-    session.add(
-        Validation(**_seed_row("trial_balance", tolerance=spec.tolerance, guidance=spec.guidance))
-    )
-    session.flush()
-    tb = _active(session)["trial_balance"]
-    assert "asset_types" in (tb.guidance or "")
-
-
 def test_seed_is_idempotent(session: Session) -> None:
     """A second insert of the same active (vertical, validation_id) is skipped
     via ON CONFLICT DO NOTHING on the active-row index — the primitive

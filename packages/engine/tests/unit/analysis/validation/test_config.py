@@ -116,14 +116,15 @@ class TestOverlayAwareLoading:
         assert "double_entry_balance" in specs
 
     def test_overlay_row_replaces_seeded_spec_by_id(self, session: Session):
-        """A teach row's legacy ``parameters.tolerance`` normalizes onto the typed field."""
+        """A teach row's typed ``tolerance`` replaces the seeded spec's — the
+        replacement is WHOLESALE (one row = one whole respec, DAT-735)."""
         session.add(_seed_row("double_entry_balance", tolerance=0.01))
         session.flush()
         set_overlay_resolver(
             lambda: [
                 OverlayRow(
                     type="validation",
-                    payload=_spec_payload("double_entry_balance", parameters={"tolerance": 5.0}),
+                    payload=_spec_payload("double_entry_balance", tolerance=5.0),
                 )
             ]
         )

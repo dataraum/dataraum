@@ -142,14 +142,13 @@ def table_with_data(session, duckdb_conn):
     return table
 
 
-def _eval_spec(check_type: str, **parameters) -> ValidationSpec:
+def _eval_spec(check_type: str) -> ValidationSpec:
     return ValidationSpec(
         validation_id="test",
         name="Test",
         description="Test",
         category="test",
         check_type=check_type,
-        parameters=parameters,
     )
 
 
@@ -164,7 +163,7 @@ class TestValidationAgentGenerateSQL:
             description="A test validation",
             category="test",
             check_type="balance",
-            sql_hints="Sum debits and credits",
+            guidance="Sum debits and credits",
         )
 
         schema = {
@@ -223,6 +222,74 @@ class TestValidationAgentGenerateSQL:
 
         rendered_context = validation_agent.renderer.render_split.call_args.args[1]
         assert rendered_context["conventions"] == "CREDIT-NORMAL = credit - debit"
+
+    def test_generate_sql_renders_expected_formula_into_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """DAT-880: the typed expected_formula declaration (no longer folded into
+        guidance at load) is rendered into the sql_hints prompt slot explicitly, so
+        the binder still sees the column-identity claim it needs to ground SQL."""
+        spec = ValidationSpec(
+            validation_id="expected_formula:orders.total",
+            name="Expected formula for orders.total",
+            description="total should equal subtotal + tax",
+            category="business_rule",
+            check_type="expected_formula",
+            expected_formula={"table": "orders", "column": "total", "formula": "subtotal + tax"},
+        )
+        schema = {
+            "table_name": "orders",
+            "duckdb_path": "typed_orders",
+            "columns": [{"column_name": "total", "data_type": "DECIMAL"}],
+        }
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert "orders.total" in rendered_context["sql_hints"]
+        assert "subtotal + tax" in rendered_context["sql_hints"]
+
+    def test_generate_sql_combines_guidance_and_expected_formula_in_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """Both an advisory guidance prose AND a typed declaration can be present —
+        neither displaces the other in the rendered hint text."""
+        spec = ValidationSpec(
+            validation_id="expected_formula:orders.total",
+            name="Expected formula for orders.total",
+            description="total should equal subtotal + tax",
+            category="business_rule",
+            check_type="expected_formula",
+            guidance="Join through the line_items table for subtotal.",
+            expected_formula={"table": "orders", "column": "total", "formula": "subtotal + tax"},
+        )
+        schema = {"table_name": "orders", "duckdb_path": "typed_orders", "columns": []}
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert "line_items" in rendered_context["sql_hints"]
+        assert "subtotal + tax" in rendered_context["sql_hints"]
 
     def test_generate_sql_cannot_validate(self, validation_agent, mock_provider):
         """Test when LLM indicates validation cannot be performed."""
@@ -371,7 +438,7 @@ class TestValidationAgentBindExecute:
             category="financial",
             check_type="balance",
             severity=ValidationSeverity.CRITICAL,
-            parameters={"tolerance": 0.01},
+            tolerance=0.01,
         )
 
         # Get multi-table schema

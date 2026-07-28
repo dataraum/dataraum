@@ -211,8 +211,8 @@ def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
 
     Payload shape mirrors :class:`ValidationSpec`:
     ``{vertical, validation_id, name, description, category, severity,
-    check_type, parameters?, sql_hints?, expected_outcome?, tags?,
-    relevant_cycles?, version?}``. ``vertical`` is matched by the caller
+    check_type, tolerance?, guidance?, expected_outcome?, expected_formula?,
+    tags?, relevant_cycles?, version?}``. ``vertical`` is matched by the caller
     (this applier only sees rows already filtered to the loading vertical).
 
     Merge semantics mirror ``concept``: one row = one whole spec. Same
@@ -220,16 +220,22 @@ def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     pre-sorted ASC by ``created_at``). A framed vertical resolves
     overlay-only: an empty base list plus rows IS the declared set.
 
-    Expected-formula declaration (DAT-447, Option B): the ``derived_value``
-    measurement's teach rides this type — a spec-shaped payload with
-    ``check_type: "expected_formula"`` and ``parameters: {table, column,
-    formula}`` (formula in the discovery's binary-arithmetic language, e.g.
-    ``"subtotal + tax"``; suggested identity ``validation_id:
-    "expected_formula:{table}.{column}"`` so a re-declaration replaces). The
-    validation phase executes it as a declared check every run via this
-    applier; ``entropy.detectors.loaders.load_declared_formula`` reads the
-    same rows directly and pools the declaration as the ``human_declaration``
-    witness on the matching formula claim.
+    Expected-formula declaration (DAT-447, Option B; retyped DAT-880): the
+    ``derived_value`` measurement's teach rides this type — a spec-shaped payload
+    with ``check_type: "expected_formula"`` and ``expected_formula: {table, column,
+    formula}`` (:class:`~dataraum.analysis.validation.models.
+    ExpectedFormulaDeclaration`; formula in the discovery's binary-arithmetic
+    language, e.g. ``"subtotal + tax"``; suggested identity ``validation_id:
+    "expected_formula:{table}.{column}"`` so a re-declaration replaces). Were such a
+    row ever written, the validation phase would execute it as a declared check
+    every run via this applier, and ``entropy.detectors.loaders.
+    load_declared_formula`` reads the same rows directly to pool the declaration as
+    the ``human_declaration`` witness on the matching formula claim — but NO writer
+    of a ``type='validation'`` overlay row can produce ``check_type:
+    "expected_formula"`` today (the cockpit's sole writer, ``teach_validation``, is
+    gated by a closed 4-value ``check_type`` enum that never admitted this fifth
+    value). This is a designed, typed contract this applier stays ready to merge,
+    not a currently-exercised one.
     """
     out = dict(base)
     specs = [dict(s) for s in (out.get("validations") or [])]

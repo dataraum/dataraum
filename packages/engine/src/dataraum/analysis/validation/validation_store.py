@@ -193,9 +193,10 @@ def ensure_validations_seeded(session: Session, vertical: str) -> int:
     re-run is a no-op, a generated/frame supersede is never clobbered, and it is
     race-safe against a concurrent seed. Mirrors ``ensure_conventions_seeded``.
 
-    Each YAML doc is re-typed through :class:`ValidationSpec` (the ``mode="before"``
-    normalizer maps the legacy ``parameters``/``sql_hints`` shape onto the typed
-    ``tolerance``/``guidance`` fields), so the seed rows carry the typed check
+    Each YAML doc is re-typed through :class:`ValidationSpec` — the shipped shape IS
+    the typed ``tolerance``/``guidance`` fields today (DAT-880 retired the
+    ``mode="before"`` normalizer that once bridged a legacy ``parameters``/
+    ``sql_hints`` wire shape onto them) — so the seed rows carry the typed check
     definition. A framed vertical (no on-disk YAML) seeds nothing. Returns the number
     of rows actually inserted (conflicts skipped).
 

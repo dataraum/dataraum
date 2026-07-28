@@ -2,11 +2,11 @@
 
 DAT-447 Option B: a declared expected formula rides the EXISTING ``validation``
 teach — a spec-shaped ``ConfigOverlay(type='validation')`` row with
-``check_type: "expected_formula"`` and ``parameters: {table, column, formula}``
-(documented on ``core.overlay._apply_validation``). The validation phase
-executes it as a check every run; ``load_declared_formula`` reads the same rows
-directly so the derived_value measurement pools the declaration as the
-``human_declaration`` witness. Mirrors ``load_documented_dependencies``.
+``check_type: "expected_formula"`` and ``expected_formula: {table, column,
+formula}`` (typed, DAT-880; documented on ``core.overlay._apply_validation``). The
+validation phase executes it as a check every run; ``load_declared_formula`` reads
+the same rows directly so the derived_value measurement pools the declaration as
+the ``human_declaration`` witness. Mirrors ``load_documented_dependencies``.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def _declaration_payload(formula: str, table: str = "orders", column: str = "tot
         "description": f"{column} should equal {formula}",
         "category": "business_rule",
         "check_type": "expected_formula",
-        "parameters": {"table": table, "column": column, "formula": formula},
+        "expected_formula": {"table": table, "column": column, "formula": formula},
     }
 
 
@@ -96,7 +96,6 @@ def test_non_formula_validation_rows_are_ignored(session: Session) -> None:
                 "description": "debits equal credits",
                 "category": "financial",
                 "check_type": "balance",
-                "parameters": {"table": "orders", "column": "total"},
             },
         )
     )

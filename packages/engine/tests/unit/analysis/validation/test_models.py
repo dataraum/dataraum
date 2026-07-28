@@ -1,19 +1,18 @@
-"""ValidationSpec — the typed check definition + legacy normalizer (DAT-735).
+"""ValidationSpec — the typed check definition (DAT-735; retyped DAT-880).
 
-Pins the ``mode="before"`` normalizer that maps the ``parameters``/``sql_hints``
-wire shape onto the typed ``tolerance``/``guidance`` fields, and the "explicit
-typed fields always win" rule. The normalizer's one remaining LIVE producer is
-the DAT-447 ``expected_formula`` teach overlay (``parameters: {table, column,
-formula}``) — finance's seed YAMLs used the typed shape natively before their
-DAT-725 band-3 retirement, and the cockpit teach_validation writes the typed
-shape natively too (teach-surface retire).
+Pins the ``check_type`` union (``ValidationCheckType | Literal["expected_formula"]``)
+and the ``check_type``/``expected_formula`` pairing invariant that replaced the
+``mode="before"`` legacy normalizer (DAT-880 deleted it entirely — no
+``parameters``/``sql_hints`` wire shape exists anymore; a row still carrying those
+keys is silently ignored as an unrecognized extra field, never folded).
 """
 
 from __future__ import annotations
 
-import json
+import pytest
+from pydantic import ValidationError
 
-from dataraum.analysis.validation.models import ValidationSpec
+from dataraum.analysis.validation.models import ExpectedFormulaDeclaration, ValidationSpec
 
 
 def _spec(**overrides) -> ValidationSpec:
@@ -28,54 +27,72 @@ def _spec(**overrides) -> ValidationSpec:
     return ValidationSpec(**base)
 
 
-def test_legacy_parameters_tolerance_maps_to_typed_tolerance() -> None:
-    spec = _spec(parameters={"tolerance": 0.05})
-    assert spec.tolerance == 0.05
-
-
-def test_legacy_sql_hints_maps_to_guidance() -> None:
-    spec = _spec(sql_hints="sum the debits")
-    assert spec.guidance == "sum the debits"
-
-
-def test_non_tolerance_params_fold_into_guidance() -> None:
-    """Non-tolerance parameters (LLM hints) survive into guidance — the binding agent
-    used to get them as a JSON blob; the fold keeps it equally informed."""
-    spec = _spec(
-        sql_hints="classify accounts", parameters={"tolerance": 0.01, "asset_types": ["a"]}
-    )
-    assert spec.tolerance == 0.01
-    assert "classify accounts" in (spec.guidance or "")
-    assert "asset_types" in (spec.guidance or "")
-    # The folded block is valid JSON of the non-tolerance params.
-    folded = spec.guidance.split("Parameters: ", 1)[1]  # type: ignore[union-attr]
-    assert json.loads(folded) == {"asset_types": ["a"]}
-
-
-def test_explicit_typed_fields_win_over_legacy() -> None:
-    """An explicit tolerance/guidance always wins; the legacy fields are dropped."""
-    spec = _spec(
-        tolerance=0.2,
-        guidance="explicit prose",
-        parameters={"tolerance": 0.9, "asset_types": ["x"]},
-        sql_hints="legacy prose",
-    )
-    assert spec.tolerance == 0.2
-    # Explicit guidance is kept verbatim — the legacy sql_hints/params are NOT folded in.
-    assert spec.guidance == "explicit prose"
-
-
-def test_new_shape_is_a_noop() -> None:
-    """A row already in the typed shape passes through unchanged (DB-home read)."""
+def test_typed_fields_construct_directly() -> None:
+    """The typed home's shape (tolerance/guidance) passes through unchanged."""
     spec = _spec(tolerance=0.0, guidance="g")
     assert spec.tolerance == 0.0
     assert spec.guidance == "g"
 
 
-def test_no_check_fields_leave_both_none() -> None:
+def test_no_check_fields_leave_tolerance_and_guidance_none() -> None:
     spec = _spec()
     assert spec.tolerance is None
     assert spec.guidance is None
-    # The retired fields are not exposed on the typed model.
+    assert spec.expected_formula is None
+
+
+def test_legacy_parameters_and_sql_hints_are_silently_ignored() -> None:
+    """No wire shape reads these anymore — DAT-880 deleted the fold with no shim.
+
+    Unrecognized keys are dropped as ordinary extra fields (pydantic's default),
+    not folded into tolerance/guidance and not exposed as attributes.
+    """
+    spec = _spec(parameters={"tolerance": 0.5}, sql_hints="legacy prose")
+    assert spec.tolerance is None
+    assert spec.guidance is None
     assert not hasattr(spec, "parameters")
     assert not hasattr(spec, "sql_hints")
+
+
+@pytest.mark.parametrize(
+    "value", ["balance", "comparison", "constraint", "aggregate", "expected_formula"]
+)
+def test_check_type_accepts_every_legal_value(value: str) -> None:
+    kwargs = {"check_type": value}
+    if value == "expected_formula":
+        kwargs["expected_formula"] = {"table": "orders", "column": "total", "formula": "a + b"}
+    spec = _spec(**kwargs)
+    assert spec.check_type == value
+
+
+def test_check_type_rejects_an_unknown_value() -> None:
+    """The union is closed to the four canonical values + the one documented
+    expected_formula sentinel — anything else is malformed data, not a new type."""
+    with pytest.raises(ValidationError):
+        _spec(check_type="bogus")
+
+
+def test_expected_formula_declaration_parses_typed() -> None:
+    spec = _spec(
+        check_type="expected_formula",
+        expected_formula={"table": "orders", "column": "total", "formula": "subtotal + tax"},
+    )
+    assert spec.expected_formula == ExpectedFormulaDeclaration(
+        table="orders", column="total", formula="subtotal + tax"
+    )
+
+
+def test_expected_formula_check_type_without_declaration_is_rejected() -> None:
+    """check_type='expected_formula' with no declaration is malformed — there is no
+    partial-declaration state; the SQL binder must never see an empty claim."""
+    with pytest.raises(ValidationError):
+        _spec(check_type="expected_formula")
+
+
+def test_expected_formula_declaration_without_matching_check_type_is_rejected() -> None:
+    """A stray declaration on an ordinary check is equally malformed."""
+    with pytest.raises(ValidationError):
+        _spec(
+            check_type="balance",
+            expected_formula={"table": "orders", "column": "total", "formula": "a + b"},
+        )

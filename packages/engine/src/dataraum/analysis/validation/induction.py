@@ -333,6 +333,98 @@ def _render_metric_dag(session: Session, vertical: str) -> str:
     return "\n".join(lines)
 
 
+def _render_temporal_form(context: GraphExecutionContext) -> str:
+    """The per-measure stock/flow facts, restated ADJACENT to the task (DAT-874).
+
+    The comparison SHAPE is chosen HERE — a check that compares a per-period
+    movement against a level is wrong the moment it is proposed, and no later seam
+    can repair it without overruling the proposal. So the fact that decides whether
+    two measures are comparable has to be legible here, not only at bind.
+
+    It is already served once: ``format_served_context`` emits each column's
+    resolved ``Materialization`` verdict ('flow' | 'stock', ``og_columns``) as one
+    cell of a per-table column table. Two things that cell cannot do:
+
+    * **Proximity.** DAT-870 measured this failure directly at the binder: with the
+      grain facts carried only as schema attributes, a confidently wrong hint
+      out-pulled them, and restating the same facts beside the prose is what fixed
+      it. ``agent._render_grain_facts`` is that counterweight at bind — the
+      induction seam, which chooses the shape those facts constrain, had none.
+    * **Absence.** A column with no verdict renders as an EMPTY CELL, which is
+      indistinguishable from a rendering gap. The temporal-form rule asks for an
+      UNDETERMINED measure to be declined, and that requires reading absence off an
+      omission — the exact inference DAT-876 settled at this same seam: state the
+      absence POSITIVELY, or it does not land.
+
+    Deterministic presentation of served facts: nothing is proposed, rewritten, or
+    rejected here — a mixed-form check stays the model's judgment to make (the
+    coherent forms include legitimate mixed pairs: a movement against the CHANGE in
+    a level, a cumulated movement against a level). Empty when no served column
+    carries a verdict and no measure lacks one.
+
+    An UNDETERMINED entry is listed only for a MEASURE-role column, where the gap
+    is decision-relevant; a verdict is listed wherever one exists, so a served fact
+    is never hidden by a missing role label.
+
+    **The UNDETERMINED list is not exhaustive, by inheritance.** It keys on
+    ``ColumnContext.materialization`` — the ``og_columns`` graph surface, whose
+    expression COALESCEs ``measure_aggregation_lineage.pattern`` AHEAD of
+    ``column_concepts.temporal_behavior`` (``storage/property_graph.py``). The
+    lineage pattern is non-NULL whenever a lineage row exists, while the resolved
+    ``temporal_behavior`` is deliberately cleared to NULL when the resolve pass
+    abstains on ignorance. So a measure the resolve layer ABSTAINED on still
+    presents a verdict here and never reaches the ``elif`` above: the graph surface
+    does not inherit resolve's fail-closed abstention. Listing a measure is
+    therefore evidence its form was stated somewhere; NOT listing one is not
+    evidence the form is known — which is why the header below claims authority
+    only over prose, and never that the list is complete. Narrowing the seam itself
+    means changing that view, which also moves the answer agent and
+    ``graphs/period_resolver.py``; it is parked, not fixed here (DAT-847 territory).
+
+    The divergence has a neighbour in this same package: ``resolver.py``'s binder
+    schema reads ``ColumnConcept.temporal_behavior`` directly and so DOES honour the
+    abstention, while this render reads the graph surface — for an abstained-with-
+    lineage measure the two seams can state opposite things about one column.
+    """
+    lines: list[str] = []
+    for table in context.tables:
+        by_form: dict[str, list[str]] = {}
+        undetermined: list[str] = []
+        for col in table.columns:
+            if col.materialization:
+                by_form.setdefault(col.materialization, []).append(col.column_name)
+            elif col.semantic_role == "measure":
+                undetermined.append(col.column_name)
+        parts: list[str] = []
+        if "flow" in by_form:
+            parts.append(
+                "flow (a per-period movement, additive across periods): "
+                f"{', '.join(by_form['flow'])}"
+            )
+        if "stock" in by_form:
+            parts.append(
+                "stock (a level as of its period, never summed across periods): "
+                f"{', '.join(by_form['stock'])}"
+            )
+        if undetermined:
+            parts.append(
+                "NO temporal-form verdict — UNDETERMINED (a stated absence, not "
+                f"'flow'): {', '.join(undetermined)}"
+            )
+        if parts:
+            lines.append(f"- {table.duckdb_name or table.table_name}: {'; '.join(parts)}")
+    if not lines:
+        return ""
+    return (
+        "\n## Temporal form of the measures\n"
+        "The catalog's per-column stock/flow verdicts as measured. Where a form is "
+        "stated it OVERRIDES any column name, description, or hint prose that says "
+        "otherwise, and a measure listed as UNDETERMINED grounds no cross-measure "
+        "comparison at all. Two measures compare only when both sides are the same "
+        "KIND of quantity (the temporal-form rule).\n" + "\n".join(lines)
+    )
+
+
 def _render_existence_universe(context: GraphExecutionContext) -> str:
     """The existence-check universe fact (DAT-876) — a projection of table_role.
 
@@ -398,9 +490,13 @@ def build_served_context(
     reads: concepts + part_of, references, cycles, per-column materialization = the
     additivity signal, reconciles_with), then APPENDS induction-specific sections
     the served graph leaves implicit: the additivity verdicts and the metric DAG
-    the balance-check class needs (DAT-735), and the existence-check universe fact
-    (DAT-876) — a positive statement when no served table is dimension-role, so the
-    existence class is declined rather than bound against an activity table.
+    the balance-check class needs (DAT-735); the per-measure temporal-form facts
+    (DAT-874) — the stock/flow verdicts restated next to the task, with the
+    UNDETERMINED measures named, because the shared assembler carries them only as
+    a column-table cell and renders a missing verdict as a blank; and the
+    existence-check universe fact (DAT-876) — a positive statement when no served
+    table is dimension-role, so the existence class is declined rather than bound
+    against an activity table.
 
     The conventions slot is induction's OWN (DAT-865): ALL active conventions,
     rendered WITH their stable ids — not ``context.conventions`` (the
@@ -436,6 +532,7 @@ def build_served_context(
     served += (
         _render_additivity(session, om_head)
         + _render_metric_dag(session, effective_vertical)
+        + _render_temporal_form(context)
         + _render_existence_universe(context)
     )
     ws_conventions = load_workspace_conventions(session, vertical)

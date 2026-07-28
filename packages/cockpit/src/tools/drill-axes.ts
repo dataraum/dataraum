@@ -749,7 +749,7 @@ export interface DrillAxesResult {
 	temporalGateReason?: string;
 	/** Which path decided the time gate (DAT-725, replacing the DAT-731 fail-open
 	 *  fallback): `engine-verdict` = the engine's persisted, DAG-aware
-	 *  `metric_additivity.time_additive`; `withheld-no-verdict` = the target has
+	 *  per-(target x axis) verdict; `withheld-no-verdict` = the target has
 	 *  NO persisted verdict yet — the system's principle is "if we do not have
 	 *  data, we honestly say so", so a missing verdict strips the time grain with
 	 *  a user-visible reason instead of silently recomputing a weaker local
@@ -1268,7 +1268,7 @@ export async function resolveDrillAxes(
  * Same relation→fact→catalog resolution as a metric — an answer's dimensions are
  * found the same way, not by a weaker rule — but the time grain is ALWAYS
  * withheld: an ad-hoc answer concept is not a target the engine has classified,
- * so no `metric_additivity` row exists to read and there is nothing to bucket
+ * so no `metric_axis_additivity` row exists to read and there is nothing to bucket
  * time by honestly. The date axis stays available as a raw slice.
  *
  * The relation is reduced to its bare name FIRST (DAT-671). This is the third

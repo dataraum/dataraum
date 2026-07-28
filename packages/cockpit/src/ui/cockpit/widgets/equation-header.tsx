@@ -45,7 +45,7 @@ export interface NodeShapeWire {
 /** An operand's role in the formula — what the ledger ink encodes: added
  *  terms credit-green, subtracted terms debit-red, divisors (neither side of
  *  the ledger) indigo. First occurrence wins — ONE hue per operand is the
- *  point (unlike `flattenAdditive`, which deliberately counts every
+ *  point (unlike `signedContributions`, which deliberately counts every
  *  occurrence because it computes arithmetic, not ink). */
 export type OperandRole = "added" | "subtracted" | "divisor";
 

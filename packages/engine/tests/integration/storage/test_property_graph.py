@@ -667,7 +667,7 @@ def _units_and_additivity_stmts() -> list[str]:
       semantic_annotation on c_ccy / c_amt3 / c_self, so the measure→materialization
       MATCH (semantic_role='measure') is untouched — og_measured_in fires purely off
       column_concepts.unit_source_column.
-    - Two ``metric_additivity`` verdicts under a fresh operating_model head: a MEASURE
+    - ``metric_axis_additivity`` verdicts under a fresh operating_model head: a MEASURE
       verdict keyed by the concept name 'revenue' (→ a has_additivity edge from the
       revenue concept) and a METRIC verdict keyed by a formula graph_id 'mk_margin'
       (no concept → vertex only, reachable by property, never by has_additivity).

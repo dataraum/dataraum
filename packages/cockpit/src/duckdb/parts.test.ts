@@ -711,7 +711,7 @@ describe("composeNodeQuery — NULL-dim non-additive slice (DAT-714)", () => {
 	});
 });
 
-// --- flattenAdditive (the doctrine-v2 classifier, pure) ---------------------------
+// --- signedContributions (composition mechanics, pure) ---------------------------
 
 describe("signedContributions", () => {
 	const byIdOf = (steps: NodeStep[]) =>

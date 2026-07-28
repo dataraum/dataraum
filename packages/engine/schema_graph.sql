@@ -560,7 +560,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),
     __READ__.og_columns KEY (column_id) LABEL column_node
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
-                  anchor_time_axis),
+                  anchor_time_axis, stored_sign),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
       PROPERTIES (concept_id, vertical, name, kind, ordering),
     __READ__.og_grounding KEY (snippet_id) LABEL grounding_node

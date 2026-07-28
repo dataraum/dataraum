@@ -36,6 +36,32 @@ corpus was consulted to pick. The only judgment constant here is what counts as 
 FAMILY rather than a stray voter, and it inherits the reconciliation's own
 "a lone entity is not a verdict" minimum.
 
+TWO LABEL-HONESTY CAVEATS — both are calibration watch items, and this is where the
+next reader is meant to find them. What the partition measures with certainty is the
+PARTITION (uniform vs split); mapping it onto the two NAMES rests on assumptions that
+can fail:
+
+1. **The convention is measured RELATIVE to the event table.** The witness compares a
+   measure against event amounts under a signed convention and its negation, so it
+   reads the measure's sign relative to THOSE amounts. The mapping split⇒
+   ``natural_balance`` / uniform⇒``ledger_signed`` assumes the event side is
+   family-BLIND — a raw ``debit``/``credit`` pair, which is how a journal stores its
+   two sides. Were an event amount column itself family-normalized, both labels
+   INVERT: a genuinely ``natural_balance`` measure would reconcile uniformly against
+   it and be labelled ``ledger_signed``. Nothing in the data says which side is raw,
+   so this assumption is load-bearing and unverified by the witness itself.
+2. **A single-family population cannot distinguish the two.** Where every account in
+   the reconciling population is debit-normal (an assets-only balance sheet, a
+   P&L-only extract), the natural and ledger directions COINCIDE — no split can
+   appear, so the witness mints a confident ``ledger_signed`` for a column the data
+   cannot actually discriminate. Harmless for a comparison (no family needs flipping,
+   so either reading yields the same SQL), but it is a confident label over an
+   undetermined fact, and it will read as measured in any eval that counts labels.
+
+Neither is defended against here, because both defences would need the account-class
+axis — which is not machine-readable anywhere today (the vertical's ``concept_groups``
+discard their labels at seed time, ``concept_edge_store``). Revisit if that changes.
+
 Pure module: no DB, no LLM, no config. Reliabilities are documented placeholder
 priors — the shipped calibrated values are measured by the eval rig (DAT-450) and
 threaded in via ``reliabilities=``; there is no measured entry for this detector yet,

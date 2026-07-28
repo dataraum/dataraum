@@ -1227,7 +1227,7 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),\n"
         f"    {READ_TOKEN}.og_columns KEY (column_id) LABEL column_node\n"
         f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,\n"
-        f"                  anchor_time_axis),\n"
+        f"                  anchor_time_axis, stored_sign),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
         f"      PROPERTIES (concept_id, vertical, name, kind, ordering),\n"
         f"    {READ_TOKEN}.og_grounding KEY (snippet_id) LABEL grounding_node\n"

@@ -10,11 +10,26 @@ witnesses and why the claim alone cannot settle this.
 
 A resolved verdict emits one witnessed ``EntropyObject`` carrying the convention and
 the pooled conflict; a measure the pool could NOT determine emits a wave-2
-``abstained`` object (``insufficient_data``) instead of a silent skip, so the
-undetermined column is visible in the coverage/abstention trace and never reads as
-measured-clean (DAT-847/DAT-853). Neither path carries a teach suggestion: the
-storage convention is data-determined, so the partition witness already wins, and
-there is no format for a human to teach here.
+``abstained`` object (``insufficient_data``) instead of a silent skip. Neither path
+carries a teach suggestion: the storage convention is data-determined, so the
+partition witness already wins, and there is no format for a human to teach here.
+
+WHERE THOSE OBJECTS DO AND DO NOT SURFACE — ``stored_sign`` has NO entry in
+``dataraum-config/entropy/loss.yaml`` yet, and that omission is deliberate: per-intent
+loss weights would be invented numbers, the same argument that defers the
+``reliabilities.yaml`` entry (see the measurement module). The consequence is
+concrete and must not be overstated. ``readiness_context`` gates every object on
+``LossConfig.is_loss_measurement``, so today:
+
+* an ABSTENTION is dropped before ``abstained_loss`` — it never becomes a
+  ``gap_abstained``, never moves ``coverage``, and never enters the abstention
+  payload. It is NOT visible in the DAT-853 coverage trace.
+* a MEASURED object routes to ``direct_signals``, not ``loss_objects``, so it is
+  carried as a direct signal but contributes ZERO banded readiness risk.
+
+Both objects ARE persisted to ``entropy_objects`` with their evidence, so the trace
+exists in the table and the resolve pass reads it — the gap is purely in the
+readiness/coverage rollup, and it closes when the loss entry is calibrated.
 
 This detector runs only where BOTH its inputs can exist — the begin_session
 ``session_detect``, where the catalogue run holds the ``ColumnConcept`` claim and the
@@ -80,9 +95,11 @@ class StoredSignDetector(EntropyDetector):
         A resolved convention → one measured object carrying the posterior and the
         pooled conflict/ignorance. Total ignorance is a wave-2 ABSTENTION for a column
         the per-column agent read as a MEASURE — persisted as ``insufficient_data`` so
-        an undetermined measure is visible in the coverage trace. A non-measure column
-        is not a storage-convention question → stay silent, so identifiers and
-        dimensions never wallpaper the trace.
+        the undetermined measure is a row in ``entropy_objects`` rather than a silent
+        skip (it does NOT yet reach the readiness coverage trace — see the module
+        docstring on the missing loss entry). A non-measure column is not a
+        storage-convention question → stay silent, so identifiers and dimensions never
+        wallpaper the trace.
 
         The claim is NOT the measure signal here: a column with no ``ColumnConcept``
         row under this run carries no claim at all, so its absence would silence

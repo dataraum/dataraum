@@ -694,8 +694,13 @@ class ColumnConcept(Base):
         ),
         # Storage-convention vocabulary (DAT-875), same derivation from its single
         # home ``catalogue.models.STORED_SIGNS``. The RESOLVED column is NULL-or-IN
-        # the two determinable values; 'unsure' is a CLAIM-only escape and is
-        # normalized to NULL at persist, so it must not appear here.
+        # the two determinable values. 'unsure' cannot appear here because the
+        # MEASUREMENT cannot emit it: its claim space is the two determinable
+        # labels, and an undetermined pool resolves to None, which the resolve pass
+        # writes as NULL. Note this is NOT a persist-time normalization — on the
+        # CLAIM column below, 'unsure' is stored verbatim and is load-bearing (the
+        # detector reads claim presence to tell an agent that looked and abstained
+        # apart from a run with no catalogue grain at all).
         CheckConstraint(
             "stored_sign IS NULL OR stored_sign IN ("
             + ", ".join(f"'{v}'" for v in sorted(STORED_SIGNS))

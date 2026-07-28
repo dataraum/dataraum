@@ -90,8 +90,10 @@ def test_partition_overrules_a_disagreeing_name_read() -> None:
 
 def test_undetermined_measure_abstains_insufficient_data() -> None:
     """A catalogued MEASURE the agent was unsure about, with no lineage this run →
-    total ignorance. A wave-2 abstention, not a silent skip, so the gap is visible in
-    the coverage trace and resolve writes NULL rather than leaving a stale label."""
+    total ignorance. A wave-2 abstention, not a silent skip: the row lands in
+    entropy_objects and resolve writes NULL rather than leaving a stale label. It does
+    NOT reach the readiness coverage trace — stored_sign has no loss.yaml entry yet
+    (deliberate, calibration-owed), so readiness_context drops non-loss abstentions."""
     objs = _detect(semantic_role="measure", stored_sign_claim="unsure")
     assert len(objs) == 1
     obj = objs[0]

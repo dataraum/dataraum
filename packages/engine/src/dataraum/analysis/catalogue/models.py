@@ -21,6 +21,35 @@ MEANING_STATUSES: tuple[str, ...] = ("ambiguous", "determined")
 
 MeaningStatus = Literal["determined", "ambiguous"]
 
+# The persisted ``ColumnConcept.stored_sign`` vocabulary (DAT-875) — same single-home
+# discipline as MEANING_STATUSES: this tuple owns the values, the CHECK in
+# ``semantic/db_models.py`` derives from it, and ``test_measurement_stored_sign.py``
+# pins it against BOTH the claim Literal below and the measurement's claim space.
+# Sorted for a deterministic offline DDL dump.
+#
+# The distinction is HOW A MONETARY MEASURE'S VALUES ARE STORED, which the
+# ``sign_natural_balance`` convention explicitly does NOT settle ("this rule says how a
+# measure is EXPRESSED, not how values are STORED"). Two values, because two is what an
+# author can state and the data can witness:
+#
+# * ``natural_balance`` — the stored values already carry each account family's natural
+#   balance direction, so a credit-normal account (liability/equity/revenue) reads
+#   POSITIVE. A comparison expressed per ``sign_natural_balance`` may use the column as-is.
+# * ``ledger_signed``  — the stored values follow ONE ledger direction for every account
+#   family (a raw debit − credit balance), so credit-normal accounts read with the
+#   OPPOSITE sign to natural. A comparison must normalize BOTH sides or compare BOTH raw.
+#
+# Undetermined is NULL, not a third label — the DAT-657 ``temporal_behavior`` precedent:
+# absence falls loud through the abstention trace, and a "unknown" string would be a
+# value no consumer can act on. There is deliberately no ``not_applicable``: it would be
+# authorable but not witnessable, and the detector already stays silent for non-measures.
+STORED_SIGNS: tuple[str, ...] = ("ledger_signed", "natural_balance")
+
+# The claim vocabulary = the persisted vocabulary + the abstention escape, mirroring
+# ``temporal_behavior_claim``'s stock/flow/unsure shape. ``unsure`` is MANDATORY-field
+# etiquette (every column emits a claim), and it abstains rather than leaning.
+StoredSignClaim = Literal["natural_balance", "ledger_signed", "unsure"]
+
 
 class ColumnConceptOutput(BaseModel):
     """Catalogue-grain semantics the catalogue agent authors for ONE column.
@@ -82,6 +111,24 @@ class ColumnConceptOutput(BaseModel):
             'Confidence (0.0-1.0) in derived_formula_hypothesis; 0.0 when the hypothesis is "".'
         ),
     )
+    stored_sign_claim: StoredSignClaim = Field(
+        description=(
+            "For a MONETARY BALANCE measure: how its values are STORED, not how a "
+            "report would express them. 'natural_balance' = each account family's "
+            "natural direction is already applied, so a liability/equity/revenue row "
+            "reads positive. 'ledger_signed' = one raw ledger direction (debit minus "
+            "credit) is applied to every account family, so liability/equity/revenue "
+            "rows read negative. 'unsure' for every column where this is not decidable "
+            "or not a question — non-measures, quantities, rates, prices, and raw "
+            "debit/credit amount columns. This is an INDEPENDENT read; a data-grounded "
+            "witness reconciles it downstream and can overturn it."
+        ),
+    )
+    stored_sign_claim_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=("Confidence (0.0-1.0) in stored_sign_claim; 0.0 when the claim is 'unsure'."),
+    )
 
 
 class TableReadingOutput(BaseModel):
@@ -129,8 +176,10 @@ class CatalogueSemanticsOutput(BaseModel):
 
 __all__ = [
     "MEANING_STATUSES",
+    "STORED_SIGNS",
     "CatalogueSemanticsOutput",
     "ColumnConceptOutput",
     "MeaningStatus",
+    "StoredSignClaim",
     "TableReadingOutput",
 ]

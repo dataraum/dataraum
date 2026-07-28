@@ -52,7 +52,8 @@ SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_na
          CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
                                    WHEN 'point_in_time' THEN 'stock' END
        ) AS materialization,
-       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,
+       cc.stored_sign
 FROM __READ__.current_columns c
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = c.column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = c.column_id
@@ -73,7 +74,8 @@ SELECT ec.column_id::text AS column_id, ec.table_id::text AS table_id, ec.column
          CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
                                    WHEN 'point_in_time' THEN 'stock' END
        ) AS materialization,
-       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,
+       cc.stored_sign
 FROM __READ__.current_enriched_columns ec
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = ec.source_column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = ec.source_column_id

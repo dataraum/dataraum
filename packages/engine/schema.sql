@@ -557,6 +557,9 @@ CREATE TABLE column_concepts (
 	unit_source_column VARCHAR, 
 	derived_formula_hypothesis VARCHAR, 
 	derived_formula_confidence FLOAT, 
+	stored_sign_claim VARCHAR, 
+	stored_sign_claim_confidence FLOAT, 
+	stored_sign VARCHAR, 
 	annotation_source VARCHAR, 
 	annotated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	annotated_by VARCHAR, 
@@ -565,6 +568,8 @@ CREATE TABLE column_concepts (
 	CONSTRAINT uq_column_concept UNIQUE (column_id, run_id), 
 	CONSTRAINT ck_column_concepts_annotation_source CHECK (annotation_source IS NULL OR annotation_source IN ('llm')), 
 	CONSTRAINT ck_column_concepts_meaning_status CHECK (meaning_status IS NULL OR meaning_status IN ('ambiguous', 'determined')), 
+	CONSTRAINT ck_column_concepts_stored_sign CHECK (stored_sign IS NULL OR stored_sign IN ('ledger_signed', 'natural_balance')), 
+	CONSTRAINT ck_column_concepts_stored_sign_claim CHECK (stored_sign_claim IS NULL OR stored_sign_claim IN ('ledger_signed', 'natural_balance', 'unsure')), 
 	CONSTRAINT fk_column_concepts_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
@@ -641,7 +646,7 @@ CREATE TABLE entropy_objects (
 	CONSTRAINT pk_entropy_objects PRIMARY KEY (object_id), 
 	CONSTRAINT ck_entropy_objects_layer CHECK (layer IN ('computational', 'semantic', 'structural', 'value')), 
 	CONSTRAINT ck_entropy_objects_dimension CHECK (dimension IN ('business_meaning', 'coverage', 'derived_values', 'dimensional', 'distribution', 'nulls', 'reconciliation', 'relations', 'temporal', 'types', 'units', 'variance')), 
-	CONSTRAINT ck_entropy_objects_sub_dimension CHECK (sub_dimension IN ('benford_compliance', 'cross_column_patterns', 'cross_table_consistency', 'dimension_coverage', 'formula_match', 'join_path_determinism', 'naming_clarity', 'null_ratio', 'null_semantics', 'relationship_discovery', 'relationship_quality', 'slice_conditional_null', 'slice_stability', 'temporal_behavior', 'time_role', 'type_fidelity', 'unit_declaration', 'unit_source')), 
+	CONSTRAINT ck_entropy_objects_sub_dimension CHECK (sub_dimension IN ('benford_compliance', 'cross_column_patterns', 'cross_table_consistency', 'dimension_coverage', 'formula_match', 'join_path_determinism', 'naming_clarity', 'null_ratio', 'null_semantics', 'relationship_discovery', 'relationship_quality', 'slice_conditional_null', 'slice_stability', 'stored_sign', 'temporal_behavior', 'time_role', 'type_fidelity', 'unit_declaration', 'unit_source')), 
 	CONSTRAINT ck_entropy_objects_status CHECK (status IN ('abstained', 'measured')), 
 	CONSTRAINT ck_entropy_objects_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('detector_error', 'insufficient_data', 'missing_inputs', 'not_applicable')), 
 	CONSTRAINT ck_entropy_objects_status_score_reason CHECK ((status = 'measured' AND score IS NOT NULL AND abstain_reason IS NULL) OR (status = 'abstained' AND score IS NULL AND abstain_reason IS NOT NULL)), 
@@ -706,6 +711,9 @@ CREATE TABLE measure_aggregation_lineage (
 	r_stock_median FLOAT NOT NULL, 
 	n_entities INTEGER NOT NULL, 
 	n_entities_fired INTEGER NOT NULL, 
+	sign_fired_primary INTEGER NOT NULL, 
+	sign_fired_mirror INTEGER NOT NULL, 
+	sign_fired_both INTEGER NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	CONSTRAINT pk_measure_aggregation_lineage PRIMARY KEY (lineage_id), 
 	CONSTRAINT uq_measure_lineage_column_run UNIQUE (measure_column_id, run_id), 

@@ -59,6 +59,13 @@ class ColumnContext:
     # measure's anchor event-time axis (witness axis over declared anchor).
     materialization: str | None = None
     anchor_time_axis: str | None = None
+    # The resolved storage convention of a monetary measure (DAT-875):
+    # 'natural_balance' (each account family's direction already applied) or
+    # 'ledger_signed' (one raw ledger direction for all families, so credit-normal
+    # accounts read negative). NULL = undetermined; the author must see no fact
+    # rather than a guess. Served because a metric extract that SUMs a stored
+    # balance cannot otherwise know whether the magnitude it returns is signed.
+    stored_sign: str | None = None
 
     # Statistical metrics
     null_ratio: float | None = None
@@ -1006,6 +1013,11 @@ def build_execution_context(
                     anchor_time_axis=(
                         graph_reads.anchor_by_column.get(col.column_id) if graph_reads else None
                     ),
+                    stored_sign=(
+                        graph_reads.stored_sign_by_column.get(col.column_id)
+                        if graph_reads
+                        else None
+                    ),
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     distinct_count=distinct_count,
@@ -1104,6 +1116,7 @@ class _GraphReads:
     conformed_dimensions: list[ConformedDimensionContext] = field(default_factory=list)
     materialization_by_column: dict[str, str] = field(default_factory=dict)
     anchor_by_column: dict[str, str] = field(default_factory=dict)
+    stored_sign_by_column: dict[str, str] = field(default_factory=dict)
     dimension_tables_by_view: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -1140,7 +1153,8 @@ def _read_og_columns(session: Session, read_schema: str) -> dict[str, Any]:
     """Vertex map ``column_id → row`` from ``og_columns`` (name, table, semantics)."""
     rows = session.execute(
         text(
-            f"SELECT column_id, table_id, column_name, materialization, anchor_time_axis\n"  # noqa: S608
+            f"SELECT column_id, table_id, column_name, materialization, anchor_time_axis,"  # noqa: S608
+            f" stored_sign\n"
             f'FROM "{read_schema}".og_columns'
         )
     ).all()
@@ -1565,6 +1579,9 @@ def _load_graph_reads(
             },
             anchor_by_column={
                 cid: str(r.anchor_time_axis) for cid, r in columns.items() if r.anchor_time_axis
+            },
+            stored_sign_by_column={
+                cid: str(r.stored_sign) for cid, r in columns.items() if r.stored_sign
             },
             dimension_tables_by_view=derived,
         )
@@ -2108,6 +2125,23 @@ def _build_column_notes(col: ColumnContext) -> str:
         if col.numeric_min < 0:
             rng += " Signed (has negatives) — SUM nets positive and negative values."
         notes.append(rng)
+
+    # The MEASURED storage convention (DAT-875). The range note above says a column
+    # carries negatives; this says WHY, which is the part an extract needs: whether
+    # the magnitude a bare SUM returns is already a natural balance. Absent when
+    # undetermined — no fact beats a guess.
+    if col.stored_sign == "ledger_signed":
+        notes.append(
+            "Stored sign: ledger_signed — one raw ledger direction for every account "
+            "family, so credit-normal accounts (liability, equity, revenue) carry the "
+            "OPPOSITE sign to their natural balance. A bare SUM returns a signed "
+            "quantity, not a natural-balance magnitude."
+        )
+    elif col.stored_sign == "natural_balance":
+        notes.append(
+            "Stored sign: natural_balance — each account family's natural direction is "
+            "already applied, so a bare SUM returns a natural-balance magnitude."
+        )
 
     # The measure's resolved anchor event-time axis (og_columns, DAT-780) — the
     # axis it trends/accumulates by.

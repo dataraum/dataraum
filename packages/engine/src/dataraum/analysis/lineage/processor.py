@@ -70,7 +70,7 @@ from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     import duckdb
     from sqlalchemy.orm import Session
@@ -260,6 +260,43 @@ def _pairing_universe(measure: _SliceSeries, event: _SliceSeries, measure_col: s
 
 
 @dataclass(frozen=True)
+class _SignPartition:
+    """Winning-pattern voter counts under a convention and under its negation.
+
+    The ``stored_sign`` substrate (DAT-875). See the field block on
+    ``MeasureAggregationLineage`` for what the counts mean; the label + confidence
+    are derived downstream in ``entropy/measurements/stored_sign.py``.
+    """
+
+    primary: int
+    mirror: int
+    both: int
+
+
+def _sign_partition(
+    by_entity: Mapping[str, tuple[Sequence[float], Sequence[float]]],
+    pattern: str,
+) -> _SignPartition:
+    """Count the winning-pattern voters under the anchor and under its negation.
+
+    Re-runs the reconciliation with every anchor value negated. Pure arithmetic
+    over series already aligned in memory — no extra SQL, no second pass over the
+    data. A measure stored in the ledger's own direction reconciles ALL its
+    entities under one sign; a measure normalized per account family splits into
+    two disjoint sets, because flipping the anchor is exactly what a credit-normal
+    family's stored values did to it.
+    """
+    mirrored = {k: (ys, [-v for v in ms]) for k, (ys, ms) in by_entity.items()}
+    primary = {k for k, r in classify_series(by_entity).items() if r.label == pattern}
+    mirror = {k for k, r in classify_series(mirrored).items() if r.label == pattern}
+    return _SignPartition(
+        primary=len(primary),
+        mirror=len(mirror),
+        both=len(primary & mirror),
+    )
+
+
+@dataclass(frozen=True)
 class _Best:
     verdict: CandidateDisposal
     event_table: Table
@@ -272,6 +309,7 @@ class _Best:
     e_axis: str  # winning event-side time-axis column name (DAT-565/778)
     m_slice_column_id: str  # winning physical slice column on the measure table (DAT-756/778)
     e_slice_column_id: str  # winning physical slice column on the event table (DAT-756/778)
+    sign_partition: _SignPartition  # winning-pattern voters under C vs -C (DAT-875)
 
 
 def _bic(candidate: _Best) -> float:
@@ -676,6 +714,7 @@ def discover_aggregation_lineage(
                                     e_axis=e_axis,
                                     m_slice_column_id=m_slice_column_id,
                                     e_slice_column_id=e_slice_column_id,
+                                    sign_partition=_sign_partition(by_entity, verdict.pattern),
                                 )
                                 key = columns_by_table[m_tid][measure_col].column_id
                                 prior = best_by_measure.get(key)
@@ -718,6 +757,9 @@ def discover_aggregation_lineage(
                 "r_stock_median": best.verdict.r_stock_median,
                 "n_entities": best.verdict.n_entities,
                 "n_entities_fired": best.verdict.n_entities_fired,
+                "sign_fired_primary": best.sign_partition.primary,
+                "sign_fired_mirror": best.sign_partition.mirror,
+                "sign_fired_both": best.sign_partition.both,
             }
         )
         logger.info(
@@ -730,6 +772,8 @@ def discover_aggregation_lineage(
             match_rate=round(best.verdict.match_rate, 3),
             support_lcb=round(best.support_lcb, 3),
             n_entities_fired=best.verdict.n_entities_fired,
+            sign_fired_primary=best.sign_partition.primary,
+            sign_fired_mirror=best.sign_partition.mirror,
         )
     upsert(
         session,

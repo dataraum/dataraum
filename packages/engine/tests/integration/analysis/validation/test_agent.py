@@ -617,7 +617,22 @@ class TestGrainFacts:
                         {
                             "column_name": "level",
                             "data_type": "DECIMAL",
-                            "semantic": {"temporal_behavior": "point_in_time"},
+                            "semantic": {
+                                "temporal_behavior": "point_in_time",
+                                "stored_sign": "ledger_signed",
+                            },
+                        },
+                        {
+                            "column_name": "natural_level",
+                            "data_type": "DECIMAL",
+                            "semantic": {"stored_sign": "natural_balance"},
+                        },
+                        # Undetermined convention contributes nothing — the author
+                        # must see no fact rather than a guess.
+                        {
+                            "column_name": "unsigned",
+                            "data_type": "DECIMAL",
+                            "semantic": {"temporal_behavior": "additive"},
                         },
                     ],
                 },
@@ -638,6 +653,14 @@ class TestGrainFacts:
         assert "time granularity: period=month" in rendered
         assert "additive (per-period movement): movement" in rendered
         assert "point_in_time (level, never summed across periods): level" in rendered
+        # DAT-875: the measured storage convention, so sign_natural_balance can be
+        # applied to BOTH sides of a comparison instead of one.
+        assert "stored ledger_signed" in rendered
+        assert "credit-normal accounts read NEGATIVE" in rendered
+        assert "express BOTH sides of any comparison in one convention): level" in rendered
+        assert "stored natural_balance" in rendered
+        assert "natural_level" in rendered
+        assert "unsigned" not in rendered.split("stored ")[1]
         assert "bare" not in rendered
         # No dimension-role table is served ⇒ the existence-check universe fact fires
         # (DAT-876): existence checks are unbindable against a fact/snapshot-only graph.

@@ -7,10 +7,10 @@ generated SQL. This runs inside the terminal ``detect`` transaction (same
 ``run_id``), updating the ``SemanticAnnotation`` that ``semantic_per_column``
 already wrote for this run; ``current_semantic_annotations`` then surfaces it.
 
-Two measurements resolve today: ``null_semantics`` → ``null_tokens`` and
-``temporal_behavior`` → ``temporal_behavior``. Each is a no-op when a run wrote
-no objects of its detector (e.g. begin_session), so both can live unconditionally
-in the generic terminal detect step.
+Three measurements resolve today: ``null_semantics`` → ``null_tokens``,
+``temporal_behavior`` → ``temporal_behavior`` and ``stored_sign`` → ``stored_sign``.
+Each is a no-op when a run wrote no objects of its detector (e.g. begin_session), so
+all three can live unconditionally in the generic terminal detect step.
 """
 
 from __future__ import annotations
@@ -138,6 +138,64 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
                 ColumnConcept.run_id == run_id,
             )
             .values(temporal_behavior=resolved)  # resolved may be None → clears a stale label
+        )
+        updated += int(result.rowcount or 0)  # see resolve_null_tokens — no-ops stay visible
+    return updated
+
+
+def resolve_stored_sign(session: Session, run_id: str | None) -> int:
+    """Write the adjudicated storage convention onto this run's column concepts.
+
+    Reads the ``stored_sign`` EntropyObject rows written this run (DAT-875) and, for
+    EACH such column, UPDATEs the matching ``(column_id, run_id)``
+    ``ColumnConcept.stored_sign`` to the run's pooled-resolved value — the catalogue
+    agent's claim reconciled with the data-grounded sign partition. Structurally
+    identical to :func:`resolve_temporal_behavior`, and for the same reason: the
+    convention is a data property the authoring agent cannot see, so the claim seeds
+    a prior and the resolved layer owns the determination.
+
+    Total ignorance is written as NULL, NOT skipped — a column whose partition
+    vanished this run (no lineage, a harness abstention, a zero-reliability wash) must
+    fall loud rather than serve a stale label to a SQL author who will act on it. That
+    is the DAT-847 fail-closed rule; here the cost of a stale label is a silently
+    wrong sign in generated SQL, which is exactly the failure this fact exists to
+    prevent.
+
+    Idempotent on retry (same run_id → same UPDATE). Returns the number of concepts
+    updated (a clear-to-NULL counts — it is a real write, not a skip).
+    """
+    from dataraum.analysis.semantic.db_models import ColumnConcept
+
+    records = session.execute(
+        select(EntropyObjectRecord).where(
+            EntropyObjectRecord.detector_id == "stored_sign",
+            EntropyObjectRecord.run_id == run_id,
+        )
+    ).scalars()
+
+    updated = 0
+    for record in records:
+        if record.column_id is None:
+            continue
+        evidence: list[Any] = record.evidence if isinstance(record.evidence, list) else []
+        first = evidence[0] if evidence and isinstance(evidence[0], dict) else None
+        resolved = first.get("resolved") if first else None
+        if first and first.get("contested"):
+            # Diagnostic only — the claim and the partition landed on opposite sides;
+            # the partition (and so the resolved value below) still wins.
+            logger.debug(
+                "stored_sign_contested",
+                column_id=record.column_id,
+                run_id=run_id,
+                resolved=resolved,
+            )
+        result: CursorResult[Any] = session.execute(  # type: ignore[assignment]
+            update(ColumnConcept)
+            .where(
+                ColumnConcept.column_id == record.column_id,
+                ColumnConcept.run_id == run_id,
+            )
+            .values(stored_sign=resolved)  # resolved may be None → clears a stale label
         )
         updated += int(result.rowcount or 0)  # see resolve_null_tokens — no-ops stay visible
     return updated

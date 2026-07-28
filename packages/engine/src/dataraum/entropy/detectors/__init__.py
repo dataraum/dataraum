@@ -36,6 +36,7 @@ from dataraum.entropy.detectors.base import (
 from dataraum.entropy.detectors.computational import (
     CrossTableConsistencyDetector,
     DerivedValueDetector,
+    StoredSignDetector,
     TemporalBehaviorDetector,
 )
 
@@ -90,6 +91,7 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     DimensionCoverageDetector,
     # Computational
     DerivedValueDetector,
+    StoredSignDetector,
     TemporalBehaviorDetector,
     CrossTableConsistencyDetector,
 ]
@@ -139,5 +141,6 @@ __all__ = [
     # Computational detectors
     "CrossTableConsistencyDetector",
     "DerivedValueDetector",
+    "StoredSignDetector",
     "TemporalBehaviorDetector",
 ]

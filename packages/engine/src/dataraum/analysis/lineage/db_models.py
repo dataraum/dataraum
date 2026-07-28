@@ -96,6 +96,33 @@ class MeasureAggregationLineage(Base):
     n_entities: Mapped[int] = mapped_column(Integer, nullable=False)
     n_entities_fired: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # The SIGN-PARTITION statistic (DAT-875) — the substrate for the ``stored_sign``
+    # witness, recorded here because this is the only place the per-entity votes
+    # exist. Alongside the winning convention ``C`` the same entities are
+    # re-classified against its NEGATION ``-C`` (arithmetic on the already-aligned
+    # series; no extra SQL), and the two voter sets are counted:
+    #
+    #   uniform  — every reconciling entity votes under ONE sign  => the measure is
+    #              stored in the ledger's own direction for all account families.
+    #   split    — two opposite signs each explain a DISJOINT family of entities
+    #              => the measure's sign was normalized per account family.
+    #
+    # Raw counts only: the judgment (label + confidence) is derived in the pure
+    # ``entropy/measurements/stored_sign.py``, mirroring how ``pattern`` +
+    # ``match_rate`` feed the ``structural_reconciliation`` witness rather than
+    # being interpreted here. The separation is arithmetic, not tuned — under the
+    # wrong sign a carried-forward series lands at residual ≈ 2 against a 0.5 gate.
+    #
+    # ``*_primary`` counts entities voting the WINNING pattern under ``C``, which is
+    # NOT ``n_entities_fired`` (that counts voters under any pattern).
+    sign_fired_primary: Mapped[int] = mapped_column(Integer, nullable=False)
+    sign_fired_mirror: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Entities that somehow vote the winning pattern under BOTH signs — expected 0
+    # (it requires a near-dead anchor, which abstains). Recorded, and subtracted
+    # from both sides by the measurement: a degenerate entity is uninformative
+    # about the partition, not evidence for either side of it.
+    sign_fired_both: Mapped[int] = mapped_column(Integer, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

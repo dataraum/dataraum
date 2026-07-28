@@ -322,6 +322,77 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		expect(block).toContain("NOT judged");
 	});
 
+	it("orders axes by (interest, relevance desc, name) like the engine (DAT-879)", () => {
+		// One rule at every surface: a 'supporting' axis must never lead a
+		// 'primary' one however well it measures, and an UNMEASURED axis must not
+		// lead a measured one by having its null read as zero.
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "c1",
+					columnName: "aaa_supporting_high",
+					valueCount: 2,
+					relevance: 0.99,
+					interest: "supporting",
+				},
+				{
+					tableId: "t1",
+					columnId: "c2",
+					columnName: "zzz_primary_low",
+					valueCount: 2,
+					relevance: 0.1,
+					interest: "primary",
+				},
+				{
+					tableId: "t1",
+					columnId: "c3",
+					columnName: "bbb_primary_unmeasured",
+					valueCount: 2,
+					relevance: null,
+					interest: "primary",
+				},
+			],
+			[],
+			addr,
+		);
+		const line = block
+			.split("\n")
+			.find((l) => l.startsWith("  dimensions:")) as string;
+		expect(line.indexOf("zzz_primary_low")).toBeLessThan(
+			line.indexOf("bbb_primary_unmeasured"),
+		);
+		expect(line.indexOf("bbb_primary_unmeasured")).toBeLessThan(
+			line.indexOf("aaa_supporting_high"),
+		);
+	});
+
+	it("states the ranker-skipped fallback rather than staying silent (DAT-879)", () => {
+		// The engine's note says the cataloguing agent did not run; the cockpit
+		// used to say nothing at all on the same branch, so the two surfaces
+		// disagreed about the same catalog.
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "c1",
+					columnName: "region",
+					valueCount: 4,
+					relevance: 0.9,
+					interest: null,
+				},
+			],
+			[],
+			addr,
+			{ total: 40, served: 25, unjudgedFallback: true },
+		);
+		expect(block).toContain("Showing 25 of 40 catalogued dimensions");
+		expect(block).toContain("measured partition quality only");
+		expect(block).toContain("did not run");
+		// NOT the judged-path wording — nothing was assessed and rejected here.
+		expect(block).not.toContain("NOT judged");
+	});
+
 	it("says nothing about curation when it served everything (DAT-622)", () => {
 		const block = formatCatalog(
 			[

@@ -7,7 +7,7 @@ tail and no note — is what these replace.
 
 from __future__ import annotations
 
-from dataraum.analysis.slicing.curation import curated_slices
+from dataraum.analysis.slicing.curation import UNJUDGED_FALLBACK_MAX, curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.storage.base import load_all_models
 
@@ -122,3 +122,25 @@ class TestUnjudgedFallback:
         note = curated_slices([_row("a", interest=None, relevance=0.5)]).note
         assert "did not run" in note
         assert "measured partition quality only" in note
+
+    def test_caps_the_inventory_and_discloses_the_cap(self) -> None:
+        """The fallback has no judgment to narrow by, so a COST bound applies —
+        the cycles and validation decorations run one profile query and one
+        value block per served dimension. A cap with no semantic content is
+        exactly the kind that has to announce itself."""
+        rows = [
+            _row(f"dim_{i:03d}", interest=None, relevance=1.0 - i / 100)
+            for i in range(UNJUDGED_FALLBACK_MAX + 15)
+        ]
+        c = curated_slices(rows)
+        assert len(c.served) == UNJUDGED_FALLBACK_MAX
+        # Capped by MEASUREMENT, not by arrival order or name.
+        assert [r.column_name for r in c.served] == [
+            f"dim_{i:03d}" for i in range(UNJUDGED_FALLBACK_MAX)
+        ]
+        assert f"Showing {UNJUDGED_FALLBACK_MAX} of {len(rows)}" in c.note
+        assert "did not run" in c.note
+
+    def test_uncapped_fallback_still_says_none_were_judged(self) -> None:
+        c = curated_slices([_row("a", interest=None, relevance=0.5)])
+        assert "All 1 catalogued dimensions are shown" in c.note

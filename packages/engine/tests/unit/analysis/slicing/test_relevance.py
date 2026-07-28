@@ -22,7 +22,7 @@ def _score(counts: list[int], *, total: int | None = None, nulls: int = 0, group
         distinct_groups=groups,
     )
     assert r is not None
-    return r.score
+    return r
 
 
 class TestBounds:
@@ -33,6 +33,20 @@ class TestBounds:
     def test_score_is_a_fraction(self) -> None:
         for counts, nulls in [([50, 50], 0), ([99, 1], 0), ([70, 20, 7, 3], 40), ([1] * 50, 10)]:
             assert 0.0 <= _score(counts, nulls=nulls) <= 1.0
+
+    def test_exactly_uniform_never_exceeds_one(self) -> None:
+        """ln(k)/ln(k) is not exactly 1 in binary floating point: k in
+        {5, 13, 19, ...} floats to 1.0000000000000002, which violates the
+        column's CHECK — an IntegrityError that fails the slicing activity and
+        makes Temporal retry the same data forever. Enumerate, don't sample."""
+        for k in range(2, 200):
+            assert _score([10] * k, groups=k) <= 1.0
+
+    def test_stale_profile_counts_cannot_go_negative(self) -> None:
+        """A profile whose counts exceed the row count gives probabilities > 1,
+        hence a NEGATIVE entropy (-0.0995 here) — the other side of the same
+        CHECK violation."""
+        assert _score([120, 5], total=100, groups=2) >= 0.0
 
 
 class TestScaleFreeInGroupCount:
@@ -108,37 +122,26 @@ class TestKindAgnostic:
 
 class TestTruncatedDistribution:
     """The profiler stores only the top-K, so a high-cardinality axis arrives
-    partial. Report bounds; never assert a number we cannot know."""
+    partial. The unseen tail is treated as ONE bucket, so the score is a LOWER
+    BOUND — under-claiming rather than promoting an axis on an assumed-even tail
+    that is really one dominant value.
 
-    def test_complete_distribution_is_exact(self) -> None:
-        r = score_axis(total_rows=100, null_count=0, bucket_counts=[25, 25, 25, 25])
-        assert r is not None
-        assert r.exact and not r.truncated
-        assert r.lower == pytest.approx(r.upper)
+    The interval itself is deliberately not returned: an earlier draft exposed
+    lower/upper/exact and nothing consumed them.
+    """
 
-    def test_partial_distribution_is_bounded_and_flagged(self) -> None:
-        # 200 values seen of 5000 real groups: the tail's SHAPE is unknown.
-        r = score_axis(
-            total_rows=100_000,
-            null_count=0,
-            bucket_counts=[300] * 200,
-            distinct_groups=5000,
-        )
-        assert r is not None
-        assert r.truncated
-        assert r.groups == 5000
-        assert r.groups_measured == 200
-        assert r.lower < r.upper
+    def test_truncation_lowers_the_score_below_the_even_case(self) -> None:
+        # Same 200 observed buckets; the second claims 4800 more groups holding
+        # the remaining mass, which can only make the axis less even than the
+        # complete case.
+        complete = _score([300] * 200, total=60_000, groups=200)
+        truncated = _score([300] * 200, total=100_000, groups=5000)
+        assert truncated < complete
 
-    def test_reported_score_is_the_conservative_bound(self) -> None:
-        """Under-claiming is the safe direction: promoting an axis on an
-        assumed-even tail that is really one dominant value is exactly the
-        silently-bad recommendation this ticket exists to prevent."""
-        r = score_axis(
-            total_rows=100_000,
-            null_count=0,
-            bucket_counts=[300] * 200,
-            distinct_groups=5000,
-        )
-        assert r is not None
-        assert r.score == r.lower
+    def test_a_zero_mass_tail_does_not_deflate_the_score(self) -> None:
+        """When the observed buckets already account for every non-null row, the
+        groups distinct_count claims beyond them hold ZERO rows — a stale
+        profile disagreeing with itself. Normalizing over the claimed 5000 would
+        divide an entropy built from 200 buckets by ln(5000) and crush a
+        perfectly even axis toward 0.6. The counts are the measurement."""
+        assert _score([10] * 200, total=2000, groups=5000) == pytest.approx(1.0)

@@ -41,7 +41,6 @@ export interface DrillAxis {
 	 *  (the enriched view exposes FK-prefixed dim columns; whether it binds in
 	 *  a given composition stays the compose-time binder's call). */
 	column: string;
-	priority: number;
 	sliceType: string;
 	/** Catalog sample of the dimension's values (display hint, not exhaustive). */
 	values: string[];

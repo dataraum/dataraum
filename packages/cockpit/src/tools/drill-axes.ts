@@ -16,7 +16,7 @@
 // curation is an annotation layer, never a filter (the slicing agent picks a
 // handful; the substrate routinely exposes more grain-safe joined dims).
 // `driver_rankings.ranked_dimensions` orders what survives: measured drivers
-// first by gain, then curated priority, then bare substrate. No
+// first by gain, then curation order, then bare substrate. No
 // alias-collapse in v1, and no pre-bind testing — whether an axis actually
 // binds in a given composition stays the compose-time binder's call
 // (`/api/drill/node`).
@@ -78,14 +78,24 @@ export interface SliceRowInput {
  *  by being treated as zero. */
 const INTEREST_RANK: Record<string, number> = { primary: 0, supporting: 1 };
 
+function interestRank(interest: string | null): number {
+	return interest == null ? 2 : (INTEREST_RANK[interest] ?? 2);
+}
+
 export function compareSliceRows(a: SliceRowInput, b: SliceRowInput): number {
-	const ra = a.sliceInterest ? (INTEREST_RANK[a.sliceInterest] ?? 2) : 2;
-	const rb = b.sliceInterest ? (INTEREST_RANK[b.sliceInterest] ?? 2) : 2;
+	const ra = interestRank(a.sliceInterest);
+	const rb = interestRank(b.sliceInterest);
 	if (ra !== rb) return ra - rb;
 	const va = a.sliceRelevance ?? -1;
 	const vb = b.sliceRelevance ?? -1;
 	if (va !== vb) return vb - va;
-	return (a.columnName ?? "").localeCompare(b.columnName ?? "");
+	// Plain codepoint comparison, matching the engine's `<` on column_name.
+	// localeCompare orders by the server's locale, so the same catalog could
+	// render in two different orders on two machines.
+	const na = a.columnName ?? "";
+	const nb = b.columnName ?? "";
+	if (na === nb) return 0;
+	return na < nb ? -1 : 1;
 }
 
 /**
@@ -94,12 +104,11 @@ export function compareSliceRows(a: SliceRowInput, b: SliceRowInput): number {
  * narrow `distinct_values` to strings.
  *
  * Rows are sorted here by the curation order (DAT-879) rather than trusting the
- * caller's ordering, and `DrillAxis.priority` becomes the POSITIONAL rank in
- * that order. The field keeps its existing contract exactly — lower is better,
- * `MAX_SAFE_INTEGER` means "no curation signal" for substrate-only axes — so
- * every downstream consumer of `priority` is untouched by the schema change.
- * What changed is only where the number comes from: a measured, comparable
- * ordering instead of an ordinal the LLM emitted per request.
+ * caller's ordering, and ARRAY ORDER is the ranking — there is no priority
+ * field. The old `DrillAxis.priority` mirrored the engine's ordinal; with the
+ * ordinal gone it had no production reader, so carrying a number that only
+ * restated the index would be noise. Substrate axes rank last by being appended
+ * (`unionSubstrateAxes`), not by holding a sentinel.
  */
 export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
 	const byColumn = new Map<string, DrillAxis>();
@@ -107,7 +116,6 @@ export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
 		if (!r.columnName || byColumn.has(r.columnName)) continue;
 		byColumn.set(r.columnName, {
 			column: r.columnName,
-			priority: byColumn.size,
 			sliceType: r.sliceType ?? "categorical",
 			values: Array.isArray(r.distinctValues)
 				? r.distinctValues.filter((v): v is string => typeof v === "string")
@@ -127,8 +135,9 @@ export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
  * Union the enriched views' grain-verified `dimension_columns` substrate into
  * the curated axes (pure): every join-projected dim the view exposes is
  * drillable, whether or not the slicing agent picked it. Substrate-only axes
- * carry no curation metadata and sink below curated ones (max priority);
- * columns the catalog already covers keep their curated row untouched.
+ * carry no curation metadata and sink below curated ones by being APPENDED —
+ * array order is the ranking; columns the catalog already covers keep their
+ * curated row untouched.
  */
 export function unionSubstrateAxes(
 	axes: DrillAxis[],
@@ -141,7 +150,6 @@ export function unionSubstrateAxes(
 		seen.add(column);
 		out.push({
 			column,
-			priority: Number.MAX_SAFE_INTEGER,
 			sliceType: "categorical",
 			values: [],
 			valueCount: null,
@@ -238,8 +246,8 @@ export function driverGains(rows: DriverRankingInput[]): Map<string, number> {
 /**
  * Order axes for the menu (pure): measured drivers first by gain (the engine
  * already gated what earns a ranking entry — any listed gain outranks curated
- * intuition), then everything else in its incoming order (curated priority,
- * then substrate). Stable within each group.
+ * intuition), then everything else in its incoming order (curated axes in
+ * curation order, then substrate). Stable within each group.
  */
 export function orderAxesByDrivers(
 	axes: DrillAxis[],

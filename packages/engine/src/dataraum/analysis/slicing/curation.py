@@ -32,9 +32,20 @@ if TYPE_CHECKING:
     from dataraum.analysis.slicing.db_models import SliceDefinition
 
 __all__ = [
+    "UNJUDGED_FALLBACK_MAX",
     "CuratedSlices",
     "curated_slices",
 ]
+
+# Cost bound for the un-judged fallback branch ONLY — NOT a relevance threshold
+# and not a judgment. In that branch there is nothing to narrow by, so the read
+# would otherwise serve the entire inventory; the cycles and validation
+# decorations then run one statistical-profile query and render one value block
+# PER served dimension, which on a wide corpus is ~50 of each. This caps that
+# work. It has no semantic content, which is exactly why the branch must SAY it
+# applied — see ``CuratedSlices.note``. The judged path has no cap at all: its
+# size is bounded by what the agent was asked to judge.
+UNJUDGED_FALLBACK_MAX = 25
 
 
 @dataclass(frozen=True)
@@ -68,10 +79,15 @@ class CuratedSlices:
         if self.unjudged_fallback:
             if not self.total:
                 return ""
+            shown = (
+                f"All {self.total} catalogued dimensions are shown"
+                if len(self.served) == self.total
+                else f"Showing {len(self.served)} of {self.total} catalogued dimensions"
+            )
             return (
-                f"All {self.total} catalogued dimensions are shown, ordered by measured "
-                "partition quality only: the cataloguing agent did not run for this "
-                "run, so none carries a business-relevance judgment."
+                f"{shown}, ordered by measured partition quality only: the "
+                "cataloguing agent did not run for this run, so none carries a "
+                "business-relevance judgment."
             )
         if not self.dropped_unjudged:
             return ""
@@ -116,8 +132,10 @@ def curated_slices(rows: list[SliceDefinition]) -> CuratedSlices:
     judged = [r for r in ordered if r.slice_interest is not None]
 
     if not judged:
+        # Nothing to narrow by, so a cost bound applies instead of a threshold
+        # (see ``UNJUDGED_FALLBACK_MAX``) — and the note states that it did.
         return CuratedSlices(
-            served=ordered,
+            served=ordered[:UNJUDGED_FALLBACK_MAX],
             total=len(ordered),
             dropped_unjudged=0,
             unjudged_fallback=bool(ordered),

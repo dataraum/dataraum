@@ -205,6 +205,11 @@ def format_served_context(
             lines.append(f"- {cd.table_a} ↔ {cd.table_b} share {cd.dimension_table}{attr}")
 
     # --- Enriched Views ---
+    # Tracks whether any slice list actually reached the document. The curation
+    # note below qualifies THAT list, so without one there is nothing to qualify
+    # — and a bare "showing 12 of 53 dimensions" with no dimensions in sight
+    # reads as though a section went missing.
+    rendered_any_slices = False
     if context.enriched_views:
         lines.append("")
         lines.append("## Enriched Views")
@@ -232,13 +237,14 @@ def format_served_context(
             # WHY the order is what it is instead of trusting a bare sequence.
             view_slices = slices_by_table.get(ev.fact_table, [])
             if view_slices:
+                rendered_any_slices = True
                 names = ", ".join(_format_slice_axis(s) for s in view_slices)
                 lines.append(f"Slice dimensions: {names} — see Value sets for the values.")
 
     # What the slice curation left out (DAT-879/DAT-622). Rendered ONCE, next to
     # the dimensions it qualifies: an agent told "these are the dimensions" with
     # no indication that forty more exist will reason as if the list is complete.
-    if context.slice_catalog_note:
+    if rendered_any_slices and context.slice_catalog_note:
         lines.append("")
         lines.append(f"_{context.slice_catalog_note}_")
 

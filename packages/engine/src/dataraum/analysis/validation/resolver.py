@@ -559,6 +559,19 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
 
     lines.append("</tables>")
 
+    # What the value-distribution decoration above left out (DAT-879/DAT-622).
+    # Only SOME columns carry <distinct_values>, and without this the model
+    # cannot tell "this column has no value-set worth listing" from "this column's
+    # axis was never judged, so nobody attached one" — it reads absence as
+    # evidence and stops considering the column. Rendered here rather than only
+    # stored on the schema dict: a note nothing prints is not a disclosure.
+    note = schema.get("slice_catalog_note", "")
+    if note:
+        lines.append("")
+        lines.append("<dimension_catalog_note>")
+        lines.append(note)
+        lines.append("</dimension_catalog_note>")
+
     # Add relationships section
     relationships = schema.get("relationships", [])
     if relationships:

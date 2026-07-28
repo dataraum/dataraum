@@ -485,7 +485,7 @@ class SlicingPhase(BasePhase):
                     "dimension_table_id": dimension_table_id,
                     "dimension_attribute": dimension_attribute,
                     "fk_role": fk_role,
-                    "slice_relevance": relevance.score if relevance else None,
+                    "slice_relevance": relevance,
                     "slice_interest": rank.slice_interest if rank else None,
                     "slice_type": "categorical",
                     "distinct_values": distinct_values,

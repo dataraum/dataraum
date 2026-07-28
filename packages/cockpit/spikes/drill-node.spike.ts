@@ -216,7 +216,7 @@ async function main(): Promise<void> {
 					}
 				}
 				report.push(
-					`  [${axis.priority === Number.MAX_SAFE_INTEGER ? "substrate" : "curated"}] ${axis.column}: ${rows.length} groups${nulls ? `, ${nulls} NULL` : ""}${sumNote}${axis.temporal ? ` [temporal:${axis.temporal}]` : ""}`,
+					`  [${axis.businessContext === null && axis.valueCount === null ? "substrate" : "curated"}] ${axis.column}: ${rows.length} groups${nulls ? `, ${nulls} NULL` : ""}${sumNote}${axis.temporal ? ` [temporal:${axis.temporal}]` : ""}`,
 				);
 
 				// 2b) the grain matrix (DAT-712): every preset grain on a temporal

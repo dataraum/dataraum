@@ -27,7 +27,7 @@
 // + `preferEnriched` are unit-tested; the Drizzle reads + the DESCRIBE are
 // smoke/integration-covered.
 
-import { asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { metadataDb } from "../db/metadata/client";
 import {
@@ -364,10 +364,51 @@ export interface CatalogAxisRow {
 	interest?: string | null;
 }
 
-/** What a curated catalog read left out, so the block can say so (DAT-622). */
+/** What a curated catalog read left out, so the block can say so (DAT-622).
+ *  `unjudgedFallback` marks the ranker-skipped branch: nothing was judged, so
+ *  the ordering is structural only and the block must say which case it is
+ *  rather than presenting a measured ordering as a curated one. */
 export interface CatalogCuration {
 	total: number;
 	served: number;
+	unjudgedFallback?: boolean;
+}
+
+/** Cost bound for the un-judged fallback branch ONLY — mirrors the engine's
+ *  `UNJUDGED_FALLBACK_MAX`. Not a relevance threshold and not a judgment: in
+ *  that branch there is nothing to narrow by, so this caps how much of the raw
+ *  inventory reaches the prompt. It has no semantic content, which is exactly
+ *  why the branch must SAY it applied. */
+export const UNJUDGED_FALLBACK_MAX = 25;
+
+/** Curation order, mirroring the engine's `curated_slices` (DAT-879): judged
+ *  before un-judged, then measured relevance descending, then name. Unmeasured
+ *  (null) relevance sorts LAST within its tier rather than winning by being
+ *  read as zero — the same trap as Postgres's NULLS-FIRST default under DESC.
+ *  Plain codepoint comparison, matching the engine's `<` on the column name;
+ *  `localeCompare` would order by the server's locale, so the same catalog
+ *  could render in two orders on two machines. */
+const CATALOG_INTEREST_RANK: Record<string, number> = {
+	primary: 0,
+	supporting: 1,
+};
+
+function interestRank(interest: string | null | undefined): number {
+	return interest == null ? 2 : (CATALOG_INTEREST_RANK[interest] ?? 2);
+}
+
+export function compareCatalogAxes(
+	a: CatalogAxisRow,
+	b: CatalogAxisRow,
+): number {
+	const ra = interestRank(a.interest);
+	const rb = interestRank(b.interest);
+	if (ra !== rb) return ra - rb;
+	const va = a.relevance ?? -1;
+	const vb = b.relevance ?? -1;
+	if (va !== vb) return vb - va;
+	if (a.columnName === b.columnName) return 0;
+	return a.columnName < b.columnName ? -1 : 1;
 }
 
 /** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
@@ -442,7 +483,10 @@ export function formatCatalog(
 		}
 		return b;
 	};
-	for (const a of axisRows) {
+	// Curation order here, so every caller of this pure formatter gets the same
+	// ordering the engine applies — the block is rendered in the order the
+	// buckets are filled (no alphabetical re-sort below).
+	for (const a of [...axisRows].sort(compareCatalogAxes)) {
 		// DAT-621: name + value-COUNT + the column_id — never the values themselves. NO
 		// samples: a sample biases the agent toward the shown subset (the silently-wrong
 		// trap). The sub-agent has look_values now, so it DRILLS the complete value-set on
@@ -478,8 +522,13 @@ export function formatCatalog(
 		.sort((a, b) => addressOf(a[0]).localeCompare(addressOf(b[0])))
 		.map(([tableId, b]) => {
 			const lines: string[] = [`Table ${addressOf(tableId)}:`];
+			// NO alphabetical sort here: the bucket was filled in curation order
+			// (interest tier, measured relevance desc, name) and re-sorting the
+			// rendered strings would throw that away — which is precisely the
+			// alphabetical-tail failure DAT-879 exists to remove. Determinism comes
+			// from the comparator's name tiebreak, not from sorting at the end.
 			if (b.dimensions.length)
-				lines.push(`  dimensions: ${[...b.dimensions].sort().join(", ")}`);
+				lines.push(`  dimensions: ${b.dimensions.join(", ")}`);
 			lines.push(...b.hierarchies.sort());
 			return lines.join("\n");
 		});
@@ -488,13 +537,25 @@ export function formatCatalog(
 	// analysis dimensions", with no sign that forty more exist, reasons as if the
 	// list is the whole catalog — and concludes an axis is unavailable when it is
 	// merely un-judged. Name the reason, not just the number.
-	const curationNote =
-		curation && curation.total > curation.served
-			? `\n\nShowing ${curation.served} of ${curation.total} catalogued dimensions — ` +
-				`the other ${curation.total - curation.served} were catalogued but NOT judged ` +
-				"business-relevant by the cataloguing agent. They are usable axes that were " +
-				"never assessed, not axes assessed and rejected; ask the user if you need one."
-			: "";
+	let curationNote = "";
+	if (curation?.unjudgedFallback) {
+		// The engine says this in its own note; saying nothing here would make the
+		// two surfaces disagree about the same catalog for no reason.
+		const shown =
+			curation.served === curation.total
+				? `All ${curation.total} catalogued dimensions are shown`
+				: `Showing ${curation.served} of ${curation.total} catalogued dimensions`;
+		curationNote =
+			`\n\n${shown}, ordered by measured partition quality only: the ` +
+			"cataloguing agent did not run for this workspace's latest catalog, so none " +
+			"carries a business-relevance judgment.";
+	} else if (curation && curation.total > curation.served) {
+		curationNote =
+			`\n\nShowing ${curation.served} of ${curation.total} catalogued dimensions — ` +
+			`the other ${curation.total - curation.served} were catalogued but NOT judged ` +
+			"business-relevant by the cataloguing agent. They are usable axes that were " +
+			"never assessed, not axes assessed and rejected; ask the user if you need one.";
+	}
 
 	return (
 		"<dimensions>\n" +
@@ -537,8 +598,12 @@ export async function buildCatalogBlock(): Promise<string> {
 				interest: currentSliceDefinitions.sliceInterest,
 			})
 			.from(currentSliceDefinitions)
+			// NULLS LAST explicitly: Postgres sorts NULLs FIRST under DESC, so a
+			// bare desc() would lead with the UNMEASURED axes. Final ordering is
+			// applied in TS below (the interest tier is a vocabulary, not a
+			// sortable column); this keeps the fetch itself sane.
 			.orderBy(
-				desc(currentSliceDefinitions.sliceRelevance),
+				sql`${currentSliceDefinitions.sliceRelevance} DESC NULLS LAST`,
 				asc(currentSliceDefinitions.columnName),
 			),
 		metadataDb
@@ -571,17 +636,11 @@ export async function buildCatalogBlock(): Promise<string> {
 			]),
 	);
 
-	const catalogued = axisRows.filter(
-		(a) => a.tableId && a.columnId && a.columnName,
-	);
-	// Serve the JUDGED axes; fall back to the whole catalog when nothing carries a
-	// judgment (the engine's ranker-skipped modes), since serving nothing would
-	// hide the catalog entirely. Mirrors the engine's `curated_slices`.
-	const judged = catalogued.filter((a) => a.interest != null);
-	const served = judged.length > 0 ? judged : catalogued;
-
-	return formatCatalog(
-		served.map((a) => ({
+	// Narrow to the well-formed rows FIRST, so the curation comparator works on
+	// the real `CatalogAxisRow` shape rather than the view's all-nullable one.
+	const catalogued: CatalogAxisRow[] = axisRows
+		.filter((a) => a.tableId && a.columnId && a.columnName)
+		.map((a) => ({
 			tableId: a.tableId as string,
 			columnId: a.columnId as string,
 			columnName: a.columnName as string,
@@ -591,7 +650,20 @@ export async function buildCatalogBlock(): Promise<string> {
 				: null,
 			relevance: a.relevance ?? null,
 			interest: a.interest ?? null,
-		})),
+		}));
+
+	// Serve the JUDGED axes; fall back to the inventory when nothing carries a
+	// judgment (the engine's ranker-skipped modes), since serving nothing would
+	// hide the catalog entirely. Mirrors the engine's `curated_slices`, including
+	// the cost bound on the fallback branch and its disclosure.
+	const judged = catalogued.filter((a) => a.interest != null);
+	const unjudgedFallback = judged.length === 0 && catalogued.length > 0;
+	const served = unjudgedFallback
+		? [...catalogued].sort(compareCatalogAxes).slice(0, UNJUDGED_FALLBACK_MAX)
+		: judged;
+
+	return formatCatalog(
+		served,
 		hierarchyRows
 			.filter((h) => h.tableId)
 			.map((h) => ({
@@ -604,7 +676,11 @@ export async function buildCatalogBlock(): Promise<string> {
 				needsConfirmation: h.needsConfirmation ?? null,
 			})),
 		tableAddressById,
-		{ total: catalogued.length, served: served.length },
+		{
+			total: catalogued.length,
+			served: served.length,
+			unjudgedFallback,
+		},
 	);
 }
 

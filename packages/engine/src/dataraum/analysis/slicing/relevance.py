@@ -5,7 +5,7 @@ with an ``UNRANKED_SLICE_PRIORITY = 1000`` floor for the rows the agent never
 looked at. An ordinal cannot be thresholded (rank 3 means nothing without
 knowing what it is 3 *of*), cannot compare an axis on one table to an axis on
 another, and cannot compare a categorical axis to a banded numeric one. The
-floor made it worse: every un-ranked row tied at 1000, so a curated
+floor made it worse: every un-judged row tied at 1000, so a curated
 ``ORDER BY slice_priority, column_name LIMIT n`` filled its remaining budget
 ALPHABETICALLY and called the result "the most interesting dimensions".
 
@@ -35,61 +35,33 @@ cannot tell the two apart, which is precisely the property the catalog needs.
 (The numeric axis TYPE itself is not built here — this establishes the shared
 scale it will land on.)
 
-What the score deliberately does NOT do: prefer few groups to many. ``evenness``
-is scale-free in the bucket count, so an even 4-way ``region`` and an even
-800-way ``account_id`` both score 1.0. Which of those a reader wants first is a
-business judgment, and it stays with the slicing agent (``slice_interest``) —
+What the score deliberately does NOT do: prefer few groups to many. Which of an
+even 4-way ``region`` and an even 800-way ``account_id`` a reader wants first is
+a business judgment, and it stays with the slicing agent (``slice_interest``) —
 this number never overrules it. The score answers "is this axis usable, and how
 much of the data does it resolve", which is a question the data can answer.
 
-Truncation is reported, never guessed. The profiler stores at most ``top_k``
-values per column, so an axis with more distinct values than that arrives with
-a partial distribution. Rather than assert a number it cannot know, the scorer
-returns a BOUNDED result: the unseen tail is treated as one bucket for the
-lower bound and as maximally-even buckets for the upper bound. When the
-distribution is complete the two bounds coincide.
+**Truncation, and what this function does NOT tell you.** The profiler stores at
+most ``top_k`` values per column, so a high-cardinality axis arrives with a
+partial distribution. The unseen tail is treated as a SINGLE bucket — the least
+even it could be — so the number returned is a LOWER BOUND on the axis's true
+relevance whenever the distribution was truncated. Under-claiming is the safe
+direction: promoting an axis on an assumed-even tail that is really one dominant
+value is exactly the silently-bad recommendation this ticket exists to prevent.
+
+Callers cannot tell a bounded score from an exact one, deliberately: an earlier
+draft returned the interval and an ``exact`` flag, and nothing consumed either.
+Rendering the interval is parked until a surface actually asks for it — a
+built-but-unwired field is a liability, not a head start.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 __all__ = [
-    "SliceRelevance",
     "score_axis",
 ]
-
-
-@dataclass(frozen=True)
-class SliceRelevance:
-    """A measured relevance score, with its bounds and its inputs.
-
-    ``lower``/``upper`` differ only when the value distribution was truncated by
-    the profiler's top-K. ``exact`` says which case this is, so a consumer can
-    render "0.42" or "0.31-0.55 (partial distribution)" without re-deriving the
-    reason. ``score`` is the value to sort and threshold on: the lower bound,
-    because under-claiming an axis is the safe direction — an axis promoted on
-    an assumed-even tail that is in fact one dominant value would be a silently
-    bad recommendation, which is the failure class this ticket exists to close.
-    """
-
-    score: float
-    lower: float
-    upper: float
-    coverage: float
-    evenness: float
-    exact: bool
-    # The bucket count the score was computed over (the axis's distinct groups,
-    # including the unseen tail) and how many of them the profile actually
-    # carried. Equal ⇒ ``exact``.
-    groups: int
-    groups_measured: int
-
-    @property
-    def truncated(self) -> bool:
-        """True when the profile's top-K hid part of the distribution."""
-        return not self.exact
 
 
 def _entropy(probabilities: list[float]) -> float:
@@ -103,7 +75,7 @@ def score_axis(
     null_count: int,
     bucket_counts: list[int],
     distinct_groups: int | None = None,
-) -> SliceRelevance | None:
+) -> float | None:
     """Score one candidate slice axis from its measured bucket distribution.
 
     Kind-agnostic by construction: ``bucket_counts`` are per-VALUE counts for a
@@ -118,13 +90,13 @@ def score_axis(
             only. May be a top-K PREFIX of the true distribution.
         distinct_groups: The axis's true group count (``COUNT(DISTINCT)``).
             When it exceeds ``len(bucket_counts)`` the distribution is
-            truncated and the result is bounded rather than exact. Defaults to
-            the number of buckets supplied (i.e. a complete distribution).
+            truncated and the result is a lower bound (see the module
+            docstring). Defaults to the number of buckets supplied.
 
     Returns:
-        The measured score, or None when the axis cannot be scored at all —
-        no rows, or no profile to score. None means "unmeasured", which the
-        catalog stores as NULL and the reads report as such; it never
+        The measured score in [0, 1], or None when the axis cannot be scored at
+        all — no rows, or no profile to score. None means "unmeasured", which
+        the catalog stores as NULL and the reads report as such; it never
         silently becomes a zero, because "this axis is bad" and "we never
         measured this axis" are different claims.
     """
@@ -139,58 +111,42 @@ def score_axis(
     if non_null <= 0:
         return None
 
-    groups = max(distinct_groups or len(observed), len(observed))
-    coverage = min(non_null / total_rows, 1.0)
-
+    coverage = non_null / total_rows
     seen = sum(observed)
     # The profile's counts are capped at top-K, so the tail mass is whatever
     # non-null rows they do not account for. Clamp: a profile written in a
-    # different run than the row count can disagree slightly, and a negative
-    # tail is not a thing we should propagate into a logarithm.
+    # different run than the row count can disagree, and a negative tail is not
+    # a thing we should propagate into a logarithm.
     tail_mass = max(non_null - seen, 0)
-    tail_groups = max(groups - len(observed), 0)
-    exact = tail_groups == 0 or tail_mass == 0
+
+    claimed_groups = max(distinct_groups or len(observed), len(observed))
+    # When the observed buckets already account for every non-null row, any
+    # groups ``distinct_count`` claims beyond them hold ZERO rows — the two
+    # halves of a stale profile disagreeing. Normalizing over the claimed count
+    # would then divide an entropy built from 200 buckets by ln(5000) and
+    # deflate a perfectly good axis toward zero. The counts ARE the
+    # measurement; trust them over a distinct_count they contradict.
+    groups = claimed_groups if tail_mass > 0 else len(observed)
 
     # A single group partitions nothing, so its evenness is 0 by definition —
     # ln(1) = 0 would otherwise divide by zero. The pre-filter already drops
     # constants; this keeps the function total rather than relying on that.
     if groups < 2:
-        return SliceRelevance(
-            score=0.0,
-            lower=0.0,
-            upper=0.0,
-            coverage=coverage,
-            evenness=0.0,
-            exact=True,
-            groups=groups,
-            groups_measured=len(observed),
-        )
+        return 0.0
 
-    max_entropy = math.log(groups)
-    head = [c / non_null for c in observed]
+    probabilities = [c / non_null for c in observed]
+    if tail_mass > 0:
+        probabilities.append(tail_mass / non_null)
 
-    if exact:
-        evenness_lo = evenness_hi = _entropy(head) / max_entropy
-    else:
-        # Lower bound: the unseen tail is ONE bucket (maximally concentrated) —
-        # the least even the axis could be given what we measured.
-        lo_probs = [*head, tail_mass / non_null]
-        evenness_lo = _entropy(lo_probs) / max_entropy
-        # Upper bound: the tail splits evenly across every unseen group — the
-        # most even it could be.
-        hi_probs = [*head, *([tail_mass / tail_groups / non_null] * tail_groups)]
-        evenness_hi = _entropy(hi_probs) / max_entropy
+    evenness = _entropy(probabilities) / math.log(groups)
 
-    lower = coverage * min(evenness_lo, evenness_hi)
-    upper = coverage * max(evenness_lo, evenness_hi)
-
-    return SliceRelevance(
-        score=lower,
-        lower=lower,
-        upper=upper,
-        coverage=coverage,
-        evenness=min(evenness_lo, evenness_hi),
-        exact=exact,
-        groups=groups,
-        groups_measured=len(observed),
-    )
+    # Clamp at the boundary rather than trusting the arithmetic. Two REAL
+    # inputs land outside [0, 1], and both would raise IntegrityError against
+    # this column's CHECK — failing the slicing activity into an endless
+    # deterministic Temporal retry, since the same data reproduces it forever:
+    #   * an exactly-uniform distribution over k in {5, 13, 19, ...} floats to
+    #     1.0000000000000002, because ln(k)/ln(k) is not exactly 1 in binary
+    #     floating point;
+    #   * a stale profile whose counts exceed the row count (e.g. [120, 5] over
+    #     100 rows) gives probabilities > 1, hence a NEGATIVE entropy (-0.0995).
+    return min(max(coverage * evenness, 0.0), 1.0)

@@ -5,11 +5,16 @@
 // of the grid, server-side and binder-validated, into a new effective base
 // SQL + params; the ordinary `WindowedGrid` renders it — remounting on the
 // effective key so grid-local sort/filters reset exactly as on a new agent
-// query (React rule 5). TWO compose paths, chosen by `nodeRef`:
+// query (React rule 5). THREE compose paths, chosen by `source`:
 //   - a canvas NODE (metric or measure) recomposes from its persisted clause
 //     parts with the steps as clause appends (`/api/drill/node`);
-//   - an ad-hoc grid wraps its own visible columns (`/api/drill/compose`,
-//     tier A only).
+//   - an ANSWER recomposes from the clause parts its sub-agent declared and the
+//     server PROVED against the answer's own value (`/api/drill/parts`,
+//     DAT-678) — the only way a scalar answer is drillable, since it projects
+//     no column to group by;
+//   - no source: the grid wraps its own visible columns (`/api/drill/compose`,
+//     tier A) — always available, and the right path for a result that already
+//     carries its dimensions.
 // The stack only ever holds compositions the server ACCEPTED: a candidate
 // stack is sent as a user-event mutation and committed on `ok: true`; a
 // refusal shows the amber "can't slice this deterministically" state and
@@ -30,8 +35,10 @@
 // changes — plus pass-through rendering props (footer cells, column accents,
 // unit chips) whose CONTENT the layer owns.
 //
-// Axes come from the metric path (`/api/drill/axes`, catalog metadata only —
-// DAT-678 adds ad-hoc resolution). This widget fetches the drill routes
+// Axes come from `/api/drill/axes`, one resolution per compose path (DAT-678):
+// the node's own catalog, the answer's proven relation, or — for tier A — the
+// catalogued dimensions that are actually COLUMNS of this result, since that is
+// all an outer GROUP BY can address. This widget fetches the drill routes
 // instead of importing server modules (bundle hygiene).
 
 // Type-only, erased at compile time — the same source result-grid.tsx uses.
@@ -49,12 +56,13 @@ import {
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown, Layers, X } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
 import type {
 	DrillAxesRequest,
 	DrillAxis,
 	DrillPinValue,
+	DrillSource,
 	DrillStep,
 } from "#/duckdb/drill";
 
@@ -93,15 +101,32 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 }
 
 /** Chart state scoped to ONE effective query — mounted with `key=effective`
- *  so drilling resets the authored chart along with sort/filters (rule 5). */
-function DrillChartAction({ sql, params }: { sql: string; params: SqlParams }) {
+ *  so drilling resets the authored chart along with sort/filters (rule 5).
+ *
+ *  CONTROLLED when the surface passes `chart`: a surface that OUTLIVES the
+ *  chart (the answer's Report mint freezes it) has to own the value, and then
+ *  the reset-on-drill is its handler's job rather than this remount's. Still
+ *  ONE button either way — a second chart affordance beside this one would be
+ *  two sources of truth for the same picture. */
+function DrillChartAction({
+	sql,
+	params,
+	chart,
+}: {
+	sql: string;
+	params: SqlParams;
+	chart?: {
+		value: ChartConfig | null;
+		onChange: (config: ChartConfig | null) => void;
+	};
+}) {
 	const [config, setConfig] = useState<ChartConfig | null>(null);
 	return (
 		<ChartToolbarButton
 			sql={sql}
 			params={params}
-			value={config}
-			onChange={setConfig}
+			value={chart ? chart.value : config}
+			onChange={chart ? chart.onChange : setConfig}
 		/>
 	);
 }
@@ -254,7 +279,7 @@ export function DrillableGrid({
 	sql,
 	params,
 	axesRequest,
-	nodeRef,
+	source,
 	footerCells,
 	footerLabel,
 	columnAccents,
@@ -262,16 +287,20 @@ export function DrillableGrid({
 	onRowHover,
 	onPinnedRow,
 	onStepsChange,
+	toolbarActions,
+	chart,
 	fillHeight,
 }: {
 	/** The base query (the node's composed SQL on the canvas path). */
 	sql: string;
 	params?: SqlParams;
-	/** What the Slice control offers — resolved by the metric path only. */
+	/** What the Slice control offers, resolved per compose path. */
 	axesRequest: DrillAxesRequest;
-	/** Present on the canvas path: drill steps recompose the NODE from its
-	 *  persisted parts (`/api/drill/node`) instead of wrapping the base SQL. */
-	nodeRef?: DrillAxesRequest;
+	/** How a drill recomposes. Absent = tier A: wrap this result's own columns
+	 *  (`/api/drill/compose`). Present = recompose UPSTREAM from clause parts —
+	 *  a canvas node's persisted ones (`/api/drill/node`) or an answer's proven
+	 *  declared ones (`/api/drill/parts`, DAT-678). */
+	source?: DrillSource;
 	/** Total-row cells (column name → value), shown as the grid's sticky footer
 	 *  WHILE a drill is active — the anchor a slice would otherwise lose. The
 	 *  layer above owns the values (DAT-712). */
@@ -286,8 +315,25 @@ export function DrillableGrid({
 	 *  null otherwise (pins cleared / slice-only change) — the equation
 	 *  layer's lock-on-pin signal (DAT-712). */
 	onPinnedRow?: (row: Record<string, Json | null> | null) => void;
-	/** Fired with the committed step stack after every accepted apply. */
-	onStepsChange?: (steps: DrillStep[]) => void;
+	/** Fired with the committed step stack after every accepted apply, together
+	 *  with the statement now on screen. A surface that freezes or exports what
+	 *  the user is looking at (the answer's Report mint) needs the EFFECTIVE
+	 *  query, not the base one — otherwise it captures numbers the grid stopped
+	 *  showing the moment a slice was applied. */
+	onStepsChange?: (
+		steps: DrillStep[],
+		effective: { sql: string; params: SqlParams },
+	) => void;
+	/** Extra grid-toolbar actions, rendered after the drill's own chart button
+	 *  (the surface owns their content — this widget stays generic). */
+	toolbarActions?: ReactNode;
+	/** Take ownership of the chart the toolbar authors — for a surface that has
+	 *  to READ it (the answer freezes it into a report). Omitted = grid-local,
+	 *  reset on every drill. */
+	chart?: {
+		value: ChartConfig | null;
+		onChange: (config: ChartConfig | null) => void;
+	};
 	/** Fill the parent's height (flex column) instead of the grid's default
 	 *  480px body cap — see ResultGridView (DAT-712). */
 	fillHeight?: boolean;
@@ -338,16 +384,22 @@ export function DrillableGrid({
 			candidate,
 			generation,
 			pinRow,
-			result: nodeRef
-				? await postJson<ComposeResponse>("/api/drill/node", {
-						...nodeRef,
-						steps: candidate,
-					})
-				: await postJson<ComposeResponse>("/api/drill/compose", {
-						sql,
-						params: baseParams,
-						steps: candidate,
-					}),
+			result:
+				source === undefined
+					? await postJson<ComposeResponse>("/api/drill/compose", {
+							sql,
+							params: baseParams,
+							steps: candidate,
+						})
+					: source.kind === "node"
+						? await postJson<ComposeResponse>("/api/drill/node", {
+								...source.ref,
+								steps: candidate,
+							})
+						: await postJson<ComposeResponse>("/api/drill/parts", {
+								...source.source,
+								steps: candidate,
+							}),
 		}),
 		onSuccess: ({ candidate, generation, pinRow, result }) => {
 			if (generation !== generationRef.current) return; // superseded — drop
@@ -357,7 +409,10 @@ export function DrillableGrid({
 				setSteps(candidate);
 				setComposed({ sql: result.sql, params: result.params });
 				setRefusal(null);
-				onStepsChange?.(candidate);
+				onStepsChange?.(candidate, {
+					sql: result.sql,
+					params: result.params,
+				});
 				// The grid remounts on the new composition — a hover observed
 				// under the OLD one must not outlive it (it would shadow the
 				// lock/totals binding; mouse flows only self-heal by DOM-layout
@@ -394,7 +449,7 @@ export function DrillableGrid({
 			setSteps([]);
 			setComposed(null);
 			setRefusal(null);
-			onStepsChange?.([]);
+			onStepsChange?.([], { sql, params: baseParams });
 			onRowHover?.(null);
 			onPinnedRow?.(null);
 			return;
@@ -441,10 +496,13 @@ export function DrillableGrid({
 				}
 			: undefined;
 
-	// Grain is a NODE-path capability: composeNodeQuery buckets it; the tier-A
-	// route rejects grained steps outright (strict zod). Without a nodeRef the
-	// temporal axis slices raw and no grain control renders.
-	const grainable = nodeRef !== undefined;
+	// Grain is a NODE-path capability. composeNodeQuery can bucket for the answer
+	// path too, but nothing may: time bucketing is only honest under an
+	// additivity verdict, and an answer's ad-hoc concept has none — so the answer
+	// axes resolver withholds the grain and `/api/drill/parts` refuses a grained
+	// step, exactly like tier A. On both of those paths a temporal axis slices
+	// raw and no grain control renders.
+	const grainable = source?.kind === "node";
 
 	/** Slice a fresh axis — temporal axes start at the default grain. */
 	const slice = (axis: DrillAxis) => {
@@ -661,11 +719,15 @@ export function DrillableGrid({
 				toolbarStart={drillControls}
 				fillHeight={fillHeight}
 				toolbarActions={
-					<DrillChartAction
-						key={effectiveKey}
-						sql={effective.sql}
-						params={effective.params}
-					/>
+					<>
+						<DrillChartAction
+							key={effectiveKey}
+							sql={effective.sql}
+							params={effective.params}
+							chart={chart}
+						/>
+						{toolbarActions}
+					</>
 				}
 			/>
 		</div>

@@ -25,8 +25,8 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
+import { DrillableResultGridWidget } from "#/ui/cockpit/widgets/drillable-result-grid";
 import { ReportChart } from "#/ui/cockpit/widgets/report-chart";
-import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 import {
 	deleteReportFn,
 	loadReport,
@@ -222,7 +222,14 @@ function ReportDetail() {
 			{report.chartConfig && (
 				<ReportChart sql={report.sql} config={report.chartConfig} />
 			)}
-			<ResultGridWidget state={{ kind: "result-grid", sql: report.sql }} />
+			{/* Drillable (DAT-678), tier A: a report freezes a STATEMENT, not a
+			    calculation, so there is nothing upstream to recompose from — but
+			    the reader can still group the live result by any catalogued
+			    dimension it returns. The drill is view-local; the report itself
+			    stays immutable. */}
+			<DrillableResultGridWidget
+				state={{ kind: "result-grid", sql: report.sql }}
+			/>
 		</Stack>
 	);
 }

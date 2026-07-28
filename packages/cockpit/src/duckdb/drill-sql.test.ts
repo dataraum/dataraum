@@ -51,16 +51,18 @@ describe("composeDrill (tier-A outer wrap over a detail result)", () => {
 		});
 		if (!result.ok) throw new Error(result.reason);
 		// product is VARCHAR → no aggregate; amount/qty are summable.
+		// DAT-678: aggregates are NAMED, not re-aliased onto the source column —
+		// tier A cannot know whether `amount` is additive, so it says what it did.
 		expect(result.columns.map((c) => c.name)).toEqual([
 			"region",
 			"count",
-			"amount",
-			"qty",
+			"sum(amount)",
+			"sum(qty)",
 		]);
 		expect(sorted(await rows(result.sql, result.params))).toEqual(
 			sorted(
 				await rows(
-					"SELECT region, COUNT(*) AS count, SUM(amount) AS amount, SUM(qty) AS qty FROM sales GROUP BY region",
+					'SELECT region, COUNT(*) AS count, SUM(amount) AS "sum(amount)", SUM(qty) AS "sum(qty)" FROM sales GROUP BY region',
 				),
 			),
 		);
@@ -79,7 +81,7 @@ describe("composeDrill (tier-A outer wrap over a detail result)", () => {
 		expect(result.params).toEqual(["a", "EU"]);
 		// COUNT(*)/SUM(BIGINT) come back as strings (bigint-safe JSON path).
 		expect(await rows(result.sql, result.params)).toEqual([
-			{ region: "EU", count: "1", amount: 1, qty: "1" },
+			{ region: "EU", count: "1", "sum(amount)": 1, "sum(qty)": "1" },
 		]);
 	});
 
@@ -95,7 +97,7 @@ describe("composeDrill (tier-A outer wrap over a detail result)", () => {
 		if (!result.ok) throw new Error(result.reason);
 		expect(result.params).toEqual([]);
 		expect(await rows(result.sql)).toEqual([
-			{ region: null, count: "1", amount: 8, qty: "3" },
+			{ region: null, count: "1", "sum(amount)": 8, "sum(qty)": "3" },
 		]);
 	});
 });

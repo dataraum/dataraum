@@ -12,6 +12,7 @@ import { ColumnProfileWidget } from "#/ui/cockpit/widgets/column-profile";
 import { ColumnWhyWidget } from "#/ui/cockpit/widgets/column-why";
 import { CycleListWidget } from "#/ui/cockpit/widgets/cycle-list";
 import { CycleWhyWidget } from "#/ui/cockpit/widgets/cycle-why";
+import { DrillableResultGridWidget } from "#/ui/cockpit/widgets/drillable-result-grid";
 import { DriverListWidget } from "#/ui/cockpit/widgets/driver-list";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
@@ -24,7 +25,6 @@ import { OperatingModelProgressWidget } from "#/ui/cockpit/widgets/operating-mod
 import { ProbeWidget } from "#/ui/cockpit/widgets/probe";
 import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
-import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 import { SessionProgressWidget } from "#/ui/cockpit/widgets/session-progress";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
@@ -42,7 +42,7 @@ export const canvasRegistry = new WidgetRegistry()
 		kind: "workspace-inventory",
 		component: WorkspaceInventoryWidget,
 	})
-	.register({ kind: "result-grid", component: ResultGridWidget })
+	.register({ kind: "result-grid", component: DrillableResultGridWidget })
 	.register({ kind: "answer-result", component: AnswerResultWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
 	.register({ kind: "column-why", component: ColumnWhyWidget })

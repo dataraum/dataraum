@@ -42,7 +42,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { useChartData } from "#/charts/use-chart-data";
-import type { DrillAxesRequest, DrillStep } from "#/duckdb/drill";
+import type { DrillNodeRef, DrillStep } from "#/duckdb/drill";
 import { grainLabel, parseGrainToken } from "#/duckdb/grain";
 import type { OMNode } from "#/tools/operating-model-graph";
 import { DrillableGrid } from "#/ui/cockpit/widgets/drillable-grid";
@@ -55,7 +55,7 @@ import {
 
 /** The node's compose target — the same ref shape the axes route resolves —
  *  or null when there is nothing to run. */
-export function analyseTarget(node: OMNode): DrillAxesRequest | null {
+export function analyseTarget(node: OMNode): DrillNodeRef | null {
 	const d = node.data;
 	// Node ids are namespaced (`metric:<graphId>` / `measure:<standardField>`) —
 	// the suffix IS the resolver key.
@@ -296,7 +296,7 @@ export function AnalyseModal({
 				<DrillableGrid
 					sql={ok.sql}
 					axesRequest={target}
-					nodeRef={target}
+					source={{ kind: "node", ref: target }}
 					footerCells={totalsRow ?? undefined}
 					columnAccents={accents}
 					columnUnits={

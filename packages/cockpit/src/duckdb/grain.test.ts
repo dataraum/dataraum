@@ -8,6 +8,7 @@ import {
 	grainIntervalBody,
 	grainLabel,
 	grainPresets,
+	grainPresetsFrom,
 	parseGrainToken,
 	temporalKindOfType,
 } from "./grain";
@@ -106,5 +107,38 @@ describe("temporalKindOfType", () => {
 		undefined,
 	])("non-temporal %j → null", (type) => {
 		expect(temporalKindOfType(type)).toBeNull();
+	});
+});
+
+describe("grainPresetsFrom (DAT-857 bucket floor)", () => {
+	it("drops grains finer than the axis's observed cadence", () => {
+		const monthly = grainPresetsFrom("timestamp", "month").map((p) => p.token);
+		expect(monthly).toEqual(["1M", "1q", "1y"]);
+		// A weekly preset is finer than a monthly cadence — gone with the rest.
+		expect(monthly).not.toContain("1w");
+	});
+
+	it("keeps everything when the cadence is daily on a DATE column", () => {
+		expect(grainPresetsFrom("date", "day").map((p) => p.token)).toEqual([
+			"1d",
+			"1w",
+			"1M",
+			"1q",
+			"1y",
+		]);
+	});
+
+	it("makes NO claim without a floor — an undetermined cadence is not a restriction", () => {
+		expect(grainPresetsFrom("date", undefined)).toEqual(grainPresets("date"));
+	});
+
+	it("never empties the menu — an unknown vocabulary term leaves the presets alone", () => {
+		expect(grainPresetsFrom("date", "fortnight")).toEqual(grainPresets("date"));
+	});
+
+	it("floors a yearly cadence to the single honest rung", () => {
+		expect(grainPresetsFrom("date", "year").map((p) => p.token)).toEqual([
+			"1y",
+		]);
 	});
 });

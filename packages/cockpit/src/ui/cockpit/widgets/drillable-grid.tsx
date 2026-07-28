@@ -73,9 +73,10 @@ import {
 	type DrillSource,
 	type DrillStep,
 	MAX_GUIDANCE_AXES,
+	maskNonReconcilingTotal,
 } from "#/duckdb/drill";
 
-import { grainLabel, grainPresets, parseGrainToken } from "#/duckdb/grain";
+import { grainLabel, grainPresetsFrom, parseGrainToken } from "#/duckdb/grain";
 // Type-only (erased at compile time — the canvas-state.ts / tool-result-to-canvas.ts
 // precedent for pulling a server tool's RESULT shape without importing its runtime):
 // the wire contract for the axes route's response, kept in sync with the server's
@@ -193,7 +194,9 @@ function GrainMenu({
 }) {
 	const [custom, setCustom] = useState("");
 	const [customError, setCustomError] = useState<string | null>(null);
-	const presets = grainPresets(axis.temporal ?? "date");
+	// Floored at the axis's observed cadence (DAT-857): a monthly measure is not
+	// offered day buckets it has no data to fill.
+	const presets = grainPresetsFrom(axis.temporal ?? "date", axis.bucketGrain);
 
 	const commitCustom = () => {
 		const token = custom.trim();
@@ -1035,8 +1038,20 @@ export function DrillableGrid({
 				onRowClick={onRowClick}
 				onRowHover={onRowHover}
 				// The total row anchors a DRILLED view; the undrilled grid IS the
-				// scalar, so a footer there would duplicate the single row.
-				footerRow={steps.length > 0 ? footerCells : undefined}
+				// scalar, so a footer there would duplicate the single row. Its
+				// `value` blanks to an honest dash when the drilled parts do not sum
+				// to it (DAT-857) — a recomputed ratio's monthly rows are each right
+				// and their total is not a number.
+				footerRow={
+					steps.length > 0
+						? maskNonReconcilingTotal(
+								footerCells,
+								steps,
+								axes,
+								axesQuery.data?.reconciles,
+							)
+						: undefined
+				}
 				footerLabel={footerLabel}
 				columnAccents={columnAccents}
 				columnUnits={columnUnits}

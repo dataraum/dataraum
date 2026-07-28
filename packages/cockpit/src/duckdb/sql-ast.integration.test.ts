@@ -57,9 +57,9 @@ describe("aggregatedColumns", () => {
 	// windowed measure was invisible to the unit gate.
 
 	it("reads a windowed aggregate's argument — WINDOW carries the same function_name/children as FUNCTION", async () => {
-		expect([...(await aggregatedColumns("SUM(x) OVER (PARTITION BY y)"))]).toEqual([
-			"x",
-		]);
+		expect([
+			...(await aggregatedColumns("SUM(x) OVER (PARTITION BY y)")),
+		]).toEqual(["x"]);
 	});
 
 	it("excludes the window frame's PARTITION BY / ORDER BY — they group and order, they are not aggregated", async () => {
@@ -76,7 +76,9 @@ describe("aggregatedColumns", () => {
 		// The old blind descent collected `flag` here: an over-collection that
 		// handed the unit gate a column no measure ever summed.
 		expect(
-			[...(await aggregatedColumns("SUM(credit) FILTER (WHERE flag > 0)"))].sort(),
+			[
+				...(await aggregatedColumns("SUM(credit) FILTER (WHERE flag > 0)")),
+			].sort(),
 		).toEqual(["credit"]);
 	});
 

@@ -215,18 +215,29 @@ export interface Contribution {
 }
 
 /**
- * Classify the target's reachable tree (doctrine v2): flatten it to signed
- * extract contributions when it is PURELY ADDITIVE — only `+`, binary `-`,
- * unary minus, and refs, every leaf an extract with a relation. Returns null
- * the moment a literal, `*`, `/`, constant ref, fall-loud extract, or hole
- * appears: the node is then non-additive (bare refs, NULL absorbs). One
- * occurrence per REFERENCE, not per step — `a + a` contributes twice, exactly
- * like the formula's own arithmetic. Classification only: refs are NOT
- * validated here — `composeNodeQuery` runs the fabrication/phantom guards
- * over the same tree first, so call this on an already-validated tree.
- * Exported for the enumeration spike.
+ * Flatten the target's reachable tree to signed extract contributions —
+ * COMPOSITION MECHANICS, not a verdict (DAT-868).
+ *
+ * This used to be the drill's second additivity judge: it decided "is this
+ * additive?" locally, from formula structure alone, while the engine decided the
+ * same question from the DAG *plus* stock/flow materialization and fact grain.
+ * Two judges answering one question is exactly what the verdict model exists to
+ * end, so the DECISION now comes from the engine's served verdict and this
+ * function only answers the mechanical follow-up: *given* that we are summing,
+ * which extracts contribute, and with which sign?
+ *
+ * Returns null when the tree is not a plain signed sum — a literal, `*`, `/`, a
+ * constant ref, a fall-loud extract, or a hole. That is NOT a verdict either: it
+ * means this shortcut shape does not apply, and the caller composes via the
+ * general carrier spine, which produces the same numbers for any shape. (A
+ * verdict of `additive` over `x * 2` lands here, correctly.)
+ *
+ * One occurrence per REFERENCE, not per step — `a + a` contributes twice, exactly
+ * like the formula's own arithmetic. Refs are NOT validated here:
+ * `composeNodeQuery` runs the fabrication/phantom guards over the same tree
+ * first, so call this on an already-validated tree.
  */
-export function flattenAdditive(
+export function signedContributions(
 	target: NodeStep,
 	byId: ReadonlyMap<string, NodeStep>,
 ): Contribution[] | null {
@@ -273,16 +284,19 @@ export interface NodeOperand {
 }
 
 /** The composed node's header shape (DAT-712's equation layer): the target's
- *  formula, its operand terms, and the doctrine classification. Pure — the
- *  route ships it once per open; signs/pretty-printing derive client-side
- *  from `expression` via the same closed grammar (metric-formula.ts). */
+ *  formula, its operand terms, and the served additivity. Pure — the route ships
+ *  it once per open; signs/pretty-printing derive client-side from `expression`
+ *  via the same closed grammar (metric-formula.ts). */
 export interface NodeShape {
 	targetStepId: string;
 	/** The target's formula expression — null for a bare extract node. */
 	expression: string | null;
-	/** Doctrine v2 classification of the target's reachable tree: additive
-	 *  nodes decompose grouped views via signed contributions (their grid rows
-	 *  carry NO operand columns); non-additive restricted views project them. */
+	/** Whether this node's value SUMS across the axes it can be drilled on — the
+	 *  ENGINE's verdict (DAT-857/868), passed in by the route, never re-derived
+	 *  from formula structure here. Additive nodes decompose grouped views via
+	 *  signed contributions (their grid rows carry NO operand columns);
+	 *  non-additive restricted views project the operands so the recomputed value
+	 *  can be read against its carriers. */
 	additive: boolean;
 	operands: NodeOperand[];
 }
@@ -292,11 +306,11 @@ export interface NodeShape {
 export function nodeShape(
 	steps: NodeStep[],
 	requestedStepId: string | undefined,
+	additive: boolean,
 ): NodeShape | { refusal: string } {
 	const target = targetStep(steps, requestedStepId);
 	if ("refusal" in target) return target;
 	const byId = new Map(steps.map((s) => [s.stepId, s]));
-	const additive = flattenAdditive(target, byId) !== null;
 	if (target.kind !== "formula" || !target.expression) {
 		return {
 			targetStepId: target.stepId,
@@ -344,8 +358,15 @@ export function composeNodeQuery(
 	steps: NodeStep[],
 	requestedStepId: string | undefined,
 	drill: NodeDrill = { slices: [], pins: [] },
+	sumsAcrossDrilledAxes = false,
 ): ComposedNodeQuery | { refusal: string } {
-	return composeNode(steps, requestedStepId, drill, false);
+	return composeNode(
+		steps,
+		requestedStepId,
+		drill,
+		false,
+		sumsAcrossDrilledAxes,
+	);
 }
 
 /**
@@ -360,7 +381,14 @@ export function composeNodeTotals(
 	steps: NodeStep[],
 	requestedStepId: string | undefined,
 ): ComposedNodeQuery | { refusal: string } {
-	return composeNode(steps, requestedStepId, { slices: [], pins: [] }, true);
+	// Unrestricted: no dims, so the additive shortcut never applies anyway.
+	return composeNode(
+		steps,
+		requestedStepId,
+		{ slices: [], pins: [] },
+		true,
+		false,
+	);
 }
 
 /** One deduped slice dim, its grain parsed: `bucketExpr` is the rendered
@@ -405,6 +433,7 @@ function composeNode(
 	requestedStepId: string | undefined,
 	drill: NodeDrill,
 	projectOperandsOnScalar: boolean,
+	sumsAcrossDrilledAxes: boolean,
 ): ComposedNodeQuery | { refusal: string } {
 	const target = targetStep(steps, requestedStepId);
 	if ("refusal" in target) return target;
@@ -577,16 +606,24 @@ function composeNode(
 	// contributions. The unrestricted scalar deliberately does NOT take this
 	// path — it stays byte-parity with the engine composition, where a
 	// whole-domain NULL is the fall-loud grounding flag.
+	//
+	// The ENGINE'S VERDICT decides whether summing is legitimate here
+	// (`sumsAcrossDrilledAxes`, DAT-857/868) — this module no longer judges
+	// additivity for itself. `signedContributions` then answers only the
+	// mechanical question of which extracts to sum and with which sign; when the
+	// shape is not a plain signed sum it returns null and composition falls
+	// through to the general carrier spine below, which is correct for every
+	// shape (it is what a recomputed ratio takes).
 	const restricted = dims.length > 0 || pinPredicates.length > 0;
 	const contributions =
-		restricted && target.kind !== "extract"
-			? flattenAdditive(target, byId)
+		restricted && target.kind !== "extract" && sumsAcrossDrilledAxes
+			? signedContributions(target, byId)
 			: null;
 	if (contributions !== null) {
 		for (const { stepId } of contributions) {
 			if (ctes[stepId]) continue;
 			const step = byId.get(stepId);
-			// flattenAdditive only emits extracts with a relation.
+			// signedContributions only emits extracts with a relation.
 			if (!step?.parts?.relation) {
 				return { refusal: `no persisted clause parts for '${stepId}'` };
 			}

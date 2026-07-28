@@ -197,7 +197,7 @@ class SemanticAgent(LLMFeature):
         result = self._converse_and_validate(request)
         if not result.success:
             return Result.fail(result.error or "Table synthesis failed")
-        return self._build_enrichment_result(result.unwrap())
+        return self._build_enrichment_result(result.unwrap(), profiles)
 
     def _converse_and_validate(
         self,
@@ -242,15 +242,58 @@ class SemanticAgent(LLMFeature):
                 )
         return "\n".join(lines)
 
+    @staticmethod
+    def _unique_columns(profiles: list[ColumnProfile]) -> dict[str, set[str]]:
+        """Columns whose values identify a row, keyed by table — a structural witness.
+
+        ``distinct_count == total_count``: every row holds a distinct, non-null
+        value. Used to recognize a one-row-per-period calendar dimension
+        (DAT-847) without any name matching.
+
+        Deliberately NOT ``cardinality_ratio == 1.0``: the profiler computes that
+        as ``distinct_count / NON-NULL count``, so it also reads 1.0 for a column
+        that is unique among three values and NULL on every other row — which is
+        not one row per period. Comparing the two counts the profile already
+        carries is the exact statement, needs no threshold, and rules out nulls
+        on the way.
+
+        For the same reason, do NOT reach for the persisted
+        ``StatisticalProfile.is_unique`` column: it is computed against the
+        non-null count too (``analysis/statistics/profiler.py``,
+        ``enriched_views_phase``, ``surrogate_mint_phase`` all derive it that
+        way), so it carries exactly the null-blindness this avoids.
+
+        A run over the ``limits.max_columns`` gate profiles only a subset of
+        columns; an unprofiled column simply never appears here, and the caller
+        treats an absent witness as "not a period" (fail safe).
+        """
+        unique: dict[str, set[str]] = {}
+        for profile in profiles:
+            # `> 0` explicitly: an EMPTY table is vacuously all-distinct
+            # (0 == 0) and would mint a witness for every one of its columns.
+            # The placeholder-profile path (no statistics yet) relies on this —
+            # it sets distinct_count=0, which would otherwise match a 0 row count.
+            if profile.total_count > 0 and profile.distinct_count == profile.total_count:
+                unique.setdefault(profile.column_ref.table_name, set()).add(
+                    profile.column_ref.column_name
+                )
+        return unique
+
     def _build_enrichment_result(
         self,
         synthesis: TableSynthesisOutput,
+        profiles: list[ColumnProfile],
     ) -> Result[SemanticEnrichmentResult]:
         """Build entities + relationships from a validated ``analyze_tables`` output.
 
         Validation (with a DAT-710 repair turn on failure) happens at the call
         site; this transforms the validated model into the enrichment result.
+
+        ``profiles`` supplies the cardinality witness that identifies a period
+        dimension (DAT-847); it carries no semantics of its own here.
         """
+        # Once per synthesis, not once per table — the scan is over every table.
+        period_dimensions = synthesis.period_columns_by_dimension(self._unique_columns(profiles))
         entity_detections = [
             EntityDetection(
                 table_id="",  # Filled by caller
@@ -259,11 +302,10 @@ class SemanticAgent(LLMFeature):
                 table_role=derive_table_role(
                     table.is_fact_table,
                     table.grain,
-                    # EVENT axes only (DAT-780): a periodic snapshot is a fact whose
-                    # grain holds a genuine event date (the snapshot period), so an
-                    # attribute date (due_date) landing in the grain must not flip a
-                    # plain fact to periodic_snapshot.
-                    [tc.column for tc in table.time_columns if tc.role == "event"],
+                    # A periodic snapshot is a fact whose grain holds the reporting
+                    # period — carried as an event date (DAT-780) or as a period FK
+                    # into a period dimension (DAT-847).
+                    synthesis.period_axis_columns(table, period_dimensions),
                 ),
                 time_columns=table.time_columns,
                 identity_columns=table.identity_columns,

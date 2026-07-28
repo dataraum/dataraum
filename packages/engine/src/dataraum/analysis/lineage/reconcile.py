@@ -13,18 +13,26 @@ Scale-free residuals — no tuning, no boost curve:
     R_flow  = Σ|y[t] − m[t]| / Σ|m[t]|
     R_stock = Σ|Δy[t] − m[t][1:]| / Σ|m[t][1:]|
 
-Classify STOCK iff ``R_stock < R_flow``. This is robust exactly where the
-falsified persistence statistic (rho1/VR) broke: a trending/seasonal flow still
-equals its movement (R_flow≈0) and a mean-reverting stock still carries forward
-(R_stock≈0).
+Classify STOCK iff ``R_stock`` beats ``R_flow`` BY A MARGIN. This is robust
+exactly where the falsified persistence statistic (rho1/VR) broke: a
+trending/seasonal flow still equals its movement (R_flow≈0) and a mean-reverting
+stock still carries forward (R_stock≈0).
 
-The ABSTAIN gate is the probe's wrong-anchor guardrail: with a misaligned anchor
-(wrong entity, wrong join, wrong period bridge) BOTH residuals stay large —
-measured median min-residual ≈ 1.0 vs ≈ 0.0–0.1 for a correct anchor, holding
-through reconciliation noise up to ~0.25–0.5 of the movement scale. An entity
-therefore only VOTES when its winning residual is ≤ ``FIRE_RESIDUAL_MAX``; a
-candidate only fires when enough entities vote and they agree. These constants
-are separation-derived from the probe (provenance above), not fitted to a metric.
+Two ABSTAIN gates, both refusing to convert ignorance into a verdict:
+
+- *Wrong anchor* — the probe's guardrail: with a misaligned anchor (wrong
+  entity, wrong join, wrong period bridge) BOTH residuals stay large — measured
+  median min-residual ≈ 1.0 vs ≈ 0.0–0.1 for a correct anchor, holding through
+  reconciliation noise up to ~0.25–0.5 of the movement scale. An entity only
+  VOTES when its winning residual is ≤ ``FIRE_RESIDUAL_MAX``.
+- *Near tie* — a fit that passes the first gate can still beat its rival by
+  nothing at all; a bare ``<`` would then mint a verdict out of the last
+  significant digit. The winner must lead by ``MIN_SEPARATION`` on the
+  scale-free separation index (see :func:`separation`).
+
+A candidate then only fires when enough entities vote and they agree. These
+constants are separation-derived from the probe (provenance above), not fitted
+to a metric.
 """
 
 from __future__ import annotations
@@ -48,6 +56,34 @@ MIN_PERIODS = 4
 # ≈ 0.0–0.1 (≤ ~0.5 under heavy reconciliation noise); wrong-anchor min-residual
 # ≈ 1.0. The gate sits at the measured separation midpoint.
 FIRE_RESIDUAL_MAX = 0.5
+
+# Near-tie margin (DAT-847) — DERIVED from the two levels the discriminator is
+# already built on. It introduces no NEW fitted constant: it inherits
+# ``FIRE_RESIDUAL_MAX``'s probe-measured provenance (module docstring) and adds
+# no number of its own.
+#
+# Under a CORRECT anchor the false hypothesis sits at R ≈ 1: a perfect flow
+# (y == m) gives R_stock = Σ|m[t-1]| / Σ|m[t]|, and a perfect stock gives R_flow
+# the mirror ratio — both ≈ 1 for a STATIONARY movement scale, the same ≈ 1.0
+# level the wrong-anchor guardrail is calibrated against. Under a strongly
+# drifting scale the ratio sags (over 12 periods: m[t] = t → 0.86, m[t] = 2^t
+# → 0.50, against exactly 1.00 for a constant scale), which
+# shrinks the observed separation and so errs toward ABSTENTION — the safe
+# direction. The true hypothesis sits at the reconciliation noise, which
+# ``FIRE_RESIDUAL_MAX`` already declares admissible out to 0.5. So the WEAKEST
+# separation this module still accepts as a fit is ``FIRE_RESIDUAL_MAX`` against
+# 1; a pair closer than that is inside the band the module itself calls
+# non-discriminating, and picking a side there reports the noise. On the
+# separation index (see :func:`separation`) that level is:
+MIN_SEPARATION = (1.0 - FIRE_RESIDUAL_MAX) / (1.0 + FIRE_RESIDUAL_MAX)
+"""Minimum lead the winning hypothesis must hold — 1/3, i.e. the loser's
+residual must be at least twice the winner's, at any residual magnitude.
+
+The two gates are COUPLED by this derivation: moving ``FIRE_RESIDUAL_MAX`` to
+1.0 drives ``MIN_SEPARATION`` to 0 and silently disables the tie gate, while
+moving it to 0.0 drives the margin to 1 and lets nothing fire. Retune the fit
+gate only with that in view.
+"""
 
 # A candidate's verdict needs at least this many voting entities and this much
 # agreement among them — a lone entity or a split vote is ignorance, not lineage.
@@ -91,8 +127,32 @@ def reconcile(y: Sequence[float], m: Sequence[float]) -> tuple[float, float]:
     return r_flow, r_stock
 
 
+def separation(r_flow: float, r_stock: float) -> float:
+    """Scale-free contrast between the two hypotheses' residuals, in ``[0, 1]``.
+
+    ``(R_lose - R_win) / (R_lose + R_win)`` — 1 when one hypothesis fits and the
+    other does not, 0 when the two are indistinguishable. Symmetric and
+    dimensionless, so it reads the same at any residual magnitude: it asks which
+    hypothesis is RELATIVELY better, never how good either one is (that is
+    ``FIRE_RESIDUAL_MAX``'s question).
+
+    An infinite loser — a hypothesis whose normalizer died, see
+    :func:`reconcile` — is total separation; an infinite winner means both died
+    and there is nothing to compare. Two identically zero residuals are NO
+    separation: that is a series whose whole movement is one terminal period,
+    which fits flow and stock equally, and is evidence for neither.
+    """
+    r_win, r_lose = min(r_flow, r_stock), max(r_flow, r_stock)
+    if math.isinf(r_win):
+        return 0.0
+    if math.isinf(r_lose):
+        return 1.0
+    total = r_win + r_lose
+    return (r_lose - r_win) / total if total else 0.0
+
+
 def classify_entity(y: Sequence[float], m: Sequence[float]) -> EntityReconciliation:
-    """Classify one entity, abstaining on short/dead series, dead anchors, or bad fits.
+    """Classify one entity, abstaining on short/dead series, dead anchors, bad fits, or ties.
 
     A dead MEASURE (identically zero) abstains symmetrically with the dead
     anchor: a series that never moves has no stock/flow nature to detect.
@@ -102,6 +162,10 @@ def classify_entity(y: Sequence[float], m: Sequence[float]) -> EntityReconciliat
     r_flow, r_stock = reconcile(y, m)
     if min(r_flow, r_stock) > FIRE_RESIDUAL_MAX:
         # Wrong-anchor guardrail: neither hypothesis fits — abstain, never guess.
+        return EntityReconciliation(r_flow=r_flow, r_stock=r_stock, label=None)
+    if separation(r_flow, r_stock) < MIN_SEPARATION:
+        # Near-tie guardrail (DAT-847): one hypothesis fits, but not measurably
+        # better than the other — the winner is the noise, not the structure.
         return EntityReconciliation(r_flow=r_flow, r_stock=r_stock, label=None)
     label = PATTERN_CUMULATIVE if r_stock < r_flow else PATTERN_PER_PERIOD
     return EntityReconciliation(r_flow=r_flow, r_stock=r_stock, label=label)

@@ -2,10 +2,13 @@
 
 Exercises the DB plumbing the pure classifier can't: the snippet ``select_expr``
 lookup, fact-column resolution via the enriched view, the run-scoped
-``temporal_behavior`` join, and the periodic-snapshot grain read. Two cases pin
-the two axes that matter — a flow measure over an event fact (fully additive) and
-a stock measure over a periodic-snapshot fact (time stripped, categorical kept) —
-the latter being the cell the live finance workspace has no standalone metric for.
+``temporal_behavior`` join, and the periodic-snapshot grain read. Three cases pin
+the axes that matter — a flow measure over an event fact (fully additive), a stock
+measure over a periodic-snapshot fact (time stripped, categorical kept; the cell
+the live finance workspace has no standalone metric for), and a COUNT over a fact
+whose period is a FOREIGN KEY rather than a date column (DAT-847), which reaches
+the snapshot rule only if the role derivation resolved the period through the
+dimension.
 """
 
 from __future__ import annotations
@@ -17,8 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity, derive_table_role
+from dataraum.analysis.semantic.models import (
+    RelationshipOutput,
+    TableEntityOutput,
+    TableSynthesisOutput,
+    TimeColumn,
+)
 from dataraum.analysis.views.db_models import EnrichedView
-from dataraum.graphs.additivity import UNKNOWN_TEMPORAL
+from dataraum.graphs.additivity import SNAPSHOT_COUNT, UNKNOWN_TEMPORAL
 from dataraum.graphs.additivity_db_models import MetricAdditivity
 from dataraum.graphs.additivity_resolver import compute_metric_verdict
 from dataraum.graphs.models import (
@@ -47,6 +56,7 @@ def _seed(
     columns: dict[str, str],
     grain_columns: list[str],
     time_columns: list[str],
+    period_axis_columns: list[str] | None = None,
     field: str,
     select_expr: str,
     aggregation: str,
@@ -163,7 +173,13 @@ def _seed(
             table_id=fact.table_id,
             run_id=RUN,
             detected_entity_type="event",
-            table_role=derive_table_role(True, grain_columns, time_columns),
+            # The period is usually the fact's own event date; ``period_axis_columns``
+            # overrides that for a fact whose period is an FK (DAT-847).
+            table_role=derive_table_role(
+                True,
+                grain_columns,
+                time_columns if period_axis_columns is None else period_axis_columns,
+            ),
             grain_columns=grain_columns,
             time_columns=[
                 {
@@ -255,6 +271,86 @@ def test_stock_over_snapshot_fact_strips_time(
     assert verdict.categorical_additive is True
     assert verdict.time_additive is False
     assert verdict.time_reason == "stock"
+
+
+def test_count_over_a_period_fk_snapshot_is_not_time_additive(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """DAT-847: the snapshot role must survive a period carried as a FOREIGN KEY.
+
+    ``balances`` holds no date column at all — its period is the integer key
+    ``period_id`` into a SURROGATE-keyed calendar, the standard warehouse shape,
+    where no date appears in either table's grain. The role is derived through
+    the production path rather than hand-set, so this pins the whole chain:
+    synthesis output + cardinality witness → ``derive_table_role`` → the
+    persisted ``table_role`` → the resolver's snapshot read → the COUNT rule.
+    Before the fix the fact read as FACT and ``COUNT(*)`` came back additive
+    across time, silently re-counting a population that is RE-STATED every
+    period.
+    """
+    synthesis = TableSynthesisOutput(
+        tables=[
+            TableEntityOutput(
+                table_name="balances",
+                is_fact_table=True,
+                grain=["account_id", "period_id"],
+                time_columns=[],
+                identity_columns=[],
+            ),
+            TableEntityOutput(
+                table_name="dim_period",
+                is_fact_table=False,
+                grain=["period_id"],
+                time_columns=[
+                    TimeColumn(
+                        column="period_date",
+                        aspect="period",
+                        role="event",
+                        is_anchor=True,
+                        note="One row per accounting period.",
+                    )
+                ],
+                identity_columns=[],
+            ),
+        ],
+        relationships=[
+            RelationshipOutput(
+                from_table="balances",
+                from_column="period_id",
+                to_table="dim_period",
+                to_column="period_id",
+                key_columns=[],
+                relationship_type="foreign_key",
+                confidence=0.95,
+                reasoning="period_id keys the calendar dimension",
+            )
+        ],
+    )
+    fact = synthesis.tables[0]
+    # One row per period — what makes dim_period a calendar rather than any other
+    # surrogate-keyed dimension.
+    period_dimensions = synthesis.period_columns_by_dimension(
+        {"dim_period": {"period_id", "period_date"}}
+    )
+    graph = _seed(
+        session,
+        fact_name="balances",
+        view_name="enriched_balances",
+        columns={"balance": "point_in_time"},
+        grain_columns=list(fact.grain),
+        time_columns=[],  # no date column on the fact — the period is the FK
+        period_axis_columns=sorted(synthesis.period_axis_columns(fact, period_dimensions)),
+        field="account_count",
+        select_expr="COUNT(*)",
+        aggregation="count",
+    )
+    verdict = compute_metric_verdict(
+        session, duckdb_conn, graph=graph, workspace_id=WS, catalogue_run_id=RUN
+    )
+    assert verdict is not None
+    assert verdict.categorical_additive is True
+    assert verdict.time_additive is False
+    assert verdict.time_reason == SNAPSHOT_COUNT
 
 
 def test_unresolved_extract_yields_no_verdict(

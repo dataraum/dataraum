@@ -55,6 +55,7 @@ from .verifier import verify_execution
 
 if TYPE_CHECKING:
     from dataraum.graphs.node_warming import NodeDecision, NodeKey
+    from dataraum.graphs.unit_grain import UnitGrainRow
 
 logger = get_logger(__name__)
 
@@ -201,6 +202,33 @@ class ExecutionContext:
             rich_context=rich_context,
             **kwargs,
         )
+
+
+def _unit_grain_value(value: Any) -> Decimal | None:
+    """One composed cell as the persisted ``Numeric`` (DAT-671 B1).
+
+    ``None`` in stays ``None`` out — "not computable for this entity" is a real
+    answer and coalescing it to 0 would assert a measurement nobody made, one
+    that would still sum to the right total so nothing downstream could catch it.
+
+    ``Decimal`` is kept EXACTLY as DuckDB returned it (the currency case — a SUM
+    over a DECIMAL column); ints and floats go through ``str`` so a ratio lands as
+    the decimal it displays as rather than its binary expansion. A bool is an int
+    subclass and is rejected explicitly: a boolean per entity is not a breakdown
+    of a number.
+
+    Raises:
+        ValueError: The cell is not a number — the caller refuses the breakdown.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("a boolean has no per-entity numeric value")
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float)):
+        return Decimal(str(value))
+    raise ValueError(f"non-numeric value {value!r} ({type(value).__name__})")
 
 
 def _served_value_sets(context: ExecutionContext) -> dict[str, set[str]]:
@@ -518,6 +546,112 @@ class GraphAgent(LLMFeature):
             workspace_id=workspace_id,
         )
         return Result.ok(execution)
+
+    def compose_unit_grain(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        context: ExecutionContext,
+        *,
+        axis: str,
+        workspace_id: str,
+    ) -> Result[list[UnitGrainRow]]:
+        """Compose and execute a metric at UNIT GRAIN on one axis — NO LLM (DAT-671 B1).
+
+        The sibling of :meth:`assemble`, one level down: the same persisted parts,
+        the same resolved parameters, the same snippet cache — re-rendered with a
+        ``GROUP BY`` instead of as a workspace scalar. Nothing is threaded from the
+        scalar pass: the grain is a property of the COMPOSITION, so re-deriving is
+        both cheaper than carrying state across the phase and immune to drifting
+        out of step with it. No node is re-authored and no snippet is written —
+        this composition is a READ of what the warm pass already decided, so it
+        can never change what the workspace believes a concept means.
+
+        ``workspace_id`` is the snippet base's ``schema_mapping_id`` (they are the
+        same identity at every engine call site), i.e. the cache this metric's
+        extracts were minted into.
+
+        Fails — never falls back to the scalar — when the metric cannot carry the
+        axis: a leaf with no parts to re-render, a formula whose every carrier is
+        entity-independent, a relation without that column. A consumer could not
+        tell a quietly-degraded scalar from a real one-entity breakdown, so the
+        honest outcome is no breakdown and a reason.
+
+        Returns one :class:`~dataraum.graphs.unit_grain.UnitGrainRow` per entity,
+        with ``value`` ``None`` where the composition genuinely produced NULL.
+        """
+        from dataraum.graphs.unit_grain import UnitGrainRow
+        from dataraum.query.execution import SQLStep, execute_sql_steps
+
+        resolved_params = self._resolve_parameters(session, graph, {})
+        cached_snippets = self._lookup_snippets(session, graph, workspace_id)
+        generated_code = self._compose_metric_from_dag(
+            graph, cached_snippets, resolved_params, group_by=[axis]
+        )
+        if generated_code is None:
+            return Result.fail(
+                f"metric '{graph.graph_id}' cannot be composed per {axis!r} — a step has "
+                "no clause parts to re-render at grain, or no carrier is entity-keyed"
+            )
+
+        # Executed in TABLE mode: a breakdown is rows, and `_execute_sql` fetches a
+        # single scalar (it builds the GraphExecution the verifier + confidence gate
+        # read, neither of which applies to a partition of an already-verified
+        # number). Same `execute_sql_steps` executable underneath — one composed
+        # standalone statement, no temp views, no text repair.
+        steps = [
+            SQLStep(
+                step_id=s.get("step_id", "unknown"),
+                sql=s.get("sql", ""),
+                description=s.get("description", ""),
+            )
+            for s in generated_code.steps
+        ]
+        exec_result = execute_sql_steps(
+            steps=steps,
+            final_sql=generated_code.final_sql,
+            duckdb_conn=context.duckdb_conn,
+            return_table=True,
+        )
+        if not exec_result.success or exec_result.value is None:
+            return Result.fail(exec_result.error or "unit-grain execution failed")
+
+        columns = exec_result.value.columns or []
+        # The composers render exactly `<axis>, value` at grain (an EXTRACT projects
+        # its key then its aggregate; a FORMULA projects the COALESCEd key then its
+        # arithmetic). Anything else means the composition is not what this reader
+        # thinks it is — say so rather than guess which column is the entity.
+        if columns != [axis, "value"]:
+            return Result.fail(
+                f"metric '{graph.graph_id}' composed per {axis!r} returned columns "
+                f"{columns} — expected exactly ['{axis}', 'value']"
+            )
+
+        rows: list[UnitGrainRow] = []
+        seen: set[str] = set()
+        for entity, value in exec_result.value.rows or []:
+            if entity is None:
+                # The relation carries rows the axis does not name. Labelling them
+                # would invent an entity; dropping them would silently withhold
+                # part of a total the verdict says reconciles. Refuse the whole
+                # breakdown — one honest outcome instead of two dishonest ones.
+                return Result.fail(
+                    f"metric '{graph.graph_id}' has rows with no {axis!r} value — a "
+                    "breakdown that cannot name every part is withheld whole"
+                )
+            key = str(entity)
+            if key in seen:
+                return Result.fail(
+                    f"metric '{graph.graph_id}' produced {key!r} twice per {axis!r} — "
+                    "the composition is not one row per entity"
+                )
+            seen.add(key)
+            try:
+                cell = _unit_grain_value(value)
+            except ValueError as exc:
+                return Result.fail(f"metric '{graph.graph_id}' per {axis!r}: {exc}")
+            rows.append(UnitGrainRow(entity_value=key, value=cell))
+        return Result.ok(rows)
 
     def _compose_metric_from_dag(
         self,
@@ -1963,6 +2097,14 @@ class GraphAgent(LLMFeature):
                     # confidence to the phase gate, instead of looking confidently
                     # green because cache-assembly dropped the assumptions.
                     "assumptions": (match.snippet.provenance or {}).get("assumptions") or [],
+                    # The clause parts (DAT-671, parts-at-source) the snippet's ``sql``
+                    # was rendered from. Carried because the SCALAR render is only one
+                    # of the renders they support: unit grain re-renders these same
+                    # parts with a GROUP BY (``_compose_step_sql``), which is the whole
+                    # reason the parts are the artifact and the string is not. A
+                    # snippet predating parts carries None and cannot be regrouped —
+                    # an honest hole the composer turns into a refused breakdown.
+                    "parts": match.snippet.parts,
                 }
 
         if cached_steps:

@@ -50,12 +50,30 @@ from dataraum.graphs.additivity import (
 from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
 
 if TYPE_CHECKING:
+    from decimal import Decimal
+
     from sqlalchemy.orm import Session
+
+    from dataraum.graphs.models import TransformationGraph
 
 #: The slice kinds that can name an ENTITY. A unit-grain breakdown groups by a
 #: categorical axis; a numeric/banded axis (DAT-280) is a different feature with its
 #: own edges, and is not silently treated as an entity here.
 _ENTITY_SLICE_TYPE = "categorical"
+
+
+@dataclass(frozen=True)
+class UnitGrainRow:
+    """One entity's composed value — the shape the phase persists.
+
+    ``value`` is ``None`` when the composition produced NULL for this entity:
+    "not computable here" (the FULL OUTER case), never zero. An entity the
+    relation carries no row for is not in this list at all — a different
+    statement, and the honest one for it.
+    """
+
+    entity_value: str
+    value: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -276,3 +294,68 @@ def resolve_entity_axes(session: Session, *, table_id: str, run_id: str) -> list
             seen.add(name)
             axes.append(name)
     return axes
+
+
+def resolve_metric_entity_axes(
+    session: Session, *, graph: TransformationGraph, workspace_id: str, run_id: str
+) -> list[str]:
+    """The categorical axes EVERY grounded carrier of a metric can be grouped by.
+
+    An INTERSECTION, mirroring :func:`~dataraum.graphs.additivity_resolver._common_time_axes`
+    for the categorical case: a metric can only be broken down on a column all of
+    its carriers carry, or the FULL OUTER join has nothing to join one carrier on.
+    Ordered by the first carrier's served ranking (its own judgment-then-measurement
+    order), so the choice of axis is the workspace's, not this function's.
+
+    Empty when the metric has no EXTRACT leaves, when any leaf has no healthy
+    grounded snippet, when a leaf's relation is outside the current analysis, or
+    when the carriers simply share no curated categorical slice. All four are the
+    same answer for the caller — there is no per-entity breakdown to offer — and
+    the caller discloses that rather than composing something narrower.
+
+    The snippet is looked up on the FULL semantic key including the declared
+    ``predicate`` (DAT-838): two extracts that restrict to different rows are
+    different measurements, and resolving one to the other's relation would name
+    the wrong axes.
+    """
+    from dataraum.graphs.additivity_resolver import served_relation
+    from dataraum.graphs.models import StepType
+    from dataraum.query.snippet_library import SnippetLibrary
+
+    library = SnippetLibrary(session)
+    shared: list[str] | None = None
+    # sorted(): the first carrier fixes the ORDER of the result, so iteration order
+    # is part of the output — a dict's insertion order is definition-dependent and
+    # a set's is PYTHONHASHSEED-salted.
+    for _step_id, step in sorted(graph.steps.items()):
+        if step.step_type != StepType.EXTRACT or step.source is None:
+            continue
+        match = library.find_by_key(
+            "extract",
+            workspace_id,
+            standard_field=step.source.standard_field,
+            statement=step.source.statement,
+            aggregation=step.aggregation,
+            predicate=step.source.predicate,
+        )
+        if match is None:
+            return []
+        relations = (match.snippet.parts or {}).get("from") or []
+        if not relations:
+            return []
+        served = served_relation(session, str(relations[0]))
+        if served is None:
+            return []
+        # SliceDefinition rows are keyed on the FACT table (the slicing phase reads
+        # the enriched view's columns but writes them against the fact it derives
+        # from), while the grounded relation IS the enriched view — a superset of
+        # the fact's columns, so every served slice name resolves on it.
+        axes = resolve_entity_axes(session, table_id=served.fact_table_id, run_id=run_id)
+        if shared is None:
+            shared = axes
+        else:
+            carried = set(axes)
+            shared = [a for a in shared if a in carried]
+        if not shared:
+            return []
+    return shared or []

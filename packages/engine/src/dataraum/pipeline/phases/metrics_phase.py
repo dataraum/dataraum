@@ -54,6 +54,7 @@ Falls back to a serial loop in unit tests where the manager isn't wired.
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -125,11 +126,21 @@ class MetricsPhase(BasePhase):
 
     @property
     def db_models(self) -> list[ModuleType]:
-        from dataraum.graphs import additivity_db_models, metric_graph_db_models
+        from dataraum.graphs import (
+            additivity_db_models,
+            metric_graph_db_models,
+            unit_grain_db_models,
+        )
         from dataraum.lifecycle import db_models as lifecycle_db_models
         from dataraum.query import snippet_models
 
-        return [snippet_models, lifecycle_db_models, additivity_db_models, metric_graph_db_models]
+        return [
+            snippet_models,
+            lifecycle_db_models,
+            additivity_db_models,
+            unit_grain_db_models,
+            metric_graph_db_models,
+        ]
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Declare → compose → execute every declared metric graph."""
@@ -362,6 +373,22 @@ class MetricsPhase(BasePhase):
             catalogue_run_id=catalogue_run_id,
         )
 
+        # Unit grain (DAT-671 B1): the question a practitioner asks NEXT — which
+        # vendors, which accounts — one level below the workspace scalar. Runs here,
+        # immediately after the verdicts, because it is GATED by the row that call
+        # just wrote for THIS run: the served per-(target × axis) verdict decides
+        # whether a breakdown may be offered at all, and reading a stale run's
+        # verdict would gate this run's numbers on last run's evidence.
+        unit_grain = _persist_unit_grain(
+            ctx.session,
+            ctx.duckdb_conn,
+            agent=agent,
+            graphs=graphs,
+            workspace_id=schema_mapping_id,
+            run_id=run_id,
+            catalogue_run_id=catalogue_run_id,
+        )
+
         # reconciles_with derivation (DAT-727 part c): with this run's grounding
         # set settled, reconcile the concept-grain self-loop assertions — the
         # aggregation-lineage witness (at the pinned catalogue run) and
@@ -404,6 +431,15 @@ class MetricsPhase(BasePhase):
             else:
                 previews.append(f"{graph_id}: {a.state} — {a.state_reason or 'no reason recorded'}")
 
+        # A unit-grain FAILURE is loud — it rides the same per-metric channel every
+        # other unhappy outcome does. A verdict-GATED withholding is not a failure:
+        # a number that provably does not partition on an axis SHOULD have no
+        # breakdown, so it is disclosed as structured output instead of shouted.
+        previews.extend(
+            f"{graph_id}: unit grain failed — {error}"
+            for graph_id, error in sorted(unit_grain.failures.items())
+        )
+
         return PhaseResult.success(
             outputs={
                 "declared": len(artifacts),
@@ -411,13 +447,20 @@ class MetricsPhase(BasePhase):
                 "executed_low_confidence": low_confidence,
                 "stuck_grounded": grounded_stuck,
                 "stuck_declared": declared_stuck,
+                "unit_grain_offered": unit_grain.offered,
+                "unit_grain_rows": unit_grain.rows,
+                # {graph_id: why} — every declared metric that got NO breakdown and
+                # the served reason, so "no rows" is never an unexplained hole.
+                "unit_grain_withheld": unit_grain.withheld,
             },
             records_processed=len(table_ids),
             records_created=len(artifacts),
             warnings=previews,
             summary=(
                 f"{executed}/{len(artifacts)} metrics executed; "
-                f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed"
+                f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed; "
+                f"{unit_grain.offered} broken down per entity "
+                f"({len(unit_grain.withheld)} withheld)"
             ),
         )
 
@@ -633,6 +676,196 @@ def _verdict_row(run_id: str, v: VerdictRow) -> dict[str, object]:
         ),
         "bucket_grain": v.bucket_grain,
     }
+
+
+# ---------------------------------------------------------------------------
+# Unit grain (DAT-671 B1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class UnitGrainOutcome:
+    """What the unit-grain step did — the phase's disclosure of it.
+
+    ``withheld`` is the DISCLOSED-SKIP channel: a target the served verdict does
+    not permit a breakdown for, keyed by metric with the reason. It is a normal
+    outcome (a number that does not partition on an axis should have no
+    breakdown), which is why it is structured output and not a warning.
+    ``failures`` is the loud channel — something that should have worked did not.
+    """
+
+    offered: int = 0
+    rows: int = 0
+    withheld: dict[str, str] = field(default_factory=dict)
+    failures: dict[str, str] = field(default_factory=dict)
+
+
+def _persist_unit_grain(
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    agent: GraphAgent,
+    graphs: dict[str, TransformationGraph],
+    workspace_id: str,
+    run_id: str,
+    catalogue_run_id: str | None,
+) -> UnitGrainOutcome:
+    """Compose and persist each declared metric's per-entity breakdown.
+
+    Gated ENTIRELY by the served per-(target × axis) verdict this run's
+    :func:`_persist_additivity_verdicts` just wrote — there is no local judgment
+    of additivity here, and a missing verdict row is never permission
+    (:func:`~dataraum.graphs.unit_grain.gate_unit_grain`). A withheld target
+    composes NOTHING and says why; it does not fall back to a workspace scalar,
+    which a consumer could not tell apart from a real one-entity breakdown.
+
+    **Fault-isolated, like its two siblings and for the same reason.** This runs
+    on the shared phase session after every metric's execute bookkeeping is
+    recorded there; an unhandled failure would surface as a phase failure and roll
+    that session back, discarding executed lifecycle state over an annotation. So
+    each metric's composition and the final upsert run inside their own SAVEPOINT.
+    The ``flush()`` first is what makes that isolation hold under an autoflushing
+    session: with bookkeeping still pending, an autoflush INSIDE a savepoint would
+    pull it into that savepoint's rollback scope.
+    """
+    from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.unit_grain_db_models import MetricUnitGrain
+    from dataraum.storage.upsert import upsert
+
+    outcome = UnitGrainOutcome()
+    if not graphs:
+        return outcome
+    if not catalogue_run_id:
+        # No promoted begin_session head: the slice catalog that NAMES the entity
+        # axes is read at that run. Nothing can be broken down, and every declared
+        # metric says so rather than silently having no rows.
+        for graph_id in sorted(graphs):
+            outcome.withheld[graph_id] = (
+                "no promoted catalogue head this run, so no served entity axis exists"
+            )
+        return outcome
+
+    session.flush()
+    context = ExecutionContext(duckdb_conn=duckdb_conn, schema_mapping_id=workspace_id)
+    rows: list[dict[str, object]] = []
+    for graph_id in sorted(graphs):
+        try:
+            with session.begin_nested():
+                rows.extend(
+                    _unit_grain_rows(
+                        session,
+                        agent=agent,
+                        context=context,
+                        graph=graphs[graph_id],
+                        graph_id=graph_id,
+                        workspace_id=workspace_id,
+                        run_id=run_id,
+                        catalogue_run_id=catalogue_run_id,
+                        outcome=outcome,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - best-effort; never fail the phase
+            _log.warning("metric_unit_grain_error", graph_id=graph_id, error=str(exc))
+            outcome.failures[graph_id] = str(exc)
+
+    if not rows:
+        _log.info("metric_unit_grain_persisted", count=0, offered=outcome.offered)
+        return outcome
+    try:
+        with session.begin_nested():
+            upsert(
+                session,
+                MetricUnitGrain,
+                rows,
+                index_elements=["target_kind", "target_key", "axis", "entity_value", "run_id"],
+            )
+    except Exception as exc:  # noqa: BLE001 - isolate the write from phase bookkeeping
+        _log.warning("metric_unit_grain_upsert_error", error=str(exc), count=len(rows))
+        return outcome
+    outcome.rows = len(rows)
+    _log.info(
+        "metric_unit_grain_persisted",
+        count=len(rows),
+        offered=outcome.offered,
+        withheld=len(outcome.withheld),
+    )
+    return outcome
+
+
+def _unit_grain_rows(
+    session: Session,
+    *,
+    agent: GraphAgent,
+    context: _ExecutionContext,
+    graph: TransformationGraph,
+    graph_id: str,
+    workspace_id: str,
+    run_id: str,
+    catalogue_run_id: str,
+    outcome: UnitGrainOutcome,
+) -> list[dict[str, object]]:
+    """One metric's persistable breakdown rows, or none with the reason recorded."""
+    from dataraum.graphs.models import StepType
+    from dataraum.graphs.unit_grain import (
+        gate_unit_grain,
+        read_categorical_verdict,
+        resolve_metric_entity_axes,
+    )
+
+    axes = resolve_metric_entity_axes(
+        session, graph=graph, workspace_id=workspace_id, run_id=catalogue_run_id
+    )
+    if not axes:
+        outcome.withheld[graph_id] = (
+            "no served categorical axis is carried by every one of its grounded "
+            "carriers (an ungroundable carrier, a relation outside the analysis, or "
+            "no curated categorical slice they share)"
+        )
+        return []
+    # The catalog's own ranking, judgment before measurement — the workspace says
+    # which axis is the interesting one, so we take its first and do not re-rank.
+    axis = axes[0]
+
+    verdict = read_categorical_verdict(
+        session, target_kind="metric", target_key=graph_id, run_id=run_id
+    )
+    # The carriers a recompute would be rebuilt from, keyed as the drill keys a
+    # measure target: by standard_field.
+    carriers = {
+        step.source.standard_field: read_categorical_verdict(
+            session,
+            target_kind="measure",
+            target_key=step.source.standard_field,
+            run_id=run_id,
+        )
+        for step in graph.steps.values()
+        if step.step_type == StepType.EXTRACT and step.source and step.source.standard_field
+    }
+    decision = gate_unit_grain(axis, verdict, carriers)
+    if not decision.offered:
+        outcome.withheld[graph_id] = decision.reason or "withheld without a reason"
+        return []
+
+    composed = agent.compose_unit_grain(
+        session, graph, context, axis=axis, workspace_id=workspace_id
+    )
+    if not composed.success or composed.value is None:
+        outcome.failures[graph_id] = composed.error or "unit-grain composition failed"
+        return []
+    outcome.offered += 1
+    return [
+        {
+            "run_id": run_id,
+            "target_kind": "metric",
+            "target_key": graph_id,
+            "axis": axis,
+            "entity_value": row.entity_value,
+            "value": row.value,
+            "reconciles": decision.reconciles,
+            "recompute": decision.recompute,
+        }
+        for row in composed.value
+    ]
 
 
 # ---------------------------------------------------------------------------

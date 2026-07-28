@@ -9,6 +9,10 @@ state that falls through a gate becomes a silent offer.
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
+
 import duckdb
 import pytest
 
@@ -18,8 +22,23 @@ from dataraum.graphs.additivity import (
     AxisAdditivity,
     AxisVerdict,
 )
+from dataraum.graphs.agent import ExecutionContext, GraphAgent
 from dataraum.graphs.formula_composer import compose_extract_sql, compose_formula_sql
+from dataraum.graphs.models import (
+    GraphMetadata,
+    GraphSource,
+    GraphStep,
+    OutputDef,
+    OutputType,
+    StepSource,
+    StepType,
+    TransformationGraph,
+)
 from dataraum.graphs.unit_grain import UnitGrainDecision, gate_unit_grain
+from dataraum.query.snippet_models import SQLSnippetRecord
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 # --- the AP fixture: a periodic-snapshot relation with an entity that drops out ---
 # acct_c stops reporting in June, so it has no row at the bound fiscal instant.
@@ -235,3 +254,136 @@ class TestGate:
     def test_a_withheld_decision_must_name_why(self) -> None:
         with pytest.raises(ValueError, match="must name why"):
             UnitGrainDecision(axis="account_id", offered=False)
+
+
+_WORKSPACE = "ws-unit-grain"
+
+
+def _ap_graph() -> TransformationGraph:
+    """A one-extract metric — the AP balance, its extract also the output step."""
+    return TransformationGraph(
+        graph_id="ap_total",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="ap_total", description="", category="liquidity", source=GraphSource.SYSTEM
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR),
+        steps={
+            "accounts_payable": GraphStep(
+                step_id="accounts_payable",
+                step_type=StepType.EXTRACT,
+                source=StepSource(
+                    standard_field="accounts_payable", statement="balance_sheet", predicate=""
+                ),
+                aggregation="sum",
+                output_step=True,
+            )
+        },
+    )
+
+
+def _warm_snippet(session: Session) -> SQLSnippetRecord:
+    """The extract as the warm pass leaves it: parts, plus their SCALAR render.
+
+    ``sql`` is deliberately the one-row render. A unit-grain composition that
+    reached for it instead of re-rendering the parts would produce a single
+    column named ``value`` and no ``account_id`` at all — which is exactly what
+    the assertions below would catch.
+    """
+    row = SQLSnippetRecord(
+        workspace_id=_WORKSPACE,
+        snippet_type="extract",
+        standard_field="accounts_payable",
+        statement="balance_sheet",
+        aggregation="sum",
+        predicate="",
+        schema_mapping_id=_WORKSPACE,
+        sql=compose_extract_sql("SUM(balance)", "ap", _BOUND),
+        description="accounts payable at the fiscal close",
+        source="graph:ap_total",
+        parts={
+            "select": [{"expr": "SUM(balance)", "alias": "value"}],
+            "from": ["ap"],
+            "where": _BOUND,
+        },
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+class TestComposeUnitGrain:
+    """The phase-facing seam: compose one metric at grain, no LLM, no state threading."""
+
+    def _agent(self) -> tuple[GraphAgent, list[Any]]:
+        agent = GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+        authored: list[Any] = []
+
+        def _never(*args: Any, **kwargs: Any) -> Any:
+            authored.append(args)
+            raise AssertionError("unit-grain composition must never author anything")
+
+        agent._generate_sql = _never  # type: ignore[method-assign]
+        return agent, authored
+
+    def test_compose_unit_grain_reuses_the_binding_map(
+        self, session: Session, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        """It re-renders what the authoring pass already decided — nothing new.
+
+        The binding map's outcome IS the warm snippet: its parts, its relation, its
+        predicates. Composing at grain re-renders those, so the per-entity numbers
+        are a partition of the very scalar the metric executed, and no concept can
+        ground differently just because someone asked for a breakdown. The LLM
+        boundary is wired to explode: reaching it at all is the failure.
+        """
+        _warm_snippet(session)
+        agent, authored = self._agent()
+
+        composed = agent.compose_unit_grain(
+            session,
+            _ap_graph(),
+            ExecutionContext(duckdb_conn=con, schema_mapping_id=_WORKSPACE),
+            axis="account_id",
+            workspace_id=_WORKSPACE,
+        )
+
+        assert composed.success, composed.error
+        assert authored == []
+        rows = {r.entity_value: r.value for r in composed.value or []}
+        # The same 210.0 the scalar reports, partitioned — and acct_c, which has no
+        # row at the bound instant, is absent rather than zero.
+        assert rows == {"acct_a": Decimal("150.0"), "acct_b": Decimal("60.0")}
+
+    def test_an_ungrounded_metric_refuses_rather_than_falling_back_to_the_scalar(
+        self, session: Session, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        """No snippet, no breakdown — never a quietly-degraded workspace scalar."""
+        agent, _ = self._agent()
+        composed = agent.compose_unit_grain(
+            session,
+            _ap_graph(),
+            ExecutionContext(duckdb_conn=con, schema_mapping_id=_WORKSPACE),
+            axis="account_id",
+            workspace_id=_WORKSPACE,
+        )
+        assert not composed.success
+        assert "cannot be composed per 'account_id'" in (composed.error or "")
+
+    def test_a_snippet_without_parts_cannot_be_regrouped(
+        self, session: Session, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Parts are the artifact; the stored string is never edited into a grain."""
+        snippet = _warm_snippet(session)
+        snippet.parts = None
+        session.flush()
+
+        agent, _ = self._agent()
+        composed = agent.compose_unit_grain(
+            session,
+            _ap_graph(),
+            ExecutionContext(duckdb_conn=con, schema_mapping_id=_WORKSPACE),
+            axis="account_id",
+            workspace_id=_WORKSPACE,
+        )
+        assert not composed.success

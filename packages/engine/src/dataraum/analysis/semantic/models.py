@@ -369,19 +369,47 @@ class TableSynthesisOutput(BaseModel):
         is not treated as a period. The role only ever tightens a verdict, so an
         absent witness must fail safe (→ ``FACT``).
 
-        Known under-claim, deliberate: a calendar carrying NO date-typed column at
-        all (only smart integers, ``date_key = 20240131``) has no event
-        ``TimeColumn`` to witness and still resolves ``FACT``. Closing that is an
-        LLM-contract change — never a name heuristic.
+        The returned keys are the grain columns that are THEMSELVES unique, not
+        the whole grain: on a composite-grained dimension only some legs identify
+        a row, and handing back the rest lets a fact that FKs, say, the ENTITY leg
+        of ``dim_entity_period(entity_id, period_id)`` read as a snapshot and lose
+        its COUNT time axis. For the single-column calendar the narrowing is a
+        no-op (a single-column grain IS the unique key).
+
+        **Known limits.** Three under-claims (all resolve ``FACT``, the safe
+        direction, since the role only ever tightens a verdict) and one
+        over-claim that cannot be closed here:
+
+        - a calendar carrying NO date-typed column at all (only smart integers,
+          ``date_key = 20240131``) has no event ``TimeColumn`` to witness;
+        - a COMPOSITE-keyed calendar (``(fiscal_year, fiscal_period)``) has no
+          individually unique grain column — that is what makes the key
+          composite — so it never registers. Per-column profiles carry no JOINT
+          cardinality, so this is not fixable from this input;
+        - a dimension whose columns were never profiled (a run over the
+          ``limits.max_columns`` gate profiles a subset) has no witness, and
+          silently does not fire.
+        - **Over-claim:** the soundness case rests on the data PLUS an
+          assumption — that a non-calendar dimension's event dates COLLIDE. A
+          small dimension with a genuinely unique event date (``dim_product``
+          keyed by product with a distinct ``launch_date`` per row) satisfies the
+          witness and false-fires as a period. Narrowing the keys does not close
+          it: its grain column is unique too.
+
+        Closing the over-claim needs an LLM-CONTRACT change — the model naming
+        its period dimension, with this cardinality witness retained as the
+        soundness gate on that claim. Never a name or shape heuristic.
         """
         periods: dict[str, set[str]] = {}
         for table in self.tables:
+            # A grainless dimension has no key to point an FK at; nothing to do.
             if table.is_fact_table or not table.grain:
                 continue
             unique = unique_columns.get(table.table_name, frozenset())
             events = {tc.column for tc in table.time_columns if tc.role == "event"}
-            if events & unique:
-                periods[table.table_name] = set(table.grain)
+            keys = set(table.grain) & set(unique)
+            if keys and events & unique:
+                periods[table.table_name] = keys
         return periods
 
     def period_axis_columns(
@@ -407,9 +435,14 @@ class TableSynthesisOutput(BaseModel):
         Hierarchy edges are self-referential parent/child, never a period bridge,
         so only ``foreign_key`` relationships are followed, and only one hop: a
         period reached through an intermediate table is that table's grain, not
-        this one's. The anchor pair is the whole FK: a dimension that passes the
-        one-row-per-period witness is keyed BY the period, so there is no
-        composite ``key_columns`` shape to follow into a calendar.
+        this one's.
+
+        Only the anchor pair is examined, and the composite ``key_columns`` shape
+        is NOT walked. Composite-keyed calendars do exist — that is not the
+        reason. The reason is that a composite-keyed dimension has no
+        individually unique grain column, so it never registers in
+        ``period_dimensions`` at all; there would be nothing for the extra pairs
+        to resolve against. See that method's known limits.
         """
         names = {tc.column for tc in table.time_columns if tc.role == "event"}
         for rel in self.relationships:

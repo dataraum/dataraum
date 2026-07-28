@@ -256,10 +256,24 @@ class SemanticAgent(LLMFeature):
         not one row per period. Comparing the two counts the profile already
         carries is the exact statement, needs no threshold, and rules out nulls
         on the way.
+
+        For the same reason, do NOT reach for the persisted
+        ``StatisticalProfile.is_unique`` column: it is computed against the
+        non-null count too (``analysis/statistics/profiler.py``,
+        ``enriched_views_phase``, ``surrogate_mint_phase`` all derive it that
+        way), so it carries exactly the null-blindness this avoids.
+
+        A run over the ``limits.max_columns`` gate profiles only a subset of
+        columns; an unprofiled column simply never appears here, and the caller
+        treats an absent witness as "not a period" (fail safe).
         """
         unique: dict[str, set[str]] = {}
         for profile in profiles:
-            if profile.total_count and profile.distinct_count == profile.total_count:
+            # `> 0` explicitly: an EMPTY table is vacuously all-distinct
+            # (0 == 0) and would mint a witness for every one of its columns.
+            # The placeholder-profile path (no statistics yet) relies on this —
+            # it sets distinct_count=0, which would otherwise match a 0 row count.
+            if profile.total_count > 0 and profile.distinct_count == profile.total_count:
                 unique.setdefault(profile.column_ref.table_name, set()).add(
                     profile.column_ref.column_name
                 )

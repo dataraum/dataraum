@@ -174,28 +174,11 @@ def test_a_dimension_whose_date_repeats_is_not_a_period() -> None:
     assert _role_of(synthesis, "subscriptions", witness) == TableRole.FACT
 
 
-def test_the_same_dimension_with_a_unique_date_is_a_period() -> None:
-    # The converse, isolating the witness as the ONLY difference: identical
-    # synthesis, one extra unique column, opposite role.
-    synthesis = TableSynthesisOutput(
-        tables=[
-            _table("subscriptions", is_fact=True, grain=["customer_id"]),
-            _table(
-                "dim_customer",
-                is_fact=False,
-                grain=["customer_id"],
-                time_columns=[_time("signup_date")],
-            ),
-        ],
-        relationships=[_fk("subscriptions", "customer_id", "dim_customer", "customer_id")],
-    )
-    witness = {"dim_customer": {"customer_id", "signup_date"}}
-    assert _role_of(synthesis, "subscriptions", witness) == TableRole.PERIODIC_SNAPSHOT
-
-
 def test_missing_witness_fails_safe_to_fact() -> None:
-    # An unprofiled dimension has no witness — the role only ever tightens a
-    # verdict, so an absent witness must never mint a snapshot.
+    # The converse of test_period_fk_in_grain_is_a_periodic_snapshot, isolating
+    # the witness as the ONLY difference: the SAME calendar synthesis, witness
+    # withheld (unprofiled dimension), opposite role. The role only ever tightens
+    # a verdict, so an absent witness must never mint a snapshot.
     synthesis = TableSynthesisOutput(
         tables=[
             _table("balances", is_fact=True, grain=["account_id", "period_id"]),
@@ -204,6 +187,51 @@ def test_missing_witness_fails_safe_to_fact() -> None:
         relationships=[_fk("balances", "period_id", "dim_period", "period_id")],
     )
     assert _role_of(synthesis, "balances", {}) == TableRole.FACT
+
+
+def test_a_fact_keyed_on_the_entity_leg_of_a_bridge_is_not_a_snapshot() -> None:
+    # Only the grain columns that are THEMSELVES unique count as period keys.
+    # dim_entity_period is one row per (entity, period) and happens to carry a
+    # unique observed_date; handing back its WHOLE grain would let a fact that
+    # FKs only the ENTITY leg read as a snapshot and lose its COUNT time axis.
+    synthesis = TableSynthesisOutput(
+        tables=[
+            _table("readings", is_fact=True, grain=["entity_id", "meter_id"]),
+            _table(
+                "dim_entity_period",
+                is_fact=False,
+                grain=["entity_id", "period_id"],
+                time_columns=[_time("observed_date")],
+            ),
+        ],
+        relationships=[_fk("readings", "entity_id", "dim_entity_period", "entity_id")],
+    )
+    # Neither grain leg identifies a row on its own; only the date does.
+    witness = {"dim_entity_period": {"observed_date"}}
+    assert _role_of(synthesis, "readings", witness) == TableRole.FACT
+
+
+def test_a_composite_keyed_calendar_under_claims_to_fact() -> None:
+    # A genuine fiscal calendar keyed (fiscal_year, fiscal_period) with a unique
+    # period_end_date. NEITHER key column is individually unique — that is what
+    # makes the key composite — and a per-column profile carries no JOINT
+    # cardinality, so the dimension never registers and the fact stays a FACT.
+    # A documented under-claim, not a wrong answer: it errs toward leaving COUNT
+    # its time axis rather than denying it on an unproven period.
+    synthesis = TableSynthesisOutput(
+        tables=[
+            _table("balances", is_fact=True, grain=["account_id", "fy", "fp"]),
+            _table(
+                "dim_fiscal",
+                is_fact=False,
+                grain=["fiscal_year", "fiscal_period"],
+                time_columns=[_time("period_end_date")],
+            ),
+        ],
+        relationships=[_fk("balances", "fy", "dim_fiscal", "fiscal_year")],
+    )
+    witness = {"dim_fiscal": {"period_end_date"}}
+    assert _role_of(synthesis, "balances", witness) == TableRole.FACT
 
 
 def test_attribute_dated_dimension_is_not_a_period_axis() -> None:

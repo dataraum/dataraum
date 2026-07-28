@@ -128,9 +128,6 @@ class TestNearTieAbstention:
         # width 3: R_flow = 0.30 vs R_stock = 0.20 — stock wins, but by a factor
         # of 1.5, inside the band this module already calls non-discriminating.
         # A bare `<` reported CUMULATIVE here with full confidence.
-        # (`approx` on the residuals: the plateau numbers are exactly
-        # representable today, but the RATIO is what this pins — an exact-equality
-        # assert would turn any future fixture tweak into a float puzzle.)
         y, m = _plateau(3)
         r = classify_entity(y, m)
         assert r.r_flow == pytest.approx(0.30)

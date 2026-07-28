@@ -22,7 +22,7 @@ from dataraum.analysis.validation.models import (
     ValidationSpec,
     ValidationStatus,
 )
-from dataraum.analysis.validation.validation_store import persist_generated_validations
+from dataraum.analysis.validation.validation_store import stage_induced_validations
 from dataraum.lifecycle import ArtifactState, LifecycleArtifact
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.validation_phase import ValidationPhase
@@ -178,14 +178,14 @@ class TestValidationPhaseOutcomes:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, workspace_table: Table
     ) -> None:
         """No per-phase head resolution (ADR-0008): an unthreaded pin is a wiring bug."""
-        # Persist ONE synthetic generated validation so the declared set is
-        # non-empty (DAT-735) — the phase must reach the base_runs check, not
-        # short-circuit on "no_declared_validations". DAT-725 band 3 retired
-        # finance's shipped validations/ directory, so ensure_validations_seeded
-        # would seed nothing here; persist_generated_validations seeds the typed
-        # home directly instead, without touching the (now-deleted) real config tree.
-        persist_generated_validations(session, "finance", [_spec("double_entry")])
+        # Stage ONE synthetic generated validation so the declared set is non-empty
+        # (DAT-735) — the phase must reach the base_runs check, not short-circuit on
+        # "no_declared_validations". DAT-725 band 3 retired finance's shipped
+        # validations/ directory, so ensure_validations_seeded would seed nothing
+        # here; staging under THIS run's id (DAT-877) is what induction does, and the
+        # phase's run-scoped read picks it up without touching the real config tree.
         ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        stage_induced_validations(session, ctx.require_run_id(), "finance", [_spec("double_entry")])
         ctx.config = {"vertical": "finance"}  # no base_runs
 
         result = ValidationPhase()._run(ctx)

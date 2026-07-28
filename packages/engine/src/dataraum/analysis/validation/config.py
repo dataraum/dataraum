@@ -35,6 +35,7 @@ def load_all_validation_specs(
     session: Session | None = None,
     *,
     verticals_dir: Path | None = None,
+    run_id: str | None = None,
 ) -> dict[str, ValidationSpec]:
     """Load a vertical's validation specs — DB home ``⊕`` teach overlay (DAT-735).
 
@@ -49,6 +50,12 @@ def load_all_validation_specs(
     warn about). An unknown / framed vertical with no rows and no overlay resolves
     to an EMPTY dict, never raises — "no declared validations" is the phase tier's
     loud outcome.
+
+    ``run_id`` is the IN-RUN read (DAT-877): an operating_model run's own consumers —
+    the validation phase and the cross_table_consistency detector that scores its
+    results — must see the generation this run's induction STAGED, which does not
+    reach the vocabulary home until the run promotes. Head-resolved readers (context
+    assembly, the cockpit surfaces) pass nothing and see only the promoted vocabulary.
 
     Tests (``verticals_dir`` given): reads raw YAML under that root and bypasses BOTH
     the DB home and the overlay.
@@ -65,7 +72,7 @@ def load_all_validation_specs(
         base = {
             "validations": [
                 spec.model_dump(mode="json")
-                for spec in load_workspace_validations(session, vertical)
+                for spec in load_workspace_validations(session, vertical, run_id=run_id)
             ]
         }
         collection = apply_overlay(f"verticals/{vertical}/validations", base)
@@ -83,7 +90,11 @@ def load_all_validation_specs(
 
 
 def get_validation_specs_for_cycles(
-    cycle_types: list[str], vertical: str, session: Session | None = None
+    cycle_types: list[str],
+    vertical: str,
+    session: Session | None = None,
+    *,
+    run_id: str | None = None,
 ) -> list[ValidationSpec]:
     """Get validation specs relevant to detected cycle types.
 
@@ -95,11 +106,15 @@ def get_validation_specs_for_cycles(
         cycle_types: Detected cycle canonical types (e.g. ['journal_entry_cycle'])
         vertical: Vertical name (e.g. 'finance')
         session: DB session for the typed home read (production).
+        run_id: The operating_model run to read the vocabulary at (DAT-877). The
+            cycle-health caller scopes its cycles AND validation results to one run,
+            so the specs must come from that same run's generation — head-free here
+            would score this run's results against the previous vocabulary.
 
     Returns:
         List of matching ValidationSpecs
     """
-    all_specs = load_all_validation_specs(vertical, session)
+    all_specs = load_all_validation_specs(vertical, session, run_id=run_id)
     cycle_set = set(cycle_types)
     return [
         spec

@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from temporalio.exceptions import ApplicationError
 
 from dataraum.analysis.semantic.concept_store import require_active_vertical
+from dataraum.analysis.validation.validation_store import materialize_induced_validations
 from dataraum.core.config import load_phase_config, load_pipeline_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
@@ -801,6 +802,12 @@ def promote_operating_model_run(manager: ConnectionManager, run: RunRef) -> int:
         )
 
     with manager.session_scope() as session:
+        # Land this run's staged induction in the SAME transaction as the head flip
+        # (DAT-877): the validation vocabulary, the executed results and the detected
+        # cycles must become current at one instant. Induction stages run-versioned
+        # precisely so an unpromoted run never publishes a generation whose evidence
+        # does not exist — a run that dies before here leaves the vocabulary untouched.
+        materialized = materialize_induced_validations(session, run_id)
         _upsert_head(
             session,
             catalog_head_target(),
@@ -809,7 +816,7 @@ def promote_operating_model_run(manager: ConnectionManager, run: RunRef) -> int:
             datetime.now(UTC),
         )
 
-    logger.info("operating_model_promote_done", run_id=run_id)
+    logger.info("operating_model_promote_done", run_id=run_id, validations=materialized)
     return 1
 
 

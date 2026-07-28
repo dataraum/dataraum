@@ -91,6 +91,15 @@ _CATALOG_GRAIN: dict[str, str] = {
     "measure_aggregation_lineage": "catalog",  # begin_session aggregation_lineage (DAT-491)
     "driver_rankings": "catalog",  # begin_session driver_rankings (DAT-546)
     "lifecycle_artifacts": "operating_model",
+    # The induction staging home (DAT-877): an operating_model run's proposed
+    # validation set, materialized into the ``validations`` vocabulary by that run's
+    # terminal promote. Head-gated like the rest of the family, so the read surface
+    # shows the PROMOTED run's induction and never an in-flight one.
+    "induced_validations": "operating_model",
+    # The induction SEAL (DAT-877) — one row per induction turn that completed,
+    # which is what distinguishes an authoritative zero-proposal set (supersede)
+    # from a degraded turn that never staged (keep the prior generation).
+    "induction_runs": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
     "metric_additivity": "operating_model",  # operating_model metrics phase (DAT-716)

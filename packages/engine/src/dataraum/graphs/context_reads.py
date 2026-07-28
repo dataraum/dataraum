@@ -409,7 +409,14 @@ def build_execution_context(
     from dataraum.analysis.validation.db_models import ValidationResultRecord
     from dataraum.analysis.validation.evaluate import evaluate_validation
 
-    val_specs = load_all_validation_specs(vertical, session) if vertical else {}
+    # Specs are read at the SAME run as the results below (DAT-877): the results are
+    # scoped to ``om_run_id``, so reading the vocabulary head-free would join this
+    # run's results against the PREVIOUS generation's specs — a newly-induced
+    # validation_id silently drops at the spec lookup, and an id present in both
+    # generations with a drifted tolerance/severity gets evaluated against the stale
+    # one. Unconditional is safe post-promote: the promoted run's staged set IS the
+    # materialized vocabulary.
+    val_specs = load_all_validation_specs(vertical, session, run_id=om_run_id) if vertical else {}
     validation_contexts: list[ValidationContext] = []
     # No specs (no vertical) ⇒ every row would be skipped at the spec lookup, so
     # skip the read entirely rather than scan validation_results for nothing.

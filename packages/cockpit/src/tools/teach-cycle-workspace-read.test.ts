@@ -1,14 +1,28 @@
-// Unit tests for readShippedCycles (DAT-881 — reads the typed cycle_types home).
-// Split from teach-cycle.test.ts because this one DB-mocks the reader-role
-// metadata client; the rest of teach_cycle's tests inject a fake reader and never
-// touch this module's real implementation.
+// Unit tests for readWorkspaceCycleTypes (DAT-881 — the WORKSPACE reader over
+// the typed cycle_types home). Split from teach-cycle.test.ts because this one
+// DB-mocks the reader-role metadata client; the rest of teach_cycle's tests
+// inject a fake reader and never touch this module's real implementation.
+// Renamed from teach-cycle-shipped-read.test.ts (DAT-881 rework): the function
+// under test is no longer named `readShippedCycles` — that name now belongs to
+// the restored LIBRARY reader (fs/YAML), which this file does NOT cover (its
+// narrowing is unit-tested in teach-cycle.test.ts; its own fs read is
+// browser/integration-smoke territory).
 
 import { describe, expect, it, vi } from "vitest";
 
-// `readShippedCycles` lazily imports the reader-role metadata client (DAT-881) —
-// stub it so the unit test drives a fixed row set (or a forced read error) instead
-// of a real Postgres. The `#/` alias is load-bearing: a relative `./db/...` mock
-// silently would not intercept (mirrors prompts/conventions.test.ts's pattern).
+// Importing teach-cycle.ts (for readWorkspaceCycleTypes) also pulls in the
+// restored LIBRARY reader's top-level `import { config } from "../config"` —
+// mock it (config.ts throws on missing env with no .env in this worktree) so
+// the module loads cleanly; this test never touches dataraumConfigPath.
+vi.mock("#/config", () => ({ config: { dataraumConfigPath: "/unused" } }));
+
+// `readWorkspaceCycleTypes` lazily imports the reader-role metadata client
+// (DAT-881) — stub it so the unit test drives a fixed row set (or a forced read
+// error) instead of a real Postgres. The `#/` alias is load-bearing: a relative
+// `./db/...` mock silently would not intercept (mirrors
+// prompts/conventions.test.ts's pattern). The chain includes `.orderBy()` (item
+// 5 — the retired fs read was deterministic; a DB read needs an explicit order)
+// so the mock must resolve there, not at `.where()`.
 const mockState = vi.hoisted(() => ({
 	rows: [] as Array<Record<string, unknown>>,
 	error: null as Error | null,
@@ -17,18 +31,20 @@ vi.mock("#/db/metadata/client", () => ({
 	metadataDb: {
 		select: () => ({
 			from: () => ({
-				where: async () => {
-					if (mockState.error) throw mockState.error;
-					return mockState.rows;
-				},
+				where: () => ({
+					orderBy: async () => {
+						if (mockState.error) throw mockState.error;
+						return mockState.rows;
+					},
+				}),
 			}),
 		}),
 	},
 }));
 
-import { readShippedCycles } from "./teach-cycle";
+import { readWorkspaceCycleTypes } from "./teach-cycle";
 
-describe("readShippedCycles (DAT-881 — reads the typed cycle_types home)", () => {
+describe("readWorkspaceCycleTypes (DAT-881 — reads the typed cycle_types home)", () => {
 	it("maps typed rows to ShippedCycleSpec", async () => {
 		mockState.error = null;
 		mockState.rows = [
@@ -45,7 +61,7 @@ describe("readShippedCycles (DAT-881 — reads the typed cycle_types home)", () 
 				completionIndicators: null,
 			},
 		];
-		const shipped = await readShippedCycles("finance");
+		const shipped = await readWorkspaceCycleTypes("finance");
 		expect(shipped).toEqual([
 			{
 				name: "order_to_cash",
@@ -65,7 +81,7 @@ describe("readShippedCycles (DAT-881 — reads the typed cycle_types home)", () 
 	it("returns [] when the vocabulary is unseeded (empty read)", async () => {
 		mockState.error = null;
 		mockState.rows = [];
-		expect(await readShippedCycles("finance")).toEqual([]);
+		expect(await readWorkspaceCycleTypes("finance")).toEqual([]);
 	});
 
 	it(
@@ -73,7 +89,7 @@ describe("readShippedCycles (DAT-881 — reads the typed cycle_types home)", () 
 			"affordance is a nice-to-have, not load-bearing)",
 		async () => {
 			mockState.error = new Error("connection reset");
-			expect(await readShippedCycles("finance")).toEqual([]);
+			expect(await readWorkspaceCycleTypes("finance")).toEqual([]);
 			mockState.error = null;
 		},
 	);

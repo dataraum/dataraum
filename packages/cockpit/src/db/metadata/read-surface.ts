@@ -16,7 +16,15 @@
 // DELETE an entry here once `db:pull:metadata` regen supersedes it (the generated
 // `./schema.ts` will carry the same columns, view-scoped identically) — this file
 // is scaffolding for the gap between an engine schema change landing and the
-// mirror catching up, not a permanent second source of truth.
+// mirror catching up, not a permanent second source of truth. Repoint these two
+// call sites to the generated `./schema.ts` export at that point:
+//   - `cycleTypesRead` → teach-cycle.ts:53 (`readWorkspaceCycleTypes`'s import)
+//   - `metricDagRead`  → teach-metric.ts:53 (`readWorkspaceMetricDag`'s import)
+// `metricDagRead` OVERLAPS the generated `./schema.ts` `metrics` export today
+// (both carry graphId/name/category) — at regen, drop `metricDagRead` entirely
+// and read `description`/`output`/`dependencies` as NEW fields added onto that
+// SAME generated `metrics` export, rather than keeping two overlapping
+// declarations of the same table alive.
 //
 // Both views ride `metadataDb` (the READER role, ./client.ts) — its search_path is
 // pinned to the promoted-read schema, already scoped to the workspace's bound
@@ -27,7 +35,11 @@
 import { json, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 /** Raw `cycle_types` (DAT-881) — the shipped cycle-type vocabulary. SELECT only;
- * 'seed' is the table's sole writer (engine-side), no cockpit write path exists. */
+ * 'seed' is the table's sole writer (engine-side), no cockpit write path exists.
+ * Backs `readWorkspaceCycleTypes` (teach-cycle.ts) — the WORKSPACE reader ONLY
+ * (see that module's header for the LIBRARY/WORKSPACE split); the LIBRARY
+ * reader (`readShippedCycles`) reads the vertical's cycles.yaml off disk and
+ * never touches this table. */
 export const cycleTypesRead = pgTable("cycle_types", {
 	name: varchar("name"),
 	description: text("description"),
@@ -43,11 +55,16 @@ export const cycleTypesRead = pgTable("cycle_types", {
 });
 
 /** Raw `metrics` (DAT-882) — ONLY the description/DAG-body columns
- * `teach-metric.ts` / `shipped-metric-dag.ts` need (the generated `./schema.ts`
+ * `readWorkspaceMetricDag` (teach-metric.ts) needs (the generated `./schema.ts`
  * `metrics` view already carries graphId/name/category etc. — this is a distinct,
- * narrower hand-declaration, not a replacement of that export). `output` /
- * `dependencies` stay `unknown` at this boundary (rule 11) — opaque pass-through
- * to the induction few-shot / override-shadow canvas, never inspected here. */
+ * narrower hand-declaration, not a replacement of that export). Backs the
+ * WORKSPACE reader ONLY (see teach-metric.ts's module header for the
+ * LIBRARY/WORKSPACE split) — consumed by `readWorkspaceMetricDag`'s two callers
+ * (`teachMetric`'s shadow detection + `/api/shipped-metric-dag`); the LIBRARY
+ * reader (`readShippedMetrics`) rglobs the vertical's metrics/**​/*.yaml off disk
+ * and never touches this table. `output` / `dependencies` stay `unknown` at
+ * this boundary (rule 11) — opaque pass-through to the induction few-shot /
+ * override-shadow canvas, never inspected here. */
 export const metricDagRead = pgTable("metrics", {
 	graphId: varchar("graph_id"),
 	name: varchar("name"),

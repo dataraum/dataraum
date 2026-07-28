@@ -54,11 +54,13 @@ _SCHEMA = "ws-collision"
 _SAME = 'SELECT SUM("amount") AS value FROM enriched_gl WHERE "period" = \'2024-12\''
 
 
-def _extract(step_id: str, standard_field: str) -> GraphStep:
+def _extract(step_id: str, standard_field: str, *, predicate: str = "") -> GraphStep:
     return GraphStep(
         step_id=step_id,
         step_type=StepType.EXTRACT,
-        source=StepSource(standard_field=standard_field, statement="balance_sheet"),
+        source=StepSource(
+            standard_field=standard_field, statement="balance_sheet", predicate=predicate
+        ),
         aggregation="sum",
         output_step=True,
     )
@@ -84,7 +86,9 @@ def _nodes_for(*concepts: str) -> dict[NodeKey, WarmNode]:
     return nodes
 
 
-def _save(session: Session, concept: str, sql: str, *, flush: bool = True) -> None:
+def _save(
+    session: Session, concept: str, sql: str, *, flush: bool = True, predicate: str = ""
+) -> None:
     SnippetLibrary(session, workspace_id=_WS).save_snippet(
         snippet_type="extract",
         sql=sql,
@@ -94,6 +98,7 @@ def _save(session: Session, concept: str, sql: str, *, flush: bool = True) -> No
         standard_field=concept,
         statement="balance_sheet",
         aggregation="sum",
+        predicate=predicate,
     )
     if flush:
         session.flush()
@@ -367,6 +372,7 @@ class TestResolveGroundingCollisions:
                     standard_field=concept,
                     statement="balance_sheet",
                     aggregation="sum",
+                    predicate="",
                 )
                 is None
             )
@@ -625,3 +631,87 @@ class TestRetryContextJoint:
         # The collision-specific steer, not the generic revise-or-abstain one.
         assert "distinguishes it from" in rendered
         assert "one-sided data" not in rendered
+
+
+class TestRestrictionSiblingsAreDistinctRows:
+    """A declared row restriction is part of the key at BOTH guard seams (DAT-838).
+
+    The pair here is one concept grounded twice — unrestricted, and restricted to
+    a subset. They are different measurements sharing field, statement and
+    aggregation, so every lookup that resolves a step to "its" snippet has to
+    carry the predicate or it silently resolves to the sibling.
+    """
+
+    _RESTRICTION = "rows that are reconciled"
+
+    def _restricted_node(self) -> WarmNode:
+        graph = _graph(
+            "reconciled_assets",
+            {"ca": _extract("ca", "current_assets", predicate=self._RESTRICTION)},
+        )
+        _, nodes = build_warm_dag({"reconciled_assets": graph})
+        return next(iter(nodes.values()))
+
+    def test_demotion_flags_the_collided_row_not_its_innocent_sibling(
+        self, session: Session
+    ) -> None:
+        """The WRITE path, and the worst failure in the family.
+
+        Demoting a restricted node without its predicate resolved to the
+        UNRESTRICTED sibling and wrote DISJOINT_COLLISION onto it — a false
+        verdict against a healthy grounding, which then left reuse forever, while
+        the row that actually collided stayed healthy and kept being served. Two
+        wrong outcomes from one missing kwarg.
+        """
+        _save(session, "current_assets", "SELECT 1 AS value")  # innocent, unrestricted
+        _save(session, "current_assets", _SAME, predicate=self._RESTRICTION)  # collided
+
+        flag_collision(
+            session,
+            self._restricted_node(),
+            workspace_id=_WS,
+            schema_mapping_id=_SCHEMA,
+            reason="'current_assets' collided with a disjoint concept",
+        )
+        session.flush()
+
+        rows = {
+            r.predicate: r
+            for r in session.execute(
+                select(SQLSnippetRecord).where(SQLSnippetRecord.standard_field == "current_assets")
+            )
+            .scalars()
+            .all()
+        }
+        assert rows[self._RESTRICTION].failure_count == 1
+        assert (
+            rows[self._RESTRICTION].provenance["failure_mode"]
+            == SnippetFailureMode.DISJOINT_COLLISION.value
+        )
+        assert rows[""].failure_count == 0, "the unrestricted sibling is untouched"
+        assert rows[""].provenance is None
+
+    def test_the_guard_reads_the_restricted_rows_own_sql(self, session: Session) -> None:
+        """The READ path: the comparison set carries what the step actually grounded.
+
+        Reading without the predicate handed back the sibling's SQL — so a real
+        collision was compared against the wrong statement, and a restricted node
+        whose sibling did not exist dropped out of the set entirely and passed
+        VACUOUSLY.
+        """
+        from dataraum.graphs.grounding_collision import _persisted_extracts
+
+        _save(session, "current_assets", "SELECT 1 AS value")
+        _save(session, "current_assets", _SAME, predicate=self._RESTRICTION)
+
+        node = self._restricted_node()
+        key = next(iter(build_warm_dag({"g": _graph("g", {"ca": node.step})})[1]))
+        extracts = _persisted_extracts(
+            {key: NodeDecision(grounded=True)},
+            {key: node},
+            session,
+            _WS,
+            _SCHEMA,
+        )
+
+        assert [e.sql for e in extracts] == [_SAME]

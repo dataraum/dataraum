@@ -350,7 +350,9 @@ class TestComposeUnitGrain:
 
         assert composed.success, composed.error
         assert authored == []
-        rows = {r.entity_value: r.value for r in composed.value or []}
+        assert composed.value is not None
+        assert composed.value.truncated_at is None
+        rows = {r.entity_value: r.value for r in composed.value.rows}
         # The same 210.0 the scalar reports, partitioned — and acct_c, which has no
         # row at the bound instant, is absent rather than zero.
         assert rows == {"acct_a": Decimal("150.0"), "acct_b": Decimal("60.0")}
@@ -387,3 +389,171 @@ class TestComposeUnitGrain:
             workspace_id=_WORKSPACE,
         )
         assert not composed.success
+
+    def test_a_null_entity_refuses_the_whole_breakdown(
+        self, session: Session, con: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Rows the axis does not name make the WHOLE breakdown unpublishable.
+
+        Two dishonest options and one honest one. Labelling the NULL group invents
+        an entity — ``str(None)`` writes the literal string "None" as a business
+        key. Dropping it silently withholds part of a total the served verdict
+        says RECONCILES, so the parts no longer sum and nothing says why. The
+        breakdown is refused whole instead.
+        """
+        con.execute("INSERT INTO ap VALUES (NULL, DATE '2024-12-01', 77.0)")
+        _warm_snippet(session)
+        agent, _ = self._agent()
+
+        composed = agent.compose_unit_grain(
+            session,
+            _ap_graph(),
+            ExecutionContext(duckdb_conn=con, schema_mapping_id=_WORKSPACE),
+            axis="account_id",
+            workspace_id=_WORKSPACE,
+        )
+
+        assert not composed.success
+        assert "no 'account_id' value" in (composed.error or "")
+
+    def test_a_breakdown_past_the_bound_is_truncated_and_says_so(
+        self, session: Session, con: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cost bound cuts, in entity order, and never silently.
+
+        A categorical axis can carry hundreds of thousands of distinct entities on
+        a real fact; composed unbounded, one metric would load them all into
+        Python and write them all. The cut is ORDERED so the prefix is
+        reproducible run-to-run, and the count of what was left out rides back for
+        the caller to disclose.
+        """
+        monkeypatch.setattr("dataraum.graphs.unit_grain.UNIT_GRAIN_MAX_ENTITIES", 2)
+        con.execute(
+            "INSERT INTO ap VALUES ('acct_d', DATE '2024-12-01', 5.0),"
+            " ('acct_e', DATE '2024-12-01', 6.0)"
+        )
+        _warm_snippet(session)
+        agent, _ = self._agent()
+
+        composed = agent.compose_unit_grain(
+            session,
+            _ap_graph(),
+            ExecutionContext(duckdb_conn=con, schema_mapping_id=_WORKSPACE),
+            axis="account_id",
+            workspace_id=_WORKSPACE,
+        )
+
+        assert composed.success, composed.error
+        assert composed.value is not None
+        assert composed.value.truncated_at == 2
+        assert composed.value.total_entities == 4
+        # ORDERED, so the same two entities every run — not whatever the scan emits.
+        assert [r.entity_value for r in composed.value.rows] == ["acct_a", "acct_b"]
+
+
+class TestEntityAxisOrdering:
+    """Which axis a breakdown lands on must not depend on row order (DAT-671 B1).
+
+    The axis is persisted per target, so an ordering that flips between runs on
+    identical data silently re-keys the breakdown — the codebase's known
+    ``.limit(1)``-without-ORDER-BY class, one layer up. The ranking is the
+    catalog's own (``curated_slices``), not a private copy: judged tier, then
+    measured relevance, then NAME as the tiebreak that makes it total.
+    """
+
+    _TABLE = "tbl-axes"
+
+    def _seed(self, session: Session, rows: list[tuple[str, str | None, float | None]]) -> None:
+        from dataraum.analysis.slicing.db_models import SliceDefinition
+        from dataraum.storage import Column, Source, Table
+
+        source = Source(name="axes_src", source_type="csv")
+        session.add(source)
+        session.flush()
+        table = Table(
+            table_id=self._TABLE,
+            source_id=source.source_id,
+            table_name="facts",
+            layer="typed",
+            duckdb_path="facts",
+            row_count=1,
+        )
+        session.add(table)
+        session.flush()
+        for position, (name, interest, relevance) in enumerate(rows):
+            column = Column(
+                table_id=self._TABLE,
+                column_name=name,
+                column_position=position,
+                raw_type="VARCHAR",
+                resolved_type="VARCHAR",
+            )
+            session.add(column)
+            session.flush()
+            session.add(
+                SliceDefinition(
+                    run_id="run-axes",
+                    table_id=self._TABLE,
+                    column_id=column.column_id,
+                    column_name=name,
+                    slice_type="categorical",
+                    slice_interest=interest,
+                    slice_relevance=relevance,
+                    detection_source="llm",
+                )
+            )
+        session.flush()
+
+    def test_judged_tier_then_relevance_then_name(self, session: Session) -> None:
+        """Pins the contract; note honestly what this harness canNOT prove.
+
+        Reverting to the pre-fix ranking (the hand-rolled 2-tuple with no name
+        tiebreak) leaves this test GREEN — measured, not assumed. SQLite answers
+        the unfiltered read from the ``(table_id, column_name, run_id)`` unique
+        index, so the scan already arrives in name order and a stable sort over it
+        reproduces the tiebreak by accident. Postgres offers no such guarantee,
+        which is exactly why the flip was invisible until someone read the code.
+        The ORDER BY in the read is what makes it hold on both, and the assertion
+        below is the contract a Postgres-side regression would break.
+        """
+        from dataraum.graphs.unit_grain import resolve_entity_axes
+
+        # Seeded in an order that contradicts every ranking signal, so a resolver
+        # that leaned on insertion order would be caught.
+        self._seed(
+            session,
+            [
+                ("z_supporting", "supporting", 0.99),
+                ("b_tied", "primary", 0.5),
+                ("m_best", "primary", 0.9),
+                ("a_tied", "primary", 0.5),
+            ],
+        )
+        served = resolve_entity_axes(session, table_id=self._TABLE, run_id="run-axes")
+
+        assert served.axes == ("m_best", "a_tied", "b_tied", "z_supporting")
+        assert served.note == ""
+
+    def test_an_unjudged_axis_is_not_served_as_curated(self, session: Session) -> None:
+        """Never assessed is not the same as assessed and ranked last."""
+        from dataraum.graphs.unit_grain import resolve_entity_axes
+
+        self._seed(session, [("judged", "primary", 0.1), ("never_looked_at", None, 0.99)])
+        served = resolve_entity_axes(session, table_id=self._TABLE, run_id="run-axes")
+
+        assert served.axes == ("judged",), "the unjudged axis does not out-rank the judged one"
+
+    def test_nothing_judged_withholds_the_axes_and_says_why(self, session: Session) -> None:
+        """The ranker did not run: serving its structural order as curated is the lie.
+
+        Withholding with the catalog's own note keeps "never assessed" distinct
+        from "assessed and rejected" — only one of those is a reason to go and
+        look at the ranker.
+        """
+        from dataraum.graphs.unit_grain import resolve_entity_axes
+
+        self._seed(session, [("a", None, 0.9), ("b", None, 0.1)])
+        served = resolve_entity_axes(session, table_id=self._TABLE, run_id="run-axes")
+
+        assert served.axes == ()
+        assert "business-relevance judgment" in served.note

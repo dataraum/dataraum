@@ -724,9 +724,13 @@ def _persist_unit_grain(
     recorded there; an unhandled failure would surface as a phase failure and roll
     that session back, discarding executed lifecycle state over an annotation. So
     each metric's composition and the final upsert run inside their own SAVEPOINT.
-    The ``flush()`` first is what makes that isolation hold under an autoflushing
-    session: with bookkeeping still pending, an autoflush INSIDE a savepoint would
-    pull it into that savepoint's rollback scope.
+
+    The ``flush()`` first makes that isolation independent of the session's
+    autoflush setting. Production runs ``autoflush=False``
+    (``core.connections``), so pending bookkeeping cannot be pulled into a
+    savepoint there — the flush is not fixing a live hazard. It is what lets the
+    guarantee be stated without a footnote about session configuration, and it is
+    why the isolation test can assert it on the harness the phase tests build.
     """
     from dataraum.graphs.agent import ExecutionContext
     from dataraum.graphs.unit_grain_db_models import MetricUnitGrain
@@ -747,29 +751,46 @@ def _persist_unit_grain(
 
     session.flush()
     context = ExecutionContext(duckdb_conn=duckdb_conn, schema_mapping_id=workspace_id)
-    rows: list[dict[str, object]] = []
+    # Kept per metric, and counted only once its SAVEPOINT has RELEASED cleanly.
+    # Releasing is itself fallible (the flush happens there), so a metric counted
+    # offered inside the block could still fail on the way out — and would then be
+    # both "offered" and "failed", with rows queued for a write its own savepoint
+    # had just rolled back.
+    per_graph: dict[str, list[dict[str, object]]] = {}
     for graph_id in sorted(graphs):
         try:
             with session.begin_nested():
-                rows.extend(
-                    _unit_grain_rows(
-                        session,
-                        agent=agent,
-                        context=context,
-                        graph=graphs[graph_id],
-                        graph_id=graph_id,
-                        workspace_id=workspace_id,
-                        run_id=run_id,
-                        catalogue_run_id=catalogue_run_id,
-                        outcome=outcome,
-                    )
+                produced = _unit_grain_rows(
+                    session,
+                    agent=agent,
+                    context=context,
+                    graph=graphs[graph_id],
+                    graph_id=graph_id,
+                    workspace_id=workspace_id,
+                    run_id=run_id,
+                    catalogue_run_id=catalogue_run_id,
+                    outcome=outcome,
                 )
         except Exception as exc:  # noqa: BLE001 - best-effort; never fail the phase
             _log.warning("metric_unit_grain_error", graph_id=graph_id, error=str(exc))
             outcome.failures[graph_id] = str(exc)
+            continue
+        if produced:
+            per_graph[graph_id] = produced
 
+    rows = [row for graph_id in sorted(per_graph) for row in per_graph[graph_id]]
+    outcome.offered = len(per_graph)
     if not rows:
-        _log.info("metric_unit_grain_persisted", count=0, offered=outcome.offered)
+        _log.info(
+            "metric_unit_grain_persisted",
+            count=0,
+            offered=outcome.offered,
+            # The REASONS, not their count: `warnings` reaches a human but this
+            # dict is the only place a withheld breakdown explains itself, and a
+            # bare length dies at the activity boundary (PhaseOutcome carries no
+            # per-target detail).
+            withheld=outcome.withheld,
+        )
         return outcome
     try:
         with session.begin_nested():
@@ -781,13 +802,19 @@ def _persist_unit_grain(
             )
     except Exception as exc:  # noqa: BLE001 - isolate the write from phase bookkeeping
         _log.warning("metric_unit_grain_upsert_error", error=str(exc), count=len(rows))
+        # Every composed breakdown just failed to land. Without this the summary
+        # renders "N broken down per entity" over an EMPTY table and the loud
+        # channel stays silent — the offers were real, the rows are not.
+        for graph_id in sorted(per_graph):
+            outcome.failures[graph_id] = f"composed but not persisted: {exc}"
+        outcome.offered = 0
         return outcome
     outcome.rows = len(rows)
     _log.info(
         "metric_unit_grain_persisted",
         count=len(rows),
         offered=outcome.offered,
-        withheld=len(outcome.withheld),
+        withheld=outcome.withheld,
     )
     return outcome
 
@@ -812,19 +839,26 @@ def _unit_grain_rows(
         resolve_metric_entity_axes,
     )
 
-    axes = resolve_metric_entity_axes(
+    served_axes = resolve_metric_entity_axes(
         session, graph=graph, workspace_id=workspace_id, run_id=catalogue_run_id
     )
-    if not axes:
-        outcome.withheld[graph_id] = (
+    if not served_axes.axes:
+        reason = (
             "no served categorical axis is carried by every one of its grounded "
             "carriers (an ungroundable carrier, a relation outside the analysis, or "
-            "no curated categorical slice they share)"
+            "no judged categorical slice they share)"
         )
+        # The catalog read's own account of what it left unsaid — today, that
+        # nothing in it was ever judged. Carried through rather than dropped: a
+        # never-assessed axis and an assessed-and-rejected one are different
+        # facts, and only one of them is a reason to go look at the ranker.
+        if served_axes.note:
+            reason = f"{reason} — {served_axes.note}"
+        outcome.withheld[graph_id] = reason
         return []
     # The catalog's own ranking, judgment before measurement — the workspace says
     # which axis is the interesting one, so we take its first and do not re-rank.
-    axis = axes[0]
+    axis = served_axes.axes[0]
 
     verdict = read_categorical_verdict(
         session, target_kind="metric", target_key=graph_id, run_id=run_id
@@ -852,7 +886,16 @@ def _unit_grain_rows(
     if not composed.success or composed.value is None:
         outcome.failures[graph_id] = composed.error or "unit-grain composition failed"
         return []
-    outcome.offered += 1
+    breakdown = composed.value
+    if breakdown.truncated_at is not None:
+        # A cut breakdown is still a breakdown, but it is NOT the whole answer and
+        # must never read as one. Disclosed on the same channel as a withholding —
+        # the rows land, and the note says what is missing from them.
+        outcome.withheld[graph_id] = (
+            f"breakdown per {axis!r} truncated at {breakdown.truncated_at} of "
+            f"{breakdown.total_entities} entities — the persisted rows are the first "
+            f"{breakdown.truncated_at} by entity value, not the whole partition"
+        )
     return [
         {
             "run_id": run_id,
@@ -864,7 +907,7 @@ def _unit_grain_rows(
             "reconciles": decision.reconciles,
             "recompute": decision.recompute,
         }
-        for row in composed.value
+        for row in breakdown.rows
     ]
 
 

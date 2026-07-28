@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.graphs.additivity import (
     AbstainReason,
@@ -56,10 +57,24 @@ if TYPE_CHECKING:
 
     from dataraum.graphs.models import TransformationGraph
 
-#: The slice kinds that can name an ENTITY. A unit-grain breakdown groups by a
-#: categorical axis; a numeric/banded axis (DAT-280) is a different feature with its
-#: own edges, and is not silently treated as an entity here.
+#: The slice kind that can name an ENTITY. ``categorical`` is the only value the
+#: catalog's CHECK constraint currently admits, so this filter excludes nothing
+#: today — it is future-proofing with a stated intent: when a numeric/banded axis
+#: (DAT-280) is added to that vocabulary, a breakdown must not start grouping by
+#: it silently. Banding is a different feature with its own edges.
 _ENTITY_SLICE_TYPE = "categorical"
+
+
+# Cost bound on ONE target's breakdown — not a judgment about which entities
+# matter, and not a relevance cut. The slice pre-filter admits a categorical
+# column up to a near-unique fraction, so a fact of a few million rows can carry
+# hundreds of thousands of distinct entities; composed unbounded, one metric
+# would write that many rows per run and load them all into Python first. The
+# bound applies with an ORDER BY and a DISCLOSED truncation (never a silent cut),
+# which is what makes it a cost decision rather than a claim that the tail is
+# uninteresting. The n=1 finance corpus has never come close to it — that is
+# exactly why the bound must exist before a wider one does.
+UNIT_GRAIN_MAX_ENTITIES = 1000
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,23 @@ class UnitGrainRow:
 
     entity_value: str
     value: Decimal | None
+
+
+@dataclass(frozen=True)
+class UnitGrainBreakdown:
+    """One target's composed breakdown, and whether it is the WHOLE breakdown.
+
+    ``truncated_at`` is ``None`` for a complete partition. When it is set, the
+    rows are the first N by entity value out of ``total_entities`` — an ordered,
+    reproducible prefix, so re-running names the same entities — and the caller
+    MUST disclose it. Rows that are silently a subset would read as the whole
+    partition and would not sum to the total the verdict says they should.
+    """
+
+    axis: str
+    rows: tuple[UnitGrainRow, ...]
+    total_entities: int
+    truncated_at: int | None = None
 
 
 @dataclass(frozen=True)
@@ -254,51 +286,83 @@ def gate_unit_grain(
     )
 
 
-def resolve_entity_axes(session: Session, *, table_id: str, run_id: str) -> list[str]:
-    """The served categorical axes of one relation, most interesting first.
+@dataclass(frozen=True)
+class EntityAxes:
+    """The served categorical axes of a read, plus what the read left unsaid.
+
+    ``note`` is non-empty when the catalog read has something a consumer must be
+    told before trusting the ordering — today, that nothing in it was ever
+    JUDGED. It is carried into the withheld reason rather than dropped, because
+    presenting an unjudged ordering as a curated one is the worse failure
+    (:mod:`dataraum.analysis.slicing.curation` makes the same call).
+    """
+
+    axes: tuple[str, ...] = ()
+    note: str = ""
+
+
+def resolve_entity_axes(session: Session, *, table_id: str, run_id: str) -> EntityAxes:
+    """The served, JUDGED categorical axes of one relation, most interesting first.
 
     Read from the slice catalog the slicing phase curates — the workspace's own
     statement about which columns are worth grouping by. The entity axis is
     therefore a SERVED fact, never a column picked because its name looks like an
     id: no name is inspected anywhere in this module.
 
-    Ordered by the catalog's own two signals, judgment before measurement:
-    ``slice_interest`` ('primary' ahead of 'supporting'), then measured
-    ``slice_relevance``. An unmeasured relevance sorts last rather than as zero —
-    NULL means unmeasured, which is not a claim that the axis resolves nothing.
+    Ordering and judged-ness both come from
+    :func:`~dataraum.analysis.slicing.curation.curated_slices`, the catalog's own
+    curation — not a private ranking here. A third hand-rolled copy of "primary
+    before supporting, then measured relevance" would drift from the two that
+    already agree, and this one also lacked the NAME tiebreak: on a relevance tie
+    the pick was whatever order the rows came back in, so the axis a breakdown was
+    persisted against could flip between runs on identical data.
+
+    When NO row carries a judgment the axes are WITHHELD, not served unranked.
+    Picking "the most interesting axis" out of a set nothing assessed would
+    present a structural ordering as a curated one; the note says so instead.
+
+    The axes are the FACT's own slices, so a breakdown groups by what the fact
+    carries — an ``account_id``, not the dimension row's ``name``. Enriched
+    ``{fk}__{attr}`` labels are catalogued against the fact too and are reachable
+    the same way; a dim-side attribute that the fact's slice inventory does not
+    carry is not, so an id-keyed breakdown is the shape a consumer should expect
+    to render (and to join a label onto itself).
     """
-    rows = session.execute(
-        select(
-            SliceDefinition.column_name,
-            SliceDefinition.slice_interest,
-            SliceDefinition.slice_relevance,
-        ).where(
-            SliceDefinition.run_id == run_id,
-            SliceDefinition.table_id == table_id,
-            SliceDefinition.slice_type == _ENTITY_SLICE_TYPE,
-            SliceDefinition.column_name.isnot(None),
+    rows = list(
+        session.execute(
+            select(SliceDefinition)
+            .where(
+                SliceDefinition.run_id == run_id,
+                SliceDefinition.table_id == table_id,
+                SliceDefinition.slice_type == _ENTITY_SLICE_TYPE,
+                SliceDefinition.column_name.isnot(None),
+            )
+            # A deterministic read BEFORE the sort: `curated_slices` sorts stably,
+            # so rows that tie on its whole key keep the order they arrived in —
+            # which without this is the database's discretion (the `.limit(1)`
+            # no-ORDER-BY class, one layer up).
+            .order_by(SliceDefinition.column_name, SliceDefinition.slice_id)
         )
-    ).all()
-    ordered = sorted(
-        rows,
-        key=lambda r: (
-            0 if r.slice_interest == "primary" else 1 if r.slice_interest else 2,
-            -(r.slice_relevance if r.slice_relevance is not None else -1.0),
-        ),
+        .scalars()
+        .all()
     )
+    curated = curated_slices(rows)
+    if curated.unjudged_fallback:
+        return EntityAxes(note=curated.note)
+
     seen: set[str] = set()
     axes: list[str] = []
-    for row in ordered:
+    for row in curated.served:
         name = str(row.column_name)
         if name not in seen:
             seen.add(name)
             axes.append(name)
-    return axes
+    return EntityAxes(axes=tuple(axes))
 
 
 def resolve_metric_entity_axes(
     session: Session, *, graph: TransformationGraph, workspace_id: str, run_id: str
-) -> list[str]:
+) -> EntityAxes:
     """The categorical axes EVERY grounded carrier of a metric can be grouped by.
 
     An INTERSECTION, mirroring :func:`~dataraum.graphs.additivity_resolver._common_time_axes`
@@ -324,6 +388,7 @@ def resolve_metric_entity_axes(
 
     library = SnippetLibrary(session)
     shared: list[str] | None = None
+    notes: dict[str, None] = {}
     # sorted(): the first carrier fixes the ORDER of the result, so iteration order
     # is part of the output — a dict's insertion order is definition-dependent and
     # a set's is PYTHONHASHSEED-salted.
@@ -339,23 +404,25 @@ def resolve_metric_entity_axes(
             predicate=step.source.predicate,
         )
         if match is None:
-            return []
+            return EntityAxes()
         relations = (match.snippet.parts or {}).get("from") or []
         if not relations:
-            return []
+            return EntityAxes()
         served = served_relation(session, str(relations[0]))
         if served is None:
-            return []
+            return EntityAxes()
         # SliceDefinition rows are keyed on the FACT table (the slicing phase reads
         # the enriched view's columns but writes them against the fact it derives
         # from), while the grounded relation IS the enriched view — a superset of
         # the fact's columns, so every served slice name resolves on it.
-        axes = resolve_entity_axes(session, table_id=served.fact_table_id, run_id=run_id)
+        carrier = resolve_entity_axes(session, table_id=served.fact_table_id, run_id=run_id)
+        if carrier.note:
+            notes[carrier.note] = None  # dict: de-duplicated, order preserved
         if shared is None:
-            shared = axes
+            shared = list(carrier.axes)
         else:
-            carried = set(axes)
+            carried = set(carrier.axes)
             shared = [a for a in shared if a in carried]
         if not shared:
-            return []
-    return shared or []
+            break
+    return EntityAxes(axes=tuple(shared or ()), note=" ".join(notes))

@@ -1330,6 +1330,7 @@ class TestPriorContextFeedback:
                 standard_field="test_field",
                 statement="test_table",
                 aggregation="sum",
+                predicate="",
             )
             is None
         )

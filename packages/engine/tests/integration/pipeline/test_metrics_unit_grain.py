@@ -248,6 +248,35 @@ def _unit_grain_rows(session: Session) -> list[MetricUnitGrain]:
 
 
 @pytest.fixture
+def session(engine):  # noqa: ANN001, ANN201 - mirrors the root fixture's shape
+    """The phase session with PRODUCTION semantics — ``autoflush=False``.
+
+    ``core.connections``' sessionmaker sets ``autoflush=False``, and
+    ``test_metrics_phase.py``'s ``_RealSessionManager`` mirrors that on purpose
+    ("the two properties the guard's cross-session correctness rests on"). The
+    shared root fixture autoflushes, which is a shape the phase never runs under
+    — and the savepoint-isolation claim below is specifically about what happens
+    on the real one. Asserting it under different session semantics would prove
+    something about the harness, not about the phase.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from dataraum.storage import Source
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    with factory() as sess:
+        sess.add(
+            Source(
+                source_id="00000000-0000-0000-0000-000000000002",
+                name="test_baseline",
+                source_type="csv",
+            )
+        )
+        sess.flush()
+        yield sess
+
+
+@pytest.fixture
 def grain_duckdb():
     """A bare in-memory DuckDB — the composed statements read seeded VALUES tables."""
     import duckdb as _duckdb
@@ -539,3 +568,48 @@ class TestUnitGrainWireIn:
         # The recompute family: per-entity meaningful, total not reconciling.
         persisted = _unit_grain_rows(session)
         assert all(r.recompute and not r.reconciles for r in persisted)
+
+    def test_a_failed_write_is_loud_and_claims_nothing(
+        self, session: Session, grain_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Composed-but-not-persisted must not read as a delivered breakdown.
+
+        The offers were real and the rows are not. Left alone, the summary
+        rendered "1 broken down per entity" over an EMPTY table with nothing on
+        the warning channel — the exact shape of a silent data loss, and the one
+        outcome a best-effort step must never produce.
+        """
+        fact_id = _seed_relation(
+            session,
+            grain_duckdb,
+            view_name="ap_enriched",
+            values=_AP_ROWS,
+            columns=f"{_AXIS}, period, balance",
+        )
+        _seed_snippet(
+            session,
+            field="accounts_payable",
+            relation="ap_enriched",
+            expr="SUM(balance)",
+            where=_BOUND,
+        )
+
+        with patch("dataraum.storage.upsert.upsert", side_effect=RuntimeError("write refused")):
+            result = _UnitGrainCase.run(
+                session,
+                grain_duckdb,
+                {
+                    "ap_total": _metric_def(
+                        "ap_total", {"ap": _extract_def("accounts_payable", output=True)}
+                    )
+                },
+                [("metric", "ap_total", AxisVerdict.ADDITIVE, None)],
+                [fact_id],
+            )
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        assert _unit_grain_rows(session) == []
+        assert result.outputs["unit_grain_offered"] == 0, "nothing landed, so nothing is claimed"
+        assert result.outputs["unit_grain_rows"] == 0
+        assert any("unit grain failed" in w and "not persisted" in w for w in result.warnings)

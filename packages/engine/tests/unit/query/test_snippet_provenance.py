@@ -103,6 +103,7 @@ class TestSnippetProvenance:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
+            predicate="",
         )
 
         assert match is not None

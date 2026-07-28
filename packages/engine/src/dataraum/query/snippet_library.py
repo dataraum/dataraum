@@ -120,12 +120,22 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
-        predicate: str = "",
+        predicate: str,
         parameter_value: str | None = None,
     ) -> SnippetMatch | None:
         """Find snippet by exact semantic key.
 
         Used by the graph agent for extract and constant steps.
+
+        ``predicate`` is keyword-REQUIRED, and that is the whole point (DAT-838).
+        The semantic key is hand-mirrored at every site that resolves a step to
+        its snippet, and a defaulted ``""`` here does not fail — it silently
+        MATCHES the unrestricted sibling, handing back a row grounded over a
+        different row population. Three sites shipped with exactly that bug
+        before the parameter was made required, and each one read as correct code.
+        A required kwarg turns the next missed site into a mypy error instead of a
+        wrong number. Pass ``""`` to mean "declared unrestricted" — the same
+        statement the column's NOT NULL default makes.
 
         Args:
             snippet_type: "extract" or "constant"
@@ -133,6 +143,7 @@ class SnippetLibrary:
             standard_field: Standard field name (for extracts)
             statement: Statement type (for extracts)
             aggregation: Aggregation method (for extracts)
+            predicate: The step's DECLARED row restriction; ``""`` = unrestricted
             parameter_value: Parameter value (for constants)
 
         Returns:
@@ -188,7 +199,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
-        predicate: str = "",
+        predicate: str,
         parameter_value: str | None = None,
     ) -> SQLSnippetRecord | None:
         """The retained FAILED snippet for this semantic key (DAT-543), or None.
@@ -217,7 +228,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
-        predicate: str = "",
+        predicate: str,
         parameter_value: str | None = None,
     ) -> SQLSnippetRecord | None:
         """Find snippet by key, including failed ones. Used by save_snippet."""
@@ -267,6 +278,10 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
+        # Defaulted on the WRITE path alone: a constant/formula/query snippet has
+        # no row restriction to state, and the column's own NOT NULL "" default
+        # says the same thing. The READ/DEMOTE family below deliberately requires
+        # it — see the note there.
         predicate: str = "",
         parameter_value: str | None = None,
         normalized_expression: str | None = None,
@@ -401,7 +416,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
-        predicate: str = "",
+        predicate: str,
         parameter_value: str | None = None,
         provenance: dict[str, Any],
     ) -> SQLSnippetRecord | None:

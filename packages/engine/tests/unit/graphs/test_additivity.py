@@ -41,6 +41,7 @@ from dataraum.graphs.models import (
     GraphStep,
     OutputDef,
     OutputType,
+    StepSource,
     StepType,
     TransformationGraph,
 )
@@ -510,3 +511,86 @@ def test_classified_reasons_vocabulary_excludes_the_unknowns():
 def test_invalid_status_pairings_are_refused_at_the_chokepoint(kwargs):
     with pytest.raises(ValueError):
         AxisAdditivity(**kwargs)
+
+
+class TestGroundedSelectCarriesTheDeclaredPredicate:
+    """``grounded_select`` resolves a step to ITS snippet, not a sibling's (DAT-838).
+
+    This is the shared grounding-resolution primitive: the additivity classifier
+    and the period resolver both read the ``(select_expr, relation, where)`` it
+    returns. Looked up without the declared ``predicate`` it did not come back
+    empty — ``""`` MATCHED the unrestricted sibling — so a restricted step was
+    classified over a row population it never reads, and the period resolver
+    bound its reporting instant over that same wrong population. Silently, in
+    both cases.
+    """
+
+    _RESTRICTION = "invoices that are overdue"
+
+    def _step(self, predicate: str) -> GraphStep:
+        return GraphStep(
+            step_id="ar",
+            step_type=StepType.EXTRACT,
+            source=StepSource(
+                standard_field="accounts_receivable",
+                statement="balance_sheet",
+                predicate=predicate,
+            ),
+            aggregation="sum",
+        )
+
+    def _save(self, session, *, predicate: str, relation: str, where: list[str]) -> None:
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        SnippetLibrary(session, workspace_id="ws-pred").save_snippet(
+            snippet_type="extract",
+            sql=f"SELECT SUM(amount) AS value FROM {relation}",
+            description="ar",
+            schema_mapping_id="ws-pred",
+            source="graph:ar",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
+            aggregation="sum",
+            predicate=predicate,
+            parts={
+                "select": [{"expr": "SUM(amount)", "alias": "value"}],
+                "from": [relation],
+                "where": where,
+            },
+        )
+        session.flush()
+
+    def test_restricted_step_resolves_its_own_rows_not_the_siblings(self, session) -> None:
+        from dataraum.graphs.additivity_resolver import grounded_select
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        self._save(session, predicate="", relation="ar_all", where=[])
+        self._save(
+            session,
+            predicate=self._RESTRICTION,
+            relation="ar_overdue",
+            where=['"due_date" < CURRENT_DATE'],
+        )
+
+        resolved = grounded_select(
+            SnippetLibrary(session), "ws-pred", self._step(self._RESTRICTION)
+        )
+
+        assert resolved is not None
+        _expr, relation, where = resolved
+        assert relation == "ar_overdue"
+        assert where == ['"due_date" < CURRENT_DATE']
+
+    def test_restricted_step_with_no_snippet_abstains(self, session) -> None:
+        """No row of its own = nothing resolved. The sibling is not a fallback."""
+        from dataraum.graphs.additivity_resolver import grounded_select
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        self._save(session, predicate="", relation="ar_all", where=[])
+
+        assert (
+            grounded_select(SnippetLibrary(session), "ws-pred", self._step(self._RESTRICTION))
+            is None
+        )
+        # ...while the unrestricted step still resolves normally.
+        assert grounded_select(SnippetLibrary(session), "ws-pred", self._step("")) is not None

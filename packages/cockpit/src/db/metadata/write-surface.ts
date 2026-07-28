@@ -109,6 +109,14 @@ export const conventionsWrite = pgTable("conventions", {
  * (the model's defaults are ORM-side, not server defaults). Identity/quality columns the
  * cockpit never writes (provenance, input_fields, normalized_expression) are
  * omitted.
+ *
+ * `predicate` (DAT-838) is omitted DELIBERATELY, not by oversight: it declares an
+ * EXTRACT step's row restriction, and this writer only ever mints `query:`
+ * snippets — a learned ad-hoc query, which carries no declared restriction. The
+ * column is NOT NULL with a `""` server default, so an insert without it lands as
+ * "unrestricted", which is exactly what a query snippet is. Adding an extract
+ * writer here would make it required reading, since `""` silently MATCHES the
+ * unrestricted sibling on lookup rather than missing.
  */
 export const sqlSnippetsWrite = pgTable("sql_snippets", {
 	snippetId: varchar("snippet_id").primaryKey(),

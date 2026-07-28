@@ -55,7 +55,7 @@ from .verifier import verify_execution
 
 if TYPE_CHECKING:
     from dataraum.graphs.node_warming import NodeDecision, NodeKey
-    from dataraum.graphs.unit_grain import UnitGrainRow
+    from dataraum.graphs.unit_grain import UnitGrainBreakdown
 
 logger = get_logger(__name__)
 
@@ -555,7 +555,7 @@ class GraphAgent(LLMFeature):
         *,
         axis: str,
         workspace_id: str,
-    ) -> Result[list[UnitGrainRow]]:
+    ) -> Result[UnitGrainBreakdown]:
         """Compose and execute a metric at UNIT GRAIN on one axis — NO LLM (DAT-671 B1).
 
         The sibling of :meth:`assemble`, one level down: the same persisted parts,
@@ -577,10 +577,18 @@ class GraphAgent(LLMFeature):
         tell a quietly-degraded scalar from a real one-entity breakdown, so the
         honest outcome is no breakdown and a reason.
 
-        Returns one :class:`~dataraum.graphs.unit_grain.UnitGrainRow` per entity,
-        with ``value`` ``None`` where the composition genuinely produced NULL.
+        Returns a :class:`~dataraum.graphs.unit_grain.UnitGrainBreakdown`: one row
+        per entity with ``value`` ``None`` where the composition genuinely produced
+        NULL, and — when the entity count exceeds
+        :data:`~dataraum.graphs.unit_grain.UNIT_GRAIN_MAX_ENTITIES` — an ordered
+        prefix with ``truncated_at`` set for the caller to disclose.
         """
-        from dataraum.graphs.unit_grain import UnitGrainRow
+        from dataraum.graphs.formula_composer import quote_key
+        from dataraum.graphs.unit_grain import (
+            UNIT_GRAIN_MAX_ENTITIES,
+            UnitGrainBreakdown,
+            UnitGrainRow,
+        )
         from dataraum.query.execution import SQLStep, execute_sql_steps
 
         resolved_params = self._resolve_parameters(session, graph, {})
@@ -607,11 +615,18 @@ class GraphAgent(LLMFeature):
             )
             for s in generated_code.steps
         ]
+        # ORDER BY the axis so the bounded read is a REPRODUCIBLE prefix: the
+        # display_limit path wraps this as `SELECT * FROM (<final>) LIMIT n` and
+        # counts the unwrapped statement separately, and DuckDB carries the inner
+        # ordering through that wrapper (probed). Without it, a truncated
+        # breakdown would name different entities on every run of identical data.
+        ordered_final = f"{generated_code.final_sql} ORDER BY {quote_key(axis)}"
         exec_result = execute_sql_steps(
             steps=steps,
-            final_sql=generated_code.final_sql,
+            final_sql=ordered_final,
             duckdb_conn=context.duckdb_conn,
             return_table=True,
+            display_limit=UNIT_GRAIN_MAX_ENTITIES,
         )
         if not exec_result.success or exec_result.value is None:
             return Result.fail(exec_result.error or "unit-grain execution failed")
@@ -651,7 +666,17 @@ class GraphAgent(LLMFeature):
             except ValueError as exc:
                 return Result.fail(f"metric '{graph.graph_id}' per {axis!r}: {exc}")
             rows.append(UnitGrainRow(entity_value=key, value=cell))
-        return Result.ok(rows)
+
+        total = exec_result.value.total_count
+        total_entities = len(rows) if total is None else total
+        return Result.ok(
+            UnitGrainBreakdown(
+                axis=axis,
+                rows=tuple(rows),
+                total_entities=total_entities,
+                truncated_at=len(rows) if total_entities > len(rows) else None,
+            )
+        )
 
     def _compose_metric_from_dag(
         self,

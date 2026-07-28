@@ -358,12 +358,18 @@ def _persisted_extracts(
         concept = node.step.source.standard_field
         if concept is None:
             continue
+        # The DECLARED predicate is part of the key (DAT-838). Without it a
+        # restricted extract resolved to its unrestricted sibling's SQL, so the
+        # guard compared the wrong statement — and a restricted node whose sibling
+        # did not exist resolved to nothing at all, dropping it out of the
+        # comparison set entirely and letting a real collision pass VACUOUSLY.
         match = library.find_by_key(
             snippet_type="extract",
             schema_mapping_id=schema_mapping_id,
             standard_field=concept,
             statement=node.step.source.statement,
             aggregation=node.step.aggregation,
+            predicate=node.step.source.predicate,
         )
         if match is None:
             continue
@@ -385,6 +391,13 @@ def flag_collision(
     re-grounding and the final abstention — so the mode, the retained SQL, and
     the feedback the next authoring reads are minted in exactly one place. The
     two differ only in their ``reason`` (see :func:`collision_reason`).
+
+    The DECLARED predicate is part of the key (DAT-838), and this is the site
+    where omitting it did the most damage: a WRITE. A restricted node's demotion
+    resolved to its unrestricted sibling and flagged THAT row
+    ``DISJOINT_COLLISION`` — a false verdict recorded against an innocent snippet,
+    excluding a healthy grounding from all future reuse, while the row that
+    actually collided stayed healthy and kept being served.
     """
     from dataraum.query.snippet_library import SnippetLibrary
 
@@ -396,6 +409,7 @@ def flag_collision(
         standard_field=node.step.source.standard_field,
         statement=node.step.source.statement,
         aggregation=node.step.aggregation,
+        predicate=node.step.source.predicate,
         provenance=FailedSnippetProvenance(
             failure_mode=SnippetFailureMode.DISJOINT_COLLISION, failure_reason=reason
         ).model_dump(mode="json"),

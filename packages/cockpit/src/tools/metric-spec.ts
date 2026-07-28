@@ -74,6 +74,13 @@ const GraphStepSchema = z
 					.string()
 					.optional()
 					.describe("Optional explicit column name."),
+				// `.optional()` here, REQUIRED-with-"" in `metric-induction.ts`, and the
+				// difference is deliberate: this schema mirrors a hand-authored
+				// `<graph_id>.yaml` file, where every shipped metric omits the key and
+				// `GraphLoader` normalizes a missing one to "" — demanding it would
+				// false-reject valid graphs, which the header rules out. Induction
+				// authors a graph from nothing under a compiled-grammar budget, so it
+				// states the restriction explicitly instead.
 				predicate: z
 					.string()
 					.optional()

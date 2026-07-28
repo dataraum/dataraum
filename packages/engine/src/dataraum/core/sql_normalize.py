@@ -110,6 +110,22 @@ def _strip_query_location(value: Any) -> Any:
     return value
 
 
+def canonical_sql_or_none(sql: str) -> str | None:
+    """The canonical key for ``sql``, or ``None`` when it could not be parsed.
+
+    Same normalization as :func:`canonical_sql`, but it REPORTS the parse failure
+    instead of silently taking the byte-equality fallback. For callers whose
+    comparison means something weaker when it degrades: the grounding collision
+    guard (DAT-709) compares two concepts' extracts, and an unparsed pair only
+    matches byte-for-byte — so a degradation there quietly narrows what the guard
+    can catch, and is worth a log line.
+    """
+    tree = serialize_sql(_VIEW_WRAPPER.sub("", sql, count=1))
+    if tree is None:
+        return None
+    return json.dumps(_strip_query_location(tree), sort_keys=True, separators=(",", ":"))
+
+
 def canonical_sql(sql: str) -> str:
     """Return a stable comparison key for ``sql`` (opaque; compare, don't render).
 
@@ -119,11 +135,10 @@ def canonical_sql(sql: str) -> str:
     result as a stable key without guarding for malformed SQL. The return value
     is an internal key — never valid SQL; do not attempt to execute it.
     """
-    inner = _VIEW_WRAPPER.sub("", sql, count=1)
-    tree = serialize_sql(inner)
-    if tree is None:
-        return inner.strip()
-    return json.dumps(_strip_query_location(tree), sort_keys=True, separators=(",", ":"))
+    canonical = canonical_sql_or_none(sql)
+    if canonical is None:
+        return _VIEW_WRAPPER.sub("", sql, count=1).strip()
+    return canonical
 
 
 def sql_equivalent(left: str, right: str) -> bool:

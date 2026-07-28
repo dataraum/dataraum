@@ -374,6 +374,67 @@ class SnippetLibrary:
 
         return record
 
+    def demote_to_failure(
+        self,
+        snippet_type: str,
+        schema_mapping_id: str,
+        *,
+        standard_field: str | None = None,
+        statement: str | None = None,
+        aggregation: str | None = None,
+        parameter_value: str | None = None,
+        provenance: dict[str, Any],
+    ) -> SQLSnippetRecord | None:
+        """Flag an already-HEALTHY snippet as retained-failure (DAT-709).
+
+        The deliberate exception to ``save_snippet``'s first-writer-wins guard.
+        That guard protects working SQL from a *concurrent* failed save — an
+        authoring attempt that knows only its own outcome. This is the opposite
+        situation: a verdict reached with strictly MORE information than the
+        writer had, by a check no single grounding call can run (the
+        cross-concept collision guard sees every concept's grounding at once).
+        The row keeps its SQL — retained, not deleted (DAT-543) — so
+        ``_build_prior_context`` feeds it plus this ``provenance`` reason back to
+        the re-grounding, while ``find_by_key`` (``failure_count == 0``) stops
+        serving it for reuse, which is what forces the next authoring to call the
+        LLM instead of assembling the collided SQL from cache.
+
+        Args:
+            snippet_type: "extract", "constant", "formula", or "query".
+            schema_mapping_id: Schema mapping identifier.
+            standard_field: Standard field name (for extracts).
+            statement: Statement type (for extracts).
+            aggregation: Aggregation method (for extracts).
+            parameter_value: Parameter value (for constants).
+            provenance: The replacement provenance blob — a
+                ``FailedSnippetProvenance`` dump naming the mode and reason.
+
+        Returns:
+            The demoted record, or ``None`` when no row matches the key (nothing
+            to demote is not an error: the grounding may never have persisted).
+        """
+        record = self._find_by_key_any(
+            snippet_type=snippet_type,
+            schema_mapping_id=schema_mapping_id,
+            standard_field=standard_field,
+            statement=statement,
+            aggregation=aggregation,
+            parameter_value=parameter_value,
+        )
+        if record is None:
+            return None
+        record.provenance = provenance
+        record.failure_count = 1
+        record.updated_at = datetime.now(UTC)
+        self.session.flush()
+        logger.info(
+            "snippet_demoted_to_failure",
+            snippet_id=record.snippet_id,
+            snippet_type=snippet_type,
+            field=standard_field,
+        )
+        return record
+
     # --- Usage Tracking ---
 
     def record_usage(self, snippet_id: str | None, usage_type: str) -> None:

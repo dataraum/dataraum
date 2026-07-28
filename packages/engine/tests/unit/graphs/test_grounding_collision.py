@@ -447,3 +447,181 @@ class TestResolveGroundingCollisions:
 
         assert calls == []
         assert all(d.grounded for d in out.values())
+
+
+class TestReAuthorFailureIsolation:
+    """A re-authoring calls the LLM and the DB, so it can raise. It must not escape.
+
+    An escape aborts the metrics phase, discards every lifecycle write the run
+    made, and — on a deterministic error — makes the Temporal retry loop on it
+    forever. Both warm-pass drivers isolate their nodes for exactly this reason.
+    """
+
+    def _run(self, session: Session, nodes, reauthor):
+        return resolve_grounding_collisions(
+            {key: NodeDecision(grounded=True) for key in nodes},
+            nodes,
+            session=session,
+            workspace_id=_WS,
+            schema_mapping_id=_SCHEMA,
+            vertical="finance",
+            reauthor=reauthor,
+        )
+
+    @pytest.fixture()
+    def _seeded(self, session: Session):
+        ensure_concept_edges_seeded(session, "finance")
+        nodes = _nodes_for("current_assets", "current_liabilities")
+        for concept in ("current_assets", "current_liabilities"):
+            _save(session, concept, _SAME)
+        return nodes
+
+    def test_a_raising_re_author_lands_the_node_ungrounded(self, session: Session, _seeded) -> None:
+        """One side blows up, the other repairs — the failure is a decision, not a crash."""
+        good = _reauthor_stub(
+            session,
+            _seeded,
+            {"current_assets": _SAME.replace("enriched_gl", "enriched_assets")},
+            [],
+        )
+
+        def _reauthor(key, reason):
+            node = _seeded[key]
+            assert node.step.source is not None
+            if node.step.source.standard_field == "current_liabilities":
+                raise RuntimeError("SENTINEL_TRANSIENT")
+            return good(key, reason)
+
+        out = self._run(session, _seeded, _reauthor)
+
+        failed = [d for d in out.values() if not d.grounded]
+        assert len(failed) == 1
+        assert failed[0].reason is not None
+        assert "SENTINEL_TRANSIENT" in failed[0].reason
+        assert "re-ground failed" in failed[0].reason
+        # ...and the concept that DID repair keeps its new grounding.
+        assert _record(session, "current_assets").failure_count == 0
+
+    def test_every_re_author_raising_still_cannot_leave_the_pair_healthy(
+        self, session: Session, _seeded
+    ) -> None:
+        """The error path abstains too — it cannot smuggle an identical pair through.
+
+        A raising re-author leaves its row healthy (the isolated session rolls the
+        demotion back), and round 2 reads only GROUNDED nodes — so deferring the
+        abstention would drop the pair out of the check entirely. It is written at
+        the point of failure instead.
+        """
+
+        def _reauthor(key, reason):
+            raise RuntimeError("boom")
+
+        out = self._run(session, _seeded, _reauthor)
+
+        assert not any(d.grounded for d in out.values())
+        for concept in ("current_assets", "current_liabilities"):
+            record = _record(session, concept)
+            assert record.failure_count == 1, "no healthy identical pair may survive"
+            assert record.provenance["failure_mode"] == SnippetFailureMode.DISJOINT_COLLISION.value
+            assert "re-ground failed" in record.provenance["failure_reason"]
+
+
+class TestPendingWritesAreVisibleToRoundOne:
+    def test_guard_sees_an_unflushed_heal(self, session: Session) -> None:
+        """Production runs autoflush=False, and save_snippet's heal never flushes.
+
+        The re-run of a run that abstained: both rows are flagged, so this run's
+        authoring takes ``save_snippet``'s HEAL branch — the one that mutates an
+        existing row in place (the healthy branch is first-writer-wins and touches
+        nothing). Without the pass's own flush, round 1's SELECT sees the rows as
+        they stand in the DB — still flagged, or still carrying the previous run's
+        SQL — the two concepts do not look identical, the guard calls nothing, and
+        the collision ships again.
+
+        The test fixture defaults to autoflush=True, session semantics that exist
+        in NEITHER production config, so it is switched off here or this pins
+        nothing.
+        """
+        ensure_concept_edges_seeded(session, "finance")
+        nodes = _nodes_for("current_assets", "current_liabilities")
+        # A prior run abstained on this pair: two retained failures, durable.
+        for concept in ("current_assets", "current_liabilities"):
+            _save(session, concept, _SAME.replace("enriched_gl", f"enriched_{concept}"))
+            flag_collision(
+                session,
+                next(
+                    n
+                    for n in nodes.values()
+                    if n.step.source and n.step.source.standard_field == concept
+                ),
+                workspace_id=_WS,
+                schema_mapping_id=_SCHEMA,
+                reason="prior run abstained",
+            )
+        session.flush()
+
+        session.autoflush = False  # mirror core.connections' sessionmaker
+        # This run re-authors both and heals them — to the SAME statement again.
+        _save(session, "current_assets", _SAME, flush=False)
+        _save(session, "current_liabilities", _SAME, flush=False)
+        assert len(session.dirty) == 2, "the heals must still be pending for this to pin anything"
+
+        calls: list[tuple[str, str]] = []
+        resolve_grounding_collisions(
+            {key: NodeDecision(grounded=True) for key in nodes},
+            nodes,
+            session=session,
+            workspace_id=_WS,
+            schema_mapping_id=_SCHEMA,
+            vertical="finance",
+            reauthor=_reauthor_stub(session, nodes, {}, calls),
+        )
+
+        assert sorted(c for c, _ in calls) == ["current_assets", "current_liabilities"]
+
+
+class TestRetryContextJoint:
+    """guard → persisted provenance → prior_context render, as ONE channel.
+
+    Each half is covered elsewhere; this pins the JOINT. The disambiguation only
+    works if the partner's name survives all three hops, and a break anywhere in
+    between would leave every other test green while the retry goes back to the
+    LLM knowing nothing about what it collided with.
+    """
+
+    def test_partner_name_reaches_the_rendered_prompt_context(self, session: Session) -> None:
+        from dataraum.graphs.agent import GraphAgent
+        from dataraum.graphs.node_warming import build_mini_graph
+
+        nodes = _nodes_for("current_assets", "current_liabilities")
+        _save(session, "current_assets", _SAME)
+        node = next(
+            n
+            for n in nodes.values()
+            if n.step.source and n.step.source.standard_field == "current_assets"
+        )
+
+        flag_collision(
+            session,
+            node,
+            workspace_id=_WS,
+            schema_mapping_id=_SCHEMA,
+            reason=(
+                "'current_assets' grounded to the same extract as disjoint concept(s) "
+                "current_liabilities"
+            ),
+        )
+        session.flush()
+
+        agent = GraphAgent.__new__(GraphAgent)
+        rendered = agent._build_prior_context(session, build_mini_graph(node), None, _SCHEMA)
+
+        assert "current_liabilities" in rendered, (
+            "the retry must learn WHICH concept it collided with"
+        )
+        assert SnippetFailureMode.DISJOINT_COLLISION.value in rendered
+        assert _SAME in rendered, "the colliding statement itself is fed back"
+        assert "do NOT re-emit unchanged" in rendered
+        # The collision-specific steer, not the generic revise-or-abstain one.
+        assert "distinguishes it from" in rendered
+        assert "one-sided data" not in rendered

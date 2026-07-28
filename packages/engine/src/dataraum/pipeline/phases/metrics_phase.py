@@ -805,6 +805,15 @@ def _warm_in_session(
     the lookup inside ``execute`` no longer finds a healthy row and the LLM is
     actually called — and so the reason reaches the new prompt through the
     retained-failure feedback channel.
+
+    Deliberately NOT shared with ``_warm_generations_serial``'s inner loop, which
+    keeps its own copy of these four lines. Two divergences make unification a
+    net loss: that loop builds the ``ExecutionContext`` once per GENERATION, not
+    per node (DAT-734 — a later generation must see the snippets earlier ones
+    minted, and rebuilding the whole served context per node would pay for that
+    many times over), and it catches per-node exceptions inline so one bad node
+    does not abort the wave. Folding either into this helper would change the
+    warm path's cost or its error boundary to save four lines.
     """
     from dataraum.graphs.agent import ExecutionContext
     from dataraum.graphs.grounding_collision import flag_collision

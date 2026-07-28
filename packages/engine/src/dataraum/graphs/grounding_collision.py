@@ -36,13 +36,19 @@ schema shape real datasets violate. So the guard does three things and no more:
 2. **Re-grounds, symmetrically** — EVERY member of a collision is demoted to a
    retained failure and re-authored; the demotion is both what unblocks the LLM
    (a healthy snippet would be assembled from cache, no call) and what serves the
-   disambiguation, since a failed row's ``{failure_mode, failure_reason}`` reaches
-   the retry through the two existing feedback channels: the concept's own
-   ``prior_context`` (its exact prior SQL, "do NOT re-emit unchanged") and the
-   served concept graph, where the sibling now reads ``disjoint with: <this
-   concept>`` + ``failed attempt [disjoint_collision]``. ONE round, mirroring the
+   disambiguation: the failed row's ``{failure_mode, failure_reason}`` names the
+   partner concept and reaches the retry through its own ``prior_context`` (that
+   exact prior SQL, "do NOT re-emit unchanged"). ONE round, mirroring the
    contract-repair turn: a model that cannot distinguish two concepts twice will
    not on a third pass.
+
+   Members re-author SEQUENTIALLY, so what each one sees of its partner differs
+   and that is deliberate: the FIRST still sees the partner's healthy
+   ``grounded by:`` line in the served concept graph — the colliding statement,
+   attributed, which is the sharper signal — while the second, whose partner has
+   since been re-grounded or left flagged, sees whatever that produced. Both
+   always carry the naming reason in their own prior_context, so neither depends
+   on the concept-graph half.
 3. **Abstains, typed** — anything still colliding is left flagged
    ``DISJOINT_COLLISION`` with its SQL retained, and its ``NodeDecision`` goes
    ungrounded so every metric built on it honest-fails born-loud. An abstained
@@ -59,7 +65,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
-from dataraum.core.sql_normalize import canonical_sql
+from dataraum.core.sql_normalize import canonical_sql, canonical_sql_or_none
 from dataraum.graphs.models import FailedSnippetProvenance, SnippetFailureMode
 from dataraum.graphs.node_warming import NodeDecision
 
@@ -136,7 +142,16 @@ def find_collisions(
     for extract in extracts:
         if not extract.sql:
             continue
-        buckets[canonical_sql(extract.sql)].append(extract)
+        canonical = canonical_sql_or_none(extract.sql)
+        if canonical is None:
+            # DuckDB could not parse it, so this concept is compared byte-for-byte
+            # from here: syntax-noise variants of the same statement stop
+            # colliding. Not an error (the guard degrades to something weaker, not
+            # to something wrong) but it is the reason a "missed" collision would
+            # ever be missed, so leave a trail.
+            logger.debug("grounding_collision_sql_unparsed", concept=extract.concept)
+            canonical = canonical_sql(extract.sql)
+        buckets[canonical].append(extract)
 
     groups: list[CollisionGroup] = []
     for _, members in sorted(buckets.items()):
@@ -223,6 +238,13 @@ def resolve_grounding_collisions(
         logger.info("grounding_collision_no_disjointness", vertical=vertical)
         return bindings
 
+    # FLUSH before the read. The authoring pass writes through ``save_snippet``,
+    # whose heal branch mutates an existing row IN PLACE without flushing, and the
+    # production session is ``autoflush=False`` (``core.connections``) — so on a
+    # re-run where both concepts healed to the same statement, the pending SQL
+    # never reaches the SELECT below and the guard compares the PREVIOUS run's
+    # values. It sees no collision and calls nothing: blind, silently.
+    session.flush()
     groups = find_collisions(
         _persisted_extracts(bindings, nodes, session, workspace_id, schema_mapping_id), disjoint
     )
@@ -237,17 +259,56 @@ def resolve_grounding_collisions(
                 concept=member.concept,
                 partners=group.partners_of(member),
             )
-            bindings[member.key] = reauthor(member.key, reason)
+            try:
+                bindings[member.key] = reauthor(member.key, reason)
+            except Exception as exc:
+                # Re-authoring calls the LLM and the DB, so it can raise where the
+                # rest of this pass cannot. Both warm-pass drivers isolate their
+                # nodes the same way, and for the same reason: an escape here
+                # aborts the phase, discards every lifecycle write the run made,
+                # and — on a deterministic error — makes the Temporal retry loop
+                # on it forever.
+                #
+                # Abstain HERE rather than leaving it to round 2. An isolated-session
+                # re-author rolls its own demotion back when it raises, so the
+                # colliding row is healthy again — and round 2 reads only GROUNDED
+                # nodes, which this one no longer is. Deferring would drop the pair
+                # out of the check entirely and let two identical healthy snippets
+                # persist. A transient failure costs one flagged row that the next
+                # run re-authors from scratch, with this reason in its prior_context.
+                failed_reason = f"{reason} (re-ground failed: {exc})"
+                logger.warning(
+                    "grounding_collision_reground_error",
+                    concept=member.concept,
+                    error=str(exc),
+                )
+                flag_collision(
+                    session,
+                    nodes[member.key],
+                    workspace_id=workspace_id,
+                    schema_mapping_id=schema_mapping_id,
+                    reason=failed_reason,
+                )
+                bindings[member.key] = NodeDecision(grounded=False, reason=failed_reason)
 
     # Re-detect over the FULL set, not just the repaired groups: a re-grounding is
     # free to move onto a statement a third concept already holds.
     #
-    # FLUSH before EXPIRE, in that order. ``save_snippet``'s heal path mutates the
-    # row in place without flushing, and ``expire_all`` DISCARDS pending changes on
-    # the instances it expires — expiring first would silently roll a successful
-    # re-grounding back to its demoted state and make every repaired node look
-    # unresolved. Expiring is still required: on the parallel path the re-authoring
-    # committed in a DIFFERENT session, so this one must drop its stale identity map.
+    # FLUSH before EXPIRE, in that order, and both are load-bearing:
+    # * flush — ``save_snippet``'s heal path mutates in place without flushing, and
+    #   ``expire_all`` DISCARDS pending changes on the instances it expires, so
+    #   expiring first would roll every successful re-grounding back to its demoted
+    #   state and make each repaired node look unresolved. The flush also persists
+    #   the phase's own in-flight work (the metric ``LifecycleArtifact`` rows
+    #   declared before warming) before we drop it from the identity map.
+    # * expire — on the parallel path each re-authoring ran and COMMITTED in a
+    #   different session, so this one's identity map holds pre-repair copies.
+    # ``expire_all`` is the blunt instrument on purpose: the surgical alternative
+    # (``populate_existing`` on the snippet read) would put a SQLAlchemy loader
+    # option into ``SnippetLibrary``'s signature for this one caller, and it would
+    # refresh ONLY snippets — while the isolated sessions also committed lifecycle
+    # transitions this session may later read. The cost is re-selecting what the
+    # phase touches next, once, and only on a run that actually collided.
     session.flush()
     session.expire_all()
     for group in find_collisions(

@@ -11,6 +11,7 @@ grounded with the reason). Born-loud lives at the agent, not in a heuristic skip
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
@@ -740,3 +741,223 @@ class TestGroundingCollisionGuard:
             session, self._ratio_graph(), exec_ctx, bindings, workspace_id="ws-collide"
         )
         assert assembled.success
+
+
+@pytest.fixture()
+def plain_duckdb():
+    """A bare in-memory DuckDB — the integration ``duckdb_conn`` override drags in
+    the whole DuckLake bootstrap, and the stubbed groundings here are ``SELECT n``."""
+    import duckdb as _duckdb
+
+    conn = _duckdb.connect(":memory:")
+    yield conn
+    conn.close()
+
+
+class _RealSessionManager:
+    """ConnectionManager stand-in with a GENUINE session boundary.
+
+    ``session_scope()`` opens a separate session on the same engine and COMMITS at
+    exit, and ``autoflush=False`` mirrors ``core.connections``' sessionmaker — the
+    two properties the guard's cross-session correctness rests on. A manager being
+    present is also what routes the warm pass down its production (parallel)
+    branch, so this is the only way ``_warm_isolated`` is exercised at all.
+    """
+
+    def __init__(self, engine, duckdb_conn) -> None:
+        from sqlalchemy.orm import sessionmaker
+
+        self._factory = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+        self._duckdb = duckdb_conn
+
+    @contextmanager
+    def session_scope(self):
+        with self._factory() as sess:
+            yield sess
+            sess.commit()
+
+    @contextmanager
+    def duckdb_cursor(self):
+        cursor = self._duckdb.cursor()
+        try:
+            yield cursor
+        finally:
+            cursor.close()
+
+
+class _ManagerCtx:
+    """PhaseContext stand-in that keeps ``manager`` wired (the production branch)."""
+
+    def __init__(self, manager, session: Session, duckdb_conn) -> None:
+        self.manager = manager
+        self.session = session
+        self.duckdb_conn = duckdb_conn
+
+
+@pytest.mark.integration
+class TestGroundingCollisionGuardOnTheProductionBranch:
+    """The guard across a REAL session boundary, on real Postgres.
+
+    Everything else pins the guard with one shared session, where "visible" is
+    free. Production never runs that way: each node is authored in its own
+    session that COMMITS, while the guard reads and abstains on the phase
+    session. Three things have to hold across that boundary, and none of them
+    can be observed on the serial path — the demotion must reach the
+    re-authoring's own snippet lookup (or it assembles the collided SQL from
+    cache and the LLM is never called), the isolated commit must land before the
+    phase session looks again, and the phase session must actually re-read it
+    rather than serve its identity map.
+    """
+
+    def test_re_ground_crosses_the_session_boundary(
+        self, integration_engine, plain_duckdb, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sqlalchemy.orm import sessionmaker
+
+        from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_seeded
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        # The whole point is real cross-session semantics; SQLite would not have them.
+        assert integration_engine.dialect.name == "postgresql"
+
+        factory = sessionmaker(bind=integration_engine, expire_on_commit=False, autoflush=False)
+        manager = _RealSessionManager(integration_engine, plain_duckdb)
+
+        authored: list[str] = []
+        agent = GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+        agent._generate_sql = _collision_generate(  # type: ignore[method-assign]
+            authored,
+            {"current_assets": "SELECT 2 AS value", "current_liabilities": "SELECT 3 AS value"},
+        )
+        monkeypatch.setattr(
+            ExecutionContext,
+            "with_rich_context",
+            classmethod(
+                lambda cls, **kw: ExecutionContext(
+                    duckdb_conn=plain_duckdb, schema_mapping_id=kw["schema_mapping_id"]
+                )
+            ),
+        )
+
+        ratio = _wm_graph(
+            "current_ratio",
+            {
+                "ca": _wm_extract("ca", "current_assets"),
+                "cl": _wm_extract("cl", "current_liabilities"),
+                "cr": _wm_formula("cr", "ca / cl", ["ca", "cl"]),
+            },
+        )
+
+        with factory() as phase_session:
+            # The disjointness the guard reads — seeded through the real
+            # ON CONFLICT path against Postgres' partial-unique index.
+            ensure_concept_edges_seeded(phase_session, "finance")
+            phase_session.commit()
+
+            bindings = gep._warm_shared_nodes(
+                {"current_ratio": ratio},
+                _ManagerCtx(manager, phase_session, plain_duckdb),  # type: ignore[arg-type]
+                agent,
+                "ws-collide-pg",
+                ["t1"],
+                "finance",
+                om_run_id="run-collide-pg",
+            )
+
+            # The demotion reached the re-authoring's OWN lookup in its OWN
+            # session: had it not, execute() would have assembled the collided
+            # SQL from cache and never called the LLM a second time.
+            assert sorted(authored) == [
+                "current_assets",
+                "current_assets",
+                "current_liabilities",
+                "current_liabilities",
+            ]
+            assert bindings and all(d.grounded for d in bindings.values())
+
+            # The isolated sessions' commits are visible to the PHASE session —
+            # which had already read the pre-repair rows during round 1, so this
+            # only holds because the pass expires its identity map.
+            rows = {
+                s.standard_field: s
+                for s in phase_session.execute(select(SQLSnippetRecord)).scalars().all()
+                if s.snippet_type == "extract"
+            }
+            assert rows["current_assets"].sql == "SELECT 2 AS value"
+            assert rows["current_liabilities"].sql == "SELECT 3 AS value"
+            assert rows["current_assets"].failure_count == 0
+            assert rows["current_liabilities"].failure_count == 0
+            phase_session.commit()
+
+        # ...and it is durable, not session-local bookkeeping.
+        with factory() as reader:
+            fresh = {
+                s.standard_field: s.sql
+                for s in reader.execute(select(SQLSnippetRecord)).scalars().all()
+                if s.snippet_type == "extract"
+            }
+        assert fresh == {
+            "current_assets": "SELECT 2 AS value",
+            "current_liabilities": "SELECT 3 AS value",
+        }
+
+    def test_unresolved_collision_abstains_across_the_boundary(
+        self, integration_engine, plain_duckdb, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The abstention is written by the phase session over rows another
+        session committed — the write half of the same boundary."""
+        from sqlalchemy.orm import sessionmaker
+
+        from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_seeded
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        factory = sessionmaker(bind=integration_engine, expire_on_commit=False, autoflush=False)
+        manager = _RealSessionManager(integration_engine, plain_duckdb)
+
+        authored: list[str] = []
+        agent = GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+        agent._generate_sql = _collision_generate(authored)  # type: ignore[method-assign]
+        monkeypatch.setattr(
+            ExecutionContext,
+            "with_rich_context",
+            classmethod(
+                lambda cls, **kw: ExecutionContext(
+                    duckdb_conn=plain_duckdb, schema_mapping_id=kw["schema_mapping_id"]
+                )
+            ),
+        )
+
+        ratio = _wm_graph(
+            "current_ratio",
+            {
+                "ca": _wm_extract("ca", "current_assets"),
+                "cl": _wm_extract("cl", "current_liabilities"),
+                "cr": _wm_formula("cr", "ca / cl", ["ca", "cl"]),
+            },
+        )
+
+        with factory() as phase_session:
+            ensure_concept_edges_seeded(phase_session, "finance")
+            phase_session.commit()
+
+            bindings = gep._warm_shared_nodes(
+                {"current_ratio": ratio},
+                _ManagerCtx(manager, phase_session, plain_duckdb),  # type: ignore[arg-type]
+                agent,
+                "ws-collide-pg",
+                ["t1"],
+                "finance",
+                om_run_id="run-collide-pg",
+            )
+            assert not any(d.grounded for d in bindings.values())
+            phase_session.commit()
+
+        with factory() as reader:
+            rows = {
+                s.standard_field: s
+                for s in reader.execute(select(SQLSnippetRecord)).scalars().all()
+                if s.snippet_type == "extract"
+            }
+        for concept in ("current_assets", "current_liabilities"):
+            assert rows[concept].failure_count == 1
+            assert rows[concept].provenance["failure_mode"] == "disjoint_collision"

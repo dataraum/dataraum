@@ -3,7 +3,10 @@ import {
 	Anchor,
 	Badge,
 	Button,
+	Center,
+	Code,
 	Group,
+	ScrollArea,
 	Stack,
 	Text,
 	TextInput,
@@ -12,6 +15,7 @@ import {
 } from "@mantine/core";
 import {
 	createFileRoute,
+	type ErrorComponentProps,
 	Link,
 	notFound,
 	useNavigate,
@@ -85,10 +89,46 @@ export const Route = createFileRoute("/(app)/reports/$reportId")({
 		return data;
 	},
 	component: ReportDetail,
+	// A render throw must degrade to a readable error, never a white screen
+	// (the operating-model.tsx precedent). Reports' confidence/chartConfig
+	// jsonb is validated at MINT (mint.ts's MintBodySchema) but not on every
+	// read — a direct DB edit or a future writer could still leave a shape
+	// ConfidenceStrip/ReportChart don't expect, and this is the ONE artifact
+	// on the page, so a full-page fallback is the right grain here (contrast
+	// the gallery, where one bad row must not blank every card — band-badge.tsx
+	// / inventory-grouping.ts carry that surface's hardening instead, since the
+	// gallery only ever dereferences `.band`).
+	errorComponent: ReportDetailError,
 });
+
+function ReportDetailError({ error }: ErrorComponentProps) {
+	return (
+		<Center h="100%">
+			<Stack gap="xs" align="center" maw={560}>
+				<TriangleAlert size={32} color="var(--mantine-color-red-6)" />
+				<Text fw={600}>Couldn't load this report</Text>
+				<Text size="sm" c="dimmed" ta="center">
+					The stored report data didn't match what this page expects. This is
+					usually a corrupted or hand-edited record — try the reports gallery.
+				</Text>
+				<ScrollArea.Autosize mah={200} w="100%">
+					<Code block>{error.message}</Code>
+				</ScrollArea.Autosize>
+			</Stack>
+		</Center>
+	);
+}
 
 function ReportDetail() {
 	const { report, outdated, parentTitle } = Route.useLoaderData();
+	// Scoped to THIS route's own `drill` search param (Route.useNavigate binds
+	// `from` to the route automatically) — lifted here (not read inside
+	// ReportDetailBody) so that component takes every router-derived value as
+	// a PROP, same as report/outdated/parentTitle below: it's the seam that
+	// makes the drill-search wiring testable without a live router context
+	// ($reportId.test.tsx mounts ReportDetailBody directly).
+	const navigateSearch = Route.useNavigate();
+	const search = Route.useSearch();
 	// REMOUNT PER REPORT (React rule 5): the lineage link (below) and a future
 	// child mint both navigate between two DIFFERENT `$reportId` matches on the
 	// SAME route — TanStack Router reuses the component instance across a
@@ -102,27 +142,36 @@ function ReportDetail() {
 			report={report}
 			outdated={outdated}
 			parentTitle={parentTitle}
+			search={search}
+			navigateSearch={navigateSearch}
 		/>
 	);
 }
 
-function ReportDetailBody({
+/** Exported for `$reportId.test.tsx` — the closest testable seam for the
+ *  search.drill → initialSteps → onStepsChange → navigateSearch round trip.
+ *  `createFileRoute` components can't be rendered without a live matched
+ *  route tree (no precedent for it anywhere in this codebase), so `search`/
+ *  `navigateSearch` are explicit props here rather than internal
+ *  `Route.useSearch()`/`Route.useNavigate()` calls — everything this
+ *  component needs from the router arrives as a prop, so a test can mount it
+ *  directly with a mocked DrillableGrid (the answer-result.test.tsx
+ *  precedent) and fake values for both. */
+export function ReportDetailBody({
 	report,
 	outdated,
 	parentTitle,
+	search,
+	navigateSearch,
 }: {
 	report: ReportRow;
 	outdated: boolean;
 	parentTitle: string | null;
+	search: { drill?: DrillStep[] };
+	navigateSearch: ReturnType<typeof Route.useNavigate>;
 }) {
 	const router = useRouter();
 	const navigate = useNavigate();
-	// Scoped to THIS route's own `drill` search param (Route.useNavigate binds
-	// `from` to the route automatically) — distinct from the bare `navigate`
-	// above, which only ever targets a DIFFERENT route (the post-delete
-	// redirect to the gallery).
-	const navigateSearch = Route.useNavigate();
-	const search = Route.useSearch();
 	const rename = useServerFn(renameReportFn);
 	const remove = useServerFn(deleteReportFn);
 	const regenerate = useServerFn(regenerateSummaryFn);
@@ -430,8 +479,16 @@ function ReportDetailBody({
 					// what the grid shows once the steps change again.
 					setMintedId(null);
 					setMintFailed(false);
+					// No `...prev` spread: `validateSearch` returns ONLY `{ drill }`
+					// on this route (nothing else is defined on it TODAY), so `prev`
+					// never carries another key to preserve — spreading it was a
+					// no-op, not a safety net. If a future search param joins this
+					// route, navigating a drill change will STRIP it (this always
+					// replaces the whole search object) unless this updater is
+					// widened to merge it back in explicitly — worth a second look
+					// then, not a silent behavior change now.
 					navigateSearch({
-						search: (prev) => ({ ...prev, drill: encodeDrillSearch(steps) }),
+						search: { drill: encodeDrillSearch(steps) },
 						replace: true,
 						resetScroll: false,
 					});

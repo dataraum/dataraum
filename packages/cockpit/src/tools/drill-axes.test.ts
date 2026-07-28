@@ -13,12 +13,44 @@ vi.mock("#/config", () => ({
 
 // A thenable fluent stub: every drizzle builder method returns the same
 // object, and awaiting it yields the rows registered for the FROM table.
+//
+// A table's registered value may be a FUNCTION instead of an array, in which
+// case it receives every string literal found in the query's WHERE arguments.
+// That is what makes a TARGET-AWARE double possible: the verdict read is issued
+// once per drill target (the metric, then each of its carrier measures), and a
+// static row set would answer all of them identically — which is exactly the
+// case the carrier gate exists to distinguish. Keyed on the target's own name,
+// not on call ORDER, so the double does not silently encode the resolver's
+// current call sequence.
 // biome-ignore lint/suspicious/noExplicitAny: test double for the fluent builder
-const rowsByTable = new Map<unknown, any[]>();
-function fluent(rows: unknown[]) {
+type RowsFor = any[] | ((whereLiterals: string[]) => any[]);
+const rowsByTable = new Map<unknown, RowsFor>();
+
+/** The BOUND VALUES of a where clause — drizzle nests its conditions as
+ *  `queryChunks`, with each bound literal wrapped in a `Param` carrying `.value`.
+ *  Reading those two shapes keeps this cheap and total; a blind walk of the
+ *  object graph re-traverses drizzle's cyclic table/column back-references and
+ *  costs seconds per query. */
+function whereLiterals(node: unknown, out: string[]): string[] {
+	if (Array.isArray(node)) {
+		for (const child of node) whereLiterals(child, out);
+		return out;
+	}
+	if (node === null || typeof node !== "object") return out;
+	const obj = node as Record<string, unknown>;
+	if (typeof obj.value === "string") out.push(obj.value);
+	if (Array.isArray(obj.queryChunks)) whereLiterals(obj.queryChunks, out);
+	return out;
+}
+
+function fluent(rowsFor: RowsFor) {
+	const literals: string[] = [];
 	// biome-ignore lint/suspicious/noExplicitAny: test double for the fluent builder
 	const q: any = {
-		where: () => q,
+		where: (...args: unknown[]) => {
+			whereLiterals(args, literals);
+			return q;
+		},
 		orderBy: () => q,
 		limit: () => q,
 		leftJoin: () => q,
@@ -26,7 +58,10 @@ function fluent(rows: unknown[]) {
 		then: (
 			resolve: (v: unknown[]) => unknown,
 			reject?: (e: unknown) => unknown,
-		) => Promise.resolve(rows).then(resolve, reject),
+		) =>
+			Promise.resolve(
+				typeof rowsFor === "function" ? rowsFor(literals) : rowsFor,
+			).then(resolve, reject),
 	};
 	return q;
 }
@@ -67,6 +102,7 @@ import {
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
+import { grainPresetsFrom } from "#/duckdb/grain";
 import {
 	ALREADY_AT_GRAIN_REASON,
 	applyHierarchyDescent,
@@ -1042,6 +1078,117 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
 		expect(dateAxis?.temporal).toBe("date");
 		expect(dateAxis?.bucketGrain).toBe("month");
+	});
+
+	it("AC WIRING (DAT-857): a bucketable axis ranks ABOVE a withheld raw date, and the floored presets reach the axis", async () => {
+		seed();
+		// TWO date columns on the same fact: the engine refined `customer__segment`
+		// (monthly cadence, additive → bucketable) and abstained on `due_date`.
+		rowsByTable.set(columns, [
+			{
+				tableId: "vt1",
+				columnName: "customer__region",
+				resolvedType: "VARCHAR",
+			},
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{ tableId: "vt1", columnName: "due_date", resolvedType: "DATE" },
+			{ tableId: "fact1", columnName: "amount", resolvedType: "DOUBLE" },
+		]);
+		rowsByTable.set(currentEnrichedViews, [
+			{
+				viewName: "enriched_invoices",
+				viewTableId: "vt1",
+				factTableId: "fact1",
+				dimensionColumns: ["customer__region", "customer__segment", "due_date"],
+				isGrainVerified: true,
+			},
+		]);
+		rowsByTable.set(currentMetricAxisAdditivity, [
+			verdictRow("categorical"),
+			verdictRow("time"),
+			verdictRow("time", {
+				axisKey: "customer__segment",
+				bucketGrain: "month",
+			}),
+			verdictRow("time", {
+				axisKey: "due_date",
+				status: "abstained",
+				verdict: null,
+				abstainReason: "unknown_temporal",
+			}),
+		]);
+
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const bucketable = res.axes.find((a) => a.column === "customer__segment");
+		const withheld = res.axes.find((a) => a.column === "due_date");
+		expect(bucketable?.temporal).toBe("date");
+		expect(withheld?.temporal).toBeNull();
+		expect(withheld?.temporalWithheldReason).toContain(
+			"no stock/flow classification",
+		);
+
+		// DEMOTION: the raw-date slice ranks LAST — below every axis that can
+		// actually be bucketed or broken out.
+		expect(res.axes.at(-1)?.column).toBe("due_date");
+		expect(
+			res.axes.findIndex((a) => a.column === "customer__segment"),
+		).toBeLessThan(res.axes.findIndex((a) => a.column === "due_date"));
+
+		// ...and the served cadence reaches the grain menu as a FLOOR: a monthly
+		// axis is not offered day buckets it has no data to fill.
+		expect(
+			grainPresetsFrom(
+				bucketable?.temporal ?? "date",
+				bucketable?.bucketGrain,
+			).map((g) => g.token),
+		).toEqual(["1M", "1q", "1y"]);
+	});
+
+	it("AC WIRING (DAT-857): a METRIC target reads its CARRIERS' verdicts — the pinned gross-margin case", async () => {
+		seed();
+		// The target-aware double: the metric is a recompute (a ratio), and the
+		// answer for its two carriers differs. `revenue` sums; `cogs` does not.
+		const additive = (axisKind: string) => verdictRow(axisKind);
+		const ratio = (axisKind: string) =>
+			verdictRow(axisKind, {
+				verdict: "non_additive_recompute",
+				reason: "ratio",
+			});
+		rowsByTable.set(currentMetricAxisAdditivity, (literals: string[]) => {
+			if (literals.includes("cogs")) {
+				return [
+					verdictRow("time", { verdict: "semi_additive", reason: "stock" }),
+					additive("categorical"),
+				];
+			}
+			if (literals.includes("revenue")) {
+				return [additive("time"), additive("categorical")];
+			}
+			return [ratio("time"), ratio("categorical")]; // the metric itself
+		});
+
+		// The metric's DAG names revenue + cogs as its extracts (see seed()).
+		const res = await resolveDrillAxes({ metricKey: "margin" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// A ratio recomputes per bucket from its carriers — but `cogs` does not sum
+		// across periods, so the recomputed number would be wrong. Withheld, and
+		// the reason NAMES the carrier that blocks it.
+		expect(dateAxis?.temporal).toBeNull();
+		expect(dateAxis?.temporalWithheldReason).toContain("cogs");
+		expect(res.reconciles).toEqual({ time: false, categorical: false });
+
+		// Flip the blocking carrier to additive and the SAME metric is offered.
+		rowsByTable.set(currentMetricAxisAdditivity, (literals: string[]) =>
+			literals.includes("revenue") || literals.includes("cogs")
+				? [additive("time"), additive("categorical")]
+				: [ratio("time"), ratio("categorical")],
+		);
+		const offered = await resolveDrillAxes({ metricKey: "margin" });
+		expect(
+			offered.axes.find((a) => a.column === "customer__segment")?.temporal,
+		).toBe("date");
+		// ...and its total still must not claim the buckets add up to it.
+		expect(offered.reconciles).toEqual({ time: false, categorical: false });
 	});
 
 	it("UNIT GATE (DAT-731): a measure measured_in a MULTI-valued unit column flags a cross-unit aggregation", async () => {

@@ -124,9 +124,17 @@ export async function aggregatedColumns(
 		// like a plain call (DAT-868). This used to fail closed on the whole
 		// expression: any WINDOW node returned the empty set, which — now that
 		// the caller is the UNIT gate, not the retired flow gate — means the gate
-		// silently has nothing to check rather than anything safe. A non-aggregate
-		// window (`row_number()`, `lead(x)`) matches no catalog aggregate name and
-		// so contributes nothing, which is correct: it aggregates nothing.
+		// silently has nothing to check rather than anything safe.
+		//
+		// NAVIGATION functions are deliberately in scope too. `duckdb_functions()`
+		// classifies `lead`/`lag`/`row_number`/`rank`/`first_value` as
+		// `function_type='aggregate'` (probed), so `lead(amount) OVER (…)` collects
+		// `amount`. That is the ANSWER WE WANT here: this feeds only the unit gate,
+		// whose question is "does this expression read measure columns whose unit
+		// column carries more than one unit?" — and a windowed read of a
+		// mixed-unit measure is exactly as much of a problem as a summed one. The
+		// gate discloses loudly; it never silently enables. (`row_number()`/`rank()`
+		// take no column arguments, so they contribute nothing regardless.)
 		const entersAggregate =
 			(obj.class === "FUNCTION" || obj.class === "WINDOW") &&
 			typeof obj.function_name === "string" &&

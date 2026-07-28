@@ -20,9 +20,10 @@ from __future__ import annotations
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity, derive_table_role
 from dataraum.analysis.semantic.models import (
     RelationshipOutput,
@@ -103,6 +104,7 @@ def _seed(
     aggregation: str,
     bind_concepts: bool = True,
     dim_served: list[tuple[str, str, str, str]] | None = None,
+    witness: dict[str, str] | None = None,
 ) -> TransformationGraph:
     """Seed one fact + its enriched view + the extract snippet, and return a
     single-extract metric graph grounding ``field`` to the view.
@@ -163,6 +165,33 @@ def _seed(
         if bind_concepts:
             session.add(
                 ColumnConcept(column_id=col.column_id, run_id=RUN, temporal_behavior=behavior)
+            )
+        # The DATA-RECONCILED stock/flow witness (measure_aggregation_lineage),
+        # which the resolver prefers over the ontology prior above.
+        if witness and name in witness:
+            session.add(
+                MeasureAggregationLineage(
+                    run_id=RUN,
+                    measure_table_id=fact.table_id,
+                    measure_column_id=col.column_id,
+                    event_table_id=fact.table_id,
+                    measure_time_axis_column="period",
+                    event_time_axis_column="period",
+                    measure_slice_column_id=col.column_id,
+                    event_slice_column_id=col.column_id,
+                    slice_dimension="account",
+                    convention_sql="SELECT 1",
+                    period_grain="month",
+                    pattern=witness[name],
+                    match_rate=1.0,
+                    r_flow_median=1.0,
+                    r_stock_median=0.0,
+                    n_entities=10,
+                    n_entities_fired=10,
+                    sign_fired_primary=10,
+                    sign_fired_mirror=0,
+                    sign_fired_both=0,
+                )
             )
         # The f.* served column on the view, sourced from the fact column.
         session.add(
@@ -864,3 +893,209 @@ def test_persist_keeps_a_healthy_sibling_when_one_extract_is_unresolvable(
     unresolved = rows[("measure", "never_grounded", "time")]
     assert unresolved.status == "abstained"
     assert unresolved.abstain_reason == "unresolved_grounding"
+
+
+# --- stock/flow witness ride-along (DAT-868) ---------------------------------
+# The resolver reads TWO sources of stock/flow evidence. Before this lane it read
+# only the weaker one, so a column with a real reconciled witness but a NULL
+# ontology prior classified `unknown_temporal` and lost its time axis for nothing.
+
+
+def test_witness_resolves_a_column_whose_ontology_prior_is_missing(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """Witness present, prior absent ⇒ the witness decides (it is an OBSERVATION)."""
+    graph = _seed(
+        session,
+        fact_name="journal_lines",
+        view_name="enriched_journal_lines",
+        columns={"credit": "additive"},
+        grain_columns=["line_id"],
+        time_columns=[],
+        field="revenue",
+        select_expr="SUM(credit)",
+        aggregation="sum",
+        bind_concepts=False,  # no ColumnConcept at all — prior is NULL
+        witness={"credit": "per_period"},  # ...but the data reconciled it as a FLOW
+    )
+    rows = _verdicts(session, duckdb_conn, graph)
+    time = _axis(rows, "metric", "m", "time")
+    assert time.status is AdditivityStatus.CLASSIFIED
+    assert time.verdict is AxisVerdict.ADDITIVE  # was: abstained/unknown_temporal
+
+
+def test_cumulative_witness_makes_a_column_a_stock(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    graph = _seed(
+        session,
+        fact_name="trial_balance",
+        view_name="enriched_trial_balance",
+        columns={"balance": "point_in_time"},
+        grain_columns=["account_id"],
+        time_columns=[],
+        field="current_assets",
+        select_expr="SUM(balance)",
+        aggregation="sum",
+        bind_concepts=False,
+        witness={"balance": "cumulative"},
+    )
+    rows = _verdicts(session, duckdb_conn, graph)
+    time = _axis(rows, "metric", "m", "time")
+    assert time.verdict is AxisVerdict.SEMI_ADDITIVE
+    assert time.reason == "stock"
+
+
+def test_witness_contradicting_the_prior_ABSTAINS(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """Two sources of truth in contradiction ⇒ abstain, never a silent pick.
+
+    Deliberately unlike ``og_columns.materialization``, which COALESCEs the witness
+    over the prior with no signal that they disagreed.
+    """
+    graph = _seed(
+        session,
+        fact_name="journal_lines",
+        view_name="enriched_journal_lines",
+        columns={"credit": "point_in_time"},  # prior says STOCK...
+        grain_columns=["line_id"],
+        time_columns=[],
+        field="revenue",
+        select_expr="SUM(credit)",
+        aggregation="sum",
+        witness={"credit": "per_period"},  # ...witness says FLOW
+    )
+    rows = _verdicts(session, duckdb_conn, graph)
+    # The MEASURE names the contradiction itself...
+    for axis_kind in ("time", "categorical"):
+        measure = _axis(rows, "measure", "revenue", axis_kind)
+        assert measure.status is AdditivityStatus.ABSTAINED
+        assert measure.abstain_reason is AbstainReason.MATERIALIZATION_CONFLICT
+        # ...and the metric built on it abstains too, naming the missing leaf
+        # rather than re-stating a cause it did not observe.
+        metric = _axis(rows, "metric", "m", axis_kind)
+        assert metric.status is AdditivityStatus.ABSTAINED
+        assert metric.abstain_reason is AbstainReason.MISSING_EXTRACT
+
+
+# --- per-axis rows + cadence (DAT-857/730) -----------------------------------
+
+
+def test_time_axes_carry_the_observed_cadence_from_the_read_view(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """The producer of the drill's grain floor: a per-axis row per time column.
+
+    The cadence is COLUMN-grain, so it is read through the head-resolving read
+    view; this stands up a minimal one and asserts the mapped ladder rung reaches
+    the served row (`week` → `month`: a weekly cadence has no rung of its own, and
+    day buckets on weekly data are mostly empty).
+    """
+    graph = _seed(
+        session,
+        fact_name="journal_lines",
+        view_name="enriched_journal_lines",
+        columns={"credit": "additive", "booked_on": "additive"},
+        grain_columns=["line_id"],
+        time_columns=[],
+        field="revenue",
+        select_expr="SUM(credit)",
+        aggregation="sum",
+    )
+    source_id = session.execute(
+        select(Column.source_column_id).where(
+            Column.column_name == "booked_on", Column.source_column_id.isnot(None)
+        )
+    ).scalar_one()
+    # The read schema is a real Postgres schema in production; on this suite's
+    # in-memory SQLite the equivalent namespace is an ATTACHed database, which
+    # makes the same `"<schema>".<table>` reference resolve.
+    read_schema = "ws_additivity_read"
+    session.execute(text(f"ATTACH DATABASE ':memory:' AS \"{read_schema}\""))
+    session.execute(
+        text(
+            f'CREATE TABLE "{read_schema}".current_temporal_column_profiles '
+            "(column_id VARCHAR, detected_granularity VARCHAR)"
+        )
+    )
+    session.execute(
+        text(f'INSERT INTO "{read_schema}".current_temporal_column_profiles VALUES (:cid, :g)'),
+        {"cid": source_id, "g": "week"},
+    )
+    session.flush()
+
+    rows = resolve_graph_verdicts(
+        session,
+        duckdb_conn,
+        graph=graph,
+        graph_id="m",
+        workspace_id=WS,
+        catalogue_run_id=RUN,
+        read_schema=read_schema,
+    )
+    per_axis = [
+        r
+        for r in rows
+        if r.target_kind == "metric" and r.axis_kind == "time" and r.axis_key != AXIS_KEY_ALL
+    ]
+    assert [r.axis_key for r in per_axis] == ["booked_on"]
+    assert {r.bucket_grain for r in per_axis} == {"month"}
+    # The measure target gets the same refinement — both are drillable.
+    assert [
+        r.bucket_grain for r in rows if r.target_kind == "measure" and r.axis_key == "booked_on"
+    ] == ["month"]
+    # ...and the class row is still there for every consumer that finds no
+    # refinement for its column.
+    assert _axis(rows, "metric", "m", "time").verdict is AxisVerdict.ADDITIVE
+
+
+def test_no_read_schema_yields_NO_per_axis_rows_only_the_class_row(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """The guard's real behaviour: no cadence source ⇒ nothing per-axis to say."""
+    graph = _seed(
+        session,
+        fact_name="journal_lines",
+        view_name="enriched_journal_lines",
+        columns={"credit": "additive", "booked_on": "additive"},
+        grain_columns=["line_id"],
+        time_columns=[],
+        field="revenue",
+        select_expr="SUM(credit)",
+        aggregation="sum",
+    )
+    rows = _verdicts(session, duckdb_conn, graph)  # read_schema=None
+    assert [r.axis_key for r in rows if r.axis_kind == "time"] == [
+        AXIS_KEY_ALL,
+        AXIS_KEY_ALL,
+    ]
+
+
+def test_an_anonymous_extract_leaf_abstains_the_metric(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """An EXTRACT with no standard_field has no measure target, so it can never be
+    checked as a CARRIER — the drill's recompute gate would pass over it vacuously.
+    The metric abstains rather than being silently enabled."""
+    graph = _seed(
+        session,
+        fact_name="journal_lines",
+        view_name="enriched_journal_lines",
+        columns={"credit": "additive"},
+        grain_columns=["line_id"],
+        time_columns=[],
+        field="revenue",
+        select_expr="SUM(credit)",
+        aggregation="sum",
+    )
+    graph.steps["anon"] = GraphStep(
+        step_id="anon",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field=""),
+        aggregation="sum",
+    )
+    rows = _verdicts(session, duckdb_conn, graph)
+    metric = _axis(rows, "metric", "m", "time")
+    assert metric.status is AdditivityStatus.ABSTAINED
+    assert metric.abstain_reason is AbstainReason.MISSING_EXTRACT

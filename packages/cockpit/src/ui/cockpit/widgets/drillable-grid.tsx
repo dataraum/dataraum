@@ -773,8 +773,30 @@ export function DrillableGrid({
 					{axis.disabledReason}
 				</Text>
 			)}
+			{/* DAT-857: a date column the engine's verdict will not let us BUCKET.
+			    Unlike disabledReason this axis stays fully selectable — it is
+			    offered as a raw date slice — so the note explains the missing
+			    grain control, not a disabled item. It also ranks last. */}
+			{axis.temporalWithheldReason && (
+				<Text size="xs" c="dimmed" fs="italic">
+					{axis.temporalWithheldReason}
+				</Text>
+			)}
 		</>
 	);
+
+	// The total row anchors a DRILLED view; the undrilled grid IS the scalar, so
+	// a footer there would duplicate the single row. Its `value` blanks to an
+	// honest dash when the drilled parts do not sum to it (DAT-857).
+	const footerRow =
+		steps.length > 0
+			? maskNonReconcilingTotal(
+					footerCells,
+					steps,
+					axes,
+					axesQuery.data?.reconciles,
+				)
+			: undefined;
 
 	// The drill controls live in the GRID's toolbar-left slot (where the row
 	// count used to sit — iteration 3), not on their own row above it.
@@ -1037,22 +1059,14 @@ export function DrillableGrid({
 				sqlParams={effective.params}
 				onRowClick={onRowClick}
 				onRowHover={onRowHover}
-				// The total row anchors a DRILLED view; the undrilled grid IS the
-				// scalar, so a footer there would duplicate the single row. Its
-				// `value` blanks to an honest dash when the drilled parts do not sum
-				// to it (DAT-857) — a recomputed ratio's monthly rows are each right
-				// and their total is not a number.
-				footerRow={
-					steps.length > 0
-						? maskNonReconcilingTotal(
-								footerCells,
-								steps,
-								axes,
-								axesQuery.data?.reconciles,
-							)
-						: undefined
+				footerRow={footerRow}
+				// A dashed total with no reason reads as a bug. When the mask fired,
+				// the label carries the why (the cell itself is the house `—`).
+				footerLabel={
+					footerRow !== undefined && footerRow !== footerCells
+						? `${footerLabel} — parts don't sum`
+						: footerLabel
 				}
-				footerLabel={footerLabel}
 				columnAccents={columnAccents}
 				columnUnits={columnUnits}
 				toolbarStart={drillControls}

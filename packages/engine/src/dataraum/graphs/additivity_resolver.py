@@ -217,6 +217,17 @@ def resolve_graph_verdicts(
     for r in resolutions:
         if r.standard_field:
             by_field.setdefault(r.standard_field, []).append(r)
+    # An EXTRACT leaf with no standard_field has NO measure target, so it cannot
+    # be looked up as a carrier — and the drill's recompute gate ("offer the
+    # bucketing iff every carrier is additive") would then pass over it
+    # VACUOUSLY, silently enabling exactly what the gate exists to refuse. The
+    # metric abstains instead. Unreachable from the shipped catalogue (grounding
+    # requires a standard_field), but a guard that knows about a case must not
+    # drop it silently.
+    # Falsy, not `is None`: an empty standard_field is just as unlookupable, and
+    # this must match the `if r.standard_field` filter that builds by_field above
+    # — a leaf that produced no measure row is exactly the one that escapes.
+    anonymous_leaf = any(not r.standard_field for r in resolutions)
     for field, group in sorted(by_field.items()):
         rows.extend(_target_rows("measure", field, group))
 
@@ -232,7 +243,9 @@ def resolve_graph_verdicts(
     metric_axes = _common_time_axes([r for r in resolutions if r.axis_class is not None])
     for axis_kind in AxisKind:
         additivity = axis_additivity(verdict, axis_kind)
-        if (
+        if anonymous_leaf:
+            additivity = abstained(AbstainReason.MISSING_EXTRACT)
+        elif (
             leaf_abstained
             and additivity.status is AdditivityStatus.ABSTAINED
             and additivity.abstain_reason is AbstainReason.UNKNOWN_AGGREGATE
@@ -485,9 +498,13 @@ def _time_axes(
     profile. The cadence is read through ``current_temporal_column_profiles`` — the
     profile is COLUMN-grain (sealed under the per-table generation head), so the
     head-resolving read view is the only run-correct door; reading the base table at
-    the catalogue run would be a cross-run read. Guarded: no read schema (SQLite unit
-    fixtures) or an unavailable view yields axes with NO cadence claim, which the
-    consumer reads as "offer your normal grains", never as a licence.
+    the catalogue run would be a cross-run read.
+
+    Guarded, and the guard yields NO AXES AT ALL — not axes with an empty cadence.
+    Without the profile read there is nothing per-axis left to say, so writing a row
+    per column would be pure duplication of the class row. A consumer that finds no
+    row for its column falls back to the ``'*'`` class verdict and offers its normal
+    grains, which is the same answer by a shorter path.
     """
     served = session.execute(
         select(Column.column_name, Column.source_column_id).where(

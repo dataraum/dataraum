@@ -16,7 +16,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
+import { formatCell } from "#/duckdb/cell-format";
 import {
 	type DrillAxis,
 	type DrillSource,
@@ -31,16 +31,32 @@ vi.mock("#/ui/cockpit/widgets/result-grid", () => ({
 		sql,
 		onRowClick,
 		toolbarStart,
+		footerRow,
+		footerLabel,
 	}: {
 		sql?: string;
 		onRowClick?: (row: Record<string, unknown>) => void;
 		toolbarStart?: React.ReactNode;
+		footerRow?: Record<string, unknown>;
+		footerLabel?: string;
 	}) => (
 		<div>
 			{/* The drill controls render through the grid's toolbar-left slot
 			    (iteration 3) — the mock must mount them like the real grid. */}
 			{toolbarStart}
 			<div data-testid="mock-grid-sql">{sql}</div>
+			{/* The footer through the REAL cell formatter the production grid uses
+			    (result-grid.tsx renders `formatCell(value, type)` per column), so a
+			    dash asserted here is the dash a practitioner sees — not a shape this
+			    mock invented. */}
+			{footerRow && (
+				<div data-testid="mock-grid-footer">
+					<span data-testid="mock-footer-label">{footerLabel}</span>
+					<span data-testid="mock-footer-value">
+						{formatCell(footerRow.value as never, "DOUBLE")}
+					</span>
+				</div>
+			)}
 			{onRowClick && (
 				<button
 					type="button"
@@ -915,5 +931,55 @@ describe("DrillableGrid — Haiku guidance fallback", () => {
 			await screen.findByTestId("drill-suggest-guidance-empty"),
 		).toBeTruthy();
 		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+});
+
+describe("non-reconciling total (DAT-857)", () => {
+	const RATIO_AXES = {
+		axes: [axis("region"), axis("entry_id__date", "date")],
+		// The engine classified this target: it recomputes per bucket, so a
+		// breakdown's parts do NOT sum to the unrestricted scalar.
+		reconciles: { time: false, categorical: true },
+	};
+
+	it("renders the drilled total as an honest dash, with the reason on the label", async () => {
+		renderGrid(NODE_SOURCE, undefined, RATIO_AXES, {
+			footerCells: { value: 42, revenue: 800 },
+		});
+		// Undrilled, the grid IS the scalar — no footer to contradict.
+		expect(screen.queryByTestId("mock-grid-footer")).toBeNull();
+
+		await sliceBy("entry_id__date", "SELECT 1");
+
+		// The deferred-mutation trap: the step commit lands in a transition, so
+		// flush before asserting on what it rendered.
+		await waitFor(() =>
+			expect(screen.getByTestId("mock-grid-footer")).toBeTruthy(),
+		);
+		expect(screen.getByTestId("mock-footer-value").textContent).toBe("—");
+		// A dead end with no reason reads as a bug — the label says why.
+		expect(screen.getByTestId("mock-footer-label").textContent).toContain(
+			"parts don't sum",
+		);
+	});
+
+	it("keeps a real total when the drilled axis reconciles", async () => {
+		renderGrid(
+			NODE_SOURCE,
+			undefined,
+			{
+				axes: [axis("region"), axis("entry_id__date", "date")],
+				reconciles: { time: true, categorical: true },
+			},
+			{ footerCells: { value: 42 } },
+		);
+		await sliceBy("entry_id__date", "SELECT 1");
+		await waitFor(() =>
+			expect(screen.getByTestId("mock-grid-footer")).toBeTruthy(),
+		);
+		expect(screen.getByTestId("mock-footer-value").textContent).toBe("42");
+		expect(screen.getByTestId("mock-footer-label").textContent).not.toContain(
+			"parts don't sum",
+		);
 	});
 });

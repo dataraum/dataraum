@@ -100,12 +100,32 @@ describe("aggregatedColumns", () => {
 		).toEqual(["credit", "fee"]);
 	});
 
-	it("reads a non-aggregate window as aggregating nothing", async () => {
-		// `row_number()` matches no catalog aggregate name — correctly contributes
-		// no measure columns rather than being treated as unreadable.
+	it("reads row_number() as aggregating nothing — it takes no column argument", async () => {
+		// NB: `row_number` IS `function_type='aggregate'` in duckdb_functions(); it
+		// contributes nothing because it has no column ARGUMENTS, not because it
+		// fails the name check.
 		expect(
 			(await aggregatedColumns("row_number() OVER (ORDER BY booked_on)")).size,
 		).toBe(0);
+	});
+
+	it("collects a NAVIGATION function's measure argument — the unit gate wants it", async () => {
+		// The rationale above, pinned: duckdb_functions() classifies `lead` as an
+		// aggregate, so its argument is collected. A windowed read of a mixed-unit
+		// measure is a real cross-unit finding, and the ORDER BY key is not.
+		expect(
+			[
+				...(await aggregatedColumns(
+					"lead(amount, 1, 0) OVER (PARTITION BY acct ORDER BY booked_on)",
+				)),
+			].sort(),
+		).toEqual(["amount"]);
+	});
+
+	it("matches a QUOTED, mixed-case aggregate name — the lowercase fold is load-bearing", async () => {
+		// DuckDB lowercases unquoted identifiers, but a quoted `"Sum"` keeps its
+		// case into the AST while the catalog holds `sum` (DAT-868).
+		expect([...(await aggregatedColumns('"Sum"(credit)'))]).toEqual(["credit"]);
 	});
 
 	it("reads a windowed aggregate whose FILTER and frame both carry columns", async () => {

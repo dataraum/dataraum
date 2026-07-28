@@ -441,7 +441,9 @@ const axisLookupKey = (axisKind: string, axisKey: string): string =>
 	`${axisKind}\u0000${axisKey}`;
 
 /** Build the lookup from raw verdict rows — the ONE place the key format lives,
- *  shared by the DB read and its tests so they cannot drift apart. */
+ *  shared by the DB read and its tests so they cannot drift apart. Last row per
+ *  key wins, which is a formality: the head-scoped view + the base table's
+ *  UNIQUE make duplicate (axis_kind, axis_key) pairs unrepresentable. */
 export function buildTargetAdditivity(
 	rows: readonly (AxisAdditivity & { axisKind: string; axisKey: string })[],
 ): TargetAdditivity | null {
@@ -557,8 +559,13 @@ function additivityTarget(req: DrillNodeRef): {
 /** Read every persisted axis verdict for one target, or `null` when the engine
  *  has none at all. A `null` is the WITHHOLD signal (DAT-725): the caller strips
  *  the grain and surfaces a visible reason rather than falling back to a weaker
- *  local re-derivation. Rows are resolved to the current operating_model run by
- *  the read view. */
+ *  local re-derivation.
+ *
+ *  No ORDER BY, and no `.limit(1)`: the read view resolves ONE operating_model
+ *  run (the promoted head), and the base table's UNIQUE is
+ *  `(target_kind, target_key, axis_kind, axis_key, run_id)` — so within a target
+ *  each (axis_kind, axis_key) appears exactly once and the rows carry no
+ *  ordering-dependent meaning. This is the row set, not a pick from one. */
 async function readTargetAdditivity(
 	kind: string,
 	key: string,
@@ -735,9 +742,19 @@ export function describeUnitGate(
 export interface DrillAxesResult {
 	axes: DrillAxis[];
 	/** Which axis classes a drilled breakdown RECONCILES on (parts sum to the
-	 *  total). The grid renders a dash instead of a total wherever this is false —
+	 *  total). The grid renders a dash instead of a total wherever this is FALSE —
 	 *  a recomputed ratio's monthly values are each correct, and their sum is not
-	 *  a number that means anything. Absent when no verdict was consulted. */
+	 *  a number that means anything.
+	 *
+	 *  Set whenever the target HAS a persisted verdict, independently of whether a
+	 *  time grain was offered: a categorical breakdown of a non-additive measure
+	 *  needs the dash just as much, and plenty of drillable nodes carry no
+	 *  temporal axis at all.
+	 *
+	 *  ABSENT (not `{false,false}`) when the target has no verdict — the answer /
+	 *  ad-hoc path, where no verdict substrate exists. Unknown is not a negative
+	 *  finding, so the honest rendering is no claim: the total stays as computed
+	 *  rather than being dashed on zero evidence. */
 	reconciles?: { time: boolean; categorical: boolean };
 	reason?: string;
 	/** Set when the time gate stripped time grain from the temporal axes — either
@@ -1180,6 +1197,16 @@ function gateAxes(
 		// carries its own reason for the menu.
 		if (reasons.length > 0) result.temporalGateReason = reasons[0];
 		gatedAxes = demoteWithheldDateAxes(gatedAxes);
+	}
+
+	// RECONCILIATION rides on the verdict lookup, NOT on the time gate: a node
+	// with no temporal axis at all (a period carried as an integer FK, a VARCHAR
+	// date — the DAT-847 shapes) is still drillable CATEGORICALLY, and a ratio
+	// broken out by region prints a total its parts do not sum to unless this is
+	// set. Absent when no verdict exists (the answer path): "we don't know" is
+	// not "it does not reconcile", and dashing every ad-hoc total on zero
+	// evidence would be a broad silent claim of its own.
+	if (verdicts.target !== null) {
 		result.reconciles = reconciliation(verdicts.target);
 	}
 

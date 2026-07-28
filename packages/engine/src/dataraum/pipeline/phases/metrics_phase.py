@@ -589,6 +589,12 @@ def _dedupe_verdicts(collected: list[VerdictRow]) -> list[VerdictRow]:
     time"), and because a field ever grounded two ways must resolve to the CLAIM
     ITS WEAKEST GROUNDING SUPPORTS: an abstention beats any verdict, and among
     verdicts the least-claiming wins.
+
+    The winning row carries its own ``bucket_grain`` along as a ride-along — the
+    cadence is a property of the AXIS, and the two groundings of one field resolve
+    the same served relation, so the two cadences agree wherever both exist. If a
+    future grounding path made them differ, the tie-break would need to widen to
+    the coarsest cadence the same way ``_common_time_axes`` already does.
     """
     best: dict[tuple[str, str, str, str], VerdictRow] = {}
     for row in collected:

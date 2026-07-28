@@ -13,13 +13,24 @@
 //
 // ABSENCE DOCTRINE v2 — "observed or dash" (DAT-703 smoke finding: zero-absence
 // COALESCE presented degenerate ratios as real values — gross_margin showed
-// 100.00 on every account that simply has no COGS). ONE structural
-// classification per opened node, from its parsed reachable tree, decided
-// once at compose time — never per operator (the chain-B context threading
-// stays deleted):
+// 100.00 on every account that simply has no COGS). ONE classification per
+// opened node, decided once at compose time — never per operator (the chain-B
+// context threading stays deleted).
 //
-//   ADDITIVE — every reachable formula uses only `+`, binary `-`, unary
-//   minus, and refs, and every leaf is an extract WITH a relation. The
+// WHO decides it changed in DAT-857/868: the caller passes the ENGINE'S SERVED
+// VERDICT (`sumsAcrossDrilledAxes`, off `metric_axis_additivity`). This module
+// no longer classifies the node for itself — the local structural judge that
+// used to is gone, because the engine's verdict knows things formula structure
+// cannot (stock vs flow materialization, periodic-snapshot grain), and two
+// judges answering one question is how the two surfaces drifted apart.
+// `signedContributions` survives as pure MECHANICS: given that we are summing,
+// which extracts contribute and with which sign. Its null return is not a
+// verdict — it means the shortcut shape does not apply, so composition falls
+// through to the spine, which is correct for every shape.
+//
+//   ADDITIVE (verdict says the value sums across the drilled axes, and the
+//   reachable tree is a plain signed sum: only `+`, binary `-`, unary minus,
+//   and refs, every leaf an extract WITH a relation) — the
 //   grouped/pinned result is a SUM over a UNION ALL of SIGNED CARRIER
 //   CONTRIBUTIONS: each extract keeps its grouped CTE, the expression
 //   flattens to (extract, sign) pairs, and an absent carrier simply
@@ -27,8 +38,10 @@
 //   union domain (gross_profit by account: +sales / -materials, Σ = total)
 //   holds by algebra.
 //
-//   NON-ADDITIVE (any ratio, product, literal, constant ref, or fall-loud
-//   leaf) — carriers join `FULL JOIN … ON (dim IS NOT DISTINCT FROM dim)`
+//   NON-ADDITIVE / RECOMPUTE (the verdict says it does not sum, or the shape is
+//   a ratio, product, literal, constant ref, or fall-loud leaf) — carriers are
+//   grouped per bucket and the formula is RE-EVALUATED there, joining
+//   `FULL JOIN … ON (dim IS NOT DISTINCT FROM dim)`
 //   (NULL-safe: a slice group whose dim is NULL stays ONE group, not a split
 //   of dashes — DAT-714) and every ref renders BARE. SQL NULL absorbs through
 //   the arithmetic, so a group shows a value iff EVERY carrier the formula

@@ -285,6 +285,39 @@ describe("composeNodeQuery — grouped", () => {
 		),
 	];
 
+	it("THE VERDICT DECIDES THE SHAPE: one signed-sum node, two compositions, two different answers", async () => {
+		// The lane's core premise, pinned. Same steps, same drill — only the
+		// ENGINE'S VERDICT differs, and it changes both the SQL and the numbers.
+		// (Before DAT-857/868 this flag did not exist: the module classified the
+		// node itself, so `false` was unreachable for an additive shape.)
+		const drill = { slices: [{ column: "account" }], pins: [] };
+		const summed = composed(GROSS_PROFIT, undefined, drill, true);
+		const recomputed = composed(GROSS_PROFIT, undefined, drill, false);
+
+		// Shape: signed UNION-ALL decomposition vs the NULL-safe carrier spine.
+		expect(summed.sql).toContain("UNION ALL");
+		expect(summed.sql).not.toContain("FULL JOIN");
+		expect(recomputed.sql).toContain("FULL JOIN");
+		expect(recomputed.sql).not.toContain("UNION ALL");
+
+		// Row sets: revenue and cogs live on DISJOINT accounts in this fixture.
+		// Summing, each side contributes its own group. Recomputing, the formula
+		// is evaluated per group and SQL NULL absorbs — so a group that observes
+		// only one carrier is the honest dash, not a number.
+		const byAccount = async (q: { sql: string }) =>
+			new Map((await rows(q.sql)).map((r) => [r.account, num(r.value)]));
+		const summedRows = await byAccount(summed);
+		const recomputedRows = await byAccount(recomputed);
+		expect(summedRows.get("sales")).toBe(800);
+		expect(summedRows.get("materials")).toBe(-200);
+		expect(recomputedRows.get("sales")).toBeNull();
+		expect(recomputedRows.get("materials")).toBeNull();
+		// Same groups, different values — the flag is load-bearing, not cosmetic.
+		expect([...recomputedRows.keys()].sort()).toEqual(
+			[...summedRows.keys()].sort(),
+		);
+	});
+
 	it("ADDITIVE: disjoint decomposition via signed contributions — union domain, Σ = scalar, no COALESCE, no join", async () => {
 		const scalar = num(
 			(await rows(composed(GROSS_PROFIT, undefined, undefined, true).sql))[0]

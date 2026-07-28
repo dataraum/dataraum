@@ -517,9 +517,18 @@ class AdditivityStatus(Enum):
 class AbstainReason(Enum):
     """Why no verdict could be reached — always named, never silent.
 
-    The first two come from the classifier (an aggregate or a stock/flow
-    behaviour it could not resolve); the rest from the resolver and the phase,
-    where a target can fail to reach classification at all.
+    Producers, so a reader can find the code that emits each:
+
+    * ``UNKNOWN_AGGREGATE`` / ``UNKNOWN_TEMPORAL`` — :func:`axis_additivity`,
+      projecting a classifier reason that means "could not determine".
+    * ``UNRESOLVED_GROUNDING`` / ``RELATION_OUTSIDE_ANALYSIS`` /
+      ``MATERIALIZATION_CONFLICT`` — ``additivity_resolver._resolve_one_extract``,
+      per EXTRACT leaf.
+    * ``MISSING_EXTRACT`` — ``additivity_resolver.resolve_graph_verdicts``, when a
+      leaf the metric depends on abstained or carries no standard_field.
+    * ``NO_CATALOGUE_RUN`` / ``GRAPH_PARSE_FAILED`` —
+      ``metrics_phase._persist_additivity_verdicts``, for targets that never reach
+      the resolver at all.
     """
 
     UNKNOWN_AGGREGATE = "unknown_aggregate"
@@ -596,10 +605,12 @@ def abstained(reason: AbstainReason) -> AxisAdditivity:
 def axis_additivity(cls: AxisClass | MetricVerdict, kind: AxisKind) -> AxisAdditivity:
     """Project a classifier result onto ONE axis as a typed verdict.
 
-    Total by construction: every branch of ``classify_extract``/``roll_up_metric``
-    either sets the axis additive, or names a reason — and every reason is either
-    a doctrine reason (→ semi-additive or recompute) or an ``unknown_*`` (→ a
-    typed abstention).
+    Total by ENUMERATION of the classifier's branches, enforced by
+    :meth:`AxisAdditivity.__post_init__`: every branch of
+    ``classify_extract``/``roll_up_metric`` either sets the axis additive, or names
+    a reason — and every reason is either a doctrine reason (→ semi-additive or
+    recompute) or an ``unknown_*`` (→ a typed abstention). A branch that ever
+    returned something else would raise here rather than persist a nonsense row.
     """
     if kind is AxisKind.TIME:
         additive, reason = cls.time_additive, cls.time_reason

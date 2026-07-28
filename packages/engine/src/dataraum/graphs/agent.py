@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -684,6 +684,7 @@ class GraphAgent(LLMFeature):
         cached_snippets: dict[str, dict[str, Any]],
         resolved_params: dict[str, Any],
         group_by: Sequence[str] = (),
+        step_grain: Mapping[str, Sequence[tuple[str, str]]] | None = None,
     ) -> GeneratedCode | None:
         """Compose a metric's SQL PER-METRIC from the DAG — no cross-metric reuse (DAT-646).
 
@@ -702,7 +703,18 @@ class GraphAgent(LLMFeature):
         ``net_margin``/``ebitda_margin`` collision). ``final_sql`` selects the output
         CTE. Returns ``None`` when an extract leaf is absent (its dep ungroundable — the
         caller honest-fails) or a step is malformed.
+
+        ``group_by`` names the shared axis identities the FORMULA merges its carriers
+        on. ``step_grain`` is the CROSS-FACT refinement (DAT-809): per EXTRACT step,
+        the ``(local_column, axis_alias)`` pairs realizing those axes on THAT step's
+        own relation, because two facts spell one conformed dimension differently.
+        ``None`` keeps the single-relation reading — every carrier groups by the axis
+        name itself — which is exactly what unit grain has always done. When it IS
+        supplied, an EXTRACT step absent from it cannot carry the axis and the metric
+        honest-fails rather than composing a partial merge.
         """
+        from dataraum.graphs.formula_composer import same_name_keys
+
         output_step = graph.get_output_step()
         if output_step is None:
             return None
@@ -722,12 +734,22 @@ class GraphAgent(LLMFeature):
             step = graph.steps.get(step_id)
             if step is None:
                 return None
+            grain_keys: Sequence[tuple[str, str]] = same_name_keys(*group_by)
+            if step_grain is not None and step.step_type == StepType.EXTRACT:
+                resolved_grain = step_grain.get(step_id)
+                if resolved_grain is None:
+                    # Cross-fact: the axis resolver did not name a local column for
+                    # this carrier, so it cannot join the merge. Composing the rest
+                    # would silently answer a narrower question than was asked.
+                    return None
+                grain_keys = resolved_grain
             sql = self._compose_step_sql(
                 step,
                 step_id,
                 cached_snippets,
                 resolved_params,
                 group_by=group_by,
+                grain_keys=grain_keys,
                 grouped_steps=frozenset(grouped_steps),
             )
             if sql is None:
@@ -798,6 +820,7 @@ class GraphAgent(LLMFeature):
         resolved_params: dict[str, Any],
         *,
         group_by: Sequence[str] = (),
+        grain_keys: Sequence[tuple[str, str]] = (),
         grouped_steps: frozenset[str] = frozenset(),
     ) -> str | None:
         """One step's CTE SQL: extract = cached snippet, constant/formula = composed.
@@ -841,7 +864,7 @@ class GraphAgent(LLMFeature):
                 if not isinstance(expr, str) or not expr.strip():
                     return None
                 where = [w for w in (parts.get("where") or []) if isinstance(w, str)]
-                return compose_extract_sql(expr, str(relations[0]), where, group_by)
+                return compose_extract_sql(expr, str(relations[0]), where, grain_keys)
             if step.step_type == StepType.CONSTANT:
                 value = resolved_params.get(step.parameter) if step.parameter else None
                 # A constant is entity-independent — the same number for every

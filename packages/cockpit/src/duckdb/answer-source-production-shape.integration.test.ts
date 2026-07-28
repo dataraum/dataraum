@@ -7,12 +7,17 @@
 //
 //   1. QUALIFIED RELATIONS — the model declares `lake.typed.<view>`, because
 //      that is what the prompt shows it. Reduction to the bare name happens in
-//      exactly ONE place (narrowDeclaredSource); anything reaching the
-//      composer without passing through it emits FROM "lake.typed.x" as a
-//      single quoted identifier and dies at bind time.
+//      exactly ONE place (`bareRelationName`); anything reaching the composer
+//      without passing through it emits FROM "lake.typed.x" as a single quoted
+//      identifier and dies at bind time. Both doors — the model's declaration
+//      (`narrowDeclaredSource`) and the drill wire (`acceptWireSources`) — now
+//      open onto it; the wire one did not, and that was DAT-671's defect.
 //   2. ALIASED PROJECTIONS — the model writes `SUM(amount) AS revenue`
 //      despite the prompt saying not to. Nothing strips it; it becomes
-//      `SUM(amount) AS revenue AS "value"`.
+//      `SUM(amount) AS revenue AS "value"`, which does not parse. Since
+//      DAT-671 that is REFUSED at declaration acceptance and reported back to
+//      the model, instead of dying inside the proof as a silent tier-A
+//      downgrade.
 //   3. CASE-GUARDED SCALARS — the house empty-aggregation rule wraps every
 //      scalar in `CASE WHEN COUNT(*) = 0 THEN NULL ELSE agg END`. This is the
 //      NORMAL shape of a real answer, not an edge case.
@@ -31,11 +36,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
 	type AnswerDrillSource,
+	acceptWireSources,
 	answerSourceScalarSql,
 	bareRelationName,
 	narrowDeclaredSource,
 	runAnswerSourceProof,
 } from "./answer-source";
+import { declaredValueExprRefusal } from "./sql-ast";
 
 let instance: DuckDBInstance;
 let conn: DuckDBConnection;
@@ -127,21 +134,52 @@ describe("answer-source on production-shaped declarations (DAT-671)", () => {
 			await expect(proves(single(parts))).resolves.toBe(true);
 		});
 
-		it("a qualified relation that SKIPS narrowing cannot bind", async () => {
-			// RECORDED DEFECT (not fixed here — W2-e is test-only): the reduction
-			// lives ONLY in narrowDeclaredSource. POST /api/drill/parts builds
-			// SnippetParts straight from the wire body without re-reducing
-			// (routes/api/drill/parts.ts), so a client sending the qualified
-			// spelling emits FROM "lake.typed.current_orders_enriched" as ONE
-			// quoted identifier — a Catalog Error, surfaced as an unexplained
-			// refusal. Production is safe only because the client happens to send
-			// an already-proven handle. Pinned so a fix flips this to true.
-			const unreduced = {
-				selectExpr: caseGuarded("SUM(amount)"),
-				relation: QUALIFIED,
-				where: ["fiscal_year = 2024"],
-			};
-			await expect(proves(single(unreduced))).resolves.toBe(false);
+		it("reduces a qualified relation arriving on the DRILL WIRE (DAT-671)", async () => {
+			// WAS A DEFECT, now fixed: the reduction lived ONLY in
+			// narrowDeclaredSource, and POST /api/drill/parts built SnippetParts
+			// straight from the wire body without re-reducing — so a client sending
+			// the qualified spelling emitted FROM "lake.typed.current_orders_enriched"
+			// as ONE quoted identifier, a Catalog Error surfaced as an unexplained
+			// refusal. Production was safe only because the client happens to echo
+			// back an already-proven handle. The route now accepts through
+			// `acceptWireSources`, which is the one door to `bareRelationName`.
+			const accepted = acceptWireSources(
+				[
+					{
+						name: "revenue",
+						parts: {
+							selectExpr: caseGuarded("SUM(amount)"),
+							relation: QUALIFIED,
+							where: ["fiscal_year = 2024"],
+						},
+					},
+				],
+				"revenue",
+			);
+			if ("refusal" in accepted) throw new Error(accepted.refusal);
+			expect(accepted.sources[0]?.parts.relation).toBe(RELATION);
+			await expect(proves(accepted)).resolves.toBe(true);
+		});
+
+		it("refuses a wire source BY NAME when it names no usable relation", async () => {
+			// Dropping it instead would compose a different calculation than the one
+			// asked for, and show the user a number nobody requested.
+			const accepted = acceptWireSources(
+				[
+					{
+						name: "revenue",
+						parts: {
+							selectExpr: "SUM(amount)",
+							relation: '"quoted.thing"',
+							where: [],
+						},
+					},
+				],
+				"revenue",
+			);
+			expect(accepted).toEqual({
+				refusal: expect.stringContaining("'revenue'"),
+			});
 		});
 	});
 
@@ -181,18 +219,35 @@ describe("answer-source on production-shaped declarations (DAT-671)", () => {
 	});
 
 	describe("aliased projections", () => {
-		it("an `AS <alias>` in the declared value expression cannot bind", async () => {
-			// RECORDED DEFECT (not fixed here): the prompt tells the model to write
-			// the expression WITHOUT the `AS value` alias, and nothing enforces it —
-			// narrowDeclaredSource only trims. `SUM(amount) AS revenue` becomes
-			// `SUM(amount) AS revenue AS "value"`, a parse error the proof swallows
-			// into a silent tier-A downgrade. The proof is the ONLY thing standing
-			// between a model typo and a wrong number, which is why it must stay
-			// executed rather than assumed.
+		it("an `AS <alias>` in the declared value expression still cannot bind", async () => {
+			// The underlying arithmetic, unchanged and still true: nothing about the
+			// composer tolerates a second alias. `SUM(amount) AS revenue` composes to
+			// `SUM(amount) AS revenue AS "value"` and dies at parse time. This is WHY
+			// the acceptance gate below exists — and why the executed proof stays the
+			// arbiter rather than an assumption.
 			const parts = narrowed(
 				declared(RELATION, "SUM(amount) AS revenue", ["fiscal_year = 2024"]),
 			);
 			await expect(proves(single(parts))).resolves.toBe(false);
+		});
+
+		it("is refused at ACCEPTANCE, naming the alias (DAT-671)", async () => {
+			// WAS A SILENT DEFECT, now disclosed: the failure above used to reach the
+			// proof, be recorded as "did not bind", and downgrade the answer to tier A
+			// with no trace of a model typo. The declaration is now checked
+			// structurally — DuckDB's own parser, never a regex over model SQL — and
+			// the reason is handed back to the model through run_steps.
+			const refusal = await declaredValueExprRefusal("SUM(amount) AS revenue");
+			expect(refusal).toContain("AS revenue");
+		});
+
+		it("passes the CASE-guarded scalar the same gate refuses aliases with", async () => {
+			// The gate must not become a blanket refusal of complicated expressions:
+			// the house empty-aggregation shape is THREE aggregate calls and is the
+			// normal form of a correct answer.
+			await expect(
+				declaredValueExprRefusal(caseGuarded("SUM(amount)")),
+			).resolves.toBeNull();
 		});
 	});
 

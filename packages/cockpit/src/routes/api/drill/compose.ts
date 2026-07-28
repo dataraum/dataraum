@@ -4,11 +4,13 @@
 // slice this deterministically" state — not a transport error). The composed
 // SQL is executed by the CLIENT through the ordinary `/api/run-sql` grid path.
 
+import type { DuckDBConnection } from "@duckdb/node-api";
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
 import { composeDrill } from "#/duckdb/drill-sql";
-import { applyEngineScope, withLakeConnection } from "#/duckdb/lake";
+import { applyEngineScope, getLakeConnection } from "#/duckdb/lake";
+import { disableBunIdleTimeout } from "#/lib/bun-request-timeout";
 
 // Length bounds follow the grid-query convention (column names 256, values
 // 1024, arrays 64) so a validated field can't balloon the SQL handed to
@@ -52,6 +54,15 @@ export const Route = createFileRoute("/api/drill/compose")({
 	server: {
 		handlers: {
 			POST: async ({ request }) => {
+				// This route is no longer DESCRIBE-only-fast: `composeDrill`'s fold
+				// probe EXECUTES the drilled aggregate to completion before a single
+				// byte is written, which on the lake is exactly the ">10s to produce
+				// the next batch" case /api/run-sql documents. Bun's idle timeout kills
+				// silence BEFORE the first body byte at ~10-12s, so without this
+				// exemption a drill that would have been ACCEPTED dies in the client's
+				// onError as "request timed out" — an unexplained refusal, the precise
+				// failure the probe exists to prevent (lib/bun-request-timeout).
+				disableBunIdleTimeout(request);
 				let raw: unknown;
 				try {
 					raw = await request.json();
@@ -64,16 +75,52 @@ export const Route = createFileRoute("/api/drill/compose")({
 						parsed.error.issues[0]?.message ?? "Invalid request.",
 					);
 				}
+
+				// A RAW connection, not `withLakeConnection`: that helper is documented
+				// for short, non-cancellable reads, and the fold probe is neither. Two
+				// quick drill clicks would otherwise leave the first full aggregation
+				// scanning the lake with nobody waiting for it — the client's
+				// generation guard drops the stale result, but only `interrupt()`
+				// stops the work. Mirrors run-steps.ts: the nullable ref makes close()
+				// idempotent and the abort-during-acquisition race leak-free, and
+				// closeSync() does NOT cancel an in-flight statement — interrupt does.
+				let conn: DuckDBConnection | null = null;
+				const close = () => {
+					if (conn) {
+						try {
+							conn.closeSync();
+						} catch {
+							// already closed / never fully opened
+						}
+						conn = null;
+					}
+				};
+				const onAbort = () => {
+					try {
+						conn?.interrupt();
+					} catch {
+						// not yet open / already gone — finally's close() cleans up
+					}
+				};
+				request.signal.addEventListener("abort", onAbort, { once: true });
+
 				try {
-					const result = await withLakeConnection(async (conn) => {
-						// Engine scope, matching /api/run-sql: the base SQL is
-						// engine-authored (unqualified names) on the canvas path.
-						await applyEngineScope(conn);
-						return composeDrill(conn, parsed.data);
-					});
-					return Response.json(result);
+					const cx = await getLakeConnection();
+					conn = cx;
+					// Engine scope, matching /api/run-sql: the base SQL is
+					// engine-authored (unqualified names) on the canvas path.
+					await applyEngineScope(cx);
+					return Response.json(await composeDrill(cx, parsed.data));
 				} catch (err) {
-					console.error("drill compose failed", err);
+					// An abort makes the in-flight statement reject; that is the
+					// cancellation working, not a fault, and nobody is listening for the
+					// response anyway — so it must not masquerade as a server error in
+					// the logs.
+					if (request.signal.aborted) {
+						console.info("drill compose cancelled");
+					} else {
+						console.error("drill compose failed", err);
+					}
 					return new Response(
 						JSON.stringify({ error: "Internal server error." }),
 						{
@@ -81,6 +128,9 @@ export const Route = createFileRoute("/api/drill/compose")({
 							headers: { "Content-Type": "application/json" },
 						},
 					);
+				} finally {
+					request.signal.removeEventListener("abort", onAbort);
+					close();
 				}
 			},
 		},

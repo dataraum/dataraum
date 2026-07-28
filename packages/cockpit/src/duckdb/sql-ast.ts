@@ -112,3 +112,140 @@ export async function aggregatedColumns(
 	walk(ast, false);
 	return columns;
 }
+
+// --- declared value expressions (DAT-671) ------------------------------------
+
+/** The one select item of a parsed `SELECT <expr>`, or a refusal describing why
+ *  the statement is not exactly that. */
+function soleSelectItem(
+	ast: unknown,
+): { item: Record<string, unknown> } | { why: string } {
+	if (typeof ast !== "object" || ast === null) {
+		return { why: "it could not be parsed as SQL" };
+	}
+	const root = ast as Record<string, unknown>;
+	if (root.error) {
+		// The parser reports failures IN-BAND. Its own message is the most useful
+		// thing we can hand back — it names the offending token.
+		const message =
+			typeof root.error_message === "string"
+				? root.error_message
+				: "parse error";
+		return { why: `it is not a valid SQL expression (${message})` };
+	}
+	const statements = root.statements;
+	if (!Array.isArray(statements) || statements.length !== 1) {
+		return { why: "it is not a single expression" };
+	}
+	const first = statements[0];
+	const node =
+		typeof first === "object" && first !== null
+			? (first as Record<string, unknown>).node
+			: null;
+	if (typeof node !== "object" || node === null) {
+		return { why: "it could not be parsed as SQL" };
+	}
+	const select = node as Record<string, unknown>;
+	// Every clause a SELECT_NODE can carry besides the projection itself. A
+	// declared value expression is an EXPRESSION, so all of them must be absent:
+	// the composer splices the expression into its own statement, where a
+	// smuggled clause either changes the meaning of the recomposed number or
+	// dies in the binder as precisely the silent tier-A downgrade this gate
+	// exists to end. Each of these parses cleanly on its own (probed against the
+	// real tree), which is why none of them can be left to the parser to reject.
+	const from = select.from_table;
+	if (
+		typeof from === "object" &&
+		from !== null &&
+		(from as Record<string, unknown>).type !== "EMPTY"
+	) {
+		return {
+			why: "it carries its own FROM clause — the table belongs in `relation`",
+		};
+	}
+	if (select.where_clause !== null && select.where_clause !== undefined) {
+		return {
+			why: "it carries its own WHERE clause — predicates belong in `filters`",
+		};
+	}
+	const groupExpressions = select.group_expressions;
+	if (Array.isArray(groupExpressions) && groupExpressions.length > 0) {
+		return {
+			why: "it carries its own GROUP BY — a declared source is the UNGROUPED value, and the drill is what groups it",
+		};
+	}
+	if (select.having !== null && select.having !== undefined) {
+		return {
+			why: "it carries its own HAVING clause — a declared source is one value, not a filtered grouping",
+		};
+	}
+	if (select.qualify !== null && select.qualify !== undefined) {
+		return {
+			why: "it carries its own QUALIFY clause — that is a windowed step, so leave the source empty",
+		};
+	}
+	if (select.sample !== null && select.sample !== undefined) {
+		return {
+			why: "it carries a USING SAMPLE clause — a sampled number is not the number the answer reported",
+		};
+	}
+	const modifiers = select.modifiers;
+	if (Array.isArray(modifiers) && modifiers.length > 0) {
+		return {
+			why: "it carries its own ORDER BY/LIMIT — a declared source is a single value, which neither orders nor limits",
+		};
+	}
+	const list = select.select_list;
+	if (!Array.isArray(list) || list.length !== 1) {
+		const n = Array.isArray(list) ? list.length : 0;
+		return {
+			why: `it projects ${n} values, not one — leave the source empty for a step that returns several columns`,
+		};
+	}
+	const item = list[0];
+	if (typeof item !== "object" || item === null) {
+		return { why: "it could not be parsed as SQL" };
+	}
+	return { item: item as Record<string, unknown> };
+}
+
+/**
+ * Why a model-DECLARED value expression cannot be composed as clause parts, or
+ * null when it can (DAT-671).
+ *
+ * The declaration contract is "one value expression, unaliased" — the composer
+ * supplies the `AS "value"` alias itself. Nothing used to enforce it, and the
+ * failure was silent in the worst way: `SUM(x) AS revenue` composes to
+ * `SUM(x) AS revenue AS "value"`, which is a PARSE error, which the executed
+ * proof catches as "did not bind", which downgrades the answer to tier A with
+ * no trace of a model typo. Enforcing it HERE turns that into a named,
+ * disclosed rejection the model can repair on its next validation.
+ *
+ * Structural, via DuckDB's own parser — never a regex over model-authored SQL.
+ * The alias, the projected-item count, and a smuggled FROM/WHERE all come off
+ * the parse tree of `SELECT <expr>`, which is exactly how the composer will
+ * read it. Fails OPEN (null) if the parser itself is unreachable: the executed
+ * proof remains the arbiter, so an unavailable parser must not silently retire
+ * the feature.
+ */
+export async function declaredValueExprRefusal(
+	selectExpr: string,
+): Promise<string | null> {
+	let ast: unknown;
+	try {
+		ast = await parseSqlToJson(`SELECT ${selectExpr}`);
+	} catch {
+		return null;
+	}
+	// null = the parser gave nothing usable (infrastructure, not the model).
+	if (ast === null) return null;
+
+	const sole = soleSelectItem(ast);
+	if ("why" in sole) return sole.why;
+
+	const alias = sole.item.alias;
+	if (typeof alias === "string" && alias !== "") {
+		return `it carries its own \`AS ${alias}\` alias — declare the expression alone, the drill supplies the alias`;
+	}
+	return null;
+}

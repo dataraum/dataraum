@@ -70,15 +70,30 @@ VALUES (
   true, ${ts});
 
 -- Catalogued dimensions, with the interest/relevance ranking the ordering uses.
+--
+-- table_id is the typed FACT table, NOT the enriched view — the enrichment's
+-- \`<fk>__<attr>\` candidates are appended to the fact's own column list and
+-- written under its id (engine slicing_phase.py:460,921,928; the phase only ever
+-- runs over layer='typed' tables, so no slice row can carry an enriched view's
+-- id). Seeding them under the VIEW's id silently hides them from every reader
+-- that scopes by fact — which is what \`resolveAxesForSources\` does — and the
+-- axes then degrade to the bare substrate names with no ranking, no business
+-- context and no values, while tier A (which filters by nothing) still looks
+-- fine. Exactly the "one shape off production" class this file exists to avoid.
+--
+-- column_id points at the FACT's FK column where the \`<fk>\` prefix resolves
+-- against it (account_id__name → col_acct); the engine falls back to the view's
+-- own column when it does not, which is the region case here — the fixture fact
+-- has no region_id column, so both branches are represented.
 INSERT INTO slice_definitions (
   slice_id, run_id, table_id, column_id, column_name,
   slice_relevance, slice_interest, slice_type, distinct_values, value_count,
   business_context, detection_source, created_at)
 VALUES
-  ('sl_region', '${RUN_ID}', '${VIEW_TABLE_ID}', 'col_regnm', '${REGION_NAME_COLUMN}',
+  ('sl_region', '${RUN_ID}', '${FACT_TABLE_ID}', 'col_regnm', '${REGION_NAME_COLUMN}',
    0.9, 'primary', 'categorical', '["EU", "US"]'::json, 2,
    'Sales region', 'llm', ${ts}),
-  ('sl_account', '${RUN_ID}', '${VIEW_TABLE_ID}', 'col_acctnm', '${ACCOUNT_NAME_COLUMN}',
+  ('sl_account', '${RUN_ID}', '${FACT_TABLE_ID}', 'col_acct', '${ACCOUNT_NAME_COLUMN}',
    0.6, 'supporting', 'categorical', '["Acme", "Globex"]'::json, 2,
    'Customer account', 'llm', ${ts});
 

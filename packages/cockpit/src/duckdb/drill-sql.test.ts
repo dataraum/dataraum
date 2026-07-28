@@ -42,6 +42,26 @@ const rows = async (sql: string, params: DrillPinValue[] = []) => {
 const sorted = (rs: Record<string, unknown>[]) =>
 	[...rs].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 
+/** A pass-through connection that records the SQL it was asked to run — the
+ *  only way to assert that a statement was NOT executed, as opposed to
+ *  executed and harmless. `composeDrill` reaches DuckDB solely through
+ *  `runAndReadAll`. */
+function countingConnection(real: DuckDBConnection): {
+	spy: DuckDBConnection;
+	statements: string[];
+} {
+	const statements: string[] = [];
+	const spy = {
+		runAndReadAll: (sql: string, params?: DrillPinValue[]) => {
+			statements.push(sql);
+			return params === undefined
+				? real.runAndReadAll(sql)
+				: real.runAndReadAll(sql, params);
+		},
+	} as unknown as DuckDBConnection;
+	return { spy, statements };
+}
+
 describe("composeDrill (tier-A outer wrap over a detail result)", () => {
 	it("slices a detail result with COUNT(*) + SUM over summable columns", async () => {
 		const result = await composeDrill(conn, {
@@ -115,6 +135,77 @@ describe("composeDrill refusals (deterministic)", () => {
 			ok: false,
 			reason: expect.stringContaining("columns not on this result (region)"),
 		});
+	});
+
+	// DAT-671, lead-spotted on a minted report: tier A will group a result by a
+	// column that is already unique per row — count 1 per group, every SUM the
+	// identity under a new header. A no-op presented as analysis.
+	it("refuses a slice that folds nothing — the result is already at that grain", async () => {
+		// One row per product already, so grouping by product folds nothing.
+		const result = await composeDrill(conn, {
+			sql: "SELECT product, SUM(amount) AS amount FROM sales GROUP BY product",
+			params: [],
+			steps: [{ kind: "slice", column: "product" }],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: expect.stringContaining("already at this grain"),
+		});
+		// The refusal names the dimension, so it is actionable rather than a wall.
+		if (result.ok) throw new Error("expected a refusal");
+		expect(result.reason).toContain("product");
+	});
+
+	it("allows a slice that genuinely folds", async () => {
+		// Same shape, coarser dimension: 4 rows fold into 3 regions.
+		const result = await composeDrill(conn, {
+			sql: "SELECT * FROM sales",
+			params: [],
+			steps: [{ kind: "slice", column: "region" }],
+		});
+		expect(result.ok).toBe(true);
+	});
+
+	// A single row cannot fold into fewer than one group, so it is no evidence
+	// about grain — and this is the ordinary drill-down state (slice by region,
+	// then pin the EU row). Refusing it would block the user's own next step.
+	it("does not call a pinned single row a grain problem", async () => {
+		const result = await composeDrill(conn, {
+			sql: "SELECT * FROM sales WHERE product = $1",
+			params: ["a"],
+			steps: [
+				{ kind: "slice", column: "region" },
+				{ kind: "pin", column: "region", value: "EU" },
+			],
+		});
+		expect(result.ok).toBe(true);
+	});
+
+	// A pins-only drill returns one row by construction, so the single-row rule
+	// would pass it anyway — asserting `ok` here would be asserting a truth for
+	// the wrong reason. What is actually claimed is that the SCAN is skipped, so
+	// count the statements the composer ran and assert the probe is absent.
+	it("skips the probe entirely on a pins-only drill (a scan that could never refuse)", async () => {
+		const { spy, statements } = countingConnection(conn);
+		const result = await composeDrill(spy, {
+			sql: "SELECT * FROM sales",
+			params: [],
+			steps: [{ kind: "pin", column: "region", value: "EU" }],
+		});
+		expect(result.ok).toBe(true);
+		expect(statements.filter((s) => s.includes("_fold"))).toEqual([]);
+	});
+
+	it("does run the probe once when the drill groups", async () => {
+		// The companion: without this, the test above would also pass if the probe
+		// had been deleted outright.
+		const { spy, statements } = countingConnection(conn);
+		await composeDrill(spy, {
+			sql: "SELECT * FROM sales",
+			params: [],
+			steps: [{ kind: "slice", column: "region" }],
+		});
+		expect(statements.filter((s) => s.includes("_fold"))).toHaveLength(1);
 	});
 
 	it("refuses an empty step stack and a non-binding base", async () => {

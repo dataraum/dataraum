@@ -45,6 +45,7 @@ import {
 	runSteps,
 	validateStepNames,
 } from "../duckdb/run-steps";
+import { declaredValueExprRefusal } from "../duckdb/sql-ast";
 import { linkedAbortController } from "../lib/abort";
 import { llmOtel } from "../lib/llm-otel";
 import { sqlEquivalent } from "../lib/sql-canonical";
@@ -210,6 +211,10 @@ const RunStepsOk = z.object({
 	// query STILL ran; this informs (never blocks). Absent when the grouping is
 	// coarse enough. The agent should reflect it to the user.
 	grain_note: z.string().optional(),
+	// A REFUSED source declaration (DAT-671) — the step's SQL ran, but what it
+	// declared about where its number comes from cannot be composed. Informs the
+	// model so it can repair; never blocks, and absent when nothing was refused.
+	source_note: z.string().optional(),
 });
 
 /** What a successful run_steps validation captured, for the grid + the surface. */
@@ -238,7 +243,7 @@ export interface RunStepsFailure {
  * the grid) and the last failure (for the no-result diagnostic). The model's draft
  * is NOT captured here — it is the return value of the structured-output call
  * (DAT-807), so nothing writes it through a tool any more. */
-interface RunStepsCapture {
+export interface RunStepsCapture {
 	value: ValidatedRun | null;
 	lastError: RunStepsFailure | null;
 }
@@ -306,36 +311,81 @@ export async function classifyComponents(
 	return out;
 }
 
+/** What one run's declarations amounted to: the candidate to prove, plus the
+ *  declarations that were REFUSED — the notes are model-facing, so a repairable
+ *  mistake gets repaired instead of silently costing the drill. */
+export interface DeclaredSourceOutcome {
+	candidate: AnswerDrillSource | null;
+	notes: string[];
+}
+
 /**
  * The model's declared clause parts for one run → a parts-at-source CANDIDATE
- * (pure; DAT-678). Structure only — nothing here believes the declaration:
+ * (DAT-678). Structure only — nothing here believes the declaration:
  * `proveAnswerSource` executes it against the answer's own value afterwards.
  *
- * Null when there is nothing to compose from: no combining arithmetic declared
- * (the model said final_sql is not a plain formula over its steps), or no step
- * declared a usable source. A declaration that names a step which then abstained
- * also collapses here — `answerNodeSteps` would refuse the phantom operand, so
- * refusing at the boundary keeps a half-declaration from reaching the proof.
+ * Null candidate when there is nothing to compose from: no combining arithmetic
+ * declared (the model said final_sql is not a plain formula over its steps), or
+ * no step declared a usable source. A declaration that names a step which then
+ * abstained also collapses here — `answerNodeSteps` would refuse the phantom
+ * operand, so refusing at the boundary keeps a half-declaration from reaching
+ * the proof.
+ *
+ * Two outcomes look alike from the outside and must not be confused (DAT-671):
+ * an ABSTENTION (empty relation + value_expr) is the contract working — the step
+ * is a join or a window and says so — while a MALFORMED declaration is a mistake
+ * the model can fix. The malformed one used to be invisible: `SUM(x) AS revenue`
+ * composed to a double-`AS` parse error, the executed proof recorded a bind
+ * failure, and the answer quietly dropped to tier A. Now it is checked
+ * STRUCTURALLY at acceptance (DuckDB's parser, never a regex over the model's
+ * SQL) and reported back through run_steps.
  */
-export function candidateSource(
+export async function candidateSource(
 	steps: {
 		name: string;
 		source: { relation: string; value_expr: string; filters: string[] };
 	}[],
 	combiningExpression: string,
-): AnswerDrillSource | null {
+): Promise<DeclaredSourceOutcome> {
 	const expression = combiningExpression.trim();
-	if (expression === "") return null;
+	if (expression === "") return { candidate: null, notes: [] };
 	const sources: AnswerSource[] = [];
+	const notes: string[] = [];
 	for (const step of steps) {
 		const parts = narrowDeclaredSource({
 			relation: step.source.relation,
 			valueExpr: step.source.value_expr,
 			filters: step.source.filters,
 		});
-		if (parts) sources.push({ name: step.name, parts });
+		// Abstained (or unusable structure) — silent by design.
+		if (!parts) continue;
+		const refusal = await declaredValueExprRefusal(parts.selectExpr);
+		if (refusal !== null) {
+			console.info("answer_source_declaration_refused", {
+				step: step.name,
+				reason: refusal,
+			});
+			notes.push(`'${step.name}' — ${refusal}`);
+			continue;
+		}
+		sources.push({ name: step.name, parts });
 	}
-	return sources.length > 0 ? { sources, expression } : null;
+	return {
+		candidate: sources.length > 0 ? { sources, expression } : null,
+		notes,
+	};
+}
+
+/** The run_steps note for refused declarations — states the cost precisely (the
+ *  drill affordance, never the answer) so the model repairs rather than
+ *  re-plans the query. Null when every declaration was accepted or abstained. */
+export function declarationNote(notes: string[]): string | null {
+	if (notes.length === 0) return null;
+	return (
+		`Declared source not usable, so this number cannot be re-sliced at source: ${notes.join("; ")}. ` +
+		"Your SQL and your answer are unaffected — fix the source declaration and " +
+		"call run_steps again only if the rest of the query is already correct."
+	);
 }
 
 /**
@@ -345,7 +395,7 @@ export function candidateSource(
  * model sees only the validator status; the composed SQL + components stay
  * server-side, so the grid is provably the validated query — not a re-emission.
  */
-function makeRunStepsTool(
+export function makeRunStepsTool(
 	captured: RunStepsCapture,
 	nearUniqueColumns: Set<string>,
 ) {
@@ -390,10 +440,15 @@ function makeRunStepsTool(
 								value_expr: z
 									.string()
 									.describe(
-										"This step's single value expression, WITHOUT the AS value " +
-											'alias — e.g. SUM("Amount") or SUM(credit) - SUM(debit). ' +
-											"Empty string if the step projects anything other than " +
-											"one computed value.",
+										"This step's single value expression, copied whole and " +
+											"WITHOUT any AS alias of your own — however many aggregate " +
+											'calls it contains. E.g. SUM("Amount"), or ' +
+											"SUM(credit) - SUM(debit), or the row-guarded form the " +
+											"empty-aggregations rule requires: CASE WHEN COUNT(*) = 0 " +
+											"THEN NULL ELSE COALESCE(SUM(a), 0) - COALESCE(SUM(b), 0) " +
+											"END. No FROM and no WHERE — those are `relation` and " +
+											"`filters`. Empty string if the step projects anything " +
+											"other than one computed value.",
 									),
 								filters: z
 									.array(z.string())
@@ -405,8 +460,10 @@ function makeRunStepsTool(
 							})
 							.describe(
 								"Where this step's number comes from, as clause parts. Fill it " +
-									"in when the step is one aggregate over one table with " +
-									"optional filters; leave relation and value_expr empty for " +
+									"in when the step reads one table and computes one value with " +
+									"optional filters — the number of aggregate calls in that " +
+									"value is irrelevant, so an empty-aggregation-guarded scalar " +
+									"still qualifies. Leave relation and value_expr empty for " +
 									"anything else (a join, a window, several output columns). " +
 									"It lets the user re-slice this number by a dimension the " +
 									"query didn't return, and it is checked against your result " +
@@ -456,13 +513,22 @@ function makeRunStepsTool(
 		// so an ambiguous "per X" question that meant a summary is caught. Computed
 		// only after a clean run; captured for the deterministic surface too.
 		const grainNote = await computeGrainNote(composed, nearUniqueColumns);
+		const declared = await candidateSource(
+			input.steps,
+			input.combining_expression,
+		);
 		captured.value = {
 			composedSql: composed,
 			components,
 			grainNote,
-			declaredSource: candidateSource(input.steps, input.combining_expression),
+			declaredSource: declared.candidate,
 		};
-		return grainNote ? { ...result, grain_note: grainNote } : result;
+		const sourceNote = declarationNote(declared.notes);
+		return {
+			...result,
+			...(grainNote ? { grain_note: grainNote } : {}),
+			...(sourceNote ? { source_note: sourceNote } : {}),
+		};
 	});
 }
 

@@ -61,6 +61,8 @@ vi.mock("./query-context", () => ({
 	// DAT-793: the compose-time grain guardrail — joins the same Promise.all as
 	// the other session-stable blocks.
 	buildGrainBlock: async () => "<grain/>",
+	// DAT-737: the concept vocabulary graph — same Promise.all, same convention.
+	buildConceptContextBlock: async () => "<business_concepts/>",
 }));
 vi.mock("./snippet-search", () => ({
 	buildVocabularyBlock: async () => "<vocabulary/>",

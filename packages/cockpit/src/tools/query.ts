@@ -63,6 +63,7 @@ import { listTables } from "./list-tables";
 import { lookValuesTool } from "./look-values";
 import {
 	buildCatalogBlock,
+	buildConceptContextBlock,
 	buildDriversBlock,
 	buildEntitiesBlock,
 	buildGrainBlock,
@@ -785,6 +786,7 @@ export async function querySubAgent(
 		vocabularyBlock,
 		nearUniqueColumns,
 		conventionsBlock,
+		conceptBlock,
 	] = await Promise.all([
 		buildSchemaBlock(),
 		buildEntitiesBlock(),
@@ -802,6 +804,11 @@ export async function querySubAgent(
 		// workspace's active vertical, so it joins the parallel batch (no workspace row to
 		// thread in). Empty (section omitted) when none target `qa`.
 		buildConventionsBlock(),
+		// DAT-737: the vertical vocabulary's own graph (part_of/disjoint_with/
+		// reconciles_with + groundings) — parity with the engine's GraphAgent,
+		// which already renders this neighbourhood for every concept. Empty
+		// (section omitted) when the workspace has no framed concepts yet.
+		buildConceptContextBlock(),
 	]);
 
 	// DAT-660: the workspace context is session-stable (all blocks read from the
@@ -815,7 +822,7 @@ export async function querySubAgent(
 		grainBlock ? `\n\n${grainBlock}` : ""
 	}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${
 		conventionsBlock ? `\n\n${conventionsBlock}` : ""
-	}`;
+	}${conceptBlock ? `\n\n${conceptBlock}` : ""}`;
 
 	const userMessage = `<question>\n${question}\n</question>`;
 

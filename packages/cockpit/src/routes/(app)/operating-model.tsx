@@ -1,23 +1,40 @@
-// The Model section (DAT-591) — a standing page rendering the workspace's metric
-// composition graph (metric → metric → measure → table). Data is read server-side
-// (the metadata Drizzle client never reaches the client bundle); the xyflow canvas is
-// rendered client-only (React Flow measures the DOM, so it must not run during SSR).
-// (Validation/cycle/driver get their own graphs in a follow-up — this page is
-// metrics-only.)
+// The Model section (DAT-591 metrics; DAT-737 concepts) — a standing page with
+// TWO complementary graphs over the same operating model: the metric
+// composition DAG (metric → metric → measure → table, the original view) and
+// the concept VOCABULARY graph (part_of/disjoint_with/reconciles_with +
+// groundings — a faithful lens on the engine's own concept traversal). Data is
+// read server-side (the metadata Drizzle client never reaches the client
+// bundle); the xyflow metric canvas is rendered client-only (React Flow
+// measures the DOM, so it must not run during SSR) — the concept view is a
+// plain accordion list and needs no such gate.
+// (Validation/cycle/driver get their own graphs in a future follow-up.)
 
-import { Box, Center, Code, ScrollArea, Stack, Text } from "@mantine/core";
+import {
+	Box,
+	Center,
+	Code,
+	ScrollArea,
+	SegmentedControl,
+	Stack,
+	Text,
+} from "@mantine/core";
 import {
 	ClientOnly,
 	createFileRoute,
 	type ErrorComponentProps,
 } from "@tanstack/react-router";
+import { useState } from "react";
 
+import { ConceptGraphView } from "#/ui/cockpit/operating-model/concept-graph-view";
 import { ModelIcon } from "#/ui/cockpit/operating-model/nodes";
 import { OperatingModelCanvas } from "#/ui/cockpit/operating-model/operating-model-canvas";
-import { loadModel } from "./operating-model.functions";
+import { loadConcepts, loadModel } from "./operating-model.functions";
 
 export const Route = createFileRoute("/(app)/operating-model")({
-	loader: () => loadModel(),
+	loader: async () => {
+		const [model, concepts] = await Promise.all([loadModel(), loadConcepts()]);
+		return { model, concepts };
+	},
 	component: ModelSection,
 	// A loader failure (e.g. a metadata read against a drifted view) must degrade
 	// to a readable error, never a white screen — the route renders server-side,
@@ -57,8 +74,9 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
 	);
 }
 
-function ModelSection() {
-	const { analyzed, graph } = Route.useLoaderData();
+function MetricsView() {
+	const { model } = Route.useLoaderData();
+	const { analyzed, graph } = model;
 
 	if (!analyzed) {
 		return (
@@ -83,14 +101,46 @@ function ModelSection() {
 		// renders blank. Size the container to the viewport minus the header offset
 		// (--app-shell-header-offset, 3rem) and the Main's 1rem top + 1rem bottom
 		// padding — a concrete height the flow pane and its children resolve against.
-		<Box
-			style={{
-				height: "calc(100dvh - var(--app-shell-header-offset, 3rem) - 2rem)",
-			}}
-		>
+		<Box style={{ height: "100%" }}>
 			<ClientOnly fallback={<EmptyState title="Loading canvas…" detail="" />}>
 				<OperatingModelCanvas graph={graph} />
 			</ClientOnly>
 		</Box>
+	);
+}
+
+function ModelSection() {
+	const { concepts } = Route.useLoaderData();
+	// Concepts are seeded at `frame`-time (config→DB, DAT-728) — independent of
+	// whether the operating_model stage has run — so this view gets its OWN
+	// empty state (inside ConceptGraphView) rather than the Metrics tab's
+	// `analyzed` gate.
+	const [view, setView] = useState<"metrics" | "concepts">("metrics");
+
+	return (
+		<Stack
+			gap="sm"
+			style={{
+				height: "calc(100dvh - var(--app-shell-header-offset, 3rem) - 2rem)",
+			}}
+		>
+			<SegmentedControl
+				data-testid="operating-model-view-toggle"
+				value={view}
+				onChange={(v) => setView(v as "metrics" | "concepts")}
+				data={[
+					{ label: "Metrics", value: "metrics" },
+					{ label: "Concepts", value: "concepts" },
+				]}
+				style={{ alignSelf: "flex-start" }}
+			/>
+			<Box style={{ flex: 1, minHeight: 0 }}>
+				{view === "metrics" ? (
+					<MetricsView />
+				) : (
+					<ConceptGraphView graph={concepts} />
+				)}
+			</Box>
+		</Stack>
 	);
 }

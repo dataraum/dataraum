@@ -120,9 +120,19 @@ export const Route = createFileRoute("/api/drill/axes")({
 						}
 					});
 					if ("bindError" in described) {
+						// The raw binder line is diagnostic, not user-facing: it would
+						// surface a `Binder Error: Referenced column "x" not found …`
+						// inside a Slice dropdown, where it reads as a crash rather than
+						// as the state it is. Say what it means; keep the detail where
+						// someone debugging will look for it.
+						console.info("drill_axes_base_query_unbindable", {
+							reason: described.bindError,
+						});
 						return Response.json({
 							axes: [],
-							reason: `This result's query doesn't bind, so it has no columns to slice by: ${described.bindError}`,
+							reason:
+								"This result's query no longer runs against the current data, so there are no columns to slice by.",
+							debugReason: described.bindError,
 						});
 					}
 					return Response.json(await resolveAdHocDrillAxes(described.columns));

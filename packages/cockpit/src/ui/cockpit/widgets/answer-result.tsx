@@ -12,7 +12,7 @@
 // (the grid owns the fetch, so it's covered by the drill/result-grid tests + the
 // smoke).
 
-import { Badge, Button, Group, Stack, Text } from "@mantine/core";
+import { Badge, Button, Group, Stack, Text, Tooltip } from "@mantine/core";
 import { Link, useParams } from "@tanstack/react-router";
 import { Library } from "lucide-react";
 import { useState } from "react";
@@ -201,15 +201,37 @@ function AnswerResultBody({
 	// A chart the user authored over this result (DAT-626) — frozen into the report
 	// at mint. Null = table-only report (first-class), the default.
 	const [chartConfig, setChartConfig] = useState<ChartConfig | null>(null);
-	// The statement the grid is CURRENTLY showing (DAT-678): the answer's own SQL
-	// until a drill commits, the drilled composition after. The Report mint must
-	// freeze what the user is looking at — minting the undrilled base while a
-	// slice is on screen would save numbers the page stopped showing.
-	const [drilled, setDrilled] = useState<string | null>(null);
+	// The committed drill (DAT-678): the statement the grid is CURRENTLY showing
+	// plus whether it is pinned. The Report mint must freeze what the user is
+	// looking at — minting the undrilled base while a slice is on screen would
+	// save numbers the page stopped showing.
+	const [drilled, setDrilled] = useState<{
+		sql: string;
+		pinned: boolean;
+	} | null>(null);
 
 	// What the grid is showing right now — the drill composes upstream, so this
 	// is the answer's own statement until a slice commits.
-	const shownSql = drilled ?? state.sql;
+	const shownSql = drilled?.sql ?? state.sql;
+
+	// WHY A DRILLED VIEW CANNOT BE SAVED YET. Both reasons are report-SCHEMA
+	// gaps, and the report schema is DAT-627/676's (W2-d2) — this surface names
+	// the limit rather than working around it:
+	//   - a PINNED composition binds `$1…` params, and `reports` stores a bare
+	//     `sql` with nowhere to put them; the report would re-run parameterless
+	//     and 400 on every open, forever.
+	//   - a SLICED composition returns different numbers than the frozen
+	//     `summary`/`confidence` describe, and `reports.confidence` is
+	//     `jsonb(...).notNull()` — there is no way to record "this confidence
+	//     does not describe these rows" without widening the column, which is
+	//     exactly W2-d2's cut. Zeroing it instead would not be an absence, it
+	//     would be a claim of 0% grounded.
+	// So the honest state is: the action is visibly unavailable and says why.
+	const mintBlocked = drilled
+		? drilled.pinned
+			? "Pinned slices can't be saved as a report yet — the pinned values can't be stored with the query."
+			: "Sliced views can't be saved as a report yet — the saved summary and confidence describe the original answer, not this breakdown."
+		: null;
 
 	// POST to the mint endpoint over fetch (not an imported server fn) so this
 	// canvas-registered widget never drags the cockpit_db client / config into the
@@ -260,6 +282,24 @@ function AnswerResultBody({
 		>
 			Saved to Reports
 		</Button>
+	) : mintBlocked ? (
+		// `data-disabled` + a swallowed click, not the `disabled` attribute: a
+		// natively disabled button emits no pointer events, so the tooltip that
+		// explains WHY would never open — leaving a dead control and no reason,
+		// which is the failure mode this whole surface is trying to avoid.
+		<Tooltip label={mintBlocked} maw={320} multiline>
+			<Button
+				variant="subtle"
+				color="gray"
+				size="compact-xs"
+				leftSection={<Library size={13} />}
+				data-disabled
+				onClick={(event) => event.preventDefault()}
+				data-testid="report-mint-blocked"
+			>
+				Report
+			</Button>
+		</Tooltip>
 	) : (
 		<Button
 			variant="subtle"
@@ -308,7 +348,14 @@ function AnswerResultBody({
 					// Event-driven, not an effect: a committed drill replaces what the
 					// mint would freeze, and retires a chart authored over the previous
 					// shape (its encodings named columns this result may not have).
-					setDrilled(steps.length > 0 ? effective.sql : null);
+					setDrilled(
+						steps.length > 0
+							? {
+									sql: effective.sql,
+									pinned: steps.some((s) => s.kind === "pin"),
+								}
+							: null,
+					);
 					setChartConfig(null);
 				}}
 				// The grid owns the chart button; this surface owns its VALUE, because

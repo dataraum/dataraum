@@ -722,7 +722,7 @@ function extractError(text: string): string {
  * sort or filter change transparently re-pages from offset 0, and Query owns
  * fetch dedup, cancellation of superseded windows, and the loading state. Sort +
  * filters are grid-local and reset by remounting on a new base query
- * (ResultGridWidget's `key`).
+ * (the registered widget's `key` — DrillableResultGridWidget).
  */
 export function WindowedGrid({
 	endpoint,

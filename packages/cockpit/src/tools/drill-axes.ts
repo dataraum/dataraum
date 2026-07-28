@@ -357,8 +357,14 @@ export interface ColumnUnitFacts {
 	distinctCount: number | null;
 }
 
+/** Composite map key. The separator is NUL because it cannot occur in either
+ *  half, so `(a, b|c)` and `(a|b, c)` can never collide — do not 'simplify' it
+ *  to a space or a dot. It is written as the ESCAPE `\u0000`, never a raw NUL
+ *  byte: a literal NUL makes the whole file binary to ripgrep, which then
+ *  silently skips it — this module was invisible to every grep sweep until
+ *  DAT-678 found the byte. */
 const _unitKey = (tableId: string, column: string): string =>
-	`${tableId} ${column}`;
+	`${tableId}\u0000${column}`;
 
 /**
  * The UNIT GATE (DAT-731): a measure aggregated across a unit column that holds

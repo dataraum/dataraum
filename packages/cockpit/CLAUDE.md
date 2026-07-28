@@ -96,7 +96,7 @@ Derived from the 2026-06-05 React-idiom audit: these rules state what the codeba
 2. **Effects are for external systems only** — DOM sync, stream subscriptions with abort/cleanup. Two exist (chat scroll-pin, NDJSON fold); a third needs the same justification in a comment. [react.dev/learn/synchronizing-with-effects]
 3. **Server data goes through TanStack Query** — polling = `refetchInterval` callback returning `false` when done (measure-progress is the template). No `setInterval`, no hand-rolled `isLoading` for queries.
 4. **Mutations fired by user events live in event handlers** (optionally `useMutation`), never in effects.
-5. **Reset child state with a remount `key`, not a reset effect** (ResultGridWidget → StreamingGrid is the template).
+5. **Reset child state with a remount `key`, not a reset effect** (DrillableResultGridWidget → DrillableGrid → WindowedGrid is the template).
 6. **Memoize with a stated reason** — streaming makes the provider re-render per token, so `memo`/`useMemo` on that path is load-bearing (markdown, focus-canvas, context values); anywhere else it must earn its line. There is no React Compiler — don't assume auto-memoization, and don't blanket-memoize either.
 7. **Context splits by volatility:** reactive state and stable actions are separate contexts; action-only widgets read `useCockpitActions()` and never re-render while a turn streams. New cross-cutting state joins this split — no prop-drilling, no third merged context.
 8. **No refs read/written during render** (init excepted) — value-stabilize with `useMemo` over a serialized key instead. [react.dev/reference/react/useRef pitfall]

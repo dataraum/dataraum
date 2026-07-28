@@ -81,10 +81,51 @@ export interface DeclaredSource {
 }
 
 /**
+ * Reduce a declared relation to the BARE name the rest of the drill speaks.
+ *
+ * The answer sub-agent is told to address tables as `lake.<layer>.<name>`, and
+ * it must keep doing so — its `final_sql` genuinely needs the qualified form,
+ * and switching conventions midway through one output is the kind of rule a
+ * model drops silently. So the qualified form is correct on the wire and wrong
+ * everywhere it lands, and this is where the two meet:
+ *
+ *   - `Query.from("lake.typed.orders")` (mosaic-sql) quotes the WHOLE string as
+ *     one identifier — `FROM "lake.typed.orders"` — which is a Catalog Error,
+ *     so a qualified declaration could never bind and the proof could never
+ *     pass. The feature was inert in production while every test was green,
+ *     because the tests used bare names.
+ *   - `current_enriched_views.view_name` is bare, so the axes resolver's
+ *     `viewByName` lookup missed too — and reported the miss as "reads
+ *     relations outside the current analysis", blaming a stale snippet for a
+ *     format mismatch.
+ *
+ * Reducing to the last segment is the same normalization `canonicalizeForReuse`
+ * applies for snippet matching, and it is safe for the same reason: engine
+ * scope is `USE lake.typed`, where the enriched views live, so a bare name
+ * resolves to exactly what the qualified one named. If it does not, the
+ * composition fails to bind and the answer falls back to tier A — never a
+ * silently different table.
+ *
+ * Refused rather than reduced: a quoted identifier (already-escaped text this
+ * has no business rewriting) and more than three segments (not an address this
+ * convention produces — guessing at it would be inventing a table).
+ */
+export function bareRelationName(relation: string): string | null {
+	const trimmed = relation.trim();
+	if (trimmed === "") return null;
+	if (/["'`]/.test(trimmed)) return null;
+	const parts = trimmed.split(".");
+	if (parts.length > 3 || parts.some((p) => p.trim() === "")) return null;
+	return parts[parts.length - 1].trim();
+}
+
+/**
  * Narrow one declared source to clause parts, or null when the model abstained
  * (or answered with something unusable). Mirrors `narrowSnippetParts`'s posture
  * at the persisted-parts boundary: structure only, no interpretation — the
- * VALUE proof is what decides whether the structure is also true.
+ * VALUE proof is what decides whether the structure is also true. The one
+ * transformation is the relation reduction above, which is a FORMAT conversion
+ * between two spellings of the same table, not an interpretation of it.
  *
  * `relation: null` (the engine's fall-loud "no relation" shape) is deliberately
  * NOT reachable from a declaration: an answer step that reads nothing has
@@ -93,9 +134,9 @@ export interface DeclaredSource {
 export function narrowDeclaredSource(
 	declared: DeclaredSource,
 ): AnswerSourceParts | null {
-	const relation = declared.relation.trim();
+	const relation = bareRelationName(declared.relation);
 	const selectExpr = declared.valueExpr.trim();
-	if (relation === "" || selectExpr === "") return null;
+	if (relation === null || selectExpr === "") return null;
 	const where = declared.filters
 		.map((f) => f.trim())
 		.filter((f) => f.length > 0);
@@ -202,6 +243,15 @@ export function composeAnswerSource(
  * FROM` makes NULL comparable rather than unknown; the extra NOT NULL floor
  * stops the degenerate proof where a hallucinated relation returns NULL and an
  * empty answer returns NULL and the two "agree".
+ *
+ * The comparison is EXACT, including for floats. Two plans that sum the same
+ * DOUBLE column in a different order can disagree in the last bits, and such a
+ * declaration is rejected. That is the correct failure: it costs a drill
+ * affordance and falls back to tier A, which is the honest fallback. Do NOT
+ * "fix" it with an epsilon — a tolerance here would be a threshold nobody
+ * calibrated, quietly admitting declarations that are wrong by a little in
+ * order to admit ones that are right by a rounding bit, and the whole point of
+ * this gate is that it never guesses.
  */
 export function answerSourceProofSql(
 	scalarSql: string,

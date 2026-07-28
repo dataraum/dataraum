@@ -298,7 +298,7 @@ const lastSteps = () =>
 		.steps;
 
 describe("DrillableGrid — time grain", () => {
-	it("WITHOUT a nodeRef a temporal axis slices RAW — grain is a node-path capability", async () => {
+	it("WITHOUT a node source a temporal axis slices RAW — grain is a node-path capability", async () => {
 		renderGrid(); // tier-A path: /api/drill/compose rejects grained steps
 		await sliceBy("entry_id__date", "SQL_RAW");
 		expect(lastSteps()).toEqual([{ kind: "slice", column: "entry_id__date" }]);

@@ -33,8 +33,11 @@ export async function proveAnswerSource(
 	if (scalarSql === null) return null;
 	try {
 		return await withLakeConnection(async (conn) => {
-			// Engine scope, matching every other drill path: a declared relation may
-			// be bare (`lake.typed` is the engine's own scope) or fully qualified.
+			// Engine scope, matching every other drill path. Declared relations are
+			// ALWAYS bare by the time they reach here — `bareRelationName` reduced
+			// the model's `lake.<layer>.<name>` at the narrow, because mosaic-sql
+			// would quote a qualified string as one identifier. `USE lake.typed` is
+			// what makes the bare name resolve.
 			await applyEngineScope(conn);
 			return (await runAnswerSourceProof(conn, scalarSql, answerSql))
 				? candidate

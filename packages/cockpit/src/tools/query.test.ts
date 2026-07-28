@@ -508,7 +508,10 @@ const declared = (
 ) => ({ relation, value_expr, filters });
 
 describe("candidateSource", () => {
-	it("collects the steps that declared a source", () => {
+	// The relation arrives in the model's `lake.<layer>.<name>` form and is
+	// reduced to the bare name here — the composer quotes it as one identifier,
+	// so the qualified spelling would never bind.
+	it("collects the steps that declared a source, relations reduced", () => {
 		expect(
 			candidateSource(
 				[
@@ -523,7 +526,7 @@ describe("candidateSource", () => {
 					name: "revenue",
 					parts: {
 						selectExpr: "SUM(amt)",
-						relation: "lake.typed.o",
+						relation: "o",
 						where: [],
 					},
 				},
@@ -531,7 +534,7 @@ describe("candidateSource", () => {
 					name: "cost",
 					parts: {
 						selectExpr: "SUM(cost)",
-						relation: "lake.typed.o",
+						relation: "o",
 						where: [],
 					},
 				},

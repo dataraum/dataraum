@@ -341,6 +341,12 @@ def grounded_select(
     — the SAME filter the executed flow SUM applies (``compose_extract_sql``). The
     period resolver needs it to observe the flow's window over exactly the rows the
     SUM scans, not the whole column; the additivity classifier ignores it.
+
+    The lookup carries the step's DECLARED ``predicate`` (DAT-838). Omitting it did
+    not abstain — it matched the UNRESTRICTED sibling, so a restricted step
+    resolved to the wrong relation and the wrong ``where``, silently: the
+    classifier then judged a row population the step never reads, and the period
+    resolver bound its reporting instant over that same wrong population.
     """
     if step.source is None:
         return None
@@ -350,6 +356,7 @@ def grounded_select(
         standard_field=step.source.standard_field,
         statement=step.source.statement,
         aggregation=step.aggregation,
+        predicate=step.source.predicate,
     )
     # find_by_key already filters failure_count == 0; the re-check is belt-and-braces.
     if match is None or (match.snippet.failure_count or 0) != 0:

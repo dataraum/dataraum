@@ -91,13 +91,28 @@ def node_key(step: GraphStep, graph: TransformationGraph) -> NodeKey | None:
     to one snippet, reusing the wrong operand's CTE — DAT-646. The fix is to not
     share formulas at all, not to refine the key.)
 
+    The key is the snippet's SEMANTIC key and must stay identical to it (DAT-838),
+    ``predicate`` included. Two steps that share field, statement and aggregation
+    but restrict to DIFFERENT rows are different measurements — the ticket's own
+    example is ``bank_transaction_count`` (unrestricted) beside
+    ``reconciled_count`` (restricted to reconciled rows). Keyed without the
+    predicate they collapsed to ONE warm node: a single snippet was minted under
+    ``predicate=""``, the restricted step's own (correct) lookup then missed it,
+    and the metric composed nothing at all — no number, rather than a wrong one.
+
     Returns ``None`` for a step that is never warmed: a FORMULA, a CONSTANT, or an
     extract with no source.
     """
     if step.step_type == StepType.EXTRACT:
         if not step.source:
             return None
-        return ("extract", step.source.standard_field, step.source.statement, step.aggregation)
+        return (
+            "extract",
+            step.source.standard_field,
+            step.source.statement,
+            step.aggregation,
+            step.source.predicate,
+        )
     return None
 
 

@@ -236,6 +236,26 @@ CREATE TABLE metric_parameters (
 
 CREATE UNIQUE INDEX uq_metric_parameter_active ON metric_parameters (vertical, graph_id, name) WHERE superseded_at IS NULL;
 
+CREATE TABLE metric_unit_grain (
+	unit_grain_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	target_kind VARCHAR NOT NULL, 
+	target_key VARCHAR NOT NULL, 
+	axis VARCHAR NOT NULL, 
+	entity_value VARCHAR NOT NULL, 
+	value NUMERIC, 
+	reconciles BOOLEAN NOT NULL, 
+	recompute BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_metric_unit_grain PRIMARY KEY (unit_grain_id), 
+	CONSTRAINT uq_metric_unit_grain_entity UNIQUE (target_kind, target_key, axis, entity_value, run_id), 
+	CONSTRAINT ck_metric_unit_grain_target_kind CHECK (target_kind IN ('measure', 'metric'))
+);
+
+CREATE INDEX ix_metric_unit_grain_run_id ON metric_unit_grain (run_id);
+
+CREATE INDEX ix_metric_unit_grain_target_key ON metric_unit_grain (target_key);
+
 CREATE TABLE metrics (
 	metric_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 
@@ -276,6 +296,7 @@ CREATE TABLE sql_snippets (
 	standard_field VARCHAR, 
 	statement VARCHAR, 
 	aggregation VARCHAR, 
+	predicate VARCHAR DEFAULT '' NOT NULL, 
 	schema_mapping_id VARCHAR NOT NULL, 
 	parameter_value VARCHAR, 
 	normalized_expression VARCHAR, 
@@ -290,7 +311,7 @@ CREATE TABLE sql_snippets (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_sql_snippets PRIMARY KEY (snippet_id), 
-	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value), 
+	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, predicate, schema_mapping_id, parameter_value), 
 	CONSTRAINT ck_sql_snippets_snippet_type CHECK (snippet_type IN ('extract', 'constant', 'formula', 'query'))
 );
 

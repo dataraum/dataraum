@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -555,6 +555,8 @@ class GraphAgent(LLMFeature):
         *,
         axis: str,
         workspace_id: str,
+        sql_axis: str | None = None,
+        step_grain: Mapping[str, Sequence[tuple[str, str]]] | None = None,
     ) -> Result[UnitGrainBreakdown]:
         """Compose and execute a metric at UNIT GRAIN on one axis — NO LLM (DAT-671 B1).
 
@@ -582,6 +584,14 @@ class GraphAgent(LLMFeature):
         NULL, and — when the entity count exceeds
         :data:`~dataraum.graphs.unit_grain.UNIT_GRAIN_MAX_ENTITIES` — an ordered
         prefix with ``truncated_at`` set for the caller to disclose.
+
+        ``sql_axis`` and ``step_grain`` serve CROSS-FACT drill-across (DAT-809),
+        where the carriers sit on different facts. ``step_grain`` gives each carrier
+        the local column realizing the shared axis on its own fact, and ``sql_axis``
+        is the identity they all project under — the ``conformed_group``, which is
+        what makes the merge key drift-proof but is not a name to show anyone, so
+        ``axis`` stays the display label. Both default to the single-relation
+        reading, where the axis is its own column on the one fact.
         """
         from dataraum.graphs.formula_composer import quote_key
         from dataraum.graphs.unit_grain import (
@@ -591,10 +601,11 @@ class GraphAgent(LLMFeature):
         )
         from dataraum.query.execution import SQLStep, execute_sql_steps
 
+        key = sql_axis or axis
         resolved_params = self._resolve_parameters(session, graph, {})
         cached_snippets = self._lookup_snippets(session, graph, workspace_id)
         generated_code = self._compose_metric_from_dag(
-            graph, cached_snippets, resolved_params, group_by=[axis]
+            graph, cached_snippets, resolved_params, group_by=[key], step_grain=step_grain
         )
         if generated_code is None:
             return Result.fail(
@@ -620,7 +631,7 @@ class GraphAgent(LLMFeature):
         # counts the unwrapped statement separately, and DuckDB carries the inner
         # ordering through that wrapper (probed). Without it, a truncated
         # breakdown would name different entities on every run of identical data.
-        ordered_final = f"{generated_code.final_sql} ORDER BY {quote_key(axis)}"
+        ordered_final = f"{generated_code.final_sql} ORDER BY {quote_key(key)}"
         exec_result = execute_sql_steps(
             steps=steps,
             final_sql=ordered_final,
@@ -636,10 +647,10 @@ class GraphAgent(LLMFeature):
         # its key then its aggregate; a FORMULA projects the COALESCEd key then its
         # arithmetic). Anything else means the composition is not what this reader
         # thinks it is — say so rather than guess which column is the entity.
-        if columns != [axis, "value"]:
+        if columns != [key, "value"]:
             return Result.fail(
                 f"metric '{graph.graph_id}' composed per {axis!r} returned columns "
-                f"{columns} — expected exactly ['{axis}', 'value']"
+                f"{columns} — expected exactly ['{key}', 'value']"
             )
 
         rows: list[UnitGrainRow] = []
@@ -654,18 +665,20 @@ class GraphAgent(LLMFeature):
                     f"metric '{graph.graph_id}' has rows with no {axis!r} value — a "
                     "breakdown that cannot name every part is withheld whole"
                 )
-            key = str(entity)
-            if key in seen:
+            # NOT `key` — that names the composition's GROUP key in this scope, and
+            # shadowing it here would leave a post-loop read holding the last entity.
+            entity_key = str(entity)
+            if entity_key in seen:
                 return Result.fail(
-                    f"metric '{graph.graph_id}' produced {key!r} twice per {axis!r} — "
-                    "the composition is not one row per entity"
+                    f"metric '{graph.graph_id}' produced {entity_key!r} twice per "
+                    f"{axis!r} — the composition is not one row per entity"
                 )
-            seen.add(key)
+            seen.add(entity_key)
             try:
                 cell = _unit_grain_value(value)
             except ValueError as exc:
                 return Result.fail(f"metric '{graph.graph_id}' per {axis!r}: {exc}")
-            rows.append(UnitGrainRow(entity_value=key, value=cell))
+            rows.append(UnitGrainRow(entity_value=entity_key, value=cell))
 
         total = exec_result.value.total_count
         total_entities = len(rows) if total is None else total
@@ -684,6 +697,7 @@ class GraphAgent(LLMFeature):
         cached_snippets: dict[str, dict[str, Any]],
         resolved_params: dict[str, Any],
         group_by: Sequence[str] = (),
+        step_grain: Mapping[str, Sequence[tuple[str, str]]] | None = None,
     ) -> GeneratedCode | None:
         """Compose a metric's SQL PER-METRIC from the DAG — no cross-metric reuse (DAT-646).
 
@@ -702,7 +716,18 @@ class GraphAgent(LLMFeature):
         ``net_margin``/``ebitda_margin`` collision). ``final_sql`` selects the output
         CTE. Returns ``None`` when an extract leaf is absent (its dep ungroundable — the
         caller honest-fails) or a step is malformed.
+
+        ``group_by`` names the shared axis identities the FORMULA merges its carriers
+        on. ``step_grain`` is the CROSS-FACT refinement (DAT-809): per EXTRACT step,
+        the ``(local_column, axis_alias)`` pairs realizing those axes on THAT step's
+        own relation, because two facts spell one conformed dimension differently.
+        ``None`` keeps the single-relation reading — every carrier groups by the axis
+        name itself — which is exactly what unit grain has always done. When it IS
+        supplied, an EXTRACT step absent from it cannot carry the axis and the metric
+        honest-fails rather than composing a partial merge.
         """
+        from dataraum.graphs.formula_composer import same_name_keys
+
         output_step = graph.get_output_step()
         if output_step is None:
             return None
@@ -722,12 +747,22 @@ class GraphAgent(LLMFeature):
             step = graph.steps.get(step_id)
             if step is None:
                 return None
+            grain_keys: Sequence[tuple[str, str]] = same_name_keys(*group_by)
+            if step_grain is not None and step.step_type == StepType.EXTRACT:
+                resolved_grain = step_grain.get(step_id)
+                if resolved_grain is None:
+                    # Cross-fact: the axis resolver did not name a local column for
+                    # this carrier, so it cannot join the merge. Composing the rest
+                    # would silently answer a narrower question than was asked.
+                    return None
+                grain_keys = resolved_grain
             sql = self._compose_step_sql(
                 step,
                 step_id,
                 cached_snippets,
                 resolved_params,
                 group_by=group_by,
+                grain_keys=grain_keys,
                 grouped_steps=frozenset(grouped_steps),
             )
             if sql is None:
@@ -798,6 +833,7 @@ class GraphAgent(LLMFeature):
         resolved_params: dict[str, Any],
         *,
         group_by: Sequence[str] = (),
+        grain_keys: Sequence[tuple[str, str]] = (),
         grouped_steps: frozenset[str] = frozenset(),
     ) -> str | None:
         """One step's CTE SQL: extract = cached snippet, constant/formula = composed.
@@ -841,7 +877,7 @@ class GraphAgent(LLMFeature):
                 if not isinstance(expr, str) or not expr.strip():
                     return None
                 where = [w for w in (parts.get("where") or []) if isinstance(w, str)]
-                return compose_extract_sql(expr, str(relations[0]), where, group_by)
+                return compose_extract_sql(expr, str(relations[0]), where, grain_keys)
             if step.step_type == StepType.CONSTANT:
                 value = resolved_params.get(step.parameter) if step.parameter else None
                 # A constant is entity-independent — the same number for every

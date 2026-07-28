@@ -23,7 +23,11 @@ from dataraum.graphs.additivity import (
     AxisVerdict,
 )
 from dataraum.graphs.agent import ExecutionContext, GraphAgent
-from dataraum.graphs.formula_composer import compose_extract_sql, compose_formula_sql
+from dataraum.graphs.formula_composer import (
+    compose_extract_sql,
+    compose_formula_sql,
+    same_name_keys,
+)
 from dataraum.graphs.models import (
     GraphMetadata,
     GraphSource,
@@ -67,7 +71,7 @@ def con() -> duckdb.DuckDBPyConnection:
 
 class TestGroupedExtract:
     def test_renders_key_projection_and_group_by(self) -> None:
-        sql = compose_extract_sql("SUM(balance)", "ap", [], ["account_id"])
+        sql = compose_extract_sql("SUM(balance)", "ap", [], same_name_keys("account_id"))
         assert sql == (
             'SELECT "account_id" AS "account_id", SUM(balance) AS value\n'
             "FROM ap\n"
@@ -80,7 +84,7 @@ class TestGroupedExtract:
         )
 
     def test_quotes_a_key_containing_a_quote(self) -> None:
-        assert '"we""ird"' in compose_extract_sql("SUM(x)", "t", [], ['we"ird'])
+        assert '"we""ird"' in compose_extract_sql("SUM(x)", "t", [], same_name_keys('we"ird'))
 
     def test_parts_reconcile_to_the_scalar_under_a_bound_instant(
         self, con: duckdb.DuckDBPyConnection
@@ -92,7 +96,7 @@ class TestGroupedExtract:
         served `additive` categorical verdict for a summed stock true.
         """
         scalar = con.execute(compose_extract_sql("SUM(balance)", "ap", _BOUND)).fetchone()
-        grouped = compose_extract_sql("SUM(balance)", "ap", _BOUND, ["account_id"])
+        grouped = compose_extract_sql("SUM(balance)", "ap", _BOUND, same_name_keys("account_id"))
         parts = con.execute(f"SELECT SUM(value) FROM ({grouped})").fetchone()
         assert scalar is not None and parts is not None
         assert parts[0] == scalar[0] == 210.0
@@ -105,7 +109,7 @@ class TestGroupedExtract:
         A zero here would assert a measurement nobody made — and would still sum to
         the right total, so nothing downstream could catch it.
         """
-        grouped = compose_extract_sql("SUM(balance)", "ap", _BOUND, ["account_id"])
+        grouped = compose_extract_sql("SUM(balance)", "ap", _BOUND, same_name_keys("account_id"))
         rows = con.execute(f"{grouped} ORDER BY 1").fetchall()
         assert [r[0] for r in rows] == ["acct_a", "acct_b"]
 
@@ -135,8 +139,8 @@ class TestGroupedFormula:
         )
 
     def _run(self, con: duckdb.DuckDBPyConnection) -> list[tuple[str, float | None]]:
-        ap = compose_extract_sql("SUM(balance)", "ap", _BOUND, ["account_id"])
-        cogs = compose_extract_sql("SUM(cogs)", "purchases", [], ["account_id"])
+        ap = compose_extract_sql("SUM(balance)", "ap", _BOUND, same_name_keys("account_id"))
+        cogs = compose_extract_sql("SUM(cogs)", "purchases", [], same_name_keys("account_id"))
         return con.execute(
             f"WITH accounts_payable AS ({ap}), cost_of_goods_sold AS ({cogs}),"
             f" days_in_period AS (SELECT 365 AS value)"

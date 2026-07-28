@@ -286,18 +286,19 @@ class TestEndpointMissesDropLoudNotCrash:
             f"'account_id', 0.7, 'supporting', 'categorical', 'llm', '{ts}')",
             # DAT-788: referenced cells so the t9 conformed edge FORMS (same account_id
             # role → one group) — it must then drop on the unresolvable t9 endpoint,
-            # not silently vanish for want of a cell.
+            # not silently vanish for want of a cell. 'judge' because the edge serves
+            # CONFIRMED cells only (DAT-809), so an unconfirmed pair never forms one.
             "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
             " concept_label, dimension_table_id, roles, attributes, confirmation_source, "
             " conformed_group, needs_confirmation, signature, created_at) "
             f"VALUES ('bm_9', '{run}', 't1', 'referenced', 'ghost', 't9', "
-            f"'[\"account_id\"]', '[]', 'unconfirmed', 'ref:t9:account_id', false, "
+            f"'[\"account_id\"]', '[]', 'judge', 'ref:t9:account_id', false, "
             f"'bus:referenced:t1:t9:account_id', '{ts}')",
             "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
             " concept_label, dimension_table_id, roles, attributes, confirmation_source, "
             " conformed_group, needs_confirmation, signature, created_at) "
             f"VALUES ('bm_9b', '{run}', 't4', 'referenced', 'ghost', 't9', "
-            f"'[\"account_id\"]', '[]', 'unconfirmed', 'ref:t9:account_id', false, "
+            f"'[\"account_id\"]', '[]', 'judge', 'ref:t9:account_id', false, "
             f"'bus:referenced:t4:t9:account_id', '{ts}')",
             # An enriched view deriving from the unresolvable t9 dimension base.
             # Fact t4 — one enriched view per fact (uq_enriched_view_fact_table),

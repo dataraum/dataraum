@@ -1014,15 +1014,21 @@ def _read_conformed(
     rows = session.execute(
         text(
             f"SELECT DISTINCT from_table_id, to_table_id, dimension_table_id,\n"  # noqa: S608
-            f"       dimension_attribute\n"
+            f"       dimension_attribute, conformed_group, confirmation_source,\n"
+            f"       from_role, to_role\n"
             f'FROM "{read_schema}".og_conformed_dimension'
         )
     ).all()
-    seen: set[tuple[str, str, str, str | None]] = set()
+    seen: set[tuple[str, str, str, str | None, str | None]] = set()
     out: list[ConformedDimensionContext] = []
     for r in rows:
         a_id, b_id = sorted((str(r.from_table_id), str(r.to_table_id)))
-        key = (a_id, b_id, str(r.dimension_table_id), r.dimension_attribute)
+        # The pair is normalized by sorting the ids, so the roles must follow that
+        # swap — otherwise each fact would be shown joining on the OTHER's column.
+        role_a, role_b = (
+            (r.from_role, r.to_role) if a_id == str(r.from_table_id) else (r.to_role, r.from_role)
+        )
+        key = (a_id, b_id, str(r.dimension_table_id), r.dimension_attribute, r.conformed_group)
         if key in seen:
             continue
         seen.add(key)
@@ -1037,10 +1043,25 @@ def _read_conformed(
             continue
         out.append(
             ConformedDimensionContext(
-                table_a=a[0], table_b=b[0], dimension_table=dim[0], attribute=r.dimension_attribute
+                table_a=a[0],
+                table_b=b[0],
+                dimension_table=dim[0],
+                attribute=r.dimension_attribute,
+                conformed_group=r.conformed_group,
+                confirmation_source=r.confirmation_source,
+                role_a=role_a,
+                role_b=role_b,
             )
         )
-    out.sort(key=lambda c: (c.table_a, c.table_b, c.dimension_table, c.attribute or ""))
+    out.sort(
+        key=lambda c: (
+            c.table_a,
+            c.table_b,
+            c.dimension_table,
+            c.attribute or "",
+            c.conformed_group or "",
+        )
+    )
     return out
 
 

@@ -97,6 +97,27 @@ VALUES
    0.6, 'supporting', 'categorical', '["Acme", "Globex"]'::json, 2,
    'Customer account', 'llm', ${ts});
 
+-- Bus matrix (DAT-762): which facts carry which dimensions. Shape is the one
+-- analysis/hierarchies/bus_matrix.py::derive_bus_matrix writes, NOT an idealized
+-- one: a REFERENCED cell always carries a conformed_group (ref:DIM:ROLES) and a
+-- non-null dimension_table_id; roles holds FK role names and attributes holds
+-- BARE attribute names (never the fk__attr spelling -- that lives in
+-- slice_definitions.column_name); confirmation_source is the weakest-link floor
+-- over the FK relationships the role reaches.
+--
+-- One fact only, so the fixture's baseline bus matrix is deliberately NOT
+-- drillable across — a cross-fact axis needs a second fact, which the bus-matrix
+-- integration test adds itself rather than widening the shared table set here.
+INSERT INTO bus_matrix (
+  entry_id, run_id, fact_table_id, attachment, concept_label, dimension_table_id,
+  roles, attributes, confirmation_source, conformed_group, needs_confirmation,
+  signature, created_at)
+VALUES
+  ('bm_fixture_acct', '${RUN_ID}', '${FACT_TABLE_ID}', 'referenced', 'accounts',
+   '${DIM_TABLE_ID}', '["account_id"]'::json, '["name"]'::json, 'judge',
+   'ref:${DIM_TABLE_ID}:account_id', false,
+   'bus:referenced:${FACT_TABLE_ID}:${DIM_TABLE_ID}:account_id', ${ts});
+
 -- ADR-0008: the read views are head-joined. Without this row every
 -- current_* read above returns zero rows.
 INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)

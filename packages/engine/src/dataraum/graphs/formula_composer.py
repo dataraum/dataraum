@@ -58,11 +58,21 @@ def quote_key(column: str) -> str:
     return f'"{escaped}"'
 
 
+def same_name_keys(*columns: str) -> tuple[tuple[str, str], ...]:
+    """Grain keys for a SINGLE-relation grouping — each column keeps its own name.
+
+    The degenerate case of :func:`compose_extract_sql`'s ``group_by``: when only
+    one relation is being grouped there is no second spelling to reconcile, so
+    the axis identity and the local column coincide.
+    """
+    return tuple((c, c) for c in columns)
+
+
 def compose_extract_sql(
     select_expr: str,
     relation: str | None,
     where: list[str],
-    group_by: Sequence[str] = (),
+    group_by: Sequence[tuple[str, str]] = (),
 ) -> str:
     """Render an EXTRACT's clause parts to SQL (DAT-671, parts-at-source).
 
@@ -81,12 +91,21 @@ def compose_extract_sql(
     sum back to it whenever the served verdict says the measure is additive on
     that axis.
 
+    Each key is ``(source_column, output_alias)``. They differ only for CROSS-FACT
+    drill-across (DAT-809): two facts realize ONE conformed dimension with their
+    own local columns (``account_id`` here, ``acct`` there), so each side groups
+    by its own column and projects it under the shared axis identity, which is
+    what :func:`compose_formula_sql` then merges on. Grouping stays on the SOURCE
+    column — aliasing a projection never changes which rows collapse together —
+    so the aliased render aggregates exactly the rows the same-named one would.
+    Use :func:`same_name_keys` for the single-relation case, where they coincide.
+
     An entity with no row under those predicates is ABSENT from the result. That
     is the honest reading — the data records no level for it — and it must never
     be filled with a zero, which would assert a measurement nobody made.
     """
-    keys = [k for k in group_by if k and k.strip()]
-    projection = ", ".join(f"{quote_key(k)} AS {quote_key(k)}" for k in keys)
+    keys = [(c, a) for c, a in group_by if c and c.strip() and a and a.strip()]
+    projection = ", ".join(f"{quote_key(c)} AS {quote_key(a)}" for c, a in keys)
     sql = f"SELECT {projection + ', ' if projection else ''}{select_expr} AS value"
     if relation:
         sql += f"\nFROM {relation}"
@@ -94,7 +113,7 @@ def compose_extract_sql(
     if clause:
         sql += f"\nWHERE {clause}"
     if keys:
-        sql += "\nGROUP BY " + ", ".join(quote_key(k) for k in keys)
+        sql += "\nGROUP BY " + ", ".join(quote_key(c) for c, _ in keys)
     return sql
 
 

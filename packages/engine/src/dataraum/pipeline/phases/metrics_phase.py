@@ -844,6 +844,11 @@ def _unit_grain_rows(
     outcome: UnitGrainOutcome,
 ) -> list[dict[str, object]]:
     """One metric's persistable breakdown rows, or none with the reason recorded."""
+    from dataraum.graphs.cross_fact import (
+        CrossFactAbstain,
+        CrossFactStatus,
+        resolve_cross_fact_axis,
+    )
     from dataraum.graphs.models import StepType
     from dataraum.graphs.unit_grain import (
         gate_unit_grain,
@@ -851,26 +856,57 @@ def _unit_grain_rows(
         resolve_metric_entity_axes,
     )
 
-    served_axes = resolve_metric_entity_axes(
+    # WHICH axis is legal depends on how many facts the carriers sit on, and the two
+    # cases take their evidence from different places (DAT-809).
+    #
+    # A column-NAME intersection is sound only within ONE relation, where a name
+    # unambiguously denotes a column. Across facts it is not evidence of anything:
+    # two facts both carrying a `region` column are not thereby the same region, and
+    # merging their numbers on that name asserts a conformance nobody established.
+    # So a multi-fact metric takes its axis from the CONFIRMED conformed dimension or
+    # gets no breakdown at all — and says which.
+    sql_axis: str | None = None
+    step_grain: dict[str, tuple[tuple[str, str], ...]] | None = None
+    cross = resolve_cross_fact_axis(
         session, graph=graph, workspace_id=workspace_id, run_id=catalogue_run_id
     )
-    if not served_axes.axes:
-        reason = (
-            "no served categorical axis is carried by every one of its grounded "
-            "carriers (an ungroundable carrier, a relation outside the analysis, or "
-            "no judged categorical slice they share)"
-        )
-        # The catalog read's own account of what it left unsaid — today, that
-        # nothing in it was ever judged. Carried through rather than dropped: a
-        # never-assessed axis and an assessed-and-rejected one are different
-        # facts, and only one of them is a reason to go look at the ranker.
-        if served_axes.note:
-            reason = f"{reason} — {served_axes.note}"
-        outcome.withheld[graph_id] = reason
+    if cross.status is CrossFactStatus.RESOLVED and cross.axis is not None:
+        # Two different names for two different jobs, and they must not be swapped:
+        # the IDENTITY is the merge key and the persisted axis (part of the ADR-0010
+        # upsert key, so it must not drift the way a label can — DAT-800), while the
+        # LABEL is what any human-facing string says. The identity embeds a table
+        # uuid, so showing it would put `ref:8f0a…:account_id` in front of a reader.
+        axis = cross.axis.label
+        sql_axis = cross.axis.identity
+        persisted_axis = cross.axis.identity
+        step_grain = cross.axis.step_grain()
+    elif cross.abstain_reason is not CrossFactAbstain.SINGLE_FACT:
+        outcome.withheld[graph_id] = cross.reason or "withheld without a reason"
         return []
-    # The catalog's own ranking, judgment before measurement — the workspace says
-    # which axis is the interesting one, so we take its first and do not re-rank.
-    axis = served_axes.axes[0]
+    else:
+        served_axes = resolve_metric_entity_axes(
+            session, graph=graph, workspace_id=workspace_id, run_id=catalogue_run_id
+        )
+        if not served_axes.axes:
+            reason = (
+                "no served categorical axis is carried by every one of its grounded "
+                "carriers (an ungroundable carrier, a relation outside the analysis, or "
+                "no judged categorical slice they share)"
+            )
+            # The catalog read's own account of what it left unsaid — today, that
+            # nothing in it was ever judged. Carried through rather than dropped: a
+            # never-assessed axis and an assessed-and-rejected one are different
+            # facts, and only one of them is a reason to go look at the ranker.
+            if served_axes.note:
+                reason = f"{reason} — {served_axes.note}"
+            outcome.withheld[graph_id] = reason
+            return []
+        # The catalog's own ranking, judgment before measurement — the workspace says
+        # which axis is the interesting one, so we take its first and do not re-rank.
+        # Single-fact: the axis IS a column on the one relation, so display key and
+        # persisted key coincide.
+        axis = served_axes.axes[0]
+        persisted_axis = axis
 
     verdict = read_categorical_verdict(
         session, target_kind="metric", target_key=graph_id, run_id=run_id
@@ -893,7 +929,13 @@ def _unit_grain_rows(
         return []
 
     composed = agent.compose_unit_grain(
-        session, graph, context, axis=axis, workspace_id=workspace_id
+        session,
+        graph,
+        context,
+        axis=axis,
+        workspace_id=workspace_id,
+        sql_axis=sql_axis,
+        step_grain=step_grain,
     )
     if not composed.success or composed.value is None:
         outcome.failures[graph_id] = composed.error or "unit-grain composition failed"
@@ -914,7 +956,7 @@ def _unit_grain_rows(
             "run_id": run_id,
             "target_kind": "metric",
             "target_key": graph_id,
-            "axis": axis,
+            "axis": persisted_axis,
             "entity_value": row.entity_value,
             "value": row.value,
             "reconciles": decision.reconciles,

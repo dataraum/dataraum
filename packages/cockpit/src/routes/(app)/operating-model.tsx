@@ -42,12 +42,14 @@ import {
 	createFileRoute,
 	type ErrorComponentProps,
 } from "@tanstack/react-router";
+import type { BusMatrix } from "#/tools/bus-matrix";
 import type { ConceptGraph } from "#/tools/concept-graph";
 import type { LoadOperatingModelResult } from "#/tools/operating-model-load";
+import { BusMatrixView } from "#/ui/cockpit/operating-model/bus-matrix-view";
 import { ConceptGraphView } from "#/ui/cockpit/operating-model/concept-graph-view";
 import { ModelIcon } from "#/ui/cockpit/operating-model/nodes";
 import { OperatingModelCanvas } from "#/ui/cockpit/operating-model/operating-model-canvas";
-import { loadConcepts, loadModel } from "./operating-model.functions";
+import { loadBus, loadConcepts, loadModel } from "./operating-model.functions";
 
 /** One pane's independent read outcome — never let one pane's failure blank
  *  the other or get mislabeled as the other's error. */
@@ -65,24 +67,30 @@ function toPaneResult<T>(settled: PromiseSettledResult<T>): PaneResult<T> {
 	};
 }
 
-type ViewMode = "metrics" | "concepts";
+type ViewMode = "metrics" | "concepts" | "bus";
 
 export const Route = createFileRoute("/(app)/operating-model")({
-	validateSearch: (search: Record<string, unknown>): { view?: "concepts" } =>
+	validateSearch: (
+		search: Record<string, unknown>,
+	): { view?: "concepts" | "bus" } =>
 		// The KEY itself is omitted (not present-with-undefined) at the default
 		// "metrics" tab — mirrors the reports `?drill=` convention of not
 		// cluttering the URL with the no-op state, and keeps `view` a truly
 		// OPTIONAL search param so a bare `{ to: "/operating-model" }` link
 		// (governance.tsx) stays valid without threading a search object.
-		search.view === "concepts" ? { view: "concepts" } : {},
+		search.view === "concepts" || search.view === "bus"
+			? { view: search.view }
+			: {},
 	loader: async () => {
-		const [modelResult, conceptsResult] = await Promise.allSettled([
+		const [modelResult, conceptsResult, busResult] = await Promise.allSettled([
 			loadModel(),
 			loadConcepts(),
+			loadBus(),
 		]);
 		return {
 			model: toPaneResult(modelResult),
 			concepts: toPaneResult(conceptsResult),
+			bus: toPaneResult(busResult),
 		};
 	},
 	component: ModelSection,
@@ -198,8 +206,21 @@ function ConceptsView({ concepts }: { concepts: PaneResult<ConceptGraph> }) {
 	return <ConceptGraphView graph={concepts.data} />;
 }
 
-function ModelSection() {
-	const { model, concepts } = Route.useLoaderData();
+function BusView({ bus }: { bus: PaneResult<BusMatrix> }) {
+	if (bus.status === "error") {
+		return (
+			<PaneError title="Couldn't load the bus matrix" message={bus.message} />
+		);
+	}
+	return <BusMatrixView matrix={bus.data} />;
+}
+
+// Exported for the route-level test (the `create.tsx` precedent): the TAB WIRING
+// is this route's actual deliverable — which pane a `view` value mounts — and
+// nothing else in the suite covers it, so deleting a tab used to leave the suite
+// green. Rendered directly with `Route`'s hooks spied, no router needed.
+export function ModelSection() {
+	const { model, concepts, bus } = Route.useLoaderData();
 	const search = Route.useSearch();
 	const navigateSearch = Route.useNavigate();
 	const view: ViewMode = search.view ?? "metrics";
@@ -217,7 +238,11 @@ function ModelSection() {
 				value={view}
 				onChange={(v) =>
 					navigateSearch({
-						search: { view: v === "concepts" ? "concepts" : undefined },
+						// The comparison already narrows `v`; a cast here would only
+						// hide a future widening of the union.
+						search: {
+							view: v === "concepts" || v === "bus" ? v : undefined,
+						},
 						replace: true,
 						resetScroll: false,
 					})
@@ -225,6 +250,7 @@ function ModelSection() {
 				data={[
 					{ label: "Metrics", value: "metrics" },
 					{ label: "Concepts", value: "concepts" },
+					{ label: "Bus matrix", value: "bus" },
 				]}
 				style={{ alignSelf: "flex-start" }}
 			/>
@@ -237,6 +263,7 @@ function ModelSection() {
 						display: view === "metrics" ? "block" : "none",
 						height: "100%",
 					}}
+					data-testid="pane-metrics"
 				>
 					<MetricsView model={model} />
 				</Box>
@@ -245,8 +272,19 @@ function ModelSection() {
 						display: view === "concepts" ? "block" : "none",
 						height: "100%",
 					}}
+					data-testid="pane-concepts"
 				>
 					<ConceptsView concepts={concepts} />
+				</Box>
+				<Box
+					style={{
+						display: view === "bus" ? "block" : "none",
+						height: "100%",
+						overflowY: "auto",
+					}}
+					data-testid="pane-bus"
+				>
+					<BusView bus={bus} />
 				</Box>
 			</Box>
 		</Stack>

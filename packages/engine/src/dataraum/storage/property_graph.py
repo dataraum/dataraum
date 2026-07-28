@@ -668,7 +668,20 @@ def _element_view_sql(name: str) -> str:
             f"SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,\n"
             f"       s1.table_id::text AS from_table_id, s2.table_id::text AS to_table_id,\n"
             f"       s1.dimension_table_id::text AS dimension_table_id,\n"
-            f"       s1.dimension_attribute AS dimension_attribute\n"
+            f"       s1.dimension_attribute AS dimension_attribute,\n"
+            # The group is the JOIN KEY a drill-across merges on (DAT-809), so it must
+            # be projected, not just gated on: a consumer told two facts "share a
+            # dimension" without being told WHICH identity has to re-derive it, and
+            # the only thing left to re-derive it from is the label — which drifts and
+            # collides (DAT-800). Mirrors og_dim_members, which already projects it.
+            f"       b1.conformed_group AS conformed_group,\n"
+            f"       b1.confirmation_source AS confirmation_source,\n"
+            # The ROLE each side joins on — the only part of this edge a SQL author
+            # can actually write. The conformed_group is the stable IDENTITY, but it
+            # embeds a table uuid, so it names the axis for machinery and names
+            # nothing for a reader or a model.
+            f"       COALESCE(NULLIF(s1.fk_role, ''), s1.column_name) AS from_role,\n"
+            f"       COALESCE(NULLIF(s2.fk_role, ''), s2.column_name) AS to_role\n"
             f"FROM {READ_TOKEN}.current_slice_definitions s1\n"
             f"JOIN {READ_TOKEN}.current_bus_matrix b1\n"
             f"  ON b1.attachment = 'referenced'\n"
@@ -690,7 +703,17 @@ def _element_view_sql(name: str) -> str:
             f" AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)\n"
             f"             WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))\n"
             f"WHERE s1.dimension_table_id IS NOT NULL\n"
-            f" AND b1.conformed_group = b2.conformed_group;"
+            f" AND b1.conformed_group = b2.conformed_group\n"
+            # CONFIRMED cells only (DAT-809). This edge is what tells a consumer two
+            # facts may legally be compared through this axis, so an unconfirmed or
+            # awaiting-review pairing must not appear on it: same-named FK roles
+            # conform STRUCTURALLY, with nobody having confirmed the underlying
+            # relationship, and serving that as a drill-across path is how a name
+            # match becomes a silent join. Absence here falls loud at the consumer.
+            f" AND b1.confirmation_source <> 'unconfirmed'\n"
+            f" AND b2.confirmation_source <> 'unconfirmed'\n"
+            f" AND NOT b1.needs_confirmation\n"
+            f" AND NOT b2.needs_confirmation;"
         )
     if name == "og_grounded_by":
         # grounded_by edge (concept → grounding, DAT-727): a grounding's `concept`
@@ -1289,7 +1312,9 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)\n"
         f"      LABEL conformed_dimension\n"
-        f"      PROPERTIES (dimension_table_id, dimension_attribute),\n"
+        f"      PROPERTIES (dimension_table_id, dimension_attribute,\n"
+        f"                  conformed_group, confirmation_source,\n"
+        f"                  from_role, to_role),\n"
         f"    {READ_TOKEN}.og_grounded_by KEY (edge_key)\n"
         f"      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)\n"
         f"      DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"

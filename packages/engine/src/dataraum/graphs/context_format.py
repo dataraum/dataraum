@@ -200,11 +200,22 @@ def format_served_context(
         lines.append(
             "Facts sharing a dimension AXIS (same dimension table + attribute) — the "
             "alignable drill-across surfaces. Comparing two facts goes through a shared "
-            "axis, never a direct fact-to-fact join."
+            "axis, never a direct fact-to-fact join: compose one subquery per fact and "
+            "merge them on the shared axis below. Only CONFIRMED conformance is listed; "
+            "a pair absent from this list has no legal merge key, and comparing it "
+            "anyway would assert an identity nobody established."
         )
         for cd in context.conformed_dimensions:
             attr = f".{cd.attribute}" if cd.attribute else ""
-            lines.append(f"- {cd.table_a} ↔ {cd.table_b} share {cd.dimension_table}{attr}")
+            # Render the JOIN COLUMNS, not the conformed_group. The group is the
+            # stable identity this axis is grouped by internally, but it embeds a
+            # table uuid — a reader cannot use it and a model cannot write SQL with
+            # it, so putting it in the prompt spends tokens on an unusable token.
+            # The two facts may spell the axis differently, so both sides are named.
+            left = f"{cd.table_a}.{cd.role_a}" if cd.role_a else cd.table_a
+            right = f"{cd.table_b}.{cd.role_b}" if cd.role_b else cd.table_b
+            src = f" ({cd.confirmation_source})" if cd.confirmation_source else ""
+            lines.append(f"- {left} ↔ {right} share {cd.dimension_table}{attr}{src}")
 
     # --- Enriched Views ---
     # Tracks whether any slice list actually reached the document. The curation

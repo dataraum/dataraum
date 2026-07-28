@@ -512,3 +512,60 @@ def test_unprofiled_axis_falls_loud(
 
     assert isinstance(bound, str)
     assert "no temporal profile" in bound
+
+
+def test_stock_on_an_unserved_relation_abstains(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """A served stock grounded on a NON-enriched relation must abstain, not pass silently.
+
+    The per-view verdict read cannot run without a served enriched view, so this branch
+    used to return None — meaning "keep the model's own pin". But on prompt branch (a)
+    the model authored NO pin, so that composed a predicate-free stock extract. Low
+    reachability (a completed pipeline serves enriched views), but the acceptance bar
+    admits no reachable branch at all.
+    """
+    _seed(pg_session)
+    _create_balance_sheet(duckdb_conn)
+    duckdb_conn.execute("CREATE OR REPLACE TABLE raw_bs AS SELECT * FROM balance_sheet")
+    _boot(integration_engine)
+
+    read_schema = read_schema_name_for(schema_name_for(WS_ID))
+    bound = resolve_period_binding(
+        pg_session,
+        duckdb_conn,
+        relation="raw_bs",  # a real DuckDB relation that is NOT a served enriched view
+        select_expr="SUM(balance)",
+        read_schema=read_schema,
+        calendar=read_reporting_calendar(pg_session, read_schema),
+    )
+
+    assert isinstance(bound, str)
+    assert "not a served enriched view" in bound
+
+
+def test_flow_on_an_unserved_relation_is_still_left_alone(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The name-keyed fallback is conservative: a FLOW must never be abstained by it."""
+    _seed(pg_session, temporal_behavior="additive")
+    _create_balance_sheet(duckdb_conn)
+    duckdb_conn.execute("CREATE OR REPLACE TABLE raw_bs AS SELECT * FROM balance_sheet")
+    _boot(integration_engine)
+
+    read_schema = read_schema_name_for(schema_name_for(WS_ID))
+    assert (
+        resolve_period_binding(
+            pg_session,
+            duckdb_conn,
+            relation="raw_bs",
+            select_expr="SUM(balance)",
+            read_schema=read_schema,
+            calendar=read_reporting_calendar(pg_session, read_schema),
+        )
+        is None
+    )

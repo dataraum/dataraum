@@ -31,6 +31,14 @@ period's close. Everything below follows from that one fact.
    end-stamped one (…, 2025-12-31) both resolve December — and it is what makes daily
    grain land on the 31st rather than a day late.
 
+Step 1 is exact for a period-START label at every grain, and for an END-stamped label
+only at month grain and finer. An end-stamped label's true coverage ends one DAY later,
+not one grain, and the interval between the two — ``(label + 1 day, label + 1 grain]`` —
+contains day-1 instants a fiscal close could sit on at the coarser grains: 2 at quarter,
+11 at year, 0 at month. So at quarter/year grain an end-stamped axis is DETECTED (one
+query: every label on its month's last day) and falls loud, rather than silently placing
+a close the data never reaches.
+
 No column names are inspected and no vertical is assumed; the calendar is the
 workspace's own declaration, read from DAT-730's ``og_period_grain`` ladder.
 
@@ -100,6 +108,14 @@ _FLOW = "flow"
 # advance by a timedelta. The ``irregular``/``unknown`` sentinels are absent from
 # ``DATE_TRUNC_GRAINS`` by construction, so an axis with no cadence falls loud.
 _GRAIN_MONTHS: dict[str, int] = {"month": 1, "quarter": 3, "year": 12}
+
+# Grains COARSER than a month, where ``coverage_end = label + one_grain`` is only exact
+# for a period-START label. For an END-stamped label the true coverage end is
+# ``label + 1 day``, so a full grain over-reaches — and the interval it over-reaches by,
+# ``(label + 1 day, label + 1 grain]``, contains day-1 instants a fiscal close could sit
+# on: 2 at quarter grain, 11 at year. At month grain and finer the same interval contains
+# NONE, so the rule stays exact there under either convention and no check is needed.
+_COARSE_GRAINS = frozenset({"quarter", "year"})
 _GRAIN_DELTA: dict[str, timedelta] = {
     "second": timedelta(seconds=1),
     "minute": timedelta(minutes=1),
@@ -270,9 +286,6 @@ def _resolve(
     calendar: ReportingCalendar | None,
 ) -> PeriodBinding | str | None:
     """Classify the extract, then resolve its instant (see :func:`resolve_period_binding`)."""
-    served = served_relation(session, relation)
-    if served is None:
-        return None  # outside the analysis — not knowably point-in-time
     try:
         measure_cols = {
             col for call in parse_aggregate_calls(select_expr, duckdb_conn) for col in call.columns
@@ -280,6 +293,20 @@ def _resolve(
     except ValueError:
         return None  # unparsed expr — the additivity surface reports this class
     if not measure_cols:
+        return None
+    served = served_relation(session, relation)
+    if served is None:
+        # The relation is not a served enriched view, so the per-view verdict read below
+        # cannot run. That is normally "not knowably point-in-time" — but if the served
+        # schema shows these measure names as a STOCK anywhere, the model was on prompt
+        # branch (a) and authored no period predicate, so returning None here would
+        # compose a predicate-free stock extract. Abstain instead: the acceptance bar is
+        # that NO reachable branch does that.
+        if _stock_by_name(session, read_schema, measure_cols):
+            return (
+                f"relation {relation!r} is not a served enriched view, so the "
+                f"point-in-time measure's anchor axis cannot be resolved on it"
+            )
         return None
     verdicts, stocks = _read_stock_axes(session, read_schema, served.columns_table_id, measure_cols)
     if not stocks:
@@ -324,6 +351,18 @@ def _bind_to_close(
     if isinstance(max_period, str):
         return max_period
 
+    if grain in _COARSE_GRAINS:
+        end_stamped = _is_end_stamped(duckdb_conn, relation, axis)
+        if isinstance(end_stamped, str):
+            return end_stamped
+        if end_stamped:
+            return (
+                f"{grain}-grain axis {axis!r} is END-stamped (every label is its month's "
+                f"last day), so one grain past the last label over-reaches its true "
+                f"coverage by up to a period and could place a fiscal close the data "
+                f"never reaches"
+            )
+
     coverage_end = _advance(max_period, grain)
     if coverage_end is None:  # defensive; grain was validated in _resolve
         return f"anchor axis {axis!r} cadence {grain!r} has no period length to advance by"
@@ -344,6 +383,24 @@ def _bind_to_close(
         fiscal_year_start_month=calendar.fiscal_year_start_month,
         calendar_source=calendar.source,
     )
+
+
+def _is_end_stamped(duckdb_conn: duckdb.DuckDBPyConnection, relation: str, axis: str) -> bool | str:
+    """Whether EVERY label on the axis falls on its own month's last day.
+
+    One query, and a sound discriminator: a period-START label is day 1, and no month is
+    one day long, so a start-stamped relation can never satisfy this. Only consulted at
+    grain > month, where the distinction changes the answer.
+    """
+    try:
+        row = duckdb_conn.execute(
+            f"SELECT COUNT(*) FROM {relation}"  # noqa: S608 - internal catalog names
+            f' WHERE "{axis}" IS NOT NULL'
+            f"   AND {_axis_expr(axis)} <> last_day({_axis_expr(axis)})"
+        ).fetchone()
+    except duckdb.Error as exc:
+        return f"period axis {axis!r} on {relation!r} could not be tested for stamping ({exc})"
+    return row is not None and row[0] == 0
 
 
 def _axis_expr(axis: str) -> str:
@@ -499,6 +556,26 @@ def compose_period_binding(
             None,
         )
     return BindingComposition([*where_parts, binding.render()], [], binding.as_record())
+
+
+def _stock_by_name(session: Session, read_schema: str, measure_cols: set[str]) -> bool:
+    """Whether the served schema shows these measure NAMES as a stock and never a flow.
+
+    The fallback classifier for the one case with no served relation to scope the read to
+    (:func:`_resolve`). Name-keyed rather than identity-keyed, so it is deliberately
+    coarse — but it only ever decides between "abstain" and "leave the model's output
+    alone", and it is conservative in the safe direction: a name that is a flow ANYWHERE
+    disqualifies, so an ordinary flow can never be abstained by it.
+    """
+    stmt = text(
+        f"SELECT DISTINCT materialization"  # noqa: S608 - read_schema is an internal identifier
+        f' FROM "{read_schema}".og_columns'
+        f" WHERE column_name IN :measure_cols AND materialization IS NOT NULL"
+    ).bindparams(bindparam("measure_cols", expanding=True))
+    verdicts = {
+        str(row[0]) for row in session.execute(stmt, {"measure_cols": sorted(measure_cols)})
+    }
+    return _STOCK in verdicts and _FLOW not in verdicts
 
 
 def _read_stock_axes(

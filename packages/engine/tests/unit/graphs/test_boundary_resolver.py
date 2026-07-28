@@ -203,6 +203,68 @@ def test_declared_non_calendar_fiscal_year(duckdb_conn: duckdb.DuckDBPyConnectio
 # ---------------------------------------------------------------------------
 
 
+def test_yearly_end_stamped_falls_loud_rather_than_overshooting(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The reviewer's repro: yearly END-stamped through 2025-12-31 with a July FY start.
+
+    One grain past the last label is 2026-12-31, which places the close at 2026-07-01 —
+    but an end-stamped label's coverage truly ends 2026-01-01, six months earlier. The
+    close was never reached. Silently binding it would be the ORIGINAL defect's class,
+    so the end-stamping is detected and disclosed instead.
+    """
+    relation = _balance_sheet(duckdb_conn, ["2023-12-31", "2024-12-31", "2025-12-31"])
+    calendar = ReportingCalendar(fiscal_year_start_month=7, source="declared")
+
+    bound = _bind_to_close(duckdb_conn, relation, "period", "year", calendar)
+
+    assert isinstance(bound, str)
+    assert "END-stamped" in bound
+
+
+def test_quarterly_end_stamped_falls_loud(duckdb_conn: duckdb.DuckDBPyConnection) -> None:
+    """Quarter grain over-reaches by up to 2 day-1 instants under end stamping."""
+    relation = _balance_sheet(duckdb_conn, ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31"])
+    calendar = ReportingCalendar(fiscal_year_start_month=2, source="declared")
+
+    bound = _bind_to_close(duckdb_conn, relation, "period", "quarter", calendar)
+
+    assert isinstance(bound, str)
+    assert "END-stamped" in bound
+
+
+def test_coarse_grain_start_stamped_still_binds(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The check must not fire on START-stamped labels — day 1 is never a month's last.
+
+    Quarter grain remains exact there, so the binding proceeds normally.
+    """
+    relation = _balance_sheet(duckdb_conn, ["2025-01-01", "2025-04-01", "2025-07-01", "2025-10-01"])
+
+    bound = _bind_to_close(duckdb_conn, relation, "period", "quarter", _CALENDAR_YEAR)
+
+    assert isinstance(bound, PeriodBinding)
+    assert bound.as_of == datetime(2025, 10, 1)
+    assert bound.window_close == datetime(2026, 1, 1)
+
+
+def test_month_grain_end_stamped_is_unaffected(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """At month grain the over-reach interval holds NO day-1 instant, so no check fires.
+
+    End stamping stays fully supported there — the restriction is exactly as wide as the
+    arithmetic requires, no wider.
+    """
+    relation = _balance_sheet(duckdb_conn, _MONTH_ENDS_2025)
+
+    bound = _bind_to_close(duckdb_conn, relation, "period", "month", _CALENDAR_YEAR)
+
+    assert isinstance(bound, PeriodBinding)
+    assert bound.as_of == datetime(2025, 12, 31)
+
+
 def test_data_ending_short_of_the_close_falls_loud(
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:

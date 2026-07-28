@@ -584,7 +584,13 @@ class GraphAgent(LLMFeature):
                         basis = AssumptionBasis.INFERRED
                     assumptions.append(
                         GraphAssumptionOutput(
-                            dimension=a.get("dimension", "grounding.cached"),
+                            # ONE unknown marker for this field, matching
+                            # SnippetAssumption.dimension's default: absent means "no
+                            # dimension recorded", never a synthesized one. (A prior
+                            # "grounding.cached" here conflated a PROVENANCE fact —
+                            # where the assumption was read from — with the DIMENSION,
+                            # which names the kind of judgment; nothing consumed it.)
+                            dimension=a.get("dimension", ""),
                             target=a.get("target", f"step:{step_id}"),
                             assumption=a.get("assumption", ""),
                             basis=basis,
@@ -1077,15 +1083,26 @@ class GraphAgent(LLMFeature):
         binding_assumptions = composed.assumptions
         binding_record = composed.record
         select_expr = output.select_expr
+        composed_relation = relation
         if composed.abstain is not None:
             # A KNOWN stock whose instant could not be resolved. The prompt told the
             # model to leave the period axis to the system, so composing what it wrote
             # would aggregate EVERY period — far more wrong than the unbound MAX this
             # ticket fixes. Compose the existing fall-loud shape instead; the reason
             # rides the sub-floor disclosure assumption attached above.
-            relation, select_expr, where_parts = None, "NULL", []
+            #
+            # Only the COMPOSED relation is dropped — `relation` still names what the
+            # model authored, so the response dump below records its actual output
+            # rather than a null it never produced.
+            #
+            # The provenance is left intact and still enumerates the columns the model's
+            # parts touched, so `og_uses` will emit `uses` edges for a grounding whose
+            # composed parts now touch no relation. That is deliberate: the edges record
+            # what the model grounded ON, which is exactly what makes an abstention
+            # diagnosable — and the abstention itself is visible on the same row.
+            composed_relation, select_expr, where_parts = None, "NULL", []
 
-        rendered_sql = compose_extract_sql(select_expr, relation, where_parts)
+        rendered_sql = compose_extract_sql(select_expr, composed_relation, where_parts)
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
@@ -1095,7 +1112,9 @@ class GraphAgent(LLMFeature):
                     "step_id": leaf.step_id,
                     "sql": rendered_sql,
                     "description": output.description,
-                    "parts": extract_parts_dict(select_expr, relation, where_parts, binding_record),
+                    "parts": extract_parts_dict(
+                        select_expr, composed_relation, where_parts, binding_record
+                    ),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",

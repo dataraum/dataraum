@@ -181,12 +181,3 @@ export function buildBusMatrix(input: BusMatrixInput): BusMatrix {
 
 	return { facts, axes };
 }
-
-/** The fact pairs a cross-fact question may compose over, for the summary line. */
-export function drillablePairs(
-	matrix: BusMatrix,
-): { axis: string; facts: string[] }[] {
-	return matrix.axes
-		.filter((a) => a.drillable)
-		.map((a) => ({ axis: a.label, facts: a.cells.map((c) => c.factName) }));
-}

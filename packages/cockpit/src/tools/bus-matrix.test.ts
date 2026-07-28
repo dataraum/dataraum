@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-	type BusMatrixRow,
-	buildBusMatrix,
-	drillablePairs,
-} from "./bus-matrix";
+import { type BusMatrixRow, buildBusMatrix } from "./bus-matrix";
 
 // FIXTURE PROVENANCE: shapes are taken from the engine's ONE writer,
 // analysis/hierarchies/bus_matrix.py::derive_bus_matrix — a REFERENCED cell always
@@ -230,21 +226,5 @@ describe("buildBusMatrix (DAT-740)", () => {
 		});
 		expect(matrix.axes[0].cells[0].roles).toEqual([]);
 		expect(matrix.axes[0].cells[0].attributes).toEqual([]);
-	});
-});
-
-describe("drillablePairs", () => {
-	it("lists only the axes a cross-fact question may compose over", () => {
-		const matrix = buildBusMatrix({
-			cells: [
-				ref("t_gl", "account_id", "ref:t_dim:account_id"),
-				ref("t_ap", "acct", "ref:t_dim:account_id"),
-				folded("t_gl", "region"),
-			],
-			tables: TABLES,
-		});
-		expect(drillablePairs(matrix)).toEqual([
-			{ axis: "accounts", facts: ["ap_balances", "gl_entries"] },
-		]);
 	});
 });

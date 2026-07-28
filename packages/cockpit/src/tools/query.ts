@@ -440,10 +440,15 @@ function makeRunStepsTool(
 								value_expr: z
 									.string()
 									.describe(
-										"This step's single value expression, WITHOUT the AS value " +
-											'alias — e.g. SUM("Amount") or SUM(credit) - SUM(debit). ' +
-											"Empty string if the step projects anything other than " +
-											"one computed value.",
+										"This step's single value expression, copied whole and " +
+											"WITHOUT any AS alias of your own — however many aggregate " +
+											'calls it contains. E.g. SUM("Amount"), or ' +
+											"SUM(credit) - SUM(debit), or the row-guarded form the " +
+											"empty-aggregations rule requires: CASE WHEN COUNT(*) = 0 " +
+											"THEN NULL ELSE COALESCE(SUM(a), 0) - COALESCE(SUM(b), 0) " +
+											"END. No FROM and no WHERE — those are `relation` and " +
+											"`filters`. Empty string if the step projects anything " +
+											"other than one computed value.",
 									),
 								filters: z
 									.array(z.string())
@@ -455,8 +460,10 @@ function makeRunStepsTool(
 							})
 							.describe(
 								"Where this step's number comes from, as clause parts. Fill it " +
-									"in when the step is one aggregate over one table with " +
-									"optional filters; leave relation and value_expr empty for " +
+									"in when the step reads one table and computes one value with " +
+									"optional filters — the number of aggregate calls in that " +
+									"value is irrelevant, so an empty-aggregation-guarded scalar " +
+									"still qualifies. Leave relation and value_expr empty for " +
 									"anything else (a join, a window, several output columns). " +
 									"It lets the user re-slice this number by a dimension the " +
 									"query didn't return, and it is checked against your result " +

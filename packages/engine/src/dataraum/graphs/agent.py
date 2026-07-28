@@ -975,6 +975,7 @@ class GraphAgent(LLMFeature):
         # + the exact violations feed the next run's prior_context instead of
         # vanishing.
         from dataraum.graphs.boundary_resolver import (
+            ReportingCalendar,
             compose_period_binding,
             resolve_period_binding,
         )
@@ -1048,21 +1049,43 @@ class GraphAgent(LLMFeature):
         # on the finance corpus. The resolver returns the fiscal close (never a rewrite
         # of the model's SQL); this appends it as one more typed WHERE part on the SAME
         # parts substrate the validity scope above rides, and records the instant on the
-        # snippet as the ticket's observable. A FLOW resolves to None and is untouched —
-        # period_resolver owns its window. An unresolvable instant, or a grounding that
-        # pins the axis itself, becomes a VISIBLE typed assumption, never a silent pass.
+        # snippet as the ticket's observable. A FLOW (or an unclassified measure)
+        # resolves to None and is untouched — the model's own judgment stands there,
+        # which is why the prompt keeps its end_of_period fallback for exactly those.
+        # The calendar is the one the served context already read, not a per-extract
+        # re-read.
+        calendar_ctx = context.rich_context.reporting_calendar
         period_binding = resolve_period_binding(
             session,
             context.duckdb_conn,
             relation=relation,
             select_expr=output.select_expr,
             read_schema=read_schema_name_for(schema_name_for(workspace_id)),
+            calendar=(
+                ReportingCalendar(
+                    fiscal_year_start_month=calendar_ctx.fiscal_year_start_month,
+                    source=calendar_ctx.source,
+                )
+                if calendar_ctx is not None
+                else None
+            ),
         )
-        where_parts, binding_assumptions, binding_record = compose_period_binding(
+        composed = compose_period_binding(
             output, where_parts, period_binding, served_columns, context.duckdb_conn
         )
+        where_parts = composed.where
+        binding_assumptions = composed.assumptions
+        binding_record = composed.record
+        select_expr = output.select_expr
+        if composed.abstain is not None:
+            # A KNOWN stock whose instant could not be resolved. The prompt told the
+            # model to leave the period axis to the system, so composing what it wrote
+            # would aggregate EVERY period — far more wrong than the unbound MAX this
+            # ticket fixes. Compose the existing fall-loud shape instead; the reason
+            # rides the sub-floor disclosure assumption attached above.
+            relation, select_expr, where_parts = None, "NULL", []
 
-        rendered_sql = compose_extract_sql(output.select_expr, relation, where_parts)
+        rendered_sql = compose_extract_sql(select_expr, relation, where_parts)
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
@@ -1072,9 +1095,7 @@ class GraphAgent(LLMFeature):
                     "step_id": leaf.step_id,
                     "sql": rendered_sql,
                     "description": output.description,
-                    "parts": extract_parts_dict(
-                        output.select_expr, relation, where_parts, binding_record
-                    ),
+                    "parts": extract_parts_dict(select_expr, relation, where_parts, binding_record),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
@@ -1532,7 +1553,12 @@ class GraphAgent(LLMFeature):
                 else {}
             ),
             assumptions=[
-                SnippetAssumption(assumption=a.assumption, basis=a.basis, confidence=a.confidence)
+                SnippetAssumption(
+                    dimension=a.dimension,
+                    assumption=a.assumption,
+                    basis=a.basis,
+                    confidence=a.confidence,
+                )
                 for a in generated_code.assumptions
             ],
         )

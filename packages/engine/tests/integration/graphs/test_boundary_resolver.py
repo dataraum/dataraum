@@ -30,12 +30,17 @@ from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
+from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.graphs.boundary_resolver import (
     PeriodBinding,
+    compose_period_binding,
     read_reporting_calendar,
     resolve_period_binding,
 )
+from dataraum.graphs.formula_composer import compose_extract_sql, extract_parts_dict
+from dataraum.graphs.models import ExtractGroundingOutput, GraphProvenanceOutput
+from dataraum.query.snippet_models import SQLSnippetRecord
 from dataraum.server.workspace import schema_name_for
 from dataraum.storage import Column, Table
 from dataraum.storage.property_graph import (
@@ -54,8 +59,9 @@ TS = datetime(2026, 1, 1, tzinfo=UTC)
 # balance sheet carries FOURTEEN monthly periods, running two past the fiscal close.
 # MAX(period) is 2026-02-01; the close — and the only correct as-of — is 2026-01-01.
 PERIODS = [f"2025-{m:02d}-01" for m in range(1, 13)] + ["2026-01-01", "2026-02-01"]
-CLOSE = datetime(2026, 1, 1)
-TRAILING = datetime(2026, 2, 1)
+CLOSE = datetime(2026, 1, 1)  # the FY2025 close instant
+YEAR_END = datetime(2025, 12, 1)  # the period whose CLOSE is that instant
+TRAILING = datetime(2026, 2, 1)  # what MAX(period) would have picked
 
 
 def _boot(engine: Engine) -> None:
@@ -72,6 +78,7 @@ def _seed(
     *,
     temporal_behavior: str | None = "point_in_time",
     declare_anchor: bool = True,
+    profile_axis: bool = True,
 ) -> None:
     """Seed the Postgres read surface for a balance-sheet stock measure.
 
@@ -100,6 +107,11 @@ def _seed(
     balance_col = (
         session.query(Column)
         .filter(Column.table_id == "t_bs", Column.column_name == "balance")
+        .one()
+    )
+    period_col = (
+        session.query(Column)
+        .filter(Column.table_id == "t_bs", Column.column_name == "period")
         .one()
     )
     session.add_all(
@@ -138,6 +150,24 @@ def _seed(
             detected_at=TS,
         )
     )
+    if profile_axis:
+        # The axis's own cadence: what one period of this relation SPANS, which is what
+        # turns max(period) into the instant coverage actually reaches.
+        session.add(
+            TemporalColumnProfile(
+                profile_id="tp_period",
+                column_id=period_col.column_id,
+                run_id=RUN,
+                profiled_at=TS,
+                min_timestamp=datetime(2025, 1, 1, tzinfo=UTC),
+                max_timestamp=datetime(2026, 2, 1, tzinfo=UTC),
+                span_days=396.0,
+                detected_granularity="month",
+                granularity_confidence=0.9,
+                actual_periods=14,
+                gaps=[],
+            )
+        )
     if temporal_behavior is not None:
         session.add(
             ColumnConcept(
@@ -210,12 +240,27 @@ def _create_balance_sheet(conn: duckdb.DuckDBPyConnection) -> None:
 def _resolve(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection
 ) -> PeriodBinding | str | None:
+    read_schema = read_schema_name_for(schema_name_for(WS_ID))
     return resolve_period_binding(
         session,
         duckdb_conn,
         relation="balance_sheet",
         select_expr="SUM(balance)",
-        read_schema=read_schema_name_for(schema_name_for(WS_ID)),
+        read_schema=read_schema,
+        calendar=read_reporting_calendar(session, read_schema),
+    )
+
+
+def _grounding_output() -> ExtractGroundingOutput:
+    """A grounding that left the period axis to the system (prompt branch (a))."""
+    return ExtractGroundingOutput(
+        grounding="evidence",
+        relation="balance_sheet",
+        where=[],
+        select_expr="SUM(balance)",
+        description="d",
+        provenance=GraphProvenanceOutput(column_mappings_basis=[]),
+        assumptions=[],
     )
 
 
@@ -233,9 +278,10 @@ def test_binds_the_fiscal_close_not_the_trailing_period(
 ) -> None:
     """THE DAT-887 defect, end to end on a real read surface.
 
-    14 monthly periods against a 12-month fiscal year: ``MAX(period)`` is 2026-02-01,
-    two past the close. The binding must resolve 2026-01-01 — and it must be a
-    DIFFERENT period than the naked max, or the test proves nothing.
+    14 monthly periods against a 12-month fiscal year. A label is a period START, so the
+    row carrying the FY2025 year-end level is 2025-12-01 — December's close. Binding the
+    close INSTANT (2026-01-01) reads January's level; binding MAX(period) reads
+    February's. Both wrong numbers are pinned here so neither can come back.
     """
     _seed(pg_session)
     _create_balance_sheet(duckdb_conn)
@@ -244,8 +290,9 @@ def test_binds_the_fiscal_close_not_the_trailing_period(
     bound = _resolve(pg_session, duckdb_conn)
 
     assert isinstance(bound, PeriodBinding)
-    assert bound.as_of == CLOSE
-    assert bound.as_of != TRAILING  # the defect: MAX(period) would land here
+    assert bound.as_of == YEAR_END
+    assert bound.as_of != CLOSE  # the January-level error
+    assert bound.as_of != TRAILING  # the naked-MAX error
     assert bound.window_close == CLOSE
     assert bound.axis == "period"
     assert bound.relation == "balance_sheet"
@@ -278,7 +325,7 @@ def test_declared_fiscal_year_moves_the_bound_instant(
     pg_session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:
-    """A DECLARED April fiscal year binds the April close — the calendar is load-bearing.
+    """A DECLARED April fiscal year binds MARCH — the calendar is load-bearing.
 
     Proves the binding actually reads ``workspace_calendar`` through the ladder rather
     than hardcoding a calendar year that happens to match this corpus.
@@ -291,7 +338,8 @@ def test_declared_fiscal_year_moves_the_bound_instant(
     bound = _resolve(pg_session, duckdb_conn)
 
     assert isinstance(bound, PeriodBinding)
-    assert bound.as_of == datetime(2025, 4, 1)
+    assert bound.as_of == datetime(2025, 3, 1)  # the period closing at the April 1 instant
+    assert bound.window_close == datetime(2025, 4, 1)
     assert bound.fiscal_year_start_month == 4
     assert bound.calendar_source == "declared"
 
@@ -353,3 +401,114 @@ def test_stock_without_an_anchor_axis_falls_loud(
 
     assert isinstance(bound, str)
     assert "no anchor time axis" in bound
+
+
+def test_the_observable_reaches_the_read_surface(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """THE WIRE (DAT-887's acceptance criterion): binding -> parts -> current_groundings.
+
+    Every link between the resolver and the grading surface was previously green with the
+    wire cut — nothing asserted that the record reaches ``parts``, and the parts-shape
+    test pinned its ABSENCE. This walks the whole path: resolve, compose the parts the
+    way the agent does, persist the snippet, then read the period back off
+    ``current_groundings.resolved_period`` as the eval does. Dropping the
+    ``period_binding`` argument in ``extract_parts_dict`` must fail this.
+    """
+    _seed(pg_session)
+    _create_balance_sheet(duckdb_conn)
+    _boot(integration_engine)
+
+    bound = _resolve(pg_session, duckdb_conn)
+    assert isinstance(bound, PeriodBinding)
+
+    composed = compose_period_binding(
+        _grounding_output(), [], bound, {"period", "balance"}, duckdb_conn
+    )
+    assert composed.record is not None
+    pg_session.add(
+        SQLSnippetRecord(
+            workspace_id=WS_ID,
+            schema_mapping_id=WS_ID,
+            snippet_type="extract",
+            standard_field="accounts_payable",
+            statement="balance_sheet",
+            aggregation="sum",
+            sql=compose_extract_sql("SUM(balance)", "balance_sheet", composed.where),
+            source="graph:dpo",
+            parts=extract_parts_dict(
+                "SUM(balance)", "balance_sheet", composed.where, composed.record
+            ),
+        )
+    )
+    pg_session.commit()
+
+    row = pg_session.execute(
+        text(  # noqa: S608 - internal identifier
+            f"SELECT resolved_period, reporting_window_close, calendar_source"
+            f' FROM "{read_schema_name_for(schema_name_for(WS_ID))}".current_groundings'
+            f" WHERE concept = 'accounts_payable'"
+        )
+    ).one()
+
+    assert row[0] == "2025-12-01 00:00:00"  # the year-end level, readable as a column
+    assert row[1] == "2026-01-01 00:00:00"
+    assert row[2] == "default"
+
+
+def test_a_flow_records_no_period_on_the_read_surface(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """A flow carries no instant, so the observable is NULL — not an empty string."""
+    _seed(pg_session, temporal_behavior="additive")
+    _create_balance_sheet(duckdb_conn)
+    _boot(integration_engine)
+
+    pg_session.add(
+        SQLSnippetRecord(
+            workspace_id=WS_ID,
+            schema_mapping_id=WS_ID,
+            snippet_type="extract",
+            standard_field="revenue",
+            statement="balance_sheet",
+            aggregation="sum",
+            sql="SELECT SUM(balance) AS value FROM balance_sheet",
+            source="graph:dso",
+            parts=extract_parts_dict("SUM(balance)", "balance_sheet", [], None),
+        )
+    )
+    pg_session.commit()
+
+    row = pg_session.execute(
+        text(  # noqa: S608 - internal identifier
+            f"SELECT resolved_period"
+            f' FROM "{read_schema_name_for(schema_name_for(WS_ID))}".current_groundings'
+            f" WHERE concept = 'revenue'"
+        )
+    ).one()
+
+    assert row[0] is None
+
+
+def test_unprofiled_axis_falls_loud(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Without a cadence the close-reachability step cannot run — so it discloses.
+
+    Guessing a period length here would silently decide whether a fiscal year counts as
+    complete, which is the whole question this step exists to answer.
+    """
+    _seed(pg_session, profile_axis=False)
+    _create_balance_sheet(duckdb_conn)
+    _boot(integration_engine)
+
+    bound = _resolve(pg_session, duckdb_conn)
+
+    assert isinstance(bound, str)
+    assert "no temporal profile" in bound

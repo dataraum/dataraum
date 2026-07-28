@@ -760,7 +760,17 @@ def _reporting_calendar(
         return None
     from dataraum.graphs.boundary_resolver import read_reporting_calendar
 
-    calendar = read_reporting_calendar(session, read_schema)
+    # Same degrade-to-None guard the graph reads carry: a read schema materialized
+    # before DAT-730 has no og_period_grain, and an UndefinedTable raised here would
+    # abort the transaction and kill the ENTIRE context build for every table — not
+    # just this one section. Serving no calendar is the correct degraded state; the
+    # binding then abstains loudly rather than assuming a calendar year.
+    try:
+        calendar = read_reporting_calendar(session, read_schema)
+    except Exception as exc:  # noqa: BLE001 - degrade-to-absent IS the contract
+        logger.warning("reporting_calendar_unreadable", error=str(exc))
+        session.rollback()
+        return None
     if calendar is None:
         return None
     return ReportingCalendarContext(

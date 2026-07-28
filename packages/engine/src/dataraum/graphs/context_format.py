@@ -309,12 +309,15 @@ _MONTHS = (
 def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext) -> None:
     """Render the workspace's reporting calendar (DAT-887).
 
-    The author does not pin the period axis of a point-in-time extract — the system
-    binds it to the last fiscal close. Serving the calendar is what makes that
-    instruction a fact rather than a black box: the author can see which window the
-    value will be as-of, and whether that calendar was declared or assumed, and
-    caveat accordingly. Absence is rendered as absence (the section is omitted), never
-    as a fabricated calendar year.
+    **Fact only — no instruction.** This document is shared: ``validation_sql`` and
+    ``validation_induction`` render the same served context, and an imperative aimed at
+    the grounding author ("do not filter the period axis") would silently become a rule
+    for authors this binding does not apply to. The instruction's one home is
+    ``graph_sql_generation.yaml``; what belongs HERE is the fiscal year's start and
+    whether it was declared or assumed, so any consumer can caveat accordingly.
+
+    Absence is rendered as absence (the section is omitted), never as a fabricated
+    calendar year.
     """
     calendar = context.reporting_calendar
     if calendar is None:
@@ -329,8 +332,8 @@ def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext)
     lines.append("")
     lines.append(f"Fiscal year starts in {month} ({basis}).")
     lines.append(
-        "A point-in-time (stock) extract is bound by the system to the last fiscal "
-        "close the data reaches — do not filter the period axis yourself."
+        "A reporting year therefore closes at the start of that month; a period-labelled "
+        "row carries the level at the END of its own period."
     )
     lines.append("")
 

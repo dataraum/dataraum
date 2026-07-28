@@ -91,7 +91,24 @@ class TestReportingCalendar:
         out = format_served_context(ctx)
         assert "## Reporting calendar" in out
         assert "Fiscal year starts in April (declared by this workspace)." in out
-        assert "do not filter the period axis yourself" in out
+        assert "a period-labelled row carries the level at the END of its own period" in out
+
+    def test_calendar_section_carries_no_authoring_instruction(self) -> None:
+        """FACT only — this document is SHARED with the validation authors.
+
+        An imperative aimed at the grounding author ("leave the period axis out") would
+        silently become a rule for prompts the binding does not apply to. Its one home
+        is graph_sql_generation.yaml.
+        """
+        out = format_served_context(
+            GraphExecutionContext(
+                reporting_calendar=ReportingCalendarContext(
+                    fiscal_year_start_month=1, source="default"
+                )
+            )
+        )
+        assert "do not filter" not in out.lower()
+        assert "leave the period axis" not in out.lower()
 
     def test_defaulted_calendar_says_it_is_assumed(self) -> None:
         """A stamped default must never read as a declaration (DAT-730's discipline)."""

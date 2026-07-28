@@ -369,7 +369,7 @@ def analyze_basic_temporal(
                                 gap_end=gap_end,
                                 gap_length_days=gap_length_days,
                                 missing_periods=missing_periods,
-                                severity=severity,
+                                severity=severity,  # type: ignore[arg-type]  # branch-narrowed to the Literal, mypy sees plain str
                             )
                         )
 

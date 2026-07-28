@@ -1087,7 +1087,7 @@ async def _run_stage[StageResultT: (AddSourceResult, BeginSessionResult, Operati
                 kind=kind,
                 stage=stage,
                 workflowId=workflow_id,
-                runId=run_id,
+                runId=run_id,  # type: ignore[arg-type]  # first_execution_run_id: str | None; always set post-start
                 conversationId=conversation_id,
             ),
             task_queue=cockpit_task_queue,

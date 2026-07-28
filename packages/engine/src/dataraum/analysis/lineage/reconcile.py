@@ -240,7 +240,7 @@ def dispose_classified(
     # residuals would contaminate the diagnostics the witness later surfaces.
     winners = [r for r in voted if r.label == pattern]
     return CandidateDisposal(
-        pattern=pattern,
+        pattern=pattern,  # type: ignore[arg-type]  # PATTERN_* consts ⊂ the Literal, mypy sees plain str
         match_rate=(len(voted) / len(results)) * agreement,
         r_flow_median=median(r.r_flow for r in winners),
         r_stock_median=median(r.r_stock for r in winners),

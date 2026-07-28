@@ -243,7 +243,7 @@ export interface RunStepsFailure {
  * the grid) and the last failure (for the no-result diagnostic). The model's draft
  * is NOT captured here — it is the return value of the structured-output call
  * (DAT-807), so nothing writes it through a tool any more. */
-interface RunStepsCapture {
+export interface RunStepsCapture {
 	value: ValidatedRun | null;
 	lastError: RunStepsFailure | null;
 }
@@ -395,7 +395,7 @@ export function declarationNote(notes: string[]): string | null {
  * model sees only the validator status; the composed SQL + components stay
  * server-side, so the grid is provably the validated query — not a re-emission.
  */
-function makeRunStepsTool(
+export function makeRunStepsTool(
 	captured: RunStepsCapture,
 	nearUniqueColumns: Set<string>,
 ) {

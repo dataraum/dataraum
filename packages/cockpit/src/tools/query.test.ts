@@ -31,6 +31,19 @@ vi.mock("#/tools/list-tables", () => ({
 	listTables: () => listTablesMock(),
 }));
 
+// The run_steps HANDLER test below needs the two lake-backed calls stubbed —
+// and only those. `composeStandalone`/`validateStepNames` stay REAL (importOriginal),
+// because the handler's own composition is part of what is under test.
+const runStepsMock = vi.fn();
+vi.mock("#/duckdb/run-steps", async (importOriginal) => ({
+	...(await importOriginal<typeof import("#/duckdb/run-steps")>()),
+	runSteps: (...a: unknown[]) => runStepsMock(...a),
+}));
+vi.mock("#/tools/grain-note", () => ({
+	computeGrainNote: vi.fn().mockResolvedValue(null),
+	loadNearUniqueColumns: vi.fn().mockResolvedValue(new Set()),
+}));
+
 // save-on-clean: saveQuerySnippet is the write boundary — mocked so the persist
 // gating/best-effort logic is testable. DAT-506: snippets are workspace-scoped
 // (the `workspace_id` column replaced the session FK), so there's no session gate.
@@ -46,11 +59,14 @@ import {
 	candidateSource,
 	classifyComponents,
 	componentsToSave,
+	declarationNote,
 	exhaustionDiagnostic,
 	isMissingStructuredResult,
+	makeRunStepsTool,
 	noResultNarrative,
 	persistLearnedSnippets,
 	type QueryDraft,
+	type RunStepsCapture,
 	readDataQuality,
 	salvageDraft,
 } from "./query";
@@ -636,5 +652,77 @@ describe("candidateSource", () => {
 				)
 			).candidate,
 		).toBeNull();
+	});
+});
+
+// The LAST hop of the DAT-671 disclosure: candidateSource produces notes,
+// declarationNote turns them into a sentence, and the run_steps handler has to
+// actually PUT that sentence on the tool result. Deleting the `source_note`
+// spread left every other test in this file green — and rejection-over-strip was
+// justified BY the model being told, so the telling is the load-bearing part.
+describe("run_steps handler — refused declarations reach the model", () => {
+	const okResult = {
+		ok: true as const,
+		columns: ["value"],
+		rowCount: 1,
+		sample: [{ value: 1 }],
+		truncated: false,
+	};
+
+	const invoke = async (valueExpr: string) => {
+		runStepsMock.mockResolvedValue(okResult);
+		const captured: RunStepsCapture = { value: null, lastError: null };
+		const tool = makeRunStepsTool(captured, new Set());
+		const out = await tool.execute?.(
+			{
+				steps: [
+					{
+						name: "revenue",
+						sql: "SELECT SUM(amt) AS value FROM o",
+						source: {
+							relation: "lake.typed.o",
+							value_expr: valueExpr,
+							filters: [],
+						},
+					},
+				],
+				final_sql: "SELECT value FROM revenue",
+				combining_expression: "revenue",
+			},
+			undefined,
+		);
+		return { out: out as Record<string, unknown>, captured };
+	};
+
+	it("names the offending step and its alias on the tool result", async () => {
+		const { out, captured } = await invoke("SUM(amt) AS rev");
+		expect(out.source_note).toContain("revenue");
+		expect(out.source_note).toContain("AS rev");
+		// The answer is untouched: the run still validated, and only the drill
+		// handle is gone.
+		expect(out.ok).toBe(true);
+		expect(captured.value?.declaredSource).toBeNull();
+	});
+
+	it("says nothing when every declaration was accepted", async () => {
+		const { out, captured } = await invoke(
+			"CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(amt) END",
+		);
+		expect(out.source_note).toBeUndefined();
+		expect(captured.value?.declaredSource?.sources).toHaveLength(1);
+	});
+});
+
+describe("declarationNote", () => {
+	it("is null when there is nothing to disclose", () => {
+		expect(declarationNote([])).toBeNull();
+	});
+
+	it("states the cost precisely — the drill, never the answer", () => {
+		const note = declarationNote(["'revenue' — it carries its own alias"]);
+		expect(note).toContain("'revenue'");
+		expect(note).toContain("cannot be re-sliced at source");
+		// The model must not read this as "your query is wrong" and re-plan.
+		expect(note).toMatch(/answer are unaffected/i);
 	});
 });

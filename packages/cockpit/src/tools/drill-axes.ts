@@ -37,6 +37,7 @@ import {
 	currentStatisticalProfiles,
 	sqlSnippets,
 } from "#/db/metadata/schema";
+import { bareRelationName } from "#/duckdb/answer-source";
 import type { DrillAxis, DrillNodeRef } from "#/duckdb/drill";
 import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
 import { narrowSnippetParts } from "#/duckdb/parts";
@@ -979,12 +980,32 @@ export async function resolveDrillAxes(
  * withheld: an ad-hoc answer concept is not a target the engine has classified,
  * so no `metric_additivity` row exists to read and there is nothing to bucket
  * time by honestly. The date axis stays available as a raw slice.
+ *
+ * The relation is reduced to its bare name FIRST (DAT-671). This is the third
+ * door onto that reduction and the one that was missing: the METRIC path above
+ * gets bare relations for free (they come out of `sqlRelations`, DuckDB's own
+ * parser, which yields the bare last segment), but an answer's relations are
+ * MODEL-declared and arrive as `lake.<layer>.<name>` — the spelling the prompt
+ * tells the model to use. `resolveAxesForSources` keys a plain string Map on
+ * `current_enriched_views.view_name`, which is bare, so a qualified spelling
+ * missed and the miss was reported as "reads relations outside the current
+ * analysis — likely a stale snippet from an earlier run": a false accusation
+ * about data lineage for what is only a format mismatch. Reducing here means
+ * the stale-snippet reason is only ever given when the relation really is
+ * unknown.
  */
 export async function resolveAnswerDrillAxes(
 	sources: AxisSource[],
 ): Promise<DrillAxesResult> {
+	const reduced = sources.map((s) => ({
+		...s,
+		// An unreducible spelling (quoted, or more segments than this convention
+		// produces) is passed through untouched: it is genuinely unrecognizable,
+		// and the "outside the current analysis" reason is then the true one.
+		relation: bareRelationName(s.relation) ?? s.relation,
+	}));
 	return gateAxes(
-		await resolveAxesForSources(sources),
+		await resolveAxesForSources(reduced),
 		null,
 		"This answer computes an ad-hoc concept the engine has not classified for additivity — time-grain drill withheld; the date is still available as a raw slice.",
 	);

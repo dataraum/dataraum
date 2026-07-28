@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { aggregatedColumns } from "./sql-ast";
+import { aggregatedColumns, declaredValueExprRefusal } from "./sql-ast";
 
 describe("aggregatedColumns", () => {
 	it("pulls columns from inside aggregates, ignoring bare refs", async () => {
@@ -54,5 +54,66 @@ describe("aggregatedColumns", () => {
 		expect((await aggregatedColumns("SUM(x) OVER (PARTITION BY y)")).size).toBe(
 			0,
 		);
+	});
+});
+
+// The declared-value-expression acceptance gate (DAT-671). Every shape below
+// PARSES on its own — that is the point: DuckDB accepts `SUM(x) GROUP BY y` as
+// a statement, so leaving these to the parser means they reach the composer,
+// die in the binder, and get swallowed by the proof as a silent tier-A
+// downgrade. The gate is what makes the failure named and repairable.
+describe("declaredValueExprRefusal", () => {
+	it("accepts the shapes a correct answer actually declares", async () => {
+		for (const expr of [
+			"SUM(amount)",
+			'SUM("Betrag")',
+			"SUM(credit) - SUM(debit)",
+			// The house empty-aggregation rule — three aggregate calls, the normal
+			// form of a real scalar, and the shape the prompt carve-out invites.
+			"CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) END",
+			// An aggregate FILTER is part of the value, not a smuggled clause.
+			"SUM(amount) FILTER (WHERE posted)",
+		]) {
+			expect(await declaredValueExprRefusal(expr)).toBeNull();
+		}
+	});
+
+	it("names the alias — the silent double-AS parse error", async () => {
+		const why = await declaredValueExprRefusal("SUM(amount) AS revenue");
+		expect(why).toContain("AS revenue");
+	});
+
+	it("refuses every clause a SELECT can smuggle past the projection", async () => {
+		const cases: [string, RegExp][] = [
+			["SUM(x) FROM orders", /FROM clause/],
+			["SUM(x) FROM orders WHERE fy = 2024", /FROM clause/],
+			["SUM(x) GROUP BY region", /GROUP BY/],
+			["SUM(x) HAVING SUM(x) > 1", /HAVING/],
+			["SUM(x) QUALIFY ROW_NUMBER() OVER () = 1", /QUALIFY/],
+			["SUM(x) USING SAMPLE 10%", /SAMPLE/],
+			["SUM(x) ORDER BY 1", /ORDER BY\/LIMIT/],
+			["SUM(x) LIMIT 1", /ORDER BY\/LIMIT/],
+		];
+		for (const [expr, expected] of cases) {
+			expect(await declaredValueExprRefusal(expr), expr).toMatch(expected);
+		}
+	});
+
+	it("refuses a projection that is not ONE value", async () => {
+		expect(await declaredValueExprRefusal("SUM(a), SUM(b)")).toMatch(
+			/projects 2 values/,
+		);
+	});
+
+	it("refuses an expression that is not valid SQL, quoting the parser", async () => {
+		const why = await declaredValueExprRefusal("SUM(x");
+		expect(why).toMatch(/not a valid SQL expression/);
+		expect(why).toMatch(/syntax error/i);
+	});
+
+	it("refuses a second statement rather than composing the first", async () => {
+		// `;` cannot smuggle a second statement in: json_serialize_sql refuses a
+		// non-SELECT outright, and the gate reports it rather than passing it on.
+		expect(await declaredValueExprRefusal("1; DROP TABLE orders")).toBeTruthy();
 	});
 });

@@ -42,6 +42,26 @@ const rows = async (sql: string, params: DrillPinValue[] = []) => {
 const sorted = (rs: Record<string, unknown>[]) =>
 	[...rs].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 
+/** A pass-through connection that records the SQL it was asked to run — the
+ *  only way to assert that a statement was NOT executed, as opposed to
+ *  executed and harmless. `composeDrill` reaches DuckDB solely through
+ *  `runAndReadAll`. */
+function countingConnection(real: DuckDBConnection): {
+	spy: DuckDBConnection;
+	statements: string[];
+} {
+	const statements: string[] = [];
+	const spy = {
+		runAndReadAll: (sql: string, params?: DrillPinValue[]) => {
+			statements.push(sql);
+			return params === undefined
+				? real.runAndReadAll(sql)
+				: real.runAndReadAll(sql, params);
+		},
+	} as unknown as DuckDBConnection;
+	return { spy, statements };
+}
+
 describe("composeDrill (tier-A outer wrap over a detail result)", () => {
 	it("slices a detail result with COUNT(*) + SUM over summable columns", async () => {
 		const result = await composeDrill(conn, {
@@ -161,15 +181,31 @@ describe("composeDrill refusals (deterministic)", () => {
 		expect(result.ok).toBe(true);
 	});
 
-	// The probe must not fire on a pins-only drill: that is the scalar
-	// re-evaluated under a filter, which returns one row by construction.
-	it("does not fire on a pins-only drill", async () => {
-		const result = await composeDrill(conn, {
+	// A pins-only drill returns one row by construction, so the single-row rule
+	// would pass it anyway — asserting `ok` here would be asserting a truth for
+	// the wrong reason. What is actually claimed is that the SCAN is skipped, so
+	// count the statements the composer ran and assert the probe is absent.
+	it("skips the probe entirely on a pins-only drill (a scan that could never refuse)", async () => {
+		const { spy, statements } = countingConnection(conn);
+		const result = await composeDrill(spy, {
 			sql: "SELECT * FROM sales",
 			params: [],
 			steps: [{ kind: "pin", column: "region", value: "EU" }],
 		});
 		expect(result.ok).toBe(true);
+		expect(statements.filter((s) => s.includes("_fold"))).toEqual([]);
+	});
+
+	it("does run the probe once when the drill groups", async () => {
+		// The companion: without this, the test above would also pass if the probe
+		// had been deleted outright.
+		const { spy, statements } = countingConnection(conn);
+		await composeDrill(spy, {
+			sql: "SELECT * FROM sales",
+			params: [],
+			steps: [{ kind: "slice", column: "region" }],
+		});
+		expect(statements.filter((s) => s.includes("_fold"))).toHaveLength(1);
 	});
 
 	it("refuses an empty step stack and a non-binding base", async () => {

@@ -94,16 +94,26 @@ export async function describeColumns(
  * — a deliberate cost. A refusal the user can act on is worth more than a scan
  * saved on a result that was going to be meaningless.
  *
- * Only for a drill that GROUPS: a pins-only drill legitimately returns one row
- * (the scalar re-evaluated under the filter), which is not a folding claim at
- * all. An empty base folds nothing either, but "no rows" is honestly empty
- * rather than wrongly-grained, so a NULL scanned-count passes.
+ * An empty base folds nothing either, but "no rows" is honestly empty rather
+ * than wrongly-grained, so a NULL scanned-count passes.
  *
- * And a SINGLE scanned row proves nothing about grain — one row cannot fold
- * into fewer than one group whatever the dimension is. That case is reached on
- * the ordinary drill-down journey (slice by region, click the EU row to pin it,
- * and the slice + its own pin now describe one row), so treating it as evidence
- * would refuse the user's own next step.
+ * A SINGLE scanned row proves nothing about grain — one row cannot fold into
+ * fewer than one group whatever the dimension is. That case is reached on the
+ * ordinary drill-down journey (slice by region, click the EU row to pin it, and
+ * the slice + its own pin now describe one row), so treating it as evidence
+ * would refuse the user's own next step. THIS is the correctness carve-out.
+ *
+ * The caller's `dims.length > 0` check is only a COST guard, not a second
+ * carve-out: with no slice there is no GROUP BY, the statement returns exactly
+ * one row, and the single-row rule above already excludes it. Skipping the
+ * probe there saves a scan that could never refuse.
+ *
+ * KNOWN LIMITATION, not currently fixed: slice A → pin A → slice B over 2-3
+ * rows under the pin still refuses, even though it is the same journey the
+ * single-row carve-out protects — the counts genuinely are all 1 there, so the
+ * statement is true, but the user is mid-descent rather than mis-grained. The
+ * message names the dimension, so it stays actionable; widening the carve-out
+ * would need the drill's own step history, which this seam does not have.
  */
 async function foldsNothing(
 	conn: DuckDBConnection,
@@ -178,6 +188,8 @@ export async function composeDrill(
 		return refuse(errorLine(err));
 	}
 
+	// `dims.length > 0` is a cost guard only — see foldsNothing: an ungrouped
+	// composition returns one row, which the single-row rule already passes.
 	const dims = sliceColumns(req.steps);
 	if (dims.length > 0 && (await foldsNothing(conn, composed, baseColumns))) {
 		return refuse(

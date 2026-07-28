@@ -146,6 +146,13 @@ function soleSelectItem(
 		return { why: "it could not be parsed as SQL" };
 	}
 	const select = node as Record<string, unknown>;
+	// Every clause a SELECT_NODE can carry besides the projection itself. A
+	// declared value expression is an EXPRESSION, so all of them must be absent:
+	// the composer splices the expression into its own statement, where a
+	// smuggled clause either changes the meaning of the recomposed number or
+	// dies in the binder as precisely the silent tier-A downgrade this gate
+	// exists to end. Each of these parses cleanly on its own (probed against the
+	// real tree), which is why none of them can be left to the parser to reject.
 	const from = select.from_table;
 	if (
 		typeof from === "object" &&
@@ -159,6 +166,33 @@ function soleSelectItem(
 	if (select.where_clause !== null && select.where_clause !== undefined) {
 		return {
 			why: "it carries its own WHERE clause — predicates belong in `filters`",
+		};
+	}
+	const groupExpressions = select.group_expressions;
+	if (Array.isArray(groupExpressions) && groupExpressions.length > 0) {
+		return {
+			why: "it carries its own GROUP BY — a declared source is the UNGROUPED value, and the drill is what groups it",
+		};
+	}
+	if (select.having !== null && select.having !== undefined) {
+		return {
+			why: "it carries its own HAVING clause — a declared source is one value, not a filtered grouping",
+		};
+	}
+	if (select.qualify !== null && select.qualify !== undefined) {
+		return {
+			why: "it carries its own QUALIFY clause — that is a windowed step, so leave the source empty",
+		};
+	}
+	if (select.sample !== null && select.sample !== undefined) {
+		return {
+			why: "it carries a USING SAMPLE clause — a sampled number is not the number the answer reported",
+		};
+	}
+	const modifiers = select.modifiers;
+	if (Array.isArray(modifiers) && modifiers.length > 0) {
+		return {
+			why: "it carries its own ORDER BY/LIMIT — a declared source is a single value, which neither orders nor limits",
 		};
 	}
 	const list = select.select_list;

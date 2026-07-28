@@ -40,7 +40,14 @@ const fx = attachFixtureWorkspace();
 const GUARDED_SUM = "CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(amount) END";
 
 /** The answer's own result columns — the dimension aliased away, which is what
- *  `SELECT region_id__name AS region, … GROUP BY 1` produces. */
+ *  `SELECT region_id__name AS region, … GROUP BY 1` produces.
+ *
+ *  These are DERIVED from the seeded catalog, not independent names: `region` is
+ *  REGION_NAME_COLUMN (`region_id__name`) with the `<fk>__` enrichment prefix
+ *  aliased off, and `account_name` is ACCOUNT_NAME_COLUMN (`account_id__name`)
+ *  the same way — the exact rename a model writes without thinking. That
+ *  correspondence is the whole experiment, so it is stated here rather than
+ *  left to be reconstructed from seed-catalog.ts. */
 const ALIASED_RESULT_COLUMNS = ["region", "account_name", "total_amount"];
 
 describe.skipIf(!fx.available)(
@@ -76,20 +83,38 @@ describe.skipIf(!fx.available)(
 			expect(atSource.reason).toBeUndefined();
 		});
 
-		it("resolves from the relation even when it arrives fully qualified", async () => {
-			// The declaration path reduces `lake.<layer>.<name>` before it gets
-			// here; this pins that the reduced spelling is the one the catalog
-			// answers to, which is the whole reason the reduction exists.
-			const atSource = await resolveAnswerDrillAxes([
+		it("resolves the SAME axes whichever spelling the relation arrives in", async () => {
+			// The model is told to address tables as lake.<layer>.<name>, so that is
+			// the spelling an answer's declared source carries. The catalog's
+			// view_name is bare, and this resolver keys a plain string Map on it —
+			// so before DAT-671 the qualified spelling missed and the miss was
+			// reported as "reads relations outside the current analysis — likely a
+			// stale snippet from an earlier run": a false accusation about lineage
+			// for what is only a format mismatch. Both spellings must land alike.
+			const bare = await resolveAnswerDrillAxes([
 				{ relation: ENRICHED_VIEW, selectExpr: "SUM(amount)" },
 			]);
-			expect(atSource.axes.map((a) => a.column)).toContain(REGION_NAME_COLUMN);
-
-			const stale = await resolveAnswerDrillAxes([
+			const qualified = await resolveAnswerDrillAxes([
 				{ relation: `lake.typed.${ENRICHED_VIEW}`, selectExpr: "SUM(amount)" },
 			]);
-			expect(stale.axes).toEqual([]);
-			expect(stale.reason).toMatch(/outside the current analysis/i);
+
+			expect(bare.axes.map((a) => a.column)).toContain(REGION_NAME_COLUMN);
+			expect(qualified.axes.map((a) => a.column)).toEqual(
+				bare.axes.map((a) => a.column),
+			);
+			expect(qualified.reason).toBeUndefined();
+		});
+
+		it("still blames a genuinely unknown relation, and only then", async () => {
+			// The stale-snippet reason has to survive as a TRUE statement — reducing
+			// the spelling must not turn every miss into silence.
+			const unknown = await resolveAnswerDrillAxes([
+				{ relation: "lake.typed.no_such_view", selectExpr: "SUM(amount)" },
+			]);
+			expect(unknown.axes).toEqual([]);
+			expect(unknown.reason).toMatch(/outside the current analysis/i);
+			// Reduced in the message too, not echoed back qualified.
+			expect(unknown.reason).toContain("no_such_view");
 		});
 
 		it("recovers the CATALOGUED axis, not just its name", async () => {

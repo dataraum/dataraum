@@ -10,6 +10,21 @@ NOTHING`` on the active-row partial-unique index, so a re-run is a no-op, a futu
 ``frame`` edit (which supersedes) is never clobbered, and a concurrent seed can't
 collide (no read-then-insert TOCTOU).
 
+**"A re-run is a no-op" is true of NEW inserts, not a backfill.** A workspace
+whose ``metrics`` rows were seeded by a version of this module PREDATING DAT-882
+(no ``description``/``output``/``dependencies`` columns) already has an ACTIVE
+row for every ``graph_id`` — the ON CONFLICT DO NOTHING skip fires on every one
+of them, forever, since the active-row index is unaffected by the new columns
+existing. Those rows keep NULL ``description``/``output``/``dependencies``
+PERMANENTLY: nothing in this module ever UPDATEs an existing active row (the
+whole design is insert-if-absent, matching every sibling config→DB store — an
+UPDATE path would reopen the "which write wins" question the supersede-only
+discipline exists to close). The only way an existing workspace picks up the
+new columns is a fresh seed: DROP/recreate the ``ws_<id>`` schema (or the whole
+Postgres volume) and re-run add_source. A dev/CI Postgres volume that predates
+this lane must be recreated (``docker compose down -v`` before a smoke), not
+just have its container restarted.
+
 **Seed source is the SHIPPED base only (DAT-882 fix), not the overlay-layered
 collection.** A ``metric`` graph has a live overlay-teach path
 (``core.overlay._apply_metric`` upserts a taught graph into the SAME ``metrics``

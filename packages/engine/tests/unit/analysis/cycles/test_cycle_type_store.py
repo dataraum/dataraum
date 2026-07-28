@@ -15,6 +15,11 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.cycles.cycle_type_store import ensure_cycle_types_seeded
 from dataraum.analysis.cycles.db_models import CycleType
+from dataraum.core.overlay import (
+    OverlayRow,
+    reset_overlay_resolver_for_tests,
+    set_overlay_resolver,
+)
 
 
 def _active(session: Session, vertical: str) -> dict[str, CycleType]:
@@ -89,3 +94,70 @@ def test_a_cycle_type_with_no_feeds_into_round_trips_empty_list(
     ensure_cycle_types_seeded(session, "finance")
     row = _active(session, "finance")["intercompany_cycle"]
     assert row.feeds_into is None
+
+
+class TestSeedSourceDiscipline:
+    """Mutation-invisible discipline (owner round, item 4).
+
+    Without a registered overlay resolver, ``apply_overlay`` short-circuits to
+    the base unchanged — so ``get_cycles_config`` (overlay-inclusive) and
+    ``VerticalLoader.shipped_base`` (shipped-only) are IDENTICAL under plain
+    resolver-less pytest, and a test that never registers a resolver cannot
+    tell a correct ``shipped_base`` seed source from a reverted overlay-
+    inclusive one (both produce the same 12 shipped rows). These tests register
+    a resolver returning a TAUGHT cycle absent from finance's shipped
+    cycles.yaml, so the two sources diverge — reverting
+    ``cycle_type_store.ensure_cycle_types_seeded`` to read ``get_cycles_config``
+    instead of ``shipped_base`` must fail this test (the taught cycle would
+    land in the typed table mislabeled ``source='seed'``).
+    """
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    def test_a_taught_only_cycle_is_never_seeded_as_seed(self, session: Session) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="cycle",
+                    payload={
+                        "vertical": "finance",
+                        "name": "custom_taught_cycle",
+                        "description": "A user-taught cycle, not on disk.",
+                    },
+                )
+            ]
+        )
+        ensure_cycle_types_seeded(session, "finance")
+        rows = _active(session, "finance")
+        assert "custom_taught_cycle" not in rows
+        # The shipped baseline still seeds normally — the resolver only ADDS a
+        # taught cycle to the overlay-inclusive view; it must not suppress the
+        # shipped read.
+        assert "order_to_cash" in rows
+
+    def test_a_taught_override_of_a_shipped_cycle_keeps_the_shipped_content(
+        self, session: Session
+    ) -> None:
+        # The overlay REPLACES order_to_cash's description in the overlay-
+        # inclusive view; the typed table must still carry the SHIPPED
+        # description (source='seed' means genuinely shipped, not "taught,
+        # relabeled").
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="cycle",
+                    payload={
+                        "vertical": "finance",
+                        "name": "order_to_cash",
+                        "description": "A user-taught override.",
+                    },
+                )
+            ]
+        )
+        ensure_cycle_types_seeded(session, "finance")
+        row = _active(session, "finance")["order_to_cash"]
+        assert row.description != "A user-taught override."
+        assert row.description == (
+            "Complete revenue cycle from customer order through payment collection"
+        )

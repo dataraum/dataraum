@@ -16,6 +16,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import WorkspaceSettings
+from dataraum.core.overlay import (
+    OverlayRow,
+    reset_overlay_resolver_for_tests,
+    set_overlay_resolver,
+)
 from dataraum.graphs.agent import GraphAgent
 from dataraum.graphs.metric_graph_db_models import (
     Metric,
@@ -281,3 +286,76 @@ def test_resolve_parameters_precedence_provided_then_db_then_parsed(session: Ses
     # (c) a metric with no seeded row → fall back to the parsed default.
     unseeded = _param_graph("not_seeded", default=999)
     assert agent._resolve_parameters(session, unseeded, {}) == {"days_in_period": 999}
+
+
+class TestSeedSourceDiscipline:
+    """Mutation-invisible discipline (owner round, item 4).
+
+    Without a registered overlay resolver, ``apply_overlay`` short-circuits to
+    the base unchanged — so ``get_metric_definitions`` (overlay-inclusive) and
+    ``_shipped_metric_definitions`` (shipped-only) are IDENTICAL under plain
+    resolver-less pytest, and a test that never registers a resolver cannot
+    tell a correct shipped-only seed source from a reverted overlay-inclusive
+    one (both produce the same 16 shipped metrics). These tests register a
+    resolver returning a TAUGHT metric absent from finance's shipped
+    ``metrics/**``, so the two sources diverge — reverting
+    ``ensure_metrics_seeded`` to read ``get_metric_definitions`` instead of
+    ``_shipped_metric_definitions`` must fail this test (the taught metric
+    would land in the typed table mislabeled ``source='seed'``).
+    """
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    def test_a_taught_only_metric_is_never_seeded_as_seed(self, session: Session) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="metric",
+                    payload={
+                        "vertical": "finance",
+                        "graph_id": "custom_taught_kpi",
+                        "metadata": {"name": "Custom Taught KPI", "category": "custom"},
+                        "output": {"type": "scalar"},
+                        "dependencies": {
+                            "revenue": {
+                                "type": "extract",
+                                "source": {"standard_field": "revenue"},
+                            },
+                        },
+                    },
+                )
+            ]
+        )
+        ensure_metrics_seeded(session, "finance")
+        graph_ids = {r.graph_id for r in session.execute(select(Metric)).scalars()}
+        assert "custom_taught_kpi" not in graph_ids
+        # The shipped baseline still seeds normally — the resolver only ADDS a
+        # taught metric to the overlay-inclusive view; it must not suppress the
+        # shipped read.
+        assert "dso" in graph_ids
+
+    def test_a_taught_override_of_a_shipped_metric_keeps_the_shipped_content(
+        self, session: Session
+    ) -> None:
+        # The overlay REPLACES ebitda's name in the overlay-inclusive view; the
+        # typed table must still carry the SHIPPED name (source='seed' means
+        # genuinely shipped, not "taught, relabeled").
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="metric",
+                    payload={
+                        "vertical": "finance",
+                        "graph_id": "ebitda",
+                        "metadata": {"name": "EBITDA (taught override)"},
+                        "output": {"type": "scalar"},
+                        "dependencies": {},
+                    },
+                )
+            ]
+        )
+        ensure_metrics_seeded(session, "finance")
+        row = session.execute(select(Metric).where(Metric.graph_id == "ebitda")).scalar_one()
+        assert row.name != "EBITDA (taught override)"
+        assert row.name == "EBITDA"

@@ -357,6 +357,38 @@ export const currentGroundings = pgView("current_groundings", {
 	sql`SELECT snippet_id, standard_field AS concept, statement, aggregation, (parts -> 'from'::text) ->> 0 AS relation, ((parts -> 'select'::text) -> 0) ->> 'expr'::text AS select_expr, (parts -> 'where'::text)::text AS where_predicates, description, sql, parts, provenance, failure_count > 0 AS failed, schema_mapping_id, workspace_id, created_at, updated_at FROM engine.sql_snippets s WHERE snippet_type::text = 'extract'::text AND source::text ~~ 'graph:%'::text`,
 );
 
+export const currentInducedValidations = pgView("current_induced_validations", {
+	rowId: varchar("row_id"),
+	runId: varchar("run_id"),
+	vertical: varchar(),
+	validationId: varchar("validation_id"),
+	name: varchar(),
+	description: text(),
+	category: varchar(),
+	severity: varchar(),
+	checkType: varchar("check_type"),
+	tolerance: doublePrecision(),
+	guidance: text(),
+	expectedOutcome: text("expected_outcome"),
+	relevantCycles: json("relevant_cycles"),
+	relevantConventions: json("relevant_conventions"),
+	tags: json(),
+	version: varchar(),
+	createdAt: timestamp("created_at"),
+}).as(
+	sql`SELECT row_id, run_id, vertical, validation_id, name, description, category, severity, check_type, tolerance, guidance, expected_outcome, relevant_cycles, relevant_conventions, tags, version, created_at FROM engine.induced_validations r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+);
+
+export const currentInductionRuns = pgView("current_induction_runs", {
+	rowId: varchar("row_id"),
+	runId: varchar("run_id"),
+	vertical: varchar(),
+	proposed: integer(),
+	createdAt: timestamp("created_at"),
+}).as(
+	sql`SELECT row_id, run_id, vertical, proposed, created_at FROM engine.induction_runs r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+);
+
 export const currentLifecycleArtifacts = pgView("current_lifecycle_artifacts", {
 	artifactId: varchar("artifact_id"),
 	artifactType: varchar("artifact_type"),

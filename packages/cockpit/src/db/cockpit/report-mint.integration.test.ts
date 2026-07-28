@@ -125,8 +125,10 @@ describe.skipIf(!fx.available)(
 			expect(row?.summaryFingerprint).toBeNull();
 			expect(row?.parentId).toBeNull();
 			// A null band is legitimate (nothing analyzed yet) and must round-trip
-			// as null rather than becoming a string.
-			expect(row?.confidence.band).toBeNull();
+			// as null rather than becoming a string. (confidence itself is
+			// nullable since the DAT-627 widening — optional chain, not a
+			// non-null claim.)
+			expect(row?.confidence?.band).toBeNull();
 		});
 
 		it("surfaces minted reports in the gallery listing", async () => {

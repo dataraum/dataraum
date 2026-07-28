@@ -24,7 +24,7 @@ from dataraum.graphs.cross_fact import (
     CrossFactAxis,
     CrossFactDecision,
     CrossFactStatus,
-    confirmed_axis_columns,
+    survey_conformed_axes,
 )
 from dataraum.storage.base import load_all_models
 
@@ -36,6 +36,13 @@ RUN = "catalog-run-1"
 GL = "t_gl"
 AP = "t_ap"
 DIM = "t_accounts"
+
+# `_ref_group_signature(dim, roles)` renders `ref:{dim}:` + "|".join(sorted(roles)),
+# so a judge CONFORM joining differently-named roles yields the UNION of both role
+# names — not either one alone. Same-named roles conform structurally to the single
+# form. Getting this wrong is the fixture defect class the harness rule warns about.
+CONFORMED = f"ref:{DIM}:acct|account_id"
+STRUCTURAL = f"ref:{DIM}:account_id"
 
 
 def _ref_cell(
@@ -67,9 +74,20 @@ def _folded_cell(
     key: str,
     group: str | None,
     *,
-    source: str = "judge",
+    source: str | None = None,
+    attributes: list[str] | None = None,
     needs_confirmation: bool = False,
 ) -> BusMatrixEntry:
+    """A folded cell in the shape `_folded_cells` writes.
+
+    `source` defaults to what the writer would actually emit: it sets 'judge' only
+    when the component conformed, which is exactly when `conformed_group` is set —
+    so judge-with-no-group is an UNWRITABLE combination and must not be seeded.
+    The signature covers ALL member columns (fold key and attributes), not the key
+    alone, because that is half the (signature, run_id) upsert key.
+    """
+    attrs = attributes or []
+    members = sorted([key, *attrs])
     return BusMatrixEntry(
         run_id=RUN,
         fact_table_id=fact,
@@ -77,15 +95,23 @@ def _folded_cell(
         concept_label="region",
         dimension_table_id=None,
         roles=[key],
-        attributes=[],
-        confirmation_source=source,
+        attributes=attrs,
+        confirmation_source=source or ("judge" if group else "unconfirmed"),
         conformed_group=group,
         needs_confirmation=needs_confirmation,
-        signature=f"bus:folded:{fact}:{key}",
+        signature=f"bus:folded:{fact}:" + "|".join(members),
     )
 
 
-def _key_slice(table: str, column: str, *, role: str, dim: str = DIM) -> SliceDefinition:
+def _key_slice(
+    table: str,
+    column: str,
+    *,
+    role: str,
+    dim: str = DIM,
+    interest: str | None = "primary",
+    relevance: float | None = 0.8,
+) -> SliceDefinition:
     """The FK KEY slice — `dimension_attribute` is NULL (it is the key, not an attribute)."""
     return SliceDefinition(
         run_id=RUN,
@@ -96,6 +122,8 @@ def _key_slice(table: str, column: str, *, role: str, dim: str = DIM) -> SliceDe
         dimension_attribute=None,
         fk_role=role,
         slice_type="categorical",
+        slice_interest=interest,
+        slice_relevance=relevance,
         detection_source="llm",
     )
 
@@ -114,7 +142,7 @@ def _folded_slice(table: str, column: str) -> SliceDefinition:
     )
 
 
-class TestConfirmedAxisColumns:
+class TestSurveyConformedAxes:
     def test_differently_spelled_fk_roles_resolve_to_each_fact_own_column(self) -> None:
         """The crossing a NAME intersection cannot see.
 
@@ -122,18 +150,19 @@ class TestConfirmedAxisColumns:
         the differently-named roles, so `conformed_group` is shared while the local
         columns are not.
         """
-        group = f"ref:{DIM}:account_id"
         cells = [
-            _ref_cell(GL, ["account_id"], group),
-            _ref_cell(AP, ["acct"], group),
+            _ref_cell(GL, ["account_id"], CONFORMED),
+            _ref_cell(AP, ["acct"], CONFORMED),
         ]
         slices = [
             _key_slice(GL, "account_id", role="account_id"),
             _key_slice(AP, "acct", role="acct"),
         ]
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {
-            group: ("accounts", {GL: "account_id", AP: "acct"})
-        }
+        survey = survey_conformed_axes(cells, slices, {GL, AP})
+        assert list(survey.qualified) == [CONFORMED]
+        assert survey.qualified[CONFORMED].columns == {GL: "account_id", AP: "acct"}
+        assert survey.qualified[CONFORMED].label == "accounts"
+        assert survey.unsliced == {}
 
     def test_an_unconfirmed_cell_is_not_a_join(self) -> None:
         """Same-named FK roles conform STRUCTURALLY — nobody confirmed the relationship.
@@ -142,73 +171,78 @@ class TestConfirmedAxisColumns:
         present and identical on both sides, so a conformed_group-only filter would
         happily merge two facts' numbers on an unconfirmed FK.
         """
-        group = f"ref:{DIM}:account_id"
         cells = [
-            _ref_cell(GL, ["account_id"], group, source="unconfirmed"),
-            _ref_cell(AP, ["account_id"], group, source="unconfirmed"),
+            _ref_cell(GL, ["account_id"], STRUCTURAL, source="unconfirmed"),
+            _ref_cell(AP, ["account_id"], STRUCTURAL, source="unconfirmed"),
         ]
         slices = [
             _key_slice(GL, "account_id", role="account_id"),
             _key_slice(AP, "account_id", role="account_id"),
         ]
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {}
+        survey = survey_conformed_axes(cells, slices, {GL, AP})
+        assert survey.qualified == {}
+        # An unconfirmed cell is never even asked for a column, so it must NOT be
+        # reported as an unsliced-axis problem — that would name the wrong fix.
+        assert survey.unsliced == {}
 
     def test_a_cell_awaiting_review_is_not_a_join(self) -> None:
-        group = f"ref:{DIM}:account_id"
         cells = [
-            _ref_cell(GL, ["account_id"], group),
-            _ref_cell(AP, ["acct"], group, needs_confirmation=True),
+            _ref_cell(GL, ["account_id"], CONFORMED),
+            _ref_cell(AP, ["acct"], CONFORMED, needs_confirmation=True),
         ]
         slices = [
             _key_slice(GL, "account_id", role="account_id"),
             _key_slice(AP, "acct", role="acct"),
         ]
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {}
+        assert survey_conformed_axes(cells, slices, {GL, AP}).qualified == {}
 
     @pytest.mark.parametrize("source", ["judge", "keeper", "user"])
     def test_every_confirmed_source_backs_a_join(self, source: str) -> None:
-        group = f"ref:{DIM}:account_id"
         cells = [
-            _ref_cell(GL, ["account_id"], group, source=source),
-            _ref_cell(AP, ["acct"], group, source=source),
+            _ref_cell(GL, ["account_id"], CONFORMED, source=source),
+            _ref_cell(AP, ["acct"], CONFORMED, source=source),
         ]
         slices = [
             _key_slice(GL, "account_id", role="account_id"),
             _key_slice(AP, "acct", role="acct"),
         ]
-        assert group in confirmed_axis_columns(cells, slices, {GL, AP})
+        assert CONFORMED in survey_conformed_axes(cells, slices, {GL, AP}).qualified
 
     def test_a_group_covering_only_one_fact_is_dropped(self) -> None:
         """A merge covering some carriers answers a narrower question than was asked."""
-        group = f"ref:{DIM}:account_id"
-        cells = [_ref_cell(GL, ["account_id"], group)]
+        cells = [_ref_cell(GL, ["account_id"], CONFORMED)]
         slices = [_key_slice(GL, "account_id", role="account_id")]
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {}
+        assert survey_conformed_axes(cells, slices, {GL, AP}).qualified == {}
 
     def test_a_folded_cell_with_no_conformed_group_is_dropped(self) -> None:
         """The production default: a fold conforms only on a judge `conform` verdict."""
         cells = [_folded_cell(GL, "region", None), _folded_cell(AP, "region", None)]
         slices = [_folded_slice(GL, "region"), _folded_slice(AP, "region")]
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {}
+        assert survey_conformed_axes(cells, slices, {GL, AP}).qualified == {}
 
     def test_a_conformed_fold_resolves_to_its_fold_key(self) -> None:
         group = f"conform:{AP}:region|{GL}:region_name"
         cells = [_folded_cell(GL, "region_name", group), _folded_cell(AP, "region", group)]
         slices = [_folded_slice(GL, "region_name"), _folded_slice(AP, "region")]
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {
-            group: ("region", {GL: "region_name", AP: "region"})
-        }
+        survey = survey_conformed_axes(cells, slices, {GL, AP})
+        assert survey.qualified[group].columns == {GL: "region_name", AP: "region"}
 
-    def test_a_conformed_axis_never_sliced_abstains_rather_than_guessing(self) -> None:
-        group = f"ref:{DIM}:account_id"
-        cells = [_ref_cell(GL, ["account_id"], group), _ref_cell(AP, ["acct"], group)]
+    def test_a_conformed_axis_never_sliced_is_reported_AS_unsliced(self) -> None:
+        """The confirmed-but-uncurated case, which has its own fix.
+
+        Reporting this as "no confirmed conformed dimension" is factually wrong —
+        the pairing IS confirmed — and sends someone to confirm something already
+        confirmed instead of curating the column.
+        """
+        cells = [_ref_cell(GL, ["account_id"], CONFORMED), _ref_cell(AP, ["acct"], CONFORMED)]
         slices = [_key_slice(GL, "account_id", role="account_id")]  # AP's key uncurated
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {}
+        survey = survey_conformed_axes(cells, slices, {GL, AP})
+        assert survey.qualified == {}
+        assert survey.unsliced == {CONFORMED: (AP, "acct")}
 
     def test_a_dim_side_attribute_is_not_mistaken_for_the_key(self) -> None:
         """The breakdown groups by what the FACT carries — an id, not the dim row's name."""
-        group = f"ref:{DIM}:account_id"
-        cells = [_ref_cell(GL, ["account_id"], group), _ref_cell(AP, ["acct"], group)]
+        cells = [_ref_cell(GL, ["account_id"], CONFORMED), _ref_cell(AP, ["acct"], CONFORMED)]
         slices = [
             _key_slice(GL, "account_id", role="account_id"),
             SliceDefinition(
@@ -223,15 +257,14 @@ class TestConfirmedAxisColumns:
                 detection_source="llm",
             ),
         ]
-        assert confirmed_axis_columns(cells, slices, {GL, AP}) == {}
+        assert survey_conformed_axes(cells, slices, {GL, AP}).qualified == {}
 
     def test_label_drift_does_not_split_a_group(self) -> None:
         """`concept_label` is display-only — the identity is the group signature."""
-        group = f"ref:{DIM}:account_id"
-        a = _ref_cell(GL, ["account_id"], group)
-        b = _ref_cell(AP, ["acct"], group)
+        a = _ref_cell(GL, ["account_id"], CONFORMED)
+        b = _ref_cell(AP, ["acct"], CONFORMED)
         b.concept_label = "ledger accounts"
-        resolved = confirmed_axis_columns(
+        survey = survey_conformed_axes(
             [a, b],
             [
                 _key_slice(GL, "account_id", role="account_id"),
@@ -239,8 +272,31 @@ class TestConfirmedAxisColumns:
             ],
             {GL, AP},
         )
-        assert list(resolved) == [group]
-        assert resolved[group][1] == {GL: "account_id", AP: "acct"}
+        assert list(survey.qualified) == [CONFORMED]
+        assert survey.qualified[CONFORMED].columns == {GL: "account_id", AP: "acct"}
+
+    def test_rank_follows_the_catalog_curation_not_the_identity(self) -> None:
+        """The workspace decides which axis is interesting — not a uuid sort.
+
+        The `primary` axis must outrank the `supporting` one even though its group
+        identity sorts LATER, which is exactly what a bare min(identity) got wrong.
+        """
+        primary = f"ref:{DIM}:zzz_seg"
+        supporting = f"ref:{DIM}:aaa_acct"
+        cells = [
+            _ref_cell(GL, ["zzz_seg"], primary),
+            _ref_cell(AP, ["zzz_seg"], primary),
+            _ref_cell(GL, ["aaa_acct"], supporting),
+            _ref_cell(AP, ["aaa_acct"], supporting),
+        ]
+        slices = [
+            _key_slice(GL, "zzz_seg", role="zzz_seg", interest="primary", relevance=0.9),
+            _key_slice(AP, "zzz_seg", role="zzz_seg", interest="primary", relevance=0.9),
+            _key_slice(GL, "aaa_acct", role="aaa_acct", interest="supporting", relevance=0.4),
+            _key_slice(AP, "aaa_acct", role="aaa_acct", interest="supporting", relevance=0.4),
+        ]
+        survey = survey_conformed_axes(cells, slices, {GL, AP})
+        assert survey.qualified[primary].rank < survey.qualified[supporting].rank
 
 
 class TestCrossFactAxis:

@@ -64,7 +64,10 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # conformed_group is the merge KEY a cross-fact drill-across joins on (DAT-809),
     # so the edge projects it rather than only gating on it.
     assert "PROPERTIES (dimension_table_id, dimension_attribute," in graph_sql
-    assert "conformed_group, confirmation_source)" in graph_sql
+    assert "conformed_group, confirmation_source," in graph_sql
+    # The join COLUMNS: the identity names the axis for machinery, the roles are
+    # what a SQL author can actually write (DAT-809).
+    assert "from_role, to_role)" in graph_sql
     # The grounding vertex (DAT-727) carries the round-trippable clause parts
     # plus the failed discriminator (a retained DAT-543 failure is a node too).
     assert "KEY (snippet_id) LABEL grounding_node" in graph_sql

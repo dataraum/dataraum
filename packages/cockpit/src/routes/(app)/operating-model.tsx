@@ -215,7 +215,11 @@ function BusView({ bus }: { bus: PaneResult<BusMatrix> }) {
 	return <BusMatrixView matrix={bus.data} />;
 }
 
-function ModelSection() {
+// Exported for the route-level test (the `create.tsx` precedent): the TAB WIRING
+// is this route's actual deliverable — which pane a `view` value mounts — and
+// nothing else in the suite covers it, so deleting a tab used to leave the suite
+// green. Rendered directly with `Route`'s hooks spied, no router needed.
+export function ModelSection() {
 	const { model, concepts, bus } = Route.useLoaderData();
 	const search = Route.useSearch();
 	const navigateSearch = Route.useNavigate();
@@ -234,11 +238,10 @@ function ModelSection() {
 				value={view}
 				onChange={(v) =>
 					navigateSearch({
+						// The comparison already narrows `v`; a cast here would only
+						// hide a future widening of the union.
 						search: {
-							view:
-								v === "concepts" || v === "bus"
-									? (v as "concepts" | "bus")
-									: undefined,
+							view: v === "concepts" || v === "bus" ? v : undefined,
 						},
 						replace: true,
 						resetScroll: false,
@@ -260,6 +263,7 @@ function ModelSection() {
 						display: view === "metrics" ? "block" : "none",
 						height: "100%",
 					}}
+					data-testid="pane-metrics"
 				>
 					<MetricsView model={model} />
 				</Box>
@@ -268,6 +272,7 @@ function ModelSection() {
 						display: view === "concepts" ? "block" : "none",
 						height: "100%",
 					}}
+					data-testid="pane-concepts"
 				>
 					<ConceptsView concepts={concepts} />
 				</Box>
@@ -277,6 +282,7 @@ function ModelSection() {
 						height: "100%",
 						overflowY: "auto",
 					}}
+					data-testid="pane-bus"
 				>
 					<BusView bus={bus} />
 				</Box>

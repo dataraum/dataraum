@@ -89,6 +89,56 @@ describe("BusMatrixView (DAT-740)", () => {
 		expect(screen.queryByTestId("bus-axis-drillable")).toBeNull();
 	});
 
+	it("renders the blocked REASON as text, not only in a tooltip", () => {
+		// A Mantine Tooltip is hover-only on a non-focusable element, so a badge whose
+		// reason lived only there gave keyboard and assistive-tech users the dead end
+		// with none of its why — the exact failure this grid exists to prevent.
+		renderMatrix([
+			ref("t_gl", "account_id", "ref:t_dim:account_id", {
+				confirmationSource: "unconfirmed",
+			}),
+			ref("t_ap", "acct", "ref:t_dim:account_id"),
+		]);
+		const reason = screen.getByTestId("bus-axis-blocked-reason");
+		expect(reason.textContent).toContain("unconfirmed on gl_entries");
+		// And it is really in the document text, not an aria-only or title-only carrier.
+		expect(document.body.textContent).toContain("nobody established");
+	});
+
+	it("claims conformance, not composability, on the drillable badge", () => {
+		// The engine additionally requires each fact's key column to be curated before
+		// it will compose; this read cannot see that, so the badge must not promise it.
+		renderMatrix([
+			ref("t_gl", "account_id", "ref:t_dim:account_id"),
+			ref("t_ap", "acct", "ref:t_dim:account_id"),
+		]);
+		const badge = screen.getByTestId("bus-axis-drillable");
+		expect(badge.textContent).toBe("conformed across facts");
+	});
+
+	it("discloses the cap when the grid is truncated", () => {
+		// Rule 15: bounded surfaces must SAY they are bounded, or a partial grid reads
+		// as the whole model.
+		const cells = Array.from({ length: 61 }, (_, i) =>
+			ref(`t_${i}`, "account_id", `ref:t_dim:${i}`),
+		);
+		render(
+			<MantineProvider theme={theme} env="test">
+				<BusMatrixView
+					matrix={buildBusMatrix({
+						cells,
+						tables: cells.map((c) => ({
+							tableId: c.factTableId,
+							tableName: c.factTableId,
+						})),
+					})}
+				/>
+			</MantineProvider>,
+		);
+		const note = screen.getByTestId("bus-matrix-truncated");
+		expect(note.textContent).toContain("of 61 facts");
+	});
+
 	it("says so loudly when NOTHING is drillable", () => {
 		// The state a practitioner most needs explained: the grid has content, but no
 		// cross-fact comparison can be composed from it.
@@ -116,6 +166,8 @@ describe("BusMatrixView (DAT-740)", () => {
 			}),
 			ref("t_ap", "acct", "ref:t_dim:account_id"),
 		]);
-		expect(screen.getByText("review")).toBeTruthy();
+		expect(screen.getByTestId("bus-matrix-review").textContent).toContain(
+			"awaiting review",
+		);
 	});
 });

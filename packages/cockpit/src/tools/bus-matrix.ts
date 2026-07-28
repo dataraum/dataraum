@@ -70,7 +70,18 @@ export interface BusMatrixAxis {
 	/** True when this axis is a real conformed dimension, not an unconformed fold. */
 	conformed: boolean;
 	cells: BusMatrixCell[];
-	/** Whether a cross-fact drill-across may compose on this axis. */
+	/**
+	 * Whether this dimension is CONFORMED ACROSS facts — a necessary condition for a
+	 * cross-fact drill, and everything this read can actually verify.
+	 *
+	 * Deliberately one condition weaker than the engine's bar, which additionally
+	 * requires each fact's key column to be in its curated slice inventory (there is
+	 * nothing to GROUP BY otherwise). Reading `current_slice_definitions` here to
+	 * close that gap was considered and rejected by the owner: the UI must not
+	 * assert composability it cannot verify, and the engine's refusal — surfaced as
+	 * a typed reason on the metric — stays the arbiter. So the badge claims
+	 * conformance, not composability.
+	 */
 	drillable: boolean;
 	/** Why not, when `drillable` is false. Always present in that case. */
 	blockedReason: string | null;
@@ -98,7 +109,11 @@ function blockedReason(
 	cells: BusMatrixCell[],
 	conformed: boolean,
 ): string | null {
-	if (cells.length < 2) {
+	// Distinct FACTS, not cells: a folded group can transitively hold two components
+	// of the SAME fact, and counting cells would then call a single-fact axis
+	// conformed-across — claiming a merge the engine refuses to compose.
+	const factCount = new Set(cells.map((c) => c.factTableId)).size;
+	if (factCount < 2) {
 		return "only one fact carries this dimension — there is nothing to drill across";
 	}
 	if (!conformed) {

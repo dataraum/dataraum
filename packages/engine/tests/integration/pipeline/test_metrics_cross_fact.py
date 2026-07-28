@@ -33,7 +33,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.analysis.hierarchies.db_models import BusMatrixEntry
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -379,7 +379,9 @@ def _seed_conformed_pair(
         axis_column="acct",
         dim_id=dim_id,
     )
-    group = f"ref:{dim_id}:account_id"
+    # `_ref_group_signature` sorts and joins the role names, so a judge CONFORM over
+    # differently-named roles yields the UNION — not either role alone.
+    group = f"ref:{dim_id}:acct|account_id"
     _seed_cell(
         session,
         fact_id=ap_id,
@@ -507,11 +509,11 @@ class TestCrossFactDrillAcross:
         assert "unconfirmed or awaiting review" in withheld
         assert "would assert an identity nobody did" in withheld
 
-    def test_a_cell_awaiting_review_yields_no_rows(
+    def test_a_cell_awaiting_review_yields_no_rows_and_discloses_why(
         self, session: Session, xf_duckdb: duckdb.DuckDBPyConnection
     ) -> None:
         ap_id, gl_id, _ = _seed_conformed_pair(session, xf_duckdb, needs_confirmation=True)
-        _run(
+        result = _run(
             session,
             xf_duckdb,
             {"ap_over_spend": _ratio_metric()},
@@ -524,3 +526,79 @@ class TestCrossFactDrillAcross:
         )
         session.flush()
         assert _rows(session) == []
+        # Two-sided: an empty table alone also passes on a crash or an unrelated
+        # withhold, so the REASON is what pins this to the review gate.
+        withheld = result.outputs["unit_grain_withheld"]["ap_over_spend"]
+        assert "unconfirmed or awaiting review" in withheld
+
+    def test_a_confirmed_but_uncurated_axis_names_the_slice_not_the_pairing(
+        self, session: Session, xf_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The confirmed-but-unsliced case reports its OWN reason.
+
+        Falling through to "share no confirmed conformed dimension" would be
+        factually wrong — the pairing IS confirmed — and would send someone to
+        confirm it again instead of curating the column.
+        """
+        ap_id, gl_id, _ = _seed_conformed_pair(session, xf_duckdb)
+        # Retract GL's curated key slice, leaving the conformance untouched.
+        session.execute(
+            delete(SliceDefinition).where(
+                SliceDefinition.table_id == gl_id, SliceDefinition.column_name == "acct"
+            )
+        )
+        session.flush()
+
+        result = _run(
+            session,
+            xf_duckdb,
+            {"ap_over_spend": _ratio_metric()},
+            [
+                ("metric", "ap_over_spend", AxisVerdict.ADDITIVE, None),
+                ("measure", "accounts_payable", AxisVerdict.ADDITIVE, None),
+                ("measure", "spend", AxisVerdict.ADDITIVE, None),
+            ],
+            [ap_id, gl_id],
+        )
+        session.flush()
+
+        assert _rows(session) == []
+        withheld = result.outputs["unit_grain_withheld"]["ap_over_spend"]
+        assert "curated slice inventory" in withheld
+        assert "'acct'" in withheld
+        # The wrongly-pinned-reason class: it must NOT claim the pairing is missing
+        # or unconfirmed, because both are false here.
+        assert "share no confirmed conformed dimension" not in withheld
+        assert "unconfirmed or awaiting review" not in withheld
+
+    def test_display_strings_use_the_label_and_never_the_uuid_identity(
+        self, session: Session, xf_duckdb: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The persisted axis is the identity; everything a human reads is the label.
+
+        `metric_unit_grain.axis` is part of the upsert key so it stays the stable
+        group signature — but that signature embeds a table uuid, so a disclosure
+        rendering it would put `ref:8f0a…:acct|account_id` in front of a reader.
+        """
+        ap_id, gl_id, group = _seed_conformed_pair(session, xf_duckdb)
+        result = _run(
+            session,
+            xf_duckdb,
+            {"ap_over_spend": _ratio_metric()},
+            [
+                ("metric", "ap_over_spend", AxisVerdict.ADDITIVE, None),
+                ("measure", "accounts_payable", AxisVerdict.ADDITIVE, None),
+                ("measure", "spend", AxisVerdict.ADDITIVE, None),
+            ],
+            [ap_id, gl_id],
+        )
+        session.flush()
+
+        # Persisted: the identity (stable, unique, part of the upsert key).
+        assert {r.axis for r in _rows(session)} == {group}
+        # Disclosed: never the identity. No human-facing channel may carry it.
+        disclosed = " ".join(
+            str(v) for k, v in result.outputs.items() if k.startswith("unit_grain")
+        )
+        assert group not in disclosed
+        assert ap_id not in disclosed and gl_id not in disclosed

@@ -207,13 +207,15 @@ def format_served_context(
         )
         for cd in context.conformed_dimensions:
             attr = f".{cd.attribute}" if cd.attribute else ""
-            # The group is the merge KEY; the source says who asserted it. Both are
-            # served facts, so the reader never has to infer the axis from a label.
-            group = f" [axis: {cd.conformed_group}]" if cd.conformed_group else ""
+            # Render the JOIN COLUMNS, not the conformed_group. The group is the
+            # stable identity this axis is grouped by internally, but it embeds a
+            # table uuid — a reader cannot use it and a model cannot write SQL with
+            # it, so putting it in the prompt spends tokens on an unusable token.
+            # The two facts may spell the axis differently, so both sides are named.
+            left = f"{cd.table_a}.{cd.role_a}" if cd.role_a else cd.table_a
+            right = f"{cd.table_b}.{cd.role_b}" if cd.role_b else cd.table_b
             src = f" ({cd.confirmation_source})" if cd.confirmation_source else ""
-            lines.append(
-                f"- {cd.table_a} ↔ {cd.table_b} share {cd.dimension_table}{attr}{group}{src}"
-            )
+            lines.append(f"- {left} ↔ {right} share {cd.dimension_table}{attr}{src}")
 
     # --- Enriched Views ---
     # Tracks whether any slice list actually reached the document. The curation

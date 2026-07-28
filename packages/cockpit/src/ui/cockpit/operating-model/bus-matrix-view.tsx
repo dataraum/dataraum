@@ -25,7 +25,6 @@ import {
 	Table,
 	Text,
 	Title,
-	Tooltip,
 } from "@mantine/core";
 import type { BusMatrix, BusMatrixAxis } from "#/tools/bus-matrix";
 
@@ -47,27 +46,36 @@ function AxisHeader({ axis }: { axis: BusMatrixAxis }) {
 				{axis.label}
 			</Text>
 			{axis.drillable ? (
+				// "conformed across", not "drillable": conformance is all this read
+				// verifies. The engine additionally requires each fact's key column
+				// to be curated before it will compose, and its refusal is the
+				// arbiter — see BusMatrixAxis.drillable.
 				<Badge
 					color="cyan"
 					variant="light"
 					size="sm"
 					data-testid="bus-axis-drillable"
 				>
-					drillable across
+					conformed across facts
 				</Badge>
 			) : (
-				// The reason rides the badge itself: a greyed affordance with no
-				// explanation reads as a bug, the same call drillable-grid.tsx makes.
-				<Tooltip label={axis.blockedReason ?? ""} multiline w={320} withArrow>
-					<Badge
-						color="gray"
-						variant="light"
-						size="sm"
-						data-testid="bus-axis-blocked"
-					>
-						not drillable
-					</Badge>
-				</Tooltip>
+				<Badge
+					color="gray"
+					variant="light"
+					size="sm"
+					data-testid="bus-axis-blocked"
+				>
+					not conformed
+				</Badge>
+			)}
+			{/* The reason is rendered as TEXT, not only as a tooltip: a Mantine
+			    Tooltip is hover-only on a non-focusable element, so keyboard and
+			    assistive-tech users got the dead end with none of its why — the
+			    exact failure this grid exists to prevent. */}
+			{!axis.drillable && axis.blockedReason && (
+				<Text size="xs" c="dimmed" data-testid="bus-axis-blocked-reason">
+					{axis.blockedReason}
+				</Text>
 			)}
 		</Stack>
 	);
@@ -160,11 +168,16 @@ export function BusMatrixView({ matrix }: { matrix: BusMatrix }) {
 													{cell.attachment === "referenced" ? "FK" : "inline"}
 												</Badge>
 												{cell.needsConfirmation && (
-													<Tooltip label="awaiting review" withArrow>
-														<Badge size="sm" color="yellow" variant="light">
-															review
-														</Badge>
-													</Tooltip>
+													// Self-describing text, not a tooltip — a Mantine Tooltip is
+													// hover-only, so keyboard and AT users got nothing.
+													<Badge
+														size="sm"
+														color="yellow"
+														variant="light"
+														data-testid="bus-matrix-review"
+													>
+														awaiting review
+													</Badge>
 												)}
 											</Group>
 										</Table.Td>

@@ -60,9 +60,17 @@ class MetricUnitGrain(Base):
     the verdict that gated it resolve on the same key.
 
     ``axis`` is a served column name (a curated categorical slice), never a
-    column chosen because its name looks like an id. ``entity_value`` is one
-    distinct value of that column, rendered as text: the axis is categorical, and
-    a breakdown label is read, not computed.
+    column chosen because its name looks like an id — or, for a CROSS-FACT
+    drill-across (DAT-809), the ``bus_matrix.conformed_group`` identity. The
+    second case has no single column name to record: the whole point of a
+    drill-across is that each fact realizes one conformed dimension with its own
+    column (``account_id`` here, ``acct`` there), so the identity is the only
+    name that denotes the axis on every carrier. It is also stable where a label
+    is not (DAT-800), which matters because this column is part of the UNIQUE key
+    below. Human-facing surfaces render the concept label instead.
+
+    ``entity_value`` is one distinct value of that column, rendered as text: the
+    axis is categorical, and a breakdown label is read, not computed.
     """
 
     __tablename__ = "metric_unit_grain"

@@ -162,7 +162,9 @@ SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,
        s1.dimension_table_id::text AS dimension_table_id,
        s1.dimension_attribute AS dimension_attribute,
        b1.conformed_group AS conformed_group,
-       b1.confirmation_source AS confirmation_source
+       b1.confirmation_source AS confirmation_source,
+       COALESCE(NULLIF(s1.fk_role, ''), s1.column_name) AS from_role,
+       COALESCE(NULLIF(s2.fk_role, ''), s2.column_name) AS to_role
 FROM __READ__.current_slice_definitions s1
 JOIN __READ__.current_bus_matrix b1
   ON b1.attachment = 'referenced'
@@ -617,7 +619,8 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
       LABEL conformed_dimension
       PROPERTIES (dimension_table_id, dimension_attribute,
-                  conformed_group, confirmation_source),
+                  conformed_group, confirmation_source,
+                  from_role, to_role),
     __READ__.og_grounded_by KEY (edge_key)
       SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)
       DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)

@@ -209,6 +209,31 @@ describe("buildBusMatrix (DAT-740)", () => {
 		);
 	});
 
+	it("counts distinct FACTS, not cells, when judging conformance", () => {
+		// A folded group can transitively hold two components of the SAME fact. Two
+		// cells then look like two participants, and a cell-count check would call a
+		// single-fact axis conformed-across — claiming a merge the engine refuses.
+		const group = "conform:t_gl:region|t_gl:region_name";
+		const matrix = buildBusMatrix({
+			cells: [
+				folded("t_gl", "region", {
+					conformedGroup: group,
+					confirmationSource: "judge",
+				}),
+				folded("t_gl", "region_name", {
+					conformedGroup: group,
+					confirmationSource: "judge",
+					signature: "bus:folded:t_gl:region_name",
+				}),
+			],
+			tables: TABLES,
+		});
+		expect(matrix.axes).toHaveLength(1);
+		expect(matrix.axes[0].cells).toHaveLength(2);
+		expect(matrix.axes[0].drillable).toBe(false);
+		expect(matrix.axes[0].blockedReason).toContain("only one fact");
+	});
+
 	it("falls back to the table id when a fact name is unresolvable", () => {
 		const matrix = buildBusMatrix({
 			cells: [ref("t_ghost", "account_id", "ref:t_dim:account_id")],

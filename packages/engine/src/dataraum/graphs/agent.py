@@ -665,18 +665,20 @@ class GraphAgent(LLMFeature):
                     f"metric '{graph.graph_id}' has rows with no {axis!r} value — a "
                     "breakdown that cannot name every part is withheld whole"
                 )
-            key = str(entity)
-            if key in seen:
+            # NOT `key` — that names the composition's GROUP key in this scope, and
+            # shadowing it here would leave a post-loop read holding the last entity.
+            entity_key = str(entity)
+            if entity_key in seen:
                 return Result.fail(
-                    f"metric '{graph.graph_id}' produced {key!r} twice per {axis!r} — "
-                    "the composition is not one row per entity"
+                    f"metric '{graph.graph_id}' produced {entity_key!r} twice per "
+                    f"{axis!r} — the composition is not one row per entity"
                 )
-            seen.add(key)
+            seen.add(entity_key)
             try:
                 cell = _unit_grain_value(value)
             except ValueError as exc:
                 return Result.fail(f"metric '{graph.graph_id}' per {axis!r}: {exc}")
-            rows.append(UnitGrainRow(entity_value=key, value=cell))
+            rows.append(UnitGrainRow(entity_value=entity_key, value=cell))
 
         total = exec_result.value.total_count
         total_entities = len(rows) if total is None else total

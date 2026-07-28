@@ -381,6 +381,11 @@ class ConformedDimensionContext:
     conformed_group: str | None = None
     #: Who asserted the underlying structure. Only CONFIRMED pairings reach here.
     confirmation_source: str | None = None
+    #: The column each fact joins on. Unlike ``conformed_group`` (which embeds a
+    #: table uuid) these are writable in SQL, so they are what the served render
+    #: shows — the identity stays for grouping and never reaches a prompt.
+    role_a: str | None = None
+    role_b: str | None = None
 
 
 @dataclass

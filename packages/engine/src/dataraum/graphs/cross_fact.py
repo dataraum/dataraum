@@ -41,6 +41,7 @@ the served additivity verdict's business, read through
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -49,10 +50,11 @@ import structlog
 from sqlalchemy import select
 
 from dataraum.analysis.hierarchies.db_models import BusMatrixEntry
+from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from sqlalchemy.orm import Session
 
@@ -202,10 +204,57 @@ def carrier_facts(
     return steps
 
 
-def confirmed_axis_columns(
+@dataclass(frozen=True)
+class AxisCandidate:
+    """One legal merge axis and how each fact spells it."""
+
+    label: str
+    #: fact_table_id -> the local column on that fact realizing this axis.
+    columns: Mapping[str, str]
+    #: The WORKSPACE's own opinion of how interesting this axis is — the best
+    #: (lowest) position its column holds in any carrier's curated slice order.
+    rank: int
+
+
+@dataclass(frozen=True)
+class AxisSurvey:
+    """Every conformed group, sorted into the one bucket that explains its fate.
+
+    ``unsliced`` exists so a confirmed group whose key column the slice catalogue
+    never curated can be reported as SUCH. Folding it into "no conformed dimension"
+    names the wrong problem and sends someone to confirm a pairing that is already
+    confirmed, when the actual fix is to curate the column.
+    """
+
+    qualified: dict[str, AxisCandidate]
+    #: group -> (fact_table_id, the role/column that resolved to no curated slice)
+    unsliced: dict[str, tuple[str, str]]
+
+
+def _curated_positions(slices: Sequence[SliceDefinition]) -> dict[tuple[str, str], int]:
+    """``(fact, column) -> rank`` in the catalog's OWN curated order.
+
+    Delegated to :func:`~dataraum.analysis.slicing.curation.curated_slices` rather
+    than re-derived: a third hand-rolled "primary before supporting, then measured
+    relevance" would drift from the two that already agree, and this module has no
+    business re-ranking what the slicing phase curated. Its documented unjudged
+    fallback applies unchanged — and cannot admit an illegal axis, because ranking
+    only ORDERS axes the confirmed-conformance gate already accepted.
+    """
+    by_table: dict[str, list[SliceDefinition]] = {}
+    for sd in slices:
+        by_table.setdefault(sd.table_id, []).append(sd)
+    positions: dict[tuple[str, str], int] = {}
+    for table_id, rows in by_table.items():
+        for index, row in enumerate(curated_slices(rows).served):
+            positions.setdefault((table_id, str(row.column_name)), index)
+    return positions
+
+
+def survey_conformed_axes(
     cells: Sequence[BusMatrixEntry], slices: Sequence[SliceDefinition], facts: set[str]
-) -> dict[str, tuple[str, dict[str, str]]]:
-    """Conformed groups CONFIRMED on every one of ``facts`` → (label, fact → column).
+) -> AxisSurvey:
+    """Sort the conformed groups over ``facts`` into qualified vs unsliced.
 
     Pure, so the gate is testable without a database. Both bus-matrix legs resolve to
     the fact's own physical grouping column:
@@ -219,7 +268,7 @@ def confirmed_axis_columns(
     A group surviving on fewer than every fact is dropped — a merge that silently
     covered only some carriers would answer a narrower question than was asked.
     """
-    # (table, fk_role) -> key column, and (table, column) -> folded lens.
+    # (table, fk_role) -> key columns, and (table, column) -> the folded lens exists.
     by_role: dict[tuple[str, str], list[str]] = {}
     folded_lens: set[tuple[str, str]] = set()
     for sd in slices:
@@ -231,8 +280,15 @@ def confirmed_axis_columns(
         if not sd.dimension_table_id:
             folded_lens.add((sd.table_id, str(name)))
 
+    positions = _curated_positions(slices)
+    # A column the curation dropped is still a LEGAL axis (conformance, not interest,
+    # decides legality) — it just sorts after everything the workspace ranked.
+    unranked = len(positions) + 1
+
     groups: dict[str, dict[str, str]] = {}
     labels: dict[str, str] = {}
+    ranks: dict[str, int] = {}
+    unsliced: dict[str, tuple[str, str]] = {}
     for cell in cells:
         group = cell.conformed_group
         if not group or cell.fact_table_id not in facts:
@@ -240,34 +296,60 @@ def confirmed_axis_columns(
         if cell.confirmation_source not in CONFIRMED_SOURCES or cell.needs_confirmation:
             continue
         column: str | None = None
+        attempted = ""
+        roles = [str(r) for r in (cell.roles or [])]
         if cell.attachment == "referenced":
-            for role in cell.roles or []:
+            attempted = roles[0] if roles else ""
+            for role in roles:
                 # Deterministic: a role can carry several curated key slices only in
                 # pathological catalogues; min() makes the pick reproducible.
-                candidates = by_role.get((cell.fact_table_id, str(role)))
+                candidates = by_role.get((cell.fact_table_id, role))
                 if candidates:
                     column = min(candidates)
+                    if len(roles) > 1:
+                        # A multi-role group means the judge merged several FK roles
+                        # into one axis. Which role the breakdown is actually ABOUT
+                        # is then a real choice, so it is recorded rather than left
+                        # to be reverse-engineered from the numbers.
+                        logger.info(
+                            "cross_fact_role_selected",
+                            fact_table_id=cell.fact_table_id,
+                            conformed_group=group,
+                            selected_role=role,
+                            available_roles=roles,
+                            column=column,
+                        )
                     break
         elif cell.attachment == "folded":
-            key = str(cell.roles[0]) if cell.roles else ""
-            if (cell.fact_table_id, key) in folded_lens:
-                column = key
+            attempted = roles[0] if roles else ""
+            if (cell.fact_table_id, attempted) in folded_lens:
+                column = attempted
         if column is None:
             logger.info(
                 "cross_fact_axis_unsliced",
                 fact_table_id=cell.fact_table_id,
                 conformed_group=group,
                 attachment=cell.attachment,
+                column=attempted,
             )
+            unsliced.setdefault(group, (cell.fact_table_id, attempted))
             continue
         groups.setdefault(group, {})[cell.fact_table_id] = column
         labels.setdefault(group, cell.concept_label)
+        rank = positions.get((cell.fact_table_id, column), unranked)
+        ranks[group] = min(ranks.get(group, unranked), rank)
 
-    return {
-        group: (labels[group], columns)
+    qualified = {
+        group: AxisCandidate(label=labels[group], columns=columns, rank=ranks[group])
         for group, columns in groups.items()
         if set(columns) == facts
     }
+    # A group that qualified is not ALSO an unsliced complaint: one fact's cell may
+    # have failed to resolve while another duplicate cell for the same group did.
+    return AxisSurvey(
+        qualified=qualified,
+        unsliced={g: v for g, v in unsliced.items() if g not in qualified},
+    )
 
 
 def resolve_cross_fact_axis(
@@ -324,19 +406,28 @@ def resolve_cross_fact_axis(
         .all()
     )
 
-    qualified = confirmed_axis_columns(cells, slices, facts)
-    if not qualified:
-        # Distinguish "nothing shared" from "shared but nobody confirmed it": the
-        # second is actionable — a user can confirm the pairing — so it must not be
-        # reported as the first.
-        shareable = {c.conformed_group for c in cells if c.conformed_group}
+    survey = survey_conformed_axes(cells, slices, facts)
+    if not survey.qualified:
+        # Three different problems with three different fixes. Reporting any of them
+        # as another sends someone to do the wrong thing, so each gets its own reason.
+        if survey.unsliced:
+            group, (fact, column) = min(survey.unsliced.items())
+            named = f" ({column!r})" if column else ""
+            return _abstain(
+                CrossFactAbstain.AXIS_UNSLICED,
+                f"the dimension conformed as {group!r} IS confirmed, but the column"
+                f"{named} realizing it on fact {fact!r} is not in that fact's curated "
+                "slice inventory — the breakdown would have nothing to group by. "
+                "Curating that column enables the drill-across; the pairing itself "
+                "needs no further confirmation",
+            )
         unconfirmed = {
             c.conformed_group
             for c in cells
             if c.conformed_group
             and (c.confirmation_source not in CONFIRMED_SOURCES or c.needs_confirmation)
         }
-        if shareable and unconfirmed:
+        if unconfirmed:
             return _abstain(
                 CrossFactAbstain.UNCONFIRMED_CONFORMANCE,
                 f"{sorted(facts)} share a candidate dimension, but its conformance is "
@@ -349,9 +440,19 @@ def resolve_cross_fact_axis(
             "legal merge key — comparing them would require a fact-to-fact join",
         )
 
-    identity = min(qualified)
-    label, columns = qualified[identity]
+    # The WORKSPACE picks the axis, not this function: order by the catalog's own
+    # curation and use the identity only as the final total-order tiebreak. The
+    # identity is a uuid-bearing signature, so sorting on it alone would have made
+    # "which axis is a metric broken down by" an accident of uuid4 — and it is part
+    # of the persisted upsert key, so that accident would be durable.
+    identity = min(survey.qualified, key=lambda g: (survey.qualified[g].rank, g))
+    candidate = survey.qualified[identity]
     return CrossFactDecision(
         status=CrossFactStatus.RESOLVED,
-        axis=CrossFactAxis(identity=identity, label=label, columns=columns, steps=steps),
+        axis=CrossFactAxis(
+            identity=identity,
+            label=candidate.label,
+            columns=candidate.columns,
+            steps=steps,
+        ),
     )

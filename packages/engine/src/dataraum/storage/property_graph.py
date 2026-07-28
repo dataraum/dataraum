@@ -675,7 +675,13 @@ def _element_view_sql(name: str) -> str:
             # the only thing left to re-derive it from is the label — which drifts and
             # collides (DAT-800). Mirrors og_dim_members, which already projects it.
             f"       b1.conformed_group AS conformed_group,\n"
-            f"       b1.confirmation_source AS confirmation_source\n"
+            f"       b1.confirmation_source AS confirmation_source,\n"
+            # The ROLE each side joins on — the only part of this edge a SQL author
+            # can actually write. The conformed_group is the stable IDENTITY, but it
+            # embeds a table uuid, so it names the axis for machinery and names
+            # nothing for a reader or a model.
+            f"       COALESCE(NULLIF(s1.fk_role, ''), s1.column_name) AS from_role,\n"
+            f"       COALESCE(NULLIF(s2.fk_role, ''), s2.column_name) AS to_role\n"
             f"FROM {READ_TOKEN}.current_slice_definitions s1\n"
             f"JOIN {READ_TOKEN}.current_bus_matrix b1\n"
             f"  ON b1.attachment = 'referenced'\n"
@@ -1307,7 +1313,8 @@ def _property_graph_sql() -> str:
         f"      DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)\n"
         f"      LABEL conformed_dimension\n"
         f"      PROPERTIES (dimension_table_id, dimension_attribute,\n"
-        f"                  conformed_group, confirmation_source),\n"
+        f"                  conformed_group, confirmation_source,\n"
+        f"                  from_role, to_role),\n"
         f"    {READ_TOKEN}.og_grounded_by KEY (edge_key)\n"
         f"      SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)\n"
         f"      DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)\n"

@@ -1014,7 +1014,8 @@ def _read_conformed(
     rows = session.execute(
         text(
             f"SELECT DISTINCT from_table_id, to_table_id, dimension_table_id,\n"  # noqa: S608
-            f"       dimension_attribute, conformed_group, confirmation_source\n"
+            f"       dimension_attribute, conformed_group, confirmation_source,\n"
+            f"       from_role, to_role\n"
             f'FROM "{read_schema}".og_conformed_dimension'
         )
     ).all()
@@ -1022,6 +1023,11 @@ def _read_conformed(
     out: list[ConformedDimensionContext] = []
     for r in rows:
         a_id, b_id = sorted((str(r.from_table_id), str(r.to_table_id)))
+        # The pair is normalized by sorting the ids, so the roles must follow that
+        # swap — otherwise each fact would be shown joining on the OTHER's column.
+        role_a, role_b = (
+            (r.from_role, r.to_role) if a_id == str(r.from_table_id) else (r.to_role, r.from_role)
+        )
         key = (a_id, b_id, str(r.dimension_table_id), r.dimension_attribute, r.conformed_group)
         if key in seen:
             continue
@@ -1043,6 +1049,8 @@ def _read_conformed(
                 attribute=r.dimension_attribute,
                 conformed_group=r.conformed_group,
                 confirmation_source=r.confirmation_source,
+                role_a=role_a,
+                role_b=role_b,
             )
         )
     out.sort(

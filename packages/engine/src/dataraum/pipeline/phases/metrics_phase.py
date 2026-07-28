@@ -871,10 +871,14 @@ def _unit_grain_rows(
         session, graph=graph, workspace_id=workspace_id, run_id=catalogue_run_id
     )
     if cross.status is CrossFactStatus.RESOLVED and cross.axis is not None:
-        # The identity, not the label, is the persisted axis key: it is part of the
-        # ADR-0010 upsert key, and a label can drift or collide between runs (DAT-800).
-        axis = cross.axis.identity
+        # Two different names for two different jobs, and they must not be swapped:
+        # the IDENTITY is the merge key and the persisted axis (part of the ADR-0010
+        # upsert key, so it must not drift the way a label can — DAT-800), while the
+        # LABEL is what any human-facing string says. The identity embeds a table
+        # uuid, so showing it would put `ref:8f0a…:account_id` in front of a reader.
+        axis = cross.axis.label
         sql_axis = cross.axis.identity
+        persisted_axis = cross.axis.identity
         step_grain = cross.axis.step_grain()
     elif cross.abstain_reason is not CrossFactAbstain.SINGLE_FACT:
         outcome.withheld[graph_id] = cross.reason or "withheld without a reason"
@@ -899,7 +903,10 @@ def _unit_grain_rows(
             return []
         # The catalog's own ranking, judgment before measurement — the workspace says
         # which axis is the interesting one, so we take its first and do not re-rank.
+        # Single-fact: the axis IS a column on the one relation, so display key and
+        # persisted key coincide.
         axis = served_axes.axes[0]
+        persisted_axis = axis
 
     verdict = read_categorical_verdict(
         session, target_kind="metric", target_key=graph_id, run_id=run_id
@@ -949,7 +956,7 @@ def _unit_grain_rows(
             "run_id": run_id,
             "target_kind": "metric",
             "target_key": graph_id,
-            "axis": axis,
+            "axis": persisted_axis,
             "entity_value": row.entity_value,
             "value": row.value,
             "reconciles": decision.reconciles,

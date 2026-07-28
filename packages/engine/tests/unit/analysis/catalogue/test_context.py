@@ -784,3 +784,36 @@ class TestEnrichedViewsAndAxes:
         out = _build(session, [ap, vendors])
         assert "Shared axes" not in out["shared_axes"]
         assert "ap_ledger slices by vendors.region" in out["shared_axes"]
+
+
+class TestSurrogateExclusion:
+    """Mint-owned surrogate join keys never reach the catalogue prompt (DAT-878).
+
+    ``_sk__*`` columns are engine-internal (``analysis/relationships/surrogate.py``)
+    — even if one somehow already carries a profile + a "measure" annotation (the
+    begin_session re-run leak this ticket guards against, where a semantic pass
+    over an already-minted table set could otherwise annotate it), the catalogue
+    context's column load must exclude it before ANY prompt section renders it.
+
+    Regression pin: the first version of this test asserted only on
+    ``structural_tables`` and missed that ``_load_annotation_rows`` (feeding
+    ``column_annotations`` verbatim via ``_format_annotations``) had its own,
+    unfiltered join — a reviewer reproduced the leak with this exact fixture.
+    This version asserts over EVERY key ``build_catalogue_inputs`` returns, so
+    a future unfiltered load site anywhere in this module fails loud here too.
+    """
+
+    def test_surrogate_column_excluded_from_every_prompt_section(self, session) -> None:
+        orders = _mk_table(session, "orders", ["id", "amount", "_sk__id__amount"])
+        _promote(session, orders)
+        _entity(session, orders, grain_columns=["id"])
+        sk_col_id = _col_id(session, orders, "_sk__id__amount")
+        _profile(session, sk_col_id, numeric={"min_value": -1.0, "max_value": 1.0, "mean": 0.0})
+        session.add(
+            SemanticAnnotation(column_id=sk_col_id, run_id=_GEN_RUN, semantic_role="measure")
+        )
+        session.flush()
+
+        out = _build(session, [orders])
+        leaked = {k for k, v in out.items() if "_sk__id__amount" in str(v)}
+        assert not leaked

@@ -477,6 +477,7 @@ def build_execution_context(
     # Lazy imports to avoid circular dependencies
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
+    from dataraum.analysis.relationships.surrogate import is_surrogate_column
     from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
     from dataraum.analysis.slicing.db_models import SliceDefinition
     from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
@@ -506,9 +507,19 @@ def build_execution_context(
     tables = session.execute(tables_stmt).scalars().all()
     table_map = {t.table_id: t for t in tables}
 
-    # 2. Load all columns for these tables
+    # 2. Load all columns for these tables. Mint-owned surrogate join keys
+    # (``_sk__*``, DAT-277) are excluded — they are not business columns and
+    # must not reach the grounding prompt's column list/value-set rendering
+    # (DAT-878). Relationship rendering is unaffected: ``_read_references``
+    # resolves endpoint names through its OWN vertex map (``_load_graph_reads``
+    # / ``og_columns``), a separate read from this one — a surrogate pair still
+    # surfaces there as the join evidence it legitimately is.
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns = session.execute(columns_stmt).scalars().all()
+    columns = [
+        c
+        for c in session.execute(columns_stmt).scalars().all()
+        if not is_surrogate_column(c.column_name)
+    ]
     columns_by_table: dict[str, list[Column]] = {}
     for col in columns:
         if col.table_id not in columns_by_table:

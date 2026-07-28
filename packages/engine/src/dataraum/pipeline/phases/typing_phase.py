@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -32,6 +33,44 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 logger = get_logger(__name__)
+
+
+class StronglyTypedVerificationFailed(RuntimeError):
+    """The DAT-748 cross-check DESCRIBE itself failed — never "disagreed".
+
+    A distinct failure mode from "checked and found a mismatch". Raised by
+    :func:`TypingPhase._promote_strongly_typed`; the caller (``_run``) catches
+    it and fails ONLY this table (a warning, no typed table produced), never
+    treating "couldn't verify" as if it were "verified and every column
+    disagreed" — those need different messages and different consequences.
+    """
+
+
+def _describe_live_types(
+    duckdb_conn: duckdb.DuckDBPyConnection, target_fqn: str
+) -> dict[str, str] | None:
+    """DESCRIBE ``target_fqn`` right now — the DAT-748 physical cross-check.
+
+    ``Column.raw_type`` is captured once, at import time (the post-CTAS
+    ``DESCRIBE`` in ``sources/backends.py``). One re-``DESCRIBE`` of the whole
+    raw table here, right before a strongly-typed promotion trusts that
+    metadata verbatim, catches a raw table that has drifted from it since (a
+    stale catalog row, a differently-typed re-extraction) — cheap (one
+    metadata query, no data scan) because both sides are the SAME kind of
+    string DuckDB reports.
+
+    Returns ``None`` when the DESCRIBE itself failed (a transient/connection
+    problem) — distinct from a successful DESCRIBE that simply disagrees with
+    the recorded metadata. ``{}`` is a legitimate answer ("checked, found no
+    columns"); ``None`` must never be read as "every column disagreed" — the
+    caller fails the whole table loudly instead of guessing.
+    """
+    try:
+        rows = duckdb_conn.execute(f"DESCRIBE {target_fqn}").fetchall()
+    except Exception as e:
+        logger.warning("strongly_typed_describe_failed", target=target_fqn, error=str(e))
+        return None
+    return {str(r[0]): str(r[1]) for r in rows}
 
 
 @analysis_phase
@@ -93,17 +132,47 @@ class TypingPhase(BasePhase):
         self,
         table: Table,
         ctx: PhaseContext,
-    ) -> tuple[str, dict[str, str]]:
+    ) -> tuple[str, dict[str, str], list[str]]:
         """Create typed table for a strongly-typed source by copying the raw table.
 
-        No type inference or TRY_CAST needed - source types are trusted.
+        No pattern-matching/TRY_CAST inference needed — the source (Parquet, or a
+        DB-recipe backend's DuckDB scanner) already assigned real types. But that
+        trust is only as good as the ``Column.raw_type`` metadata captured once,
+        at import time (the post-CTAS ``DESCRIBE`` in ``sources/backends.py``) —
+        typing can run much later (a teach re-run retypes without necessarily
+        re-importing), and "workspaces with catalog history" is exactly where a
+        stored ``raw_type`` can drift from what the raw table physically is NOW
+        (DAT-748). One re-``DESCRIBE`` of the whole raw table right before
+        trusting it is the cross-check: cheap (one metadata query, no data scan)
+        and honest — it compares metadata against the CURRENT physical schema
+        rather than re-deriving a tautological "does a native DuckDB column
+        conform to its own type" (TRY_CASTing an already-typed column against
+        that same type can never fail, so it cannot catch a stale catalog; a
+        schema mismatch is the only thing that CAN be physically wrong here).
+
+        On a mismatch, the LIVE type is adopted, not discarded: the DESCRIBE
+        reads the exact relation the CTAS then selects from, so it is ground
+        truth at that instant — the catalog metadata is the only suspect party
+        (``decision_source="automatic"``, the catalog corrected). The VARCHAR
+        downgrade (``decision_source="fallback"``, the SAME vocabulary the
+        untyped path already uses for "not confident enough to commit to a
+        type") is reserved for a column ABSENT from the live schema entirely —
+        a stronger failure than a type disagreement, and one where the
+        explicit CAST projection below fails loud anyway (there is no such
+        physical column to reference).
 
         Args:
             table: Raw table with non-VARCHAR types
             ctx: Phase context
 
         Returns:
-            Tuple of (typed_table_id, column type decisions)
+            Tuple of (typed_table_id, column type decisions, warnings)
+
+        Raises:
+            StronglyTypedVerificationFailed: the cross-check DESCRIBE itself
+                failed — this is "couldn't check", never treated the same as
+                "checked and disagreed": nothing for this table is trusted,
+                adopted, or downgraded; the caller fails only this table.
         """
         # Post-DAT-341: Table.duckdb_path is the bare ``<source>__<table>`` form
         # under the workspace-stable layer schemas. Strongly-typed copy reads
@@ -119,11 +188,72 @@ class TypingPhase(BasePhase):
         raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
         typed_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{bare}"'
 
-        # Emit → store → execute (DAT-414): the strongly-typed copy is a plain
-        # ``CREATE OR REPLACE … AS SELECT *``. Capture the DDL string so it is
-        # versioned like the untyped path's recipes (stored below, once the typed
-        # Table id is reconciled); the executed SQL is unchanged.
-        typed_sql = f"CREATE OR REPLACE TABLE {typed_target} AS SELECT * FROM {raw_target}"
+        # Physical cross-check (DAT-748). `None` means the DESCRIBE itself
+        # failed — "couldn't check" — and must never be conflated with "checked,
+        # every column disagreed": fail this table loudly instead of guessing.
+        live_types = _describe_live_types(ctx.duckdb_conn, raw_target)
+        if live_types is None:
+            raise StronglyTypedVerificationFailed(
+                f"{table.table_name}: could not verify strongly-typed columns against "
+                f"the live raw schema — the cross-check DESCRIBE itself failed (see the "
+                f"logged 'strongly_typed_describe_failed' warning for the cause); nothing "
+                f"was trusted, adopted, or promoted for this table"
+            )
+
+        # `adopted`: present in the live schema but disagreeing with the catalog
+        # — the live type is ground truth (see docstring), so the catalog value
+        # is corrected, not discarded. `downgraded`: absent from the live schema
+        # entirely (the catalog names a column that no longer physically
+        # exists) — nothing to adopt, so VARCHAR is the honest fallback.
+        adopted: dict[str, str] = {}
+        downgraded: set[str] = set()
+        for col in table.columns:
+            if not col.raw_type or col.raw_type == "VARCHAR":
+                continue
+            live = live_types.get(col.column_name)
+            if live is None:
+                downgraded.add(col.column_name)
+            elif live != col.raw_type:
+                adopted[col.column_name] = live
+
+        warnings: list[str] = []
+        if adopted:
+            warnings.append(
+                f"{table.table_name}: {len(adopted)} column(s) had a stale catalog "
+                f"raw_type — the raw table's live DuckDB schema is ground truth, so "
+                f"the catalog was corrected: {sorted(adopted)}"
+            )
+        if downgraded:
+            warnings.append(
+                f"{table.table_name}: {len(downgraded)} column(s) were absent from the "
+                f"raw table's live schema (the catalog names a column that no longer "
+                f"physically exists) and were downgraded to VARCHAR: {sorted(downgraded)}"
+            )
+
+        # Emit → store → execute (DAT-414): an UNCONDITIONAL explicit per-column
+        # projection — never a blanket ``SELECT *`` — so detecting (or not
+        # finding) a mismatch on one column never changes whether some OTHER,
+        # untracked physical column silently rides along; the output shape must
+        # not depend on what the cross-check found. A column that passed the
+        # cross-check (or is VARCHAR/untyped) passes through unchanged; an
+        # adopted column gets an explicit (trivially-succeeding, since it's
+        # already that type) CAST to its corrected live type; a downgraded
+        # column gets an explicit CAST to VARCHAR. Capture the DDL string so it
+        # is versioned like the untyped path's recipes (stored below, once the
+        # typed Table id is reconciled).
+        selects = []
+        for col in sorted(table.columns, key=lambda c: c.column_position):
+            ident = f'"{col.column_name}"'
+            if col.column_name in downgraded:
+                selects.append(f"TRY_CAST({ident} AS VARCHAR) AS {ident}")
+            elif col.column_name in adopted:
+                selects.append(f"TRY_CAST({ident} AS {adopted[col.column_name]}) AS {ident}")
+            else:
+                selects.append(ident)
+        typed_sql = (
+            f"CREATE OR REPLACE TABLE {typed_target} AS "
+            f"SELECT {', '.join(selects)} FROM {raw_target}"
+        )
         ctx.duckdb_conn.execute(typed_sql)
 
         # Get row count
@@ -161,13 +291,18 @@ class TypingPhase(BasePhase):
             depends_on=[raw_target],
         )
 
+        def _resolved_type(col: Any) -> str:
+            if col.column_name in downgraded:
+                return "VARCHAR"
+            return adopted.get(col.column_name, col.raw_type or "VARCHAR")
+
         desired = [
             (
                 col.column_name,
                 col.original_name,
                 col.column_position,
                 col.raw_type,
-                col.raw_type or "VARCHAR",
+                _resolved_type(col),
             )
             for col in table.columns
         ]
@@ -175,28 +310,50 @@ class TypingPhase(BasePhase):
         ctx.session.flush()
 
         # Stamp a TypeDecision per typed column. Strongly-typed columns are
-        # "trusted source" decisions. ``TypeDecision`` is one-per-column-per-run,
-        # so upsert on ``(column_id, run_id)``: idempotent under a Temporal
-        # at-least-once retry (same run_id, no delete needed) while a NEW run's
-        # rows still coexist with prior runs'; the promoted head names which run
-        # is current.
+        # "trusted source" decisions; an adopted column is ALSO "automatic" —
+        # the live schema is ground truth, so correcting the catalog to match it
+        # is not a lower-confidence outcome, just an honest one. Only a
+        # downgraded (live-absent) column gets the SAME "fallback" vocabulary
+        # the untyped path already uses for "not confident enough to commit to a
+        # type" (DAT-748). ``TypeDecision`` is one-per-column-per-run, so upsert
+        # on ``(column_id, run_id)``: idempotent under a Temporal at-least-once
+        # retry (same run_id, no delete needed) while a NEW run's rows still
+        # coexist with prior runs'; the promoted head names which run is current.
         from dataraum.analysis.typing.db_models import TypeDecision
 
         decided_at = datetime.now(UTC)
         type_decisions: dict[str, str] = {}
         td_rows: list[dict[str, Any]] = []
         for col in table.columns:
-            resolved = col.raw_type or "VARCHAR"
             typed_col_id = column_map[col.column_name]
+            if col.column_name in downgraded:
+                resolved = "VARCHAR"
+                decision_source = "fallback"
+                decision_reason = (
+                    f"column absent from the raw table's live schema (catalog named "
+                    f"raw_type {col.raw_type!r} for a column that no longer physically "
+                    f"exists) — downgraded to VARCHAR"
+                )
+            elif col.column_name in adopted:
+                resolved = adopted[col.column_name]
+                decision_source = "automatic"
+                decision_reason = (
+                    f"catalog raw_type {col.raw_type!r} was stale; adopted live type "
+                    f"{resolved!r} (the live DESCRIBE of the raw table is ground truth)"
+                )
+            else:
+                resolved = col.raw_type or "VARCHAR"
+                decision_source = "automatic"
+                decision_reason = "strongly-typed source (types trusted, cross-check passed)"
             # PK omitted so the model's Python-side default applies.
             td_rows.append(
                 {
                     "column_id": typed_col_id,
                     "run_id": ctx.require_run_id(),
                     "decided_type": resolved,
-                    "decision_source": "automatic",
+                    "decision_source": decision_source,
                     "decided_at": decided_at,
-                    "decision_reason": "strongly-typed source (types trusted)",
+                    "decision_reason": decision_reason,
                 }
             )
             type_decisions[typed_col_id] = resolved
@@ -207,9 +364,11 @@ class TypingPhase(BasePhase):
             table=table.table_name,
             columns=len(table.columns),
             rows=row_count,
+            adopted=sorted(adopted),
+            downgraded=sorted(downgraded),
         )
 
-        return typed_table.table_id, type_decisions
+        return typed_table.table_id, type_decisions, warnings
 
     def _resolve_target_table_ids(self, ctx: PhaseContext) -> list[str]:
         """Resolve which raw table_ids to type — the per-table fan-out unit (DAT-422).
@@ -274,9 +433,19 @@ class TypingPhase(BasePhase):
 
             # Check if source is strongly typed (e.g., Parquet)
             if self._is_strongly_typed(table):
-                typed_table_id, decisions = self._promote_strongly_typed(table, ctx)
+                try:
+                    typed_table_id, decisions, promote_warnings = self._promote_strongly_typed(
+                        table, ctx
+                    )
+                except StronglyTypedVerificationFailed as e:
+                    # "Couldn't check" — fail only THIS table (no typed table
+                    # produced), never fall back to trusting or downgrading
+                    # every column as if a real mismatch had been found.
+                    warnings.append(str(e))
+                    continue
                 typed_tables.append(typed_table_id)
                 type_decisions.update(decisions)
+                warnings.extend(promote_warnings)
                 total_rows_processed += table.row_count or 0
                 total_typed_created += 1
                 continue

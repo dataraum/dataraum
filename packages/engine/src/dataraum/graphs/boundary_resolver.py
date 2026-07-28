@@ -58,9 +58,13 @@ from sqlalchemy import bindparam, text
 from dataraum.core.logging import get_logger
 from dataraum.graphs.additivity import parse_aggregate_calls
 from dataraum.graphs.additivity_resolver import served_relation
+from dataraum.graphs.grounding_validation import where_filter_columns
+from dataraum.graphs.models import AssumptionBasis, GraphAssumptionOutput
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+    from dataraum.graphs.models import ExtractGroundingOutput
 
 _log = get_logger(__name__)
 
@@ -271,6 +275,74 @@ def _bind_to_close(
         fiscal_year_start_month=calendar.fiscal_year_start_month,
         calendar_source=calendar.source,
     )
+
+
+def compose_period_binding(
+    output: ExtractGroundingOutput,
+    where_parts: list[str],
+    binding: PeriodBinding | str | None,
+    served_columns: set[str],
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+) -> tuple[list[str], list[GraphAssumptionOutput], dict[str, str | int] | None]:
+    """Compose a resolved period binding onto a grounding's WHERE parts (DAT-887).
+
+    The DAT-733 shape, for the same reason: the binding rides the SAME parts substrate
+    every consumer already reads, and an opt-out is RECORDED rather than silent.
+
+    Returns ``(where_parts, assumptions, record)``:
+
+    * ``where_parts`` — the grounding's parts plus the typed period predicate, when the
+      grounding left the period axis unconstrained;
+    * ``assumptions`` — one typed assumption per non-binding outcome: a DEFERRAL when
+      the grounding pins the period axis ITSELF, or a DISCLOSURE naming why the instant
+      could not be resolved. Both are visible; neither is a silent absence;
+    * ``record`` — the observable to persist on the snippet, or ``None`` when nothing
+      was bound.
+
+    **The model's own pin is never overridden.** When the grounding constrains the
+    period axis, appending a second predicate would not correct it — it would AND two
+    incompatible pins into an empty result. So the binding defers and says so, and the
+    authoring prompt (which is served the reporting calendar) is what moves the model to
+    leave the axis alone in the first place.
+    """
+    if binding is None:
+        return where_parts, [], None
+    if isinstance(binding, str):
+        return (
+            where_parts,
+            [
+                GraphAssumptionOutput(
+                    dimension="period.binding",
+                    target="extract",
+                    assumption=(
+                        f"point-in-time extract is NOT bound to a reporting instant — {binding}; "
+                        f"the value is as-of whatever period the grounding itself selects"
+                    ),
+                    basis=AssumptionBasis.INFERRED,
+                    confidence=1.0,
+                )
+            ],
+            None,
+        )
+    constrained = where_filter_columns(output, served_columns, duckdb_conn)
+    if binding.axis in constrained:
+        return (
+            where_parts,
+            [
+                GraphAssumptionOutput(
+                    dimension="period.binding",
+                    target=f"column:{binding.relation}.{binding.axis}",
+                    assumption=(
+                        f"reporting-instant binding {binding.render()} not applied — "
+                        f"grounding constrains {binding.axis} directly"
+                    ),
+                    basis=AssumptionBasis.INFERRED,
+                    confidence=1.0,
+                )
+            ],
+            None,
+        )
+    return [*where_parts, binding.render()], [], binding.as_record()
 
 
 def _latest_close(max_period: datetime, start_month: int) -> datetime:

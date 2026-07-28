@@ -20,8 +20,10 @@ from dataraum.graphs.boundary_resolver import (
     ReportingCalendar,
     _bind_to_close,
     _latest_close,
+    compose_period_binding,
     resolve_period_binding,
 )
+from dataraum.graphs.models import ExtractGroundingOutput, GraphProvenanceOutput
 
 if TYPE_CHECKING:
     import duckdb
@@ -126,9 +128,7 @@ def test_binds_declared_non_calendar_fiscal_year(duckdb_conn: duckdb.DuckDBPyCon
 
 def test_snaps_back_when_close_itself_is_absent(duckdb_conn: duckdb.DuckDBPyConnection) -> None:
     """A gap at the close binds the latest period BEFORE it — never one after."""
-    relation = _balance_sheet(
-        duckdb_conn, ["2025-10-01", "2025-11-01", "2025-12-01", "2026-02-01"]
-    )
+    relation = _balance_sheet(duckdb_conn, ["2025-10-01", "2025-11-01", "2025-12-01", "2026-02-01"])
 
     bound = _bind_to_close(duckdb_conn, relation, "period", _CALENDAR_YEAR)
 
@@ -206,6 +206,97 @@ def test_no_relation_makes_no_binding(
 # ---------------------------------------------------------------------------
 # The recorded observable (the ticket's acceptance criterion)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Composing the binding onto the grounding's parts
+# ---------------------------------------------------------------------------
+
+
+def _output(where: list[str] | None = None) -> ExtractGroundingOutput:
+    return ExtractGroundingOutput(
+        grounding="evidence",
+        relation="enriched_balance_sheet",
+        where=where or [],
+        select_expr="SUM(balance)",
+        description="d",
+        provenance=GraphProvenanceOutput(column_mappings_basis=[]),
+        assumptions=[],
+    )
+
+
+def _binding() -> PeriodBinding:
+    return PeriodBinding(
+        as_of=datetime(2026, 1, 1),
+        window_close=datetime(2026, 1, 1),
+        axis="period",
+        relation="enriched_balance_sheet",
+        fiscal_year_start_month=1,
+        calendar_source="default",
+    )
+
+
+def test_compose_appends_the_binding_and_records_it(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """An unconstrained period axis gets the typed predicate AND the observable."""
+    where, assumptions, record = compose_period_binding(
+        _output(["account_type = 'payable'"]),
+        ["account_type = 'payable'"],
+        _binding(),
+        {"period", "balance", "account_type"},
+        duckdb_conn,
+    )
+
+    assert where == ["account_type = 'payable'", "\"period\" = TIMESTAMP '2026-01-01 00:00:00'"]
+    assert assumptions == []
+    assert record is not None
+    assert record["as_of"] == "2026-01-01 00:00:00"
+
+
+def test_compose_defers_when_the_grounding_pins_the_axis_itself(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The model's own pin is never overridden — ANDing two pins yields an empty result.
+
+    The deferral is recorded as a typed assumption so the unbound axis stays visible.
+    """
+    model_pin = "period = (SELECT MAX(period) FROM enriched_balance_sheet)"
+    where, assumptions, record = compose_period_binding(
+        _output([model_pin]),
+        [model_pin],
+        _binding(),
+        {"period", "balance"},
+        duckdb_conn,
+    )
+
+    assert where == [model_pin]  # untouched — no deterministic override
+    assert record is None
+    assert len(assumptions) == 1
+    assert assumptions[0].dimension == "period.binding"
+    assert "not applied" in assumptions[0].assumption
+
+
+def test_compose_discloses_an_unresolved_instant(duckdb_conn: duckdb.DuckDBPyConnection) -> None:
+    """A point-in-time extract with no resolvable instant says so — never a silent pass."""
+    where, assumptions, record = compose_period_binding(
+        _output(), [], "no period at or before the last fiscal close", set(), duckdb_conn
+    )
+
+    assert where == []
+    assert record is None
+    assert len(assumptions) == 1
+    assert assumptions[0].dimension == "period.binding"
+    assert "NOT bound to a reporting instant" in assumptions[0].assumption
+
+
+def test_compose_leaves_a_flow_untouched(duckdb_conn: duckdb.DuckDBPyConnection) -> None:
+    """A flow resolves to None — no predicate, no assumption, no record."""
+    assert compose_period_binding(_output(), ["x = 1"], None, set(), duckdb_conn) == (
+        ["x = 1"],
+        [],
+        None,
+    )
 
 
 def test_binding_renders_a_typed_equality_predicate() -> None:

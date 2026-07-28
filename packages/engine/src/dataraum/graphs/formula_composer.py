@@ -68,19 +68,34 @@ def compose_extract_sql(select_expr: str, relation: str | None, where: list[str]
     return sql
 
 
-def extract_parts_dict(select_expr: str, relation: str | None, where: list[str]) -> dict[str, Any]:
+def extract_parts_dict(
+    select_expr: str,
+    relation: str | None,
+    where: list[str],
+    period_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The persisted clause-parts shape (DAT-671).
 
     This is the GENERAL schema every structured SQL author shares (the answer
     agent adopts it later), even though the graph agent only ever fills the
     single-relation single-item case:
     ``{select: [{expr, alias}], from: [relation], where: [pred, …]}``.
+
+    ``period_binding`` (DAT-887) is the resolved reporting instant a POINT-IN-TIME
+    extract was bound to — the ticket's required observable, so a consumer can tell
+    "the balance at the fiscal-year close" from "the latest balance in the table"
+    instead of having to infer it from the value. The key is present ONLY when an
+    instant was actually bound: a flow never carries one, and an unresolved binding
+    discloses itself as a typed assumption instead of a half-filled record here.
     """
-    return {
+    parts: dict[str, Any] = {
         "select": [{"expr": select_expr, "alias": "value"}],
         "from": [relation] if relation else [],
         "where": [p.strip() for p in where if p and p.strip()],
     }
+    if period_binding is not None:
+        parts["period_binding"] = period_binding
+    return parts
 
 
 def compose_constant_sql(value: Any) -> str:

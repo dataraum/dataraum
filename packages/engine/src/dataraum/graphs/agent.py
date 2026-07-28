@@ -974,12 +974,18 @@ class GraphAgent(LLMFeature):
         # falls loud into the failed-snippet path (DAT-543) so the authored SQL
         # + the exact violations feed the next run's prior_context instead of
         # vanishing.
+        from dataraum.graphs.boundary_resolver import (
+            compose_period_binding,
+            resolve_period_binding,
+        )
         from dataraum.graphs.grounding_validation import (
             schema_tables_from_info,
             validate_grounding_basis,
         )
         from dataraum.graphs.validity_scope import compose_scoped_where
         from dataraum.llm.contract_repair import repair_tool_contract
+        from dataraum.server.workspace import schema_name_for
+        from dataraum.storage.read_views import read_schema_name_for
 
         schema_tables = schema_tables_from_info(schema_info)
         # DAT-787: the value reference for filter_members — the complete served
@@ -1025,14 +1031,35 @@ class GraphAgent(LLMFeature):
         # constrains the status column (the LLM's own judgment), the scope defers and
         # is recorded as a typed assumption instead of silently double-filtering.
         # Absence falls loud — no applicable cycle appends nothing.
+        served_columns = schema_tables.get(relation, set()) if relation is not None else set()
         where_parts, scope_assumptions = compose_scoped_where(
             output,
             relation,
-            schema_tables.get(relation, set()) if relation is not None else set(),
+            served_columns,
             context.rich_context.business_cycles,
             context.rich_context.enriched_views,
             context.rich_context.tables,
             context.duckdb_conn,
+        )
+
+        # DAT-887: bind a POINT-IN-TIME extract to a reporting instant. A stock is a
+        # level AT an instant, not an accumulation, so an unbound period axis resolves
+        # to whatever period the data happens to end at — two past the fiscal-year end
+        # on the finance corpus. The resolver returns the fiscal close (never a rewrite
+        # of the model's SQL); this appends it as one more typed WHERE part on the SAME
+        # parts substrate the validity scope above rides, and records the instant on the
+        # snippet as the ticket's observable. A FLOW resolves to None and is untouched —
+        # period_resolver owns its window. An unresolvable instant, or a grounding that
+        # pins the axis itself, becomes a VISIBLE typed assumption, never a silent pass.
+        period_binding = resolve_period_binding(
+            session,
+            context.duckdb_conn,
+            relation=relation,
+            select_expr=output.select_expr,
+            read_schema=read_schema_name_for(schema_name_for(workspace_id)),
+        )
+        where_parts, binding_assumptions, binding_record = compose_period_binding(
+            output, where_parts, period_binding, served_columns, context.duckdb_conn
         )
 
         rendered_sql = compose_extract_sql(output.select_expr, relation, where_parts)
@@ -1045,12 +1072,14 @@ class GraphAgent(LLMFeature):
                     "step_id": leaf.step_id,
                     "sql": rendered_sql,
                     "description": output.description,
-                    "parts": extract_parts_dict(output.select_expr, relation, where_parts),
+                    "parts": extract_parts_dict(
+                        output.select_expr, relation, where_parts, binding_record
+                    ),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
             provenance=output.provenance,
-            assumptions=(output.assumptions or []) + scope_assumptions,
+            assumptions=(output.assumptions or []) + scope_assumptions + binding_assumptions,
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),

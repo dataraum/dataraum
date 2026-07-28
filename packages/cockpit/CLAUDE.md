@@ -55,8 +55,25 @@ docker compose -f packages/infra/docker-compose.yml up -d --wait postgres seawee
 cp .env.example .env                 # host-dev defaults; fill ANTHROPIC_API_KEY (gitignored)
 bun install && bun --bun run dev     # → http://localhost:3000  (the --bun flag is required)
 bun run check                        # biome lint + format
-bun run test                         # vitest
+bun run test                         # vitest — unit project (pure, no DB)
+bun run test:integration             # vitest — integration project (needs docker)
 ```
+
+## Testing — read `src/test/README.md` before adding a test
+
+Two projects: `unit` (pure) and `integration` (a fixture workspace carrying the
+**engine's** generated schema + cockpit_db at its real migration head, booted
+once per run from a docker daemon; no compose stack, loud skip without docker).
+
+**The standing rule that harness establishes: boundary tests use
+production-shape fixtures, never idealized bare-name SQL.** Every high-value
+cockpit defect of the DAT-671 wave was invisible to unit tests, `tsc` and
+`build`, and each hid in the gap between a tidy fixture and the real shape —
+`lake.typed.current_orders_enriched` not `orders`, `SUM(x) AS revenue` not
+`SUM(x)`, `CASE WHEN COUNT(*)=0 THEN NULL ELSE SUM(x) END` not `SUM(x)`,
+`region_id__name` not `region`. Corollary: an **empty** result is a claim —
+assert the *reason*, since "no axes" and "checks lost in transit" both render
+as nothing.
 
 > **Worker code is NOT hot-reloaded.** The activity-only worker is a `globalThis`-pinned singleton created once at server boot (`src/worker/worker.ts`); HMR re-imports the module but reuses the running worker. So edits to **`src/worker/`** (the activities, the grounding-teach agent) do **not** take effect under `bun --bun run dev` — **restart the dev server** to load them. (The prod/container face is the deploy step under "Temporal" below.)
 

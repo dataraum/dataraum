@@ -26,6 +26,7 @@ import {
 	startFixtureWorkspace,
 	stopFixtureWorkspace,
 } from "./fixture-workspace";
+import { catalogSeedSql, metricArtifactSeedSql } from "./seed-catalog";
 
 export interface FixtureHandle {
 	metadataUrl: string;
@@ -57,6 +58,9 @@ export default async function setup({ provide }: TestProject) {
 	try {
 		fixture = startFixtureWorkspace();
 		applyCockpitMigrations(fixture.cockpitUrl);
+		// One canonical, head-promoted catalog for every fixture-backed suite.
+		fixture.psql(catalogSeedSql());
+		fixture.psql(metricArtifactSeedSql());
 	} catch (err) {
 		// A fixture that fails to BUILD is a real failure, not a skip: docker is
 		// present, so this is our seeding going wrong (e.g. engine schema.sql no

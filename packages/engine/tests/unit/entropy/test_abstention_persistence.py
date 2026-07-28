@@ -198,7 +198,7 @@ class TestReadinessCoveragePersistence:
             {
                 "detector": "null_ratio",
                 "reason": "missing_inputs",
-                "intents": ["aggregation_intent", "query_intent", "reporting_intent"],
+                "intents": ["aggregation_intent", "query_intent", "presentation_intent"],
             }
         ]
 
@@ -262,6 +262,6 @@ class TestReadinessCoveragePersistence:
             {
                 "detector": "temporal_behavior",
                 "reason": "insufficient_data",
-                "intents": ["aggregation_intent", "query_intent", "reporting_intent"],
+                "intents": ["aggregation_intent", "query_intent", "presentation_intent"],
             }
         ]

@@ -8,13 +8,21 @@ import { Badge, Group, Text } from "@mantine/core";
 
 import { humanizeBand } from "#/ui/cockpit/widgets/inventory-grouping";
 
-// The three entropy intents, as the ENGINE NODE KEYS persisted in readiness
-// rows (`network.get_intent_nodes()`), not bare words — matching on the wrong
+// The three entropy intents, as the persisted readiness-row KEYS (the loss
+// table's `LossConfig.intents()`, packages/engine/src/dataraum/entropy/loss.py
+// — the Bayesian network + network.yaml were deleted in DAT-442, so these are
+// no longer "network node keys"), not bare words — matching on the wrong
 // string silently renders every per-intent cell as a dash.
+//
+// Named `presentation_intent` (DAT-883 rename, was `reporting_intent`): the
+// highest-stakes tier — a number PRESENTED as finished/labeled/authoritative
+// to a stakeholder with no further chance to caveat it — renamed off
+// "reporting" to stop colliding with the cockpit's own `Report` entity
+// (reports/mint, unrelated).
 export const INTENTS = [
 	"query_intent",
 	"aggregation_intent",
-	"reporting_intent",
+	"presentation_intent",
 ] as const;
 
 /** Friendly labels for the intent node keys. String-keyed so callers can fall
@@ -22,7 +30,7 @@ export const INTENTS = [
 export const INTENT_LABEL: Record<string, string> = {
 	query_intent: "Query",
 	aggregation_intent: "Aggregation",
-	reporting_intent: "Reporting",
+	presentation_intent: "Presentation",
 };
 
 // Band → Mantine color. An absent band (not analyzed) renders as a muted dash,

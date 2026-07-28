@@ -32,7 +32,7 @@ function readiness(
 		worstIntentRisk: 0.42,
 		intents: [
 			{
-				intent: "reporting_intent",
+				intent: "presentation_intent",
 				band: "investigate",
 				risk: 0.42,
 				drivers: [
@@ -148,7 +148,7 @@ describe("projectWhyTable (DAT-415)", () => {
 					{
 						detector: "dimension_coverage",
 						reason: "missing_inputs",
-						intents: ["reporting_intent"],
+						intents: ["presentation_intent"],
 					},
 				],
 			}),

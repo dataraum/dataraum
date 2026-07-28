@@ -349,7 +349,7 @@ class TestMultiIntentAssembly:
         assert {i.intent_name for i in col.intents} == {
             "query_intent",
             "aggregation_intent",
-            "reporting_intent",
+            "presentation_intent",
         }
 
     def test_multiple_columns_independent_intents(self):
@@ -362,7 +362,7 @@ class TestMultiIntentAssembly:
         assert result.total_columns == 2
         for target in ("column:t.c1", "column:t.c2"):
             names = {i.intent_name for i in result.columns[target].intents}
-            assert names == {"query_intent", "aggregation_intent", "reporting_intent"}
+            assert names == {"query_intent", "aggregation_intent", "presentation_intent"}
 
     def test_overall_readiness_blocked_when_high(self):
         """A very high measurement pushes its worst intent to blocked."""
@@ -415,7 +415,7 @@ class TestCoverage:
             {
                 "detector": "null_ratio",
                 "reason": "missing_inputs",
-                "intents": ["aggregation_intent", "query_intent", "reporting_intent"],
+                "intents": ["aggregation_intent", "query_intent", "presentation_intent"],
             }
         ]
         # Counted apart from ready — an unmeasured column is not a clean one.

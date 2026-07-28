@@ -51,18 +51,39 @@ class ColumnAnnotationAgent(LLMFeature):
     as ``SemanticAnnotation`` rows.
     """
 
-    # Runaway-emission guard (DAT-889). A free-text-JSON call annotating ALL
-    # tables at once is a SAMPLED dice roll: Sonnet 5 has no temperature (the
+    # Runaway-emission guard (DAT-889). The phase has been structured output
+    # since DAT-807 — constrained decoding fixes the JSON's GRAMMAR (shape),
+    # but not the LENGTH of one string/number literal, and thinking tokens
+    # (when the model uses them) are unconstrained prose. Emission is
+    # therefore still SAMPLED: Sonnet 5 has no temperature (the
     # `temperature: 0.0` prompt-YAML lines are dead config), so an identical
-    # request can legitimately runaway into digit emission on one run and
-    # finish cleanly (~15k chars, end_turn) on the next (~70k chars,
-    # stop_reason=max_tokens, tail "...9999"). ``annotate`` retries a
-    # max_tokens cut-off on a REDUCED table batch (halved, then per-table once
-    # a batch can no longer be split) instead of raising max_tokens (a runaway
-    # just runs longer) or failing the whole phase on the first bad roll. The
-    # call budget below bounds the retry tree so a persistently-runaway
-    # workspace still fails loud (PhaseFailed) rather than looping forever.
-    _MAX_ANNOTATION_CALLS: ClassVar[int] = 6
+    # request can legitimately runaway into a digit literal that never
+    # terminates on one run and finish cleanly (~15k chars, end_turn) on the
+    # next (~70k chars, stop_reason=max_tokens, tail "...9999"). ``annotate``
+    # retries a max_tokens cut-off on a REDUCED table batch (halved, then
+    # per-table once a batch can no longer be split) instead of raising
+    # max_tokens (a runaway just runs longer) or failing the whole phase on
+    # the first bad roll.
+    #
+    # The call budget SCALES with the table count (``_annotation_call_budget``)
+    # rather than a flat ceiling: a full binary-split retry tree over N tables
+    # can cost up to ~2N-1 calls in the worst case, so a fixed small ceiling
+    # would itself start failing large requests loud for reasons unrelated to
+    # any persistent runaway — exactly the failure this guard exists to
+    # prevent, just rarer. ``_MIN_ANNOTATION_CALLS`` is the floor for a small
+    # request.
+    _MIN_ANNOTATION_CALLS: ClassVar[int] = 6
+
+    def _annotation_call_budget(self, table_count: int) -> int:
+        """Bounded LLM-call budget for one ``annotate`` call (DAT-889).
+
+        Scales with the table count so a large request isn't bounded by the
+        same fixed ceiling as a small one; floored at
+        ``_MIN_ANNOTATION_CALLS`` so a small request still gets a few
+        retries. A real method (not an inline expression in ``annotate``) so
+        a test can force a specific budget regardless of table count.
+        """
+        return max(self._MIN_ANNOTATION_CALLS, 2 * table_count)
 
     def __init__(
         self,
@@ -85,20 +106,29 @@ class ColumnAnnotationAgent(LLMFeature):
         """Annotate columns with semantic metadata.
 
         Batches the request by TABLE (never by column — a table's columns are
-        never split across calls) and retries a max_tokens runaway on a
-        reduced batch (DAT-889, see ``_MAX_ANNOTATION_CALLS``). The common
-        case (no runaway) is exactly one call over every requested table,
-        unchanged from before this guard.
+        never split across calls) and retries on a reduced batch when a
+        runaway is detected (DAT-889, see ``_annotation_call_budget``). The
+        common case (no runaway) is exactly one call over every requested
+        table, unchanged from before this guard.
 
-        COVERAGE INVARIANT: the guard changes call granularity, never
-        coverage. On success every table this call was asked to annotate IS
-        annotated — reduced batches partition the same requested table set and
-        their outputs are merged, nothing is sampled down or silently dropped.
-        If any batch exhausts its retry budget, the WHOLE call fails (no
+        COVERAGE INVARIANT, enforced on TWO axes:
+
+        1. Call-shape axis: the guard changes call granularity, never
+           coverage. A max_tokens cut-off retries on reduced batches that
+           partition the same requested table set, and their outputs are
+           merged — nothing is sampled down because a batch got smaller.
+        2. Content axis: a batch can also parse CLEANLY yet silently OMIT a
+           table it was asked for — the same sampled-incompleteness class as
+           a runaway, just past the parse boundary. The omitted tables are
+           re-queued as a retry batch (counted against the same budget)
+           rather than accepted as a thinner success.
+
+        If any batch exhausts the call budget, the WHOLE call fails (no
         partial ``ColumnAnnotationOutput`` is ever returned as if it were
         complete) — the caller's existing failure path (``ground_columns`` →
         ``PhaseResult.failed`` → non-retryable ``PhaseFailed``) surfaces it,
-        naming the tables still unannotated.
+        naming the tables still unannotated. A post-loop check re-verifies
+        full coverage as the final guarantee before reporting success.
 
         Args:
             session: Database session
@@ -113,7 +143,12 @@ class ColumnAnnotationAgent(LLMFeature):
 
         Returns:
             Result containing ColumnAnnotationOutput. On success, ``warnings``
-            carries one entry per runaway retry — never silent (DAT-889).
+            carries one entry per retry (runaway OR content-omission). It is
+            read by ``ground_columns`` → ``PhaseResult.warnings``, which feeds
+            both the phase summary's retry-count suffix and the
+            ``activity.phase_done`` / ``activity.session_phase_done`` log
+            line's ``warnings`` field (DAT-889) — disclosure is not just a
+            debug log a human has to go looking for.
         """
         feature_config = self.config.features.column_annotation
         if not feature_config or not feature_config.enabled:
@@ -147,30 +182,43 @@ class ColumnAnnotationAgent(LLMFeature):
         model = self.provider.get_model_for_tier(feature_config.model_tier)
 
         # Group profiles by table, preserving first-seen order — the batching
-        # unit the runaway guard splits and retries over. A batch of one (all
-        # tables) is the pre-existing, unguarded behavior.
+        # unit the runaway guard splits and retries over. One BATCH containing
+        # every table is the pre-existing, unguarded shape.
         profiles_by_table: dict[str, list[ColumnProfile]] = {}
         for profile in profiles:
             profiles_by_table.setdefault(profile.column_ref.table_name, []).append(profile)
         all_tables = list(profiles_by_table)
+        if not all_tables:
+            return Result.ok(ColumnAnnotationOutput(tables=[]))
 
+        max_calls = self._annotation_call_budget(len(all_tables))
         tables_out: list[TableColumnAnnotation] = []
         retry_notes: list[str] = []
         pending: list[list[str]] = [all_tables]
         calls_made = 0
 
+        def _fail_with_retries(message: str) -> Result[ColumnAnnotationOutput]:
+            """Fail, carrying whatever retries already ran.
+
+            A render exception, a genuine contract break, or budget
+            exhaustion each end the call — but retries already spent on
+            EARLIER batches in this same call must not vanish from the
+            error just because a later batch is what finally gave up.
+            """
+            if retry_notes:
+                message = f"{message} Retries so far: {'; '.join(retry_notes)}"
+            return Result.fail(message)
+
         while pending:
             batch = pending.pop()
 
-            if calls_made >= self._MAX_ANNOTATION_CALLS:
+            if calls_made >= max_calls:
                 gap_tables = list(batch)
                 for later_batch in pending:
                     gap_tables.extend(later_batch)
-                return Result.fail(
+                return _fail_with_retries(
                     "column_annotation runaway guard exhausted "
-                    f"{self._MAX_ANNOTATION_CALLS} LLM calls ({len(retry_notes)} retries) "
-                    f"with tables {gap_tables!r} still unannotated. Retries so far: "
-                    + "; ".join(retry_notes)
+                    f"{max_calls} LLM calls with tables {gap_tables!r} still unannotated."
                 )
 
             batch_profiles = [p for name in batch for p in profiles_by_table[name]]
@@ -188,11 +236,25 @@ class ColumnAnnotationAgent(LLMFeature):
                     "column_annotation", context
                 )
             except Exception as e:
-                return Result.fail(f"Failed to render column_annotation prompt: {e}")
+                return _fail_with_retries(f"Failed to render column_annotation prompt: {e}")
 
             # Call LLM — structured output (DAT-807): the API constrains decoding
             # to the schema, so the answer is JSON message content, not tool
             # arguments.
+            #
+            # `label` stays the literal "column_annotation" on every attempt —
+            # NOT e.g. f"column_annotation@{calls_made}" — even though that
+            # means a same-table retry's offline prompt dump
+            # (``llm/prompt_log.py``, keyed by (label, prompt_hash) in
+            # ``providers/anthropic.py``) collides with and overwrites the
+            # earlier attempt's dump, destroying exactly the runaway payload
+            # the eval would want to inspect (DAT-889 fold-in review — PARKED,
+            # not fixed here). `label` is asserted verbatim by
+            # ``tests/unit/llm/test_agent_request_shape.py::test_column_annotation``
+            # via the ``_assert_shape`` helper that ~9 other feature-agent
+            # tests in that file share; varying it would mean loosening a
+            # shared assertion those other agents' tests also rely on — out
+            # of this lane's fence (other phases/agents' tests).
             request = ConversationRequest(
                 messages=[Message(role="user", content=user_prompt)],
                 system=system_prompt,
@@ -216,14 +278,37 @@ class ColumnAnnotationAgent(LLMFeature):
                 response, ColumnAnnotationOutput, label="column_annotation"
             )
             if parsed.success:
-                tables_out.extend(parsed.unwrap().tables)
+                output = parsed.unwrap()
+                tables_out.extend(output.tables)
+
+                # Content-axis coverage (DAT-889): a parse-clean response can
+                # still silently OMIT a table this batch asked for. Re-queue
+                # exactly the gap — it counts against the same call budget as
+                # any other retry — rather than accept a thinner success.
+                returned = {t.table_name for t in output.tables}
+                missing = [name for name in batch if name not in returned]
+                if missing:
+                    note = (
+                        f"parse-clean response for batch {batch!r} omitted "
+                        f"{missing!r} (attempt {calls_made}/{max_calls}) — "
+                        "retrying the gap"
+                    )
+                    logger.warning(
+                        "column_annotation_incomplete_batch_retry",
+                        batch=batch,
+                        missing=missing,
+                        attempt=calls_made,
+                        max_calls=max_calls,
+                    )
+                    retry_notes.append(note)
+                    pending.append(missing)
                 continue
 
             if response.stop_reason != "max_tokens":
                 # A genuine contract break (bad schema, refusal, …) — not the
                 # runaway this guard targets. Reducing the batch would not fix
                 # it, so fail exactly as before the guard existed.
-                return Result.fail(parsed.error or "column_annotation failed")
+                return _fail_with_retries(parsed.error or "column_annotation failed")
 
             # Runaway: retry on a reduced batch (DAT-889). Halve while more
             # than one table remains; once down to a single table, retry that
@@ -235,7 +320,7 @@ class ColumnAnnotationAgent(LLMFeature):
                 left, right = batch[:mid], batch[mid:]
                 note = (
                     f"runaway (stop_reason=max_tokens) on {len(batch)}-table batch "
-                    f"{batch!r} (attempt {calls_made}/{self._MAX_ANNOTATION_CALLS}) — "
+                    f"{batch!r} (attempt {calls_made}/{max_calls}) — "
                     f"splitting into {len(left)}+{len(right)} tables and retrying"
                 )
                 pending.append(right)
@@ -243,7 +328,7 @@ class ColumnAnnotationAgent(LLMFeature):
             else:
                 note = (
                     f"runaway (stop_reason=max_tokens) on single-table batch {batch!r} "
-                    f"(attempt {calls_made}/{self._MAX_ANNOTATION_CALLS}) — retrying "
+                    f"(attempt {calls_made}/{max_calls}) — retrying "
                     "the same table"
                 )
                 pending.append(batch)
@@ -254,10 +339,26 @@ class ColumnAnnotationAgent(LLMFeature):
                 stop_reason=response.stop_reason,
                 output_tokens=response.output_tokens,
                 content_chars=len(response.content),
+                # The one field that distinguishes a digit runaway from
+                # legitimately long output at a glance (DAT-889 fold-in).
+                content_tail=response.content[-80:],
                 attempt=calls_made,
-                max_calls=self._MAX_ANNOTATION_CALLS,
+                max_calls=max_calls,
             )
             retry_notes.append(note)
+
+        # Post-loop safety check (DAT-889 fold-in): the final guarantee, not
+        # the primary mechanism. Every path above either re-queues a gap or
+        # returns Result.fail, so `pending` emptying out should already imply
+        # full coverage — verify it anyway rather than trust it.
+        covered = {t.table_name for t in tables_out}
+        still_missing = [name for name in all_tables if name not in covered]
+        if still_missing:
+            return _fail_with_retries(
+                f"column_annotation's retry loop ended with tables {still_missing!r} "
+                "still missing from the merged output — refusing to report a "
+                "thinner success."
+            )
 
         logger.debug(
             "column_annotation_complete",

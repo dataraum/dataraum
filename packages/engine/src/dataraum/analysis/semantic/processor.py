@@ -376,9 +376,11 @@ def ground_columns(
         annotated_by=model_name,
         run_id=run_id,
     )
-    # Runaway-retry disclosure (DAT-889): non-empty only when the annotation
-    # call hit stop_reason=max_tokens and recovered on a reduced batch — never
-    # silent. Threaded through to PhaseResult.warnings by the calling phase.
+    # Retry disclosure (DAT-889): non-empty only when a runaway (max_tokens)
+    # or a content-omission was recovered by retrying a reduced batch.
+    # Threaded through to PhaseResult.warnings by the calling phase, which
+    # feeds the phase summary's retry-count suffix and the
+    # activity.phase_done log line's warnings field — not just a debug log.
     return Result.ok(count, warnings=annotation_result.warnings)
 
 

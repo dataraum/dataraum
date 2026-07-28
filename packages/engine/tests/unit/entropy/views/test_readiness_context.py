@@ -415,7 +415,7 @@ class TestCoverage:
             {
                 "detector": "null_ratio",
                 "reason": "missing_inputs",
-                "intents": ["aggregation_intent", "query_intent", "presentation_intent"],
+                "intents": ["aggregation_intent", "presentation_intent", "query_intent"],
             }
         ]
         # Counted apart from ready — an unmeasured column is not a clean one.

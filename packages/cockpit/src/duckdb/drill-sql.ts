@@ -26,6 +26,7 @@ import {
 	countAlias,
 	type DrillPinValue,
 	type DrillStep,
+	deCompoundedColumnRenames,
 	referencedColumns,
 	sliceColumns,
 } from "./drill";
@@ -197,5 +198,37 @@ export async function composeDrill(
 		);
 	}
 
-	return { ok: true, sql: composed.sql, params: composed.params, columns };
+	// DAT-671 drilled-projection hygiene: a re-wrap of an already-drilled base
+	// (e.g. re-drilling a minted report) compounds this wrap's own aggregate
+	// labels onto the base's — `sum(sum(x))`, `sum(count)`, a de-collided
+	// `_count` — over columns that are otherwise correct and already
+	// fold-probed above. Relabel them ONE more thin wrap; the ordinary,
+	// overwhelmingly common case (nothing compounded) costs nothing extra.
+	const renames = deCompoundedColumnRenames(columns);
+	if (renames.size === 0) {
+		return { ok: true, sql: composed.sql, params: composed.params, columns };
+	}
+	const renameClause = [...renames]
+		.map(([from, to]) => `${quoteIdentifier(from)} AS ${quoteIdentifier(to)}`)
+		.join(", ");
+	const cleanedSql = `SELECT * RENAME (${renameClause}) FROM (${composed.sql}) AS _clean`;
+	// Re-validate: this module's own contract ("the caller never receives SQL
+	// that will not bind") covers `composed.sql` above but not yet this SECOND
+	// wrap — and DuckDB's `RENAME` does not error on a naming collision (it
+	// silently disambiguates, e.g. two columns both landing on `count`), which
+	// `deCompoundedColumnRenames`'s own de-collision should already prevent but
+	// this is the honest backstop if it somehow didn't. The DESCRIBE's own
+	// names are the truth for `cleanedColumns`, not our hand-computed mapping.
+	let cleanedColumns: BaseColumn[];
+	try {
+		cleanedColumns = await describeColumns(conn, cleanedSql, composed.params);
+	} catch (err) {
+		return refuse(errorLine(err));
+	}
+	return {
+		ok: true,
+		sql: cleanedSql,
+		params: composed.params,
+		columns: cleanedColumns,
+	};
 }

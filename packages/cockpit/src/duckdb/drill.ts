@@ -82,7 +82,21 @@ export type DrillNodeRef =
 export type DrillAxesRequest =
 	| DrillNodeRef
 	| { resultSql: string; resultParams?: DrillPinValue[] }
-	| { partsSources: { relation: string; selectExpr: string }[] };
+	| {
+			partsSources: { relation: string; selectExpr: string }[];
+			/** The answer's own BASE statement — `state.sql` in
+			 *  answer-result.tsx, the ORIGINAL undrilled query the widget mounted
+			 *  with, NOT `shownSql` (which tracks whatever's currently displayed,
+			 *  base or drilled) — carried ONLY so the server can determine which
+			 *  candidate axes are already non-measure identifier columns of THIS
+			 *  exact result (DAT-671, "we should not slice on already existing
+			 *  slices"), via a structural (one-hop) read of its outer projection/
+			 *  GROUP BY. Never executed for this purpose — a parse/DESCRIBE read
+			 *  only, same as the tier-A path's `resultSql` above. Absent = the
+			 *  determination can't run, so nothing is greyed by this rule (never a
+			 *  guess) — the axes still resolve exactly as before. */
+			baseSql?: string;
+	  };
 
 /**
  * How a grid recomposes when a drill is applied — the ONE selector, so a
@@ -133,6 +147,22 @@ export interface DrillAxis {
 	 *  also among the currently-resolved axes — else `null`. Fact-scoped like
 	 *  `driverGain`: node/measure path only, always null on tier A. */
 	hierarchyNext: string | null;
+	/** DAT-671 ("we should not slice on already existing slices," grey-out
+	 *  amendment): set when this axis's column NAME already matches one of the
+	 *  result's own non-measure identifier columns — the result is already
+	 *  broken out by this dimension (a GROUP BY it already carries, read
+	 *  structurally off the base statement — `sql-ast.ts`'s
+	 *  `existingIdentifierColumns`), so slicing by it again would be a no-op
+	 *  re-group. The item stays in the menu (never removed) but renders
+	 *  DISABLED with this reason. `null` when offered normally — either the
+	 *  axis genuinely isn't already in the result, or the determination
+	 *  couldn't decide structurally (never a guess): the post-execution fold
+	 *  probe (`drill-sql.ts`'s `foldsNothing`, tier-A only) remains the net for
+	 *  what this schema/name-only check misses on that path. Populated on the
+	 *  tier-A and parts-at-source (answer) paths only — the metric/measure node
+	 *  path (`resolveDrillAxes`) never re-wraps an already-drilled statement, so
+	 *  it stays null there. */
+	disabledReason: string | null;
 }
 
 export const sliceColumns = (steps: DrillStep[]): string[] => {
@@ -205,6 +235,69 @@ export function aggregateAlias(
 /** The row-count alias, de-collided against the base columns. */
 export function countAlias(columns: BaseColumn[]): string {
 	return aggregateAlias("count", new Set(columns.map((c) => c.name)));
+}
+
+/**
+ * Compounded aggregate labels a RE-WRAP of an already-drilled statement
+ * produces, collapsed back to a clean face — `sum(sum(x))` → `sum(x)`,
+ * `sum(count)` → `count`, a de-collided `_count`/`__count` → `groups` — de-
+ * colliding against whatever else the SAME output already claims (DAT-671
+ * drilled-projection hygiene).
+ *
+ * WHY this exists: `composeTierA` always emits `COUNT(*)` plus `SUM(<col>)`
+ * over every summable non-dim base column, with no awareness that a base
+ * column might ITSELF already be a prior wrap's own aggregate output — exactly
+ * what happens re-drilling an already-minted report (`SELECT dim, SUM(x) AS
+ * "sum(x)", COUNT(*) AS count FROM ... GROUP BY dim`, then sliced/pinned
+ * further): the base's `"sum(x)"` gets summed again → `sum(sum(x))`; its
+ * `"count"` gets summed → `sum(count)`; and the new wrap's OWN fresh
+ * `COUNT(*)` collides with the base's existing `"count"` and de-collides to
+ * `"_count"` — a real, rendered column that reads exactly like leaked internal
+ * plumbing.
+ *
+ * `_count`/`__count` renames to `groups` rather than being dropped or reusing
+ * `count` (owner ruling): it carries REAL information — how many of the
+ * PRIOR wrap's sub-groups folded into this new, coarser group — distinct from
+ * `sum(count)`'s rolled-up ORIGINAL row total, so the two must never collide
+ * onto the same name. `groups` names what it counts and satisfies the "never
+ * render `_count`" rule without discarding a real number. Since the two now
+ * target genuinely different clean names, no priority ordering is needed
+ * between them — the generic de-collision below (against whatever the same
+ * output already claims, itself or another renamed column) is enough.
+ *
+ * String-level, over OUR OWN deterministic alias vocabulary (composeTierA's
+ * `count`/`sum(<col>)` shapes) — never a read of the SQL that produced them.
+ * `composeTierA`/`countAlias`/`foldsNothing` are UNTOUCHED and stay in exact
+ * parity with each other: this only relabels the OUTER-most face of an
+ * already-validated, already-fold-probed result, as one more thin wrap
+ * (`drill-sql.ts`'s `composeDrill` applies it AFTER the fold probe has already
+ * run against the un-renamed SQL).
+ */
+export function deCompoundedColumnRenames(
+	columns: BaseColumn[],
+): Map<string, string> {
+	const proposals: { original: string; wanted: string }[] = [];
+	const unchanged = new Set<string>();
+	for (const c of columns) {
+		const nestedSum = /^sum\((sum\(.+\))\)$/.exec(c.name);
+		if (nestedSum) {
+			proposals.push({ original: c.name, wanted: nestedSum[1] });
+		} else if (c.name === "sum(count)") {
+			proposals.push({ original: c.name, wanted: "count" });
+		} else if (/^_+count$/.test(c.name)) {
+			proposals.push({ original: c.name, wanted: "groups" });
+		} else {
+			unchanged.add(c.name);
+		}
+	}
+	const taken = new Set(unchanged);
+	const renames = new Map<string, string>();
+	for (const p of proposals) {
+		const final = aggregateAlias(p.wanted, taken);
+		taken.add(final);
+		if (final !== p.original) renames.set(p.original, final);
+	}
+	return renames;
 }
 
 export interface ComposedDrill {

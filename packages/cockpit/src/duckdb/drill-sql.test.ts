@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { DrillPinValue } from "./drill";
 import { composeDrill, describeColumns } from "./drill-sql";
+import { existingIdentifierColumns } from "./sql-ast";
 
 let instance: DuckDBInstance;
 let conn: DuckDBConnection;
@@ -222,6 +223,122 @@ describe("composeDrill refusals (deterministic)", () => {
 			ok: false,
 			reason: expect.stringContaining("base query does not bind"),
 		});
+	});
+});
+
+describe("composeDrill re-wrap hygiene (DAT-671 drilled-projection)", () => {
+	// The already-drilled base: what a MINTED report's stored SQL looks like
+	// after a first tier-A wrap — its own "count"/"sum(amount)" aggregate faces.
+	const ALREADY_DRILLED_BASE =
+		'SELECT product, COUNT(*) AS count, SUM(amount) AS "sum(amount)" FROM sales GROUP BY product';
+
+	it("re-wrapping (via a pin — pins reach a re-wrap regardless of the menu rule) produces CLEAN column names, never compounded and never a leaked _count", async () => {
+		const result = await composeDrill(conn, {
+			sql: ALREADY_DRILLED_BASE,
+			params: [],
+			steps: [{ kind: "pin", column: "product", value: "a" }],
+		});
+		if (!result.ok) throw new Error(result.reason);
+
+		const names = result.columns.map((c) => c.name);
+		// Never a nested/compounded label, never the leaked "_count" face.
+		expect(names.some((n) => n.includes("sum(sum("))).toBe(false);
+		expect(names).not.toContain("sum(count)");
+		expect(names.some((n) => /^_+count$/.test(n))).toBe(false);
+		// The meaningful rolled-up total wins the clean "count" face; the fresh,
+		// less-useful group-of-groups count renames to "groups" (owner ruling:
+		// it carries real information — how many sub-groups folded — so it is
+		// renamed, not dropped or forced to collide with "count").
+		expect(names).toEqual(["groups", "count", "sum(amount)"]);
+
+		// product='a' is 2 raw rows (amount 1 and 4) folded into ONE row by the
+		// already-drilled base (count=2, sum(amount)=5); pinning it re-aggregates
+		// that single row: the fresh COUNT(*) over one row is 1 (one sub-group),
+		// the rolled-up original-row count is 2, the rolled-up amount total is 5.
+		const [row] = await rows(result.sql, result.params);
+		expect(String(row.groups)).toBe("1");
+		expect(String(row.count)).toBe("2");
+		expect(row["sum(amount)"]).toBe(5);
+	});
+
+	it("leaves an ordinary (non-re-wrap) drill's column names untouched", async () => {
+		// The existing "slices a detail result" test already pins this shape
+		// (region/count/sum(amount)/sum(qty)) — this asserts the SAME shape is
+		// unaffected by the new post-composition relabel: nothing compounded, so
+		// deCompoundedColumnRenames is a no-op and the SQL is returned as composed.
+		const result = await composeDrill(conn, {
+			sql: "SELECT * FROM sales",
+			params: [],
+			steps: [{ kind: "slice", column: "region" }],
+		});
+		if (!result.ok) throw new Error(result.reason);
+		expect(result.columns.map((c) => c.name)).toEqual([
+			"region",
+			"count",
+			"sum(amount)",
+			"sum(qty)",
+		]);
+		expect(result.sql).not.toContain("_clean");
+	});
+});
+
+// DAT-671 review round: "the rename-wrap blind spot" — a re-wrapped, minted
+// child report's SQL is `SELECT * RENAME (...) FROM (<the real, grouped
+// statement>) AS _clean`. Read naively (top-level only), this OUTER node has
+// no GROUP BY of its own — `existingIdentifierColumns` would see it as
+// ungrouped and offer the child's own grain ENABLED again, reintroducing
+// offer-then-refuse one level down. This chain proves the fix: the one-hop
+// star-wrapper unwrap in sql-ast.ts still finds the real grouping underneath.
+describe("chain: drilled report -> child mint -> open (DAT-671 rename-wrap blind spot)", () => {
+	beforeAll(async () => {
+		await conn.run(
+			"CREATE TABLE orders_2dim (account VARCHAR, region VARCHAR, amount DOUBLE)",
+		);
+		await conn.run(
+			"INSERT INTO orders_2dim VALUES " +
+				"('A','EU',10),('A','EU',5),('B','EU',20),('A','US',5),('C','US',15),('B','US',7)",
+		);
+	});
+
+	it("the child's own grain is still detected (greyed) through the RENAME wrap, not offered as ungrouped", async () => {
+		// Level 1 — "the report": grouped by BOTH account and region (e.g. an
+		// answer authored with a 2-column GROUP BY, minted directly). A first
+		// wrap: nothing compounded yet, no RENAME wrap.
+		const report = await composeDrill(conn, {
+			sql: "SELECT * FROM orders_2dim",
+			params: [],
+			steps: [
+				{ kind: "slice", column: "account" },
+				{ kind: "slice", column: "region" },
+			],
+		});
+		if (!report.ok) throw new Error(report.reason);
+		expect(report.sql).not.toContain("_clean");
+
+		// Level 2 — "opening the report, re-drilling to region alone, minting
+		// the CHILD": a genuine roll-up (folds the report's own account-level
+		// rows into region-level ones), so the fold probe does not refuse it —
+		// but it DOES compound the report's own count/sum(amount) faces, which
+		// is exactly what produces the RENAME wrap.
+		const child = await composeDrill(conn, {
+			sql: report.sql,
+			params: report.params,
+			steps: [{ kind: "slice", column: "region" }],
+		});
+		if (!child.ok) throw new Error(child.reason);
+		expect(child.sql).toContain("_clean"); // confirms the wrap actually fired
+		expect(child.columns.map((c) => c.name)).toEqual([
+			"region",
+			"groups",
+			"count",
+			"sum(amount)",
+		]);
+
+		// "Opening the child": read what a re-view would DESCRIBE/parse — the
+		// child's own `region` grain must still be found, hidden one level
+		// inside the RENAME wrap, not asserted-ungrouped.
+		const existing = await existingIdentifierColumns(child.sql);
+		expect(existing).toEqual(new Set(["region"]));
 	});
 });
 

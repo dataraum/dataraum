@@ -41,6 +41,7 @@ import {
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
 import { DrillableGrid } from "#/ui/cockpit/widgets/drillable-grid";
 import { ReportChart } from "#/ui/cockpit/widgets/report-chart";
+import { drilledTitle } from "#/ui/cockpit/widgets/report-title";
 import {
 	deleteReportFn,
 	loadReport,
@@ -270,7 +271,7 @@ export function ReportDetailBody({
 					sql: drilled.sql,
 					sqlParams: drilled.params.length > 0 ? drilled.params : null,
 					summary: "",
-					title: `${report.title} (drilled)`,
+					title: drilledTitle(report.title),
 					conversationId: null,
 					confidence: null,
 					parentId: report.id,

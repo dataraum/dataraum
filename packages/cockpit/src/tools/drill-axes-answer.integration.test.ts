@@ -148,5 +148,49 @@ describe.skipIf(!fx.available)(
 			expect(atSource.axes.length).toBeGreaterThan(0);
 			for (const axis of atSource.axes) expect(axis.temporal).toBeNull();
 		});
+
+		// DAT-671, "we should not slice on already existing slices" — the
+		// parts-at-source path: `resolveAnswerDrillAxes`'s `baseSql` param (what
+		// `answer-result.tsx` sends as `state.sql`) already groups by one of the
+		// catalog's resolved axes, so THAT axis renders greyed while the other
+		// catalogued dimension on the same fact stays a live option.
+		//
+		// FIXTURE HONESTY (owner review): this GROUP-BY `baseSql` is NOT a shape
+		// `state.sql` can actually take on the live answer canvas TODAY — a
+		// drillSource only exists once `proveAnswerSource` proves the declared
+		// parts reproduce the answer's value via a SCALAR subquery comparison,
+		// so a drillSource-bearing answer's `state.sql` is always single-row and
+		// essentially never carries a naming GROUP BY (see the "near-dead wire"
+		// note on `resolveAnswerDrillAxes`'s own docstring). This test therefore
+		// exercises the MECHANISM — the wiring from `baseSql` through the
+		// structural read to the stamped axis — not a reachable production path;
+		// it stays valuable because the wire is harmless to keep (a wider proof
+		// shape covering row-set answers would make it fire for real) and the
+		// plumbing itself needs coverage independent of today's narrow proof.
+		it("[mechanism, not yet a reachable shape] greys the axis a baseSql already groups by, keeping the other axis enabled", async () => {
+			const baseSql =
+				`SELECT ${REGION_NAME_COLUMN}, ${GUARDED_SUM} AS revenue ` +
+				`FROM lake.typed.${ENRICHED_VIEW} GROUP BY ${REGION_NAME_COLUMN}`;
+			const atSource = await resolveAnswerDrillAxes(
+				[{ relation: ENRICHED_VIEW, selectExpr: GUARDED_SUM }],
+				baseSql,
+			);
+
+			const region = atSource.axes.find((a) => a.column === REGION_NAME_COLUMN);
+			const account = atSource.axes.find(
+				(a) => a.column === ACCOUNT_NAME_COLUMN,
+			);
+			expect(region?.disabledReason).toMatch(/already at this grain/i);
+			// The item stays IN THE MENU — never removed.
+			expect(atSource.axes.map((a) => a.column)).toContain(REGION_NAME_COLUMN);
+			expect(account?.disabledReason).toBeNull();
+		});
+
+		it("greys nothing when baseSql is absent — unchanged from before DAT-671 (the current live-canvas reality)", async () => {
+			const atSource = await resolveAnswerDrillAxes([
+				{ relation: ENRICHED_VIEW, selectExpr: GUARDED_SUM },
+			]);
+			for (const axis of atSource.axes) expect(axis.disabledReason).toBeNull();
+		});
 	},
 );

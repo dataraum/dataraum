@@ -59,6 +59,7 @@ describe("adHocAxesFromCatalog", () => {
 			sliceInterest: "primary",
 			driverGain: null,
 			hierarchyNext: null,
+			disabledReason: null,
 		});
 	});
 

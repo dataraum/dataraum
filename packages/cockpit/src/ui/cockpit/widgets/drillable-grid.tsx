@@ -394,15 +394,20 @@ export function DrillableGrid({
 		[axes],
 	);
 
+	// DAT-671: excludes a greyed (already-in-result) axis from BOTH the
+	// all-unmeasured gate and the guidance payload below — Haiku has no
+	// business suggesting slicing by a column the menu already shows disabled.
+	const enabledAxes = axes.filter((a) => a.disabledReason === null);
 	// Haiku guidance fallback (DAT-673): offered ONLY when the node has NO
-	// measured signal at all — every axis's tier is null. A node with even one
-	// measured/curated axis never shows this; mixing a real badge with an
-	// unmeasured guess on the same menu would blur exactly the honesty this
-	// chip exists to preserve. Session-local state (no persistence — this is
-	// an on-demand affordance, and a fresh mount naturally clears it, React
+	// measured signal at all — every ENABLED axis's tier is null. A node with
+	// even one measured/curated axis never shows this; mixing a real badge
+	// with an unmeasured guess on the same menu would blur exactly the honesty
+	// this chip exists to preserve. Session-local state (no persistence — this
+	// is an on-demand affordance, and a fresh mount naturally clears it, React
 	// idiom #5).
 	const allUnmeasured =
-		axes.length > 0 && axes.every((a) => axisGuidanceTier(a) === null);
+		enabledAxes.length > 0 &&
+		enabledAxes.every((a) => axisGuidanceTier(a) === null);
 	// Tri-state, not a plain nullable Map (fold-in #4): a successful call that
 	// returns ZERO surviving suggestions must not look identical to "never
 	// asked" — an empty-but-truthy Map made the Suggest action vanish with no
@@ -418,8 +423,9 @@ export function DrillableGrid({
 			// the agent module cap with (duckdb/drill.ts); review-round Critical
 			// 1: a pure-substrate node routinely has MORE than MAX_GUIDANCE_AXES
 			// axes, and sending all of them 400'd on the route's own cap with a
-			// raw zod message.
-			const capped = axes.slice(0, MAX_GUIDANCE_AXES);
+			// raw zod message. DAT-671: `enabledAxes`, not `axes` — never send a
+			// greyed (already-in-result) column for Haiku to suggest slicing by.
+			const capped = enabledAxes.slice(0, MAX_GUIDANCE_AXES);
 			// Fold-in #5: a hung model must not leave "Asking…" disabled
 			// forever — bound the client's own fetch independently of the
 			// server-side timeout (axis-guidance-agent.ts bounds its chat() call
@@ -699,8 +705,13 @@ export function DrillableGrid({
 	const hierarchyNextColumn = lastPin
 		? axisByColumn.get(lastPin.column)?.hierarchyNext
 		: undefined;
+	// DAT-671: never promote a "Suggested: Descend to X" for an axis that's
+	// simultaneously shown greyed (already-in-result) in the list below —
+	// same filter shape as the existing already-sliced check just beside it.
 	const hierarchySuggestion =
-		hierarchyNextColumn && !slicedColumns.has(hierarchyNextColumn)
+		hierarchyNextColumn &&
+		!slicedColumns.has(hierarchyNextColumn) &&
+		axisByColumn.get(hierarchyNextColumn)?.disabledReason === null
 			? axisByColumn.get(hierarchyNextColumn)
 			: undefined;
 
@@ -750,6 +761,15 @@ export function DrillableGrid({
 					Suggested (unmeasured): {guidanceTextFor(axis.column)}
 				</Text>
 			)}
+			{/* DAT-671: the short inline reason a greyed axis carries — the item
+			    STAYS in the menu (never removed), disabled, with this label; the
+			    fuller Tooltip on the item itself (below) carries the same text on
+			    hover. */}
+			{axis.disabledReason && (
+				<Text size="xs" c="dimmed" fs="italic">
+					{axis.disabledReason}
+				</Text>
+			)}
 		</>
 	);
 
@@ -789,16 +809,37 @@ export function DrillableGrid({
 							<Menu.Divider />
 						</>
 					)}
-					{axes.map((axis) => (
-						<Menu.Item
-							key={axis.column}
-							disabled={slicedColumns.has(axis.column)}
-							onClick={() => slice(axis)}
-							rightSection={axisRightSection(axis)}
-						>
-							{axisItemBody(axis, axis.column)}
-						</Menu.Item>
-					))}
+					{axes.map((axis) => {
+						const item = (
+							<Menu.Item
+								key={axis.column}
+								disabled={
+									slicedColumns.has(axis.column) || axis.disabledReason !== null
+								}
+								onClick={() => slice(axis)}
+								rightSection={axisRightSection(axis)}
+								data-testid={`drill-axis-${axis.column}`}
+							>
+								{axisItemBody(axis, axis.column)}
+							</Menu.Item>
+						);
+						// DAT-671: a disabled-because-already-in-result item stays in the
+						// menu (never removed) and carries its reason on hover too, not
+						// just the inline label inside axisItemBody.
+						return axis.disabledReason ? (
+							<Tooltip
+								key={axis.column}
+								label={axis.disabledReason}
+								position="right"
+								maw={280}
+								multiline
+							>
+								<div>{item}</div>
+							</Tooltip>
+						) : (
+							item
+						);
+					})}
 					{allUnmeasured && guidance === null && (
 						<>
 							<Menu.Divider />

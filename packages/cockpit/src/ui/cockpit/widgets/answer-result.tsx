@@ -21,7 +21,10 @@ import type { ChartConfig } from "#/charts/chart-config";
 import type { AnswerConfidence, CanvasState } from "#/ui/cockpit/canvas-state";
 import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
 import { DrillableGrid } from "#/ui/cockpit/widgets/drillable-grid";
-import { defaultReportTitle } from "#/ui/cockpit/widgets/report-title";
+import {
+	defaultReportTitle,
+	drilledTitle,
+} from "#/ui/cockpit/widgets/report-title";
 
 // Bound both model-controlled arrays — the answer tool does not cap them, so a
 // pathological answer could enumerate dozens (cockpit "bound every data surface"
@@ -246,7 +249,7 @@ function AnswerResultBody({
 						drilled && drilled.params.length > 0 ? drilled.params : null,
 					summary: drilled ? "" : state.summary,
 					title: drilled
-						? `${defaultReportTitle(state.summary)} (drilled)`
+						? drilledTitle(defaultReportTitle(state.summary))
 						: defaultReportTitle(state.summary),
 					conversationId: params.conversationId ?? null,
 					// No confidence describes a drilled view's rows (DAT-627) — an
@@ -324,6 +327,12 @@ function AnswerResultBody({
 									relation: s.parts.relation,
 									selectExpr: s.parts.selectExpr,
 								})),
+								// DAT-671: the answer's own BASE statement — deliberately
+								// `state.sql`, NOT this component's own `shownSql` (which
+								// tracks whatever's CURRENTLY displayed and changes per live
+								// drill) — so the resolver can grey an axis that already
+								// breaks out this result. Structural only, never executed.
+								baseSql: state.sql,
 							}
 						: { resultSql: state.sql }
 				}

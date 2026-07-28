@@ -68,6 +68,7 @@ import {
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
 import {
+	ALREADY_AT_GRAIN_REASON,
 	applyHierarchyDescent,
 	applyTemporalKinds,
 	axesFromSliceRows,
@@ -75,6 +76,7 @@ import {
 	describeUnitGate,
 	driverGains,
 	hierarchyDescentMap,
+	markAlreadyInResult,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
 	resolveDrillAxes,
@@ -173,6 +175,7 @@ describe("axesFromSliceRows", () => {
 				sliceInterest: "primary",
 				driverGain: null,
 				hierarchyNext: null,
+				disabledReason: null,
 			},
 			{
 				column: "booking_month",
@@ -185,6 +188,7 @@ describe("axesFromSliceRows", () => {
 				sliceInterest: null,
 				driverGain: null,
 				hierarchyNext: null,
+				disabledReason: null,
 			},
 		]);
 	});
@@ -221,6 +225,39 @@ const axis = (column: string): DrillAxis => ({
 	sliceRelevance: null,
 	sliceInterest: null,
 	hierarchyNext: null,
+	disabledReason: null,
+});
+
+describe("markAlreadyInResult (DAT-671 slice-menu curation)", () => {
+	it("stamps the disabled reason on a matching axis, case-insensitively, by RESULT spelling", () => {
+		const axes = [axis("Account_Id__Name"), axis("region_id__name")];
+		const out = markAlreadyInResult(
+			axes,
+			new Set(["account_id__name"]), // structural read's own (lowercased-agnostic) spelling
+		);
+		expect(out[0].disabledReason).toBe(ALREADY_AT_GRAIN_REASON);
+		expect(out[0].column).toBe("Account_Id__Name"); // the axis keeps ITS spelling
+		expect(out[1].disabledReason).toBeNull();
+	});
+
+	it("passes axes through unchanged when existing is null (structural read couldn't decide)", () => {
+		const axes = [axis("account_id__name")];
+		expect(markAlreadyInResult(axes, null)).toBe(axes);
+	});
+
+	it("passes axes through unchanged when existing is empty (nothing already sliced)", () => {
+		const axes = [axis("account_id__name")];
+		expect(markAlreadyInResult(axes, new Set())).toBe(axes);
+	});
+
+	it("never overwrites an axis that's already disabled for another reason", () => {
+		const already = {
+			...axis("account_id__name"),
+			disabledReason: "some other reason",
+		};
+		const out = markAlreadyInResult([already], new Set(["account_id__name"]));
+		expect(out[0].disabledReason).toBe("some other reason");
+	});
 });
 
 describe("unionSubstrateAxes", () => {
@@ -245,6 +282,7 @@ describe("unionSubstrateAxes", () => {
 			sliceInterest: null,
 			driverGain: null,
 			hierarchyNext: null,
+			disabledReason: null,
 		});
 	});
 });
@@ -782,6 +820,7 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				sliceInterest: "primary",
 				driverGain: null,
 				hierarchyNext: null,
+				disabledReason: null,
 			},
 			// Substrate-only: the view exposes it, the catalog never curated it.
 			// supplier__country stays absent — its fact (cogs) never grounded.
@@ -797,6 +836,7 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				sliceInterest: null,
 				driverGain: null,
 				hierarchyNext: null,
+				disabledReason: null,
 			},
 		]);
 	});

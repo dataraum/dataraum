@@ -382,7 +382,7 @@ function tableRow(overrides: Partial<TableBandRow> = {}): TableBandRow {
 		intents: [
 			{ intent: "query", band: "ready", risk: 0.1, drivers: [] },
 			{
-				intent: "reporting",
+				intent: "presentation",
 				band: "investigate",
 				risk: 0.42,
 				drivers: [
@@ -417,7 +417,7 @@ describe("projectTableBand (DAT-415)", () => {
 		// The overview carries band + risk per intent only — drivers are why_table's.
 		expect(out.intents).toEqual([
 			{ intent: "query", band: "ready", risk: 0.1 },
-			{ intent: "reporting", band: "investigate", risk: 0.42 },
+			{ intent: "presentation", band: "investigate", risk: 0.42 },
 		]);
 		expect(out.top_drivers).toEqual([
 			{ label: "Dimension Coverage", state: "high", impact_delta: 0.3 },

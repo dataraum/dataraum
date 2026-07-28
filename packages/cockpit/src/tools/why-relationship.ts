@@ -414,7 +414,7 @@ export const whyRelationshipTool = toolDefinition({
 	name: "why_relationship",
 	description:
 		"Explain ONE relationship's readiness — why it lands in its band for the " +
-		"query, aggregation, and reporting intents — grounded in the persisted " +
+		"query, aggregation, and presentation intents — grounded in the persisted " +
 		"drivers (ranked by how much fixing each would help) and the underlying " +
 		"detector evidence, with a short synthesized explanation. Read-only. Use " +
 		"after look_relationships to drill into a specific relationship; identify it " +

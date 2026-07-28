@@ -109,7 +109,7 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
     """A table-scoped dimension_coverage object rolls up to a banded ``table:`` row (DAT-415).
 
     Proves the round-trip: a ``table:`` entropy object rolls up the network
-    (dimension_coverage → query/reporting intents), persists with the table FK and
+    (dimension_coverage → query/presentation intents), persists with the table FK and
     NO column FK, and ``load_table_readiness`` reads it back via the catalog head.
     """
     from datetime import UTC, datetime
@@ -122,7 +122,7 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
     session.add(Table(table_id="fact_t", source_id="src_t", table_name="orders", layer="typed"))
     session.flush()
     # A high coverage-gap measurement at table grain (semantic.coverage.dimension_coverage
-    # maps to the dimension_coverage network node → query/reporting intent risk).
+    # maps to the dimension_coverage network node → query/presentation intent risk).
     session.add(
         EntropyObjectRecord(
             layer="semantic",

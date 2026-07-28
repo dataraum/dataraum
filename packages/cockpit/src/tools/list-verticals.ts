@@ -110,7 +110,10 @@ async function readOntology(
  * (DAT-728's config→DB migration). The on-disk YAML count serves ONLY the
  * pre-frame case: a vertical this workspace has never touched, where no typed
  * rows exist yet to ask instead. */
-function resolvedConceptCount(ontoCount: number, typedCount: number): number {
+export function resolvedConceptCount(
+	ontoCount: number,
+	typedCount: number,
+): number {
 	return typedCount > 0 ? typedCount : ontoCount;
 }
 

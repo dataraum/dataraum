@@ -157,6 +157,15 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		// (Title-case via the shared BandBadge — DAT-451.)
 		expect(overall.getAllByText("Investigate")).toHaveLength(2);
 		expect(overall.getAllByText("Ready")).toHaveLength(1);
+		// Pin INTENT_LABEL's humanized text directly (DAT-883 rename): the
+		// TableBandSummary renders every INTENTS entry's label regardless of which
+		// intents carry data, so "Presentation" is always present here — a label
+		// map reverted to the old "Reporting" (or any other drift) would fail this,
+		// not just the raw `presentation_intent` key comparisons elsewhere in this
+		// file (which never render human text).
+		expect(overall.getByText("Query")).toBeTruthy();
+		expect(overall.getByText("Aggregation")).toBeTruthy();
+		expect(overall.getByText("Presentation")).toBeTruthy();
 	});
 
 	it("omits the whole-table summary for a plain add_source view (no session)", () => {

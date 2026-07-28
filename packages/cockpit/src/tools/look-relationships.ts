@@ -7,7 +7,7 @@
 // `relationship:{from_col}::{to_col}` target (DAT-408) and seals the run under a
 // `session:{id}` head (DAT-408). This resolves that head, reads the promoted
 // run's relationship rows, and surfaces — per relationship — the calibrated band
-// (ready/investigate/blocked) across the query/aggregation/reporting intents plus
+// (ready/investigate/blocked) across the query/aggregation/presentation intents plus
 // the top quality drivers. It reads the PERSISTED band, never re-deriving it (the
 // engine owns the rollup). Read-only → no approval.
 //
@@ -511,7 +511,7 @@ export const lookRelationshipsTool = toolDefinition({
 	name: "look_relationships",
 	description:
 		"Show the workspace's per-relationship readiness — ready/investigate/" +
-		"blocked across the query, aggregation, and reporting intents — with the top " +
+		"blocked across the query, aggregation, and presentation intents — with the top " +
 		"quality drivers per relationship, identified by its directional column pair " +
 		"(from_column_id → to_column_id). Each relationship also carries its catalog " +
 		"facts (relationship_type, cardinality, confidence, detection_method, " +

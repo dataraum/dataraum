@@ -31,8 +31,10 @@ from dataraum.llm.providers.base import ConversationRequest, Message
 # label -> (feature key on LLMFeatures, model tier)
 #
 # ``dimension_conform`` and ``dimension_alias`` are two labels over ONE feature
-# entry (the judge runs both templates); ``why_analysis`` is the cockpit's, not
-# an engine agent, so it is deliberately absent.
+# entry (the judge runs both templates). ``why_analysis`` — the why-column/table/
+# relationship explanation — is the cockpit's (`prompts/why.ts`), not an engine
+# agent; the engine-side FeatureConfig field + prompt/config.yaml entry it never
+# rendered from were dead and deleted (this rename's sweep).
 _LABELS: list[tuple[str, str]] = [
     ("semantic_per_table", "semantic_analysis"),
     # DAT-823: the catalogue authoring turn shares the semantic_analysis feature

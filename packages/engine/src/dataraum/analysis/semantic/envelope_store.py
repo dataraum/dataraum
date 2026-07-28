@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.semantic.db_models import VerticalEnvelope, WorkspaceSettings
 from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.core.logging import get_logger
-from dataraum.core.vertical import VerticalKind, resolve_vertical
 from dataraum.storage.upsert import insert_if_absent
 
 logger = get_logger(__name__)
@@ -36,24 +35,45 @@ def _active_vertical(session: Session) -> str | None:
 def ensure_envelope_seeded(session: Session, vertical: str) -> int:
     """Idempotently seed the shipped vertical's envelope as a typed row (DAT-883).
 
-    Only a vertical with an on-disk ``ontology.yaml`` (SHIPPED, or the PLACEHOLDER
-    ``_adhoc``) has a genuine envelope to seed — gated explicitly via
-    :func:`~dataraum.core.vertical.resolve_vertical`, unlike ``ensure_concepts_seeded``
-    (which needs no explicit gate: a framed vertical's YAML-shaped ``empty_base``
-    naturally carries zero concepts). The envelope has no such natural tell — the
-    empty_base sets a ``name`` too (the vertical's own key) — so without this gate a
-    framed vertical would seed a synthesized envelope row, exactly the fabrication
-    this ticket removes. A FRAMED or UNKNOWN vertical seeds nothing here; its
-    envelope stays absent until a future frame-time writer declares one (no such
-    writer exists yet — see :class:`~dataraum.analysis.semantic.db_models.VerticalEnvelope`).
+    Only a vertical with a REAL on-disk ``ontology.yaml`` has a genuine envelope
+    to seed. Gated on actual on-disk presence — :meth:`OntologyLoader.list_verticals`,
+    a glob over ``verticals/*/ontology.yaml`` — NOT on :func:`~dataraum.core.vertical.
+    resolve_vertical`'s classification: that function's PLACEHOLDER kind is a
+    NAME-SHAPE test (any leading-underscore name, `_is_placeholder`), not an
+    on-disk check, so an unseen name like ``_wild_no_such_dir`` would also resolve
+    PLACEHOLDER and — under the prior name-shape gate — get a ``source='seed'`` row
+    fabricated from ``OntologyLoader``'s empty ``{"name": v}`` base, burning the
+    singleton slot against a future frame-time writer and contradicting this
+    module's own "only a real on-disk source seeds" contract. The glob-based check
+    has no such gap: ``_adhoc`` passes (it genuinely ships an ``ontology.yaml``),
+    an unseen underscore name does not.
+
+    Unlike ``ensure_concepts_seeded`` (which needs no explicit gate — a framed
+    vertical's YAML-shaped ``empty_base`` naturally carries zero concepts), the
+    envelope has no such natural tell: the empty_base sets a ``name`` too (the
+    vertical's own key), so without this gate ANY resolvable-but-off-disk name
+    would seed a synthesized envelope row — exactly the fabrication this ticket
+    removes. A FRAMED or UNKNOWN vertical seeds nothing here; its envelope stays
+    absent until a future frame-time writer declares one (no such writer exists
+    yet — see :class:`~dataraum.analysis.semantic.db_models.VerticalEnvelope`).
 
     Race-safe via ``INSERT … ON CONFLICT DO NOTHING`` on the active-row partial-unique
     index, mirroring :func:`~dataraum.analysis.semantic.concept_store.ensure_concepts_seeded`.
     Returns 1 if a row was inserted, 0 if skipped (already seeded, or nothing to seed).
+
+    **A bumped on-disk version never reaches an existing workspace.** ``ON CONFLICT
+    DO NOTHING`` means this only ever fires once per vertical per workspace — a
+    later edit to the shipped ``ontology.yaml`` (e.g. a version bump) does NOT
+    propagate to a workspace that already seeded the old envelope. Deliberate (the
+    same non-clobbering contract every sibling seed here upholds — a `frame` edit
+    must never be silently overwritten by a re-seed), but worth stating plainly:
+    there is no re-seed-on-change path, only a fresh workspace picks up the new
+    envelope.
     """
-    if resolve_vertical(vertical) not in (VerticalKind.SHIPPED, VerticalKind.PLACEHOLDER):
+    loader = OntologyLoader()
+    if vertical not in loader.list_verticals():
         return 0
-    definition = OntologyLoader().load(vertical)
+    definition = loader.load(vertical)
     if definition is None:
         return 0
     seeded = insert_if_absent(

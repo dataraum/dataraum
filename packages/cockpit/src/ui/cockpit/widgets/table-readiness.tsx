@@ -1,6 +1,6 @@
 // Table-readiness widget (DAT-350) — renders the `look_table` result as a
 // per-column traffic-light grid in the focus canvas: one row per column, a band
-// badge per intent (query / aggregation / reporting) plus the column's top
+// badge per intent (query / aggregation / presentation) plus the column's top
 // quality drivers. The bands are the engine's PERSISTED, calibrated values — this
 // widget only colors them, it never recomputes readiness.
 //

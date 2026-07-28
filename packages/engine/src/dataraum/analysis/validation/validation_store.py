@@ -8,6 +8,16 @@ phase reads these typed rows (never the YAML directory walk), ``⊕`` the
 ``validation`` teach overlay applied at read time — so a *framed* vertical whose
 validations exist only as rows is served identically to a builtin.
 
+**Induction is staged, not published (DAT-877).** An induction run writes its
+proposals to the run-versioned ``induced_validations`` table
+(:func:`stage_induced_validations`); only the terminal operating_model promote
+lands them in the vocabulary home (:func:`materialize_induced_validations`), in
+the same transaction as the head flip. That is what keeps the vocabulary, the
+executed results and the detected cycles becoming current together: writing
+straight to the home published a generation minutes before its evidence existed,
+and permanently so if the run never promoted. The in-flight run reads its own
+staged set via ``load_workspace_validations(run_id=…)``.
+
 The DAT-789 ``convention_store`` pattern applied to validation specs: the check
 LOGIC (``check_type`` + ``tolerance``) gets a typed home instead of living as free
 ``sql_hints`` text. The teach overlay stays a SEPARATE layer (it is NOT a
@@ -23,11 +33,11 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select, text, update
 
 from dataraum.analysis.semantic.db_models import WorkspaceSettings
-from dataraum.analysis.validation.db_models import Validation
+from dataraum.analysis.validation.db_models import InducedValidation, Validation
 from dataraum.analysis.validation.models import ValidationSpec
 from dataraum.core.logging import get_logger
 from dataraum.core.vertical_loader import Family, VerticalLoader
-from dataraum.storage.upsert import insert_if_absent
+from dataraum.storage.upsert import insert_if_absent, upsert
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -63,6 +73,38 @@ def _row_values(vertical: str, spec: ValidationSpec, *, source: str) -> dict[str
         "version": spec.version,
         "source": source,
     }
+
+
+def _staged_row_values(run_id: str, vertical: str, spec: ValidationSpec) -> dict[str, Any]:
+    """An :class:`InducedValidation` staging-row dict (row_id/created_at defaulted).
+
+    The vocabulary home's ``source`` axis is absent by construction: every staged row
+    is a 'generated' proposal, and it only acquires that label when the promote
+    materializes it.
+    """
+    values = _row_values(vertical, spec, source="generated")
+    del values["source"]
+    return {"run_id": run_id, **values}
+
+
+def _staged_to_spec(row: InducedValidation) -> ValidationSpec:
+    """A :class:`ValidationSpec` from a staged row — always ``source='generated'``."""
+    return ValidationSpec(
+        validation_id=row.validation_id,
+        name=row.name,
+        description=row.description,
+        category=row.category,
+        severity=row.severity,  # type: ignore[arg-type]  # StrEnum coerces the str
+        check_type=row.check_type,
+        tolerance=row.tolerance,
+        guidance=row.guidance,
+        expected_outcome=row.expected_outcome,
+        tags=list(row.tags or []),
+        relevant_cycles=list(row.relevant_cycles or []),
+        relevant_conventions=list(row.relevant_conventions or []),
+        version=row.version,
+        source="generated",
+    )
 
 
 def _row_to_spec(row: Validation) -> ValidationSpec:
@@ -133,33 +175,69 @@ def ensure_validations_seeded(session: Session, vertical: str) -> int:
     return seeded
 
 
-def persist_generated_validations(
-    session: Session, vertical: str, specs: list[ValidationSpec]
+def stage_induced_validations(
+    session: Session, run_id: str, vertical: str, specs: list[ValidationSpec]
 ) -> int:
-    """Persist an induced validation set as ``source='generated'`` rows (DAT-735).
+    """Stage one induction run's proposed set, run-versioned (DAT-877).
 
-    Re-induction SUPERSEDES, never duplicates: the prior active generated rows for
-    this vertical are stamped ``superseded_at`` in one statement, then the fresh set
-    is inserted via ``INSERT … ON CONFLICT DO NOTHING`` on the active-row index — so a
-    generated proposal that collides with an active SEED row is skipped (the shipped
-    validation wins; a generated duplicate is redundant), and re-running the induction
-    converges in place rather than piling up history. The seed rows are untouched.
+    Writes into :class:`InducedValidation`, NOT the live vocabulary. The workspace's
+    ``validations`` home is only flipped later, by
+    :func:`materialize_induced_validations` inside the terminal operating_model
+    promote — so an operating_model run that dies after induction (a non-retryable
+    ``PhaseFailed`` downstream, the ``nothing_declared`` completion, a crash) leaves
+    the previously promoted vocabulary intact instead of publishing a generation
+    whose results and cycles will never exist.
+
+    ADR-0010 default writer form: ``(validation_id, run_id)`` UNIQUE + ON CONFLICT
+    upsert, so a Temporal activity retry of the induction phase re-stages the same
+    run in place rather than colliding. Returns the number of rows written.
+    """
+    rows = [_staged_row_values(run_id, vertical, spec) for spec in specs]
+    upsert(session, InducedValidation, rows, index_elements=["validation_id", "run_id"])
+    logger.info("induced_validations_staged", vertical=vertical, run_id=run_id, staged=len(rows))
+    return len(rows)
+
+
+def materialize_induced_validations(session: Session, run_id: str) -> int:
+    """Land a promoted run's staged generation into the live vocabulary (DAT-877).
+
+    Called by ``promote_operating_model_run`` in the SAME transaction as the
+    ``(catalog, "operating_model")`` head flip, so the validation vocabulary, the
+    executed results and the detected cycles all become current at one instant —
+    a head-resolved reader can never observe a generation without its evidence.
+
+    Supersede-then-insert, exactly the semantics the induction-time writer had:
+    the prior active generated rows for the staged verticals are stamped
+    ``superseded_at``, then the run's staged set is inserted via ``INSERT … ON
+    CONFLICT DO NOTHING`` on the active-row index — a generated proposal colliding
+    with an active SEED row is skipped (the shipped validation wins). Seed rows are
+    untouched. A run that staged nothing supersedes nothing: an induction that
+    degraded to zero proposals must not silently empty the vocabulary.
 
     Returns the number of generated rows actually inserted (skipped collisions
     excluded).
     """
+    staged = list(
+        session.execute(
+            select(InducedValidation)
+            .where(InducedValidation.run_id == run_id)
+            .order_by(InducedValidation.validation_id)
+        ).scalars()
+    )
+    if not staged:
+        return 0
+
+    verticals = sorted({row.vertical for row in staged})
     session.execute(
         update(Validation)
         .where(
-            Validation.vertical == vertical,
+            Validation.vertical.in_(verticals),
             Validation.source == "generated",
             Validation.superseded_at.is_(None),
         )
         .values(superseded_at=datetime.now(UTC))
     )
-    rows = [_row_values(vertical, spec, source="generated") for spec in specs]
-    if not rows:
-        return 0
+    rows = [_row_values(row.vertical, _staged_to_spec(row), source="generated") for row in staged]
     inserted = insert_if_absent(
         session,
         Validation,
@@ -167,39 +245,79 @@ def persist_generated_validations(
         index_elements=["vertical", "validation_id"],
         index_where=text("superseded_at IS NULL"),
     )
-    skipped = len(rows) - inserted
     logger.info(
-        "generated_validations_persisted",
-        vertical=vertical,
+        "induced_validations_materialized",
+        run_id=run_id,
+        verticals=verticals,
         inserted=inserted,
-        skipped_collisions=skipped,
+        skipped_collisions=len(rows) - inserted,
     )
     return inserted
 
 
-def load_workspace_validations(session: Session, vertical: str) -> list[ValidationSpec]:
+def load_workspace_validations(
+    session: Session, vertical: str, *, run_id: str | None = None
+) -> list[ValidationSpec]:
     """The workspace's active validations as typed :class:`ValidationSpec` objects.
 
-    Reads the active ``validations`` rows (seed ``⊕`` generated — both are rows in this
-    table) as the config→DB home. **Scoped to the workspace's bound active vertical
-    (DAT-848),** exactly like ``load_workspace_conventions``: the read filters on
-    ``workspace_settings.active_vertical`` (never blindly on the caller's ``vertical``),
-    with ``vertical`` the fallback for an UNBOUND workspace. The teach overlay is
-    layered on top by the caller (``config.load_all_validation_specs``), NOT here.
+    Reads the active ``validations`` rows (seed ``⊕`` promoted generated) as the
+    config→DB home. **Scoped to the workspace's bound active vertical (DAT-848),**
+    exactly like ``load_workspace_conventions``: the read filters on
+    ``workspace_settings.active_vertical`` (never blindly on the caller's
+    ``vertical``), with ``vertical`` the fallback for an UNBOUND workspace. The teach
+    overlay is layered on top by the caller (``config.load_all_validation_specs``),
+    NOT here.
+
+    ``run_id`` is the IN-RUN read (DAT-877): an operating_model run's own phases must
+    see the generation their induction just staged, which is not in the vocabulary
+    home until that run promotes. Head-resolved readers pass nothing and see only the
+    promoted vocabulary.
+
+    The in-run read REPLACES the generated layer rather than merging into it, so the
+    set a run declares is exactly the set its promote will publish: a staged
+    generation supersedes the prior one wholesale (a check this run's induction
+    dropped must not still be declared), while a run that staged NOTHING — a degraded
+    induction — keeps the previously promoted generation, matching
+    :func:`materialize_induced_validations`. Seed rows are untouched by either.
 
     Ordered by ``validation_id`` for a deterministic declared set.
     """
     effective = _active_vertical(session) or vertical
-    rows = session.execute(
-        select(Validation)
-        .where(Validation.vertical == effective, Validation.superseded_at.is_(None))
-        .order_by(Validation.validation_id)
-    ).scalars()
-    return [_row_to_spec(row) for row in rows]
+    active = list(
+        session.execute(
+            select(Validation)
+            .where(Validation.vertical == effective, Validation.superseded_at.is_(None))
+            .order_by(Validation.validation_id)
+        ).scalars()
+    )
+    staged = (
+        list(
+            session.execute(
+                select(InducedValidation)
+                .where(
+                    InducedValidation.vertical == effective,
+                    InducedValidation.run_id == run_id,
+                )
+                .order_by(InducedValidation.validation_id)
+            ).scalars()
+        )
+        if run_id is not None
+        else []
+    )
+    if not staged:
+        return [_row_to_spec(row) for row in active]
+
+    # Seed first: a staged proposal never displaces an active SEED row — the shipped
+    # validation wins, the same precedence the materialization applies at promote.
+    specs = {row.validation_id: _row_to_spec(row) for row in active if row.source == "seed"}
+    for row in staged:
+        specs.setdefault(row.validation_id, _staged_to_spec(row))
+    return [specs[key] for key in sorted(specs)]
 
 
 __all__ = [
     "ensure_validations_seeded",
-    "persist_generated_validations",
+    "stage_induced_validations",
+    "materialize_induced_validations",
     "load_workspace_validations",
 ]

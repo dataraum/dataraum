@@ -110,13 +110,19 @@ class ValidationPhase(BasePhase):
                 "session's typed table selection (ctx.table_ids)."
             )
 
-        # Declared set: the typed `validations` home (shipped seed ⊕ agentic-induction
-        # generated rows, DAT-735) ⊕ the `validation` teach overlay. Induction (the
-        # prior `validation_induction` phase) already landed this run's generated rows;
-        # user declares arrive via frame-2 teach rows (DAT-441). No vertical / empty
-        # declared set is a LOUD explicit outcome, not a silent skip.
+        # Declared set: the typed `validations` home (shipped seed rows ⊕ the promoted
+        # generated vocabulary, DAT-735) ⊕ THIS run's staged induction (DAT-877) ⊕ the
+        # `validation` teach overlay. The prior `validation_induction` phase staged this
+        # run's proposals run-versioned — they reach the home only at the terminal
+        # promote — so the read is scoped by run_id to see them; user declares arrive via
+        # frame-2 teach rows (DAT-441). No vertical / empty declared set is a LOUD
+        # explicit outcome, not a silent skip.
         vertical = ctx.config.get("vertical")
-        specs = load_all_validation_specs(vertical, ctx.session) if vertical else {}
+        specs = (
+            load_all_validation_specs(vertical, ctx.session, run_id=ctx.require_run_id())
+            if vertical
+            else {}
+        )
         if not specs:
             outcome = "no_vertical" if not vertical else "no_declared_validations"
             _log.warning("validation_nothing_declared", vertical=vertical, outcome=outcome)

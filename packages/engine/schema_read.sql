@@ -229,6 +229,16 @@ WHERE EXISTS (
   )
 ;
 
+DROP VIEW IF EXISTS __READ__.current_induced_validations;
+CREATE VIEW __READ__.current_induced_validations AS
+SELECT r.* FROM __WS__.induced_validations r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_lifecycle_artifacts;
 CREATE VIEW __READ__.current_lifecycle_artifacts AS
 SELECT r.* FROM __WS__.lifecycle_artifacts r

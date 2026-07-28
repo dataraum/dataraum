@@ -35,6 +35,7 @@ def load_all_validation_specs(
     session: Session | None = None,
     *,
     verticals_dir: Path | None = None,
+    run_id: str | None = None,
 ) -> dict[str, ValidationSpec]:
     """Load a vertical's validation specs — DB home ``⊕`` teach overlay (DAT-735).
 
@@ -49,6 +50,12 @@ def load_all_validation_specs(
     warn about). An unknown / framed vertical with no rows and no overlay resolves
     to an EMPTY dict, never raises — "no declared validations" is the phase tier's
     loud outcome.
+
+    ``run_id`` is the IN-RUN read (DAT-877): an operating_model run's own consumers —
+    the validation phase and the cross_table_consistency detector that scores its
+    results — must see the generation this run's induction STAGED, which does not
+    reach the vocabulary home until the run promotes. Head-resolved readers (context
+    assembly, the cockpit surfaces) pass nothing and see only the promoted vocabulary.
 
     Tests (``verticals_dir`` given): reads raw YAML under that root and bypasses BOTH
     the DB home and the overlay.
@@ -65,7 +72,7 @@ def load_all_validation_specs(
         base = {
             "validations": [
                 spec.model_dump(mode="json")
-                for spec in load_workspace_validations(session, vertical)
+                for spec in load_workspace_validations(session, vertical, run_id=run_id)
             ]
         }
         collection = apply_overlay(f"verticals/{vertical}/validations", base)

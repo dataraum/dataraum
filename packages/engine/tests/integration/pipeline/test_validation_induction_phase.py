@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
-from dataraum.analysis.validation.db_models import Validation
+from dataraum.analysis.validation.db_models import InducedValidation, Validation
 from dataraum.analysis.validation.induction import Membership
 from dataraum.analysis.validation.models import ValidationSeverity, ValidationSpec
 from dataraum.core.models.base import Result
@@ -111,7 +111,18 @@ def _gen_spec(validation_id: str) -> ValidationSpec:
     )
 
 
+def _staged(session: Session, run_id: str = "run-om-1") -> dict[str, InducedValidation]:
+    """This run's STAGED proposals (DAT-877) — what the phase actually writes now."""
+    return {
+        r.validation_id: r
+        for r in session.execute(
+            select(InducedValidation).where(InducedValidation.run_id == run_id)
+        ).scalars()
+    }
+
+
 def _generated(session: Session) -> dict[str, Validation]:
+    """The LIVE generated vocabulary — only the operating_model promote writes here."""
     return {
         r.validation_id: r
         for r in session.execute(
@@ -142,7 +153,10 @@ class TestValidationInductionPhase:
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs["generated"] == 1
         assert "declared" not in result.outputs
-        assert "induced_x" in _generated(session)
+        assert "induced_x" in _staged(session)
+        # STAGED, not published (DAT-877): the live vocabulary stays empty until the
+        # run's terminal promote materializes it.
+        assert _generated(session) == {}
 
     def test_thin_graph_zero_generated_is_not_declared(
         self, session, duckdb_conn, workspace_table, _mock_llm

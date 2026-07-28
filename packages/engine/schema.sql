@@ -109,6 +109,32 @@ CREATE TABLE detected_business_cycles (
 	CONSTRAINT ck_detected_business_cycles_family_direction CHECK ((family IS NULL AND direction IS NULL) OR (family IS NOT NULL AND direction IS NOT NULL))
 );
 
+CREATE TABLE induced_validations (
+	row_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	validation_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description TEXT NOT NULL, 
+	category VARCHAR NOT NULL, 
+	severity VARCHAR NOT NULL, 
+	check_type VARCHAR NOT NULL, 
+	tolerance FLOAT, 
+	guidance TEXT, 
+	expected_outcome TEXT, 
+	relevant_cycles JSON, 
+	relevant_conventions JSON, 
+	tags JSON, 
+	version VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_induced_validations PRIMARY KEY (row_id), 
+	CONSTRAINT uq_induced_validation_run UNIQUE (validation_id, run_id), 
+	CONSTRAINT ck_induced_validations_severity CHECK (severity IN ('critical', 'error', 'info', 'warning')), 
+	CONSTRAINT ck_induced_validations_check_type CHECK (check_type IN ('aggregate', 'balance', 'comparison', 'constraint'))
+);
+
+CREATE INDEX ix_induced_validations_run_id ON induced_validations (run_id);
+
 CREATE TABLE lifecycle_artifacts (
 	artifact_id VARCHAR NOT NULL, 
 	artifact_type VARCHAR NOT NULL, 

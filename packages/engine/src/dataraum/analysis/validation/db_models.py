@@ -1,12 +1,16 @@
 """SQLAlchemy models for validation.
 
-Two homes with different lifecycles:
+Three homes with different lifecycles:
 
 * :class:`Validation` — the workspace's typed *validation vocabulary* (DAT-735):
   declaration-versioned, keyed ``(vertical, validation_id)``, written by the seed
   (shipped YAML) and by agentic induction. The DAT-789 ``Convention`` typed-home
   pattern applied to validation specs, so the check LOGIC gets a typed home
   instead of living as free ``sql_hints`` text.
+* :class:`InducedValidation` — the run-versioned STAGING home an induction run
+  writes (DAT-877). Induction proposes into this table; the terminal
+  ``operating_model`` promote materializes the promoted run's set into
+  :class:`Validation`. That keeps the vocabulary flip atomic with the head flip.
 * :class:`ValidationResultRecord` — one run-versioned grounded SQL per check
   (ADR-0017), the pure SQL store whose verdict is recomputed on demand.
 """
@@ -52,7 +56,10 @@ class Validation(Base):
     at connect — DAT-725 band 3 retired finance's, so no vertical ships a
     ``validations/`` directory today. Agentic induction (:mod:`~dataraum.analysis.
     validation.induction`) proposes more rows over the served graph
-    (source='generated') either way. The validation phase reads these rows (never
+    (source='generated') either way — staged run-versioned in
+    :class:`InducedValidation` and landed HERE only by the operating_model promote,
+    so the live vocabulary never shows an unsealed generation (DAT-877). The
+    in-flight run reads its own staged set directly. The validation phase reads these rows (never
     a YAML directory walk), so a *framed* vertical whose validations exist only as
     rows is served identically to a builtin.
 
@@ -88,8 +95,9 @@ class Validation(Base):
         # Lifecycle-source vocabulary (DAT-802, the two-layer standard): every
         # admitted value has a LIVE writer — 'seed'
         # (``validation_store.ensure_validations_seeded``, engine) and 'generated'
-        # (``validation_store.persist_generated_validations``, the agentic-induction
-        # writer). NOT 'frame'/'teach': the cockpit teach path writes config_overlay
+        # (``validation_store.materialize_induced_validations``, run by the terminal
+        # operating_model promote off the run's ``induced_validations`` staging rows
+        # — DAT-877). NOT 'frame'/'teach': the cockpit teach path writes config_overlay
         # rows (the ⊕ layer), not this table — a CHECK admitting a value no writer
         # produces is the exact DAT-802 defect. Widening is one line + a re-dump in
         # the PR that adds the writer.
@@ -160,6 +168,70 @@ class Validation(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class InducedValidation(Base):
+    """One induction run's proposed validation set — run-versioned STAGING (DAT-877).
+
+    **Why this table exists.** :class:`Validation` is deliberately NOT
+    run-versioned: a head-free read of it IS the workspace's live vocabulary. So
+    writing an induced generation straight into it published that generation the
+    moment the induction activity committed — roughly a minute into an
+    operating_model run whose executed results and detected cycles stay invisible
+    until the terminal promote (``current_validation_results`` /
+    ``current_detected_business_cycles`` are head-gated). Every reader in that
+    window saw N generated validations with ZERO executed results, and if the run
+    never promoted — a non-retryable ``PhaseFailed`` in any later phase, the
+    ``nothing_declared`` completion, a crash — that state was FINAL, not
+    transient. The prior good generation was already superseded by then.
+
+    So induction stages here instead, and the promote materializes. Between them
+    the head keeps serving the PREVIOUS generation, self-consistent with the
+    results and cycles that were sealed alongside it; a run that dies after
+    induction leaves the vocabulary untouched.
+
+    Run-versioned under the ADR-0010 default writer form: ``(validation_id,
+    run_id)`` UNIQUE + an ON CONFLICT upsert, so a Temporal activity retry
+    re-stages in place instead of duplicating. Rows are kept after materialization
+    — they are this run's induction record, and the read surface exposes the
+    promoted run's set as ``current_induced_validations``.
+    """
+
+    __tablename__ = "induced_validations"
+    __table_args__ = (
+        UniqueConstraint("validation_id", "run_id", name="uq_induced_validation_run"),
+        # Same closed vocabularies as the vocabulary home — a staged row is a
+        # validation spec, and must not be able to carry a value the home would
+        # reject at materialization time.
+        CheckConstraint(
+            "severity IN (" + ", ".join(f"'{v}'" for v in _VALIDATION_SEVERITY_VALUES) + ")",
+            name="severity",
+        ),
+        CheckConstraint(
+            "check_type IN (" + ", ".join(f"'{v}'" for v in _VALIDATION_CHECK_TYPE_VALUES) + ")",
+            name="check_type",
+        ),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    validation_id: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    check_type: Mapped[str] = mapped_column(String, nullable=False)
+    tolerance: Mapped[float | None] = mapped_column(Float)
+    guidance: Mapped[str | None] = mapped_column(Text)
+    expected_outcome: Mapped[str | None] = mapped_column(Text)
+    relevant_cycles: Mapped[list[str] | None] = mapped_column(JSON)
+    relevant_conventions: Mapped[list[str] | None] = mapped_column(JSON)
+    tags: Mapped[list[str] | None] = mapped_column(JSON)
+    version: Mapped[str] = mapped_column(String, nullable=False, default="1.0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
 
 
 class ValidationResultRecord(Base):

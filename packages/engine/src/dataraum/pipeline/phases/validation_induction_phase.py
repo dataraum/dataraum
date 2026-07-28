@@ -3,12 +3,24 @@
 The operating_model stage's PRE-validation step: it serves the promoted graph to an
 induction LLM, which proposes typed validation specs; the proposals are
 membership-validated against the served context (fabricated references repaired once,
-then dropped) and the clean set is persisted as ``source='generated'`` rows. The
-downstream ``validation`` phase then declares/binds/executes the seed ``⊕`` generated
-``⊕`` teach set uniformly — induction just populates the typed home first.
+then dropped) and the clean set is STAGED run-versioned (``induced_validations``,
+DAT-877). The downstream ``validation`` phase then declares/binds/executes the seed
+``⊕`` this run's staged ``⊕`` teach set uniformly; the terminal promote is what turns
+the staged set into the workspace's live ``source='generated'`` vocabulary.
 
 Placement (spine): ``operating_model_resolve → validation_induction → validation``.
 Induction precedes validation because the validation phase reads the rows it writes.
+
+**Why staged and not published (DAT-877).** The vocabulary home ``validations`` is
+deliberately head-free — a plain read of it IS the current vocabulary. Landing a
+generation there at induction time therefore published it about a minute into a run
+whose executed results and detected cycles stay invisible until the terminal promote,
+so every reader in that window saw N generated validations with ZERO results and ZERO
+cycles. Worse, the window is not bounded by the run: a later phase failing
+non-retryably, the ``nothing_declared`` completion, or a crash left that state FINAL,
+with the prior good generation already superseded. Staging + promote-time
+materialization makes the vocabulary flip atomic with the head flip, and makes a run
+that dies after induction a no-op on the vocabulary.
 
 **First-run limitation (recorded for sweep interpretation).** Induction runs BEFORE
 the cycles and metrics phases in the spine, so the run-versioned cycles / additivity
@@ -43,7 +55,7 @@ from dataraum.analysis.validation.induction import (
     ValidationInductionAgent,
     build_served_context,
 )
-from dataraum.analysis.validation.validation_store import persist_generated_validations
+from dataraum.analysis.validation.validation_store import stage_induced_validations
 from dataraum.core.logging import get_logger
 from dataraum.lifecycle import BaseRunMap
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
@@ -145,12 +157,16 @@ class ValidationInductionPhase(BasePhase):
             )
 
         specs = result.unwrap()
-        # Supersede-then-insert: a successful induction (even an empty one, on a thin
-        # graph) is authoritative — it clears stale generated rows and lands the new set.
-        inserted = persist_generated_validations(ctx.session, vertical, specs)
+        # STAGE, don't publish (DAT-877): the set lands run-versioned and becomes the
+        # workspace's live vocabulary only when this run's terminal promote flips the
+        # head. Writing it straight to the vocabulary home made an unsealed generation
+        # readable as current for the whole rest of the run — and permanently, if the
+        # run never promoted. This run's own validation phase reads the staged set by
+        # run_id, so the in-run ordering is unchanged.
+        staged = stage_induced_validations(ctx.session, ctx.require_run_id(), vertical, specs)
 
         return PhaseResult.success(
-            outputs={"outcome": "induced", "generated": inserted, "proposed": len(specs)},
-            records_created=inserted,
-            summary=f"induced {len(specs)} validations, {inserted} persisted (source=generated)",
+            outputs={"outcome": "induced", "generated": staged, "proposed": len(specs)},
+            records_created=staged,
+            summary=f"induced {len(specs)} validations, {staged} staged for promote",
         )

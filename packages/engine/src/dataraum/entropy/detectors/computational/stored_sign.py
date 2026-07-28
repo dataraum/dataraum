@@ -14,22 +14,15 @@ the pooled conflict; a measure the pool could NOT determine emits a wave-2
 carries a teach suggestion: the storage convention is data-determined, so the
 partition witness already wins, and there is no format for a human to teach here.
 
-WHERE THOSE OBJECTS DO AND DO NOT SURFACE — ``stored_sign`` has NO entry in
-``dataraum-config/entropy/loss.yaml`` yet, and that omission is deliberate: per-intent
-loss weights would be invented numbers, the same argument that defers the
-``reliabilities.yaml`` entry (see the measurement module). The consequence is
-concrete and must not be overstated. ``readiness_context`` gates every object on
-``LossConfig.is_loss_measurement``, so today:
-
-* an ABSTENTION is dropped before ``abstained_loss`` — it never becomes a
-  ``gap_abstained``, never moves ``coverage``, and never enters the abstention
-  payload. It is NOT visible in the DAT-853 coverage trace.
-* a MEASURED object routes to ``direct_signals``, not ``loss_objects``, so it is
-  carried as a direct signal but contributes ZERO banded readiness risk.
-
-Both objects ARE persisted to ``entropy_objects`` with their evidence, so the trace
-exists in the table and the resolve pass reads it — the gap is purely in the
-readiness/coverage rollup, and it closes when the loss entry is calibrated.
+Both paths reach readiness because ``stored_sign`` HAS a ``loss.yaml`` row —
+``readiness_context`` gates every object on ``LossConfig.is_loss_measurement``, so
+without one an abstention would be dropped before ``abstained_loss`` (never a
+``gap_abstained``, never moving ``coverage``) and a measured object would fall to
+``direct_signals`` carrying zero banded risk. The row is what makes the coverage
+claim above true. Its priors, and the ``reliabilities.yaml`` witness priors, are
+declared PLACEHOLDERS (``calibrated: false`` per-measurement provenance, so the
+file-global ``calibrated: true`` cannot vouch for them) — shaped after sibling rows,
+never tuned to a metric, pending the eval rig.
 
 This detector runs only where BOTH its inputs can exist — the begin_session
 ``session_detect``, where the catalogue run holds the ``ColumnConcept`` claim and the
@@ -95,11 +88,10 @@ class StoredSignDetector(EntropyDetector):
         A resolved convention → one measured object carrying the posterior and the
         pooled conflict/ignorance. Total ignorance is a wave-2 ABSTENTION for a column
         the per-column agent read as a MEASURE — persisted as ``insufficient_data`` so
-        the undetermined measure is a row in ``entropy_objects`` rather than a silent
-        skip (it does NOT yet reach the readiness coverage trace — see the module
-        docstring on the missing loss entry). A non-measure column is not a
-        storage-convention question → stay silent, so identifiers and dimensions never
-        wallpaper the trace.
+        the undetermined measure is visible in the coverage/abstention trace and never
+        reads as measured-clean (DAT-847/DAT-853). A non-measure column is not a
+        storage-convention question → it is gated out ahead of both paths, so
+        identifiers and dimensions never wallpaper the trace.
 
         The claim is NOT the measure signal here: a column with no ``ColumnConcept``
         row under this run carries no claim at all, so its absence would silence
@@ -110,6 +102,13 @@ class StoredSignDetector(EntropyDetector):
         """
         semantic = context.get_analysis("semantic")
         if not semantic:
+            return []
+        # The role gate governs BOTH paths. A non-measure is not a storage-convention
+        # question, so it must not emit a MEASURED verdict either — a concept-bearing
+        # dimension that happens to carry a lineage partition would otherwise be
+        # labelled, and the label would be served. Every catalogued column carries a
+        # mandatory claim, so claim presence cannot discriminate; the role does.
+        if semantic.get("semantic_role") != "measure":
             return []
         reliabilities = context.get_analysis("reliabilities", None) or None
         partition = context.get_analysis("partition", None) or {}
@@ -129,10 +128,11 @@ class StoredSignDetector(EntropyDetector):
 
         label, contested = resolved_stored_sign(adj)
         if label is None:
-            # Nothing determined this run. Abstain only where the question applies and
-            # the catalogue grain exists: a measure column that HAS a claim slot. A
-            # column with no claim is at the wrong grain (add_source), not undetermined.
-            if semantic.get("semantic_role") != "measure" or claim is None:
+            # Nothing determined this run. The role already gated above; what remains
+            # is the GRAIN check — a column with no claim slot at all is at the
+            # add_source grain (no ColumnConcept under this run), which is not an
+            # undetermined column but a question that was never asked here.
+            if claim is None:
                 return []
             return [
                 self.create_abstention(

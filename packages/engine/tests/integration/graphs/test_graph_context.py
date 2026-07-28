@@ -199,7 +199,14 @@ class TestStructuralEdges:
             )
         )
         assert "ledger_signed" in ledger
-        assert "OPPOSITE sign" in ledger
+        assert "opposite sign to its natural balance" in ledger
+        # DESCRIPTIVE, never prescriptive. "A bare SUM returns a signed quantity"
+        # is false wherever the reconciling population is single-family or the
+        # measure is not account-shaped — the label is still right there, but the
+        # consequence is not, and it invited a sign flip on a family that need not
+        # exist. State the convention; let the author reason about its own query.
+        assert "bare SUM" not in ledger
+        assert "SUM" not in ledger
 
         natural = _build_column_notes(
             ColumnContext(

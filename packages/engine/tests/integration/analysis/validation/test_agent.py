@@ -660,7 +660,12 @@ class TestGrainFacts:
         assert "express BOTH sides of any comparison in one convention): level" in rendered
         assert "stored natural_balance" in rendered
         assert "natural_level" in rendered
-        assert "unsigned" not in rendered.split("stored ")[1]
+        # "unsigned" IS in the block (it carries a temporal fact) — it must be absent
+        # only from the two stored-sign segments, which is what an undetermined
+        # convention means. Scope the assertion instead of slicing at the first match.
+        sign_segments = [seg for seg in rendered.split("; ") if seg.startswith("stored ")]
+        assert len(sign_segments) == 2
+        assert all("unsigned" not in seg for seg in sign_segments)
         assert "bare" not in rendered
         # No dimension-role table is served ⇒ the existence-check universe fact fires
         # (DAT-876): existence checks are unbindable against a fact/snapshot-only graph.

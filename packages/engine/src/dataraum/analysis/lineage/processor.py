@@ -75,6 +75,8 @@ if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
 
+    from dataraum.analysis.lineage.reconcile import EntityReconciliation
+
 logger = get_logger(__name__)
 
 # Per-table-pair convention budget: numeric columns n yields n singles plus
@@ -275,19 +277,21 @@ class _SignPartition:
 
 def _sign_partition(
     by_entity: Mapping[str, tuple[Sequence[float], Sequence[float]]],
+    results: Mapping[str, EntityReconciliation],
     pattern: str,
 ) -> _SignPartition:
     """Count the winning-pattern voters under the anchor and under its negation.
 
-    Re-runs the reconciliation with every anchor value negated. Pure arithmetic
-    over series already aligned in memory — no extra SQL, no second pass over the
-    data. A measure stored in the ledger's own direction reconciles ALL its
-    entities under one sign; a measure normalized per account family splits into
-    two disjoint sets, because flipping the anchor is exactly what a credit-normal
+    ``results`` is the caller's existing classification of ``by_entity`` — it is
+    reused, never recomputed, so the only added arithmetic is the ONE classification
+    of the negated anchor. Pure in-memory float work: no extra SQL, no second pass
+    over the data. A measure stored in the ledger's own direction reconciles ALL its
+    entities under one sign; a measure normalized per account family splits into two
+    disjoint sets, because flipping the anchor is exactly what a credit-normal
     family's stored values did to it.
     """
     mirrored = {k: (ys, [-v for v in ms]) for k, (ys, ms) in by_entity.items()}
-    primary = {k for k, r in classify_series(by_entity).items() if r.label == pattern}
+    primary = {k for k, r in results.items() if r.label == pattern}
     mirror = {k for k, r in classify_series(mirrored).items() if r.label == pattern}
     return _SignPartition(
         primary=len(primary),
@@ -714,7 +718,9 @@ def discover_aggregation_lineage(
                                     e_axis=e_axis,
                                     m_slice_column_id=m_slice_column_id,
                                     e_slice_column_id=e_slice_column_id,
-                                    sign_partition=_sign_partition(by_entity, verdict.pattern),
+                                    sign_partition=_sign_partition(
+                                        by_entity, results, verdict.pattern
+                                    ),
                                 )
                                 key = columns_by_table[m_tid][measure_col].column_id
                                 prior = best_by_measure.get(key)

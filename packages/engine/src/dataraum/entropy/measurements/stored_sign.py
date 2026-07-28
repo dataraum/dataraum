@@ -64,8 +64,12 @@ discard their labels at seed time, ``concept_edge_store``). Revisit if that chan
 
 Pure module: no DB, no LLM, no config. Reliabilities are documented placeholder
 priors — the shipped calibrated values are measured by the eval rig (DAT-450) and
-threaded in via ``reliabilities=``; there is no measured entry for this detector yet,
-so it runs on the fallback below until one is calibrated.
+threaded in via ``reliabilities=``. ``reliabilities.yaml`` ships NO values for this
+detector, so it runs on :data:`DEFAULT_RELIABILITIES` below; what it does ship is the
+per-measurement ``provenance.measurements.stored_sign: {calibrated: false}`` flag,
+without which the file-global ``calibrated: true`` would vouch for these placeholders
+and ``calibrated_for()`` would report the measurement as rig-measured. The matching
+``loss.yaml`` row is a placeholder on the same terms.
 """
 
 from __future__ import annotations
@@ -208,9 +212,23 @@ def sign_partition_distribution(
     Confidence is COVERAGE: the fraction of the entity population whose series
     actually reconciled under one sign or the other. Entities that reconciled under
     neither are unobserved, not evidence, so a partition read off a small corner of
-    the population asserts weakly rather than confidently. That scaling is the whole
-    confidence model — no coverage threshold is imposed on top of it, because a
-    threshold would discard a weak-but-honest read that pooling already discounts.
+    the population asserts weakly rather than confidently.
+
+    ABSENCE OF MIRROR VOTERS IS NOT EVIDENCE OF ABSENCE. ``ledger_signed`` is the one
+    label inferred from something NOT seen — no entity needed the flipped anchor — so
+    it is the one that can be manufactured by silence. A genuinely ``natural_balance``
+    column whose credit-normal family is silenced (short series, dead anchors, the
+    near-tie abstention, a family simply absent from this draw) presents as
+    ``primary``-only and would otherwise resolve to the OPPOSITE label with
+    confidence. The guard is the module's own definition of a family: a hidden family
+    would need at least :data:`MIN_FAMILY_ENTITIES` members, so as long as that many
+    entities voted under NEITHER sign, one of them could be the silenced family and
+    the uniform reading is unsafe — abstain. Where the unexplained remainder is too
+    small to hold a family, there is nowhere for one to hide and the reading stands.
+    No tuned constant: the floor IS ``MIN_FAMILY_ENTITIES``, applied to the residual
+    the coverage arithmetic already computes.
+
+    The split branch needs no such guard — there both families were observed voting.
     """
     if not n_entities or fired_primary is None or fired_mirror is None:
         return _distribution(0.5)
@@ -227,11 +245,16 @@ def sign_partition_distribution(
         return _distribution(0.5)
     if minor >= MIN_FAMILY_ENTITIES:
         # Two disjoint families, opposite signs: the stored values already carry each
-        # family's own direction.
+        # family's own direction. Both were observed, so nothing is inferred from
+        # silence and the coverage scaling alone carries the uncertainty.
         return _leaning(_CLAIM_PNATURAL[NATURAL_BALANCE], coverage)
     if minor == 0:
-        # One sign explains every reconciling entity: the ledger's own direction was
-        # stored, uniformly, across families.
+        if n_entities - covered >= MIN_FAMILY_ENTITIES:
+            # Room for a whole silenced family among the entities that voted under
+            # neither sign — see the docstring. Absence is not evidence.
+            return _distribution(0.5)
+        # One sign explains every entity there was to explain: the ledger's own
+        # direction was stored, uniformly, across families.
         return _leaning(_CLAIM_PNATURAL[LEDGER_SIGNED], coverage)
     # A single dissenting entity is neither a family nor noise we can name — it is
     # exactly the ambiguity this witness must not resolve by rounding.

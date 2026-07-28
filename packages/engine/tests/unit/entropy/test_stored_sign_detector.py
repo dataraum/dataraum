@@ -109,6 +109,14 @@ def test_non_measure_stays_silent() -> None:
     assert _detect(semantic_role="dimension", stored_sign_claim="unsure") == []
 
 
+def test_non_measure_with_a_partition_emits_no_measured_verdict() -> None:
+    """The role gate governs BOTH paths. Before it was hoisted, only the abstention
+    branch checked the role — a concept-bearing dimension that happened to carry a
+    lineage partition resolved a label and served it."""
+    assert _detect(_UNIFORM, semantic_role="dimension", stored_sign_claim="unsure") == []
+    assert _detect(_SPLIT, semantic_role="key", stored_sign_claim="natural_balance") == []
+
+
 def test_no_catalogue_grain_stays_silent() -> None:
     """add_source: no ColumnConcept under the run, so no claim slot at all. That is
     the wrong grain for this question, not an undetermined column — no abstention."""

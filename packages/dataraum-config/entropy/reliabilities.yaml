@@ -31,6 +31,7 @@ provenance:
     relationship_discovery: { calibrated: true } # all four witnesses measured (teach protocol closed the circuit); keeper's 0.5 is a documented stance on real silence atop its measured 0.857 plumbing ceiling
     derived_value: { calibrated: true } # wave-2 rig, detection-derived-cal-v1 (2026-06-11)
     cross_table_consistency: { calibrated: false } # DAT-865b placeholder priors, not rig-measured
+    stored_sign: { calibrated: false } # DAT-875 placeholder priors, not rig-measured
   source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
   corpus_version: null_tokens-v2
   estimator: Laplace-smoothed accuracy on opinionated votes; abstentions excluded

@@ -771,6 +771,32 @@ def load_declared_formula(
     return {"formula": declared}
 
 
+def _lineage_row(session: Session, column_id: str, run_id: str | None) -> Any | None:
+    """The column's ``MeasureAggregationLineage`` row for THIS run, or ``None``.
+
+    Exact-run by design, NO pinned fallback: lineage rows are written by the
+    begin_session ``aggregation_lineage`` phase under the session run's ``run_id``,
+    so both witnesses reading this row fire at that run's ``session_detect`` and
+    abstain everywhere else (every add_source detect in particular). A cross-run
+    fallback would re-introduce the stale-immortal-artifact failure mode the slice
+    definitions hit (DAT-405); revisit only with head-promotion semantics for lineage.
+
+    Shared by the two witnesses this row feeds — ``structural_reconciliation``
+    (stock/flow, DAT-491) and ``sign_partition`` (stored_sign, DAT-875) — so the
+    exact-run contract has one home and cannot drift between them.
+    """
+    from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
+
+    if run_id is None:
+        return None
+    return session.execute(
+        select(MeasureAggregationLineage).where(
+            MeasureAggregationLineage.measure_column_id == column_id,
+            MeasureAggregationLineage.run_id == run_id,
+        )
+    ).scalar_one_or_none()
+
+
 def load_structural_reconciliation(
     session: Session, column_id: str, run_id: str | None
 ) -> dict[str, Any] | None:
@@ -785,16 +811,7 @@ def load_structural_reconciliation(
     slice definitions hit (DAT-405); revisit only with head-promotion semantics
     for lineage.
     """
-    from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
-
-    if run_id is None:
-        return None
-    row = session.execute(
-        select(MeasureAggregationLineage).where(
-            MeasureAggregationLineage.measure_column_id == column_id,
-            MeasureAggregationLineage.run_id == run_id,
-        )
-    ).scalar_one_or_none()
+    row = _lineage_row(session, column_id, run_id)
     if row is None:
         return None
     return {
@@ -817,16 +834,7 @@ def load_sign_partition(
     Exact-run for the same reason (:func:`load_structural_reconciliation`) — a
     cross-run fallback would resurrect the stale-immortal-artifact failure mode.
     """
-    from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
-
-    if run_id is None:
-        return None
-    row = session.execute(
-        select(MeasureAggregationLineage).where(
-            MeasureAggregationLineage.measure_column_id == column_id,
-            MeasureAggregationLineage.run_id == run_id,
-        )
-    ).scalar_one_or_none()
+    row = _lineage_row(session, column_id, run_id)
     if row is None:
         return None
     return {

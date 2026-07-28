@@ -84,11 +84,33 @@ class TestSignPartitionWitness:
 
     def test_confidence_is_coverage_of_the_entity_population(self):
         # Same partition SHAPE, different share of the population explained: the
-        # witness leans harder when it saw more of it. Unobserved entities are not
-        # evidence, so coverage is the honest confidence — no threshold on top.
-        wide = sign_partition_distribution(10, 10, 0, 0)[LEDGER_SIGNED]
-        narrow = sign_partition_distribution(100, 10, 0, 0)[LEDGER_SIGNED]
+        # witness leans harder when it saw more of it. Both families are observed
+        # here, so only the coverage scaling differs.
+        wide = sign_partition_distribution(10, 5, 5, 0)[NATURAL_BALANCE]
+        narrow = sign_partition_distribution(100, 5, 5, 0)[NATURAL_BALANCE]
         assert wide > narrow > 0.5
+
+    def test_a_silenced_family_does_not_mint_ledger_signed(self):
+        """The absence-of-evidence guard. ``ledger_signed`` is inferred from what was
+        NOT seen — no entity needed the flipped anchor — so silence can manufacture
+        it. A true natural_balance partition (6/6) whose credit family goes quiet
+        presents as 6/0 and must NOT resolve to the OPPOSITE label."""
+        truth = sign_partition_distribution(12, 6, 6, 0)
+        assert truth[NATURAL_BALANCE] > truth[LEDGER_SIGNED]
+        silenced = sign_partition_distribution(12, 6, 0, 0)
+        assert silenced == {NATURAL_BALANCE: 0.5, LEDGER_SIGNED: 0.5}
+
+    def test_uniform_reading_stands_when_no_family_could_hide(self):
+        # The floor is MIN_FAMILY_ENTITIES applied to the UNEXPLAINED remainder: one
+        # stray silent entity cannot be a family, so the reading survives it.
+        assert sign_partition_distribution(9, 8, 0, 0)[LEDGER_SIGNED] > 0.5
+        # Two could be — abstain.
+        assert sign_partition_distribution(10, 8, 0, 0)[LEDGER_SIGNED] == 0.5
+
+    def test_a_sliver_of_a_large_population_asserts_nothing(self):
+        # 2 voters out of 1000 previously leaned ledger_signed at U ~ 1.0; the
+        # unexplained remainder obviously has room for a family, so it abstains.
+        assert sign_partition_distribution(1000, 2, 0, 0)[LEDGER_SIGNED] == 0.5
 
     def test_full_coverage_asserts_the_extreme(self):
         assert sign_partition_distribution(4, 4, 0, 0)[LEDGER_SIGNED] == pytest.approx(1.0)

@@ -2131,11 +2131,16 @@ def _build_column_notes(col: ColumnContext) -> str:
     # the magnitude a bare SUM returns is already a natural balance. Absent when
     # undetermined — no fact beats a guess.
     if col.stored_sign == "ledger_signed":
+        # Descriptive, never prescriptive. An earlier draft added "a bare SUM returns
+        # a signed quantity, not a natural-balance magnitude" — false wherever the
+        # reconciling population is single-family or the measure is not account-shaped
+        # (the two conventions coincide there, so the label is correct but the
+        # consequence is not), and it invited a sign flip on a family that need not
+        # exist. State the convention and let the author reason about its own query.
         notes.append(
-            "Stored sign: ledger_signed — one raw ledger direction for every account "
-            "family, so credit-normal accounts (liability, equity, revenue) carry the "
-            "OPPOSITE sign to their natural balance. A bare SUM returns a signed "
-            "quantity, not a natural-balance magnitude."
+            "Stored sign: ledger_signed — values follow one raw ledger direction "
+            "across account families, so a credit-normal account (liability, equity, "
+            "revenue) carries the opposite sign to its natural balance."
         )
     elif col.stored_sign == "natural_balance":
         notes.append(

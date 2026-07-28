@@ -213,5 +213,9 @@ class SemanticPerColumnPhase(BasePhase):
             outputs={"annotations": count, "tables_analyzed": len(table_ids)},
             records_processed=count,
             records_created=count,
+            # Runaway-retry disclosure (DAT-889): populated only when a
+            # max_tokens cut-off was recovered by retrying a reduced table
+            # batch — never silent.
+            warnings=grounding.warnings,
             summary=f"{count} column annotations",
         )

@@ -376,7 +376,10 @@ def ground_columns(
         annotated_by=model_name,
         run_id=run_id,
     )
-    return Result.ok(count)
+    # Runaway-retry disclosure (DAT-889): non-empty only when the annotation
+    # call hit stop_reason=max_tokens and recovered on a reduced batch — never
+    # silent. Threaded through to PhaseResult.warnings by the calling phase.
+    return Result.ok(count, warnings=annotation_result.warnings)
 
 
 def _lake_path(table_name: str) -> str:

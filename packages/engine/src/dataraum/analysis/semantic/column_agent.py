@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.concept_store import load_workspace_concepts
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
+    TableColumnAnnotation,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.statistics.models import ColumnProfile
@@ -50,6 +51,19 @@ class ColumnAnnotationAgent(LLMFeature):
     as ``SemanticAnnotation`` rows.
     """
 
+    # Runaway-emission guard (DAT-889). A free-text-JSON call annotating ALL
+    # tables at once is a SAMPLED dice roll: Sonnet 5 has no temperature (the
+    # `temperature: 0.0` prompt-YAML lines are dead config), so an identical
+    # request can legitimately runaway into digit emission on one run and
+    # finish cleanly (~15k chars, end_turn) on the next (~70k chars,
+    # stop_reason=max_tokens, tail "...9999"). ``annotate`` retries a
+    # max_tokens cut-off on a REDUCED table batch (halved, then per-table once
+    # a batch can no longer be split) instead of raising max_tokens (a runaway
+    # just runs longer) or failing the whole phase on the first bad roll. The
+    # call budget below bounds the retry tree so a persistently-runaway
+    # workspace still fails loud (PhaseFailed) rather than looping forever.
+    _MAX_ANNOTATION_CALLS: ClassVar[int] = 6
+
     def __init__(
         self,
         config: LLMConfig,
@@ -70,6 +84,22 @@ class ColumnAnnotationAgent(LLMFeature):
     ) -> Result[ColumnAnnotationOutput]:
         """Annotate columns with semantic metadata.
 
+        Batches the request by TABLE (never by column — a table's columns are
+        never split across calls) and retries a max_tokens runaway on a
+        reduced batch (DAT-889, see ``_MAX_ANNOTATION_CALLS``). The common
+        case (no runaway) is exactly one call over every requested table,
+        unchanged from before this guard.
+
+        COVERAGE INVARIANT: the guard changes call granularity, never
+        coverage. On success every table this call was asked to annotate IS
+        annotated — reduced batches partition the same requested table set and
+        their outputs are merged, nothing is sampled down or silently dropped.
+        If any batch exhausts its retry budget, the WHOLE call fails (no
+        partial ``ColumnAnnotationOutput`` is ever returned as if it were
+        complete) — the caller's existing failure path (``ground_columns`` →
+        ``PhaseResult.failed`` → non-retryable ``PhaseFailed``) surfaces it,
+        naming the tables still unannotated.
+
         Args:
             session: Database session
             table_ids: List of table IDs to annotate
@@ -82,7 +112,8 @@ class ColumnAnnotationAgent(LLMFeature):
                 the per-column phase).
 
         Returns:
-            Result containing ColumnAnnotationOutput
+            Result containing ColumnAnnotationOutput. On success, ``warnings``
+            carries one entry per runaway retry — never silent (DAT-889).
         """
         feature_config = self.config.features.column_annotation
         if not feature_config or not feature_config.enabled:
@@ -100,12 +131,10 @@ class ColumnAnnotationAgent(LLMFeature):
                 )
             profiles = profiles_result.value
 
-        # Prepare samples
+        # Prepare samples once — keyed by (table_name, column_name), so it is
+        # reused unchanged across every batch attempt below.
         sampler = DataSampler(self.config.privacy)
         samples = sampler.prepare_samples(profiles)
-
-        # Build tables JSON (reuse SemanticAgent's method)
-        tables_json = self._build_tables_json(profiles, samples)
 
         # Concepts from the typed vocabulary table (DAT-728, config→DB); the
         # loader below is retained only as the prompt formatter.
@@ -113,55 +142,132 @@ class ColumnAnnotationAgent(LLMFeature):
         if not ontology_def.concepts:
             return Result.fail(f"Vertical '{ontology}' has no concepts to ground against.")
 
-        context = {
-            "tables_json": json.dumps(tables_json),
-            "ontology_name": ontology,
-            "ontology_concepts": self._ontology_loader.format_concepts_for_prompt(ontology_def),
-            "required_standard_fields": self._format_required_fields(required_standard_fields),
-        }
-
-        # Render prompt
-        try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "column_annotation", context
-            )
-        except Exception as e:
-            return Result.fail(f"Failed to render column_annotation prompt: {e}")
-
-        # Call LLM — structured output (DAT-807): the API constrains decoding to
-        # the schema, so the answer is JSON message content, not tool arguments.
+        ontology_concepts = self._ontology_loader.format_concepts_for_prompt(ontology_def)
+        required_fields_text = self._format_required_fields(required_standard_fields)
         model = self.provider.get_model_for_tier(feature_config.model_tier)
-        request = ConversationRequest(
-            messages=[Message(role="user", content=user_prompt)],
-            system=system_prompt,
-            output_schema=ColumnAnnotationOutput.model_json_schema(),
-            label="column_annotation",
-            effort=feature_config.effort,
-            max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
-            model=model,
-        )
 
-        # converse raises a typed ProviderError on an API failure (DAT-503) —
-        # transient/permanent retryability rides the exception to the worker's
-        # durable boundary, so we don't re-wrap it as a Result here. A returned
-        # Result is always a success.
-        response = self.provider.converse(request).unwrap()
+        # Group profiles by table, preserving first-seen order — the batching
+        # unit the runaway guard splits and retries over. A batch of one (all
+        # tables) is the pre-existing, unguarded behavior.
+        profiles_by_table: dict[str, list[ColumnProfile]] = {}
+        for profile in profiles:
+            profiles_by_table.setdefault(profile.column_ref.table_name, []).append(profile)
+        all_tables = list(profiles_by_table)
 
-        parsed = parse_structured_output(
-            response, ColumnAnnotationOutput, label="column_annotation"
-        )
-        if not parsed.success:
-            return Result.fail(parsed.error or "column_annotation failed")
-        output = parsed.unwrap()
+        tables_out: list[TableColumnAnnotation] = []
+        retry_notes: list[str] = []
+        pending: list[list[str]] = [all_tables]
+        calls_made = 0
+
+        while pending:
+            batch = pending.pop()
+
+            if calls_made >= self._MAX_ANNOTATION_CALLS:
+                gap_tables = list(batch)
+                for later_batch in pending:
+                    gap_tables.extend(later_batch)
+                return Result.fail(
+                    "column_annotation runaway guard exhausted "
+                    f"{self._MAX_ANNOTATION_CALLS} LLM calls ({len(retry_notes)} retries) "
+                    f"with tables {gap_tables!r} still unannotated. Retries so far: "
+                    + "; ".join(retry_notes)
+                )
+
+            batch_profiles = [p for name in batch for p in profiles_by_table[name]]
+            tables_json = self._build_tables_json(batch_profiles, samples)
+            context = {
+                "tables_json": json.dumps(tables_json),
+                "ontology_name": ontology,
+                "ontology_concepts": ontology_concepts,
+                "required_standard_fields": required_fields_text,
+            }
+
+            # Render prompt
+            try:
+                system_prompt, user_prompt, temperature = self.renderer.render_split(
+                    "column_annotation", context
+                )
+            except Exception as e:
+                return Result.fail(f"Failed to render column_annotation prompt: {e}")
+
+            # Call LLM — structured output (DAT-807): the API constrains decoding
+            # to the schema, so the answer is JSON message content, not tool
+            # arguments.
+            request = ConversationRequest(
+                messages=[Message(role="user", content=user_prompt)],
+                system=system_prompt,
+                output_schema=ColumnAnnotationOutput.model_json_schema(),
+                label="column_annotation",
+                effort=feature_config.effort,
+                max_tokens=self.config.limits.max_output_tokens_per_request,
+                temperature=temperature,
+                model=model,
+            )
+
+            # converse raises a typed ProviderError on an API failure (DAT-503) —
+            # transient/permanent retryability rides the exception to the worker's
+            # durable boundary, so we don't re-wrap it as a Result here. A
+            # returned Result is always a success (max_tokens is a normal
+            # completed API call, not a raised failure).
+            response = self.provider.converse(request).unwrap()
+            calls_made += 1
+
+            parsed = parse_structured_output(
+                response, ColumnAnnotationOutput, label="column_annotation"
+            )
+            if parsed.success:
+                tables_out.extend(parsed.unwrap().tables)
+                continue
+
+            if response.stop_reason != "max_tokens":
+                # A genuine contract break (bad schema, refusal, …) — not the
+                # runaway this guard targets. Reducing the batch would not fix
+                # it, so fail exactly as before the guard existed.
+                return Result.fail(parsed.error or "column_annotation failed")
+
+            # Runaway: retry on a reduced batch (DAT-889). Halve while more
+            # than one table remains; once down to a single table, retry that
+            # same table (sampling — not batch size — is now the only lever
+            # left, and Sonnet 5's lack of temperature means a retry is a
+            # genuinely different roll).
+            if len(batch) > 1:
+                mid = len(batch) // 2
+                left, right = batch[:mid], batch[mid:]
+                note = (
+                    f"runaway (stop_reason=max_tokens) on {len(batch)}-table batch "
+                    f"{batch!r} (attempt {calls_made}/{self._MAX_ANNOTATION_CALLS}) — "
+                    f"splitting into {len(left)}+{len(right)} tables and retrying"
+                )
+                pending.append(right)
+                pending.append(left)
+            else:
+                note = (
+                    f"runaway (stop_reason=max_tokens) on single-table batch {batch!r} "
+                    f"(attempt {calls_made}/{self._MAX_ANNOTATION_CALLS}) — retrying "
+                    "the same table"
+                )
+                pending.append(batch)
+
+            logger.warning(
+                "column_annotation_runaway_retry",
+                batch=batch,
+                stop_reason=response.stop_reason,
+                output_tokens=response.output_tokens,
+                content_chars=len(response.content),
+                attempt=calls_made,
+                max_calls=self._MAX_ANNOTATION_CALLS,
+            )
+            retry_notes.append(note)
 
         logger.debug(
             "column_annotation_complete",
-            tables=len(output.tables),
-            columns=sum(len(t.columns) for t in output.tables),
-            model=response.model,
+            tables=len(tables_out),
+            columns=sum(len(t.columns) for t in tables_out),
+            model=model,
+            calls=calls_made,
+            retries=len(retry_notes),
         )
-        return Result.ok(output)
+        return Result.ok(ColumnAnnotationOutput(tables=tables_out), warnings=retry_notes)
 
     @staticmethod
     def _format_required_fields(fields: list[str] | None) -> str:

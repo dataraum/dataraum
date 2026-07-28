@@ -79,7 +79,7 @@ function checksIndicator(om: OMNode): React.ReactNode {
 	const validation = om.data.kind === "metric" ? om.data.validation : [];
 	if (validation.length === 0) return null;
 	return (
-		<span style={{ marginTop: 2 }}>
+		<span style={{ flexShrink: 0, marginTop: 2 }}>
 			<StepCheckIndicator checks={validation} />
 		</span>
 	);

@@ -28,6 +28,14 @@ export interface StepCheckView {
 	message: string | null;
 }
 
+/** A check tagged with the step that declared it — the canvas-node indicator
+ *  surfaces the union of every step's checks (DAT-840 owner ruling), so each
+ *  entry needs to say which step it's on. Structural, same reasoning as
+ *  `StepCheckView`. */
+export interface StepCheckWithOrigin extends StepCheckView {
+	stepId: string;
+}
+
 // The engine's severity enum (`info | warning | error | critical`, default
 // "error" — `metric-spec.ts`'s `GraphStepSchema.validation` describes the
 // same vocabulary). Unknown/absent severity falls back to "error"'s color,
@@ -40,29 +48,42 @@ const SEVERITY_COLOR: Record<string, string> = {
 	critical: "red",
 };
 
+// `severity` is untrusted persisted text (the engine's own YAML/induction
+// writers set it, but nothing validates it round-trips through this cockpit's
+// bounds) — a plain `SEVERITY_COLOR[key]` lookup resolves an inherited key
+// like "constructor" or "toString" through Object.prototype to a FUNCTION
+// (truthy, so `?? SEVERITY_COLOR.error` never fires), and Mantine's
+// parse-theme-color throws on a non-string color deep inside render, taking
+// the whole Model page down. `Object.hasOwn` guards the lookup to the
+// object's OWN keys only.
 function severityColor(severity: string | null): string {
-	return SEVERITY_COLOR[severity ?? "error"] ?? SEVERITY_COLOR.error;
+	const key = severity ?? "error";
+	return Object.hasOwn(SEVERITY_COLOR, key)
+		? SEVERITY_COLOR[key]
+		: SEVERITY_COLOR.error;
 }
 
-/** One check as a compact badge: the condition text, colored by severity, the
- *  business-readable message (when present) in a tooltip. */
+/** One check as a compact badge: the condition text, colored by severity. The
+ *  tooltip always carries the severity word (color alone doesn't read as
+ *  "critical" vs "warning" to everyone) plus the business-readable message
+ *  when present. */
 export function StepCheckBadge({ check }: { check: StepCheckView }) {
-	const badge = (
-		<Badge
-			color={severityColor(check.severity)}
-			variant="light"
-			size="xs"
-			tt="none"
-		>
-			{check.condition}
-		</Badge>
-	);
-	return check.message ? (
-		<Tooltip label={check.message} multiline maw={280} withArrow>
-			{badge}
+	const severity = check.severity ?? "error";
+	const tooltipLabel = check.message
+		? `${severity} — ${check.message}`
+		: severity;
+	return (
+		<Tooltip label={tooltipLabel} multiline maw={280} withArrow>
+			<Badge
+				color={severityColor(check.severity)}
+				variant="light"
+				size="xs"
+				tt="none"
+				data-testid="step-check-badge"
+			>
+				{check.condition}
+			</Badge>
 		</Tooltip>
-	) : (
-		badge
 	);
 }
 
@@ -79,9 +100,10 @@ export function StepCheckBadges({ checks }: { checks: StepCheckView[] }) {
 	const overflow = checks.length - visible.length;
 	return (
 		<Group gap={4} wrap="wrap" data-testid="step-check-badges">
-			{visible.map((c) => (
+			{visible.map((c, i) => (
 				<StepCheckBadge
-					key={`${c.condition}|${c.severity}|${c.message}`}
+					// biome-ignore lint/suspicious/noArrayIndexKey: static list (an already-narrowed DAG's declared checks), never reordered; a composite content key collides on two identical checks
+					key={i}
 					check={c}
 				/>
 			))}
@@ -94,21 +116,27 @@ export function StepCheckBadges({ checks }: { checks: StepCheckView[] }) {
 	);
 }
 
-/** A step's checks as ONE compact icon + tooltip — for a space-constrained
- *  widget (the canvas node face). Renders nothing for an empty list. The
- *  tooltip lists every condition (severity: condition — message), so nothing
- *  is lost to the compact form. */
-export function StepCheckIndicator({ checks }: { checks: StepCheckView[] }) {
+/** A metric's checks across EVERY step (DAT-840 owner ruling — the canvas
+ *  node is the only check surface for a runnable metric, and the engine's
+ *  verifier flags on any step, not just the output step) as ONE compact icon
+ *  + tooltip — for the space-constrained canvas node face. Renders nothing
+ *  for an empty list. Each tooltip entry names its step, so a check on a
+ *  leaf extract doesn't read as if it were on the output. */
+export function StepCheckIndicator({
+	checks,
+}: {
+	checks: StepCheckWithOrigin[];
+}) {
 	if (checks.length === 0) return null;
 	const label = checks
-		.map((c) =>
-			[`${c.severity ?? "error"}: ${c.condition}`, c.message]
-				.filter(Boolean)
-				.join(" — "),
-		)
+		.map((c) => {
+			const head = `${c.stepId} · ${c.severity ?? "error"}: ${c.condition}`;
+			return c.message ? `${head} — ${c.message}` : head;
+		})
 		.join("; ");
-	// The worst (first-listed-severity) color loosely orients the icon; the
-	// tooltip carries the real detail, so a mixed-severity set isn't lossy.
+	// The first-listed check's color loosely orients the icon; the tooltip
+	// (and its `aria-label` twin, for keyboard/screen-reader reach) carries
+	// the full per-step detail, so a mixed-severity set isn't lossy.
 	const color = severityColor(checks[0].severity);
 	return (
 		<Tooltip label={label} multiline maw={280} withArrow>
@@ -117,6 +145,12 @@ export function StepCheckIndicator({ checks }: { checks: StepCheckView[] }) {
 				color={`var(--mantine-color-${color}-filled)`}
 				style={{ flexShrink: 0 }}
 				data-testid="step-check-indicator"
+				// Mantine's Tooltip only opens on hover/focus — a keyboard or
+				// screen-reader user needs the icon to be focusable AND to carry
+				// the content directly (aria-label), not just visually on hover.
+				tabIndex={0}
+				role="img"
+				aria-label={label}
 			/>
 		</Tooltip>
 	);

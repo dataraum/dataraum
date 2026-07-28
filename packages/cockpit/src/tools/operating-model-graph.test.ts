@@ -15,11 +15,26 @@ import {
 } from "./operating-model-graph";
 
 // --- DAG fixture builders (mirror the persisted graph_definition shape) --------
-const extract = (field: string, statement: string) => ({
+// The YAML's singular `validation:` block (DAT-840) — shipped metrics only
+// ever declare it on the output formula step (dpo/dso/dio/current_ratio),
+// but the engine's verifier flags on ANY step and induction can emit
+// `validation` on any step too (owner ruling), so both `extract` and
+// `formula` accept it here.
+type StepValidationFixture = Array<{
+	condition: string;
+	severity?: string;
+	message?: string;
+}>;
+const extract = (
+	field: string,
+	statement: string,
+	validation?: StepValidationFixture,
+) => ({
 	type: "extract",
 	level: 1,
 	source: { standard_field: field, statement },
 	aggregation: "sum",
+	...(validation ? { validation } : {}),
 });
 const constant = (parameter: string, value: number) => ({
 	type: "constant",
@@ -31,13 +46,7 @@ const formula = (
 	expression: string,
 	dependsOn: string[],
 	output = false,
-	// The YAML's singular `validation:` block (DAT-840) — only ever declared on
-	// the output step in shipped metrics (dpo/dso/dio/current_ratio).
-	validation?: Array<{
-		condition: string;
-		severity?: string;
-		message?: string;
-	}>,
+	validation?: StepValidationFixture,
 ) => ({
 	type: "formula",
 	level: 2,
@@ -290,12 +299,12 @@ describe("buildOperatingModelGraph", () => {
 		expect(e).toContain("metric:dso->measure:accounts_receivable:reads");
 		expect(e).toContain("metric:dso->measure:revenue:reads");
 		expect(e).toContain("metric:dso->constant:days_in_period:uses");
-		// No validation declared on this fixture's output step — the metric node
+		// No validation declared anywhere in this fixture's DAG — the metric node
 		// carries an empty array, never undefined (DAT-840).
 		expect(m?.data).toMatchObject({ validation: [] });
 	});
 
-	it("carries the output step's declared checks onto the metric node (DAT-840)", () => {
+	it("tags the output step's declared checks with their step id (DAT-840)", () => {
 		const deps = DSO_DEPS();
 		deps.dso = {
 			...deps.dso,
@@ -308,9 +317,58 @@ describe("buildOperatingModelGraph", () => {
 		const m = g.nodes.find((n) => n.id === "metric:dso");
 		expect(m?.data).toMatchObject({
 			validation: [
-				{ condition: "0 <= value <= 365", severity: "warning", message: null },
+				{
+					stepId: "dso",
+					condition: "0 <= value <= 365",
+					severity: "warning",
+					message: null,
+				},
 			],
 		});
+	});
+
+	it("surfaces a NON-output step's declared checks too — the engine's verifier can flag any step, not just the output (DAT-840 owner ruling)", () => {
+		const deps = DSO_DEPS();
+		// A check on a LEAF extract step, not the output formula.
+		deps.revenue = {
+			...deps.revenue,
+			validation: [{ condition: "value > 0", severity: "critical" }],
+		};
+		const g = buildOperatingModelGraph({
+			metrics: [metric("dso", "Days Sales Outstanding", "days", deps)],
+			grounding: base().grounding,
+		});
+		const m = g.nodes.find((n) => n.id === "metric:dso");
+		expect(m?.data).toMatchObject({
+			validation: [
+				{
+					stepId: "revenue",
+					condition: "value > 0",
+					severity: "critical",
+					message: null,
+				},
+			],
+		});
+	});
+
+	it("unions checks across MULTIPLE steps of the same metric", () => {
+		const deps = DSO_DEPS();
+		deps.revenue = {
+			...deps.revenue,
+			validation: [{ condition: "value > 0", severity: "critical" }],
+		};
+		deps.dso = {
+			...deps.dso,
+			validation: [{ condition: "0 <= value <= 365", severity: "warning" }],
+		};
+		const g = buildOperatingModelGraph({
+			metrics: [metric("dso", "Days Sales Outstanding", "days", deps)],
+			grounding: base().grounding,
+		});
+		const m = g.nodes.find((n) => n.id === "metric:dso");
+		const validation = (m?.data as { validation?: Array<{ stepId: string }> })
+			.validation;
+		expect(validation?.map((v) => v.stepId).sort()).toEqual(["dso", "revenue"]);
 	});
 
 	it("composes metric→metric by name, NOT inlining the self-contained copies", () => {

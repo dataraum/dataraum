@@ -17,6 +17,7 @@ import {
 	StepCheckBadges,
 	StepCheckIndicator,
 	type StepCheckView,
+	type StepCheckWithOrigin,
 } from "#/ui/cockpit/widgets/step-check-badge";
 
 function renderIn(node: React.ReactNode) {
@@ -52,42 +53,86 @@ describe("StepCheckBadges", () => {
 		const group = screen.getByTestId("step-check-badges");
 		expect(group.textContent).toContain("+3");
 	});
+
+	it("never crashes on an untrusted severity that collides with Object.prototype", () => {
+		// "constructor" resolves through the prototype chain to a FUNCTION on a
+		// plain `SEVERITY_COLOR[key]` lookup — truthy, so `?? "error"` never
+		// fires, and Mantine's parse-theme-color throws on a non-string color.
+		// The persisted severity is untrusted text (rule 11); this must render,
+		// not throw.
+		const checks: StepCheckView[] = [
+			{ condition: "value > 0", severity: "constructor", message: null },
+		];
+		expect(() => renderIn(<StepCheckBadges checks={checks} />)).not.toThrow();
+		const group = screen.getByTestId("step-check-badges");
+		expect(group.textContent).toContain("value > 0");
+	});
+
+	it("puts the severity word in the badge's tooltip, not just its color", async () => {
+		const checks: StepCheckView[] = [
+			{ condition: "value > 0", severity: "critical", message: null },
+		];
+		renderIn(<StepCheckBadges checks={checks} />);
+		// Mantine attaches the hover listener to the Badge root (Tooltip's
+		// child), not its inner label span — target the testid'd root directly
+		// (mouseenter doesn't bubble, so firing it on a descendant is a no-op).
+		fireEvent.mouseEnter(screen.getByTestId("step-check-badge"));
+		const tooltip = await screen.findByRole("tooltip");
+		expect(tooltip.textContent).toContain("critical");
+	});
 });
 
 describe("StepCheckIndicator", () => {
+	const check = (
+		stepId: string,
+		condition: string,
+		severity: string | null,
+		message: string | null = null,
+	): StepCheckWithOrigin => ({ stepId, condition, severity, message });
+
 	it("renders nothing for an empty list", () => {
 		renderIn(<StepCheckIndicator checks={[]} />);
 		expect(screen.queryByTestId("step-check-indicator")).toBeNull();
 	});
 
-	it("renders one icon whose tooltip carries every condition (message included)", async () => {
-		const checks: StepCheckView[] = [
-			{
-				condition: "value > 0",
-				severity: "warning",
-				message: "must be positive",
-			},
+	it("carries every check's step id, severity, condition, and message in its aria-label — reachable without hovering (a11y)", () => {
+		const checks = [check("dso", "value > 0", "warning", "must be positive")];
+		renderIn(<StepCheckIndicator checks={checks} />);
+		const icon = screen.getByRole("img", { name: /dso · warning: value > 0/ });
+		expect(icon.getAttribute("aria-label")).toContain("must be positive");
+		// Focusable — a keyboard/screen-reader user reaches the content without
+		// a mouse hover.
+		expect(icon.getAttribute("tabindex")).toBe("0");
+	});
+
+	it("labels each check by its OWN step when a metric declares checks on more than one step (DAT-840 owner ruling)", () => {
+		const checks = [
+			check("revenue", "value > 0", "warning"),
+			check("dso", "0 <= value <= 365", "critical", "DSO outside range"),
 		];
 		renderIn(<StepCheckIndicator checks={checks} />);
 		const icon = screen.getByTestId("step-check-indicator");
-		// Mantine mounts the tooltip content only once open (Floating UI) — hover
-		// to open it, same as a real reviewer would, rather than reading the
-		// label prop directly off the component.
-		fireEvent.mouseEnter(icon);
-		const tooltip = await screen.findByRole("tooltip");
-		expect(tooltip.textContent).toContain("value > 0");
-		expect(tooltip.textContent).toContain("must be positive");
+		const label = icon.getAttribute("aria-label") ?? "";
+		expect(label).toContain("revenue · warning: value > 0");
+		expect(label).toContain(
+			"dso · critical: 0 <= value <= 365 — DSO outside range",
+		);
 	});
 
-	it("renders every check's condition when a step declares more than one", async () => {
-		const checks: StepCheckView[] = [
-			{ condition: "value > 0", severity: "warning", message: null },
-			{ condition: "value < 1000", severity: "critical", message: null },
-		];
+	it("still opens a visible tooltip on hover (mouse users)", async () => {
+		const checks = [check("dso", "value > 0", "warning")];
 		renderIn(<StepCheckIndicator checks={checks} />);
 		fireEvent.mouseEnter(screen.getByTestId("step-check-indicator"));
 		const tooltip = await screen.findByRole("tooltip");
+		expect(tooltip.textContent).toContain("dso");
 		expect(tooltip.textContent).toContain("value > 0");
-		expect(tooltip.textContent).toContain("value < 1000");
+	});
+
+	it("never crashes on an untrusted severity that collides with Object.prototype", () => {
+		const checks = [check("dso", "value > 0", "constructor")];
+		expect(() =>
+			renderIn(<StepCheckIndicator checks={checks} />),
+		).not.toThrow();
+		expect(screen.getByTestId("step-check-indicator")).toBeTruthy();
 	});
 });

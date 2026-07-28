@@ -68,11 +68,13 @@ interface MetricData {
 	 *  (DAT-702: the node composes ad hoc from its parts; the flattened `sql`
 	 *  above stays a reference display, never the gate). */
 	hasDag: boolean;
-	/** The output step's declared post-execution checks (DAT-840) — enforced by
-	 *  the engine's `graphs/verifier.py` against the executed value; a violation
-	 *  flags the metric, never suppresses the number. Empty when the metric's
-	 *  output step declares none (the common case — renders nothing). */
-	validation: StepValidation[];
+	/** Every step's declared post-execution checks, tagged by step (DAT-840,
+	 *  owner ruling — the union across the whole DAG, not just the output
+	 *  step; see `MetricCheck`). Enforced by the engine's `graphs/verifier.py`
+	 *  against the executed value; a violation flags the metric, never
+	 *  suppresses the number. Empty when no step declares one (the common
+	 *  case — renders nothing). */
+	validation: MetricCheck[];
 }
 interface MeasureData {
 	kind: "measure";
@@ -172,6 +174,16 @@ export interface StepValidation {
 	condition: string;
 	severity: string | null;
 	message: string | null;
+}
+
+/** A step's check, tagged with the step that declared it (DAT-840 owner
+ *  ruling): the canvas node is the ONLY check surface for a runnable metric,
+ *  and the engine's verifier flags on ANY step — not just the output step
+ *  (`graphs/verifier.py:114-117`), and induction can emit `validation` on any
+ *  step (`metric-induction.ts:326`) — so `MetricData.validation` carries the
+ *  union across every step, not just the output's. */
+export interface MetricCheck extends StepValidation {
+	stepId: string;
 }
 
 /** One parsed step of a metric's effective DAG (a `dependencies` entry). */
@@ -450,7 +462,13 @@ export function buildOperatingModelGraph(
 				category: dag?.category ?? null,
 				sql: m.sql,
 				hasDag: dag !== null,
-				validation: output?.validation ?? [],
+				// The union of EVERY step's checks, not just the output's (DAT-840
+				// owner ruling) — the engine's verifier can flag any step.
+				validation: dag
+					? dag.steps.flatMap((s) =>
+							s.validation.map((v) => ({ ...v, stepId: s.stepId })),
+						)
+					: [],
 			},
 		});
 		if (!dag || !output) continue;

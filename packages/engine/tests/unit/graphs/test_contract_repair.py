@@ -158,7 +158,7 @@ def _generate(agent: GraphAgent) -> object:
 
 
 def _patch_context(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context_format.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
 
 

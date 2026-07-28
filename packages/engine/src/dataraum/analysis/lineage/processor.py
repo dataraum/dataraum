@@ -490,7 +490,13 @@ def discover_aggregation_lineage(
                 SliceDefinition.table_id.in_(table_ids),
                 SliceDefinition.run_id == run_id,
             )
-            .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
+            # NULLS LAST explicitly: Postgres sorts NULLs FIRST under DESC, so a
+            # plain .desc() would lead with the UNMEASURED axes — the opposite of
+            # the intended order, and silently (they would simply appear best).
+            .order_by(
+                SliceDefinition.slice_relevance.desc().nulls_last(),
+                SliceDefinition.column_name,
+            )
         )
         .scalars()
         .all()

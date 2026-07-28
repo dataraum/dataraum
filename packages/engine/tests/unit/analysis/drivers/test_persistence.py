@@ -101,7 +101,6 @@ def _seed(
                     table_id=fact.table_id,
                     column_id=col.column_id,
                     column_name=name,
-                    slice_priority=1,
                     detection_source="llm",
                 )
             )

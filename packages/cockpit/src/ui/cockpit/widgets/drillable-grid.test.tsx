@@ -66,7 +66,6 @@ const axis = (
 	temporal: DrillAxis["temporal"] = null,
 ): DrillAxis => ({
 	column,
-	priority: 1,
 	sliceType: "categorical",
 	values: [],
 	valueCount: 3,

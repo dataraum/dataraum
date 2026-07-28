@@ -13,7 +13,10 @@ verdict of a multi-grounded concept appear in the served text.
 
 from __future__ import annotations
 
-from dataraum.graphs.context import (
+from dataraum.graphs.context_format import (
+    format_served_context,
+)
+from dataraum.graphs.context_models import (
     BusinessCycleContext,
     ColumnContext,
     ConceptContext,
@@ -29,7 +32,6 @@ from dataraum.graphs.context import (
     SliceContext,
     TableContext,
     ValidationContext,
-    format_served_context,
 )
 
 
@@ -511,7 +513,7 @@ class TestColumnFlagsBenfordSuppression:
     """DAT-843: only a MEASURED Benford violation flags to the agent."""
 
     def _flags(self, benford_status):
-        from dataraum.graphs.context import _generate_column_flags
+        from dataraum.graphs.context_reads import _generate_column_flags
 
         return _generate_column_flags(
             null_ratio=None,

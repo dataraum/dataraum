@@ -121,7 +121,8 @@ WHERE r.relationship_type IN ('foreign_key', 'hierarchy')
 
 CREATE VIEW __READ__.og_has_dimension AS
 SELECT slice_id::text AS slice_id, table_id::text AS table_id,
-       column_id::text AS column_id, column_name, slice_type, slice_priority,
+       column_id::text AS column_id, column_name, slice_type,
+       slice_relevance, slice_interest,
        dimension_table_id::text AS dimension_table_id,
        dimension_attribute, fk_role
 FROM __READ__.current_slice_definitions;
@@ -592,7 +593,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
       LABEL has_dimension
-      PROPERTIES (column_name, slice_type, slice_priority,
+      PROPERTIES (column_name, slice_type, slice_relevance, slice_interest,
                   dimension_table_id, dimension_attribute, fk_role),
     __READ__.og_derived_from KEY (edge_key)
       SOURCE KEY (view_table_id) REFERENCES og_tables (table_id)

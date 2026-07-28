@@ -275,9 +275,9 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             "INSERT INTO slice_definitions "
             "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
-            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            " dimension_attribute, fk_role, slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', '{colname}', 't2', "
-            f"'{attr}', '{role}', 1, 'categorical', 'llm', '{TS}')"
+            f"'{attr}', '{role}', 0.9, 'primary', 'categorical', 'llm', '{TS}')"
         )
     # DAT-867 FOLDED slice: journal's own categorical region_flat — dimension_table_id /
     # dimension_attribute / fk_role ALL NULL (no FK identity, SliceDefinition contract).
@@ -287,9 +287,9 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             "INSERT INTO slice_definitions "
             "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
-            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            " dimension_attribute, fk_role, slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', 'region_flat', NULL, "
-            f"NULL, NULL, 1, 'categorical', 'structural', '{TS}')"
+            f"NULL, NULL, 0.8, NULL, 'categorical', 'structural', '{TS}')"
         )
     # Referenced bus-matrix cells carry the DAT-788 role identity the graph joins on
     # (og_conformed_dimension). Same-named FK roles across facts auto-conform to one

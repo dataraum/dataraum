@@ -49,7 +49,7 @@ def _rec(column: str) -> SliceRecommendationOutput:
     return SliceRecommendationOutput(
         table_name="journal_lines",
         column_name=column,
-        priority=1,
+        interest="primary",
         distinct_values=["CC100", "CC200"],
         reasoning="r",
         business_context="b",
@@ -89,7 +89,7 @@ def test_unknown_table_recommendation_is_dropped() -> None:
             SliceRecommendationOutput(
                 table_name="ghost_table",
                 column_name="cost_center",
-                priority=1,
+                interest="primary",
                 distinct_values=["A", "B"],
                 reasoning="r",
                 business_context="b",

@@ -804,7 +804,8 @@ CREATE TABLE slice_definitions (
 	dimension_table_id VARCHAR, 
 	dimension_attribute VARCHAR, 
 	fk_role VARCHAR, 
-	slice_priority INTEGER NOT NULL, 
+	slice_relevance FLOAT, 
+	slice_interest VARCHAR, 
 	slice_type VARCHAR NOT NULL, 
 	distinct_values JSON, 
 	value_count INTEGER, 
@@ -817,6 +818,8 @@ CREATE TABLE slice_definitions (
 	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
 	CONSTRAINT ck_slice_definitions_slice_type CHECK (slice_type IN ('categorical')), 
 	CONSTRAINT ck_slice_definitions_detection_source CHECK (detection_source IN ('llm', 'structural')), 
+	CONSTRAINT ck_slice_definitions_slice_interest CHECK (slice_interest IS NULL OR slice_interest IN ('primary', 'supporting')), 
+	CONSTRAINT ck_slice_definitions_slice_relevance_range CHECK (slice_relevance IS NULL OR (slice_relevance >= 0.0 AND slice_relevance <= 1.0)), 
 	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_slice_definitions_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)

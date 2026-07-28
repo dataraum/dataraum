@@ -36,20 +36,24 @@ class SliceDefinition(Base):
     every eligible column — grain-safe pre-filter survivor (DAT-805: not a
     constant, not majority-NULL, not a near-unique key, on a scale-invariant
     near-key fraction) whose ``semantic_role`` is not measure/timestamp. The
-    LLM's role is ENRICHMENT only: the slicing agent ranks the most interesting
-    dimensions, and its ``slice_priority`` / ``business_context`` / ``reasoning``
-    / ``confidence`` merge onto rows that exist regardless (un-ranked rows carry
-    the ``UNRANKED_SLICE_PRIORITY`` floor). Same data + same code ⇒ the same
-    persisted dimension set, run to run — an elected-subset catalog silently
-    dropped real axes (a folded ``account_id`` was elected 0-2 times across
-    runs) from every existence consumer (drivers, lineage, bus_matrix).
+    LLM's role is ENRICHMENT only: the slicing agent judges which dimensions are
+    business breakdown axes, and its ``slice_interest`` / ``business_context`` /
+    ``reasoning`` / ``confidence`` merge onto rows that exist regardless.
+    Same data + same code ⇒ the same persisted dimension set, run to run — an
+    elected-subset catalog silently dropped real axes (a folded ``account_id``
+    was elected 0-2 times across runs) from every existence consumer (drivers,
+    lineage, bus_matrix).
 
     Grain-safety is by construction — enriched dimensions are grain-verified FK
     joins; thin per-group support is folded by the driver-tree's ``min_support``
     (DAT-538 removed the redundant always-true ``grain_safe`` flag). Curation
     surfaces (cycles/graphs/validation context + the cockpit ``<dimensions>``
-    block) read ``ORDER BY slice_priority LIMIT CURATED_SLICE_BUDGET``; existence
-    consumers read the full inventory. Slice *materialization* was removed
+    block) take the JUDGED rows ordered by ``(slice_interest, slice_relevance
+    DESC)`` and REPORT what they left behind (DAT-879 — ``curated_slices`` in
+    ``slicing/curation.py``); existence consumers read the full inventory. The
+    old ``ORDER BY slice_priority LIMIT CURATED_SLICE_BUDGET`` cut silently, and
+    because every un-ranked row tied at the priority floor its remaining budget
+    was filled ALPHABETICALLY. Slice *materialization* was removed
     (DAT-536): the structural_reconciliation substrate is aggregated inline over
     the enriched views, so there is no ``sql_template`` to store.
 
@@ -72,11 +76,25 @@ class SliceDefinition(Base):
         # vocabulary here.
         CheckConstraint("slice_type IN ('categorical')", name="slice_type"),
         # Detection-source vocabulary (DAT-802 / DAT-725): 'llm' = the slicing
-        # agent ranked this row (its enrichment fields are LLM-derived);
+        # agent judged this row (its enrichment fields are LLM-derived);
         # 'structural' = a deterministic inventory row the ranker did not touch
-        # (enrichment NULL, priority = the UNRANKED_SLICE_PRIORITY floor).
+        # (enrichment + ``slice_interest`` NULL; ``slice_relevance`` is still
+        # measured — it comes from the profile, not the agent).
         # ``slicing_phase.py`` is still the sole writer.
         CheckConstraint("detection_source IN ('llm', 'structural')", name="detection_source"),
+        # Interest vocabulary (DAT-879). NULL is a member of the domain and
+        # means "the agent did not judge this row" — a distinct state from
+        # either label, and the reads report it as such.
+        CheckConstraint(
+            "slice_interest IS NULL OR slice_interest IN ('primary', 'supporting')",
+            name="slice_interest",
+        ),
+        # A measured score is a fraction. Out-of-range would mean the scorer
+        # broke, not that an axis is unusual — fail loud at the write.
+        CheckConstraint(
+            "slice_relevance IS NULL OR (slice_relevance >= 0.0 AND slice_relevance <= 1.0)",
+            name="slice_relevance_range",
+        ),
     )
 
     slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -109,8 +127,23 @@ class SliceDefinition(Base):
     dimension_attribute: Mapped[str | None] = mapped_column(String, nullable=True)
     fk_role: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Slice configuration
-    slice_priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Curation signal (DAT-879). Two fields, two different kinds of claim:
+    #
+    # ``slice_relevance`` is MEASURED from this run's profile — coverage x
+    # evenness over the value distribution (``slicing/relevance.py``), in
+    # [0, 1], kind-agnostic so a future banded numeric axis lands on the same
+    # scale (DAT-280). NULL means UNMEASURED (no statistical profile), never
+    # "scored zero" — a zero says the axis resolves nothing, which is a claim
+    # we have no right to make without a profile.
+    #
+    # ``slice_interest`` is the agent's ABSOLUTE judgment ('primary' /
+    # 'supporting'), NULL for a row the ranker never returned. Absolute rather
+    # than ordinal so it is comparable across tables and across slice types.
+    # The two are deliberately not folded into one number: relevance says what
+    # the data supports, interest says what a reader wants, and the measured
+    # number must never silently overrule the judgment.
+    slice_relevance: Mapped[float | None] = mapped_column(Float)
+    slice_interest: Mapped[str | None] = mapped_column(String)
     slice_type: Mapped[str] = mapped_column(String, nullable=False, default="categorical")
     distinct_values: Mapped[list[str] | None] = mapped_column(JSON)
     value_count: Mapped[int | None] = mapped_column(Integer)

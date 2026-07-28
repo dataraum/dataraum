@@ -177,7 +177,6 @@ class TestSlicingPhase:
         slice_def = SliceDefinition(
             table_id=table_id,
             column_id=col_id,
-            slice_priority=1,
             slice_type="categorical",
             distinct_values=["A", "B", "C"],
             value_count=3,

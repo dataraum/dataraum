@@ -10,7 +10,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from dataraum.graphs.context import BusinessCycleContext, EnrichedViewContext, TableContext
+from dataraum.graphs.context_models import BusinessCycleContext, EnrichedViewContext, TableContext
 from dataraum.graphs.models import (
     ExtractGroundingOutput,
     GraphAssumptionOutput,

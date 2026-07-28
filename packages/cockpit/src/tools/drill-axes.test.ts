@@ -108,22 +108,38 @@ describe("measureFieldsFromDag", () => {
 });
 
 describe("axesFromSliceRows", () => {
-	it("narrows nullable view rows and dedupes by column keeping first (best priority)", () => {
+	it("narrows nullable view rows, dedupes by column, and ranks by curation order", () => {
+		// DAT-879: order comes from (interest tier, measured relevance desc, name)
+		// and ARRAY ORDER is the ranking — deliberately NOT the raw row order, so
+		// a judged axis leads regardless of how the rows arrive.
 		const axes = axesFromSliceRows([
 			{
 				tableId: "fact1",
+				columnName: "booking_month",
+				sliceRelevance: 0.99, // measures best, but was never judged
+				sliceInterest: null,
+				sliceType: null,
+				distinctValues: "not-an-array",
+				valueCount: 12,
+				businessContext: null,
+			},
+			{
+				tableId: "fact1",
 				columnName: "customer__region",
-				slicePriority: 1,
+				sliceRelevance: 0.4,
+				sliceInterest: "primary",
 				sliceType: "categorical",
 				distinctValues: ["EU", "US", 7, null],
 				valueCount: 2,
 				businessContext: "sales region",
 			},
-			// Same dimension cataloged on a second fact — lower priority, dropped.
+			// Same dimension cataloged on a second fact — deduped away; the
+			// better-ordered row wins, so the enrichment here never surfaces.
 			{
 				tableId: "fact2",
 				columnName: "customer__region",
-				slicePriority: 3,
+				sliceRelevance: 0.1,
+				sliceInterest: "supporting",
 				sliceType: "categorical",
 				distinctValues: [],
 				valueCount: null,
@@ -132,26 +148,17 @@ describe("axesFromSliceRows", () => {
 			{
 				tableId: "fact1",
 				columnName: null, // stale row without a name → dropped
-				slicePriority: 2,
+				sliceRelevance: 0.5,
+				sliceInterest: "primary",
 				sliceType: null,
 				distinctValues: null,
 				valueCount: null,
-				businessContext: null,
-			},
-			{
-				tableId: "fact1",
-				columnName: "booking_month",
-				slicePriority: null,
-				sliceType: null,
-				distinctValues: "not-an-array",
-				valueCount: 12,
 				businessContext: null,
 			},
 		]);
 		expect(axes).toEqual([
 			{
 				column: "customer__region",
-				priority: 1,
 				sliceType: "categorical",
 				values: ["EU", "US"],
 				valueCount: 2,
@@ -160,7 +167,6 @@ describe("axesFromSliceRows", () => {
 			},
 			{
 				column: "booking_month",
-				priority: Number.MAX_SAFE_INTEGER,
 				sliceType: "categorical",
 				values: [],
 				valueCount: 12,
@@ -169,12 +175,30 @@ describe("axesFromSliceRows", () => {
 			},
 		]);
 	});
+
+	it("keeps un-measured axes behind measured ones within a tier", () => {
+		// A null relevance must not read as zero-and-therefore-best.
+		const row = (columnName: string, sliceRelevance: number | null) => ({
+			tableId: "fact1",
+			columnName,
+			sliceRelevance,
+			sliceInterest: "primary",
+			sliceType: "categorical",
+			distinctValues: [],
+			valueCount: null,
+			businessContext: null,
+		});
+		const axes = axesFromSliceRows([
+			row("unmeasured", null),
+			row("measured", 0.1),
+		]);
+		expect(axes.map((a) => a.column)).toEqual(["measured", "unmeasured"]);
+	});
 });
 
 /** A minimal curated axis for the pure-function tests. */
-const axis = (column: string, priority = 1): DrillAxis => ({
+const axis = (column: string): DrillAxis => ({
 	column,
-	priority,
 	sliceType: "categorical",
 	values: [],
 	valueCount: null,
@@ -185,7 +209,7 @@ const axis = (column: string, priority = 1): DrillAxis => ({
 describe("unionSubstrateAxes", () => {
 	it("appends uncataloged substrate dims below curated axes, skipping covered columns", () => {
 		const out = unionSubstrateAxes(
-			[axis("customer__region", 1)],
+			[axis("customer__region")],
 			["customer__region", "customer__segment"],
 		);
 		expect(out.map((a) => a.column)).toEqual([
@@ -193,10 +217,8 @@ describe("unionSubstrateAxes", () => {
 			"customer__segment",
 		]);
 		// The curated row is untouched; the substrate row carries no curation.
-		expect(out[0]?.priority).toBe(1);
 		expect(out[1]).toEqual({
 			column: "customer__segment",
-			priority: Number.MAX_SAFE_INTEGER,
 			sliceType: "categorical",
 			values: [],
 			valueCount: null,
@@ -472,7 +494,7 @@ describe("driver ordering", () => {
 
 	it("puts measured drivers first by gain and keeps the rest in incoming order", () => {
 		const out = orderAxesByDrivers(
-			[axis("a", 1), axis("b", 2), axis("c", 3), axis("d", 4)],
+			[axis("a"), axis("b"), axis("c"), axis("d")],
 			new Map([
 				["c", 0.1],
 				["b", 0.6],
@@ -545,7 +567,8 @@ const seed = () => {
 		{
 			tableId: "fact1",
 			columnName: "customer__region",
-			slicePriority: 1,
+			sliceRelevance: 0.9,
+			sliceInterest: "primary",
 			sliceType: "categorical",
 			distinctValues: ["EU", "US"],
 			valueCount: 2,
@@ -585,7 +608,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect(axes).toEqual([
 			{
 				column: "customer__region",
-				priority: 1,
 				sliceType: "categorical",
 				values: ["EU", "US"],
 				valueCount: 2,
@@ -597,7 +619,6 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 			// Its DATE type on the view table makes it the temporal axis.
 			{
 				column: "customer__segment",
-				priority: Number.MAX_SAFE_INTEGER,
 				sliceType: "categorical",
 				values: [],
 				valueCount: null,
@@ -622,7 +643,7 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		expect(axes.map((a) => a.column)).toEqual(["customer__region"]);
 	});
 
-	it("puts a measured driver ahead of curated priority", async () => {
+	it("puts a measured driver ahead of curation order", async () => {
 		seed();
 		rowsByTable.set(currentDriverRankings, [
 			{

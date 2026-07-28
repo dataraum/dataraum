@@ -106,7 +106,7 @@ def disjoint_map(session: Session, vertical: str) -> dict[str, frozenset[str]]:
     """Active ``disjoint_with`` edges for ``vertical`` as ``concept → partners``.
 
     Read from the typed ``concept_edges`` table directly rather than through the
-    property graph (``graphs.context._read_concept_edges``): this needs one
+    property graph (``graphs.context_reads._read_concept_edges``): this needs one
     predicate, not the whole neighbourhood, and PGQ is Postgres-19-only while the
     guard must also run wherever the phase does. Symmetric edges are stored in
     BOTH directions, so accumulating each row under its from-side already

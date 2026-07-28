@@ -102,7 +102,7 @@ def check_benford_law(
         if span_decades < 1.0:
             return Result.ok(
                 BenfordAnalysis(
-                    status=BENFORD_NOT_APPLICABLE,
+                    status=BENFORD_NOT_APPLICABLE,  # type: ignore[arg-type]  # BENFORD_* consts ⊂ the Literal, mypy sees plain str
                     magnitude_span_decades=span_decades,
                     chi_square=None,
                     p_value=None,
@@ -148,7 +148,7 @@ def check_benford_law(
         }
 
         result = BenfordAnalysis(
-            status=status,
+            status=status,  # type: ignore[arg-type]  # branch-narrowed to a BENFORD_* const, mypy sees plain str
             magnitude_span_decades=span_decades,
             chi_square=chi2_float,
             p_value=p_value_float,

@@ -14,19 +14,26 @@
 // constrained-decoding probe to verify the new schema compiles — out of a
 // mechanical lane's scope/budget (no e2e without asking).
 //
-// PRODUCTION IMPACT TODAY: none on the primary path. `frame.ts`'s
+// PRODUCTION IMPACT TODAY: real, confirmed (DAT-880 review — a deletion lane
+// probed this live and both reviewers independently reproduced it). `frame.ts`'s
 // `induceValidations` → `toProposedValidation` output is written to
 // `config_overlay` WITHOUT ever being parsed against the typed
 // `ProposedValidation` (== `ValidationSpecSchema.omit({vertical:true})`) —
 // `frameFamily` only runs `itemSchema.parse` on the SEPARATE "user-edited"
 // declare path (`opts.edited`), not the induce path — so the legacy
 // `parameters`/`sql_hints` keys survive verbatim into the overlay row, and the
-// engine's `ValidationSpec` `mode="before"` normalizer (models.py) accepts
-// EITHER wire shape. RISK NOT FULLY RULED OUT: if the frame UI ever resubmits
-// an induced-then-edited validation through `frameFamily`'s `opts.edited` path
-// carrying these legacy keys, `ValidationSpecSchema.parse` (non-strict) would
-// silently DROP them, losing any induced tolerance — unverified UI-layer risk,
-// out of this module's scope to confirm.
+// engine's `ValidationSpec` `mode="before"` fold (models.py,
+// `_fold_legacy_check_fields`) is this shape's LIVE, load-bearing reader for
+// EVERY frame-induced validation, not a dormant compatibility path — deleting
+// it silently strips tolerance + guidance from every induced check. It stays
+// until this module is migrated to the typed shape alongside it (the planned
+// follow-on this file's KNOWN GAP note above describes — lead-gated on a live
+// constrained-decoding compile probe), not indefinitely. RISK NOT FULLY RULED
+// OUT: if the frame UI ever resubmits an induced-then-edited validation through
+// `frameFamily`'s `opts.edited` path carrying these legacy keys,
+// `ValidationSpecSchema.parse` (non-strict) would silently DROP them, losing
+// any induced tolerance — unverified UI-layer risk, out of this module's scope
+// to confirm.
 //
 // `ValidationSpecSchema.parameters` used to be
 // `z.record(z.string(), z.unknown())` because that WAS the persisted shape: the

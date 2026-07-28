@@ -726,11 +726,13 @@ def load_declared_formula(
 
     The derived_value teach rides the EXISTING ``validation`` overlay type: a
     declared expected formula is a spec-shaped ``validation`` teach row with
-    ``check_type: "expected_formula"`` and ``parameters: {table, column,
-    formula}`` (full shape documented on ``core.overlay._apply_validation``).
-    The validation phase executes the same row as a declared check every run;
-    this read pools it as the ``human_declaration`` witness on the matching
-    formula claim. Mirrors ``load_documented_dependencies``: a direct
+    ``check_type: "expected_formula"`` and ``expected_formula: {table, column,
+    formula}`` (:class:`~dataraum.analysis.validation.models.
+    ExpectedFormulaDeclaration`; full shape documented on
+    ``core.overlay._apply_validation`` — retyped off the legacy ``parameters`` bag,
+    DAT-880). The validation phase would execute the same row as a declared check
+    every run; this read pools it as the ``human_declaration`` witness on the
+    matching formula claim. Mirrors ``load_documented_dependencies``: a direct
     ``config_overlay`` read, ``superseded_at IS NULL`` filters undone teaches,
     ``created_at`` ASC + last write wins (the applier's upsert convention).
 
@@ -757,13 +759,13 @@ def load_declared_formula(
         payload = row.payload or {}
         if payload.get("check_type") != "expected_formula":
             continue
-        params = payload.get("parameters") or {}
+        declaration = payload.get("expected_formula") or {}
         if (
-            str(params.get("table") or "").strip().lower() != target_table
-            or str(params.get("column") or "").strip().lower() != target_column
+            str(declaration.get("table") or "").strip().lower() != target_table
+            or str(declaration.get("column") or "").strip().lower() != target_column
         ):
             continue
-        formula = params.get("formula")
+        formula = declaration.get("formula")
         if formula:
             declared = str(formula)  # rows are created_at ASC → last write wins
     if declared is None:

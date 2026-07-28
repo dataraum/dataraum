@@ -228,7 +228,7 @@ def _to_spec(validation: InducedValidation) -> ValidationSpec:
         description=validation.description,
         category=validation.category,
         severity=ValidationSeverity(validation.severity),
-        check_type=validation.check_type,
+        check_type=validation.check_type,  # type: ignore[arg-type]  # induction Literal ⊂ the union
         tolerance=validation.tolerance,
         guidance=validation.guidance or None,
         expected_outcome=validation.expected_outcome or None,

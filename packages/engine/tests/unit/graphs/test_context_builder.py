@@ -452,3 +452,35 @@ class TestBuilderCuratedSliceRead:
             s.column_name for s in ctx.available_slices if s.priority == UNRANKED_SLICE_PRIORITY
         ]
         assert floor_names == sorted(floor_names), "deterministic tiebreak on the floor"
+
+
+class TestBuilderExcludesSurrogateColumns:
+    """Mint-owned surrogate join keys never reach the grounding prompt (DAT-878).
+
+    ``_sk__*`` columns (``pipeline/phases/surrogate_mint_phase.py``,
+    ``analysis/relationships/surrogate.py``) are engine-internal join keys, not
+    business columns — they must not appear in ``TableContext.columns`` (the
+    grounding prompt's rendered column list / value-set enumeration). The
+    relationship-evidence path is a SEPARATE read (``_read_references`` over its
+    own vertex map) and is unaffected by this exclusion.
+    """
+
+    def test_surrogate_column_absent_from_context(self, session: Session) -> None:
+        from dataraum.storage import Column
+
+        _source_id, table_id, _column_id = _insert_source_table_column(session)
+        session.add(
+            Column(
+                column_id=_id(),
+                table_id=table_id,
+                column_name="_sk__customer_id__order_date",
+                column_position=1,
+            )
+        )
+        session.flush()
+
+        ctx = build_execution_context(session, [table_id])
+
+        names = {c.column_name for c in ctx.tables[0].columns}
+        assert names == {"amount"}
+        assert ctx.tables[0].column_count == 1

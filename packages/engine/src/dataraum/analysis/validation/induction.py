@@ -156,6 +156,11 @@ def served_membership(
     it does not enforce a reference style. ``conventions`` are the served convention
     ids (DAT-865) — the vocabulary ``relevant_conventions`` is judged against, kept
     as a ``_norm(id) → canonical id`` map so a tolerated variant canonicalizes at save.
+
+    Surrogate-column membership is inconsistent across serving sites (this
+    context's ``columns`` is surrogate-free since DAT-878, but other physical
+    schema views the SQL/validation agents also read are not) — seam decision
+    pending (W1-f).
     """
     membership = Membership(conventions={_norm(c): c for c in conventions})
     for table in context.tables:

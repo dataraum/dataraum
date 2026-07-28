@@ -22,6 +22,7 @@ from dataraum.analysis.relationships.graph_topology import (
     GraphStructure,
     analyze_graph_topology,
 )
+from dataraum.analysis.relationships.surrogate import is_surrogate_column
 from dataraum.analysis.semantic.concept_store import load_workspace_concepts
 from dataraum.analysis.semantic.db_models import derive_table_role
 from dataraum.analysis.semantic.models import (
@@ -350,6 +351,12 @@ class SemanticAgent(LLMFeature):
 
             profiles = []
             for profile_model, col, table in rows:
+                # Mint-owned surrogate join keys (``_sk__*``, DAT-277) are not
+                # business columns — a begin_session re-run over an
+                # already-minted table set must not feed them into the
+                # semantic LLM prompts (DAT-878).
+                if is_surrogate_column(col.column_name):
+                    continue
                 # Convert storage model to core model
                 # StatisticalProfile uses hybrid storage: stats are in profile_data JSONB field
                 profile_data = profile_model.profile_data or {}
@@ -407,6 +414,13 @@ class SemanticAgent(LLMFeature):
                 profiles.append(profile)
 
             if not profiles:
+                # DAT-878: this checks the POST-surrogate-filter `profiles` list,
+                # so a table whose ONLY profiled column is a mint-owned surrogate
+                # (real business columns never profiled) now takes this
+                # placeholder path too — the surrogate exclusion above can empty
+                # `profiles` even though profile ROWS existed in the DB. That is
+                # the correct trigger: the real columns still need placeholder
+                # coverage for semantic analysis to run over them.
                 # If no profiles found, create placeholder profiles
                 # This allows semantic analysis to work even without profiling
                 placeholder_stmt = (
@@ -416,6 +430,8 @@ class SemanticAgent(LLMFeature):
                 placeholder_rows = placeholder_result.all()
 
                 for col, table in placeholder_rows:
+                    if is_surrogate_column(col.column_name):
+                        continue  # DAT-878 — same surrogate exclusion as above
                     profile = ColumnProfile(
                         column_id=col.column_id,
                         column_ref=ColumnRef(

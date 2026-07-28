@@ -117,6 +117,61 @@ describe("composeDrill refusals (deterministic)", () => {
 		});
 	});
 
+	// DAT-671, lead-spotted on a minted report: tier A will group a result by a
+	// column that is already unique per row — count 1 per group, every SUM the
+	// identity under a new header. A no-op presented as analysis.
+	it("refuses a slice that folds nothing — the result is already at that grain", async () => {
+		// One row per product already, so grouping by product folds nothing.
+		const result = await composeDrill(conn, {
+			sql: "SELECT product, SUM(amount) AS amount FROM sales GROUP BY product",
+			params: [],
+			steps: [{ kind: "slice", column: "product" }],
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: expect.stringContaining("already at this grain"),
+		});
+		// The refusal names the dimension, so it is actionable rather than a wall.
+		if (result.ok) throw new Error("expected a refusal");
+		expect(result.reason).toContain("product");
+	});
+
+	it("allows a slice that genuinely folds", async () => {
+		// Same shape, coarser dimension: 4 rows fold into 3 regions.
+		const result = await composeDrill(conn, {
+			sql: "SELECT * FROM sales",
+			params: [],
+			steps: [{ kind: "slice", column: "region" }],
+		});
+		expect(result.ok).toBe(true);
+	});
+
+	// A single row cannot fold into fewer than one group, so it is no evidence
+	// about grain — and this is the ordinary drill-down state (slice by region,
+	// then pin the EU row). Refusing it would block the user's own next step.
+	it("does not call a pinned single row a grain problem", async () => {
+		const result = await composeDrill(conn, {
+			sql: "SELECT * FROM sales WHERE product = $1",
+			params: ["a"],
+			steps: [
+				{ kind: "slice", column: "region" },
+				{ kind: "pin", column: "region", value: "EU" },
+			],
+		});
+		expect(result.ok).toBe(true);
+	});
+
+	// The probe must not fire on a pins-only drill: that is the scalar
+	// re-evaluated under a filter, which returns one row by construction.
+	it("does not fire on a pins-only drill", async () => {
+		const result = await composeDrill(conn, {
+			sql: "SELECT * FROM sales",
+			params: [],
+			steps: [{ kind: "pin", column: "region", value: "EU" }],
+		});
+		expect(result.ok).toBe(true);
+	});
+
 	it("refuses an empty step stack and a non-binding base", async () => {
 		expect(
 			await composeDrill(conn, { sql: "SELECT 1", params: [], steps: [] }),

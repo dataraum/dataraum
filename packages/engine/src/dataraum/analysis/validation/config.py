@@ -90,7 +90,11 @@ def load_all_validation_specs(
 
 
 def get_validation_specs_for_cycles(
-    cycle_types: list[str], vertical: str, session: Session | None = None
+    cycle_types: list[str],
+    vertical: str,
+    session: Session | None = None,
+    *,
+    run_id: str | None = None,
 ) -> list[ValidationSpec]:
     """Get validation specs relevant to detected cycle types.
 
@@ -102,11 +106,15 @@ def get_validation_specs_for_cycles(
         cycle_types: Detected cycle canonical types (e.g. ['journal_entry_cycle'])
         vertical: Vertical name (e.g. 'finance')
         session: DB session for the typed home read (production).
+        run_id: The operating_model run to read the vocabulary at (DAT-877). The
+            cycle-health caller scopes its cycles AND validation results to one run,
+            so the specs must come from that same run's generation — head-free here
+            would score this run's results against the previous vocabulary.
 
     Returns:
         List of matching ValidationSpecs
     """
-    all_specs = load_all_validation_specs(vertical, session)
+    all_specs = load_all_validation_specs(vertical, session, run_id=run_id)
     cycle_set = set(cycle_types)
     return [
         spec

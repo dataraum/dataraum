@@ -150,6 +150,9 @@ class ValidationInductionPhase(BasePhase):
         # Result.fail → degrade (keep the prior generated set), never sink the OM run.
         result = agent.induce(served_graph, conventions, membership)
         if not result.success:
+            # Degraded: NO staging and NO seal, which is exactly how the promote tells
+            # this apart from an induction that authoritatively proposed zero. The
+            # prior generation survives instead of being silently retired.
             _log.warning("validation_induction_degraded", reason=result.error)
             return PhaseResult.success(
                 outputs={"outcome": "degraded", "generated": 0},

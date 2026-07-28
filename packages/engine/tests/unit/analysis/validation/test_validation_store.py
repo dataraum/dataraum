@@ -235,18 +235,32 @@ def test_generated_collision_with_active_seed_is_skipped(session: Session) -> No
     assert rows["induced_new"].source == "generated"
 
 
-def test_empty_induction_leaves_the_prior_generation_standing(session: Session) -> None:
-    """A run that staged NOTHING supersedes nothing (DAT-877).
+def test_degraded_induction_leaves_the_prior_generation_standing(session: Session) -> None:
+    """A DEGRADED induction supersedes nothing (DAT-877).
 
-    A degraded induction reports generated=0 and must not silently empty the
-    workspace's vocabulary — the promote has no staged set to swap in, so the
-    previously promoted generation stays live. (The old induction-time writer
-    superseded first and asked questions later, which turned a degraded LLM turn
-    into vocabulary loss.)
+    A parse/render failure reports generated=0 and never stages — so it writes no
+    seal, and the promote keeps the previously promoted generation. (The old
+    induction-time writer superseded first and asked questions later, which turned a
+    degraded LLM turn into vocabulary loss.)
+    """
+    _induce(session, [_gen_spec("induced_a")])
+    # No stage_induced_validations call at all — that IS the degraded path.
+    assert materialize_induced_validations(session, "run-2") == 0
+    assert "induced_a" in _active(session)
+
+
+def test_zero_proposal_induction_retires_the_prior_generation(session: Session) -> None:
+    """A SUCCESSFUL induction proposing zero DOES supersede (DAT-877).
+
+    The counterpart to the degraded case, and the reason the seal exists: without it
+    the two are indistinguishable at promote time and a generated validation could
+    never be retired once induced — a thin-graph or deliberately-empty re-induction
+    would re-seal the previous generation forever. Absence stays loud on the
+    retirement axis.
     """
     _induce(session, [_gen_spec("induced_a")])
     assert _induce(session, [], run_id="run-2") == 0
-    assert "induced_a" in _active(session)
+    assert "induced_a" not in _active(session)
 
 
 def test_source_check_rejects_unknown_vocab(session: Session) -> None:
@@ -354,13 +368,38 @@ def test_restaging_the_same_run_is_idempotent(session: Session) -> None:
     assert rows[0].tolerance == 0.5
 
 
-def test_materialize_is_idempotent(session: Session) -> None:
-    """Re-running the promote's materialize converges — no duplicate generation."""
+def test_materialize_retry_is_quiescent(session: Session) -> None:
+    """A promote retry writes NOTHING when the live set already matches (DAT-877).
+
+    Temporal re-runs a committed-but-unacked activity. A blind re-supersede would
+    retire the rows this promote just wrote and re-insert them under fresh row_ids —
+    phantom superseded generations accumulating in plain sight, since
+    ``__READ__.validations`` is a pass-through over the whole table.
+    """
     stage_induced_validations(session, RUN, VERTICAL, [_gen_spec("induced_a")])
     assert materialize_induced_validations(session, RUN) == 1
-    # A promote-activity retry re-supersedes its OWN row and re-inserts it.
+    row_id = _active(session)["induced_a"].row_id
+
     assert materialize_induced_validations(session, RUN) == 1
+
     assert set(_active(session)) == {"induced_a"}
+    # Same row, not a re-mint — and no superseded phantom behind it.
+    assert _active(session)["induced_a"].row_id == row_id
+    all_rows = (
+        session.execute(select(Validation).where(Validation.validation_id == "induced_a"))
+        .scalars()
+        .all()
+    )
+    assert len(all_rows) == 1
+
+
+def test_materialize_rewrites_when_content_drifted(session: Session) -> None:
+    """Quiescence is content-keyed, not run-keyed — a drifted spec still lands."""
+    _induce(session, [_gen_spec("induced_a", tolerance=0.02)])
+    stage_induced_validations(session, "run-2", VERTICAL, [_gen_spec("induced_a", tolerance=0.5)])
+
+    assert materialize_induced_validations(session, "run-2") == 1
+    assert _active(session)["induced_a"].tolerance == 0.5
 
 
 def test_in_run_read_replaces_the_prior_generation(session: Session) -> None:
@@ -402,3 +441,23 @@ def test_in_run_read_of_a_degraded_induction_keeps_the_prior_generation(
         s.validation_id for s in load_workspace_validations(session, VERTICAL, run_id="run-2")
     }
     assert in_run == {"induced_a"}
+
+
+def test_in_run_read_serves_the_runs_own_drifted_tolerance(session: Session) -> None:
+    """The in-run read serves THIS run's spec, not the promoted one (DAT-877).
+
+    The sharp case behind the third-consumer sweep: an id present in BOTH
+    generations whose tolerance drifted. A head-free spec read inside the run
+    evaluates this run's results against the PREVIOUS generation's tolerance — a
+    wrong verdict rather than a missing one, so nothing looks broken.
+    """
+    _induce(session, [_gen_spec("induced_a", tolerance=0.02)])
+    stage_induced_validations(session, "run-2", VERTICAL, [_gen_spec("induced_a", tolerance=0.5)])
+
+    in_run = {
+        s.validation_id: s for s in load_workspace_validations(session, VERTICAL, run_id="run-2")
+    }
+    assert in_run["induced_a"].tolerance == 0.5
+    # The head still serves the promoted generation until run-2 promotes.
+    head = {s.validation_id: s for s in load_workspace_validations(session, VERTICAL)}
+    assert head["induced_a"].tolerance == 0.02

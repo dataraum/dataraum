@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -101,6 +102,12 @@ def _manager(session_factory: Any) -> Any:
             try:
                 yield session
                 session.commit()
+            except Exception:
+                # Mirrors ConnectionManager.session_scope's real contract — the
+                # promote's atomicity test depends on the rollback being explicit
+                # here, not on close() happening to discard uncommitted work.
+                session.rollback()
+                raise
             finally:
                 session.close()
 
@@ -266,6 +273,31 @@ class TestPromoteOperatingModelRun:
             assert _active_generated(s) == {"induced_a"}
             head = s.execute(select(MetadataSnapshotHead)).scalar_one()
         assert head.run_id == "run-om-A"
+
+    def test_head_failure_leaves_the_vocabulary_unchanged(self, session_factory):
+        """The atomicity invariant this ticket exists for (DAT-877).
+
+        Materialize and the head flip share one transaction. If the head write
+        fails, the vocabulary must roll back with it — otherwise the promote has
+        published a generation for a run that is not the head, which is the exact
+        split-state the staging design removes.
+        """
+        with session_factory() as s:
+            stage_induced_validations(s, "run-om-A", _VERTICAL, [_gen_spec("induced_a")])
+            s.commit()
+
+        with (
+            patch(
+                "dataraum.worker.activity._upsert_head",
+                side_effect=RuntimeError("head write failed"),
+            ),
+            pytest.raises(RuntimeError, match="head write failed"),
+        ):
+            promote_operating_model_run(_manager(session_factory), _IDENTITY)
+
+        with session_factory() as s:
+            assert _active_generated(s) == set()
+            assert s.execute(select(MetadataSnapshotHead)).all() == []
 
     def test_promote_ignores_another_runs_staging(self, session_factory):
         """Only the PROMOTED run's staged set lands — a sibling run's stays staged."""

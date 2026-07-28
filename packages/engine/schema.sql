@@ -135,6 +135,16 @@ CREATE TABLE induced_validations (
 
 CREATE INDEX ix_induced_validations_run_id ON induced_validations (run_id);
 
+CREATE TABLE induction_runs (
+	row_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	proposed INTEGER NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_induction_runs PRIMARY KEY (row_id), 
+	CONSTRAINT uq_induction_run UNIQUE (run_id)
+);
+
 CREATE TABLE lifecycle_artifacts (
 	artifact_id VARCHAR NOT NULL, 
 	artifact_type VARCHAR NOT NULL, 

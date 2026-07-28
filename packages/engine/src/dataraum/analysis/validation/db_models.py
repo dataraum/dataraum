@@ -26,6 +26,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -168,6 +169,41 @@ class Validation(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class InductionRun(Base):
+    """The seal for one run's induction turn — it COMPLETED (DAT-877).
+
+    Written only on the induction agent's success path, alongside the staged rows,
+    and it is what makes an empty proposal set legible. Two very different states
+    otherwise look identical at promote time — zero staged rows:
+
+    * induction ran and authoritatively proposed NOTHING (a thin graph, or the model
+      retiring the previous generation) — the promote must supersede, or a generated
+      validation could never be retired once induced;
+    * induction DEGRADED (a parse/render failure returns generated=0 without
+      staging) or never ran at all — the promote must keep the prior generation
+      rather than silently empty the workspace's vocabulary.
+
+    The seal distinguishes them, so absence stays loud on the retirement axis. It
+    also carries the ``vertical``, which is what a zero-proposal materialization
+    needs to know WHICH generation to supersede — the staged rows can't say.
+
+    Run-versioned under the ADR-0010 default writer form: ``run_id`` UNIQUE + an ON
+    CONFLICT upsert, so an induction activity retry re-seals in place.
+    """
+
+    __tablename__ = "induction_runs"
+    __table_args__ = (UniqueConstraint("run_id", name="uq_induction_run"),)
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    # How many specs the induction turn proposed. 0 is a real, authoritative answer.
+    proposed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
 
 
 class InducedValidation(Base):

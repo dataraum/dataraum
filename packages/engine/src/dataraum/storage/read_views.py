@@ -96,6 +96,10 @@ _CATALOG_GRAIN: dict[str, str] = {
     # terminal promote. Head-gated like the rest of the family, so the read surface
     # shows the PROMOTED run's induction and never an in-flight one.
     "induced_validations": "operating_model",
+    # The induction SEAL (DAT-877) — one row per induction turn that completed,
+    # which is what distinguishes an authoritative zero-proposal set (supersede)
+    # from a degraded turn that never staged (keep the prior generation).
+    "induction_runs": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
     "metric_additivity": "operating_model",  # operating_model metrics phase (DAT-716)

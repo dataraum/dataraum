@@ -8,8 +8,10 @@ import {
 	type BaseColumn,
 	composeTierA,
 	countAlias,
+	type DrillAxis,
 	type DrillStep,
 	deCompoundedColumnRenames,
+	maskNonReconcilingTotal,
 	referencedColumns,
 	sliceColumns,
 } from "./drill";
@@ -181,5 +183,101 @@ describe("composeTierA", () => {
 		expect(params).toEqual(["a", "EU"]);
 		// qty is pinned → excluded from the SUM set even though summable.
 		expect(sql).not.toContain('SUM("qty")');
+	});
+});
+
+describe("maskNonReconcilingTotal (DAT-857 — the total row is honest or it is a dash)", () => {
+	const axis = (column: string, temporal: "date" | null): DrillAxis => ({
+		column,
+		sliceType: "categorical",
+		values: [],
+		valueCount: null,
+		businessContext: null,
+		temporal,
+		driverGain: null,
+		sliceRelevance: null,
+		sliceInterest: null,
+		hierarchyNext: null,
+		disabledReason: null,
+	});
+	const AXES = [axis("booked_on", "date"), axis("region", null)];
+	const FOOTER = { value: 680, revenue: 800, cost_of_goods_sold: 120 };
+
+	it("blanks a recomputed measure's total when bucketed by time — its buckets do not sum to it", () => {
+		const got = maskNonReconcilingTotal(
+			FOOTER,
+			[{ kind: "slice", column: "booked_on", grain: "1M" }],
+			AXES,
+			{ time: false, categorical: true },
+		);
+		expect(got?.value).toBeNull();
+		// The carriers DO sum — the recompute bucketing is only offered when they
+		// are additive — so their totals stay real numbers, not collateral dashes.
+		expect(got?.revenue).toBe(800);
+		expect(got?.cost_of_goods_sold).toBe(120);
+	});
+
+	it("keeps a real total when the drilled axis reconciles", () => {
+		expect(
+			maskNonReconcilingTotal(
+				FOOTER,
+				[{ kind: "slice", column: "booked_on", grain: "1M" }],
+				AXES,
+				{ time: true, categorical: true },
+			)?.value,
+		).toBe(680);
+	});
+
+	it("reads a RAW date slice as categorical — ungrained, it folds rows the categorical way", () => {
+		// A stock is additive across categories but not across periods; sliced on a
+		// raw date (no grain) the parts do reconcile, so the total stands.
+		expect(
+			maskNonReconcilingTotal(
+				FOOTER,
+				[{ kind: "slice", column: "booked_on" }],
+				AXES,
+				{ time: false, categorical: true },
+			)?.value,
+		).toBe(680);
+	});
+
+	it("blanks when ANY drilled axis fails to reconcile", () => {
+		expect(
+			maskNonReconcilingTotal(
+				FOOTER,
+				[
+					{ kind: "slice", column: "region" },
+					{ kind: "slice", column: "booked_on", grain: "1M" },
+				],
+				AXES,
+				{ time: false, categorical: true },
+			)?.value,
+		).toBeNull();
+	});
+
+	it("leaves the footer alone with no slice, no verdict, or no footer at all", () => {
+		const pinOnly: DrillStep[] = [
+			{ kind: "pin", column: "region", value: "eu" },
+		];
+		expect(
+			maskNonReconcilingTotal(FOOTER, pinOnly, AXES, {
+				time: false,
+				categorical: false,
+			}),
+		).toBe(FOOTER);
+		expect(
+			maskNonReconcilingTotal(
+				FOOTER,
+				[{ kind: "slice", column: "booked_on", grain: "1M" }],
+				AXES,
+				undefined,
+			),
+		).toBe(FOOTER);
+		expect(
+			maskNonReconcilingTotal(undefined, [], AXES, {
+				time: false,
+				categorical: false,
+			}),
+		).toBeUndefined();
 	});
 });

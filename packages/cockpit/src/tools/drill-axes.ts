@@ -32,7 +32,7 @@ import {
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
-	currentMetricAdditivity,
+	currentMetricAxisAdditivity,
 	currentSliceDefinitions,
 	currentStatisticalProfiles,
 	sqlSnippets,
@@ -409,53 +409,139 @@ async function targetFields(req: DrillNodeRef): Promise<string[]> {
 	return measureFieldsFromDag(row?.dag ?? null);
 }
 
-/** The engine's persisted additivity verdict for one drill target, as the drill's
- *  TIME gate consumes it (`metric_additivity`, DAT-716). Only the time axis is read
- *  here: the drill AXES resolver decides whether to offer a time grain, and the
- *  engine's DAG-aware `time_additive` replaces the local re-derivation. The
- *  CATEGORICAL axis of the verdict (whether a breakdown reconciles vs shows the
- *  honest dash) is a drill-RESULTS rendering concern, not an axes-resolution one —
- *  deliberately not read here; wiring it is the drill-results surface (DAT-715).
- *  This is also the DAT-673 P2 seam this lane leaves OPEN: per-(measure×axis)
- *  time-bucketing verdict chips need that same categorical axis, one verdict per
- *  axis rather than one per target — substrate work for W3-a, not yet persisted.
- *  Nothing here guesses at it; the boolean flow gate above is unaffected. */
-export interface PersistedAdditivity {
-	timeAdditive: boolean;
-	timeReason: string | null;
+/** One served per-(target × axis) additivity verdict (`metric_axis_additivity`,
+ *  DAT-857/868). `status` decides how to read the rest: a `classified` row carries
+ *  a `verdict` (+ the doctrine `reason` when it is not `additive`), an `abstained`
+ *  row carries only `abstainReason`. A target/axis with NO row at all is a third
+ *  thing again — the engine never judged it — and is withheld with its own words.
+ *  `bucketGrain` is the axis's observed cadence: the finest bucket the data
+ *  supports, or null for no claim. */
+export interface AxisAdditivity {
+	status: string;
+	verdict: string | null;
+	reason: string | null;
+	abstainReason: string | null;
+	bucketGrain: string | null;
+}
+
+/** Every verdict for one target, resolved most-specific-first: a concrete axis
+ *  column if the engine refined it, else the `*` class row for that axis kind. */
+export interface TargetAdditivity {
+	byAxis: Map<string, AxisAdditivity>;
+}
+
+/** The class-row sentinel — must match `additivity_db_models.AXIS_KEY_ALL`. */
+const AXIS_KEY_ALL = "*";
+
+// NUL-joined, like `_unitKey` below: no column name can contain a NUL, so the
+// two parts can never smear into each other (a space separator would collide
+// on a column name that contains one). Written as an ESCAPE, not a literal NUL,
+// so this stays a text file to grep.
+const axisLookupKey = (axisKind: string, axisKey: string): string =>
+	`${axisKind}\u0000${axisKey}`;
+
+/** Build the lookup from raw verdict rows — the ONE place the key format lives,
+ *  shared by the DB read and its tests so they cannot drift apart. Last row per
+ *  key wins, which is a formality: the head-scoped view + the base table's
+ *  UNIQUE make duplicate (axis_kind, axis_key) pairs unrepresentable. */
+export function buildTargetAdditivity(
+	rows: readonly (AxisAdditivity & { axisKind: string; axisKey: string })[],
+): TargetAdditivity | null {
+	const byAxis = new Map<string, AxisAdditivity>();
+	for (const r of rows) {
+		byAxis.set(axisLookupKey(r.axisKind, r.axisKey), {
+			status: r.status,
+			verdict: r.verdict,
+			reason: r.reason,
+			abstainReason: r.abstainReason,
+			bucketGrain: r.bucketGrain,
+		});
+	}
+	return byAxis.size > 0 ? { byAxis } : null;
+}
+
+/** The verdict governing (kind, column): the column's own row when the engine
+ *  refined that axis, otherwise the class row. Null = never judged. */
+export function resolveAxisVerdict(
+	target: TargetAdditivity | null,
+	axisKind: string,
+	column: string,
+): AxisAdditivity | null {
+	if (target === null) return null;
+	return (
+		target.byAxis.get(axisLookupKey(axisKind, column)) ??
+		target.byAxis.get(axisLookupKey(axisKind, AXIS_KEY_ALL)) ??
+		null
+	);
 }
 
 /**
- * Phrase the engine's `time_reason` as a drill refusal (pure; DAT-731). The
- * engine's reason vocabulary (dataraum.graphs.additivity) rolls the whole
- * metric DAG up, so it can name a ratio, an average, a distinct/snapshot
- * count, or an unresolved aggregate. An unrecognized/None reason falls back to
- * the honest "couldn't be confirmed to sum across periods".
+ * Phrase a doctrine reason as the cause clause of a refusal (pure). The engine's
+ * vocabulary (dataraum.graphs.additivity) rolls the whole metric DAG up, so it can
+ * name a ratio, an average, a distinct/snapshot count, or a stock.
  */
-export function describeEngineTimeVerdict(reason: string | null): string {
-	const cause = ((): string => {
-		switch (reason) {
-			case "stock":
-				return "aggregates a balance (point-in-time stock), which double-counts when summed across periods";
-			case "snapshot_count":
-				return "counts over a periodic-snapshot fact, which recounts the same population every period";
-			case "ratio":
-				return "is a ratio, which does not sum across periods";
-			case "average":
-				return "is an average, which does not sum across periods";
-			case "distinct_count":
-				return "is a distinct count, whose per-period slices overlap";
-			case "min_max":
-				return "is a min/max, which is not summable across periods";
-			case "unknown_temporal":
-				return "aggregates a column with no stock/flow classification";
-			case "unknown_aggregate":
-				return "uses an aggregate we can't confirm sums across periods";
-			default:
-				return "couldn't be confirmed to sum across periods";
-		}
-	})();
-	return `Time grain is off: this measure ${cause}. Only a summable flow can be bucketed by period without double-counting.`;
+function describeReason(reason: string | null): string {
+	switch (reason) {
+		case "stock":
+			return "aggregates a balance (point-in-time stock), which double-counts when summed across periods";
+		case "snapshot_count":
+			return "counts over a periodic-snapshot fact, which recounts the same population every period";
+		case "ratio":
+			return "is a ratio";
+		case "average":
+			return "is an average";
+		case "distinct_count":
+			return "is a distinct count, whose per-period slices overlap";
+		case "min_max":
+			return "is a min/max";
+		default:
+			return "does not sum across periods";
+	}
+}
+
+/** Why the engine could not judge an axis — its typed abstention, in words. */
+function describeAbstention(abstainReason: string | null): string {
+	switch (abstainReason) {
+		case "unknown_temporal":
+			return "it aggregates a column with no stock/flow classification";
+		case "unknown_aggregate":
+			return "it uses an aggregate outside the classifier's doctrine";
+		case "unresolved_grounding":
+			return "one of its inputs never grounded to a healthy query";
+		case "relation_outside_analysis":
+			return "it reads a relation outside the current analysis";
+		case "materialization_conflict":
+			return "its stock/flow evidence contradicts itself";
+		case "missing_extract":
+			return "one of the measures it is built from could not be classified";
+		case "no_catalogue_run":
+			return "this workspace has no promoted analysis run yet";
+		case "graph_parse_failed":
+			return "its definition could not be parsed";
+		default:
+			return "the engine did not classify it";
+	}
+}
+
+/**
+ * Phrase the engine's TIME verdict as a drill refusal (pure; DAT-857/868).
+ *
+ * Three different sentences for three different facts, because collapsing them
+ * is exactly the defect this replaced: a SEMI-additive measure could be bucketed
+ * honestly if we composed period-end values (we do not yet), an ABSTENTION is a
+ * gap in what we know, and a missing row means we never looked.
+ */
+export function describeTimeWithhold(verdict: AxisAdditivity | null): string {
+	if (verdict === null) {
+		return "Time grain withheld: the engine has not classified this target's additivity, so bucketing it by period would be a guess.";
+	}
+	if (verdict.status === "abstained") {
+		return `Time grain withheld: ${describeAbstention(verdict.abstainReason)}, so we can't say whether it sums across periods.`;
+	}
+	if (verdict.verdict === "semi_additive") {
+		return `Time grain withheld: this measure ${describeReason(verdict.reason)}. Each period on its own is meaningful, but the drill can only SUM buckets, and summing period-end values double-counts.`;
+	}
+	return `Time grain withheld: this measure ${describeReason(verdict.reason)}, and it cannot be recomputed per period because at least one of its inputs does not sum across periods either.`;
 }
 
 /** The drill target's (kind, key) for the persisted-verdict lookup (DAT-731): a
@@ -470,34 +556,85 @@ function additivityTarget(req: DrillNodeRef): {
 		: { kind: "metric", key: req.metricKey };
 }
 
-/** Read the engine's persisted additivity verdict for the target, or `null` when
- *  none exists (a not-yet-classified target). A `null` here is the WITHHOLD signal
- *  (DAT-725): `resolveDrillAxes` strips the time grain and surfaces a visible
- *  reason rather than silently falling back to a weaker local re-derivation. One
- *  row by the `(target_kind, target_key)` UNIQUE, resolved to the current
- *  operating_model run by the read view. */
-async function resolveTargetAdditivity(
-	req: DrillNodeRef,
-): Promise<PersistedAdditivity | null> {
-	const { kind, key } = additivityTarget(req);
-	const [row] = await metadataDb
+/** Read every persisted axis verdict for one target, or `null` when the engine
+ *  has none at all. A `null` is the WITHHOLD signal (DAT-725): the caller strips
+ *  the grain and surfaces a visible reason rather than falling back to a weaker
+ *  local re-derivation.
+ *
+ *  No ORDER BY, and no `.limit(1)`: the read view resolves ONE operating_model
+ *  run (the promoted head), and the base table's UNIQUE is
+ *  `(target_kind, target_key, axis_kind, axis_key, run_id)` — so within a target
+ *  each (axis_kind, axis_key) appears exactly once and the rows carry no
+ *  ordering-dependent meaning. This is the row set, not a pick from one. */
+async function readTargetAdditivity(
+	kind: string,
+	key: string,
+): Promise<TargetAdditivity | null> {
+	const rows = await metadataDb
 		.select({
-			timeAdditive: currentMetricAdditivity.timeAdditive,
-			timeReason: currentMetricAdditivity.timeReason,
+			axisKind: currentMetricAxisAdditivity.axisKind,
+			axisKey: currentMetricAxisAdditivity.axisKey,
+			status: currentMetricAxisAdditivity.status,
+			verdict: currentMetricAxisAdditivity.verdict,
+			reason: currentMetricAxisAdditivity.reason,
+			abstainReason: currentMetricAxisAdditivity.abstainReason,
+			bucketGrain: currentMetricAxisAdditivity.bucketGrain,
 		})
-		.from(currentMetricAdditivity)
+		.from(currentMetricAxisAdditivity)
 		.where(
 			and(
-				eq(currentMetricAdditivity.targetKind, kind),
-				eq(currentMetricAdditivity.targetKey, key),
+				eq(currentMetricAxisAdditivity.targetKind, kind),
+				eq(currentMetricAxisAdditivity.targetKey, key),
 			),
-		)
-		.limit(1);
-	// `timeAdditive` is NOT NULL on the base table; the null-check narrows the
-	// view's nullable column type AND doubles as the "no row" guard (absent verdict
-	// → null → the caller withholds the time grain, visibly).
-	if (!row || row.timeAdditive === null) return null;
-	return { timeAdditive: row.timeAdditive, timeReason: row.timeReason };
+		);
+	// `status` is NOT NULL on the base table; the guard narrows the view's
+	// nullable column types and drops any row that cannot be read honestly.
+	return buildTargetAdditivity(
+		rows.flatMap((r) =>
+			r.axisKind && r.axisKey && r.status
+				? [
+						{
+							axisKind: r.axisKind,
+							axisKey: r.axisKey,
+							status: r.status,
+							verdict: r.verdict,
+							reason: r.reason,
+							abstainReason: r.abstainReason,
+							bucketGrain: r.bucketGrain,
+						},
+					]
+				: [],
+		),
+	);
+}
+
+/**
+ * The verdicts the TIME gate needs: the target's own, plus one per CARRIER
+ * measure of its DAG (DAT-857).
+ *
+ * The engine serves per-(target × axis) FACTS; deciding what can be composed
+ * from them is this side's job, because it is a fact about the composer, not
+ * about the data. A recompute target (a ratio) is bucketable exactly when every
+ * carrier it recomputes FROM sums per bucket — the composer groups each carrier
+ * and re-evaluates the formula over the grouped values, so an input that does
+ * not sum would silently poison the recomputed number.
+ */
+async function resolveVerdicts(
+	req: DrillNodeRef,
+	carrierFields: readonly string[],
+): Promise<{
+	target: TargetAdditivity | null;
+	carriers: Map<string, TargetAdditivity | null>;
+}> {
+	const { kind, key } = additivityTarget(req);
+	const target = await readTargetAdditivity(kind, key);
+	const carriers = new Map<string, TargetAdditivity | null>();
+	// A measure target IS its own carrier — its extract is the thing recomputed.
+	const fields = kind === "measure" ? [] : carrierFields;
+	for (const field of fields) {
+		carriers.set(field, await readTargetAdditivity("measure", field));
+	}
+	return { target, carriers };
 }
 
 /** One measure whose aggregation crosses units (DAT-731): the measure column and
@@ -604,6 +741,21 @@ export function describeUnitGate(
  *  nothing (no extracts / stale relations / bare catalog). */
 export interface DrillAxesResult {
 	axes: DrillAxis[];
+	/** Which axis classes a drilled breakdown RECONCILES on (parts sum to the
+	 *  total). The grid renders a dash instead of a total wherever this is FALSE —
+	 *  a recomputed ratio's monthly values are each correct, and their sum is not
+	 *  a number that means anything.
+	 *
+	 *  Set whenever the target HAS a persisted verdict, independently of whether a
+	 *  time grain was offered: a categorical breakdown of a non-additive measure
+	 *  needs the dash just as much, and plenty of drillable nodes carry no
+	 *  temporal axis at all.
+	 *
+	 *  ABSENT (not `{false,false}`) when the target has no verdict — the answer /
+	 *  ad-hoc path, where no verdict substrate exists. Unknown is not a negative
+	 *  finding, so the honest rendering is no claim: the total stays as computed
+	 *  rather than being dashed on zero evidence. */
+	reconciles?: { time: boolean; categorical: boolean };
 	reason?: string;
 	/** Set when the time gate stripped time grain from the temporal axes — either
 	 *  the engine's DAG-aware verdict says the target is non-additive over time
@@ -614,7 +766,7 @@ export interface DrillAxesResult {
 	temporalGateReason?: string;
 	/** Which path decided the time gate (DAT-725, replacing the DAT-731 fail-open
 	 *  fallback): `engine-verdict` = the engine's persisted, DAG-aware
-	 *  `metric_additivity.time_additive`; `withheld-no-verdict` = the target has
+	 *  per-(target x axis) verdict; `withheld-no-verdict` = the target has
 	 *  NO persisted verdict yet — the system's principle is "if we do not have
 	 *  data, we honestly say so", so a missing verdict strips the time grain with
 	 *  a user-visible reason instead of silently recomputing a weaker local
@@ -852,9 +1004,10 @@ async function resolveAxesForSources(
 
 	// The node's aggregated base measure columns (AST read), scoped to grounded
 	// facts — feeds the UNIT gate at the caller. A stale/unpromoted source
-	// contributes nothing (its relation resolves to no kept fact); an unparseable
-	// expr (window / COUNT(*)) yields no columns and simply has nothing for the
-	// unit gate to check for that expr.
+	// contributes nothing (its relation resolves to no kept fact); an expression
+	// that aggregates nothing (COUNT(*), a bare passthrough) or cannot be parsed
+	// yields no columns and simply has nothing for the unit gate to check.
+	// Windowed aggregates DO yield their columns now (DAT-868).
 	const factIdSet = new Set(factIds);
 	// The aggregated measures WITH their fact id (the unit gate keys per fact, so a
 	// same-named unit column on a different fact can't answer for this measure).
@@ -882,10 +1035,109 @@ async function resolveAxesForSources(
 	return { axes, aggMeasures, columnFacts };
 }
 
-/** Strip the time grain from every temporal axis — the date column stays as a
- *  RAW slice, it just can't be bucketed. */
-const stripTimeGrain = (xs: DrillAxis[]): DrillAxis[] =>
-	xs.map((a) => (a.temporal !== null ? { ...a, temporal: null } : a));
+/**
+ * Whether ONE time axis can be offered for bucketing, and at what floor.
+ *
+ * The composition rule, stated once:
+ *
+ * * `additive` — sum the buckets. Offer.
+ * * `non_additive_recompute` — the composer groups each CARRIER per bucket and
+ *   re-evaluates the formula there, so this is honest exactly when every carrier
+ *   is itself additive on this axis. A semi-additive or unjudged carrier would
+ *   need period-end selection instead of summation, which would silently corrupt
+ *   the recomputed value — so we withhold and name the carrier.
+ * * `semi_additive` — each bucket is meaningful, but the composer only knows how
+ *   to SUM buckets, and summing period-end values double-counts. Withheld until
+ *   point-in-time composition exists; NOT a claim that bucketing is meaningless.
+ * * abstained / no row — withheld, in the engine's own words.
+ */
+export function decideTimeAxis(
+	column: string,
+	verdicts: {
+		target: TargetAdditivity | null;
+		carriers: Map<string, TargetAdditivity | null>;
+	},
+):
+	| { offer: true; bucketGrain: string | null }
+	| { offer: false; reason: string } {
+	const verdict = resolveAxisVerdict(verdicts.target, "time", column);
+	if (verdict === null || verdict.status !== "classified") {
+		return { offer: false, reason: describeTimeWithhold(verdict) };
+	}
+	if (verdict.verdict === "semi_additive") {
+		return { offer: false, reason: describeTimeWithhold(verdict) };
+	}
+	if (verdict.verdict === "non_additive_recompute") {
+		for (const [field, carrier] of verdicts.carriers) {
+			const carrierVerdict = resolveAxisVerdict(carrier, "time", column);
+			if (
+				carrierVerdict === null ||
+				carrierVerdict.status !== "classified" ||
+				carrierVerdict.verdict !== "additive"
+			) {
+				return {
+					offer: false,
+					reason: `Time grain withheld: this measure ${describeReason(verdict.reason)}, so each period must be recomputed from its inputs — but \`${field}\` does not sum across periods, so the recomputed value would be wrong.`,
+				};
+			}
+		}
+	}
+	return { offer: true, bucketGrain: verdict.bucketGrain };
+}
+
+/**
+ * The target's reconciliation on both axis classes, for the COMPOSER and the
+ * totals row (DAT-857). `/api/drill/node` calls this: `time && categorical` is
+ * the engine's answer to "may this be composed by summing signed carrier
+ * contributions?", and each flag alone decides whether a drilled total on that
+ * axis class is a number or an honest dash.
+ */
+export async function resolveTargetReconciliation(
+	req: DrillNodeRef,
+): Promise<{ time: boolean; categorical: boolean }> {
+	const { kind, key } = additivityTarget(req);
+	return reconciliation(await readTargetAdditivity(kind, key));
+}
+
+/** Which axis classes a drilled breakdown RECONCILES on — i.e. where the parts
+ *  sum to the total. Anything else must render its total as a dash rather than a
+ *  number the parts do not add up to. Unknown is never "yes". */
+function reconciliation(target: TargetAdditivity | null): {
+	time: boolean;
+	categorical: boolean;
+} {
+	const isAdditive = (axisKind: string): boolean => {
+		const v = resolveAxisVerdict(target, axisKind, AXIS_KEY_ALL);
+		return v !== null && v.status === "classified" && v.verdict === "additive";
+	};
+	return { time: isAdditive("time"), categorical: isAdditive("categorical") };
+}
+
+/** Strip the time grain from ONE axis — the date column stays as a raw slice, it
+ *  just can't be bucketed, and it says why. */
+const withholdGrain = (axis: DrillAxis, reason: string): DrillAxis => ({
+	...axis,
+	temporal: null,
+	temporalWithheldReason: reason,
+});
+
+/**
+ * Rank a withheld raw-date slice LAST (DAT-857).
+ *
+ * Once ANY axis on this target can be bucketed by period, a date column offered
+ * WITHOUT a grain is the least honest thing in the menu: it renders one row per
+ * distinct date — 365 of them for a year of daily data — and for a non-additive
+ * target every one of those rows is a carrier-misaligned dash. It stays available
+ * (it is not wrong, just useless), but nothing that can actually be bucketed
+ * should rank below it.
+ */
+export function demoteWithheldDateAxes(axes: DrillAxis[]): DrillAxis[] {
+	const bucketable = axes.some((a) => a.temporal !== null);
+	if (!bucketable) return axes;
+	const kept = axes.filter((a) => a.temporalWithheldReason === undefined);
+	const demoted = axes.filter((a) => a.temporalWithheldReason !== undefined);
+	return demoted.length === 0 ? axes : [...kept, ...demoted];
+}
 
 /**
  * Apply the two gates to resolved axes. `verdict` is the TIME gate's authority:
@@ -897,7 +1149,10 @@ const stripTimeGrain = (xs: DrillAxis[]): DrillAxis[] =>
  */
 function gateAxes(
 	resolved: SourceAxes,
-	verdict: PersistedAdditivity | null,
+	verdicts: {
+		target: TargetAdditivity | null;
+		carriers: Map<string, TargetAdditivity | null>;
+	},
 	withholdReason: string,
 ): DrillAxesResult {
 	const { axes, aggMeasures, columnFacts } = resolved;
@@ -907,29 +1162,52 @@ function gateAxes(
 	const result: DrillAxesResult = { axes };
 	let gatedAxes = axes;
 
-	// TIME GATE (DAT-673 → DAT-731 → DAT-725): only when a temporal axis is
-	// offered. Exactly TWO sources decide it, never a third: the engine's
-	// persisted, DAG-aware additivity verdict (metric_additivity.time_additive),
-	// or — when no verdict has been persisted yet — an honest WITHHOLD. The
-	// lead's ruling that retired the old column-level temporal_behavior
-	// heuristic here: "if we do not have data, we honestly say so" — a missing
-	// verdict is NOT license to guess a weaker local answer, so the grain is
-	// stripped with a user-visible reason instead (the DAT-731 fail-open
-	// fallback was the epic's core silent-judge-swap failure mode).
+	// TIME GATE (DAT-673 → DAT-731 → DAT-725 → DAT-857/868): PER AXIS, only for
+	// axes that are temporal at all. Exactly TWO sources decide it, never a
+	// third: the engine's persisted, DAG-aware verdict for that (target, axis),
+	// or — when it has none — an honest WITHHOLD. The lead's ruling that retired
+	// the old column-level temporal_behavior heuristic still holds: "if we do not
+	// have data, we honestly say so", so a missing verdict is never license to
+	// guess a weaker local answer.
+	//
+	// What changed in DAT-857: "does not sum" is no longer the same as "cannot be
+	// offered". A ratio over flow carriers IS bucketable — the composer sums each
+	// carrier per bucket and re-evaluates the formula there — so it is offered,
+	// and only its TOTAL is non-reconciling (rendered as a dash, not a number).
 	if (axes.some((a) => a.temporal !== null)) {
-		if (verdict !== null) {
-			result.temporalGateSource = "engine-verdict";
-			if (!verdict.timeAdditive) {
-				gatedAxes = stripTimeGrain(gatedAxes);
-				result.temporalGateReason = describeEngineTimeVerdict(
-					verdict.timeReason,
-				);
+		result.temporalGateSource =
+			verdicts.target !== null ? "engine-verdict" : "withheld-no-verdict";
+		const reasons: string[] = [];
+		gatedAxes = gatedAxes.map((axis) => {
+			if (axis.temporal === null) return axis;
+			if (verdicts.target === null) {
+				reasons.push(withholdReason);
+				return withholdGrain(axis, withholdReason);
 			}
-		} else {
-			result.temporalGateSource = "withheld-no-verdict";
-			gatedAxes = stripTimeGrain(gatedAxes);
-			result.temporalGateReason = withholdReason;
-		}
+			const decision = decideTimeAxis(axis.column, verdicts);
+			if (decision.offer) {
+				return decision.bucketGrain === null
+					? axis
+					: { ...axis, bucketGrain: decision.bucketGrain };
+			}
+			reasons.push(decision.reason);
+			return withholdGrain(axis, decision.reason);
+		});
+		// One badge for the common single-temporal-axis case; each axis also
+		// carries its own reason for the menu.
+		if (reasons.length > 0) result.temporalGateReason = reasons[0];
+		gatedAxes = demoteWithheldDateAxes(gatedAxes);
+	}
+
+	// RECONCILIATION rides on the verdict lookup, NOT on the time gate: a node
+	// with no temporal axis at all (a period carried as an integer FK, a VARCHAR
+	// date — the DAT-847 shapes) is still drillable CATEGORICALLY, and a ratio
+	// broken out by region prints a total its parts do not sum to unless this is
+	// set. Absent when no verdict exists (the answer path): "we don't know" is
+	// not "it does not reconcile", and dashing every ad-hoc total on zero
+	// evidence would be a broad silent claim of its own.
+	if (verdicts.target !== null) {
+		result.reconciles = reconciliation(verdicts.target);
 	}
 
 	// UNIT GATE (DAT-731): a cross-unit aggregation — a measure whose authored
@@ -1005,8 +1283,10 @@ export async function resolveDrillAxes(
 	const resolved = await resolveAxesForSources(sources);
 	return gateAxes(
 		resolved,
-		resolved.axes.length > 0 ? await resolveTargetAdditivity(req) : null,
-		"Additivity not determined for this target — time-grain drill withheld until the engine classifies it.",
+		resolved.axes.length > 0
+			? await resolveVerdicts(req, fields)
+			: { target: null, carriers: new Map() },
+		"Time grain withheld: the engine has not classified this target's additivity, so bucketing it by period would be a guess.",
 	);
 }
 
@@ -1015,7 +1295,7 @@ export async function resolveDrillAxes(
  * Same relation→fact→catalog resolution as a metric — an answer's dimensions are
  * found the same way, not by a weaker rule — but the time grain is ALWAYS
  * withheld: an ad-hoc answer concept is not a target the engine has classified,
- * so no `metric_additivity` row exists to read and there is nothing to bucket
+ * so no `metric_axis_additivity` row exists to read and there is nothing to bucket
  * time by honestly. The date axis stays available as a raw slice.
  *
  * The relation is reduced to its bare name FIRST (DAT-671). This is the third
@@ -1056,7 +1336,7 @@ export async function resolveAnswerDrillAxes(
 	}));
 	const result = gateAxes(
 		await resolveAxesForSources(reduced),
-		null,
+		{ target: null, carriers: new Map() },
 		"This answer computes an ad-hoc concept the engine has not classified for additivity — time-grain drill withheld; the date is still available as a raw slice.",
 	);
 	// DAT-671: grey any axis that already breaks out the answer's own BASE

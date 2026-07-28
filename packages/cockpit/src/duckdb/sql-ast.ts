@@ -1,8 +1,13 @@
 // SQL-as-structure via DuckDB's own AST (DAT-713 direction): read structure
 // off the JSON parse tree — the same parser that executes, so a parse can never
-// diverge from the binder. This module is the READ side used by the flow gate
-// (DAT-673): "which base columns does an extract AGGREGATE?" The mutation side
-// (the drill's clause appends) lands with DAT-678.
+// diverge from the binder. This module answers "which base columns does an
+// extract AGGREGATE?" for the drill's UNIT gate, and "can this declared value
+// expression be composed as clause parts?" for the answer path.
+//
+// It is NOT an additivity judge. The flow gate that once lived on this read was
+// deleted in DAT-725 and replaced by the engine's persisted per-(target × axis)
+// verdict (DAT-857/868) — additivity is a served fact, never re-derived from
+// SQL structure here.
 //
 // The parser is the shared memoized in-memory DuckDB in `sql-canonical.ts`
 // (`json_serialize_sql` is parse-only — no lake, no table binding), so this
@@ -41,16 +46,36 @@ function aggregateNames(): Promise<ReadonlySet<string>> {
 	return aggregateNamesPromise;
 }
 
-/** Does any node anywhere in the parse tree carry `class === cls`? (A shallow
- *  structural probe — used to fail closed on shapes the aggregate walk can't
- *  yet read, e.g. `WINDOW`.) */
-function hasClass(node: unknown, cls: string): boolean {
-	if (Array.isArray(node)) return node.some((child) => hasClass(child, cls));
-	if (node === null || typeof node !== "object") return false;
-	const obj = node as Record<string, unknown>;
-	if (obj.class === cls) return true;
-	return Object.values(obj).some((value) => hasClass(value, cls));
-}
+/**
+ * Sub-trees that are NEVER measure arguments, even when they hang off an
+ * aggregate node (DAT-868, closing the DAT-715 residue). Each names a real
+ * DuckDB AST key:
+ *
+ * - `filter` / `filter_expr` — the `FILTER (WHERE …)` predicate of an aggregate
+ *   (`FUNCTION`) or a windowed aggregate (`WINDOW`). Its columns RESTRICT the
+ *   rows that are aggregated; they are not themselves aggregated. The old blind
+ *   `Object.values` descent collected them as if they were, so
+ *   `SUM(credit) FILTER (WHERE flag > 0)` reported `flag` as an aggregated
+ *   measure — an over-collection that hands the unit gate a column to check
+ *   that no measure ever summed.
+ * - `partitions` / `orders` / `arg_orders` / `order_bys` — the window frame's
+ *   PARTITION BY / ORDER BY and an aggregate's internal ORDER BY. These are
+ *   grouping/sequencing keys, exactly as much "not a measure" as a GROUP BY key.
+ * - `start_expr` / `end_expr` / `offset_expr` / `default_expr` — frame bounds and
+ *   `lead`/`lag` offsets. Row arithmetic, not aggregated values.
+ */
+const NON_MEASURE_KEYS: ReadonlySet<string> = new Set([
+	"filter",
+	"filter_expr",
+	"partitions",
+	"orders",
+	"arg_orders",
+	"order_bys",
+	"start_expr",
+	"end_expr",
+	"offset_expr",
+	"default_expr",
+]);
 
 /** The last element of a COLUMN_REF's `column_names` — the bare column, dropping
  *  any table/schema qualification (`["t","credit"]` → `credit`). */
@@ -64,9 +89,13 @@ function bareColumn(columnNames: unknown): string | null {
  * The base columns an extract's select expression AGGREGATES — the column
  * references INSIDE an aggregate function (`SUM(credit)` → `credit`; a bare
  * `credit` outside any aggregate is ignored, as is a scalar-only multiplier).
+ * Windowed aggregates count (`SUM(x) OVER (…)` → `x`); a `FILTER (WHERE …)`
+ * predicate and the window frame's PARTITION BY / ORDER BY do not — they select
+ * and order the rows, they are not the value being aggregated (DAT-868).
+ *
  * Parse-only: the relation need not exist. Returns an empty set when the
- * expression can't be parsed — the caller treats "couldn't determine" as
- * fail-closed (no time grain).
+ * expression can't be parsed — "we could not read this expression", which for
+ * the unit gate means it has nothing to check here, not that anything is safe.
  */
 export async function aggregatedColumns(
 	selectExpr: string,
@@ -81,15 +110,6 @@ export async function aggregatedColumns(
 		return new Set();
 	}
 
-	// Fail CLOSED on window aggregates (DAT-673). A windowed `SUM(x) OVER (…)`
-	// parses as a `WINDOW` node, NOT a `FUNCTION`, so the aggregate walk below
-	// would miss its columns — a windowed STOCK would read as "nothing
-	// aggregated" → the gate wrongly says safe and offers grain (the one
-	// direction a safety gate must never get wrong). Stopgap: any WINDOW node →
-	// empty set → the caller fails closed (strips grain). Parsing window bodies
-	// properly (and FILTER-clause / case-sensitivity handling) is DAT-715.
-	if (hasClass(ast, "WINDOW")) return new Set();
-
 	const columns = new Set<string>();
 	const walk = (node: unknown, insideAggregate: boolean): void => {
 		if (Array.isArray(node)) {
@@ -98,16 +118,38 @@ export async function aggregatedColumns(
 		}
 		if (node === null || typeof node !== "object") return;
 		const obj = node as Record<string, unknown>;
+		// A windowed aggregate (`SUM(x) OVER (…)`) parses as class `WINDOW`, not
+		// `FUNCTION`, but it carries the same `function_name` and puts its
+		// arguments in the same `children` — so it enters the aggregate exactly
+		// like a plain call (DAT-868). This used to fail closed on the whole
+		// expression: any WINDOW node returned the empty set, which — now that
+		// the caller is the UNIT gate, not the retired flow gate — means the gate
+		// silently has nothing to check rather than anything safe.
+		//
+		// NAVIGATION functions are deliberately in scope too. `duckdb_functions()`
+		// classifies `lead`/`lag`/`row_number`/`rank`/`first_value` as
+		// `function_type='aggregate'` (probed), so `lead(amount) OVER (…)` collects
+		// `amount`. That is the ANSWER WE WANT here: this feeds only the unit gate,
+		// whose question is "does this expression read measure columns whose unit
+		// column carries more than one unit?" — and a windowed read of a
+		// mixed-unit measure is exactly as much of a problem as a summed one. The
+		// gate discloses loudly; it never silently enables. (`row_number()`/`rank()`
+		// take no column arguments, so they contribute nothing regardless.)
 		const entersAggregate =
-			obj.class === "FUNCTION" &&
+			(obj.class === "FUNCTION" || obj.class === "WINDOW") &&
 			typeof obj.function_name === "string" &&
-			aggregates.has(obj.function_name);
+			aggregates.has(obj.function_name.toLowerCase());
 		const nowInside = insideAggregate || entersAggregate;
 		if (nowInside && obj.class === "COLUMN_REF") {
 			const col = bareColumn(obj.column_names);
 			if (col !== null) columns.add(col);
 		}
-		for (const value of Object.values(obj)) walk(value, nowInside);
+		for (const [key, value] of Object.entries(obj)) {
+			// A FILTER predicate / window frame key is never a measure, however
+			// deep inside an aggregate it sits — descend it OUTSIDE the aggregate
+			// so a genuine nested aggregate there is still found on its own node.
+			walk(value, NON_MEASURE_KEYS.has(key) ? false : nowInside);
+		}
 	};
 	walk(ast, false);
 	return columns;

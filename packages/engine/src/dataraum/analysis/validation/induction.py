@@ -239,40 +239,59 @@ def _to_spec(validation: InducedValidation) -> ValidationSpec:
 
 
 def _render_additivity(session: Session, om_head_run_id: str | None) -> str:
-    """The additivity verdicts at the promoted operating_model head (DAT-716/735).
+    """The additivity verdicts at the promoted operating_model head (DAT-857/868).
 
-    Whether a breakdown by an axis class reconciles to the unsliced total. A
-    NON-additive target must not be summed across that axis, so the balance-check
-    class the induction proposes needs this explicitly: a Σ-of-parts check over a
-    non-additive target is a false positive. Run-versioned — read at the promoted
-    head (``om_head_run_id``); empty on a first run (no operating_model promoted yet).
+    Whether a target's value reconciles under SUM across an axis class. A
+    Σ-of-parts check is sound ONLY over an ``additive`` target: summing a
+    semi-additive value across periods double-counts, and a recompute target has
+    no meaningful sum at all — so a balance check over either is a guaranteed
+    false positive. An abstained axis is not a licence either: unknown is not
+    additive.
+
+    Only the CLASS rows (``axis_key = '*'``) are rendered — the induction reasons
+    about a target's aggregate behaviour, not about which specific column a drill
+    might bucket on. Run-versioned: read at the promoted head (``om_head_run_id``);
+    empty on a first run (no operating_model promoted yet).
     """
     if om_head_run_id is None:
         return ""
-    from dataraum.graphs.additivity_db_models import MetricAdditivity
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
 
     rows = (
         session.execute(
-            select(MetricAdditivity)
-            .where(MetricAdditivity.run_id == om_head_run_id)
-            .order_by(MetricAdditivity.target_kind, MetricAdditivity.target_key)
+            select(MetricAxisAdditivity)
+            .where(
+                MetricAxisAdditivity.run_id == om_head_run_id,
+                MetricAxisAdditivity.axis_key == AXIS_KEY_ALL,
+            )
+            .order_by(
+                MetricAxisAdditivity.target_kind,
+                MetricAxisAdditivity.target_key,
+                MetricAxisAdditivity.axis_kind,
+            )
         )
         .scalars()
         .all()
     )
     if not rows:
         return ""
-    lines = ["", "## Additivity Verdicts"]
+    by_target: dict[tuple[str, str], list[str]] = {}
     for r in rows:
-        cat = (
-            "categorical:additive"
-            if r.categorical_additive
-            else f"categorical:NON-additive ({r.categorical_reason or 'n/a'})"
-        )
-        tim = (
-            "time:additive" if r.time_additive else f"time:NON-additive ({r.time_reason or 'n/a'})"
-        )
-        lines.append(f"- {r.target_kind} {r.target_key}: {cat}; {tim}")
+        if r.status == "abstained":
+            phrase = f"{r.axis_kind}:UNJUDGED ({r.abstain_reason})"
+        elif r.verdict == "additive":
+            phrase = f"{r.axis_kind}:additive"
+        else:
+            phrase = f"{r.axis_kind}:{r.verdict} ({r.reason})"
+        by_target.setdefault((r.target_kind, r.target_key), []).append(phrase)
+    lines = [
+        "",
+        "## Additivity Verdicts",
+        "Only `additive` licenses a sum-of-parts (balance) check across that axis;",
+        "`semi_additive`, `non_additive_recompute` and UNJUDGED do not.",
+    ]
+    for (kind, key), phrases in by_target.items():
+        lines.append(f"- {kind} {key}: {'; '.join(phrases)}")
     return "\n".join(lines)
 
 

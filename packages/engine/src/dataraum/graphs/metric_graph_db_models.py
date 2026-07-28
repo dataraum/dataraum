@@ -25,7 +25,7 @@ axis is declaration-versioned exactly like :class:`~dataraum.analysis.semantic.d
 — a stable ``(vertical, graph_id[, …])`` key, ``superseded_at`` the sole lifecycle axis,
 seeded ``INSERT … ON CONFLICT DO NOTHING`` so a re-run is a no-op and a supersede is
 never clobbered. This is deliberately NOT the run-versioned axis of
-:class:`~dataraum.graphs.additivity_db_models.MetricAdditivity` (a verdict RECOMPUTED
+:class:`~dataraum.graphs.additivity_db_models.MetricAxisAdditivity` (a verdict RECOMPUTED
 every operating_model run from live ``temporal_behavior``); the DAG STRUCTURE is not
 recomputed from data, so keying it on ``run_id`` would be wrong. Workspace identity is
 the ``ws_<id>`` schema itself (no ``workspace_id`` column), and the read surface scopes

@@ -489,15 +489,16 @@ FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))
 
 CREATE VIEW __READ__.og_additivity AS
 SELECT additivity_id::text AS additivity_id, target_kind, target_key,
-       categorical_additive, time_additive, categorical_reason, time_reason
-FROM __READ__.current_metric_additivity;
+       axis_kind, axis_key, status, verdict, reason, abstain_reason,
+       bucket_grain
+FROM __READ__.current_metric_axis_additivity;
 
 CREATE VIEW __READ__.og_has_additivity AS
 SELECT (c.concept_id || '_' || a.additivity_id)::text AS edge_key,
        c.concept_id::text AS concept_id,
        a.additivity_id::text AS additivity_id,
        a.target_key
-FROM __READ__.current_metric_additivity a
+FROM __READ__.current_metric_axis_additivity a
 JOIN __READ__.concepts c
   ON c.name = a.target_key AND c.superseded_at IS NULL
 WHERE a.target_kind = 'measure';
@@ -570,8 +571,8 @@ CREATE PROPERTY GRAPH __READ__.operating_model
     __READ__.og_period_grain KEY (grain) LABEL period_grain
       PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),
     __READ__.og_additivity KEY (additivity_id) LABEL additivity_verdict
-      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,
-                  time_additive, categorical_reason, time_reason),
+      PROPERTIES (additivity_id, target_kind, target_key, axis_kind, axis_key,
+                  status, verdict, reason, abstain_reason, bucket_grain),
     __READ__.og_metrics KEY (graph_id) LABEL metric_node
       PROPERTIES (graph_id, vertical, name, category, unit, output_type),
     __READ__.og_metric_parameters KEY (parameter_id) LABEL parameter_node

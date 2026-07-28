@@ -13,12 +13,44 @@ vi.mock("#/config", () => ({
 
 // A thenable fluent stub: every drizzle builder method returns the same
 // object, and awaiting it yields the rows registered for the FROM table.
+//
+// A table's registered value may be a FUNCTION instead of an array, in which
+// case it receives every string literal found in the query's WHERE arguments.
+// That is what makes a TARGET-AWARE double possible: the verdict read is issued
+// once per drill target (the metric, then each of its carrier measures), and a
+// static row set would answer all of them identically — which is exactly the
+// case the carrier gate exists to distinguish. Keyed on the target's own name,
+// not on call ORDER, so the double does not silently encode the resolver's
+// current call sequence.
 // biome-ignore lint/suspicious/noExplicitAny: test double for the fluent builder
-const rowsByTable = new Map<unknown, any[]>();
-function fluent(rows: unknown[]) {
+type RowsFor = any[] | ((whereLiterals: string[]) => any[]);
+const rowsByTable = new Map<unknown, RowsFor>();
+
+/** The BOUND VALUES of a where clause — drizzle nests its conditions as
+ *  `queryChunks`, with each bound literal wrapped in a `Param` carrying `.value`.
+ *  Reading those two shapes keeps this cheap and total; a blind walk of the
+ *  object graph re-traverses drizzle's cyclic table/column back-references and
+ *  costs seconds per query. */
+function whereLiterals(node: unknown, out: string[]): string[] {
+	if (Array.isArray(node)) {
+		for (const child of node) whereLiterals(child, out);
+		return out;
+	}
+	if (node === null || typeof node !== "object") return out;
+	const obj = node as Record<string, unknown>;
+	if (typeof obj.value === "string") out.push(obj.value);
+	if (Array.isArray(obj.queryChunks)) whereLiterals(obj.queryChunks, out);
+	return out;
+}
+
+function fluent(rowsFor: RowsFor) {
+	const literals: string[] = [];
 	// biome-ignore lint/suspicious/noExplicitAny: test double for the fluent builder
 	const q: any = {
-		where: () => q,
+		where: (...args: unknown[]) => {
+			whereLiterals(args, literals);
+			return q;
+		},
 		orderBy: () => q,
 		limit: () => q,
 		leftJoin: () => q,
@@ -26,7 +58,10 @@ function fluent(rows: unknown[]) {
 		then: (
 			resolve: (v: unknown[]) => unknown,
 			reject?: (e: unknown) => unknown,
-		) => Promise.resolve(rows).then(resolve, reject),
+		) =>
+			Promise.resolve(
+				typeof rowsFor === "function" ? rowsFor(literals) : rowsFor,
+			).then(resolve, reject),
 	};
 	return q;
 }
@@ -62,17 +97,21 @@ import {
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
-	currentMetricAdditivity,
+	currentMetricAxisAdditivity,
 	currentSliceDefinitions,
 	sqlSnippets,
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
+import { grainPresetsFrom } from "#/duckdb/grain";
 import {
 	ALREADY_AT_GRAIN_REASON,
 	applyHierarchyDescent,
 	applyTemporalKinds,
 	axesFromSliceRows,
-	describeEngineTimeVerdict,
+	buildTargetAdditivity,
+	decideTimeAxis,
+	demoteWithheldDateAxes,
+	describeTimeWithhold,
 	describeUnitGate,
 	driverGains,
 	hierarchyDescentMap,
@@ -343,25 +382,6 @@ describe("applyTemporalKinds", () => {
 			new Map([["entry__date", "date" as const]]),
 		);
 		expect(out.map((a) => a.temporal)).toEqual(["date", null]);
-	});
-});
-
-describe("describeEngineTimeVerdict (DAT-731 — the engine verdict's richer reasons)", () => {
-	it("phrases each engine reason distinctly — the DAG-aware causes a column-level check alone couldn't see", () => {
-		expect(describeEngineTimeVerdict("stock")).toContain("balance");
-		expect(describeEngineTimeVerdict("snapshot_count")).toContain("snapshot");
-		expect(describeEngineTimeVerdict("ratio")).toContain("ratio");
-		expect(describeEngineTimeVerdict("average")).toContain("average");
-		expect(describeEngineTimeVerdict("distinct_count")).toContain("distinct");
-		expect(describeEngineTimeVerdict("min_max")).toContain("min/max");
-		expect(describeEngineTimeVerdict("unknown_temporal")).toContain(
-			"no stock/flow classification",
-		);
-	});
-
-	it("falls back to the honest 'couldn't confirm' for a null / unrecognized reason", () => {
-		expect(describeEngineTimeVerdict(null)).toContain("couldn't");
-		expect(describeEngineTimeVerdict("some_future_code")).toContain("couldn't");
 	});
 });
 
@@ -794,12 +814,24 @@ const seed = () => {
 	// NOT about the time gate itself don't need to think about it. Tests that
 	// exercise the gate override this explicitly (VERDICT-STOCK clears/flips
 	// it, VERDICT-MISSING/WITHHELD empties the table to simulate no verdict).
-	rowsByTable.set(currentMetricAdditivity, [
+	rowsByTable.set(currentMetricAxisAdditivity, [
 		{
-			timeAdditive: true,
-			timeReason: null,
-			categoricalAdditive: true,
-			categoricalReason: null,
+			axisKind: "time",
+			axisKey: "*",
+			status: "classified",
+			verdict: "additive",
+			reason: null,
+			abstainReason: null,
+			bucketGrain: null,
+		},
+		{
+			axisKind: "categorical",
+			axisKey: "*",
+			status: "classified",
+			verdict: "additive",
+			reason: null,
+			abstainReason: null,
+			bucketGrain: null,
 		},
 	]);
 };
@@ -920,56 +952,243 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 		);
 	});
 
-	it("VERDICT-STOCK (DAT-731/725): a persisted time_additive=false strips grain, with the engine's reason and source stamped", async () => {
+	// One `metric_axis_additivity` row as the view serves it.
+	const verdictRow = (
+		axisKind: string,
+		over: Partial<{
+			axisKey: string;
+			status: string;
+			verdict: string | null;
+			reason: string | null;
+			abstainReason: string | null;
+			bucketGrain: string | null;
+		}> = {},
+	) => ({
+		axisKind,
+		axisKey: "*",
+		status: "classified",
+		verdict: "additive",
+		reason: null,
+		abstainReason: null,
+		bucketGrain: null,
+		...over,
+	});
+
+	it("VERDICT-RECOMPUTE (DAT-857): a ratio over ADDITIVE carriers KEEPS its grain — the pinned gross-margin case", async () => {
 		seed();
-		// The engine's DAG-aware verdict says the metric is a RATIO (non-additive
-		// on every axis) — authoritative, regardless of any column-level facts.
-		rowsByTable.set(currentMetricAdditivity, [
-			{
-				timeAdditive: false,
-				timeReason: "ratio",
-				categoricalAdditive: false,
-				categoricalReason: "ratio",
-			},
+		// The engine says the target is a ratio: recomputed per bucket, not summed.
+		// Its carrier measures are additive flows, so bucketing IS honest — the
+		// composer sums each carrier per bucket and re-evaluates the formula there.
+		// The old boolean gate stripped the grain here and left a raw 365-row date
+		// slice in its place: the meaningful ask withheld, the misleading one kept.
+		rowsByTable.set(currentMetricAxisAdditivity, [
+			verdictRow("time", {
+				verdict: "non_additive_recompute",
+				reason: "ratio",
+			}),
+			verdictRow("categorical", {
+				verdict: "non_additive_recompute",
+				reason: "ratio",
+			}),
 		]);
 		const res = await resolveDrillAxes({ standardField: "revenue" });
 		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
-		expect(dateAxis).toBeDefined();
-		expect(dateAxis?.temporal).toBeNull(); // grain gated off by the engine verdict
-		expect(res.temporalGateReason).toContain("ratio");
+		expect(dateAxis?.temporal).toBe("date"); // OFFERED, with per-bucket recompute
+		expect(res.temporalGateReason).toBeUndefined();
 		expect(res.temporalGateSource).toBe("engine-verdict");
+		// ...and the drilled total must not claim the buckets add up to it.
+		expect(res.reconciles).toEqual({ time: false, categorical: false });
 	});
 
-	it("VERDICT-FLOW (DAT-731/725): a persisted time_additive=true keeps grain, source stamped engine-verdict", async () => {
+	it("VERDICT-SEMI-ADDITIVE (DAT-857): a stock withholds its grain and says the buckets are meaningful but unsummable", async () => {
 		seed();
-		// The engine's rolled-up verdict says time_additive=true — the DAG-aware
-		// verdict is authoritative over any column-level facts.
-		rowsByTable.set(currentMetricAdditivity, [
-			{
-				timeAdditive: true,
-				timeReason: null,
-				categoricalAdditive: true,
-				categoricalReason: null,
-			},
+		rowsByTable.set(currentMetricAxisAdditivity, [
+			verdictRow("time", { verdict: "semi_additive", reason: "stock" }),
+			verdictRow("categorical"),
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		expect(dateAxis?.temporal).toBeNull(); // withheld: the composer can only SUM
+		expect(res.temporalGateReason).toContain(
+			"Each period on its own is meaningful",
+		);
+		expect(res.temporalGateSource).toBe("engine-verdict");
+		// The categorical breakdown still reconciles — a balance sums across accounts.
+		expect(res.reconciles).toEqual({ time: false, categorical: true });
+	});
+
+	it("VERDICT-FLOW (DAT-857): an additive flow keeps its grain and reconciles on both axes", async () => {
+		seed();
+		rowsByTable.set(currentMetricAxisAdditivity, [
+			verdictRow("time"),
+			verdictRow("categorical"),
 		]);
 		const res = await resolveDrillAxes({ standardField: "revenue" });
 		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
 		expect(dateAxis?.temporal).toBe("date"); // grain KEPT
 		expect(res.temporalGateReason).toBeUndefined();
 		expect(res.temporalGateSource).toBe("engine-verdict");
+		expect(res.reconciles).toEqual({ time: true, categorical: true });
 	});
 
-	it("VERDICT-MISSING / WITHHELD (DAT-725): no persisted verdict → time grain stripped with a visible reason, never silently recomputed from a local heuristic (replaces the DAT-731 fail-open fallback)", async () => {
+	it("VERDICT-ABSTAINED (DAT-868): a typed abstention withholds the grain in the ENGINE's words, not as a flat refusal", async () => {
 		seed();
-		rowsByTable.set(currentMetricAdditivity, []); // no row → resolveTargetAdditivity returns null
+		rowsByTable.set(currentMetricAxisAdditivity, [
+			verdictRow("time", {
+				status: "abstained",
+				verdict: null,
+				abstainReason: "unknown_temporal",
+			}),
+			verdictRow("categorical"),
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		expect(
+			res.axes.find((a) => a.column === "customer__segment")?.temporal,
+		).toBeNull();
+		expect(res.temporalGateReason).toContain("no stock/flow classification");
+		// An abstention is NOT "we judged it non-additive" — the source still says a
+		// verdict row was found, and the reason names the gap.
+		expect(res.temporalGateSource).toBe("engine-verdict");
+	});
+
+	it("VERDICT-MISSING / WITHHELD (DAT-725): no persisted verdict → grain withheld with a visible reason, never silently recomputed from a local heuristic", async () => {
+		seed();
+		rowsByTable.set(currentMetricAxisAdditivity, []); // no rows at all
 		const res = await resolveDrillAxes({ standardField: "revenue" });
 		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
 		expect(dateAxis).toBeDefined();
 		expect(dateAxis?.temporal).toBeNull(); // grain WITHHELD, not silently kept
+		expect(dateAxis?.temporalWithheldReason).toBeDefined(); // ...and it says why
 		expect(res.temporalGateSource).toBe("withheld-no-verdict");
-		expect(res.temporalGateReason).toContain(
-			"Additivity not determined for this target",
+		expect(res.temporalGateReason).toContain("has not classified this target");
+	});
+
+	it("BUCKET GRAIN (DAT-857/730): a refining per-axis row carries the axis's observed cadence onto the axis", async () => {
+		seed();
+		rowsByTable.set(currentMetricAxisAdditivity, [
+			verdictRow("time"),
+			verdictRow("categorical"),
+			// The engine refined THIS column: monthly data, so no day buckets.
+			verdictRow("time", {
+				axisKey: "customer__segment",
+				bucketGrain: "month",
+			}),
+		]);
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		expect(dateAxis?.temporal).toBe("date");
+		expect(dateAxis?.bucketGrain).toBe("month");
+	});
+
+	it("AC WIRING (DAT-857): a bucketable axis ranks ABOVE a withheld raw date, and the floored presets reach the axis", async () => {
+		seed();
+		// TWO date columns on the same fact: the engine refined `customer__segment`
+		// (monthly cadence, additive → bucketable) and abstained on `due_date`.
+		rowsByTable.set(columns, [
+			{
+				tableId: "vt1",
+				columnName: "customer__region",
+				resolvedType: "VARCHAR",
+			},
+			{ tableId: "vt1", columnName: "customer__segment", resolvedType: "DATE" },
+			{ tableId: "vt1", columnName: "due_date", resolvedType: "DATE" },
+			{ tableId: "fact1", columnName: "amount", resolvedType: "DOUBLE" },
+		]);
+		rowsByTable.set(currentEnrichedViews, [
+			{
+				viewName: "enriched_invoices",
+				viewTableId: "vt1",
+				factTableId: "fact1",
+				dimensionColumns: ["customer__region", "customer__segment", "due_date"],
+				isGrainVerified: true,
+			},
+		]);
+		rowsByTable.set(currentMetricAxisAdditivity, [
+			verdictRow("categorical"),
+			verdictRow("time"),
+			verdictRow("time", {
+				axisKey: "customer__segment",
+				bucketGrain: "month",
+			}),
+			verdictRow("time", {
+				axisKey: "due_date",
+				status: "abstained",
+				verdict: null,
+				abstainReason: "unknown_temporal",
+			}),
+		]);
+
+		const res = await resolveDrillAxes({ standardField: "revenue" });
+		const bucketable = res.axes.find((a) => a.column === "customer__segment");
+		const withheld = res.axes.find((a) => a.column === "due_date");
+		expect(bucketable?.temporal).toBe("date");
+		expect(withheld?.temporal).toBeNull();
+		expect(withheld?.temporalWithheldReason).toContain(
+			"no stock/flow classification",
 		);
+
+		// DEMOTION: the raw-date slice ranks LAST — below every axis that can
+		// actually be bucketed or broken out.
+		expect(res.axes.at(-1)?.column).toBe("due_date");
+		expect(
+			res.axes.findIndex((a) => a.column === "customer__segment"),
+		).toBeLessThan(res.axes.findIndex((a) => a.column === "due_date"));
+
+		// ...and the served cadence reaches the grain menu as a FLOOR: a monthly
+		// axis is not offered day buckets it has no data to fill.
+		expect(
+			grainPresetsFrom(
+				bucketable?.temporal ?? "date",
+				bucketable?.bucketGrain,
+			).map((g) => g.token),
+		).toEqual(["1M", "1q", "1y"]);
+	});
+
+	it("AC WIRING (DAT-857): a METRIC target reads its CARRIERS' verdicts — the pinned gross-margin case", async () => {
+		seed();
+		// The target-aware double: the metric is a recompute (a ratio), and the
+		// answer for its two carriers differs. `revenue` sums; `cogs` does not.
+		const additive = (axisKind: string) => verdictRow(axisKind);
+		const ratio = (axisKind: string) =>
+			verdictRow(axisKind, {
+				verdict: "non_additive_recompute",
+				reason: "ratio",
+			});
+		rowsByTable.set(currentMetricAxisAdditivity, (literals: string[]) => {
+			if (literals.includes("cogs")) {
+				return [
+					verdictRow("time", { verdict: "semi_additive", reason: "stock" }),
+					additive("categorical"),
+				];
+			}
+			if (literals.includes("revenue")) {
+				return [additive("time"), additive("categorical")];
+			}
+			return [ratio("time"), ratio("categorical")]; // the metric itself
+		});
+
+		// The metric's DAG names revenue + cogs as its extracts (see seed()).
+		const res = await resolveDrillAxes({ metricKey: "margin" });
+		const dateAxis = res.axes.find((a) => a.column === "customer__segment");
+		// A ratio recomputes per bucket from its carriers — but `cogs` does not sum
+		// across periods, so the recomputed number would be wrong. Withheld, and
+		// the reason NAMES the carrier that blocks it.
+		expect(dateAxis?.temporal).toBeNull();
+		expect(dateAxis?.temporalWithheldReason).toContain("cogs");
+		expect(res.reconciles).toEqual({ time: false, categorical: false });
+
+		// Flip the blocking carrier to additive and the SAME metric is offered.
+		rowsByTable.set(currentMetricAxisAdditivity, (literals: string[]) =>
+			literals.includes("revenue") || literals.includes("cogs")
+				? [additive("time"), additive("categorical")]
+				: [ratio("time"), ratio("categorical")],
+		);
+		const offered = await resolveDrillAxes({ metricKey: "margin" });
+		expect(
+			offered.axes.find((a) => a.column === "customer__segment")?.temporal,
+		).toBe("date");
+		// ...and its total still must not claim the buckets add up to it.
+		expect(offered.reconciles).toEqual({ time: false, categorical: false });
 	});
 
 	it("UNIT GATE (DAT-731): a measure measured_in a MULTI-valued unit column flags a cross-unit aggregation", async () => {
@@ -1147,5 +1366,167 @@ describe("resolveDrillAxes bare-catalog reason", () => {
 			"customer__region",
 			"customer__segment",
 		]);
+	});
+});
+
+describe("decideTimeAxis (DAT-857 composition rule)", () => {
+	// Built through the SAME constructor the DB read uses, so the test cannot
+	// drift from the key format.
+	const target = (
+		verdict: string,
+		reason: string | null,
+		bucketGrain: string | null = null,
+	) =>
+		buildTargetAdditivity([
+			{
+				axisKind: "time",
+				axisKey: "*",
+				status: "classified",
+				verdict,
+				reason,
+				abstainReason: null,
+				bucketGrain,
+			},
+		]);
+	const additiveCarrier = () => target("additive", null);
+
+	it("offers an additive axis", () => {
+		const got = decideTimeAxis("booked_on", {
+			target: target("additive", null),
+			carriers: new Map(),
+		});
+		expect(got).toEqual({ offer: true, bucketGrain: null });
+	});
+
+	it("offers a recompute target when EVERY carrier is additive", () => {
+		const got = decideTimeAxis("booked_on", {
+			target: target("non_additive_recompute", "ratio"),
+			carriers: new Map([
+				["revenue", additiveCarrier()],
+				["cost_of_goods_sold", additiveCarrier()],
+			]),
+		});
+		expect(got).toEqual({ offer: true, bucketGrain: null });
+	});
+
+	it("REFUSES a recompute target whose carrier does not sum, and names the carrier", () => {
+		// The composer sums carriers per bucket before re-evaluating the formula,
+		// so a semi-additive carrier would silently corrupt the recomputed value.
+		const got = decideTimeAxis("booked_on", {
+			target: target("non_additive_recompute", "ratio"),
+			carriers: new Map([
+				["revenue", additiveCarrier()],
+				["closing_balance", target("semi_additive", "stock")],
+			]),
+		});
+		expect(got.offer).toBe(false);
+		if (got.offer === false) expect(got.reason).toContain("closing_balance");
+	});
+
+	it("REFUSES a recompute target whose carrier was never judged", () => {
+		const got = decideTimeAxis("booked_on", {
+			target: target("non_additive_recompute", "ratio"),
+			carriers: new Map([["revenue", null]]),
+		});
+		expect(got.offer).toBe(false);
+	});
+
+	it("prefers a refining per-axis row over the class row", () => {
+		const withRefinement = buildTargetAdditivity([
+			{
+				axisKind: "time",
+				axisKey: "*",
+				status: "classified",
+				verdict: "additive",
+				reason: null,
+				abstainReason: null,
+				bucketGrain: null,
+			},
+			{
+				axisKind: "time",
+				axisKey: "booked_on",
+				status: "classified",
+				verdict: "additive",
+				reason: null,
+				abstainReason: null,
+				bucketGrain: "month",
+			},
+		]);
+		expect(
+			decideTimeAxis("booked_on", {
+				target: withRefinement,
+				carriers: new Map(),
+			}),
+		).toEqual({ offer: true, bucketGrain: "month" });
+		// A column the engine did NOT refine still resolves — via the class row.
+		expect(
+			decideTimeAxis("due_date", {
+				target: withRefinement,
+				carriers: new Map(),
+			}),
+		).toEqual({ offer: true, bucketGrain: null });
+	});
+});
+
+describe("describeTimeWithhold", () => {
+	it("distinguishes never-judged from abstained from semi-additive", () => {
+		const missing = describeTimeWithhold(null);
+		const abstained = describeTimeWithhold({
+			status: "abstained",
+			verdict: null,
+			reason: null,
+			abstainReason: "unknown_temporal",
+			bucketGrain: null,
+		});
+		const semi = describeTimeWithhold({
+			status: "classified",
+			verdict: "semi_additive",
+			reason: "stock",
+			abstainReason: null,
+			bucketGrain: null,
+		});
+		expect(missing).toContain("has not classified");
+		expect(abstained).toContain("no stock/flow classification");
+		expect(semi).toContain("Each period on its own is meaningful");
+		// Three different facts must not collapse to one sentence.
+		expect(new Set([missing, abstained, semi]).size).toBe(3);
+	});
+});
+
+describe("demoteWithheldDateAxes (DAT-857)", () => {
+	const axis = (column: string, over: Partial<DrillAxis> = {}): DrillAxis => ({
+		column,
+		sliceType: "categorical",
+		values: [],
+		valueCount: null,
+		businessContext: null,
+		temporal: null,
+		driverGain: null,
+		sliceRelevance: null,
+		sliceInterest: null,
+		hierarchyNext: null,
+		disabledReason: null,
+		...over,
+	});
+
+	it("sinks a withheld raw-date slice below everything once ANY axis is bucketable", () => {
+		const got = demoteWithheldDateAxes([
+			axis("due_date", { temporalWithheldReason: "nope" }),
+			axis("region"),
+			axis("booked_on", { temporal: "date" }),
+		]);
+		expect(got.map((a) => a.column)).toEqual([
+			"region",
+			"booked_on",
+			"due_date",
+		]);
+	});
+
+	it("leaves the order alone when NOTHING is bucketable — there is no better option to promote", () => {
+		const input = [
+			axis("due_date", { temporalWithheldReason: "nope" }),
+			axis("region"),
+		];
+		expect(demoteWithheldDateAxes(input)).toBe(input);
 	});
 });

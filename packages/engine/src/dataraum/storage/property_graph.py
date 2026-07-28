@@ -37,12 +37,14 @@ reification).** Vertices/edges:
     period_grain   (KEY grain)       the constant period ladder node (day/month/
                                             quarter/year) carrying the workspace's
                                             declared fiscal boundary (DAT-730)
-    additivity_verdict (KEY additivity_id) the 2-axis drill additivity verdict
-                                            (DAT-731) projected from
-                                            current_metric_additivity: categorical /
-                                            time additive + reason, per drill target
-                                            (a ``metric`` graph_id or a ``measure``
-                                            standard_field)
+    additivity_verdict (KEY additivity_id) the per-(target x axis) additivity
+                                            verdict (DAT-857/868) projected from
+                                            current_metric_axis_additivity: status +
+                                            verdict (additive / semi_additive /
+                                            non_additive_recompute) or a typed
+                                            abstention, per drill target (a ``metric``
+                                            graph_id or a ``measure`` standard_field)
+                                            and axis (axis_key '*' = the class row)
     metric_node    (KEY graph_id)    a declared metric (DAT-732); props: name /
                                             category / unit / output_type — the metric
                                             DAG's typed home (metrics table)
@@ -71,7 +73,7 @@ reification).** Vertices/edges:
     temporal_coverage  table → column    [temporal_column_profiles ▸ time_columns] observed window/grain/completeness per (relation × time col) (DAT-730)
     rolls_up_to        column → column   [dimension_hierarchies] ordered drill level→level, finer→coarser (DAT-730)
     period_rolls_up_to grain → grain     [constant + workspace_calendar] the calendar ladder day→month→quarter→year (DAT-730)
-    has_additivity     concept → additivity_verdict [current_metric_additivity] a MEASURE concept's 2-axis verdict (DAT-731)
+    has_additivity     concept → additivity_verdict [current_metric_axis_additivity] a MEASURE concept's per-axis verdicts (DAT-857/868)
     measured_in        column → column   [column_concepts.unit_source_column] a measure column → the column that defines its unit (DAT-731)
     derives_from       metric → concept   [metric_derives_from] a metric's extract leaves → the concepts they ground (DAT-732)
     has_parameter      metric → parameter [metric_parameters]   a metric's user-configurable parameters (DAT-732)
@@ -113,10 +115,13 @@ conform judge's role identity, so role-playing FKs (bill-to vs ship-to) are dist
 axes unless the judge conformed them — the SAME LLM-authored decision layer the lineage
 witness reads, keeping the two post-judge consumers on one identity.
 
-**Additivity + units (DAT-731).** ``additivity_verdict`` is a small VERTEX projecting
-``current_metric_additivity`` — the deterministic 2-axis drill verdict (categorical /
-time additive + reason) the metrics phase persists per drill target (a ``metric``
-graph_id or a ``measure`` standard_field). A vertex (not a property on an existing
+**Additivity + units (DAT-857/868).** ``additivity_verdict`` is a small VERTEX
+projecting ``current_metric_axis_additivity`` — the deterministic per-(target x axis)
+drill verdict the metrics phase persists per drill target (a ``metric`` graph_id or a
+``measure`` standard_field) and axis. Each row either CLASSIFIES the axis (additive /
+semi_additive / non_additive_recompute, with the doctrine reason when it does not sum)
+or ABSTAINS with a typed reason; ``axis_key = '*'`` is the class-level row covering
+every axis of its kind, and a concrete column name refines it. A vertex (not a property on an existing
 node) because the two target kinds have NO common home: a ``measure`` target_key is a
 concept name, but a ``metric`` target_key is a formula ``graph_id`` with no vertex at
 all (metrics are not in the graph). One uniform vertex covers both and stays MATCH-able
@@ -994,24 +999,32 @@ def _element_view_sql(name: str) -> str:
             f"       AS l(from_grain, to_grain);"
         )
     if name == "og_additivity":
-        # additivity_verdict vertex (DAT-731): the 2-axis drill additivity verdict, a
-        # ::text projection of current_metric_additivity (read_views.py, the
-        # operating_model metrics-phase head). One row per drill TARGET — a `metric`
-        # (target_key = the formula graph_id / lifecycle artifact_key) or a `measure`
-        # (target_key = the concept standard_field). categorical_/time_additive say
-        # whether a breakdown by that axis class reconciles to the unsliced total;
-        # the *_reason names the cause when it does not (stock / average /
-        # distinct_count / snapshot_count / min_max / ratio / unknown_*), NULL when it
-        # reconciles. additivity_id is a per-run uuid4 but UNIQUE within one promoted
-        # state (the current view resolves one run), so it is a valid LOCAL vertex KEY
-        # — the og_references relationship_id discipline ("a fine local edge key inside
-        # one promoted state"). target_kind discriminates the two kinds for a consumer
+        # additivity_verdict vertex (DAT-857/868): the per-(target × axis) drill
+        # additivity verdict, a ::text projection of current_metric_axis_additivity
+        # (read_views.py, the operating_model metrics-phase head). One row per drill
+        # TARGET and AXIS — the target is a `metric` (target_key = the formula
+        # graph_id / lifecycle artifact_key) or a `measure` (target_key = the concept
+        # standard_field); the axis is (axis_kind, axis_key), where axis_key '*' is
+        # the CLASS-level verdict covering every axis of that kind and a concrete
+        # column name refines it.
+        #
+        # `status` says whether we judged it at all: 'classified' rows carry a
+        # `verdict` (additive / semi_additive / non_additive_recompute) plus, when
+        # not additive, the doctrine `reason`; 'abstained' rows carry only
+        # `abstain_reason`. A consumer must branch on status — there is no
+        # NULL-means-no encoding.
+        #
+        # additivity_id is a per-run uuid4 but UNIQUE within one promoted state (the
+        # current view resolves one run), so it is a valid LOCAL vertex KEY — the
+        # og_references relationship_id discipline ("a fine local edge key inside one
+        # promoted state"). target_kind discriminates the two kinds for a consumer
         # that MATCHes the metric case by property (no metric vertex to traverse from).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_additivity AS\n"
             f"SELECT additivity_id::text AS additivity_id, target_kind, target_key,\n"
-            f"       categorical_additive, time_additive, categorical_reason, time_reason\n"
-            f"FROM {READ_TOKEN}.current_metric_additivity;"
+            f"       axis_kind, axis_key, status, verdict, reason, abstain_reason,\n"
+            f"       bucket_grain\n"
+            f"FROM {READ_TOKEN}.current_metric_axis_additivity;"
         )
     if name == "og_has_additivity":
         # has_additivity edge (concept → additivity_verdict, DAT-731): a MEASURE
@@ -1032,7 +1045,7 @@ def _element_view_sql(name: str) -> str:
             f"       c.concept_id::text AS concept_id,\n"
             f"       a.additivity_id::text AS additivity_id,\n"
             f"       a.target_key\n"
-            f"FROM {READ_TOKEN}.current_metric_additivity a\n"
+            f"FROM {READ_TOKEN}.current_metric_axis_additivity a\n"
             f"JOIN {READ_TOKEN}.concepts c\n"
             f"  ON c.name = a.target_key AND c.superseded_at IS NULL\n"
             f"WHERE a.target_kind = 'measure';"
@@ -1237,8 +1250,8 @@ def _property_graph_sql() -> str:
         f"    {READ_TOKEN}.og_period_grain KEY (grain) LABEL period_grain\n"
         f"      PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),\n"
         f"    {READ_TOKEN}.og_additivity KEY (additivity_id) LABEL additivity_verdict\n"
-        f"      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,\n"
-        f"                  time_additive, categorical_reason, time_reason),\n"
+        f"      PROPERTIES (additivity_id, target_kind, target_key, axis_kind, axis_key,\n"
+        f"                  status, verdict, reason, abstain_reason, bucket_grain),\n"
         f"    {READ_TOKEN}.og_metrics KEY (graph_id) LABEL metric_node\n"
         f"      PROPERTIES (graph_id, vertical, name, category, unit, output_type),\n"
         f"    {READ_TOKEN}.og_metric_parameters KEY (parameter_id) LABEL parameter_node\n"

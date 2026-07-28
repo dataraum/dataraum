@@ -48,17 +48,94 @@ describe("aggregatedColumns", () => {
 		expect([...(await aggregatedColumns("SUM(t.credit)"))]).toEqual(["credit"]);
 	});
 
-	it("returns empty for an unparseable expression (fail-closed signal)", async () => {
+	it("returns empty for an unparseable expression", async () => {
 		expect((await aggregatedColumns("this is not sql )(")).size).toBe(0);
 	});
 
-	it("fails CLOSED on a window aggregate — a WINDOW node yields an empty set (DAT-673)", async () => {
-		// `SUM(x) OVER (…)` parses as a WINDOW node, not FUNCTION — the aggregate
-		// walk can't read it, so returning {} makes the gate fail closed (strip
-		// grain) rather than miss a windowed stock. Proper window parsing: DAT-715.
-		expect((await aggregatedColumns("SUM(x) OVER (PARTITION BY y)")).size).toBe(
-			0,
-		);
+	// --- window + FILTER grammar (DAT-868, closing the DAT-715 residue) --------
+	// These used to fail closed: ANY window node returned the empty set, so a
+	// windowed measure was invisible to the unit gate.
+
+	it("reads a windowed aggregate's argument — WINDOW carries the same function_name/children as FUNCTION", async () => {
+		expect([
+			...(await aggregatedColumns("SUM(x) OVER (PARTITION BY y)")),
+		]).toEqual(["x"]);
+	});
+
+	it("excludes the window frame's PARTITION BY / ORDER BY — they group and order, they are not aggregated", async () => {
+		expect(
+			[
+				...(await aggregatedColumns(
+					"SUM(credit) OVER (PARTITION BY acct ORDER BY booked_on)",
+				)),
+			].sort(),
+		).toEqual(["credit"]);
+	});
+
+	it("excludes a FILTER predicate's columns — they restrict the rows, they are not the measure", async () => {
+		// The old blind descent collected `flag` here: an over-collection that
+		// handed the unit gate a column no measure ever summed.
+		expect(
+			[
+				...(await aggregatedColumns("SUM(credit) FILTER (WHERE flag > 0)")),
+			].sort(),
+		).toEqual(["credit"]);
+	});
+
+	it("excludes a FILTER predicate on COUNT(*), which aggregates nothing at all", async () => {
+		expect(
+			(await aggregatedColumns("COUNT(*) FILTER (WHERE region = 'x')")).size,
+		).toBe(0);
+	});
+
+	it("still finds a genuine aggregate nested inside a FILTER predicate", async () => {
+		// Descending the predicate OUTSIDE the aggregate does not blind us to an
+		// aggregate that sits there on its own node.
+		expect(
+			[
+				...(await aggregatedColumns(
+					"SUM(credit) FILTER (WHERE debit > (SELECT SUM(fee) FROM f))",
+				)),
+			].sort(),
+		).toEqual(["credit", "fee"]);
+	});
+
+	it("reads row_number() as aggregating nothing — it takes no column argument", async () => {
+		// NB: `row_number` IS `function_type='aggregate'` in duckdb_functions(); it
+		// contributes nothing because it has no column ARGUMENTS, not because it
+		// fails the name check.
+		expect(
+			(await aggregatedColumns("row_number() OVER (ORDER BY booked_on)")).size,
+		).toBe(0);
+	});
+
+	it("collects a NAVIGATION function's measure argument — the unit gate wants it", async () => {
+		// The rationale above, pinned: duckdb_functions() classifies `lead` as an
+		// aggregate, so its argument is collected. A windowed read of a mixed-unit
+		// measure is a real cross-unit finding, and the ORDER BY key is not.
+		expect(
+			[
+				...(await aggregatedColumns(
+					"lead(amount, 1, 0) OVER (PARTITION BY acct ORDER BY booked_on)",
+				)),
+			].sort(),
+		).toEqual(["amount"]);
+	});
+
+	it("matches a QUOTED, mixed-case aggregate name — the lowercase fold is load-bearing", async () => {
+		// DuckDB lowercases unquoted identifiers, but a quoted `"Sum"` keeps its
+		// case into the AST while the catalog holds `sum` (DAT-868).
+		expect([...(await aggregatedColumns('"Sum"(credit)'))]).toEqual(["credit"]);
+	});
+
+	it("reads a windowed aggregate whose FILTER and frame both carry columns", async () => {
+		expect(
+			[
+				...(await aggregatedColumns(
+					"SUM(amount) FILTER (WHERE status = 'posted') OVER (PARTITION BY acct ORDER BY d)",
+				)),
+			].sort(),
+		).toEqual(["amount"]);
 	});
 });
 

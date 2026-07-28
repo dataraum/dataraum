@@ -14,6 +14,7 @@ import pytest
 from dataraum.graphs.additivity import (
     ADDITIVE,
     AVERAGE,
+    CLASSIFIED_REASONS,
     DISTINCT_COUNT,
     MIN_MAX,
     RATIO,
@@ -21,8 +22,14 @@ from dataraum.graphs.additivity import (
     STOCK,
     UNKNOWN_AGGREGATE,
     UNKNOWN_TEMPORAL,
+    AbstainReason,
+    AdditivityStatus,
     AggregateCall,
+    AxisAdditivity,
     AxisClass,
+    AxisKind,
+    AxisVerdict,
+    axis_additivity,
     classify_extract,
     parse_aggregate_calls,
     roll_up_metric,
@@ -371,3 +378,135 @@ def test_rollup_formula_cycle_is_refused():
     assert verdict.categorical_additive is False
     assert verdict.time_additive is False
     assert verdict.time_reason == UNKNOWN_AGGREGATE
+
+
+# --- 7. typed per-axis verdicts (DAT-857 / DAT-868) --------------------------
+#
+# The projection is TOTAL over the classifier: every branch above lands on
+# exactly one of ADDITIVE / SEMI_ADDITIVE / NON_ADDITIVE_RECOMPUTE / ABSTAINED.
+
+
+def test_flow_sum_is_additive_on_both_axes():
+    cls = classify_extract([AggregateCall("sum", ("revenue",))], {"revenue": "additive"}, False)
+    for kind in (AxisKind.TIME, AxisKind.CATEGORICAL):
+        got = axis_additivity(cls, kind)
+        assert got.status is AdditivityStatus.CLASSIFIED
+        assert got.verdict is AxisVerdict.ADDITIVE
+        assert got.reason is None
+
+
+def test_stock_is_semi_additive_across_time_but_additive_across_categories():
+    """The distinction the boolean model could not express: a balance sums across
+    accounts, and per-period it is meaningful — only the SUM across periods is not."""
+    cls = classify_extract([AggregateCall("sum", ("balance",))], {"balance": "point_in_time"}, None)
+    time = axis_additivity(cls, AxisKind.TIME)
+    assert time.status is AdditivityStatus.CLASSIFIED
+    assert time.verdict is AxisVerdict.SEMI_ADDITIVE
+    assert time.reason == STOCK
+    assert axis_additivity(cls, AxisKind.CATEGORICAL).verdict is AxisVerdict.ADDITIVE
+
+
+def test_snapshot_count_is_semi_additive_across_time():
+    cls = classify_extract([AggregateCall("count_star", ())], {}, True)
+    got = axis_additivity(cls, AxisKind.TIME)
+    assert got.verdict is AxisVerdict.SEMI_ADDITIVE
+    assert got.reason == SNAPSHOT_COUNT
+
+
+def test_ratio_is_recompute_on_both_axes_not_a_refusal():
+    """The pinned case: a ratio is RECOMPUTABLE per bucket, not un-bucketable."""
+    cls = classify_extract([], {}, False, is_ratio=True)
+    for kind in (AxisKind.TIME, AxisKind.CATEGORICAL):
+        got = axis_additivity(cls, kind)
+        assert got.status is AdditivityStatus.CLASSIFIED
+        assert got.verdict is AxisVerdict.NON_ADDITIVE_RECOMPUTE
+        assert got.reason == RATIO
+
+
+def test_average_and_distinct_count_and_min_max_are_recompute():
+    for call, reason in (
+        (AggregateCall("avg", ("amount",)), AVERAGE),
+        (AggregateCall("count", ("customer",), distinct=True), DISTINCT_COUNT),
+        (AggregateCall("max", ("amount",)), MIN_MAX),
+    ):
+        cls = classify_extract([call], {}, False)
+        got = axis_additivity(cls, AxisKind.TIME)
+        assert got.verdict is AxisVerdict.NON_ADDITIVE_RECOMPUTE, call
+        assert got.reason == reason
+
+
+def test_unresolved_temporal_behaviour_ABSTAINS_rather_than_refusing():
+    """'We can't tell' is not 'no' — it must be a typed abstention so the drill
+    renders a reason instead of silently withholding."""
+    cls = classify_extract([AggregateCall("sum", ("revenue",))], {}, False)
+    got = axis_additivity(cls, AxisKind.TIME)
+    assert got.status is AdditivityStatus.ABSTAINED
+    assert got.abstain_reason is AbstainReason.UNKNOWN_TEMPORAL
+    assert got.verdict is None and got.reason is None
+    # ...while the categorical axis of the same extract is still a real verdict.
+    assert axis_additivity(cls, AxisKind.CATEGORICAL).verdict is AxisVerdict.ADDITIVE
+
+
+def test_unknown_aggregate_abstains():
+    cls = classify_extract([AggregateCall("median", ("amount",))], {}, False)
+    got = axis_additivity(cls, AxisKind.TIME)
+    assert got.status is AdditivityStatus.ABSTAINED
+    assert got.abstain_reason is AbstainReason.UNKNOWN_AGGREGATE
+
+
+def test_metric_rollup_projects_the_same_way():
+    """A ratio METRIC (the gross-margin shape) rolls up to recompute, not refusal."""
+    graph = _graph(
+        {
+            "rev": _extract("rev"),
+            "cogs": _extract("cogs"),
+            "gm": _formula("gm", "(rev - cogs) / rev", ["rev", "cogs"]),
+        }
+    )
+    flow = classify_extract([AggregateCall("sum", ("x",))], {"x": "additive"}, False)
+    verdict = roll_up_metric(graph, {"rev": flow, "cogs": flow})
+    got = axis_additivity(verdict, AxisKind.TIME)
+    assert got.verdict is AxisVerdict.NON_ADDITIVE_RECOMPUTE
+    assert got.reason == RATIO
+
+
+def test_classified_reasons_vocabulary_excludes_the_unknowns():
+    """The DB CHECK vocab: an `unknown_*` is an abstention, never a reason."""
+    assert UNKNOWN_AGGREGATE not in CLASSIFIED_REASONS
+    assert UNKNOWN_TEMPORAL not in CLASSIFIED_REASONS
+    assert set(CLASSIFIED_REASONS) == {
+        AVERAGE,
+        DISTINCT_COUNT,
+        MIN_MAX,
+        RATIO,
+        SNAPSHOT_COUNT,
+        STOCK,
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"status": AdditivityStatus.CLASSIFIED},  # no verdict
+        {"status": AdditivityStatus.CLASSIFIED, "verdict": AxisVerdict.ADDITIVE, "reason": STOCK},
+        {
+            "status": AdditivityStatus.CLASSIFIED,
+            "verdict": AxisVerdict.SEMI_ADDITIVE,
+            "reason": UNKNOWN_TEMPORAL,
+        },
+        {
+            "status": AdditivityStatus.CLASSIFIED,
+            "verdict": AxisVerdict.ADDITIVE,
+            "abstain_reason": AbstainReason.MISSING_EXTRACT,
+        },
+        {"status": AdditivityStatus.ABSTAINED},  # no abstain_reason
+        {
+            "status": AdditivityStatus.ABSTAINED,
+            "abstain_reason": AbstainReason.MISSING_EXTRACT,
+            "verdict": AxisVerdict.ADDITIVE,
+        },
+    ],
+)
+def test_invalid_status_pairings_are_refused_at_the_chokepoint(kwargs):
+    with pytest.raises(ValueError):
+        AxisAdditivity(**kwargs)

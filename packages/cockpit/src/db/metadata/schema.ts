@@ -458,18 +458,24 @@ export const currentMeasureAggregationLineage = pgView(
 	sql`SELECT lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, measure_time_axis_column, measure_time_axis_column_id, event_time_axis_column, event_time_axis_column_id, measure_slice_column_id, event_slice_column_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, sign_fired_primary, sign_fired_mirror, sign_fired_both, created_at FROM engine.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
-export const currentMetricAdditivity = pgView("current_metric_additivity", {
-	additivityId: varchar("additivity_id"),
-	runId: varchar("run_id"),
-	targetKind: varchar("target_kind"),
-	targetKey: varchar("target_key"),
-	categoricalAdditive: boolean("categorical_additive"),
-	timeAdditive: boolean("time_additive"),
-	categoricalReason: varchar("categorical_reason"),
-	timeReason: varchar("time_reason"),
-	createdAt: timestamp("created_at", { withTimezone: true }),
-}).as(
-	sql`SELECT additivity_id, run_id, target_kind, target_key, categorical_additive, time_additive, categorical_reason, time_reason, created_at FROM engine.metric_additivity r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+export const currentMetricAxisAdditivity = pgView(
+	"current_metric_axis_additivity",
+	{
+		additivityId: varchar("additivity_id"),
+		runId: varchar("run_id"),
+		targetKind: varchar("target_kind"),
+		targetKey: varchar("target_key"),
+		axisKind: varchar("axis_kind"),
+		axisKey: varchar("axis_key"),
+		status: varchar(),
+		verdict: varchar(),
+		reason: varchar(),
+		abstainReason: varchar("abstain_reason"),
+		bucketGrain: varchar("bucket_grain"),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	},
+).as(
+	sql`SELECT additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, status, verdict, reason, abstain_reason, bucket_grain, created_at FROM engine.metric_axis_additivity r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentRelationships = pgView("current_relationships", {

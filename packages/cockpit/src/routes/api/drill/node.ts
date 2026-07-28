@@ -29,6 +29,7 @@ import { pinSteps, sliceSteps } from "#/duckdb/drill";
 import { describeColumns, errorLine } from "#/duckdb/drill-sql";
 import { applyEngineScope, withLakeConnection } from "#/duckdb/lake";
 import { composeNodeQuery, composeNodeTotals, nodeShape } from "#/duckdb/parts";
+import { resolveTargetReconciliation } from "#/tools/drill-axes";
 import { resolveNodeSteps } from "#/tools/drill-metric";
 
 // Length bounds follow the grid-query convention (column names 256, values
@@ -115,14 +116,27 @@ export const Route = createFileRoute("/api/drill/node")({
 					if ("missing" in resolved) {
 						return Response.json({ ok: false, reason: resolved.missing });
 					}
-					const composed = composeNodeQuery(resolved.steps, stepId, {
-						slices: sliceSteps(steps),
-						pins: pinSteps(steps).map((p) => ({
-							column: p.column,
-							value: p.value,
-							grain: p.grain,
-						})),
-					});
+					// The engine's served verdict is what licenses summing here — the
+					// drill no longer re-derives additivity from formula structure
+					// (DAT-857/868). Conservative on purpose: the signed-contribution
+					// shortcut applies only when the target sums on BOTH axis classes,
+					// so it cannot be taken for the axis actually drilled being the
+					// non-summable one. Every other case composes via the carrier
+					// spine, which is correct for any shape.
+					const reconciles = await resolveTargetReconciliation(nodeRef);
+					const composed = composeNodeQuery(
+						resolved.steps,
+						stepId,
+						{
+							slices: sliceSteps(steps),
+							pins: pinSteps(steps).map((p) => ({
+								column: p.column,
+								value: p.value,
+								grain: p.grain,
+							})),
+						},
+						reconciles.time && reconciles.categorical,
+					);
 					if ("refusal" in composed) {
 						return Response.json({ ok: false, reason: composed.refusal });
 					}
@@ -131,7 +145,13 @@ export const Route = createFileRoute("/api/drill/node")({
 					// statement. A shape refusal or totals bind failure only omits the
 					// block — the grid must open regardless.
 					const shape =
-						steps.length === 0 ? nodeShape(resolved.steps, stepId) : null;
+						steps.length === 0
+							? nodeShape(
+									resolved.steps,
+									stepId,
+									reconciles.time && reconciles.categorical,
+								)
+							: null;
 					const node =
 						shape !== null && !("refusal" in shape)
 							? { name: resolved.name, unit: resolved.unit, ...shape }

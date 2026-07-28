@@ -572,19 +572,32 @@ def test_render_metric_dag_serves_declared_metrics(session) -> None:
 
 
 def test_render_additivity_serves_verdicts_at_head(session) -> None:
-    """The additivity section renders the verdicts + reasons at the promoted head."""
+    """The additivity section renders the class verdicts at the promoted head."""
     from dataraum.analysis.validation.induction import _render_additivity
-    from dataraum.graphs.additivity_db_models import MetricAdditivity
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
 
-    session.add(
-        MetricAdditivity(
-            run_id="om-run-1",
-            target_kind="metric",
-            target_key="current_liabilities",
-            categorical_additive=True,
-            time_additive=False,
-            time_reason="stock",
-        )
+    session.add_all(
+        [
+            MetricAxisAdditivity(
+                run_id="om-run-1",
+                target_kind="metric",
+                target_key="current_liabilities",
+                axis_kind="categorical",
+                axis_key=AXIS_KEY_ALL,
+                status="classified",
+                verdict="additive",
+            ),
+            MetricAxisAdditivity(
+                run_id="om-run-1",
+                target_kind="metric",
+                target_key="current_liabilities",
+                axis_kind="time",
+                axis_key=AXIS_KEY_ALL,
+                status="classified",
+                verdict="semi_additive",
+                reason="stock",
+            ),
+        ]
     )
     session.flush()
 
@@ -592,7 +605,66 @@ def test_render_additivity_serves_verdicts_at_head(session) -> None:
     assert "## Additivity Verdicts" in rendered
     assert "current_liabilities" in rendered
     assert "categorical:additive" in rendered
-    assert "time:NON-additive (stock)" in rendered
+    assert "time:semi_additive (stock)" in rendered
+    # The induction must be told that only `additive` licenses a balance check.
+    assert "Only `additive` licenses a sum-of-parts" in rendered
+
+
+def test_render_additivity_names_an_abstention_as_unjudged(session) -> None:
+    """An abstained axis is UNJUDGED, never rendered as if it were non-additive."""
+    from dataraum.analysis.validation.induction import _render_additivity
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
+
+    session.add(
+        MetricAxisAdditivity(
+            run_id="om-run-2",
+            target_kind="measure",
+            target_key="unclassified_measure",
+            axis_kind="time",
+            axis_key=AXIS_KEY_ALL,
+            status="abstained",
+            abstain_reason="unknown_temporal",
+        )
+    )
+    session.flush()
+
+    rendered = _render_additivity(session, "om-run-2")
+    assert "time:UNJUDGED (unknown_temporal)" in rendered
+
+
+def test_render_additivity_reads_only_the_class_rows(session) -> None:
+    """A per-axis refinement row must not duplicate its target in the rendering."""
+    from dataraum.analysis.validation.induction import _render_additivity
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
+
+    session.add_all(
+        [
+            MetricAxisAdditivity(
+                run_id="om-run-3",
+                target_kind="measure",
+                target_key="revenue",
+                axis_kind="time",
+                axis_key=AXIS_KEY_ALL,
+                status="classified",
+                verdict="additive",
+            ),
+            MetricAxisAdditivity(
+                run_id="om-run-3",
+                target_kind="measure",
+                target_key="revenue",
+                axis_kind="time",
+                axis_key="booked_on",
+                status="classified",
+                verdict="additive",
+                bucket_grain="day",
+            ),
+        ]
+    )
+    session.flush()
+
+    rendered = _render_additivity(session, "om-run-3")
+    assert rendered.count("measure revenue") == 1
+    assert "booked_on" not in rendered
 
 
 def test_render_additivity_empty_on_first_run(session) -> None:

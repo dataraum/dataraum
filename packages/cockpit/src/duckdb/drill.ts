@@ -163,6 +163,59 @@ export interface DrillAxis {
 	 *  path (`resolveDrillAxes`) never re-wraps an already-drilled statement, so
 	 *  it stays null there. */
 	disabledReason: string | null;
+	/** DAT-857: why this DATE column is offered without a grain. Set only when the
+	 *  engine's per-(target × axis) verdict withheld the bucketing — `temporal` is
+	 *  then null, so the column stays available as a raw slice, but it says why it
+	 *  cannot be bucketed and ranks LAST once anything else can be. Undefined
+	 *  means "not a withheld time axis", which includes every non-temporal axis. */
+	temporalWithheldReason?: string;
+	/** DAT-857/730: the finest bucket this axis's data actually supports (`day` |
+	 *  `month` | `quarter` | `year`), from its observed cadence. The grain menu
+	 *  offers this rung and coarser; `undefined` is no claim, so the full preset
+	 *  list stands. */
+	bucketGrain?: string;
+}
+
+/**
+ * Blank the drilled total where the parts do not add up to it (DAT-857).
+ *
+ * A recomputed measure — a ratio, an average, a distinct count — is correct in
+ * every bucket and meaningless summed across them. The footer's `value` comes
+ * from the UNRESTRICTED scalar, so printing it under a column of recomputed
+ * per-bucket values invites the one false read the drill exists to prevent:
+ * that the rows above it add up to it. It becomes an explicit `null`, which the
+ * grid renders as the same honest `—` it already uses for an unobserved cell.
+ *
+ * Only `value` is masked. The operand columns beside it stay real totals: the
+ * time gate offers a recompute bucketing ONLY when every carrier is additive on
+ * that axis, so those columns genuinely do sum to their footers.
+ *
+ * Returns the footer unchanged when nothing is drilled, when no verdict was
+ * consulted, or when the drilled axes all reconcile. `undefined` in, `undefined`
+ * out — the footer is suppressed entirely on an undrilled grid.
+ */
+export function maskNonReconcilingTotal<V>(
+	footer: Record<string, V | null> | undefined,
+	steps: readonly DrillStep[],
+	axes: readonly DrillAxis[],
+	reconciles: { time: boolean; categorical: boolean } | undefined,
+): Record<string, V | null> | undefined {
+	if (footer === undefined || reconciles === undefined) return footer;
+	const sliced = steps.filter((s) => s.kind === "slice");
+	if (sliced.length === 0) return footer;
+	const temporalColumns = new Set(
+		axes.filter((a) => a.temporal !== null).map((a) => a.column),
+	);
+	// A slice on a date column that IS bucketed is a time axis; every other
+	// slice — including a raw-date slice offered without a grain — folds rows
+	// the categorical way.
+	const reconcilesAll = sliced.every((s) =>
+		temporalColumns.has(s.column) && s.grain !== undefined
+			? reconciles.time
+			: reconciles.categorical,
+	);
+	if (reconcilesAll) return footer;
+	return { ...footer, value: null };
 }
 
 export const sliceColumns = (steps: DrillStep[]): string[] => {

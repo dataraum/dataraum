@@ -73,9 +73,10 @@ import {
 	type DrillSource,
 	type DrillStep,
 	MAX_GUIDANCE_AXES,
+	maskNonReconcilingTotal,
 } from "#/duckdb/drill";
 
-import { grainLabel, grainPresets, parseGrainToken } from "#/duckdb/grain";
+import { grainLabel, grainPresetsFrom, parseGrainToken } from "#/duckdb/grain";
 // Type-only (erased at compile time — the canvas-state.ts / tool-result-to-canvas.ts
 // precedent for pulling a server tool's RESULT shape without importing its runtime):
 // the wire contract for the axes route's response, kept in sync with the server's
@@ -193,7 +194,9 @@ function GrainMenu({
 }) {
 	const [custom, setCustom] = useState("");
 	const [customError, setCustomError] = useState<string | null>(null);
-	const presets = grainPresets(axis.temporal ?? "date");
+	// Floored at the axis's observed cadence (DAT-857): a monthly measure is not
+	// offered day buckets it has no data to fill.
+	const presets = grainPresetsFrom(axis.temporal ?? "date", axis.bucketGrain);
 
 	const commitCustom = () => {
 		const token = custom.trim();
@@ -770,8 +773,30 @@ export function DrillableGrid({
 					{axis.disabledReason}
 				</Text>
 			)}
+			{/* DAT-857: a date column the engine's verdict will not let us BUCKET.
+			    Unlike disabledReason this axis stays fully selectable — it is
+			    offered as a raw date slice — so the note explains the missing
+			    grain control, not a disabled item. It also ranks last. */}
+			{axis.temporalWithheldReason && (
+				<Text size="xs" c="dimmed" fs="italic">
+					{axis.temporalWithheldReason}
+				</Text>
+			)}
 		</>
 	);
+
+	// The total row anchors a DRILLED view; the undrilled grid IS the scalar, so
+	// a footer there would duplicate the single row. Its `value` blanks to an
+	// honest dash when the drilled parts do not sum to it (DAT-857).
+	const footerRow =
+		steps.length > 0
+			? maskNonReconcilingTotal(
+					footerCells,
+					steps,
+					axes,
+					axesQuery.data?.reconciles,
+				)
+			: undefined;
 
 	// The drill controls live in the GRID's toolbar-left slot (where the row
 	// count used to sit — iteration 3), not on their own row above it.
@@ -1034,10 +1059,14 @@ export function DrillableGrid({
 				sqlParams={effective.params}
 				onRowClick={onRowClick}
 				onRowHover={onRowHover}
-				// The total row anchors a DRILLED view; the undrilled grid IS the
-				// scalar, so a footer there would duplicate the single row.
-				footerRow={steps.length > 0 ? footerCells : undefined}
-				footerLabel={footerLabel}
+				footerRow={footerRow}
+				// A dashed total with no reason reads as a bug. When the mask fired,
+				// the label carries the why (the cell itself is the house `—`).
+				footerLabel={
+					footerRow !== undefined && footerRow !== footerCells
+						? `${footerLabel} — parts don't sum`
+						: footerLabel
+				}
 				columnAccents={columnAccents}
 				columnUnits={columnUnits}
 				toolbarStart={drillControls}

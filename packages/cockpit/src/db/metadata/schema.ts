@@ -127,12 +127,15 @@ export const currentColumnConcepts = pgView("current_column_concepts", {
 	unitSourceColumn: varchar("unit_source_column"),
 	derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
 	derivedFormulaConfidence: doublePrecision("derived_formula_confidence"),
+	storedSignClaim: varchar("stored_sign_claim"),
+	storedSignClaimConfidence: doublePrecision("stored_sign_claim_confidence"),
+	storedSign: varchar("stored_sign"),
 	annotationSource: varchar("annotation_source"),
 	annotatedAt: timestamp("annotated_at"),
 	annotatedBy: varchar("annotated_by"),
 	confidence: doublePrecision(),
 }).as(
-	sql`SELECT concept_id, column_id, run_id, meaning, meaning_status, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT concept_id, column_id, run_id, meaning, meaning_status, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, stored_sign_claim, stored_sign_claim_confidence, stored_sign, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentColumnEligibility = pgView("current_column_eligibility", {
@@ -411,10 +414,13 @@ export const currentMeasureAggregationLineage = pgView(
 		rStockMedian: doublePrecision("r_stock_median"),
 		nEntities: integer("n_entities"),
 		nEntitiesFired: integer("n_entities_fired"),
+		signFiredPrimary: integer("sign_fired_primary"),
+		signFiredMirror: integer("sign_fired_mirror"),
+		signFiredBoth: integer("sign_fired_both"),
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	},
 ).as(
-	sql`SELECT lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, measure_time_axis_column, measure_time_axis_column_id, event_time_axis_column, event_time_axis_column_id, measure_slice_column_id, event_slice_column_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at FROM engine.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, measure_time_axis_column, measure_time_axis_column_id, event_time_axis_column, event_time_axis_column_id, measure_slice_column_id, event_slice_column_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, sign_fired_primary, sign_fired_mirror, sign_fired_both, created_at FROM engine.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentMetricAdditivity = pgView("current_metric_additivity", {
@@ -483,7 +489,8 @@ export const currentSliceDefinitions = pgView("current_slice_definitions", {
 	dimensionTableId: varchar("dimension_table_id"),
 	dimensionAttribute: varchar("dimension_attribute"),
 	fkRole: varchar("fk_role"),
-	slicePriority: integer("slice_priority"),
+	sliceRelevance: doublePrecision("slice_relevance"),
+	sliceInterest: varchar("slice_interest"),
 	sliceType: varchar("slice_type"),
 	distinctValues: json("distinct_values"),
 	valueCount: integer("value_count"),
@@ -493,7 +500,7 @@ export const currentSliceDefinitions = pgView("current_slice_definitions", {
 	detectionSource: varchar("detection_source"),
 	createdAt: timestamp("created_at"),
 }).as(
-	sql`SELECT slice_id, run_id, table_id, column_id, column_name, dimension_table_id, dimension_attribute, fk_role, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, detection_source, created_at FROM engine.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT slice_id, run_id, table_id, column_id, column_name, dimension_table_id, dimension_attribute, fk_role, slice_relevance, slice_interest, slice_type, distinct_values, value_count, reasoning, business_context, confidence, detection_source, created_at FROM engine.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentStatisticalProfiles = pgView(

@@ -212,9 +212,19 @@ export async function composeDrill(
 		.map(([from, to]) => `${quoteIdentifier(from)} AS ${quoteIdentifier(to)}`)
 		.join(", ");
 	const cleanedSql = `SELECT * RENAME (${renameClause}) FROM (${composed.sql}) AS _clean`;
-	const cleanedColumns = columns.map((c) =>
-		renames.has(c.name) ? { ...c, name: renames.get(c.name) as string } : c,
-	);
+	// Re-validate: this module's own contract ("the caller never receives SQL
+	// that will not bind") covers `composed.sql` above but not yet this SECOND
+	// wrap — and DuckDB's `RENAME` does not error on a naming collision (it
+	// silently disambiguates, e.g. two columns both landing on `count`), which
+	// `deCompoundedColumnRenames`'s own de-collision should already prevent but
+	// this is the honest backstop if it somehow didn't. The DESCRIBE's own
+	// names are the truth for `cleanedColumns`, not our hand-computed mapping.
+	let cleanedColumns: BaseColumn[];
+	try {
+		cleanedColumns = await describeColumns(conn, cleanedSql, composed.params);
+	} catch (err) {
+		return refuse(errorLine(err));
+	}
 	return {
 		ok: true,
 		sql: cleanedSql,

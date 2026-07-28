@@ -652,6 +652,14 @@ describe("DrillableGrid — already-in-result grey-out (DAT-671)", () => {
 		fireEvent.click(button);
 		const disabledItem = await screen.findByTestId("drill-axis-region");
 		fireEvent.click(disabledItem);
+		// Flush past the current task before asserting: useMutation's own
+		// mutationFn (which reaches the mocked fetch and pushes onto
+		// composeQueue) runs on a LATER microtask/task than the click handler
+		// itself, so asserting immediately would pass whether or not the click
+		// fired a compose call at all — this is not a style nicety, it's what
+		// makes the assertion below mean anything (review-caught: forcing the
+		// item enabled left the un-flushed assertion green too).
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(composeQueue.length).toBe(0);
 	});
 

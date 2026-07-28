@@ -84,8 +84,10 @@ export type DrillAxesRequest =
 	| { resultSql: string; resultParams?: DrillPinValue[] }
 	| {
 			partsSources: { relation: string; selectExpr: string }[];
-			/** The answer's own CURRENT rendered SQL (`state.sql` in
-			 *  answer-result.tsx) — carried ONLY so the server can determine which
+			/** The answer's own BASE statement — `state.sql` in
+			 *  answer-result.tsx, the ORIGINAL undrilled query the widget mounted
+			 *  with, NOT `shownSql` (which tracks whatever's currently displayed,
+			 *  base or drilled) — carried ONLY so the server can determine which
 			 *  candidate axes are already non-measure identifier columns of THIS
 			 *  exact result (DAT-671, "we should not slice on already existing
 			 *  slices"), via a structural (one-hop) read of its outer projection/
@@ -93,7 +95,7 @@ export type DrillAxesRequest =
 			 *  only, same as the tier-A path's `resultSql` above. Absent = the
 			 *  determination can't run, so nothing is greyed by this rule (never a
 			 *  guess) — the axes still resolve exactly as before. */
-			currentSql?: string;
+			baseSql?: string;
 	  };
 
 /**
@@ -237,8 +239,8 @@ export function countAlias(columns: BaseColumn[]): string {
 
 /**
  * Compounded aggregate labels a RE-WRAP of an already-drilled statement
- * produces, collapsed back to the single-wrap face — `sum(sum(x))` → `sum(x)`,
- * `sum(count)` → `count`, a de-collided `_count`/`__count` → `count` — de-
+ * produces, collapsed back to a clean face — `sum(sum(x))` → `sum(x)`,
+ * `sum(count)` → `count`, a de-collided `_count`/`__count` → `groups` — de-
  * colliding against whatever else the SAME output already claims (DAT-671
  * drilled-projection hygiene).
  *
@@ -253,6 +255,16 @@ export function countAlias(columns: BaseColumn[]): string {
  * `"_count"` — a real, rendered column that reads exactly like leaked internal
  * plumbing.
  *
+ * `_count`/`__count` renames to `groups` rather than being dropped or reusing
+ * `count` (owner ruling): it carries REAL information — how many of the
+ * PRIOR wrap's sub-groups folded into this new, coarser group — distinct from
+ * `sum(count)`'s rolled-up ORIGINAL row total, so the two must never collide
+ * onto the same name. `groups` names what it counts and satisfies the "never
+ * render `_count`" rule without discarding a real number. Since the two now
+ * target genuinely different clean names, no priority ordering is needed
+ * between them — the generic de-collision below (against whatever the same
+ * output already claims, itself or another renamed column) is enough.
+ *
  * String-level, over OUR OWN deterministic alias vocabulary (composeTierA's
  * `count`/`sum(<col>)` shapes) — never a read of the SQL that produced them.
  * `composeTierA`/`countAlias`/`foldsNothing` are UNTOUCHED and stay in exact
@@ -260,43 +272,27 @@ export function countAlias(columns: BaseColumn[]): string {
  * already-validated, already-fold-probed result, as one more thin wrap
  * (`drill-sql.ts`'s `composeDrill` applies it AFTER the fold probe has already
  * run against the un-renamed SQL).
- *
- * Priority matters when a re-wrap ends up with BOTH a de-collided `_count`
- * (the fresh, less-useful "how many prior groups fell into this new group")
- * AND a `sum(count)`/nested `sum(sum(x))` (the MEANINGFUL rolled-up total) —
- * unavoidable, since every re-wrap always carries a `count`-shaped column
- * (composeTierA's first, mandatory aggregate). The compounded-looking names
- * (priority 0) claim the clean face first; a bare de-collided `_count`
- * (priority 1) only gets it if nothing more meaningful wanted it too — so
- * `sum(count)` → `count` wins the name over a merely-relabeled `_count`, which
- * then keeps its own (already fine, never itself compounded) spelling.
  */
 export function deCompoundedColumnRenames(
 	columns: BaseColumn[],
 ): Map<string, string> {
-	interface Proposal {
-		original: string;
-		wanted: string;
-		priority: 0 | 1;
-	}
-	const proposals: Proposal[] = [];
+	const proposals: { original: string; wanted: string }[] = [];
 	const unchanged = new Set<string>();
 	for (const c of columns) {
 		const nestedSum = /^sum\((sum\(.+\))\)$/.exec(c.name);
 		if (nestedSum) {
-			proposals.push({ original: c.name, wanted: nestedSum[1], priority: 0 });
+			proposals.push({ original: c.name, wanted: nestedSum[1] });
 		} else if (c.name === "sum(count)") {
-			proposals.push({ original: c.name, wanted: "count", priority: 0 });
+			proposals.push({ original: c.name, wanted: "count" });
 		} else if (/^_+count$/.test(c.name)) {
-			proposals.push({ original: c.name, wanted: "count", priority: 1 });
+			proposals.push({ original: c.name, wanted: "groups" });
 		} else {
 			unchanged.add(c.name);
 		}
 	}
 	const taken = new Set(unchanged);
 	const renames = new Map<string, string>();
-	const ordered = [...proposals].sort((a, b) => a.priority - b.priority);
-	for (const p of ordered) {
+	for (const p of proposals) {
 		const final = aggregateAlias(p.wanted, taken);
 		taken.add(final);
 		if (final !== p.original) renames.set(p.original, final);

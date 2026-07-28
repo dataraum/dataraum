@@ -1030,10 +1030,22 @@ export async function resolveDrillAxes(
  * about data lineage for what is only a format mismatch. Reducing here means
  * the stale-snippet reason is only ever given when the relation really is
  * unknown.
+ *
+ * `baseSql` (DAT-671, optional): the answer's own BASE statement — the
+ * `DrillAxesRequest.partsSources` variant's `baseSql` field, `state.sql` in
+ * answer-result.tsx (the ORIGINAL undrilled query, not `shownSql`, which
+ * tracks whatever's currently displayed) — used ONLY to grey a candidate axis
+ * that already breaks out THIS exact result, via `existingIdentifierColumns`'s
+ * structural read. In practice this wire is near-dead on the live answer
+ * canvas today: `proveAnswerSource` proves a SCALAR subquery, so an unproven
+ * answer's `state.sql` is single-row and essentially never carries a naming
+ * GROUP BY of its own — but the wire costs nothing to keep, and a wider proof
+ * shape (a proven row-set answer) would make it fire for real. Absent →
+ * nothing greyed by this rule (never a guess).
  */
 export async function resolveAnswerDrillAxes(
 	sources: AxisSource[],
-	currentSql?: string,
+	baseSql?: string,
 ): Promise<DrillAxesResult> {
 	const reduced = sources.map((s) => ({
 		...s,
@@ -1047,10 +1059,11 @@ export async function resolveAnswerDrillAxes(
 		null,
 		"This answer computes an ad-hoc concept the engine has not classified for additivity — time-grain drill withheld; the date is still available as a raw slice.",
 	);
-	// DAT-671: grey any axis that already breaks out THIS answer's own current
-	// SQL — a structural, schema/name-only read (see markAlreadyInResult); no
-	// current-SQL signal or an empty axis list means nothing to determine.
-	if (result.axes.length === 0 || currentSql === undefined) return result;
-	const existing = await existingIdentifierColumns(currentSql);
+	// DAT-671: grey any axis that already breaks out the answer's own BASE
+	// statement — a structural, schema/name-only read (see
+	// markAlreadyInResult); no base-SQL signal or an empty axis list means
+	// nothing to determine.
+	if (result.axes.length === 0 || baseSql === undefined) return result;
+	const existing = await existingIdentifierColumns(baseSql);
 	return { ...result, axes: markAlreadyInResult(result.axes, existing) };
 }

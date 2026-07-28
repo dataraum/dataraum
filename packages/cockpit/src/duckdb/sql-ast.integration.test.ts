@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { REGION_NAME_COLUMN } from "#/test/seed-catalog";
 import {
 	aggregatedColumns,
 	declaredValueExprRefusal,
@@ -183,5 +184,58 @@ describe("existingIdentifierColumns", () => {
 
 	it("returns null for unparseable SQL rather than guessing", async () => {
 		expect(await existingIdentifierColumns("this is not sql )(")).toBeNull();
+	});
+
+	// DAT-671 review round — "the rename-wrap blind spot": a MINTED child
+	// report's stored SQL is exactly `SELECT * RENAME (...) FROM (<the real,
+	// grouped statement>) AS _clean` (drill-sql.ts's composeDrill, DAT-671
+	// drilled-projection hygiene). Read naively, that OUTER node has no GROUP
+	// BY of its own, so the un-hopped read would wrongly call it ungrouped and
+	// re-offer the child's own grain as a fresh, enabled slice.
+	describe("the star-wrapper one-hop unwrap (OUR OWN generated shape only)", () => {
+		it("hops through a RENAME wrap to find the inner GROUP BY", async () => {
+			const names = await existingIdentifierColumns(
+				'SELECT * RENAME ("sum(count)" AS "count") FROM ' +
+					`(SELECT ${REGION_NAME_COLUMN}, SUM(total_amount) AS "sum(count)" ` +
+					`FROM lake.typed.current_orders_enriched GROUP BY ${REGION_NAME_COLUMN}) AS _clean`,
+			);
+			expect(names).toEqual(new Set([REGION_NAME_COLUMN]));
+		});
+
+		it("hops through an EXCLUDE wrap the same way", async () => {
+			const names = await existingIdentifierColumns(
+				`SELECT * EXCLUDE (junk) FROM (SELECT ${REGION_NAME_COLUMN}, junk, ` +
+					`SUM(total_amount) AS revenue FROM lake.typed.current_orders_enriched ` +
+					`GROUP BY ${REGION_NAME_COLUMN}, junk) AS _clean`,
+			);
+			expect(names).toEqual(new Set([REGION_NAME_COLUMN, "junk"]));
+		});
+
+		it("does NOT hop through a bare `SELECT * FROM (subquery)` with no RENAME/EXCLUDE — that is not our generated shape", async () => {
+			// Reads as an ordinary (ungrouped, at THIS level) statement instead —
+			// the outer node genuinely has no GROUP BY of its own, and this shape
+			// is not one composeDrill ever emits, so there is nothing to hop into.
+			const names = await existingIdentifierColumns(
+				`SELECT * FROM (SELECT ${REGION_NAME_COLUMN}, SUM(total_amount) AS revenue ` +
+					`FROM lake.typed.current_orders_enriched GROUP BY ${REGION_NAME_COLUMN}) AS _x`,
+			);
+			expect(names).toEqual(new Set());
+		});
+
+		it("returns null (undecided) for a wrap-of-a-wrap — still ONE hop, never a second", async () => {
+			const names = await existingIdentifierColumns(
+				"SELECT * RENAME (x AS y) FROM (SELECT * RENAME (a AS b) FROM " +
+					`(SELECT ${REGION_NAME_COLUMN} FROM lake.typed.current_orders_enriched ` +
+					`GROUP BY ${REGION_NAME_COLUMN}) AS inner1) AS outer1`,
+			);
+			expect(names).toBeNull();
+		});
+
+		it("does not hop when the FROM is a bare table, not a subquery", async () => {
+			const names = await existingIdentifierColumns(
+				"SELECT * RENAME (a AS b) FROM lake.typed.current_orders_enriched",
+			);
+			expect(names).toEqual(new Set());
+		});
 	});
 });

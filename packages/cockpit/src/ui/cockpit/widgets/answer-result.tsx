@@ -327,10 +327,12 @@ function AnswerResultBody({
 									relation: s.parts.relation,
 									selectExpr: s.parts.selectExpr,
 								})),
-								// DAT-671: this answer's own current SQL, so the resolver can
-								// grey an axis that already breaks out this exact result —
-								// structural only, never executed for this purpose.
-								currentSql: state.sql,
+								// DAT-671: the answer's own BASE statement — deliberately
+								// `state.sql`, NOT this component's own `shownSql` (which
+								// tracks whatever's CURRENTLY displayed and changes per live
+								// drill) — so the resolver can grey an axis that already
+								// breaks out this result. Structural only, never executed.
+								baseSql: state.sql,
 							}
 						: { resultSql: state.sql }
 				}

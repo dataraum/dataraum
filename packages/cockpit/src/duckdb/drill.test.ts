@@ -62,12 +62,12 @@ describe("deCompoundedColumnRenames (DAT-671 drilled-projection hygiene)", () =>
 		expect(renames).toEqual(new Map([["sum(count)", "count"]]));
 	});
 
-	it("relabels a de-collided _count/__count back to count", () => {
+	it("relabels a de-collided _count/__count to groups (owner ruling — real information, not dropped)", () => {
 		expect(deCompoundedColumnRenames([col("_count")])).toEqual(
-			new Map([["_count", "count"]]),
+			new Map([["_count", "groups"]]),
 		);
 		expect(deCompoundedColumnRenames([col("__count")])).toEqual(
-			new Map([["__count", "count"]]),
+			new Map([["__count", "groups"]]),
 		);
 	});
 
@@ -81,14 +81,13 @@ describe("deCompoundedColumnRenames (DAT-671 drilled-projection hygiene)", () =>
 		).toEqual(new Map());
 	});
 
-	it("de-collides when the fresh row-count AND a rolled-up count both want the same name", () => {
+	it("the fresh row-count and a rolled-up count target DIFFERENT clean names — no collision between them", () => {
 		// The realistic re-wrap shape: composeTierA's own fresh COUNT(*) collided
 		// against a base "count" column and got de-collided to "_count"; the SAME
-		// base "count" column was ALSO re-summed into "sum(count)". Both want the
-		// clean "count" face — the MEANINGFUL rolled-up total (sum(count), the
-		// compounded-looking name) wins it; the less-useful fresh group-of-groups
-		// count keeps its own (already fine) "_count" spelling rather than
-		// colliding it away.
+		// base "count" column was ALSO re-summed into "sum(count)". Since `groups`
+		// (the fresh count's target) and `count` (the rolled-up total's target)
+		// are now genuinely different names, both rename cleanly with no
+		// priority/collision logic needed between them.
 		const renames = deCompoundedColumnRenames([
 			col("_count"),
 			col("sum(count)"),
@@ -96,13 +95,21 @@ describe("deCompoundedColumnRenames (DAT-671 drilled-projection hygiene)", () =>
 		]);
 		expect(renames).toEqual(
 			new Map([
+				["_count", "groups"],
 				["sum(count)", "count"],
 				["sum(sum(amount))", "sum(amount)"],
 			]),
 		);
-		// "_count" itself is untouched — de-colliding against "count" (now taken)
-		// would just return "_count" again, which is a no-op rename.
-		expect(renames.has("_count")).toBe(false);
+	});
+
+	it("de-collides two fresh-count-shaped columns against each other (both want groups)", () => {
+		const renames = deCompoundedColumnRenames([col("_count"), col("__count")]);
+		expect(renames).toEqual(
+			new Map([
+				["_count", "groups"],
+				["__count", "_groups"],
+			]),
+		);
 	});
 });
 

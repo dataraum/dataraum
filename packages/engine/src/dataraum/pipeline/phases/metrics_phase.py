@@ -452,6 +452,9 @@ class MetricsPhase(BasePhase):
                 # {graph_id: why} — every declared metric that got NO breakdown and
                 # the served reason, so "no rows" is never an unexplained hole.
                 "unit_grain_withheld": unit_grain.withheld,
+                # {graph_id: what was cut} — these metrics DID get rows; the note
+                # says the rows are a bounded prefix, not the whole partition.
+                "unit_grain_truncated": unit_grain.truncated,
             },
             records_processed=len(table_ids),
             records_created=len(artifacts),
@@ -460,7 +463,7 @@ class MetricsPhase(BasePhase):
                 f"{executed}/{len(artifacts)} metrics executed; "
                 f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed; "
                 f"{unit_grain.offered} broken down per entity "
-                f"({len(unit_grain.withheld)} withheld)"
+                f"({len(unit_grain.withheld)} withheld, {len(unit_grain.truncated)} truncated)"
             ),
         )
 
@@ -687,16 +690,24 @@ def _verdict_row(run_id: str, v: VerdictRow) -> dict[str, object]:
 class UnitGrainOutcome:
     """What the unit-grain step did — the phase's disclosure of it.
 
-    ``withheld`` is the DISCLOSED-SKIP channel: a target the served verdict does
-    not permit a breakdown for, keyed by metric with the reason. It is a normal
-    outcome (a number that does not partition on an axis should have no
-    breakdown), which is why it is structured output and not a warning.
-    ``failures`` is the loud channel — something that should have worked did not.
+    Three channels, and a metric appears in AT MOST one of them:
+
+    * ``withheld`` — no breakdown exists for this target, keyed by metric with the
+      reason. A normal outcome (a number that does not partition on an axis should
+      have no breakdown), which is why it is structured output and not a warning.
+    * ``truncated`` — a breakdown DOES exist and its rows ARE persisted, but they
+      are a bounded prefix of the entities rather than all of them. Separate from
+      ``withheld`` because the two are different facts: "there is nothing to
+      render here" versus "render these, there are more". Folding them together
+      made a truncated metric count against ``(N withheld)`` and would let a
+      consumer keying off ``withheld`` skip rendering rows that exist.
+    * ``failures`` — the loud channel: something that should have worked did not.
     """
 
     offered: int = 0
     rows: int = 0
     withheld: dict[str, str] = field(default_factory=dict)
+    truncated: dict[str, str] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
 
 
@@ -815,6 +826,7 @@ def _persist_unit_grain(
         count=len(rows),
         offered=outcome.offered,
         withheld=outcome.withheld,
+        truncated=outcome.truncated,
     )
     return outcome
 
@@ -888,10 +900,11 @@ def _unit_grain_rows(
         return []
     breakdown = composed.value
     if breakdown.truncated_at is not None:
-        # A cut breakdown is still a breakdown, but it is NOT the whole answer and
-        # must never read as one. Disclosed on the same channel as a withholding —
-        # the rows land, and the note says what is missing from them.
-        outcome.withheld[graph_id] = (
+        # A cut breakdown is still a breakdown: its rows land and it counts as
+        # offered. It gets its OWN channel rather than riding the withheld one —
+        # "rows exist, bounded" is not "no rows here", and a consumer reading
+        # withheld as the second would skip rendering real rows.
+        outcome.truncated[graph_id] = (
             f"breakdown per {axis!r} truncated at {breakdown.truncated_at} of "
             f"{breakdown.total_entities} entities — the persisted rows are the first "
             f"{breakdown.truncated_at} by entity value, not the whole partition"

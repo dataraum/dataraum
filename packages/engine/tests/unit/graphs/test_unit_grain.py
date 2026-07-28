@@ -512,9 +512,14 @@ class TestEntityAxisOrdering:
         the unfiltered read from the ``(table_id, column_name, run_id)`` unique
         index, so the scan already arrives in name order and a stable sort over it
         reproduces the tiebreak by accident. Postgres offers no such guarantee,
-        which is exactly why the flip was invisible until someone read the code.
-        The ORDER BY in the read is what makes it hold on both, and the assertion
-        below is the contract a Postgres-side regression would break.
+        which is why the flip was invisible until someone read the code.
+
+        What makes the order hold on BOTH backends is that
+        ``uq_slice_def_table_column_run`` makes ``column_name`` unique within a
+        ``(table_id, run_id)`` read, so ``curated_slices``' three-element sort key
+        is a TOTAL order and input order cannot affect the output. The ORDER BY in
+        the read is belt-and-braces, not the mechanism — do not drop the
+        ``curated_slices`` reuse believing the ORDER BY carries this.
         """
         from dataraum.graphs.unit_grain import resolve_entity_axes
 

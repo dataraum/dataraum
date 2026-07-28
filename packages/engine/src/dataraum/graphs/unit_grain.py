@@ -337,10 +337,12 @@ def resolve_entity_axes(session: Session, *, table_id: str, run_id: str) -> Enti
                 SliceDefinition.slice_type == _ENTITY_SLICE_TYPE,
                 SliceDefinition.column_name.isnot(None),
             )
-            # A deterministic read BEFORE the sort: `curated_slices` sorts stably,
-            # so rows that tie on its whole key keep the order they arrived in —
-            # which without this is the database's discretion (the `.limit(1)`
-            # no-ORDER-BY class, one layer up).
+            # Belt-and-braces, NOT the mechanism. What makes the result order
+            # independent of the scan is that `uq_slice_def_table_column_run`
+            # makes `column_name` unique within one (table_id, run_id) read, so
+            # `curated_slices`' (tier, -relevance, name) key is a TOTAL order and
+            # no two rows can tie on all three. Keep the reuse; this clause alone
+            # would not carry it.
             .order_by(SliceDefinition.column_name, SliceDefinition.slice_id)
         )
         .scalars()

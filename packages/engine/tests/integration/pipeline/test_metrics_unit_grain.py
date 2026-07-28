@@ -613,3 +613,57 @@ class TestUnitGrainWireIn:
         assert result.outputs["unit_grain_offered"] == 0, "nothing landed, so nothing is claimed"
         assert result.outputs["unit_grain_rows"] == 0
         assert any("unit grain failed" in w and "not persisted" in w for w in result.warnings)
+
+    def test_a_truncated_breakdown_is_offered_not_withheld(
+        self,
+        session: Session,
+        grain_duckdb: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Bounded rows still EXIST — a different fact from having none.
+
+        Truncation and withholding disclose opposite things: "render these, there
+        are more" versus "there is nothing to render". Sharing one channel made a
+        truncated metric count against the summary's withheld total, and would let
+        a consumer reading `withheld` as "no breakdown here" skip rows that are
+        sitting in the table.
+        """
+        monkeypatch.setattr("dataraum.graphs.unit_grain.UNIT_GRAIN_MAX_ENTITIES", 1)
+        fact_id = _seed_relation(
+            session,
+            grain_duckdb,
+            view_name="ap_enriched",
+            values=_AP_ROWS,
+            columns=f"{_AXIS}, period, balance",
+        )
+        _seed_snippet(
+            session,
+            field="accounts_payable",
+            relation="ap_enriched",
+            expr="SUM(balance)",
+            where=_BOUND,
+        )
+
+        result = _UnitGrainCase.run(
+            session,
+            grain_duckdb,
+            {
+                "ap_total": _metric_def(
+                    "ap_total", {"ap": _extract_def("accounts_payable", output=True)}
+                )
+            },
+            [("metric", "ap_total", AxisVerdict.ADDITIVE, None)],
+            [fact_id],
+        )
+        session.flush()
+
+        assert result.status == PhaseStatus.COMPLETED
+        # The rows are real and the metric counts as offered...
+        assert [r.entity_value for r in _unit_grain_rows(session)] == ["acct_a"]
+        assert result.outputs["unit_grain_offered"] == 1
+        assert result.outputs["unit_grain_rows"] == 1
+        # ...and the cut is disclosed on its OWN channel, never as a withholding.
+        assert "ap_total" not in result.outputs["unit_grain_withheld"]
+        truncated = result.outputs["unit_grain_truncated"]["ap_total"]
+        assert "truncated at 1 of 2 entities" in truncated
+        assert not any("unit grain failed" in w for w in result.warnings)

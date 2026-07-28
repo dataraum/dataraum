@@ -137,18 +137,27 @@ _DIMENSION_ORDERING_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in Dime
 def derive_table_role(
     is_fact: bool,
     grain_columns: Sequence[str],
-    time_column_names: Sequence[str],
+    period_axis_columns: Sequence[str],
 ) -> TableRole:
     """Classify a table's role from the LLM's fact/dimension bit + its grain.
 
     The LLM answers one question (fact vs dimension); the PeriodicSnapshot subtype
-    is structural, not asked: a fact whose grain contains a time column re-states
-    the same population each period. Non-fact → ``DIMENSION``; fact with a time
-    column in its grain → ``PERIODIC_SNAPSHOT``; otherwise ``FACT``.
+    is structural, not asked: a fact whose grain contains the reporting period
+    re-states the same population each period. Non-fact → ``DIMENSION``; fact with
+    a period in its grain → ``PERIODIC_SNAPSHOT``; otherwise ``FACT``.
+
+    Args:
+        is_fact: the LLM's fact/dimension answer for this table.
+        grain_columns: the column names that uniquely identify a row.
+        period_axis_columns: the table's columns that can CARRY the reporting
+            period. A period is not always a date column — the standard
+            warehouse snapshot keys it as an FK into a period dimension — so this
+            is a derived set, not the raw time columns
+            (:meth:`~dataraum.analysis.semantic.models.TableSynthesisOutput.period_axis_columns`).
     """
     if not is_fact:
         return TableRole.DIMENSION
-    if set(grain_columns) & set(time_column_names):
+    if set(grain_columns) & set(period_axis_columns):
         return TableRole.PERIODIC_SNAPSHOT
     return TableRole.FACT
 

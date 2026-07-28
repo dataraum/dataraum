@@ -62,6 +62,22 @@ measurements:
     aggregation_intent: { conflict: 0.7, ignorance: 0.3 }
     reporting_intent: { conflict: 0.8, ignorance: 0.4 }
 
+  stored_sign:
+    # Contested storage convention (DAT-875): whether a monetary balance is stored
+    # account-naturally or in one raw ledger direction. A wrong reading flips the
+    # SIGN of a magnitude, so it is not a caveat-able imprecision — reporting bears
+    # the highest loss (a signed balance sheet reconciliation is materially wrong,
+    # the DAT-865/870/875 signature), aggregation close behind (a SUM over a
+    # credit-normal family returns the negation of the intended metric, the DAT-886
+    # accounts_payable/dpo defect), a query can still caveat the served label.
+    # PLACEHOLDER priors (calibrated: false) — shaped after the
+    # temporal_behavior/relationship_discovery rows, NOT tuned to a metric; the eval
+    # rig calibrates them against the outcomes scoreboard. The reliabilities entry
+    # carries the matching provenance flag.
+    query_intent: { conflict: 0.4, ignorance: 0.2 }
+    aggregation_intent: { conflict: 0.8, ignorance: 0.4 }
+    reporting_intent: { conflict: 0.9, ignorance: 0.4 }
+
   # benford is NOT in the loss table: it is an INFORMATIVE SIGNAL, not tunable entropy
   # (DAT-442). Leading-digit law is a forensic/compliance statistic, not an ERP data-
   # quality fact a teach can close — and it doesn't map to ERP measures (prices aren't

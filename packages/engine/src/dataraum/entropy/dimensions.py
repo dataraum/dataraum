@@ -83,3 +83,4 @@ class SubDimension(_StrValueMixin):
     SLICE_STABILITY = "slice_stability"
     SLICE_CONDITIONAL_NULL = "slice_conditional_null"
     TEMPORAL_BEHAVIOR = "temporal_behavior"
+    STORED_SIGN = "stored_sign"

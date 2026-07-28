@@ -424,6 +424,7 @@ def _format_table_schema(
                 "business_description": ann.business_description if ann else None,
                 "meaning": concept.meaning if concept else None,
                 "temporal_behavior": concept.temporal_behavior if concept else None,
+                "stored_sign": concept.stored_sign if concept else None,
             }
 
         tf = time_facts.get(col.column_name)
@@ -521,6 +522,8 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                     col_line += f' meaning="{_attr(sem["meaning"])}"'
                 if sem.get("temporal_behavior"):
                     col_line += f' temporal_behavior="{sem["temporal_behavior"]}"'
+                if sem.get("stored_sign"):
+                    col_line += f' stored_sign="{sem["stored_sign"]}"'
                 if sem.get("business_description"):
                     desc = _attr(sem["business_description"][:500])
                     col_line += f' description="{desc}"'

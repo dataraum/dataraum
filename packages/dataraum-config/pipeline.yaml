@@ -103,7 +103,14 @@ phases:
     # witness this phase just produced (inline GROUP BY over the enriched views) —
     # the witness that escapes name-anchoring. At add_source detect (no lineage rows
     # for that run) the witness abstains and the two-witness behaviour is unchanged.
-    detectors: [temporal_behavior]
+    #
+    # stored_sign (DAT-875) is declared HERE and ONLY here: both of its inputs are
+    # catalogue-grain and exact-run — the ColumnConcept claim written by
+    # catalogue_semantics, and the sign partition (winning-pattern voters under the
+    # convention vs its negation) this phase records on the same lineage row. At
+    # add_source neither exists, so unlike temporal_behavior there is no weaker
+    # one-witness run to declare.
+    detectors: [temporal_behavior, stored_sign]
 
   correlations:
     description: Within-table correlation analysis

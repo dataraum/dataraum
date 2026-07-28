@@ -172,6 +172,58 @@ class TestStructuralEdges:
         assert cols["amount_declared"].materialization is None
         assert cols["amount_declared"].anchor_time_axis == "txn_date"  # declared anchor
 
+    def test_stored_sign_reaches_the_grounding_author(self, ctx: GraphExecutionContext) -> None:
+        """DAT-875/886: the resolved storage convention rides og_columns onto the
+        served column context, so a metric extract SUMming a stored balance knows
+        whether the magnitude it returns is already a natural balance. Without it a
+        credit-normal liability extract returns a negative magnitude into a ratio
+        (the accounts_payable / dpo defect). NULL stays NULL — no fact beats a guess.
+        """
+        t1 = next(t for t in ctx.tables if t.table_name == "journal")
+        cols = {c.column_name: c for c in t1.columns}
+        assert cols["amount"].stored_sign == "ledger_signed"
+        assert cols["amount_declared"].stored_sign is None
+
+    def test_stored_sign_is_rendered_into_the_column_notes(self) -> None:
+        """The served fact has to reach the PROMPT, not just the dataclass — the
+        notes column is what the grounding author actually reads."""
+        from dataraum.graphs.context import ColumnContext, _build_column_notes
+
+        ledger = _build_column_notes(
+            ColumnContext(
+                column_id="c",
+                column_name="ending_balance",
+                table_name="balance_sheet",
+                semantic_role="measure",
+                stored_sign="ledger_signed",
+            )
+        )
+        assert "ledger_signed" in ledger
+        assert "opposite sign to its natural balance" in ledger
+        # DESCRIPTIVE, never prescriptive. "A bare SUM returns a signed quantity"
+        # is false wherever the reconciling population is single-family or the
+        # measure is not account-shaped — the label is still right there, but the
+        # consequence is not, and it invited a sign flip on a family that need not
+        # exist. State the convention; let the author reason about its own query.
+        assert "bare SUM" not in ledger
+        assert "SUM" not in ledger
+
+        natural = _build_column_notes(
+            ColumnContext(
+                column_id="c",
+                column_name="ending_balance",
+                table_name="balance_sheet",
+                semantic_role="measure",
+                stored_sign="natural_balance",
+            )
+        )
+        assert "natural_balance" in natural
+
+        undetermined = _build_column_notes(
+            ColumnContext(column_id="c", column_name="x", table_name="t", semantic_role="measure")
+        )
+        assert "Stored sign" not in undetermined
+
     def test_enriched_view_serves_dimension_bases(self, ctx: GraphExecutionContext) -> None:
         """derived_from edges attach the view's dimension base TABLES."""
         ev = next(v for v in ctx.enriched_views if v.view_name == "enriched_journal")

@@ -52,7 +52,8 @@ SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_na
          CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
                                    WHEN 'point_in_time' THEN 'stock' END
        ) AS materialization,
-       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,
+       cc.stored_sign
 FROM __READ__.current_columns c
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = c.column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = c.column_id
@@ -73,7 +74,8 @@ SELECT ec.column_id::text AS column_id, ec.table_id::text AS table_id, ec.column
          CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
                                    WHEN 'point_in_time' THEN 'stock' END
        ) AS materialization,
-       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,
+       cc.stored_sign
 FROM __READ__.current_enriched_columns ec
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = ec.source_column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = ec.source_column_id
@@ -558,7 +560,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),
     __READ__.og_columns KEY (column_id) LABEL column_node
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
-                  anchor_time_axis),
+                  anchor_time_axis, stored_sign),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
       PROPERTIES (concept_id, vertical, name, kind, ordering),
     __READ__.og_grounding KEY (snippet_id) LABEL grounding_node

@@ -27,7 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from dataraum.analysis.catalogue.models import MEANING_STATUSES
+from dataraum.analysis.catalogue.models import MEANING_STATUSES, STORED_SIGNS
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
@@ -660,6 +660,22 @@ class ColumnConcept(Base):
             should obey — operands may span a JOINED table (the derived_value
             session detector grades it over enriched_views), so it is reasoned
             from the relationship catalogue, not one table.
+        stored_sign_claim / _confidence: the catalogue agent's INDEPENDENT read of
+            how a monetary balance's values are stored ('natural_balance' /
+            'ledger_signed' / 'unsure' — ``catalogue.models.StoredSignClaim``).
+            A name-and-marginal read by construction: the agent sees each column's
+            own value sample and range, never row-aligned tuples, so it cannot
+            observe sign CONDITIONED on account family. It is a prior, and the
+            data witness below overrules it on disagreement.
+        stored_sign: the resolved storage convention ('natural_balance' /
+            'ledger_signed'), written by the resolved-layer pass (DAT-875) from the
+            claim pooled against the data-grounded sign-partition witness the
+            ``aggregation_lineage`` phase measures. NULL = undetermined, and NULL is
+            written THROUGH (never skipped) so a stale label cannot outlive a run
+            that lost the witness. Served to SQL authors so the
+            ``sign_natural_balance`` convention can be applied to BOTH sides of a
+            comparison — the one-sided normalization it could not otherwise prevent,
+            because no instruction substitutes for a fact the model cannot see.
     """
 
     __tablename__ = "column_concepts"
@@ -685,6 +701,30 @@ class ColumnConcept(Base):
             + ")",
             name="meaning_status",
         ),
+        # Storage-convention vocabulary (DAT-875), same derivation from its single
+        # home ``catalogue.models.STORED_SIGNS``. The RESOLVED column is NULL-or-IN
+        # the two determinable values. 'unsure' cannot appear here because the
+        # MEASUREMENT cannot emit it: its claim space is the two determinable
+        # labels, and an undetermined pool resolves to None, which the resolve pass
+        # writes as NULL. Note this is NOT a persist-time normalization — on the
+        # CLAIM column below, 'unsure' is stored verbatim and is load-bearing (the
+        # detector reads claim presence to tell an agent that looked and abstained
+        # apart from a run with no catalogue grain at all).
+        CheckConstraint(
+            "stored_sign IS NULL OR stored_sign IN ("
+            + ", ".join(f"'{v}'" for v in sorted(STORED_SIGNS))
+            + ")",
+            name="stored_sign",
+        ),
+        # The claim keeps its own arm: 'unsure' is a legitimate stored value there
+        # (a mandatory field's abstention), and conflating the two vocabularies
+        # would let an abstention be read back as a determination.
+        CheckConstraint(
+            "stored_sign_claim IS NULL OR stored_sign_claim IN ("
+            + ", ".join(f"'{v}'" for v in sorted((*STORED_SIGNS, "unsure")))
+            + ")",
+            name="stored_sign_claim",
+        ),
     )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -699,6 +739,14 @@ class ColumnConcept(Base):
     unit_source_column: Mapped[str | None] = mapped_column(String)
     derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
     derived_formula_confidence: Mapped[float | None] = mapped_column(Float)
+    # Closed vocab: see ck_column_concepts_stored_sign_claim (DAT-875). The agent's
+    # name-based prior, seeded by the catalogue INSERT.
+    stored_sign_claim: Mapped[str | None] = mapped_column(String)
+    stored_sign_claim_confidence: Mapped[float | None] = mapped_column(Float)
+    # Closed vocab: see ck_column_concepts_stored_sign (DAT-875). Left NULL at
+    # authoring like ``temporal_behavior`` — the storage convention is a data
+    # property, written only by the resolve pass (``entropy.resolve``).
+    stored_sign: Mapped[str | None] = mapped_column(String)
 
     # Provenance
     annotation_source: Mapped[str | None] = mapped_column(String)

@@ -219,8 +219,10 @@ def _seed(engine: Engine) -> None:
     # edge c_amt → c_ccy (both seeded in _units_and_additivity_stmts).
     stmts.append(
         "INSERT INTO column_concepts "
-        "(concept_id, column_id, run_id, temporal_behavior, unit_source_column, annotated_at) "
-        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', 'currency', '{TS}')"
+        "(concept_id, column_id, run_id, temporal_behavior, unit_source_column, "
+        " stored_sign, annotated_at) "
+        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', 'currency', "
+        f"'ledger_signed', '{TS}')"
     )
     # measure_time_axis_column_id / event_time_axis_column_id are left NULL — this
     # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
@@ -234,11 +236,12 @@ def _seed(engine: Engine) -> None:
         " measure_time_axis_column, event_time_axis_column, "
         " measure_slice_column_id, event_slice_column_id, "
         " slice_dimension, convention_sql, period_grain, pattern, match_rate, "
-        " r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at) "
+        " r_flow_median, r_stock_median, n_entities, n_entities_fired, "
+        " sign_fired_primary, sign_fired_mirror, sign_fired_both, created_at) "
         f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't1', "
         f"'period_date', 'period_date', 'c_k1', 'c_k1', "
         f"'month', 'SUM(amount)', "
-        f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, '{TS}')"
+        f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, 10, 0, 0, '{TS}')"
     )
     # detection_method='llm': og_references serves the DEFINED catalog only
     # (DAT-850) — a row without a real method would be dropped by the view.

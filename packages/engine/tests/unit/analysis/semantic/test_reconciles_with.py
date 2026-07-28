@@ -122,6 +122,9 @@ def _witness(session: Session, measure_column_id: str, tid: str, *, run_id: str 
             r_stock_median=0.1,
             n_entities=10,
             n_entities_fired=10,
+            sign_fired_primary=10,
+            sign_fired_mirror=0,
+            sign_fired_both=0,
         )
     )
 

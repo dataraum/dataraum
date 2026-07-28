@@ -416,6 +416,13 @@ def _element_view_sql(name: str) -> str:
         # NULL when neither exists. The COALESCE order IS the precedence, exactly like
         # materialization prefers the witness posterior over the concept prior.
         #
+        # stored_sign (DAT-875) — the RESOLVED storage convention of a monetary
+        # measure ('natural_balance' | 'ledger_signed'), served raw: unlike
+        # materialization there is no second vocabulary to normalize, because the
+        # measurement's claim space and the persisted column share one home
+        # (catalogue.models.STORED_SIGNS). NULL when undetermined, and NULL means
+        # exactly that — the grounding author sees no fact rather than a guess.
+        #
         # DAT-811 — the vertex set is the UNION of two branches:
         #   TYPED    (current_columns): a column resolves its own semantics by its own
         #     column_id, and the declared anchor comes from its own table's entity.
@@ -435,7 +442,8 @@ def _element_view_sql(name: str) -> str:
             f"         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'\n"
             f"                                   WHEN 'point_in_time' THEN 'stock' END\n"
             f"       ) AS materialization,\n"
-            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis\n"
+            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,\n"
+            f"       cc.stored_sign\n"
             f"FROM {READ_TOKEN}.current_columns c\n"
             f"LEFT JOIN {READ_TOKEN}.current_semantic_annotations sa ON sa.column_id = c.column_id\n"
             f"LEFT JOIN {READ_TOKEN}.current_column_concepts cc ON cc.column_id = c.column_id\n"
@@ -457,7 +465,8 @@ def _element_view_sql(name: str) -> str:
             f"         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'\n"
             f"                                   WHEN 'point_in_time' THEN 'stock' END\n"
             f"       ) AS materialization,\n"
-            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis\n"
+            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,\n"
+            f"       cc.stored_sign\n"
             f"FROM {READ_TOKEN}.current_enriched_columns ec\n"
             f"LEFT JOIN {READ_TOKEN}.current_semantic_annotations sa ON sa.column_id = ec.source_column_id\n"
             f"LEFT JOIN {READ_TOKEN}.current_column_concepts cc ON cc.column_id = ec.source_column_id\n"
@@ -1218,7 +1227,7 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),\n"
         f"    {READ_TOKEN}.og_columns KEY (column_id) LABEL column_node\n"
         f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,\n"
-        f"                  anchor_time_axis),\n"
+        f"                  anchor_time_axis, stored_sign),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
         f"      PROPERTIES (concept_id, vertical, name, kind, ordering),\n"
         f"    {READ_TOKEN}.og_grounding KEY (snippet_id) LABEL grounding_node\n"

@@ -78,6 +78,8 @@ def _cc(
         unit_source_column=kw.get("unit_source_column", ""),
         derived_formula_hypothesis=kw.get("derived_formula_hypothesis", ""),
         derived_formula_confidence=kw.get("derived_formula_confidence", 0.0),
+        stored_sign_claim=kw.get("stored_sign_claim", "unsure"),
+        stored_sign_claim_confidence=kw.get("stored_sign_claim_confidence", 0.0),
     )
 
 
@@ -135,6 +137,41 @@ class TestPersistColumnConcepts:
         assert rows[cols["discount"]].derived_formula_hypothesis is None
         assert rows[cols["discount"]].unit_source_column is None
         assert rows[cols["discount"]].meaning_status == "ambiguous"
+
+    def test_stored_sign_claim_persists_and_resolved_value_stays_null(self, session):
+        """DAT-875: the catalogue INSERT seeds the agent's CLAIM only. ``stored_sign``
+        itself is left NULL — it is a data property, written by the resolve pass once
+        the sign-partition witness has reconciled the claim. Seeding it here would make
+        authoring look determined and mask the witness that can overturn it.
+
+        'unsure' persists AS 'unsure', not folded to NULL: an agent that looked and
+        abstained is a different fact from a row written before the field existed, and
+        only the former is a present abstention to the pooling layer.
+        """
+        table = _table_with_columns(session, "balance_sheet", ["ending_balance", "qty"])
+        concepts = [
+            _cc(
+                "balance_sheet",
+                "ending_balance",
+                "Period-end account balance",
+                stored_sign_claim="ledger_signed",
+                stored_sign_claim_confidence=0.7,
+            ),
+            _cc("balance_sheet", "qty", "Unit count"),
+        ]
+
+        persist_column_concepts(
+            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
+        )
+        session.flush()
+
+        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
+        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
+        balance = rows[cols["ending_balance"]]
+        assert balance.stored_sign_claim == "ledger_signed"
+        assert balance.stored_sign_claim_confidence == 0.7
+        assert balance.stored_sign is None
+        assert rows[cols["qty"]].stored_sign_claim == "unsure"
 
     def test_blank_meaning_carries_no_status(self, session) -> None:
         """No meaning → no status: a coverage gap must not be dressed as a judgment."""

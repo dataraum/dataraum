@@ -9,12 +9,16 @@
 
 import { describe, expect, it } from "vitest";
 
-const STACK_AVAILABLE = !!process.env.COCKPIT_DATABASE_URL;
-if (!process.env.BETTER_AUTH_SECRET) {
-	// config.base (loaded by the module under test) requires it; the value is
-	// irrelevant to the lock.
-	process.env.BETTER_AUTH_SECRET = "dataraum-dev-secret";
-}
+import {
+	applyIntegrationEnv,
+	providedByEnvironment,
+} from "#/test/integration-env";
+
+const STACK_AVAILABLE = providedByEnvironment("COCKPIT_DATABASE_URL");
+
+// config.base (loaded by the module under test) requires BETTER_AUTH_SECRET;
+// the value is irrelevant to the lock.
+applyIntegrationEnv();
 
 // Unique per run — the dev database is shared state.
 const WS = `lock-test-${Date.now().toString(36)}`;

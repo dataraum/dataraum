@@ -27,34 +27,18 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import {
+	applyIntegrationEnv,
+	providedByEnvironment,
+} from "#/test/integration-env";
+
 const STACK_AVAILABLE =
-	!!process.env.METADATA_DATABASE_URL &&
-	!!process.env.METADATA_WRITER_DATABASE_URL;
+	providedByEnvironment("METADATA_DATABASE_URL") &&
+	providedByEnvironment("METADATA_WRITER_DATABASE_URL");
 
 // Stub the cockpit env so config.ts loads even when the test doesn't have
 // every var set (the DB-bound teach/undo import config transitively).
-const REQUIRED_DEFAULTS: Record<string, string> = {
-	COCKPIT_DATABASE_URL:
-		process.env.COCKPIT_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
-	METADATA_DATABASE_URL: process.env.METADATA_DATABASE_URL ?? "",
-	METADATA_WRITER_DATABASE_URL: process.env.METADATA_WRITER_DATABASE_URL ?? "",
-	DATARAUM_WORKSPACE_ID:
-		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
-	DATARAUM_LAKE_PATH:
-		process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
-	DUCKLAKE_CATALOG_URL:
-		process.env.DUCKLAKE_CATALOG_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
-	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
-	S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
-	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
-	S3_SECRET_ACCESS_KEY:
-		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
-};
-for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
-	if (!process.env[k]) process.env[k] = v;
-}
+applyIntegrationEnv();
 
 describe.skipIf(!STACK_AVAILABLE)(
 	"teach + undoTeach round-trip (DAT-343)",
@@ -154,8 +138,8 @@ describe.skipIf(!STACK_AVAILABLE)(
 			// Engine-emulation scaffolding: the superuser connection carries no
 			// role search_path, so raw DML must name the ws_<id> schema explicitly
 			// (mirroring the engine's own derivation — the app never does this).
-			// REQUIRED_DEFAULTS already populated this; fall back to the same default
-			// rather than "" so the schema name can't silently truncate to `ws_`.
+			// applyIntegrationEnv() already populated this; fall back to the same
+			// default rather than "" so the name can't silently truncate to `ws_`.
 			const wsId =
 				process.env.DATARAUM_WORKSPACE_ID ??
 				"00000000-0000-0000-0000-000000000001";

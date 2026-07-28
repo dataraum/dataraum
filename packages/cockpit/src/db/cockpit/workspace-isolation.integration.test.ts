@@ -16,40 +16,15 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const STACK_AVAILABLE = !!process.env.COCKPIT_DATABASE_URL;
+import {
+	applyIntegrationEnv,
+	providedByEnvironment,
+} from "#/test/integration-env";
+
+const STACK_AVAILABLE = providedByEnvironment("COCKPIT_DATABASE_URL");
 
 // Stub the cockpit env so config.ts loads for the DB-bound imports.
-const REQUIRED_DEFAULTS: Record<string, string> = {
-	COCKPIT_DATABASE_URL: process.env.COCKPIT_DATABASE_URL ?? "",
-	METADATA_DATABASE_URL:
-		process.env.METADATA_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
-	DATARAUM_WORKSPACE_ID:
-		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
-	DATARAUM_CONFIG_PATH: process.env.DATARAUM_CONFIG_PATH ?? "/tmp",
-	S3_BUCKET: process.env.S3_BUCKET ?? "dataraum-lake",
-	DATARAUM_LAKE_PATH:
-		process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
-	DUCKLAKE_CATALOG_URL:
-		process.env.DUCKLAKE_CATALOG_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
-	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
-	S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
-	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
-	S3_SECRET_ACCESS_KEY:
-		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
-	// Base (mode-shared) config (DAT-819). The dev creds make the seed's
-	// credential-user path run for real — same defaults the compose stack uses,
-	// so the row this writes is the one a live stack would hold anyway.
-	BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "dataraum-dev-secret",
-	DATARAUM_DEV_USER_EMAIL:
-		process.env.DATARAUM_DEV_USER_EMAIL ?? "dev@dataraum.dev",
-	DATARAUM_DEV_USER_PASSWORD:
-		process.env.DATARAUM_DEV_USER_PASSWORD ?? "dataraum-dev",
-};
-for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
-	if (!process.env[k]) process.env[k] = v;
-}
+applyIntegrationEnv();
 
 const WS_A = process.env.DATARAUM_WORKSPACE_ID as string;
 

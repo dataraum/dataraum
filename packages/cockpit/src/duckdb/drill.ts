@@ -92,6 +92,30 @@ export interface DrillAxis {
 	 *  (never a name heuristic) — non-null makes the slice grain-able and
 	 *  decides which grains the chip offers (DAT-712). */
 	temporal: TemporalKind | null;
+	/** DAT-673 guidance: the max measured `driver_rankings` gain naming this
+	 *  column, or `null` when no measured ranking exists for it. This is the
+	 *  SAME number `orderAxesByDrivers` already uses to reorder the menu — it
+	 *  used to be thrown away after ordering; now it rides the wire so the
+	 *  chip can disclose WHY an axis leads (fact-scoped: only ever set on the
+	 *  node/measure path — tier A doesn't know which fact backs a result
+	 *  column, so it stays null there). */
+	driverGain: number | null;
+	/** DAT-879 measured slice relevance in [0,1] when this column is
+	 *  catalogued, else `null` (substrate-only column — nothing curated it).
+	 *  Populated on BOTH the node and tier-A paths (the catalog read is
+	 *  fact-agnostic, only its dimension is). */
+	sliceRelevance: number | null;
+	/** 'primary' | 'supporting' | null — the cataloguing agent's absolute
+	 *  judgement, or null when the column is catalogued but never judged
+	 *  (still has `sliceRelevance`) or not catalogued at all (`sliceRelevance`
+	 *  also null). Populated on both paths, same as `sliceRelevance`. */
+	sliceInterest: string | null;
+	/** DAT-673 hierarchy descent: the next-finer column in a CONFIRMED
+	 *  drill-down chain this axis belongs to (`dimension_hierarchies`,
+	 *  kind='drilldown', needs_confirmation=false), when that next column is
+	 *  also among the currently-resolved axes — else `null`. Fact-scoped like
+	 *  `driverGain`: node/measure path only, always null on tier A. */
+	hierarchyNext: string | null;
 }
 
 export const sliceColumns = (steps: DrillStep[]): string[] => {

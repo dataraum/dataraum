@@ -28,6 +28,7 @@ import { metadataDb } from "#/db/metadata/client";
 import {
 	columns,
 	currentColumnConcepts,
+	currentDimensionHierarchies,
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
@@ -126,6 +127,15 @@ export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
 			// (`applyTemporalKinds`) — the slicing agent's rows don't carry a
 			// trustworthy type (their column_id FK points at the bare FK column).
 			temporal: null,
+			// DAT-673 guidance: carry the catalog's own relevance/interest onto the
+			// axis (previously read only to ORDER the axes, then discarded) so the
+			// chip can disclose its provenance honestly.
+			sliceRelevance: r.sliceRelevance,
+			sliceInterest: r.sliceInterest,
+			// Stamped later, once the driver-rankings/hierarchy reads are in: a
+			// curated row carries neither by itself.
+			driverGain: null,
+			hierarchyNext: null,
 		});
 	}
 	return [...byColumn.values()];
@@ -155,6 +165,14 @@ export function unionSubstrateAxes(
 			valueCount: null,
 			businessContext: null,
 			temporal: null,
+			// A pure substrate column carries no catalog signal at all — leave
+			// every guidance field null rather than inventing a tier for it
+			// (DAT-673: "unjudged" specifically means catalogued-but-unjudged,
+			// which this is not).
+			sliceRelevance: null,
+			sliceInterest: null,
+			driverGain: null,
+			hierarchyNext: null,
 		});
 	}
 	return out;
@@ -244,19 +262,96 @@ export function driverGains(rows: DriverRankingInput[]): Map<string, number> {
 }
 
 /**
- * Order axes for the menu (pure): measured drivers first by gain (the engine
- * already gated what earns a ranking entry — any listed gain outranks curated
- * intuition), then everything else in its incoming order (curated axes in
- * curation order, then substrate). Stable within each group.
+ * Order axes for the menu AND stamp their measured gain (pure): measured
+ * drivers first by gain (the engine already gated what earns a ranking entry
+ * — any listed gain outranks curated intuition), then everything else in its
+ * incoming order (curated axes in curation order, then substrate). Stable
+ * within each group.
+ *
+ * DAT-673: the gain number used to be read ONLY to decide order, then thrown
+ * away before the axis ever reached the wire — the chip had no way to show
+ * WHY a driver led the menu. This now stamps `driverGain` on every axis the
+ * map covers (still `null` everywhere else) in the SAME pass that computes
+ * the order, since both come from the identical `gains` lookup.
  */
 export function orderAxesByDrivers(
 	axes: DrillAxis[],
 	gains: ReadonlyMap<string, number>,
 ): DrillAxis[] {
-	const ranked = axes
+	const stamped = axes.map((a) => {
+		const gain = gains.get(a.column) ?? null;
+		return gain === a.driverGain ? a : { ...a, driverGain: gain };
+	});
+	const ranked = stamped
 		.filter((a) => gains.has(a.column))
 		.sort((a, b) => (gains.get(b.column) ?? 0) - (gains.get(a.column) ?? 0));
-	return [...ranked, ...axes.filter((a) => !gains.has(a.column))];
+	return [...ranked, ...stamped.filter((a) => !gains.has(a.column))];
+}
+
+/** One `current_dimension_hierarchies` row as the descent resolver reads it
+ *  (`members` is the engine's JSON array: `[{column_name, level}, ...]`,
+ *  ordered by `level` — NOT array position, DAT-779 — coarse→fine). */
+export interface HierarchyRowInput {
+	tableId: string | null;
+	kind: string | null;
+	members: unknown;
+	needsConfirmation: boolean | null;
+}
+
+/**
+ * Per-column "what's the next finer level" map, from CONFIRMED drill-down
+ * hierarchies only (pure; DAT-673 hierarchy descent).
+ *
+ * Two deliberate narrowings, both in the honest-disclosure direction rather
+ * than inventing a confident suggestion from shaky structure: `kind` must be
+ * `'drilldown'` — an `'alias'` group (1:1 redundant columns) has no ordered
+ * "next level" to descend to, and a `'role'` row is a different classification
+ * entirely (neither is a descent chain); and `needsConfirmation` must be
+ * `false` — an unconfirmed chain gets the SAME caution the catalog already
+ * applies to unconfirmed aliases (DAT-762: treat as unverified structure, not
+ * as a confident next step). First occurrence wins if a column appears in more
+ * than one qualifying hierarchy (deterministic, matching this file's other
+ * first-wins folds, e.g. `temporalKindsFromColumns`).
+ */
+export function hierarchyDescentMap(
+	rows: HierarchyRowInput[],
+): Map<string, string> {
+	const next = new Map<string, string>();
+	for (const row of rows) {
+		if (row.kind !== "drilldown" || row.needsConfirmation !== false) continue;
+		if (!Array.isArray(row.members)) continue;
+		const ordered = row.members
+			.map((m, i) => {
+				if (typeof m !== "object" || m === null) return null;
+				const { column_name, level } = m as Record<string, unknown>;
+				return typeof column_name === "string"
+					? { name: column_name, level: typeof level === "number" ? level : i }
+					: null;
+			})
+			.filter((m): m is { name: string; level: number } => m !== null)
+			.sort((a, b) => a.level - b.level);
+		for (let i = 0; i < ordered.length - 1; i++) {
+			const name = ordered[i].name;
+			if (!next.has(name)) next.set(name, ordered[i + 1].name);
+		}
+	}
+	return next;
+}
+
+/** Stamp `hierarchyNext` onto axes (pure) — but only when the suggested next
+ *  column is ALSO among the currently-resolved axes; never point at a column
+ *  the menu doesn't actually offer (DAT-673). */
+export function applyHierarchyDescent(
+	axes: DrillAxis[],
+	next: ReadonlyMap<string, string>,
+): DrillAxis[] {
+	const columns = new Set(axes.map((a) => a.column));
+	return axes.map((a) => {
+		const candidate = next.get(a.column);
+		const hierarchyNext =
+			candidate !== undefined && columns.has(candidate) ? candidate : null;
+		return hierarchyNext === a.hierarchyNext ? a : { ...a, hierarchyNext };
+	});
 }
 
 /** The measure standard fields the request targets: a measure names itself, a
@@ -282,7 +377,11 @@ async function targetFields(req: DrillNodeRef): Promise<string[]> {
  *  engine's DAG-aware `time_additive` replaces the local re-derivation. The
  *  CATEGORICAL axis of the verdict (whether a breakdown reconciles vs shows the
  *  honest dash) is a drill-RESULTS rendering concern, not an axes-resolution one —
- *  deliberately not read here; wiring it is the drill-results surface (DAT-715). */
+ *  deliberately not read here; wiring it is the drill-results surface (DAT-715).
+ *  This is also the DAT-673 P2 seam this lane leaves OPEN: per-(measure×axis)
+ *  time-bucketing verdict chips need that same categorical axis, one verdict per
+ *  axis rather than one per target — substrate work for W3-a, not yet persisted.
+ *  Nothing here guesses at it; the boolean flow gate above is unaffected. */
 export interface PersistedAdditivity {
 	timeAdditive: boolean;
 	timeReason: string | null;
@@ -609,76 +708,90 @@ async function resolveAxesForSources(
 	);
 	const typeTableIds = [...factIds, ...viewTableIds];
 
-	const [sliceRows, rankingRows, columnRows] = await Promise.all([
-		metadataDb
-			.select({
-				tableId: currentSliceDefinitions.tableId,
-				columnName: currentSliceDefinitions.columnName,
-				sliceRelevance: currentSliceDefinitions.sliceRelevance,
-				sliceInterest: currentSliceDefinitions.sliceInterest,
-				sliceType: currentSliceDefinitions.sliceType,
-				distinctValues: currentSliceDefinitions.distinctValues,
-				valueCount: currentSliceDefinitions.valueCount,
-				businessContext: currentSliceDefinitions.businessContext,
-			})
-			.from(currentSliceDefinitions)
-			.where(inArray(currentSliceDefinitions.tableId, factIds))
-			// Ordering is applied in `axesFromSliceRows` (the interest tier is a
-			// vocabulary, not a sortable column); this keeps the fetch stable.
-			.orderBy(
-				desc(currentSliceDefinitions.sliceRelevance),
-				asc(currentSliceDefinitions.columnName),
-			),
-		metadataDb
-			.select({
-				status: currentDriverRankings.status,
-				rankedDimensions: currentDriverRankings.rankedDimensions,
-			})
-			.from(currentDriverRankings)
-			.where(inArray(currentDriverRankings.measureTableId, factIds)),
-		metadataDb
-			.select({
-				tableId: columns.tableId,
-				columnName: columns.columnName,
-				resolvedType: columns.resolvedType,
-				// The unit gate (DAT-731): the measure's authored unit_source_column
-				// (catalogue_semantics) + the distinct-value count of a column, so a
-				// measure whose unit column carries >1 distinct unit is flaggable.
-				unitSourceColumn: currentColumnConcepts.unitSourceColumn,
-				distinctCount: currentStatisticalProfiles.distinctCount,
-			})
-			.from(columns)
-			.leftJoin(
-				currentColumnConcepts,
-				eq(columns.columnId, currentColumnConcepts.columnId),
-			)
-			.leftJoin(
-				currentStatisticalProfiles,
-				eq(columns.columnId, currentStatisticalProfiles.columnId),
-			)
-			.where(inArray(columns.tableId, typeTableIds))
-			// Deterministic row order — temporalKindsFromColumns is first-wins
-			// per name, so an unordered read would be Postgres row-order
-			// roulette (the same trap the enriched-views read pins above).
-			.orderBy(asc(columns.tableId), asc(columns.columnName)),
-	]);
+	const [sliceRows, rankingRows, hierarchyRows, columnRows] = await Promise.all(
+		[
+			metadataDb
+				.select({
+					tableId: currentSliceDefinitions.tableId,
+					columnName: currentSliceDefinitions.columnName,
+					sliceRelevance: currentSliceDefinitions.sliceRelevance,
+					sliceInterest: currentSliceDefinitions.sliceInterest,
+					sliceType: currentSliceDefinitions.sliceType,
+					distinctValues: currentSliceDefinitions.distinctValues,
+					valueCount: currentSliceDefinitions.valueCount,
+					businessContext: currentSliceDefinitions.businessContext,
+				})
+				.from(currentSliceDefinitions)
+				.where(inArray(currentSliceDefinitions.tableId, factIds))
+				// Ordering is applied in `axesFromSliceRows` (the interest tier is a
+				// vocabulary, not a sortable column); this keeps the fetch stable.
+				.orderBy(
+					desc(currentSliceDefinitions.sliceRelevance),
+					asc(currentSliceDefinitions.columnName),
+				),
+			metadataDb
+				.select({
+					status: currentDriverRankings.status,
+					rankedDimensions: currentDriverRankings.rankedDimensions,
+				})
+				.from(currentDriverRankings)
+				.where(inArray(currentDriverRankings.measureTableId, factIds)),
+			metadataDb
+				.select({
+					tableId: currentDimensionHierarchies.tableId,
+					kind: currentDimensionHierarchies.kind,
+					members: currentDimensionHierarchies.members,
+					needsConfirmation: currentDimensionHierarchies.needsConfirmation,
+				})
+				.from(currentDimensionHierarchies)
+				.where(inArray(currentDimensionHierarchies.tableId, factIds)),
+			metadataDb
+				.select({
+					tableId: columns.tableId,
+					columnName: columns.columnName,
+					resolvedType: columns.resolvedType,
+					// The unit gate (DAT-731): the measure's authored unit_source_column
+					// (catalogue_semantics) + the distinct-value count of a column, so a
+					// measure whose unit column carries >1 distinct unit is flaggable.
+					unitSourceColumn: currentColumnConcepts.unitSourceColumn,
+					distinctCount: currentStatisticalProfiles.distinctCount,
+				})
+				.from(columns)
+				.leftJoin(
+					currentColumnConcepts,
+					eq(columns.columnId, currentColumnConcepts.columnId),
+				)
+				.leftJoin(
+					currentStatisticalProfiles,
+					eq(columns.columnId, currentStatisticalProfiles.columnId),
+				)
+				.where(inArray(columns.tableId, typeTableIds))
+				// Deterministic row order — temporalKindsFromColumns is first-wins
+				// per name, so an unordered read would be Postgres row-order
+				// roulette (the same trap the enriched-views read pins above).
+				.orderBy(asc(columns.tableId), asc(columns.columnName)),
+		],
+	);
 
 	// The JS filter mirrors the SQL `inArray` (the belt-over-braces pattern
 	// above): a row from any OTHER table must not pose as a fact column in the
 	// temporal fallback pass.
 	const typeTableIdSet = new Set(typeTableIds);
-	const axes = applyTemporalKinds(
-		orderAxesByDrivers(
-			unionSubstrateAxes(axesFromSliceRows(sliceRows), substrateColumns),
-			driverGains(rankingRows),
-		),
-		temporalKindsFromColumns(
-			columnRows.filter(
-				(r): r is typeof r & { tableId: string } =>
-					r.tableId !== null && typeTableIdSet.has(r.tableId),
+	const axes = applyHierarchyDescent(
+		applyTemporalKinds(
+			orderAxesByDrivers(
+				unionSubstrateAxes(axesFromSliceRows(sliceRows), substrateColumns),
+				driverGains(rankingRows),
 			),
-			viewTableIds,
+			temporalKindsFromColumns(
+				columnRows.filter(
+					(r): r is typeof r & { tableId: string } =>
+						r.tableId !== null && typeTableIdSet.has(r.tableId),
+				),
+				viewTableIds,
+			),
 		),
+		hierarchyDescentMap(hierarchyRows),
 	);
 	if (axes.length === 0) {
 		return empty(

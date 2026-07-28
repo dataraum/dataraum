@@ -64,6 +64,12 @@ import { DrillableGrid } from "./drillable-grid";
 const axis = (
 	column: string,
 	temporal: DrillAxis["temporal"] = null,
+	guidance: Partial<
+		Pick<
+			DrillAxis,
+			"driverGain" | "sliceRelevance" | "sliceInterest" | "hierarchyNext"
+		>
+	> = {},
 ): DrillAxis => ({
 	column,
 	sliceType: "categorical",
@@ -71,6 +77,10 @@ const axis = (
 	valueCount: 3,
 	businessContext: null,
 	temporal,
+	driverGain: guidance.driverGain ?? null,
+	sliceRelevance: guidance.sliceRelevance ?? null,
+	sliceInterest: guidance.sliceInterest ?? null,
+	hierarchyNext: guidance.hierarchyNext ?? null,
 });
 
 const jsonResponse = (body: unknown) =>

@@ -67,11 +67,13 @@ import {
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
 import {
+	applyHierarchyDescent,
 	applyTemporalKinds,
 	axesFromSliceRows,
 	describeEngineTimeVerdict,
 	describeUnitGate,
 	driverGains,
+	hierarchyDescentMap,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
 	resolveDrillAxes,
@@ -164,6 +166,12 @@ describe("axesFromSliceRows", () => {
 				valueCount: 2,
 				businessContext: "sales region",
 				temporal: null,
+				// DAT-673: carried through from the winning (fact1, relevance 0.4,
+				// primary) row — the deduped fact2 row's 0.1/supporting never surfaces.
+				sliceRelevance: 0.4,
+				sliceInterest: "primary",
+				driverGain: null,
+				hierarchyNext: null,
 			},
 			{
 				column: "booking_month",
@@ -172,6 +180,10 @@ describe("axesFromSliceRows", () => {
 				valueCount: 12,
 				businessContext: null,
 				temporal: null,
+				sliceRelevance: 0.99,
+				sliceInterest: null,
+				driverGain: null,
+				hierarchyNext: null,
 			},
 		]);
 	});
@@ -204,6 +216,10 @@ const axis = (column: string): DrillAxis => ({
 	valueCount: null,
 	businessContext: null,
 	temporal: null,
+	driverGain: null,
+	sliceRelevance: null,
+	sliceInterest: null,
+	hierarchyNext: null,
 });
 
 describe("unionSubstrateAxes", () => {
@@ -224,6 +240,10 @@ describe("unionSubstrateAxes", () => {
 			valueCount: null,
 			businessContext: null,
 			temporal: null,
+			sliceRelevance: null,
+			sliceInterest: null,
+			driverGain: null,
+			hierarchyNext: null,
 		});
 	});
 });
@@ -502,6 +522,150 @@ describe("driver ordering", () => {
 		);
 		expect(out.map((a) => a.column)).toEqual(["b", "c", "a", "d"]);
 	});
+
+	// DAT-673: the gain used to decide order was thrown away before the axis
+	// reached the wire — the chip had no way to disclose WHY a driver led.
+	it("stamps the SAME gain it ordered by onto each axis, null everywhere else", () => {
+		const out = orderAxesByDrivers(
+			[axis("a"), axis("b"), axis("c")],
+			new Map([
+				["c", 0.1],
+				["b", 0.6],
+			]),
+		);
+		expect(out.map((a) => [a.column, a.driverGain])).toEqual([
+			["b", 0.6],
+			["c", 0.1],
+			["a", null],
+		]);
+	});
+});
+
+describe("hierarchyDescentMap (DAT-673 hierarchy descent)", () => {
+	it("maps a CONFIRMED drill-down chain's members to their next-finer neighbor, ordered by level not array position", () => {
+		const next = hierarchyDescentMap([
+			{
+				tableId: "fact1",
+				kind: "drilldown",
+				needsConfirmation: false,
+				// Deliberately out of level order — level must decide, not index.
+				members: [
+					{ column_name: "account_id__account_type", level: 0 },
+					{ column_name: "account_id__account_subtype", level: 1 },
+					{ column_name: "account_id__account_name", level: 2 },
+				],
+			},
+		]);
+		expect(next.get("account_id__account_type")).toBe(
+			"account_id__account_subtype",
+		);
+		expect(next.get("account_id__account_subtype")).toBe(
+			"account_id__account_name",
+		);
+		// The finest level has no next — absent from the map, never a phantom null.
+		expect(next.has("account_id__account_name")).toBe(false);
+	});
+
+	it("excludes an UNCONFIRMED drill-down chain — same caution DAT-762 gives unconfirmed aliases", () => {
+		const next = hierarchyDescentMap([
+			{
+				tableId: "fact1",
+				kind: "drilldown",
+				needsConfirmation: true,
+				members: [
+					{ column_name: "a", level: 0 },
+					{ column_name: "b", level: 1 },
+				],
+			},
+		]);
+		expect(next.size).toBe(0);
+	});
+
+	it("excludes alias and role kinds — neither is an ordered descent chain", () => {
+		const rows = [
+			{
+				tableId: "fact1",
+				kind: "alias",
+				needsConfirmation: false,
+				members: [
+					{ column_name: "a", level: 0 },
+					{ column_name: "b", level: 1 },
+				],
+			},
+			{
+				tableId: "fact1",
+				kind: "role",
+				needsConfirmation: false,
+				members: [
+					{ column_name: "c", level: 0 },
+					{ column_name: "d", level: 1 },
+				],
+			},
+		];
+		expect(hierarchyDescentMap(rows).size).toBe(0);
+	});
+
+	it("first occurrence wins when a column appears in more than one qualifying hierarchy", () => {
+		const next = hierarchyDescentMap([
+			{
+				tableId: "fact1",
+				kind: "drilldown",
+				needsConfirmation: false,
+				members: [
+					{ column_name: "a", level: 0 },
+					{ column_name: "b", level: 1 },
+				],
+			},
+			{
+				tableId: "fact1",
+				kind: "drilldown",
+				needsConfirmation: false,
+				members: [
+					{ column_name: "a", level: 0 },
+					{ column_name: "z", level: 1 },
+				],
+			},
+		]);
+		expect(next.get("a")).toBe("b");
+	});
+
+	it("falls back to array index only when a member's level is absent, and ignores malformed members", () => {
+		const next = hierarchyDescentMap([
+			{
+				tableId: "fact1",
+				kind: "drilldown",
+				needsConfirmation: false,
+				members: [{ column_name: "a" }, { column_name: "b" }, "junk", null],
+			},
+		]);
+		expect(next.get("a")).toBe("b");
+	});
+
+	it("yields nothing for a non-array members value", () => {
+		expect(
+			hierarchyDescentMap([
+				{
+					tableId: "fact1",
+					kind: "drilldown",
+					needsConfirmation: false,
+					members: "not-an-array",
+				},
+			]).size,
+		).toBe(0);
+	});
+});
+
+describe("applyHierarchyDescent", () => {
+	it("stamps hierarchyNext only when the suggested column is among the resolved axes", () => {
+		const out = applyHierarchyDescent(
+			[axis("a"), axis("b")],
+			new Map([
+				["a", "b"], // b IS among the resolved axes → kept
+				["b", "phantom"], // phantom is NOT → dropped, never a dead reference
+			]),
+		);
+		expect(out.map((a) => a.hierarchyNext)).toEqual(["b", null]);
+	});
 });
 
 /** The engine-persisted parts shape — grounding is `from[0]` since DAT-703. */
@@ -613,6 +777,10 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				valueCount: 2,
 				businessContext: null,
 				temporal: null,
+				sliceRelevance: 0.9,
+				sliceInterest: "primary",
+				driverGain: null,
+				hierarchyNext: null,
 			},
 			// Substrate-only: the view exposes it, the catalog never curated it.
 			// supplier__country stays absent — its fact (cogs) never grounded.
@@ -624,6 +792,10 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 				valueCount: null,
 				businessContext: null,
 				temporal: "date",
+				sliceRelevance: null,
+				sliceInterest: null,
+				driverGain: null,
+				hierarchyNext: null,
 			},
 		]);
 	});

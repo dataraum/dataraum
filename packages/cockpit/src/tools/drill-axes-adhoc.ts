@@ -121,6 +121,21 @@ export function adHocAxesFromCatalog(
 				businessContext: ambiguous ? null : r.businessContext,
 				// Tier A never buckets time — see the module header.
 				temporal: null,
+				// DAT-673 guidance: relevance/interest are catalog facts about the
+				// DIMENSION, not the fact that grounds it, so they carry through here
+				// same as on the node path — blanked under the same ambiguity rule as
+				// businessContext/values just above (an ambiguous column's curation
+				// can't speak for it either).
+				sliceRelevance: ambiguous ? null : r.sliceRelevance,
+				sliceInterest: ambiguous ? null : r.sliceInterest,
+				// driverGain and hierarchyNext stay null on EVERY tier-A axis, always:
+				// both are fact-scoped (driver_rankings.measure_table_id,
+				// dimension_hierarchies.table_id), and tier A wraps an arbitrary result
+				// without knowing which fact backs any given column — the same reason
+				// this module already gives for offering no driver ordering and no
+				// time grain (see the module header).
+				driverGain: null,
+				hierarchyNext: null,
 			};
 		});
 
@@ -142,6 +157,10 @@ export function adHocAxesFromCatalog(
 			valueCount: null,
 			businessContext: null,
 			temporal: null,
+			sliceRelevance: null,
+			sliceInterest: null,
+			driverGain: null,
+			hierarchyNext: null,
 		});
 	}
 

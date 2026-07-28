@@ -51,6 +51,14 @@ describe("adHocAxesFromCatalog", () => {
 			// Tier A cannot bucket time — no additivity verdict exists for an
 			// arbitrary result, so no axis is ever offered as temporal here.
 			temporal: null,
+			// DAT-673 guidance: relevance/interest carry through on tier A too
+			// (a catalog fact about the dimension, fact-agnostic); driver gain and
+			// hierarchy descent stay null — both are fact-scoped and tier A doesn't
+			// know which fact backs a result column.
+			sliceRelevance: 0.8,
+			sliceInterest: "primary",
+			driverGain: null,
+			hierarchyNext: null,
 		});
 	});
 
@@ -87,6 +95,11 @@ describe("adHocAxesFromCatalog", () => {
 			values: [],
 			valueCount: null,
 			businessContext: null,
+			// DAT-673: relevance/interest are blanked under the same ambiguity rule
+			// as businessContext/values — no fact's curation can speak for a name
+			// two facts both catalogue.
+			sliceRelevance: null,
+			sliceInterest: null,
 		});
 	});
 

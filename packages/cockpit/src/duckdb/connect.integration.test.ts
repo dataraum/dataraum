@@ -12,35 +12,13 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 
-const REQUIRED_DEFAULTS: Record<string, string> = {
-	COCKPIT_DATABASE_URL:
-		process.env.COCKPIT_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
-	METADATA_DATABASE_URL:
-		process.env.METADATA_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
-	// Config-parse placeholder only — these suites never touch the metadata
-	// write surface (DAT-816 role split).
-	METADATA_WRITER_DATABASE_URL:
-		process.env.METADATA_WRITER_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
-	DATARAUM_WORKSPACE_ID:
-		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
-	DATARAUM_LAKE_PATH:
-		process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
-	DUCKLAKE_CATALOG_URL:
-		process.env.DUCKLAKE_CATALOG_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
-	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
-	S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
-	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
-	S3_SECRET_ACCESS_KEY:
-		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
-	S3_BUCKET: process.env.S3_BUCKET ?? "dataraum-lake",
-};
-for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
-	if (!process.env[k]) process.env[k] = v;
-}
+import {
+	applyIntegrationEnv,
+	providedByEnvironment,
+	suiteTitle,
+} from "#/test/integration-env";
+
+applyIntegrationEnv();
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shape
 let connect: any;
@@ -73,6 +51,25 @@ describe("connect file path rejects non-bucket paths (DAT-386)", () => {
 const S3_ENDPOINT = process.env.S3_ENDPOINT ?? "127.0.0.1:8333";
 const S3_BUCKET = process.env.S3_BUCKET ?? "dataraum-lake";
 
+// Reachability alone is NOT a sufficient gate. This repo runs several lanes
+// concurrently, so a SIBLING's compose stack is routinely listening on 8333
+// with its own credentials: the port probe passes, and PutObject then fails
+// with an opaque S3Error. Require the environment to have supplied real
+// credentials (not integration-env's placeholders) before touching the store.
+//
+// All three keys, not just the two credentials: a developer with creds but no
+// S3_BUCKET would otherwise stage into integration-env's placeholder bucket
+// and fail on a bucket that was never meant to exist.
+const S3_CREDENTIALED =
+	providedByEnvironment("S3_ACCESS_KEY_ID") &&
+	providedByEnvironment("S3_SECRET_ACCESS_KEY") &&
+	providedByEnvironment("S3_BUCKET");
+
+// A named reason, because an unexplained skip is how this suite went quiet.
+const S3_SKIP_REASON = S3_CREDENTIALED
+	? null
+	: "no real S3 credentials in the environment (S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_BUCKET) — `cp .env.example .env` and bring up the compose stack's SeaweedFS";
+
 async function seaweedReachable(): Promise<boolean> {
 	try {
 		const res = await fetch(`http://${S3_ENDPOINT}/`, {
@@ -86,43 +83,54 @@ async function seaweedReachable(): Promise<boolean> {
 	}
 }
 
-describe("connect s3:// path against live SeaweedFS (DAT-386)", () => {
-	it("stages a CSV to the bucket and sniffs it over s3://", async () => {
-		if (!(await seaweedReachable())) {
-			// No object store up — skip rather than fail (mirrors the DB-gated suites).
-			return;
-		}
+describe.skipIf(!S3_CREDENTIALED)(
+	suiteTitle(
+		"connect s3:// path against live SeaweedFS (DAT-386)",
+		S3_SKIP_REASON,
+	),
+	() => {
+		it("stages a CSV to the bucket and sniffs it over s3://", async () => {
+			if (!(await seaweedReachable())) {
+				// Credentials configured but no gateway up — skip rather than fail
+				// (mirrors the DB-gated suites).
+				return;
+			}
 
-		const { putObject } = await import("../upload/s3-upload");
-		const { buildUploadKey, buildUploadUri } = await import("../upload/policy");
+			const { putObject } = await import("../upload/s3-upload");
+			const { buildUploadKey, buildUploadUri } = await import(
+				"../upload/policy"
+			);
 
-		// DAT-505: uploads stage under the workspace's `<ws>/uploads/` prefix.
-		const key = buildUploadKey(
-			"00000000-0000-0000-0000-000000000001",
-			crypto.randomUUID(),
-			"people.csv",
-		);
-		await putObject(
-			S3_BUCKET,
-			key,
-			Buffer.from("id,name,active\n1,Ada,true\n2,Grace,false\n3,Ada,true\n"),
-			"text/csv",
-		);
+			// DAT-505: uploads stage under the workspace's `<ws>/uploads/` prefix.
+			const key = buildUploadKey(
+				"00000000-0000-0000-0000-000000000001",
+				crypto.randomUUID(),
+				"people.csv",
+			);
+			await putObject(
+				S3_BUCKET,
+				key,
+				Buffer.from("id,name,active\n1,Ada,true\n2,Grace,false\n3,Ada,true\n"),
+				"text/csv",
+			);
 
-		const uri = buildUploadUri(S3_BUCKET, key);
-		const schema = await connect({ source_kind: "file", path: uri });
+			const uri = buildUploadUri(S3_BUCKET, key);
+			const schema = await connect({ source_kind: "file", path: uri });
 
-		expect(schema.sourceKind).toBe("file");
-		expect(schema.source).toBe(uri);
-		expect(schema.tables).toHaveLength(1);
-		const table = schema.tables[0];
-		expect(table.name).toBe("people.csv");
-		expect(table.columns.map((c: { name: string }) => c.name)).toEqual([
-			"id",
-			"name",
-			"active",
-		]);
-		const name = table.columns.find((c: { name: string }) => c.name === "name");
-		expect(name.sampleValues).toEqual(["Ada", "Grace"]);
-	});
-});
+			expect(schema.sourceKind).toBe("file");
+			expect(schema.source).toBe(uri);
+			expect(schema.tables).toHaveLength(1);
+			const table = schema.tables[0];
+			expect(table.name).toBe("people.csv");
+			expect(table.columns.map((c: { name: string }) => c.name)).toEqual([
+				"id",
+				"name",
+				"active",
+			]);
+			const name = table.columns.find(
+				(c: { name: string }) => c.name === "name",
+			);
+			expect(name.sampleValues).toEqual(["Ada", "Grace"]);
+		});
+	},
+);

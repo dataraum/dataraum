@@ -19,7 +19,7 @@
 		"start": "bun run .output/server/index.mjs",
 		"preview": "bun --bun vite preview",
 		"test": "vitest run --project unit",
-		"test:integration": "vitest run --project integration",
+		"test:integration": "bun --bun vitest run --project integration",
 		"typecheck": "tsc --noEmit",
 		"format": "bun --bun biome format",
 		"lint": "bun --bun biome lint",

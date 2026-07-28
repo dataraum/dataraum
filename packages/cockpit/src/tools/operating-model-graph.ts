@@ -68,6 +68,11 @@ interface MetricData {
 	 *  (DAT-702: the node composes ad hoc from its parts; the flattened `sql`
 	 *  above stays a reference display, never the gate). */
 	hasDag: boolean;
+	/** The output step's declared post-execution checks (DAT-840) — enforced by
+	 *  the engine's `graphs/verifier.py` against the executed value; a violation
+	 *  flags the metric, never suppresses the number. Empty when the metric's
+	 *  output step declares none (the common case — renders nothing). */
+	validation: StepValidation[];
 }
 interface MeasureData {
 	kind: "measure";
@@ -158,6 +163,17 @@ export interface OperatingModelGraphInput {
 
 export type MetricStepKind = "extract" | "formula" | "constant";
 
+/** A step's declared post-execution check (the engine's `GraphStep.validations`
+ *  / the YAML's `validation:` block — THE KEY IS SINGULAR, graphs/loader.py
+ *  reads `data.get("validation")`; a `validations` key would be dropped on the
+ *  floor). Enforced by `graphs/verifier.py` against the executed value —
+ *  execution-pass is not validation. */
+export interface StepValidation {
+	condition: string;
+	severity: string | null;
+	message: string | null;
+}
+
 /** One parsed step of a metric's effective DAG (a `dependencies` entry). */
 export interface MetricStep {
 	stepId: string;
@@ -170,6 +186,7 @@ export interface MetricStep {
 	parameter: string | null;
 	value: string | null;
 	outputStep: boolean;
+	validation: StepValidation[];
 }
 
 /** A metric's parsed effective DAG — from the persisted `graph_definition` json. */
@@ -188,6 +205,25 @@ const asString = (v: unknown): string | null =>
 
 const asStepKind = (v: unknown): MetricStepKind =>
 	v === "formula" || v === "constant" ? v : "extract";
+
+/** Narrow a step's `validation` array (untrusted — rule 11). Skips entries
+ *  missing `condition` (the one required field); a non-array/absent key
+ *  yields []. */
+const asValidation = (v: unknown): StepValidation[] => {
+	if (!Array.isArray(v)) return [];
+	const out: StepValidation[] = [];
+	for (const item of v) {
+		if (!isRecord(item)) continue;
+		const condition = asString(item.condition);
+		if (!condition) continue;
+		out.push({
+			condition,
+			severity: asString(item.severity),
+			message: asString(item.message),
+		});
+	}
+	return out;
+};
 
 /**
  * Parse the engine-persisted effective DAG (`graph_definition` json) into typed
@@ -221,6 +257,7 @@ export function parseMetricDag(raw: unknown): MetricDag | null {
 					? String(rawValue)
 					: asString(rawValue),
 			outputStep: stepRaw.output_step === true,
+			validation: asValidation(stepRaw.validation),
 		});
 	}
 	if (steps.length === 0) return null;
@@ -413,6 +450,7 @@ export function buildOperatingModelGraph(
 				category: dag?.category ?? null,
 				sql: m.sql,
 				hasDag: dag !== null,
+				validation: output?.validation ?? [],
 			},
 		});
 		if (!dag || !output) continue;

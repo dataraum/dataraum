@@ -18,6 +18,7 @@ import {
 import { memo } from "react";
 
 import type { OMNode, OMNodeKind } from "#/tools/operating-model-graph";
+import { StepCheckIndicator } from "#/ui/cockpit/widgets/step-check-badge";
 import { OM_NODE_WIDTH } from "./layout";
 
 /** RF node payload — the engine node plus the expanded flag (display only). */
@@ -71,6 +72,19 @@ function subtitle(om: OMNode): string | null {
 	return om.data.kind === "metric" ? om.data.formula : null;
 }
 
+/** The metric's output-step declared-checks indicator (DAT-840) — null for
+ *  every other kind and for a metric that declares none, so the node face is
+ *  unchanged from before this field existed (density stays low by default). */
+function checksIndicator(om: OMNode): React.ReactNode {
+	const validation = om.data.kind === "metric" ? om.data.validation : [];
+	if (validation.length === 0) return null;
+	return (
+		<span style={{ marginTop: 2 }}>
+			<StepCheckIndicator checks={validation} />
+		</span>
+	);
+}
+
 function OperatingModelNodeImpl({ data, selected }: NodeProps<OMRfNode>) {
 	const { om, expanded } = data;
 	const { color, Icon } = KIND_STYLE[om.kind] ?? KIND_STYLE.metric;
@@ -115,6 +129,7 @@ function OperatingModelNodeImpl({ data, selected }: NodeProps<OMRfNode>) {
 							</Text>
 						) : null}
 					</Stack>
+					{checksIndicator(om)}
 					{statusBadge(om)}
 				</Group>
 			</Paper>

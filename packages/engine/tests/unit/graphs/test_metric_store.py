@@ -72,6 +72,45 @@ def test_seed_creates_metric_nodes_params_and_edges(session: Session) -> None:
     assert _count(session, MetricParameter) == 4
 
 
+def test_seed_carries_description_and_the_raw_dag_body(session: Session) -> None:
+    """DAT-882: the typed home now carries description + the RAW output/dependencies
+    sub-dicts verbatim off the shipped YAML — the exact shape teach_metric's
+    shipped-baseline readers already expect (raw `type`, not the parsed dataclass's
+    `output_type`)."""
+    ensure_metrics_seeded(session, "finance")
+    ebitda = session.execute(select(Metric).where(Metric.graph_id == "ebitda")).scalar_one()
+    assert ebitda.description == ("Earnings before interest, taxes, depreciation, and amortization")
+    assert ebitda.output == {
+        "type": "scalar",
+        "metric_id": "ebitda",
+        "unit": "currency",
+        "decimal_places": 0,
+    }
+    assert ebitda.dependencies is not None
+    assert set(ebitda.dependencies) == {
+        "revenue",
+        "cost_of_goods_sold",
+        "operating_expense",
+        "depreciation",
+        "operating_income",
+        "ebitda",
+    }
+    # A leaf extract step keeps the RAW YAML shape (source/aggregation), not the
+    # parsed dataclass's field names.
+    revenue_step = ebitda.dependencies["revenue"]
+    assert revenue_step["type"] == "extract"
+    assert revenue_step["source"] == {
+        "standard_field": "revenue",
+        "statement": "income_statement",
+    }
+    assert revenue_step["aggregation"] == "sum"
+    # The output step keeps depends_on + output_step verbatim.
+    output_step = ebitda.dependencies["ebitda"]
+    assert output_step["type"] == "formula"
+    assert output_step["output_step"] is True
+    assert output_step["depends_on"] == ["operating_income", "depreciation"]
+
+
 def test_seed_derives_from_edges_are_the_distinct_extract_concepts(session: Session) -> None:
     ensure_metrics_seeded(session, "finance")
 
@@ -183,7 +222,7 @@ def test_one_malformed_metric_does_not_sink_the_seed(
         "parameters": {"p": {"type": "integer", "default": 1, "derivation": "not_a_rule"}},
     }
     monkeypatch.setattr(
-        "dataraum.graphs.metric_store.get_metric_definitions",
+        "dataraum.graphs.metric_store._shipped_metric_definitions",
         lambda _vertical: {
             "good": good,
             "bad_noname": bad_no_name,

@@ -149,6 +149,7 @@ function renderGrid(
 	source?: DrillSource,
 	onPinnedRow?: (row: Record<string, unknown> | null) => void,
 	axesResponse?: unknown,
+	extraProps?: Partial<Parameters<typeof DrillableGrid>[0]>,
 ) {
 	stubFetch(axesResponse);
 	return render(
@@ -159,6 +160,7 @@ function renderGrid(
 					axesRequest={{ metricKey: "m1" }}
 					source={source}
 					onPinnedRow={onPinnedRow}
+					{...extraProps}
 				/>
 			</MantineProvider>
 		</TestQueryProvider>,
@@ -459,5 +461,96 @@ describe("DrillableGrid — temporal gate reason", () => {
 			).toBe(false),
 		);
 		expect(screen.queryByTestId("drill-temporal-gate-reason")).toBeNull();
+	});
+});
+
+// --- rehydrate on mount (DAT-676) --------------------------------------------
+//
+// The report-detail route decodes its `?drill=` search param into steps and
+// hands them here as `initialSteps` — composed exactly like a live apply
+// (same endpoint, same acceptance rule), but ONCE, on mount.
+
+describe("DrillableGrid — rehydrate on mount", () => {
+	it("composes the saved steps on mount and commits them (steps + effective SQL + onStepsChange)", async () => {
+		const onStepsChange = vi.fn();
+		renderGrid(undefined, undefined, undefined, {
+			initialSteps: [{ kind: "slice", column: "region" }],
+			onStepsChange,
+		});
+		expect(gridSql()).toBe(BASE_SQL); // nothing committed yet — the compose is in flight
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		expect(composeBodies[0]).toEqual({
+			url: "/api/drill/compose",
+			body: {
+				sql: BASE_SQL,
+				params: [],
+				steps: [{ kind: "slice", column: "region" }],
+			},
+		});
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "REHYDRATED_SQL", params: [] }),
+		);
+		await waitFor(() => expect(gridSql()).toBe("REHYDRATED_SQL"));
+		await screen.findByTestId("drill-step-slice-region");
+		expect(onStepsChange).toHaveBeenCalledWith(
+			[{ kind: "slice", column: "region" }],
+			{ sql: "REHYDRATED_SQL", params: [] },
+		);
+		expect(screen.queryByTestId("drill-rehydrate-notice")).toBeNull();
+	});
+
+	it("degrades to the base result with a visible, dismissable notice when the saved step is refused", async () => {
+		renderGrid(undefined, undefined, undefined, {
+			initialSteps: [{ kind: "slice", column: "region" }],
+		});
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: false, reason: "axis no longer catalogued" }),
+		);
+		const notice = await screen.findByTestId("drill-rehydrate-notice");
+		expect(notice.textContent).toContain("axis no longer catalogued");
+		expect(gridSql()).toBe(BASE_SQL);
+		expect(screen.queryByTestId("drill-step-slice-region")).toBeNull();
+
+		// Dismissable, like the live-apply refusal.
+		const closeButton = notice.querySelector("button");
+		if (!closeButton) throw new Error("notice close button not rendered");
+		fireEvent.click(closeButton);
+		expect(screen.queryByTestId("drill-rehydrate-notice")).toBeNull();
+	});
+
+	it("degrades to the base result on a network failure too (never throws)", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: RequestInfo | URL) => {
+				const u = String(url);
+				if (u.endsWith("/api/drill/axes")) {
+					return jsonResponse({ axes: [axis("region")] });
+				}
+				if (u.endsWith("/api/drill/compose")) {
+					throw new Error("network down");
+				}
+				throw new Error(`unexpected fetch: ${u}`);
+			}),
+		);
+		render(
+			<TestQueryProvider>
+				<MantineProvider theme={theme} env="test">
+					<DrillableGrid
+						sql={BASE_SQL}
+						axesRequest={{ metricKey: "m1" }}
+						initialSteps={[{ kind: "slice", column: "region" }]}
+					/>
+				</MantineProvider>
+			</TestQueryProvider>,
+		);
+		await screen.findByTestId("drill-rehydrate-notice");
+		expect(gridSql()).toBe(BASE_SQL);
+	});
+
+	it("does nothing when initialSteps is absent — the ordinary empty-stack start", async () => {
+		renderGrid();
+		expect(composeBodies).toEqual([]);
+		expect(screen.queryByTestId("drill-rehydrate-notice")).toBeNull();
 	});
 });

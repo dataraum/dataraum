@@ -10,6 +10,7 @@ import { notFound } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import {
 	getReport,
+	getReportParentTitle,
 	renameReport,
 	setReportFingerprint,
 	softDeleteReport,
@@ -37,7 +38,14 @@ export const loadReport = createServerFn({ method: "GET" })
 			// SQL, a lake hiccup), don't badge — the grid surfaces the real error.
 			console.error("[reports] drift check failed — not flagging:", err);
 		}
-		return { report, outdated };
+		// The evolve-lineage title (DAT-627) — a separate, minimal query only
+		// when a parent is actually set (most reports have none). Null when
+		// the parent id no longer resolves (soft-deleted/foreign); the route
+		// omits the link rather than rendering a dead one.
+		const parentTitle = report.parentId
+			? await getReportParentTitle(report.parentId)
+			: null;
+		return { report, outdated, parentTitle };
 	});
 
 export const renameReportFn = createServerFn({ method: "POST" })

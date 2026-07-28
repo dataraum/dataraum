@@ -1,5 +1,6 @@
 import {
 	ActionIcon,
+	Anchor,
 	Badge,
 	Button,
 	Group,
@@ -7,9 +8,11 @@ import {
 	Text,
 	TextInput,
 	Title,
+	Tooltip,
 } from "@mantine/core";
 import {
 	createFileRoute,
+	Link,
 	notFound,
 	useNavigate,
 	useRouter,
@@ -17,15 +20,22 @@ import {
 import { useServerFn } from "@tanstack/react-start";
 import {
 	Check,
+	Library,
 	Pencil,
 	RefreshCw,
 	Trash2,
 	TriangleAlert,
 	X,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type { ReportRow } from "#/db/cockpit/reports";
+import type { DrillStep } from "#/duckdb/drill";
+import {
+	decodeDrillSearch,
+	encodeDrillSearch,
+} from "#/ui/cockpit/report-drill-search";
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
-import { DrillableResultGridWidget } from "#/ui/cockpit/widgets/drillable-result-grid";
+import { DrillableGrid } from "#/ui/cockpit/widgets/drillable-grid";
 import { ReportChart } from "#/ui/cockpit/widgets/report-chart";
 import {
 	deleteReportFn,
@@ -48,8 +58,27 @@ import {
 // The loader + action server fns live in the sibling `$reportId.functions.ts`
 // (the cockpit route convention) so their cockpit_db + lake handlers are stripped
 // from the client bundle.
+//
+// DRILL PERSISTENCE (DAT-676): the grid mounts DIRECTLY on `DrillableGrid` (not
+// the canvas-registered `DrillableResultGridWidget`, which owns the run_sql/
+// canvas path and stays untouched here) so this route can wire a typed `?drill=`
+// search param — decoded once as `initialSteps` so a reload/shared link restores
+// the drilled result, and re-encoded on every live step change so the URL always
+// names what the grid is showing. A step that no longer composes (the DrillableGrid
+// rehydrate path) degrades to the base result with its own visible notice.
+//
+// CHILD-REPORT MINT (DAT-627): while drilled, the grid's toolbar carries its own
+// "Report" action — mints a NEW report whose `sql`/`sqlParams` are the composed
+// drilled statement and whose `parentId` is THIS report's id; the source row is
+// never touched. No confidence describes a slice nobody computed one for, so the
+// child mints with `confidence: null` (the same honesty the answer surface now
+// carries — see answer-result.tsx).
 
 export const Route = createFileRoute("/(app)/reports/$reportId")({
+	validateSearch: (search: Record<string, unknown>) => {
+		const drill = decodeDrillSearch(search.drill);
+		return { drill: drill.length > 0 ? drill : undefined };
+	},
 	loader: async ({ params }) => {
 		const data = await loadReport({ data: params.reportId });
 		if (!data) throw notFound();
@@ -59,9 +88,41 @@ export const Route = createFileRoute("/(app)/reports/$reportId")({
 });
 
 function ReportDetail() {
-	const { report, outdated } = Route.useLoaderData();
+	const { report, outdated, parentTitle } = Route.useLoaderData();
+	// REMOUNT PER REPORT (React rule 5): the lineage link (below) and a future
+	// child mint both navigate between two DIFFERENT `$reportId` matches on the
+	// SAME route — TanStack Router reuses the component instance across a
+	// params-only change, so without this key the title-edit draft, the drill's
+	// committed steps, and the mint's "Saved to Reports" state would all leak
+	// from the report just left into the one just opened (the AnswerResultWidget
+	// `key={state.sql}` precedent, answer-result.tsx).
+	return (
+		<ReportDetailBody
+			key={report.id}
+			report={report}
+			outdated={outdated}
+			parentTitle={parentTitle}
+		/>
+	);
+}
+
+function ReportDetailBody({
+	report,
+	outdated,
+	parentTitle,
+}: {
+	report: ReportRow;
+	outdated: boolean;
+	parentTitle: string | null;
+}) {
 	const router = useRouter();
 	const navigate = useNavigate();
+	// Scoped to THIS route's own `drill` search param (Route.useNavigate binds
+	// `from` to the route automatically) — distinct from the bare `navigate`
+	// above, which only ever targets a DIFFERENT route (the post-delete
+	// redirect to the gallery).
+	const navigateSearch = Route.useNavigate();
+	const search = Route.useSearch();
 	const rename = useServerFn(renameReportFn);
 	const remove = useServerFn(deleteReportFn);
 	const regenerate = useServerFn(regenerateSummaryFn);
@@ -74,6 +135,31 @@ function ReportDetail() {
 	const [busy, setBusy] = useState(false);
 	const [regenerating, setRegenerating] = useState(false);
 	const [regenFailed, setRegenFailed] = useState(false);
+
+	// The committed drill (DAT-676/627): the statement the grid is CURRENTLY
+	// showing, mirroring the answer surface's own `drilled` state
+	// (answer-result.tsx) — the toolbar's child-mint action needs the EFFECTIVE
+	// query, and its very presence is gated on "is anything drilled at all".
+	const [drilled, setDrilled] = useState<{
+		sql: string;
+		params: (string | number | boolean | null)[];
+	} | null>(null);
+	const [minting, setMinting] = useState(false);
+	const [mintedId, setMintedId] = useState<string | null>(null);
+	const [mintFailed, setMintFailed] = useState(false);
+
+	// `?drill=` decodes ONCE, at load, into DrillableGrid's rehydrate path
+	// (initialSteps is read only on mount there — see drillable-grid.tsx); a
+	// later live change flows the other way, through `onStepsChange` below.
+	const initialSteps: DrillStep[] = search.drill ?? [];
+
+	const axesRequest = useMemo(
+		() =>
+			report.sqlParams && report.sqlParams.length > 0
+				? { resultSql: report.sql, resultParams: report.sqlParams }
+				: { resultSql: report.sql },
+		[report.sql, report.sqlParams],
+	);
 
 	// Refresh the stale summary: regenerate server-side, then re-load so the new prose
 	// + cleared badge render. On failure keep the old summary + badge and flag inline.
@@ -118,6 +204,79 @@ function ReportDetail() {
 		}
 	};
 
+	// Mint a CHILD report from the drilled grid (DAT-627). No narrative
+	// describes a slice nobody generated one for — same honesty the answer
+	// surface carries (confidence: null, and here summary: "" too, since
+	// `reports.summary` is NOT NULL and an empty string is the same "nothing
+	// computed" state as a null confidence, not a fabricated one).
+	const onMintChild = async () => {
+		if (!drilled) return;
+		setMinting(true);
+		setMintFailed(false);
+		try {
+			const res = await fetch("/api/reports/mint", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					sql: drilled.sql,
+					sqlParams: drilled.params.length > 0 ? drilled.params : null,
+					summary: "",
+					title: `${report.title} (drilled)`,
+					conversationId: null,
+					confidence: null,
+					parentId: report.id,
+				}),
+			});
+			if (!res.ok) throw new Error(`mint failed: ${res.status}`);
+			const { id } = (await res.json()) as { id: string };
+			setMintedId(id);
+		} catch (err) {
+			console.error("[reports] child mint failed:", err);
+			setMintFailed(true);
+		} finally {
+			setMinting(false);
+		}
+	};
+
+	const childMintAction = drilled ? (
+		mintedId ? (
+			<Button
+				variant="light"
+				color="green"
+				size="compact-xs"
+				leftSection={<Library size={13} />}
+				data-testid="report-child-mint-saved"
+				renderRoot={(props) => (
+					<Link
+						to="/reports/$reportId"
+						params={{ reportId: mintedId }}
+						{...props}
+					/>
+				)}
+			>
+				Saved to Reports
+			</Button>
+		) : (
+			<Tooltip
+				label="Save this drilled view as a new report, linked to this one"
+				maw={280}
+				multiline
+			>
+				<Button
+					variant="subtle"
+					color="gray"
+					size="compact-xs"
+					leftSection={<Library size={13} />}
+					onClick={onMintChild}
+					loading={minting}
+					data-testid="report-child-mint"
+				>
+					Report
+				</Button>
+			</Tooltip>
+		)
+	) : undefined;
+
 	return (
 		<Stack p="md" gap="md" data-testid="report-detail">
 			<Group justify="space-between" wrap="nowrap">
@@ -157,19 +316,41 @@ function ReportDetail() {
 						</ActionIcon>
 					</Group>
 				) : (
-					<Group gap="xs">
-						<Title order={3}>{report.title}</Title>
-						<ActionIcon
-							variant="subtle"
-							onClick={() => {
-								setDraft(report.title);
-								setEditing(true);
-							}}
-							aria-label="Rename report"
-						>
-							<Pencil size={16} />
-						</ActionIcon>
-					</Group>
+					<Stack gap={2}>
+						<Group gap="xs">
+							<Title order={3}>{report.title}</Title>
+							<ActionIcon
+								variant="subtle"
+								onClick={() => {
+									setDraft(report.title);
+									setEditing(true);
+								}}
+								aria-label="Rename report"
+							>
+								<Pencil size={16} />
+							</ActionIcon>
+						</Group>
+						{/* Evolve lineage (DAT-627): only when the parent still resolves —
+						    a soft-deleted or foreign parent id (getReportParentTitle's null)
+						    omits the link rather than pointing at a dead page. */}
+						{report.parentId && parentTitle && (
+							<Text size="xs" c="dimmed" data-testid="report-parent-link">
+								Evolved from{" "}
+								<Anchor
+									size="xs"
+									renderRoot={(props) => (
+										<Link
+											to="/reports/$reportId"
+											params={{ reportId: report.parentId as string }}
+											{...props}
+										/>
+									)}
+								>
+									{parentTitle}
+								</Anchor>
+							</Text>
+						)}
+					</Stack>
 				)}
 				<Button
 					color="red"
@@ -216,19 +397,46 @@ function ReportDetail() {
 					<Text>{report.summary}</Text>
 				</Stack>
 			)}
-			<ConfidenceStrip confidence={report.confidence} />
+			{report.confidence && <ConfidenceStrip confidence={report.confidence} />}
+			{mintFailed && (
+				<Text size="xs" c="red" data-testid="report-child-mint-error">
+					Couldn’t save the drilled view as a report — try again.
+				</Text>
+			)}
 			{/* Frozen chart (DAT-626) over live re-run data — above the table it
 			    summarizes. Absent → table-only report (first-class). */}
 			{report.chartConfig && (
-				<ReportChart sql={report.sql} config={report.chartConfig} />
+				<ReportChart
+					sql={report.sql}
+					params={report.sqlParams ?? undefined}
+					config={report.chartConfig}
+				/>
 			)}
 			{/* Drillable (DAT-678), tier A: a report freezes a STATEMENT, not a
 			    calculation, so there is nothing upstream to recompose from — but
 			    the reader can still group the live result by any catalogued
-			    dimension it returns. The drill is view-local; the report itself
+			    dimension it returns. A saved/shared `?drill=` link restores
+			    (DAT-676); the drill is otherwise view-local, the report itself
 			    stays immutable. */}
-			<DrillableResultGridWidget
-				state={{ kind: "result-grid", sql: report.sql }}
+			<DrillableGrid
+				sql={report.sql}
+				params={report.sqlParams ?? undefined}
+				axesRequest={axesRequest}
+				initialSteps={initialSteps}
+				onStepsChange={(steps, effective) => {
+					setDrilled(steps.length > 0 ? effective : null);
+					// Retire a stale mint state (rule 1 precedent, answer-result.tsx):
+					// the previous drill's "Saved to Reports" no longer describes
+					// what the grid shows once the steps change again.
+					setMintedId(null);
+					setMintFailed(false);
+					navigateSearch({
+						search: (prev) => ({ ...prev, drill: encodeDrillSearch(steps) }),
+						replace: true,
+						resetScroll: false,
+					});
+				}}
+				toolbarActions={childMintAction}
 			/>
 		</Stack>
 	);

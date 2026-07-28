@@ -174,23 +174,35 @@ CREATE TABLE metadata_snapshot_head (
 	CONSTRAINT uq_snapshot_head_target_stage UNIQUE (target, stage)
 );
 
-CREATE TABLE metric_additivity (
+CREATE TABLE metric_axis_additivity (
 	additivity_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	target_kind VARCHAR NOT NULL, 
 	target_key VARCHAR NOT NULL, 
-	categorical_additive BOOLEAN NOT NULL, 
-	time_additive BOOLEAN NOT NULL, 
-	categorical_reason VARCHAR, 
-	time_reason VARCHAR, 
+	axis_kind VARCHAR NOT NULL, 
+	axis_key VARCHAR NOT NULL, 
+	status VARCHAR NOT NULL, 
+	verdict VARCHAR, 
+	reason VARCHAR, 
+	abstain_reason VARCHAR, 
+	bucket_grain VARCHAR, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
-	CONSTRAINT pk_metric_additivity PRIMARY KEY (additivity_id), 
-	CONSTRAINT uq_metric_additivity_target UNIQUE (target_kind, target_key, run_id)
+	CONSTRAINT pk_metric_axis_additivity PRIMARY KEY (additivity_id), 
+	CONSTRAINT uq_metric_axis_additivity_target UNIQUE (target_kind, target_key, axis_kind, axis_key, run_id), 
+	CONSTRAINT ck_metric_axis_additivity_target_kind CHECK (target_kind IN ('measure', 'metric')), 
+	CONSTRAINT ck_metric_axis_additivity_axis_kind CHECK (axis_kind IN ('categorical', 'time')), 
+	CONSTRAINT ck_metric_axis_additivity_status CHECK (status IN ('abstained', 'classified')), 
+	CONSTRAINT ck_metric_axis_additivity_verdict CHECK (verdict IS NULL OR verdict IN ('additive', 'non_additive_recompute', 'semi_additive')), 
+	CONSTRAINT ck_metric_axis_additivity_reason CHECK (reason IS NULL OR reason IN ('average', 'distinct_count', 'min_max', 'ratio', 'snapshot_count', 'stock')), 
+	CONSTRAINT ck_metric_axis_additivity_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('graph_parse_failed', 'materialization_conflict', 'missing_extract', 'no_catalogue_run', 'relation_outside_analysis', 'unknown_aggregate', 'unknown_temporal', 'unresolved_grounding')), 
+	CONSTRAINT ck_metric_axis_additivity_bucket_grain CHECK (bucket_grain IS NULL OR bucket_grain IN ('day', 'month', 'quarter', 'year')), 
+	CONSTRAINT ck_metric_axis_additivity_status_verdict_reason CHECK ((status = 'classified' AND verdict IS NOT NULL AND abstain_reason IS NULL AND ((verdict = 'additive' AND reason IS NULL) OR (verdict <> 'additive' AND reason IS NOT NULL))) OR (status = 'abstained' AND verdict IS NULL AND reason IS NULL AND abstain_reason IS NOT NULL)), 
+	CONSTRAINT ck_metric_axis_additivity_bucket_grain_time_axis_only CHECK (axis_kind = 'time' OR bucket_grain IS NULL)
 );
 
-CREATE INDEX ix_metric_additivity_run_id ON metric_additivity (run_id);
+CREATE INDEX ix_metric_axis_additivity_run_id ON metric_axis_additivity (run_id);
 
-CREATE INDEX ix_metric_additivity_target_key ON metric_additivity (target_key);
+CREATE INDEX ix_metric_axis_additivity_target_key ON metric_axis_additivity (target_key);
 
 CREATE TABLE metric_derives_from (
 	edge_id VARCHAR NOT NULL, 

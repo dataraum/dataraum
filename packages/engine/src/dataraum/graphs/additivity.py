@@ -1,9 +1,16 @@
-"""Additivity verdict for a grounded metric (DAT-716).
+"""Additivity verdicts for a grounded metric (DAT-716, per-axis in DAT-857/868).
 
-Deterministic classification of whether a metric's value *reconciles* under
-aggregation across an axis class — the drill's grounding for two decisions:
-offer a time grain, and sum vs dash a categorical breakdown. No measurement,
-no LLM: a pure function over signals the pipeline already computes.
+Deterministic classification of how a metric's value behaves under aggregation
+across an axis — the drill's grounding for three decisions: whether to offer a
+time bucketing, how to COMPOSE it (sum the parts, or recompute the formula per
+bucket), and whether a breakdown reconciles or shows the honest dash. No
+measurement, no LLM: a pure function over signals the pipeline already computes.
+
+Sections 1-3 are the doctrine (parse → classify → roll up the DAG), expressed as
+"does this reconcile under SUM?" booleans per axis CLASS. Section 4 projects
+those onto the served per-(target × axis) verdict vocabulary, which distinguishes
+the three ways a value can fail to sum — and distinguishes all of them from not
+having been judged at all.
 
 Two independent rules (Kimball / Malloy aggregate locality):
 
@@ -31,6 +38,7 @@ from __future__ import annotations
 import ast
 import json
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import duckdb
@@ -455,3 +463,157 @@ def _to_verdict(cls: AxisClass) -> MetricVerdict:
         categorical_reason=cls.categorical_reason,
         time_reason=cls.time_reason,
     )
+
+
+# =============================================================================
+# 4. Typed per-axis verdicts (DAT-857 / DAT-868)
+# =============================================================================
+#
+# The booleans above answer ONE question — "does this reconcile under SUM?" —
+# and answer it for two axis CLASSES. The served model generalizes that to a
+# verdict per (target × axis), because "does not sum" is three different facts
+# with three different honest UIs:
+#
+#   ADDITIVE                — sum the parts; the total reconciles.
+#   SEMI_ADDITIVE           — each bucket is meaningful, the SUM across buckets
+#                             is not (a stock's closing balance, a snapshot's
+#                             recounted population). Needs point-in-time
+#                             selection per bucket, not summation.
+#   NON_ADDITIVE_RECOMPUTE  — the value must be RECOMPUTED per bucket from its
+#                             carriers (a ratio, an average, a distinct count).
+#                             Bucketing is honest; only the total is not.
+#   ABSTAINED               — we do not know. Never a silent "no".
+#
+# The old model collapsed all four onto `False`, which is why the drill withheld
+# a ratio's month buckets (a meaningful, recomputable ask) while permitting a
+# raw 365-row date breakdown of the same measure (the least honest form).
+#
+# This is a PROJECTION of the classifier above, not a second judge: the doctrine
+# stays in `classify_extract`/`roll_up_metric`, and the mapping below is total.
+
+
+class AxisKind(Enum):
+    """Which axis class a verdict is about."""
+
+    TIME = "time"
+    CATEGORICAL = "categorical"
+
+
+class AxisVerdict(Enum):
+    """How a value aggregates across one axis. See the module note above."""
+
+    ADDITIVE = "additive"
+    SEMI_ADDITIVE = "semi_additive"
+    NON_ADDITIVE_RECOMPUTE = "non_additive_recompute"
+
+
+class AdditivityStatus(Enum):
+    """Whether we judged the (target × axis) at all (DAT-859 template)."""
+
+    CLASSIFIED = "classified"
+    ABSTAINED = "abstained"
+
+
+class AbstainReason(Enum):
+    """Why no verdict could be reached — always named, never silent.
+
+    The first two come from the classifier (an aggregate or a stock/flow
+    behaviour it could not resolve); the rest from the resolver and the phase,
+    where a target can fail to reach classification at all.
+    """
+
+    UNKNOWN_AGGREGATE = "unknown_aggregate"
+    UNKNOWN_TEMPORAL = "unknown_temporal"
+    UNRESOLVED_GROUNDING = "unresolved_grounding"
+    RELATION_OUTSIDE_ANALYSIS = "relation_outside_analysis"
+    MATERIALIZATION_CONFLICT = "materialization_conflict"
+    MISSING_EXTRACT = "missing_extract"
+    NO_CATALOGUE_RUN = "no_catalogue_run"
+    GRAPH_PARSE_FAILED = "graph_parse_failed"
+
+
+#: Doctrine reasons that can appear on a CLASSIFIED row. The two `unknown_*`
+#: reasons are deliberately absent: they are not "why it doesn't sum", they are
+#: "we couldn't tell", which is an ABSTENTION. This tuple is the DB CHECK vocab.
+CLASSIFIED_REASONS: tuple[str, ...] = (
+    AVERAGE,
+    DISTINCT_COUNT,
+    MIN_MAX,
+    RATIO,
+    SNAPSHOT_COUNT,
+    STOCK,
+)
+
+#: Reasons whose per-bucket value is meaningful but whose SUM across buckets is
+#: not — the semi-additive family (Kimball). Everything else non-additive is a
+#: recompute-from-carriers case.
+_SEMI_ADDITIVE_REASONS: frozenset[str] = frozenset({STOCK, SNAPSHOT_COUNT})
+
+#: Classifier reasons that are really "we could not determine", mapped to their
+#: typed abstention.
+_ABSTAIN_BY_REASON: dict[str, AbstainReason] = {
+    UNKNOWN_AGGREGATE: AbstainReason.UNKNOWN_AGGREGATE,
+    UNKNOWN_TEMPORAL: AbstainReason.UNKNOWN_TEMPORAL,
+}
+
+
+@dataclass(frozen=True)
+class AxisAdditivity:
+    """The served verdict for one (target × axis), or a typed abstention.
+
+    Status/verdict/reason pairing is enforced here, at the one chokepoint, so an
+    invalid combination cannot reach the row builder (``drivers/models.py``
+    template). The DB repeats the same rule as a CHECK constraint.
+    """
+
+    status: AdditivityStatus
+    verdict: AxisVerdict | None = None
+    reason: str | None = None
+    abstain_reason: AbstainReason | None = None
+
+    def __post_init__(self) -> None:
+        if self.status is AdditivityStatus.CLASSIFIED:
+            if self.verdict is None:
+                raise ValueError("a classified axis must carry a verdict")
+            if self.abstain_reason is not None:
+                raise ValueError("a classified axis must not carry an abstain_reason")
+            if self.verdict is AxisVerdict.ADDITIVE and self.reason is not None:
+                raise ValueError("an additive axis reconciles — it has no reason not to")
+            if self.verdict is not AxisVerdict.ADDITIVE and self.reason not in CLASSIFIED_REASONS:
+                raise ValueError(f"non-additive axis needs a doctrine reason, got {self.reason!r}")
+        else:
+            if self.abstain_reason is None:
+                raise ValueError("an abstention must name its reason")
+            if self.verdict is not None or self.reason is not None:
+                raise ValueError("an abstention carries no verdict and no doctrine reason")
+
+
+def abstained(reason: AbstainReason) -> AxisAdditivity:
+    """A typed abstention — the only honest answer when classification failed."""
+    return AxisAdditivity(status=AdditivityStatus.ABSTAINED, abstain_reason=reason)
+
+
+def axis_additivity(cls: AxisClass | MetricVerdict, kind: AxisKind) -> AxisAdditivity:
+    """Project a classifier result onto ONE axis as a typed verdict.
+
+    Total by construction: every branch of ``classify_extract``/``roll_up_metric``
+    either sets the axis additive, or names a reason — and every reason is either
+    a doctrine reason (→ semi-additive or recompute) or an ``unknown_*`` (→ a
+    typed abstention).
+    """
+    if kind is AxisKind.TIME:
+        additive, reason = cls.time_additive, cls.time_reason
+    else:
+        additive, reason = cls.categorical_additive, cls.categorical_reason
+    if additive:
+        return AxisAdditivity(status=AdditivityStatus.CLASSIFIED, verdict=AxisVerdict.ADDITIVE)
+    if reason is None or reason in _ABSTAIN_BY_REASON:
+        # A non-additive axis with no named reason is unreachable from the
+        # classifier; if one ever appears, abstain rather than invent a doctrine.
+        return abstained(_ABSTAIN_BY_REASON.get(reason or "", AbstainReason.UNKNOWN_AGGREGATE))
+    verdict = (
+        AxisVerdict.SEMI_ADDITIVE
+        if reason in _SEMI_ADDITIVE_REASONS
+        else AxisVerdict.NON_ADDITIVE_RECOMPUTE
+    )
+    return AxisAdditivity(status=AdditivityStatus.CLASSIFIED, verdict=verdict, reason=reason)

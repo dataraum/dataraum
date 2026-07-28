@@ -705,27 +705,100 @@ def _units_and_additivity_stmts() -> list[str]:
         "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
         f"VALUES ('cc_self', 'c_self', '{RUN}', 'price_usd', '{TS}')"
     )
-    # The operating_model head that promotes metric_additivity (read_views _CATALOG_GRAIN
-    # maps it to (catalog, 'operating_model')). The existing seed only has (catalog,
-    # 'catalog') — without this head current_metric_additivity resolves zero rows.
+    # The operating_model head that promotes metric_axis_additivity (read_views
+    # _CATALOG_GRAIN maps it to (catalog, 'operating_model')). The existing seed only
+    # has (catalog, 'catalog') — without this head the current view resolves zero rows.
     stmts.append(
         "INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at) "
         f"VALUES ('h_om', 'catalog', 'operating_model', '{RUN}', '{TS}')"
     )
-    for aid, kind, key, cat_add, time_add, cat_reason, time_reason in [
+    for aid, kind, key, axis_kind, axis_key, status, verdict, reason, abstain, grain in [
         # revenue: an active finance concept → gets a has_additivity edge. A summed
-        # balance reconciles across categories but not across time (STOCK).
-        ("ma_rev", "measure", "revenue", "true", "false", "NULL", "'stock'"),
+        # balance is additive across categories and SEMI-additive across time (stock).
+        (
+            "ma_rev_c",
+            "measure",
+            "revenue",
+            "categorical",
+            "*",
+            "classified",
+            "'additive'",
+            "NULL",
+            "NULL",
+            "NULL",
+        ),
+        (
+            "ma_rev_t",
+            "measure",
+            "revenue",
+            "time",
+            "*",
+            "classified",
+            "'semi_additive'",
+            "'stock'",
+            "NULL",
+            "NULL",
+        ),
+        # ...and a concrete time axis REFINES the class row with its observed cadence.
+        (
+            "ma_rev_p",
+            "measure",
+            "revenue",
+            "time",
+            "period",
+            "classified",
+            "'semi_additive'",
+            "'stock'",
+            "NULL",
+            "'month'",
+        ),
         # mk_margin: a formula graph_id (no concept) → vertex only, no has_additivity.
-        # A ratio reconciles on NEITHER axis.
-        ("ma_margin", "metric", "mk_margin", "false", "false", "'ratio'", "'ratio'"),
+        # A ratio must be RECOMPUTED per bucket on either axis.
+        (
+            "ma_mg_c",
+            "metric",
+            "mk_margin",
+            "categorical",
+            "*",
+            "classified",
+            "'non_additive_recompute'",
+            "'ratio'",
+            "NULL",
+            "NULL",
+        ),
+        (
+            "ma_mg_t",
+            "metric",
+            "mk_margin",
+            "time",
+            "*",
+            "classified",
+            "'non_additive_recompute'",
+            "'ratio'",
+            "NULL",
+            "NULL",
+        ),
+        # mk_unknown: never judged — the typed abstention must project too, so a
+        # consumer can tell "not judged" from "judged non-additive".
+        (
+            "ma_unk_t",
+            "metric",
+            "mk_unknown",
+            "time",
+            "*",
+            "abstained",
+            "NULL",
+            "NULL",
+            "'unknown_temporal'",
+            "NULL",
+        ),
     ]:
         stmts.append(
-            "INSERT INTO metric_additivity "
-            "(additivity_id, run_id, target_kind, target_key, categorical_additive, "
-            " time_additive, categorical_reason, time_reason, created_at) "
-            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', {cat_add}, {time_add}, "
-            f"{cat_reason}, {time_reason}, '{TS}')"
+            "INSERT INTO metric_axis_additivity "
+            "(additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, "
+            " status, verdict, reason, abstain_reason, bucket_grain, created_at) "
+            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', '{axis_kind}', '{axis_key}', "
+            f"'{status}', {verdict}, {reason}, {abstain}, {grain}, '{TS}')"
         )
     return stmts
 
@@ -2097,26 +2170,65 @@ def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
 # --- DAT-731: additivity projection + measured_in units ---------------------------
 
 
-def test_additivity_verdict_vertices_carry_the_two_axis_verdict(graph_engine: Engine) -> None:
-    """additivity_verdict (DAT-731): both drill-target kinds project as one uniform
+def test_additivity_verdict_vertices_carry_the_per_axis_verdict(graph_engine: Engine) -> None:
+    """additivity_verdict (DAT-857/868): both drill-target kinds project as one uniform
     vertex — a MEASURE (target_key = a concept name) and a METRIC (target_key = a
-    formula graph_id with no vertex of its own) — each carrying the 2-axis verdict
-    (categorical / time additive + reason), MATCH-able by property."""
+    formula graph_id with no vertex of its own) — each carrying a verdict PER AXIS,
+    MATCH-able by property. The class row ('*') covers every axis of its kind; a named
+    axis refines it with the cadence; an abstention projects as itself."""
     sql = (
-        f"SELECT kind, key, cadd, tadd, creason, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT kind, key, ak, axk, st, vd, rsn, ab, bg FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (a IS additivity_verdict) "
-        "COLUMNS (a.target_kind AS kind, a.target_key AS key, a.categorical_additive AS cadd, "
-        "a.time_additive AS tadd, a.categorical_reason AS creason, a.time_reason AS treason))"
+        "COLUMNS (a.target_kind AS kind, a.target_key AS key, a.axis_kind AS ak, "
+        "a.axis_key AS axk, a.status AS st, a.verdict AS vd, a.reason AS rsn, "
+        "a.abstain_reason AS ab, a.bucket_grain AS bg))"
     )
     with graph_engine.connect() as conn:
         rows = {
-            (r.kind, r.key, r.cadd, r.tadd, r.creason, r.treason) for r in conn.execute(text(sql))
+            (r.kind, r.key, r.ak, r.axk, r.st, r.vd, r.rsn, r.ab, r.bg)
+            for r in conn.execute(text(sql))
         }
     assert rows == {
-        # revenue: a summed balance reconciles across categories, not across time (stock).
-        ("measure", "revenue", True, False, None, "stock"),
-        # mk_margin: a ratio reconciles on neither axis.
-        ("metric", "mk_margin", False, False, "ratio", "ratio"),
+        # revenue: additive across categories, semi-additive across time (stock)...
+        ("measure", "revenue", "categorical", "*", "classified", "additive", None, None, None),
+        ("measure", "revenue", "time", "*", "classified", "semi_additive", "stock", None, None),
+        # ...with the `period` axis carrying its observed monthly cadence.
+        (
+            "measure",
+            "revenue",
+            "time",
+            "period",
+            "classified",
+            "semi_additive",
+            "stock",
+            None,
+            "month",
+        ),
+        # mk_margin: a ratio is recomputed per bucket on either axis.
+        (
+            "metric",
+            "mk_margin",
+            "categorical",
+            "*",
+            "classified",
+            "non_additive_recompute",
+            "ratio",
+            None,
+            None,
+        ),
+        (
+            "metric",
+            "mk_margin",
+            "time",
+            "*",
+            "classified",
+            "non_additive_recompute",
+            "ratio",
+            None,
+            None,
+        ),
+        # mk_unknown: an abstention is a row that SAYS SO, not an absence.
+        ("metric", "mk_unknown", "time", "*", "abstained", None, None, "unknown_temporal", None),
     }
 
 
@@ -2127,14 +2239,19 @@ def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Eng
     formula graph_id) names no concept and is reachable only by property on the vertex —
     the graph never dangles (the og_grounded_by INNER-join discipline)."""
     sql = (
-        f"SELECT cname, tadd, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT cname, axk, vd, rsn FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (c IS concept_node)-[e IS has_additivity]->(a IS additivity_verdict) "
-        "COLUMNS (c.name AS cname, a.time_additive AS tadd, a.time_reason AS treason))"
+        "WHERE a.axis_kind = 'time' "
+        "COLUMNS (c.name AS cname, a.axis_key AS axk, a.verdict AS vd, a.reason AS rsn))"
     )
     with graph_engine.connect() as conn:
-        rows = {(r.cname, r.tadd, r.treason) for r in conn.execute(text(sql))}
+        rows = {(r.cname, r.axk, r.vd, r.rsn) for r in conn.execute(text(sql))}
     # revenue is the only measure verdict; mk_margin (metric) never surfaces here.
-    assert rows == {("revenue", False, "stock")}
+    # Both its class row and its refining `period` axis row hang off the concept.
+    assert rows == {
+        ("revenue", "*", "semi_additive", "stock"),
+        ("revenue", "period", "semi_additive", "stock"),
+    }
 
 
 def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None:

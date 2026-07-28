@@ -95,7 +95,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
-    from dataraum.graphs.additivity import AxisClass, MetricVerdict
+    from dataraum.graphs.additivity_resolver import VerdictRow
     from dataraum.graphs.agent import ExecutionContext as _ExecutionContext
     from dataraum.graphs.agent import GraphAgent
     from dataraum.graphs.models import GraphExecution, TransformationGraph
@@ -347,16 +347,16 @@ class MetricsPhase(BasePhase):
                 artifact.state_reason = f"composed but not executed: {result.error}"
                 _log.warning("metric_not_executed", graph_id=graph_id, error=result.error)
 
-        # Additivity verdict (DAT-716): classify how each EXECUTED metric's value
-        # reconciles under aggregation (offer a time grain? does a categorical
-        # breakdown sum or dash?) from the grounded snippets + catalogue
-        # temporal_behavior/grain — no LLM. A metric that can't be classified
-        # writes no row, never a wrong one. Read at the pinned catalogue run.
+        # Additivity verdicts (DAT-857/868): classify how each DECLARED metric's
+        # value aggregates per axis (offer a time bucketing and how to compose it?
+        # does a breakdown sum or dash?) from the grounded snippets + catalogue
+        # materialization/grain — no LLM. A target that can't be classified gets a
+        # typed abstention, never silence. Read at the pinned catalogue run.
         _persist_additivity_verdicts(
             ctx.session,
             ctx.duckdb_conn,
             graphs=graphs,
-            executed_keys={gid for gid, a in artifacts.items() if a.state == "executed"},
+            declared_keys=set(declared_defs),
             workspace_id=schema_mapping_id,
             run_id=run_id,
             catalogue_run_id=catalogue_run_id,
@@ -458,20 +458,26 @@ def _persist_additivity_verdicts(
     duckdb_conn: duckdb.DuckDBPyConnection,
     *,
     graphs: dict[str, TransformationGraph],
-    executed_keys: set[str],
+    declared_keys: set[str],
     workspace_id: str,
     run_id: str,
     catalogue_run_id: str | None,
 ) -> None:
-    """Persist additivity verdicts for the executed metrics AND their measures.
+    """Persist per-(target x axis) additivity verdicts for every DECLARED metric.
 
     A drill target is either a **metric** node (a formula, keyed by ``graph_id``)
     or a **measure** node (a grounded extract, keyed by ``standard_field``) — both
-    are drillable, so both get a verdict. A metric's verdict rolls its extract
+    are drillable, so both get verdicts. A metric's verdict rolls its extract
     classes up through the DAG; a measure's verdict IS its single extract's class
-    (deduped most-restrictive across the metrics that share it). Idempotent per run
-    — ``(target_kind, target_key, run_id)`` UPSERTed (ADR-0010 form-(a)). A target
-    that can't be classified is skipped: no row is better than a misleading one.
+    (deduped conservatively across the metrics that share it). Idempotent per run —
+    ``(target_kind, target_key, axis_kind, axis_key, run_id)`` UPSERTed (ADR-0010
+    form-(a)).
+
+    **Verdict-total (DAT-868).** Every declared metric contributes rows: a
+    classification when it can be classified, a typed ABSTENTION when it cannot —
+    including when its DAG would not parse and when the whole run has no promoted
+    catalogue head. "No row" used to mean both "not drillable" and "judged
+    non-additive"; it now means neither, because there is no such thing as no row.
 
     **Fault-isolated (best-effort annotation).** This runs on the shared phase
     session AFTER every metric's execute bookkeeping is already recorded there; an
@@ -481,71 +487,78 @@ def _persist_additivity_verdicts(
     inside their own SAVEPOINT: a bug (a parse error, a bad query) rolls back only
     its own annotation, never the metric bookkeeping.
     """
-    from dataraum.graphs.additivity import most_restrictive, roll_up_metric
-    from dataraum.graphs.additivity_db_models import MetricAdditivity
-    from dataraum.graphs.additivity_resolver import classify_metric_extracts
+    from dataraum.graphs.additivity import AbstainReason, AxisKind, abstained
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
+    from dataraum.graphs.additivity_resolver import VerdictRow, resolve_graph_verdicts
+    from dataraum.server.workspace import schema_name_for
+    from dataraum.storage.read_views import read_schema_name_for
     from dataraum.storage.upsert import upsert
 
-    if not catalogue_run_id:
-        _log.warning("metric_additivity_skipped_no_catalogue_run")
-        return
+    def _class_rows(gid: str, reason: AbstainReason) -> list[VerdictRow]:
+        """Both axis-class rows for a metric we could not classify at all."""
+        return [
+            VerdictRow("metric", gid, kind.value, AXIS_KEY_ALL, abstained(reason))
+            for kind in AxisKind
+        ]
 
-    rows: list[dict[str, object]] = []
-    measure_classes: dict[str, AxisClass] = {}
-    # sorted(): the measure fold below merges a shared field's class across metrics
-    # `most_restrictive` (order-dependent reason), so a deterministic iteration order
-    # is required — a set's is PYTHONHASHSEED-salted.
-    for graph_id in sorted(executed_keys):
+    # The universe is every DECLARED metric, not the ones that executed this run
+    # (DAT-868). The canvas offers a metric for drilling as soon as it is declared
+    # with a parseable DAG — it applies no state filter — so scoping the verdicts to
+    # `executed` left every declared-but-not-executed target with no row at all, and
+    # a missing row is indistinguishable from "we judged it non-additive". Every
+    # target now gets a verdict or a TYPED ABSTENTION.
+    collected: list[VerdictRow] = []
+    # sorted(): the measure fold below merges a shared field across metrics with an
+    # order-dependent conservative rule, so a deterministic iteration order is
+    # required — a set's is PYTHONHASHSEED-salted.
+    for graph_id in sorted(declared_keys):
         graph = graphs.get(graph_id)
         if graph is None:
+            # Declared but not parseable (GraphLoader refused it). It is still a
+            # metric the user declared, and the cockpit's own parse may well differ
+            # from ours, so say so explicitly rather than leave a hole. Its measures
+            # are unknowable without a DAG — metric-kind rows only.
+            collected.extend(_class_rows(graph_id, AbstainReason.GRAPH_PARSE_FAILED))
             continue
-        # ALL fallible work (classify, roll-up, the extract→standard_field access)
-        # runs inside the SAVEPOINT; only the in-memory bookkeeping happens after,
-        # so a bug here rolls back its own annotation, never the phase session.
+        if not catalogue_run_id:
+            # No promoted begin_session head: nothing can be classified this run.
+            # This used to write NOTHING AT ALL — a silent, total hole. The identity
+            # of each declared metric needs no catalogue, so the abstention does not
+            # either.
+            collected.extend(_class_rows(graph_id, AbstainReason.NO_CATALOGUE_RUN))
+            continue
+        # ALL fallible work runs inside the SAVEPOINT; only in-memory bookkeeping
+        # happens after, so a bug here rolls back its own annotation, never the
+        # phase session.
         try:
             with session.begin_nested():
-                classes = classify_metric_extracts(
-                    session,
-                    duckdb_conn,
-                    graph=graph,
-                    workspace_id=workspace_id,
-                    catalogue_run_id=catalogue_run_id,
+                collected.extend(
+                    resolve_graph_verdicts(
+                        session,
+                        duckdb_conn,
+                        graph=graph,
+                        graph_id=graph_id,
+                        workspace_id=workspace_id,
+                        catalogue_run_id=catalogue_run_id,
+                        read_schema=read_schema_name_for(schema_name_for(workspace_id)),
+                    )
                 )
-                if classes is None:
-                    continue
-                metric_verdict = roll_up_metric(graph, classes)
-                # A measure node is one extract, keyed by standard_field (the drill's
-                # node identity — see analyseTarget); the same field is shared across
-                # metrics via the concept-keyed snippet cache (same class).
-                metric_measures = [
-                    (source.standard_field, cls)
-                    for step_id, cls in classes.items()
-                    if (source := graph.steps[step_id].source) and source.standard_field
-                ]
         except Exception as exc:  # noqa: BLE001 - best-effort; never fail the phase
             _log.warning("metric_additivity_compute_error", graph_id=graph_id, error=str(exc))
+            collected.extend(_class_rows(graph_id, AbstainReason.UNRESOLVED_GROUNDING))
             continue
-        rows.append(_verdict_row(run_id, "metric", graph_id, metric_verdict))
-        for field, cls in metric_measures:
-            # Deduped most-restrictive: identical today (shared snippet), conservative
-            # if a field is ever grounded two ways across metrics — never optimistic.
-            prior = measure_classes.get(field)
-            measure_classes[field] = cls if prior is None else most_restrictive(prior, cls)
 
-    rows.extend(
-        _verdict_row(run_id, "measure", field, cls) for field, cls in measure_classes.items()
-    )
-
+    rows = [_verdict_row(run_id, v) for v in _dedupe_verdicts(collected)]
     if not rows:
-        _log.info("metric_additivity_persisted", count=0, executed=len(executed_keys))
+        _log.info("metric_additivity_persisted", count=0, declared=len(declared_keys))
         return
     try:
         with session.begin_nested():
             upsert(
                 session,
-                MetricAdditivity,
+                MetricAxisAdditivity,
                 rows,
-                index_elements=["target_kind", "target_key", "run_id"],
+                index_elements=["target_kind", "target_key", "axis_kind", "axis_key", "run_id"],
             )
     except Exception as exc:  # noqa: BLE001 - isolate the write from phase bookkeeping
         _log.warning("metric_additivity_upsert_error", error=str(exc), count=len(rows))
@@ -553,23 +566,66 @@ def _persist_additivity_verdicts(
     _log.info(
         "metric_additivity_persisted",
         count=len(rows),
-        measures=len(measure_classes),
-        executed=len(executed_keys),
+        abstained=sum(1 for r in rows if r["status"] == "abstained"),
+        declared=len(declared_keys),
     )
 
 
-def _verdict_row(
-    run_id: str, kind: str, key: str, v: MetricVerdict | AxisClass
-) -> dict[str, object]:
-    """One ``metric_additivity`` row from a verdict/AxisClass (both share the fields)."""
+#: How much a verdict CLAIMS, least first. The fold below keeps the least
+#: claiming of two groundings for the same target.
+_VERDICT_CLAIM_RANK: dict[str | None, int] = {
+    "non_additive_recompute": 0,
+    "semi_additive": 1,
+    "additive": 2,
+}
+
+
+def _dedupe_verdicts(collected: list[VerdictRow]) -> list[VerdictRow]:
+    """One row per (target, axis) — the same measure appears in several metrics.
+
+    A ``standard_field`` is shared across the metrics that extract it (one snippet,
+    one class), so this is a no-op in practice; it exists because emitting the same
+    key twice would make the UPSERT fail outright ("cannot affect row a second
+    time"), and because a field ever grounded two ways must resolve to the CLAIM
+    ITS WEAKEST GROUNDING SUPPORTS: an abstention beats any verdict, and among
+    verdicts the least-claiming wins.
+    """
+    best: dict[tuple[str, str, str, str], VerdictRow] = {}
+    for row in collected:
+        key = (row.target_kind, row.target_key, row.axis_kind, row.axis_key)
+        prior = best.get(key)
+        if prior is None or _claims_less(row, prior):
+            best[key] = row
+    return [best[k] for k in sorted(best)]
+
+
+def _claims_less(row: VerdictRow, prior: VerdictRow) -> bool:
+    from dataraum.graphs.additivity import AdditivityStatus
+
+    if prior.additivity.status is AdditivityStatus.ABSTAINED:
+        return False
+    if row.additivity.status is AdditivityStatus.ABSTAINED:
+        return True
+    row_verdict = row.additivity.verdict.value if row.additivity.verdict else None
+    prior_verdict = prior.additivity.verdict.value if prior.additivity.verdict else None
+    return _VERDICT_CLAIM_RANK.get(row_verdict, 3) < _VERDICT_CLAIM_RANK.get(prior_verdict, 3)
+
+
+def _verdict_row(run_id: str, v: VerdictRow) -> dict[str, object]:
+    """One ``metric_axis_additivity`` row from a resolved verdict."""
     return {
         "run_id": run_id,
-        "target_kind": kind,
-        "target_key": key,
-        "categorical_additive": v.categorical_additive,
-        "time_additive": v.time_additive,
-        "categorical_reason": v.categorical_reason,
-        "time_reason": v.time_reason,
+        "target_kind": v.target_kind,
+        "target_key": v.target_key,
+        "axis_kind": v.axis_kind,
+        "axis_key": v.axis_key,
+        "status": v.additivity.status.value,
+        "verdict": v.additivity.verdict.value if v.additivity.verdict else None,
+        "reason": v.additivity.reason,
+        "abstain_reason": (
+            v.additivity.abstain_reason.value if v.additivity.abstain_reason else None
+        ),
+        "bucket_grain": v.bucket_grain,
     }
 
 

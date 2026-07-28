@@ -102,7 +102,7 @@ _CATALOG_GRAIN: dict[str, str] = {
     "induction_runs": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
-    "metric_additivity": "operating_model",  # operating_model metrics phase (DAT-716)
+    "metric_axis_additivity": "operating_model",  # operating_model metrics phase (DAT-857/868)
 }
 
 # Written by THREE detect paths: add_source seals per (table:{id}, GENERATION),

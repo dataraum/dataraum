@@ -26,7 +26,12 @@ import {
 	startFixtureWorkspace,
 	stopFixtureWorkspace,
 } from "./fixture-workspace";
-import { catalogSeedSql, metricArtifactSeedSql } from "./seed-catalog";
+import { TEST_WORKSPACE_ID } from "./integration-env";
+import {
+	catalogSeedSql,
+	graphSnippetSeedSql,
+	metricArtifactSeedSql,
+} from "./seed-catalog";
 
 export interface FixtureHandle {
 	metadataUrl: string;
@@ -61,6 +66,9 @@ export default async function setup({ provide }: TestProject) {
 		// One canonical, head-promoted catalog for every fixture-backed suite.
 		fixture.psql(catalogSeedSql());
 		fixture.psql(metricArtifactSeedSql());
+		// Snippets are workspace-scoped by schema_mapping_id — it must match the
+		// boot identity the suites run under or the loader reads zero rows.
+		fixture.psql(graphSnippetSeedSql(TEST_WORKSPACE_ID));
 	} catch (err) {
 		// A fixture that fails to BUILD is a real failure, not a skip: docker is
 		// present, so this is our seeding going wrong (e.g. engine schema.sql no

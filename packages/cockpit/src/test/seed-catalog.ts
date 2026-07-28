@@ -86,6 +86,81 @@ VALUES
 -- current_* read above returns zero rows.
 INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
 VALUES ('head_catalog', 'catalog', 'catalog', '${RUN_ID}', ${ts});
+
+-- current_tables is gated per-table on a 'generation' head, NOT the catalog
+-- head. Without these the fact/dim names an enriched view derives from resolve
+-- to nothing and the grounding edges silently lose their labels.
+INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
+VALUES
+  ('head_gen_fact', 'table:${FACT_TABLE_ID}', 'generation', '${RUN_ID}', ${ts}),
+  ('head_gen_dim',  'table:${DIM_TABLE_ID}',  'generation', '${RUN_ID}', ${ts});
+`;
+}
+
+/**
+ * Graph snippets — the rows that make the GROUNDING path execute.
+ *
+ * Without these, `loadOperatingModelGraph` finds zero snippets and
+ * `resolveGrounding` returns nothing: measure nodes exist but no extract is
+ * ever mapped to an enriched view, so the whole
+ * sqlRelations() → viewByName → enrichedView/baseTables stretch never runs.
+ *
+ * The two extracts deliberately differ in RELATION SPELLING — bare vs fully
+ * qualified — because that is the exact class the live bug lived in. Grounding
+ * resolves relations through DuckDB's own PARSER (`sqlRelations` collects
+ * BASE_TABLE nodes, whose `table_name` is the bare last segment), so both
+ * spellings should ground identically. That is the interesting contrast with
+ * the AXES path, which keys a plain string Map on the DECLARED relation and
+ * therefore does NOT survive qualification. Same underlying data, two lookup
+ * strategies, only one of them qualification-immune.
+ */
+export function graphSnippetSeedSql(
+	workspaceId: string,
+	graphId = "gross_margin",
+): string {
+	const rows = [
+		{
+			id: "snip_formula",
+			type: "formula",
+			field: "gross_margin",
+			sql: `SELECT (SUM(amount) - SUM(cost)) / NULLIF(SUM(amount), 0) FROM ${ENRICHED_VIEW}`,
+			failures: 0,
+		},
+		{
+			// BARE relation spelling.
+			id: "snip_revenue",
+			type: "extract",
+			field: "revenue",
+			sql: `SELECT SUM(amount) FROM ${ENRICHED_VIEW}`,
+			failures: 0,
+		},
+		{
+			// QUALIFIED relation spelling — same view, three-part name.
+			id: "snip_cost",
+			type: "extract",
+			field: "cost",
+			sql: `SELECT SUM(cost) FROM lake.typed.${ENRICHED_VIEW}`,
+			failures: 0,
+		},
+	];
+
+	const values = rows
+		.map(
+			(r) =>
+				`('${r.id}', '${workspaceId}', '${r.type}', '${r.field}', '${workspaceId}', ` +
+				`'${r.sql.replaceAll("'", "''")}', 'fixture snippet', 'graph:${graphId}', ` +
+				`0, ${r.failures}, ${ts}, ${ts})`,
+		)
+		.join(",\n  ");
+
+	return `
+SET search_path TO engine;
+
+INSERT INTO sql_snippets (
+  snippet_id, workspace_id, snippet_type, standard_field, schema_mapping_id,
+  sql, description, source, execution_count, failure_count, created_at, updated_at)
+VALUES
+  ${values};
 `;
 }
 
@@ -95,15 +170,24 @@ VALUES ('head_catalog', 'catalog', 'catalog', '${RUN_ID}', ${ts});
  * thing worth testing.
  */
 export function metricArtifactSeedSql(graphId = "gross_margin"): string {
+	// Shape copied from a REAL vertical spec (dataraum-config
+	// verticals/finance/metrics/**), not invented: an extract's
+	// `standard_field` + `statement` live under a nested `source` object, and
+	// steps carry a `level`. Flattening those to the step's top level is
+	// silently tolerated by the narrow — `standardField` just comes back null —
+	// and the measure nodes then never get built, so the metric renders alone
+	// and grounding looks like it "found nothing". Exactly the class the
+	// standing rule is about: a fixture one shape off from production tests a
+	// system we do not ship.
 	const dag = {
 		metadata: { name: "Gross Margin", category: "profitability" },
 		output: { type: "ratio", metric_id: graphId, unit: "percent" },
 		dependencies: {
 			revenue: {
+				level: 1,
 				type: "extract",
-				standard_field: "revenue",
+				source: { standard_field: "revenue", statement: "income_statement" },
 				aggregation: "sum",
-				statement: `SELECT SUM(amount) FROM ${ENRICHED_VIEW}`,
 				validation: [
 					{
 						condition: "revenue >= 0",
@@ -113,10 +197,10 @@ export function metricArtifactSeedSql(graphId = "gross_margin"): string {
 				],
 			},
 			cost: {
+				level: 1,
 				type: "extract",
-				standard_field: "cost",
+				source: { standard_field: "cost", statement: "income_statement" },
 				aggregation: "sum",
-				statement: `SELECT SUM(cost) FROM ${ENRICHED_VIEW}`,
 				validation: [
 					{
 						condition: "cost >= 0",
@@ -126,6 +210,7 @@ export function metricArtifactSeedSql(graphId = "gross_margin"): string {
 				],
 			},
 			margin: {
+				level: 2,
 				type: "formula",
 				expression: "(revenue - cost) / revenue",
 				depends_on: ["revenue", "cost"],

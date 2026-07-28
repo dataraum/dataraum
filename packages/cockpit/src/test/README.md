@@ -59,7 +59,16 @@ these shipped silently.
 **Head gating bites.** The `current_*` views are head-joined. A row inserted
 without its `metadata_snapshot_head` row is invisible, and the surface under
 test returns "nothing analyzed yet" rather than failing. When a fixture-backed
-read comes back empty, suspect the head first.
+read comes back empty, suspect the head first. Note `current_tables` is gated
+per table on a `generation` head, not the `catalog` one.
+
+**The WRITER role is not modelled.** Both metadata DSNs point one superuser at
+the read views' `search_path`; production splits a reader role (`ws_<id>_read`)
+from a writer role (`ws_<id>`, the control-table verbs — DAT-816). So the
+write-surface suites (`snippet-writer`, `concept-write`, `convention-write`,
+`teach`) stay compose-gated and are **not** covered by the fixture. Covering
+them means modelling the two roles and the raw `ws_<id>` schema; until someone
+does, do not assume a green fixture run exercised a metadata write.
 
 ### Writing a fixture-backed suite
 
@@ -85,6 +94,14 @@ a console warning; the run still exits 0. A fixture that fails to **build**
 while docker IS present is a hard failure — that means our seeding broke (e.g.
 the engine schema no longer applies).
 
+**Orphan recovery.** Teardown removes the container, but `--rm` fires on the
+*daemon* side only when the container exits — a SIGKILLed vitest (or a dead
+docker client) leaves it running. Recover with:
+
+```bash
+docker rm -f $(docker ps -aq --filter label=dataraum-fixture=1)
+```
+
 Older suites predating the fixture are gated on `providedByEnvironment(...)`
 and still expect a seeded compose stack; they skip unless the environment
 supplies real DSNs.
@@ -108,10 +125,11 @@ supplies real DSNs.
 ## Config env belongs in one place
 
 `src/test/integration-env.ts` is the single home for what `config.ts` and
-`config.base.ts` require to parse. It replaced fourteen hand-copied
-`REQUIRED_DEFAULTS` blocks that had drifted apart — when DAT-819 added a
-required `BETTER_AUTH_SECRET`, three suites broke at import and the rest only
-escaped because their gate skipped them first.
+`config.base.ts` require to parse. It replaced **eleven** hand-copied
+`REQUIRED_DEFAULTS` blocks (twelve counting `portal/lock`'s ad-hoc one-field
+stub) that had drifted apart — when DAT-819 added a required
+`BETTER_AUTH_SECRET`, three suites broke at import and the rest only escaped
+because their gate skipped them first.
 
 Add a new required config field **there, once**. And gate on
 `providedByEnvironment(...)`, never a bare `process.env` read: vitest reuses a
@@ -119,7 +137,27 @@ worker process across files, so once any sibling applied the stub, a bare read
 is true even on a bare checkout and the suite runs against an unreachable
 placeholder instead of skipping.
 
+**Every placeholder must be a value no real environment would hold.** A
+placeholder that collides with a documented real value makes the gate answer
+"no real infrastructure" for exactly the developers who followed the setup
+instructions. This already happened: the S3 credential placeholders were
+byte-identical to `.env.example`, so `cp .env.example .env` silently skipped
+the SeaweedFS round-trip. Hence the `integration-env-invalid` posture.
+
 Reachability is not a sufficient gate for a **credentialed** service either.
 Lanes run concurrently here, so a sibling's compose stack may well answer on
 the expected port with different credentials — the port probe passes and the
 first authenticated call fails.
+
+> **`S3Error: an unexpected error has occurred` on the SeaweedFS suite** is
+> almost always `S3_USE_SSL`. It is optional in the schema and defaults to
+> **true** (secure-by-default), so supplying S3 credentials from a shell or CI
+> secret *without* it points the client at `https://` on a plaintext gateway.
+> `.env.example` sets `S3_USE_SSL=false`; `cp .env.example .env` is correct.
+> It is deliberately NOT in `integration-env.ts`, which carries only what the
+> config schemas *require* to parse.
+
+And give every conditional suite a **named** skip reason (`suiteTitle(...)` /
+`fx.describeName(...)`). A bare `describe.skipIf` renders an unexplained
+"skipped", indistinguishable from a suite nobody meant to run — which is how a
+silently disabled round-trip survives a whole wave.

@@ -15,6 +15,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
 	applyIntegrationEnv,
 	providedByEnvironment,
+	suiteTitle,
 } from "#/test/integration-env";
 
 applyIntegrationEnv();
@@ -55,9 +56,19 @@ const S3_BUCKET = process.env.S3_BUCKET ?? "dataraum-lake";
 // with its own credentials: the port probe passes, and PutObject then fails
 // with an opaque S3Error. Require the environment to have supplied real
 // credentials (not integration-env's placeholders) before touching the store.
+//
+// All three keys, not just the two credentials: a developer with creds but no
+// S3_BUCKET would otherwise stage into integration-env's placeholder bucket
+// and fail on a bucket that was never meant to exist.
 const S3_CREDENTIALED =
 	providedByEnvironment("S3_ACCESS_KEY_ID") &&
-	providedByEnvironment("S3_SECRET_ACCESS_KEY");
+	providedByEnvironment("S3_SECRET_ACCESS_KEY") &&
+	providedByEnvironment("S3_BUCKET");
+
+// A named reason, because an unexplained skip is how this suite went quiet.
+const S3_SKIP_REASON = S3_CREDENTIALED
+	? null
+	: "no real S3 credentials in the environment (S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_BUCKET) — `cp .env.example .env` and bring up the compose stack's SeaweedFS";
 
 async function seaweedReachable(): Promise<boolean> {
 	try {
@@ -73,7 +84,10 @@ async function seaweedReachable(): Promise<boolean> {
 }
 
 describe.skipIf(!S3_CREDENTIALED)(
-	"connect s3:// path against live SeaweedFS (DAT-386)",
+	suiteTitle(
+		"connect s3:// path against live SeaweedFS (DAT-386)",
+		S3_SKIP_REASON,
+	),
 	() => {
 		it("stages a CSV to the bucket and sniffs it over s3://", async () => {
 			if (!(await seaweedReachable())) {

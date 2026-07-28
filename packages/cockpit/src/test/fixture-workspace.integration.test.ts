@@ -4,6 +4,9 @@
 // fixture-backed assertion below it is worthless — so it asserts the seam,
 // not the data.
 
+import { readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { attachFixtureWorkspace } from "./fixture";
@@ -52,17 +55,24 @@ describe.skipIf(!fx.available)(
 		});
 
 		it("has cockpit_db at the CURRENT migration head", async () => {
+			// Count APPLIED migrations against the checked-in folder, rather than
+			// spot-checking columns: every column that existed since the first
+			// migration passes such a check whether or not the later migrations
+			// ran, so it would not notice the fixture sitting on a stale head —
+			// which is the entire claim of this test, and the thing that matters
+			// while sibling lanes land migrations concurrently.
+			const migrationDirs = readdirSync(
+				fileURLToPath(new URL("../../drizzle/cockpit", import.meta.url)),
+				{ withFileTypes: true },
+			).filter((e) => e.isDirectory()).length;
+			expect(migrationDirs).toBeGreaterThan(0);
+
 			const { SQL } = await import("bun");
 			const sql = new SQL(fx.cockpitUrl as string);
 			try {
-				const rows = await sql`
-					SELECT column_name FROM information_schema.columns
-					WHERE table_schema = 'public' AND table_name = 'reports'`;
-				const cols = rows.map((r: { column_name: string }) => r.column_name);
-				expect(cols).toContain("id");
-				expect(cols).toContain("workspace_id");
-				expect(cols).toContain("sql");
-				expect(cols).toContain("confidence");
+				const [applied] = await sql`
+					SELECT COUNT(*)::int AS n FROM drizzle.__drizzle_migrations`;
+				expect(applied.n).toBe(migrationDirs);
 			} finally {
 				await sql.close();
 			}

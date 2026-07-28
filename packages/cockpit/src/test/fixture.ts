@@ -15,7 +15,11 @@
 
 import { inject } from "vitest";
 
-import { applyIntegrationEnv, TEST_WORKSPACE_ID } from "./integration-env";
+import {
+	applyIntegrationEnv,
+	suiteTitle,
+	TEST_WORKSPACE_ID,
+} from "./integration-env";
 
 export interface FixtureContext {
 	available: boolean;
@@ -61,6 +65,6 @@ export function attachFixtureWorkspace(): FixtureContext {
 		cockpitUrl: handle?.cockpitUrl ?? null,
 		skipReason: skipReason ?? null,
 		describeName: (title: string) =>
-			handle ? title : `${title} [SKIPPED: ${skipReason ?? "no fixture"}]`,
+			suiteTitle(title, handle ? null : (skipReason ?? "no fixture")),
 	};
 }

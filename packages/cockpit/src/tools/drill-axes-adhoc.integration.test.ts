@@ -15,6 +15,15 @@
 // Reads go through the head-joined read views, so this also pins that the
 // promoted-head gating is wired: drop the head and every axis silently
 // vanishes.
+//
+// SCOPE — this is NOT end-to-end. `resolveAdHocDrillAxes` takes
+// `resultColumns` as an argument; in production those come from the route's
+// live `DESCRIBE` of the base statement (routes/api/drill/axes.ts →
+// describeColumns). Here they are hand-written, so what is covered is the
+// catalog join and the refusal wording, NOT the DESCRIBE that produces the
+// names. A DESCRIBE that renamed or re-cased columns would not be caught by
+// this suite — that seam needs the lake, which this harness deliberately
+// leaves out.
 
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -87,12 +96,22 @@ describe.skipIf(!fx.available)(
 			expect(region?.column).toBe(shouted);
 		});
 
-		it("never offers a measure as an axis", async () => {
+		it("offers only catalogued DIMENSIONS, not other catalogued columns", async () => {
+			// `amount` is a real column of the catalogued fact table — it is in
+			// `columns` with origin 'fact' — but it is NOT a slice_definition, so
+			// it must not become an axis. This is the exclusion that matters:
+			// asserting a bare `sum(amount)` is absent would pass trivially,
+			// since that string appears in neither the slice rows nor the
+			// substrate list and could never have been offered.
 			const result = await resolveAdHocDrillAxes([
 				REGION_NAME_COLUMN,
+				"amount",
 				"sum(amount)",
 			]);
-			expect(result.axes.map((a) => a.column)).not.toContain("sum(amount)");
+			const columns = result.axes.map((a) => a.column);
+			expect(columns).toContain(REGION_NAME_COLUMN);
+			expect(columns).not.toContain("amount");
+			expect(columns).not.toContain("sum(amount)");
 		});
 
 		it("refuses with a reason when the result has no columns", async () => {

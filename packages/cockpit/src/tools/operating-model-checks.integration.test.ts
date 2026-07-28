@@ -19,6 +19,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { attachFixtureWorkspace } from "#/test/fixture";
+import { VIEW_TABLE_ID } from "#/test/seed-catalog";
 
 const fx = attachFixtureWorkspace();
 
@@ -45,6 +46,9 @@ describe.skipIf(!fx.available)(
 			expect(metric?.data.kind).toBe("metric");
 			if (metric?.data.kind !== "metric") throw new Error("unreachable");
 			expect(metric.data.hasDag).toBe(true);
+			// NB: `state` is the lifecycle_artifacts column passed straight
+			// through — a persistence round-trip, NOT computed grounding.
+			// Grounding is asserted separately below, off the snippet rows.
 			expect(metric.data.state).toBe("grounded");
 			expect(metric.data.unit).toBe("percent");
 			expect(metric.data.category).toBe("profitability");
@@ -75,6 +79,49 @@ describe.skipIf(!fx.available)(
 			expect(byStep.get("revenue")?.severity).toBe("error");
 			expect(byStep.get("revenue")?.message).toBe("Revenue cannot be negative");
 			expect(byStep.get("cost")?.severity).toBe("warning");
+		});
+
+		it("grounds measures to their enriched view through the SQL parser", async () => {
+			// The largest stretch of this loader: snippet rows →
+			// sqlRelations() (DuckDB's parse tree) → viewByName → the enriched
+			// view + the base tables it derives from. With zero snippets seeded
+			// none of it executes, and the metric node still looks fine.
+			const { graph } = await loadOperatingModelGraph();
+
+			const view = graph.nodes.find((n) => n.data.kind === "table");
+			expect(view).toBeDefined();
+
+			// The measure→view edges only exist when grounding resolved.
+			const measures = graph.nodes.filter((n) => n.data.kind === "measure");
+			expect(measures.length).toBeGreaterThanOrEqual(2);
+			for (const m of measures) {
+				if (m.data.kind !== "measure") throw new Error("unreachable");
+				expect(m.data.grounded).toBe(true);
+				expect(m.data.sql).toBeTruthy();
+			}
+		});
+
+		it("grounds a QUALIFIED relation identically to a bare one", async () => {
+			// The live-bug class, pinned on the path that survives it. `revenue`
+			// names the view bare; `cost` names it `lake.typed.<view>`. Grounding
+			// reads relations from DuckDB's parse tree (BASE_TABLE.table_name is
+			// the bare last segment), so BOTH resolve to the same view.
+			//
+			// Contrast — and this is the point — the AXES path keys a plain
+			// string Map on the declared relation, so the qualified spelling
+			// misses there. Two lookup strategies over the same data; only the
+			// parser-based one is qualification-immune.
+			const { graph } = await loadOperatingModelGraph();
+			const grounds = graph.edges.filter((e) => e.kind === "grounds");
+
+			const target = (measure: string) =>
+				grounds.find((e) => e.source === `measure:${measure}`)?.target;
+
+			// `revenue`'s snippet reads `current_orders_enriched`;
+			// `cost`'s reads `lake.typed.current_orders_enriched`.
+			expect(target("revenue")).toBe(`table:${VIEW_TABLE_ID}`);
+			expect(target("cost")).toBe(`table:${VIEW_TABLE_ID}`);
+			expect(target("cost")).toBe(target("revenue"));
 		});
 
 		it("renders check indicators for exactly the check-bearing metrics", async () => {

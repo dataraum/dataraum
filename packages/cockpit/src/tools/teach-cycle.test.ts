@@ -1,12 +1,10 @@
 // Unit tests for teach_cycle (DAT-465). Pure — the schema + the shadow detection
-// run with no DB and no config tree. The DB-bound write path reuses `teach()`
-// (covered by the teach integration smoke); the live config-tree read is
-// browser/integration-smoke territory. What this guards:
+// run with no DB. The DB-bound write path reuses `teach()` (covered by the teach
+// integration smoke); the live typed-table read (`readShippedCycles`, DAT-881) has
+// its own DB-mock coverage in teach-cycle-shipped-read.test.ts. What this guards:
 //   - the spec input is a top-level object whose `name` is FREE-FORM (no closed
 //     vocabulary — the cycle counterpart to validation's closed check_type) but
 //     whose `business_value` IS a closed enum;
-//   - the shadow narrowing turns a shipped cycle_types entry into the summary
-//     shape, tolerating a non-object def;
 //   - findShadowedCycle is an exact name match → the override flag is honest.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,17 +13,14 @@ import {
 	BUSINESS_VALUES,
 	CycleSpecSchema,
 	findShadowedCycle,
-	narrowShippedCycle,
 	type ShippedCycleSpec,
 } from "./cycle-spec";
 import { teach } from "./teach";
 import { teachCycle } from "./teach-cycle";
 
-// Mock the shared overlay-write path and the env config so importing the tool
-// (which evals `../config` + `./teach` at load) doesn't pull the DB/boot. vitest
-// hoists these above the imports above. The shipped-cycle reader is injected per
-// call (no fs/bun mock needed).
-vi.mock("#/config", () => ({ config: { dataraumConfigPath: "/unused" } }));
+// Mock the shared overlay-write path so importing the tool doesn't pull the DB.
+// vitest hoists this above the imports above. The shipped-cycle reader is
+// injected per call (no DB mock needed here).
 vi.mock("#/tools/teach", () => ({ teach: vi.fn() }));
 
 const MINIMAL = {
@@ -103,44 +98,6 @@ describe("CycleSpecSchema (DAT-465)", () => {
 		expect(
 			CycleSpecSchema.safeParse({ ...MINIMAL, vertical: "" }).success,
 		).toBe(false);
-	});
-});
-
-describe("narrowShippedCycle (DAT-465)", () => {
-	it("narrows a parsed cycle_types entry to the summary fields", () => {
-		const spec = narrowShippedCycle("order_to_cash", {
-			description: "Complete revenue cycle from order through collection.",
-			business_value: "high",
-			completion_indicators: ["paid", "collected", "closed"],
-			// extra YAML fields are ignored by the narrowing
-			typical_stages: [{ name: "Order Placed", order: 1 }],
-		});
-		expect(spec).toEqual({
-			name: "order_to_cash",
-			description: "Complete revenue cycle from order through collection.",
-			business_value: "high",
-			completion_indicators: ["paid", "collected", "closed"],
-		});
-	});
-
-	it("returns null for an empty name (not a real cycle_types key)", () => {
-		expect(narrowShippedCycle("", {})).toBeNull();
-	});
-
-	it("tolerates a non-object def — name-only summary, no throw", () => {
-		expect(narrowShippedCycle("weird", "not an object")).toEqual({
-			name: "weird",
-			description: null,
-			business_value: null,
-			completion_indicators: null,
-		});
-	});
-
-	it("coalesces non-string completion_indicators entries away", () => {
-		const spec = narrowShippedCycle("x", {
-			completion_indicators: ["paid", 42, null, "closed"],
-		});
-		expect(spec?.completion_indicators).toEqual(["paid", "closed"]);
 	});
 });
 

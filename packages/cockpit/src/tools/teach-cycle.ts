@@ -19,16 +19,14 @@
 // shipped cycle's name is an upsert-REPLACE, surfaced visibly (the shadowed
 // shipped cycle is echoed back), never silent.
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { toolDefinition } from "@tanstack/ai";
+import { isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import { config } from "../config";
+import { cycleTypesRead } from "../db/metadata/read-surface";
 import {
 	CycleSpecSchema,
 	findShadowedCycle,
-	narrowShippedCycle,
 	type ShippedCycleSpec,
 } from "./cycle-spec";
 import { teach } from "./teach";
@@ -48,56 +46,50 @@ export interface TeachCycleResult {
 }
 
 /**
- * Read the cycles a vertical SHIPS on disk (verticals/<v>/cycles.yaml), narrowed
- * to the shadow-summary fields. Unlike validations (a DIRECTORY of per-id spec
- * files) the cycle vocabulary is ONE file with a `cycle_types` MAPPING, so this
- * reads one file and iterates its entries. Bun's YAML, imported lazily so merely
- * importing this tool doesn't pull "bun" into the node-run test workers. A
- * missing/unreadable/unparseable file (no shipped cycles, or the tree isn't
- * mounted) yields [].
+ * Read the cycles a vertical SHIPS, from the typed `cycle_types` vocabulary home
+ * (DAT-881, config→DB) — narrowed to the shadow-summary fields. `vertical` stays
+ * in the signature for interface stability, but the query itself doesn't filter
+ * on it: the mirrored view is ALREADY scoped to the workspace's bound
+ * active_vertical (storage/read_views.py's `_vertical_scoped_view_sql`), the same
+ * safety property `prompts/conventions.ts`'s `buildConventionsBlock` relies on —
+ * an un-gated caller threading a mismatched vertical still sees the workspace's
+ * real shipped cycles, never another vertical's.
+ *
+ * The metadata client is imported lazily (it constructs the reader-role SQL
+ * client at module scope): a static import would pull it into every consumer of
+ * this module + the node-run vitest workers.
  *
  * Degradation note: a swallowed read failure makes an actual override LOOK like
  * a fresh declaration in the rail hint (`override:false`) — but the override
  * itself is unaffected (the engine applier upsert-replaces by `name` regardless;
  * it is the source of truth). Only the visible-override label degrades, and only
- * when the config tree is unreadable — which in the live stack it never is (it's
- * bind-mounted read-only). */
+ * on a metadata-read blip — the same best-effort contract `buildConventionsBlock`
+ * documents. */
 export async function readShippedCycles(
-	vertical: string,
+	_vertical: string,
 ): Promise<ShippedCycleSpec[]> {
-	const file = join(
-		config.dataraumConfigPath,
-		"verticals",
-		vertical,
-		"cycles.yaml",
-	);
-	let text: string;
 	try {
-		text = await readFile(file, "utf8");
+		const { metadataDb } = await import("#/db/metadata/client");
+		const rows = await metadataDb
+			.select({
+				name: cycleTypesRead.name,
+				description: cycleTypesRead.description,
+				businessValue: cycleTypesRead.businessValue,
+				completionIndicators: cycleTypesRead.completionIndicators,
+			})
+			.from(cycleTypesRead)
+			.where(isNull(cycleTypesRead.supersededAt));
+		return rows
+			.filter((r): r is typeof r & { name: string } => Boolean(r.name))
+			.map((r) => ({
+				name: r.name,
+				description: r.description ?? null,
+				business_value: r.businessValue ?? null,
+				completion_indicators: r.completionIndicators ?? null,
+			}));
 	} catch {
 		return [];
 	}
-	const { YAML } = await import("bun");
-	let doc: unknown;
-	try {
-		doc = YAML.parse(text);
-	} catch {
-		// An unparseable cycles.yaml must not throw — degrade to "no shipped".
-		return [];
-	}
-	const cycleTypes =
-		doc && typeof doc === "object"
-			? (doc as Record<string, unknown>).cycle_types
-			: null;
-	if (!cycleTypes || typeof cycleTypes !== "object") return [];
-	const specs: ShippedCycleSpec[] = [];
-	for (const [name, def] of Object.entries(
-		cycleTypes as Record<string, unknown>,
-	)) {
-		const spec = narrowShippedCycle(name, def);
-		if (spec) specs.push(spec);
-	}
-	return specs;
 }
 
 /**

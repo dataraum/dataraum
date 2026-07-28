@@ -139,45 +139,16 @@ export const CycleSpecSchema = z.object({
 });
 export type CycleSpecInput = z.infer<typeof CycleSpecSchema>;
 
-/** A shipped cycle as read off a vertical's `cycles.yaml` `cycle_types` mapping,
- * in the few fields the shadowing affordance surfaces. The full entry carries
- * more; we only echo what the UX shows when an override shadows a shipped cycle
- * (the thing a user typically tweaks is `completion_indicators`). */
+/** A shipped cycle as read from the typed `cycle_types` vocabulary home (DAT-881,
+ * config→DB), in the few fields the shadowing affordance surfaces. The typed row
+ * carries more (aliases/typical_stages/feeds_into); we only echo what the UX
+ * shows when an override shadows a shipped cycle (the thing a user typically
+ * tweaks is `completion_indicators`). */
 export interface ShippedCycleSpec {
 	name: string;
 	description: string | null;
 	business_value: string | null;
 	completion_indicators: string[] | null;
-}
-
-function asString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
-}
-
-function asStringArray(v: unknown): string[] | null {
-	if (!Array.isArray(v)) return null;
-	const strings = v.filter((x): x is string => typeof x === "string");
-	return strings.length > 0 ? strings : null;
-}
-
-/** Narrow one parsed `cycle_types` entry (untrusted shape — rule 11) to a
- * ShippedCycleSpec. `name` is the mapping KEY (always present for a real entry);
- * a non-object def degrades to a name-only summary rather than throwing. Pure —
- * no fs/YAML here, so the reader's I/O stays mockable and this narrowing is
- * unit-tested directly. */
-export function narrowShippedCycle(
-	name: string,
-	def: unknown,
-): ShippedCycleSpec | null {
-	if (!name) return null;
-	const raw =
-		def && typeof def === "object" ? (def as Record<string, unknown>) : {};
-	return {
-		name,
-		description: asString(raw.description),
-		business_value: asString(raw.business_value),
-		completion_indicators: asStringArray(raw.completion_indicators),
-	};
 }
 
 /**

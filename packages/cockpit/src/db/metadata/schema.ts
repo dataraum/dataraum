@@ -5,6 +5,7 @@ import {
 	integer,
 	json,
 	jsonb,
+	numeric,
 	pgView,
 	text,
 	timestamp,
@@ -478,6 +479,21 @@ export const currentMetricAxisAdditivity = pgView(
 	sql`SELECT additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, status, verdict, reason, abstain_reason, bucket_grain, created_at FROM engine.metric_axis_additivity r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
+export const currentMetricUnitGrain = pgView("current_metric_unit_grain", {
+	unitGrainId: varchar("unit_grain_id"),
+	runId: varchar("run_id"),
+	targetKind: varchar("target_kind"),
+	targetKey: varchar("target_key"),
+	axis: varchar(),
+	entityValue: varchar("entity_value"),
+	value: numeric(),
+	reconciles: boolean(),
+	recompute: boolean(),
+	createdAt: timestamp("created_at", { withTimezone: true }),
+}).as(
+	sql`SELECT unit_grain_id, run_id, target_kind, target_key, axis, entity_value, value, reconciles, recompute, created_at FROM engine.metric_unit_grain r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+);
+
 export const currentRelationships = pgView("current_relationships", {
 	relationshipId: varchar("relationship_id"),
 	runId: varchar("run_id"),
@@ -794,6 +810,7 @@ export const sqlSnippets = pgView("sql_snippets", {
 	standardField: varchar("standard_field"),
 	statement: varchar(),
 	aggregation: varchar(),
+	predicate: varchar(),
 	schemaMappingId: varchar("schema_mapping_id"),
 	parameterValue: varchar("parameter_value"),
 	normalizedExpression: varchar("normalized_expression"),
@@ -808,7 +825,7 @@ export const sqlSnippets = pgView("sql_snippets", {
 	createdAt: timestamp("created_at"),
 	updatedAt: timestamp("updated_at"),
 }).as(
-	sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, provenance, parts, execution_count, failure_count, created_at, updated_at FROM engine.sql_snippets`,
+	sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, predicate, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, provenance, parts, execution_count, failure_count, created_at, updated_at FROM engine.sql_snippets`,
 );
 
 export const tables = pgView("tables", {

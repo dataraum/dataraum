@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from dataraum.graphs.context import build_execution_context
+from dataraum.graphs.context_reads import build_execution_context
 from dataraum.storage import init_database
 
 

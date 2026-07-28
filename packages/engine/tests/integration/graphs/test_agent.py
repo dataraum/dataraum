@@ -122,7 +122,7 @@ def _make_execution_context(
     exercise SQL generation. Using ExecutionContext without rich_context
     will fail fast with a clear error.
     """
-    from dataraum.graphs.context import GraphExecutionContext, TableContext
+    from dataraum.graphs.context_models import GraphExecutionContext, TableContext
     from dataraum.graphs.field_mapping import ColumnMeaning
 
     rich_context = GraphExecutionContext(
@@ -156,7 +156,7 @@ def _context_with_validity_cycle() -> tuple[duckdb.DuckDBPyConnection, Execution
     Rows: two posted (100 + 200), one draft (300), so the appended posted-only scope
     is observable in the metric value.
     """
-    from dataraum.graphs.context import (
+    from dataraum.graphs.context_models import (
         BusinessCycleContext,
         GraphExecutionContext,
         TableContext,
@@ -305,7 +305,7 @@ class TestGraphAgentExecution:
 
     def test_build_schema_info_with_rich_context(self, duckdb_with_data):
         """Test building multi-table schema from rich context."""
-        from dataraum.graphs.context import TableContext
+        from dataraum.graphs.context_models import TableContext
 
         agent = GraphAgent(
             config=MagicMock(),

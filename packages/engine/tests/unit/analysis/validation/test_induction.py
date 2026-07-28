@@ -26,7 +26,7 @@ from dataraum.analysis.validation.induction import (
 )
 from dataraum.analysis.validation.models import ValidationSeverity
 from dataraum.core.models.base import Result
-from dataraum.graphs.context import (
+from dataraum.graphs.context_models import (
     ColumnContext,
     ConceptContext,
     GraphExecutionContext,

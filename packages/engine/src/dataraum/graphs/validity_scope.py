@@ -29,7 +29,7 @@ from dataraum.graphs.models import AssumptionBasis, GraphAssumptionOutput
 if TYPE_CHECKING:
     import duckdb
 
-    from dataraum.graphs.context import (
+    from dataraum.graphs.context_models import (
         BusinessCycleContext,
         EnrichedViewContext,
         TableContext,

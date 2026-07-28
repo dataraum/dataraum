@@ -30,11 +30,9 @@ from dataraum.analysis.semantic.db_models import WorkspaceSettings
 from dataraum.analysis.validation.models import ValidationSeverity, ValidationSpec
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.graphs.context import (
-    GraphExecutionContext,
-    build_execution_context,
-    format_served_context,
-)
+from dataraum.graphs.context_format import format_served_context
+from dataraum.graphs.context_models import GraphExecutionContext
+from dataraum.graphs.context_reads import build_execution_context
 from dataraum.llm.contract_repair import repair_tool_contract
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message

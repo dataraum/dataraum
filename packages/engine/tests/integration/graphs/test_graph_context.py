@@ -24,7 +24,8 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from dataraum.graphs.context import GraphExecutionContext, build_execution_context
+from dataraum.graphs.context_models import GraphExecutionContext
+from dataraum.graphs.context_reads import build_execution_context
 from dataraum.server.workspace import schema_name_for
 from tests.integration.storage.test_property_graph import _boot, _seed
 
@@ -187,7 +188,8 @@ class TestStructuralEdges:
     def test_stored_sign_is_rendered_into_the_column_notes(self) -> None:
         """The served fact has to reach the PROMPT, not just the dataclass — the
         notes column is what the grounding author actually reads."""
-        from dataraum.graphs.context import ColumnContext, _build_column_notes
+        from dataraum.graphs.context_format import _build_column_notes
+        from dataraum.graphs.context_models import ColumnContext
 
         ledger = _build_column_notes(
             ColumnContext(

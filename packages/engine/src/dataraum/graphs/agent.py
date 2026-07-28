@@ -145,7 +145,7 @@ class ExecutionContext:
     # - Table relationships and topology
     # - Quality flags
     # - Entropy scores and data readiness
-    rich_context: Any | None = None  # GraphExecutionContext from graphs.context
+    rich_context: Any | None = None  # GraphExecutionContext from graphs.context_models
 
     @classmethod
     def with_rich_context(
@@ -179,7 +179,7 @@ class ExecutionContext:
         Returns:
             ExecutionContext with rich_context populated
         """
-        from dataraum.graphs.context import build_execution_context
+        from dataraum.graphs.context_reads import build_execution_context
 
         rich_context = build_execution_context(
             session=session,
@@ -805,7 +805,7 @@ class GraphAgent(LLMFeature):
                 "Cannot generate SQL without the column meaning feed. "
                 "Run the semantic phase to author column meanings."
             )
-        from dataraum.graphs.context import format_served_context
+        from dataraum.graphs.context_format import format_served_context
         from dataraum.graphs.field_mapping import format_meanings_for_prompt
 
         # Built ONCE and shared by the prompt's <data_schema> block AND the

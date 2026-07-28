@@ -209,9 +209,20 @@ class SemanticPerColumnPhase(BasePhase):
             return PhaseResult.failed(grounding.error or "Column annotation failed")
 
         count = grounding.unwrap()
+        # Retry disclosure (DAT-889): grounding.warnings is non-empty only
+        # when a runaway (max_tokens) or a content-omission was recovered by
+        # retrying a reduced batch. It rides three channels, not a debug log
+        # a human has to go looking for: PhaseResult.warnings below, this
+        # summary's suffix (Temporal history), and the activity.phase_done /
+        # activity.session_phase_done log line's warnings field
+        # (worker/activity.py).
+        summary = f"{count} column annotations"
+        if grounding.warnings:
+            summary += f" ({len(grounding.warnings)} runaway retries)"
         return PhaseResult.success(
             outputs={"annotations": count, "tables_analyzed": len(table_ids)},
             records_processed=count,
             records_created=count,
-            summary=f"{count} column annotations",
+            warnings=grounding.warnings,
+            summary=summary,
         )

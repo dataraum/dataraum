@@ -240,6 +240,11 @@ def run_phase(
         phase=phase_name,
         status=result.status.value,
         duration=result.duration_seconds,
+        # A phase's non-fatal disclosures (e.g. the DAT-889 column_annotation
+        # runaway/omission retry guard) ride PhaseResult.warnings — surfaced
+        # here so they reach a log reader for EVERY phase, not just the ones
+        # a caller thinks to check PhaseRun.summary for.
+        warnings=result.warnings,
     )
     return PhaseRun(
         status=result.status.value,
@@ -455,6 +460,9 @@ def run_session_phase(
         phase=phase_name,
         status=result.status.value,
         duration=result.duration_seconds,
+        # See the sibling run_phase's identical addition (DAT-889): a phase's
+        # non-fatal disclosures ride PhaseResult.warnings.
+        warnings=result.warnings,
     )
     return PhaseRun(
         status=result.status.value,

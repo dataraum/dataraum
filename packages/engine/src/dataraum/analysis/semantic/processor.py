@@ -376,7 +376,12 @@ def ground_columns(
         annotated_by=model_name,
         run_id=run_id,
     )
-    return Result.ok(count)
+    # Retry disclosure (DAT-889): non-empty only when a runaway (max_tokens)
+    # or a content-omission was recovered by retrying a reduced batch.
+    # Threaded through to PhaseResult.warnings by the calling phase, which
+    # feeds the phase summary's retry-count suffix and the
+    # activity.phase_done log line's warnings field — not just a debug log.
+    return Result.ok(count, warnings=annotation_result.warnings)
 
 
 def _lake_path(table_name: str) -> str:

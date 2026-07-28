@@ -729,6 +729,23 @@ export const cycleFamilies = pgView("cycle_families", {
 	sql`SELECT family_id, vertical, family, directions, source, created_at, superseded_at FROM engine.cycle_families WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
+export const cycleTypes = pgView("cycle_types", {
+	cycleTypeId: varchar("cycle_type_id"),
+	vertical: varchar(),
+	name: varchar(),
+	description: text(),
+	businessValue: varchar("business_value"),
+	aliases: json(),
+	typicalStages: json("typical_stages"),
+	completionIndicators: json("completion_indicators"),
+	feedsInto: json("feeds_into"),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT cycle_type_id, vertical, name, description, business_value, aliases, typical_stages, completion_indicators, feeds_into, source, created_at, superseded_at FROM engine.cycle_types WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
 export const metadataSnapshotHead = pgView("metadata_snapshot_head", {
 	headId: varchar("head_id"),
 	target: varchar(),
@@ -776,11 +793,14 @@ export const metrics = pgView("metrics", {
 	unit: varchar(),
 	outputType: varchar("output_type"),
 	version: varchar(),
+	description: text(),
+	output: json(),
+	dependencies: json(),
 	source: varchar(),
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, description, output, dependencies, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const runTables = pgView("run_tables", {
@@ -862,6 +882,19 @@ export const validations = pgView("validations", {
 	supersededAt: timestamp("superseded_at"),
 }).as(
 	sql`SELECT row_id, vertical, validation_id, name, description, category, severity, check_type, tolerance, guidance, expected_outcome, relevant_cycles, relevant_conventions, tags, version, source, created_at, superseded_at FROM engine.validations WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
+export const verticalEnvelopes = pgView("vertical_envelopes", {
+	envelopeId: varchar("envelope_id"),
+	vertical: varchar(),
+	name: varchar(),
+	version: varchar(),
+	description: text(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT envelope_id, vertical, name, version, description, source, created_at, superseded_at FROM engine.vertical_envelopes WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const workspaceCalendar = pgView("workspace_calendar", {

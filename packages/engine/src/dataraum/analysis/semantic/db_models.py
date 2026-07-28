@@ -433,6 +433,80 @@ class Convention(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class VerticalEnvelope(Base):
+    """The vertical's own identity — name/version/description, typed (DAT-883).
+
+    The third config→DB home alongside :class:`Concept` (DAT-728) and
+    :class:`Convention` (DAT-789): ``load_workspace_concepts`` used to re-parse
+    ``ontology.yaml`` on every call just to read its envelope (name/version/
+    description), and fabricated ``version="1.0.0"`` for a framed vertical (no
+    on-disk YAML) rather than admitting it has none. This table is the typed home
+    that fixes both — a shipped vertical's YAML is the *seed* (one row, normalized
+    at connect, :func:`~dataraum.analysis.semantic.envelope_store.ensure_envelope_seeded`);
+    a framed vertical (declared via the cockpit ``frame`` stage, no on-disk file) has
+    NO seed source and so gets NO row — never a synthesized identity. This is the
+    lead's north star for vertical config (2026-07-29): a framed/agent-generated
+    vertical is the FIRST-CLASS envelope case, served with its honest (possibly
+    absent) provenance, not a hand-authored-YAML fallback value.
+
+    **Identity contract — NOT run-versioned, singleton per vertical (the DAT-728
+    pattern, simplified).** Unlike :class:`Concept`/:class:`Convention` (many active
+    rows per vertical, keyed ``(vertical, name)``), a vertical has exactly ONE
+    envelope — the active-row uniqueness is on ``vertical`` alone
+    (``uq_vertical_envelope_active``). ``envelope_id`` is a workspace-stable
+    surrogate minted once at seed, not a per-run uuid. Workspace identity IS the
+    ``ws_<id>`` schema (no ``workspace_id`` column), matching every sibling here.
+
+    ``version`` and ``description`` are NULLABLE — a source that genuinely lacks
+    them (a framed vertical has no envelope row at all; even a shipped YAML could
+    in principle omit ``description``) must serve NULL, never a fabricated
+    placeholder. ``name`` is NOT NULL: a seeded row always has one (the YAML
+    requires it), and the reader (``concept_store.load_workspace_concepts``) falls
+    back to the vertical's own key when no row exists — that key IS the vertical's
+    real identity, not an invention.
+    """
+
+    __tablename__ = "vertical_envelopes"
+    __table_args__ = (
+        # At most one ACTIVE row per vertical (singleton — one envelope per
+        # vertical, unlike the compound (vertical, name) keys on Concept/
+        # Convention). Superseded history rows are exempt.
+        Index(
+            "uq_vertical_envelope_active",
+            "vertical",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+        # Lifecycle-source vocabulary (DAT-802 discipline): the ONE live writer today
+        # is 'seed' (``envelope_store.ensure_envelope_seeded``, engine, gated to
+        # shipped/placeholder verticals with an on-disk ontology.yaml). No frame-time
+        # envelope writer exists yet — a framed vertical seeds no row at all, per this
+        # table's docstring — so 'frame' is deliberately NOT in the CHECK (the DAT-802
+        # rule: never admit a value no writer produces). Widen this CHECK the day a
+        # frame/generation-time envelope writer lands (the lead's north star above).
+        CheckConstraint("source IN ('seed')", name="source"),
+    )
+
+    envelope_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Absent, never fabricated: NULL when the source genuinely has no version
+    # (there is no live writer that would leave this NULL today — the one seed
+    # writer only fires for a vertical whose YAML declares one — but the column
+    # stays nullable for the day a generated-vertical writer legitimately has none).
+    version: Mapped[str | None] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    # Closed vocab: see ck_vertical_envelopes_source — 'seed' is the one live writer.
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class WorkspaceSettings(Base):
     """The workspace's bound active vertical — the one home DAT-848 was missing.
 

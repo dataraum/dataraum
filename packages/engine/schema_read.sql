@@ -465,6 +465,12 @@ SELECT * FROM __WS__.validations
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
+DROP VIEW IF EXISTS __READ__.vertical_envelopes;
+CREATE VIEW __READ__.vertical_envelopes AS
+SELECT * FROM __WS__.vertical_envelopes
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
 DROP VIEW IF EXISTS __READ__.workspace_calendar;
 CREATE VIEW __READ__.workspace_calendar AS
 SELECT * FROM __WS__.workspace_calendar;

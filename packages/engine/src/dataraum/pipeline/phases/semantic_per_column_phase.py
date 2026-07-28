@@ -24,6 +24,7 @@ from dataraum.analysis.semantic.concept_store import (
     require_active_vertical,
 )
 from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
+from dataraum.analysis.semantic.envelope_store import ensure_envelope_seeded
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.analysis.validation.validation_store import ensure_validations_seeded
 from dataraum.core.logging import get_logger
@@ -161,6 +162,12 @@ class SemanticPerColumnPhase(BasePhase):
         # finance seeds from its shipped ontology; a framed vertical seeds nothing
         # here and relies on frame's typed writes.
         ensure_concepts_seeded(ctx.session, ontology)
+        # Envelope (DAT-883): seed the vertical's own identity (name/version/
+        # description) into the typed `vertical_envelopes` home right after its
+        # concepts — same idempotent config→DB seed. A framed vertical (no on-disk
+        # YAML) seeds nothing here; its envelope stays honestly absent rather than a
+        # fabricated placeholder.
+        ensure_envelope_seeded(ctx.session, ontology)
         # Conventions (DAT-789): seed the vertical's domain conventions into the typed
         # `conventions` home right after the concepts their `concept_groups` name — same
         # idempotent config→DB seed. All three SQL authors (extraction, validation, the

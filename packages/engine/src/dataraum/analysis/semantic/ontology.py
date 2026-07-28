@@ -82,7 +82,12 @@ class OntologyDefinition(BaseModel):
     """A complete ontology definition from YAML."""
 
     name: str
-    version: str = "1.0.0"
+    # No fabricated default (DAT-883): a shipped vertical's YAML always declares its
+    # own version; a framed vertical (loaded via the empty ``{"name": v}`` base, no
+    # on-disk file) genuinely has none, and must resolve to NULL here, never an
+    # invented "1.0.0". The typed envelope home (`envelope_store`) carries the same
+    # nullability forward into the DB.
+    version: str | None = None
     description: str | None = None
     concepts: list[OntologyConcept] = Field(default_factory=list)
     conventions: list[OntologyConvention] = Field(default_factory=list)

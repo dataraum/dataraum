@@ -61,7 +61,11 @@ function ReportsGallery() {
 								{/* Frozen chart over live data (DAT-626) — lazy per card so a big
 								    gallery doesn't fire a query + canvas for every report. */}
 								{r.chartConfig && (
-									<ReportChartThumbnail sql={r.sql} config={r.chartConfig} />
+									<ReportChartThumbnail
+										sql={r.sql}
+										params={r.sqlParams ?? undefined}
+										config={r.chartConfig}
+									/>
 								)}
 								<Text size="sm" c="dimmed" lineClamp={3}>
 									{r.summary}

@@ -516,6 +516,13 @@ class SnippetAssumption(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The authored assumption's DIMENSION (DAT-887) — the kind of judgment it records
+    # ('scope.validity', 'period.binding', …). Persisted because it is what makes the
+    # grading surface FILTERABLE: an eval attributing period error must be able to
+    # select the period-binding assumptions without pattern-matching prose. Defaults to
+    # "" rather than being optional — every writer supplies it from the authored
+    # GraphAssumptionOutput, and pre-DAT-887 rows simply carry no dimension.
+    dimension: str = ""
     assumption: str
     basis: AssumptionBasis
     confidence: float = Field(ge=0.0, le=1.0)

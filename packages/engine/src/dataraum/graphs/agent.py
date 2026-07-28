@@ -584,7 +584,13 @@ class GraphAgent(LLMFeature):
                         basis = AssumptionBasis.INFERRED
                     assumptions.append(
                         GraphAssumptionOutput(
-                            dimension=a.get("dimension", "grounding.cached"),
+                            # ONE unknown marker for this field, matching
+                            # SnippetAssumption.dimension's default: absent means "no
+                            # dimension recorded", never a synthesized one. (A prior
+                            # "grounding.cached" here conflated a PROVENANCE fact —
+                            # where the assumption was read from — with the DIMENSION,
+                            # which names the kind of judgment; nothing consumed it.)
+                            dimension=a.get("dimension", ""),
                             target=a.get("target", f"step:{step_id}"),
                             assumption=a.get("assumption", ""),
                             basis=basis,
@@ -974,12 +980,19 @@ class GraphAgent(LLMFeature):
         # falls loud into the failed-snippet path (DAT-543) so the authored SQL
         # + the exact violations feed the next run's prior_context instead of
         # vanishing.
+        from dataraum.graphs.boundary_resolver import (
+            ReportingCalendar,
+            compose_period_binding,
+            resolve_period_binding,
+        )
         from dataraum.graphs.grounding_validation import (
             schema_tables_from_info,
             validate_grounding_basis,
         )
         from dataraum.graphs.validity_scope import compose_scoped_where
         from dataraum.llm.contract_repair import repair_tool_contract
+        from dataraum.server.workspace import schema_name_for
+        from dataraum.storage.read_views import read_schema_name_for
 
         schema_tables = schema_tables_from_info(schema_info)
         # DAT-787: the value reference for filter_members — the complete served
@@ -1025,17 +1038,71 @@ class GraphAgent(LLMFeature):
         # constrains the status column (the LLM's own judgment), the scope defers and
         # is recorded as a typed assumption instead of silently double-filtering.
         # Absence falls loud — no applicable cycle appends nothing.
+        served_columns = schema_tables.get(relation, set()) if relation is not None else set()
         where_parts, scope_assumptions = compose_scoped_where(
             output,
             relation,
-            schema_tables.get(relation, set()) if relation is not None else set(),
+            served_columns,
             context.rich_context.business_cycles,
             context.rich_context.enriched_views,
             context.rich_context.tables,
             context.duckdb_conn,
         )
 
-        rendered_sql = compose_extract_sql(output.select_expr, relation, where_parts)
+        # DAT-887: bind a POINT-IN-TIME extract to a reporting instant. A stock is a
+        # level AT an instant, not an accumulation, so an unbound period axis resolves
+        # to whatever period the data happens to end at — two past the fiscal-year end
+        # on the finance corpus. The resolver returns the fiscal close (never a rewrite
+        # of the model's SQL); this appends it as one more typed WHERE part on the SAME
+        # parts substrate the validity scope above rides, and records the instant on the
+        # snippet as the ticket's observable. A FLOW (or an unclassified measure)
+        # resolves to None and is untouched — the model's own judgment stands there,
+        # which is why the prompt keeps its end_of_period fallback for exactly those.
+        # The calendar is the one the served context already read, not a per-extract
+        # re-read.
+        calendar_ctx = context.rich_context.reporting_calendar
+        period_binding = resolve_period_binding(
+            session,
+            context.duckdb_conn,
+            relation=relation,
+            select_expr=output.select_expr,
+            read_schema=read_schema_name_for(schema_name_for(workspace_id)),
+            calendar=(
+                ReportingCalendar(
+                    fiscal_year_start_month=calendar_ctx.fiscal_year_start_month,
+                    source=calendar_ctx.source,
+                )
+                if calendar_ctx is not None
+                else None
+            ),
+        )
+        composed = compose_period_binding(
+            output, where_parts, period_binding, served_columns, context.duckdb_conn
+        )
+        where_parts = composed.where
+        binding_assumptions = composed.assumptions
+        binding_record = composed.record
+        select_expr = output.select_expr
+        composed_relation = relation
+        if composed.abstain is not None:
+            # A KNOWN stock whose instant could not be resolved. The prompt told the
+            # model to leave the period axis to the system, so composing what it wrote
+            # would aggregate EVERY period — far more wrong than the unbound MAX this
+            # ticket fixes. Compose the existing fall-loud shape instead; the reason
+            # rides the sub-floor disclosure assumption attached above.
+            #
+            # Only the COMPOSED relation is dropped — `relation` still names what the
+            # model authored, so the response dump below records its actual output
+            # rather than a null it never produced.
+            #
+            # The provenance is left intact and still enumerates the columns the model's
+            # parts touched, so `og_uses` will emit `uses` edges for a grounding whose
+            # composed parts now touch no relation. That is deliberate: the edges record
+            # what the model grounded ON, which is exactly what makes an abstention
+            # diagnosable — and the abstention itself is visible on the same row.
+            composed_relation, select_expr, where_parts = None, "NULL", []
+
+        rendered_sql = compose_extract_sql(select_expr, composed_relation, where_parts)
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
@@ -1045,12 +1112,14 @@ class GraphAgent(LLMFeature):
                     "step_id": leaf.step_id,
                     "sql": rendered_sql,
                     "description": output.description,
-                    "parts": extract_parts_dict(output.select_expr, relation, where_parts),
+                    "parts": extract_parts_dict(
+                        select_expr, composed_relation, where_parts, binding_record
+                    ),
                 }
             ],
             final_sql=f"SELECT * FROM {leaf.step_id}",
             provenance=output.provenance,
-            assumptions=(output.assumptions or []) + scope_assumptions,
+            assumptions=(output.assumptions or []) + scope_assumptions + binding_assumptions,
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),
@@ -1503,7 +1572,12 @@ class GraphAgent(LLMFeature):
                 else {}
             ),
             assumptions=[
-                SnippetAssumption(assumption=a.assumption, basis=a.basis, confidence=a.confidence)
+                SnippetAssumption(
+                    dimension=a.dimension,
+                    assumption=a.assumption,
+                    basis=a.basis,
+                    confidence=a.confidence,
+                )
                 for a in generated_code.assumptions
             ],
         )

@@ -59,6 +59,8 @@ def format_served_context(
     lines.append(f"{len(context.tables)} tables, {total_columns} columns.")
     lines.append("")
 
+    _append_reporting_calendar(lines, context)
+
     # --- Business Concepts (the traversal core, DAT-734) ---
     _append_concepts(lines, context)
 
@@ -296,6 +298,44 @@ def format_served_context(
                 lines.append(f"- [{v.status}] {v.validation_id}: {v.message}")
 
     return "\n".join(lines)
+
+
+_MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)  # fmt: skip
+
+
+def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext) -> None:
+    """Render the workspace's reporting calendar (DAT-887).
+
+    **Fact only — no instruction.** This document is shared: ``validation_sql`` and
+    ``validation_induction`` render the same served context, and an imperative aimed at
+    the grounding author ("do not filter the period axis") would silently become a rule
+    for authors this binding does not apply to. The instruction's one home is
+    ``graph_sql_generation.yaml``; what belongs HERE is the fiscal year's start and
+    whether it was declared or assumed, so any consumer can caveat accordingly.
+
+    Absence is rendered as absence (the section is omitted), never as a fabricated
+    calendar year.
+    """
+    calendar = context.reporting_calendar
+    if calendar is None:
+        return
+    month = _MONTHS[calendar.fiscal_year_start_month - 1]
+    basis = (
+        "declared by this workspace"
+        if calendar.source == "declared"
+        else "not declared — the calendar-year default is assumed"
+    )
+    lines.append("## Reporting calendar")
+    lines.append("")
+    lines.append(f"Fiscal year starts in {month} ({basis}).")
+    lines.append(
+        "A reporting year therefore closes at the start of that month; a period-labelled "
+        "row carries the level at the END of its own period."
+    )
+    lines.append("")
 
 
 def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:

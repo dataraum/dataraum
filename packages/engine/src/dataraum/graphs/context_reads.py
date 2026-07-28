@@ -37,6 +37,7 @@ from dataraum.graphs.context_models import (
     GroundingContext,
     GroundingUseContext,
     RelationshipContext,
+    ReportingCalendarContext,
     SliceContext,
     TableContext,
     ValidationContext,
@@ -701,6 +702,7 @@ def build_execution_context(
 
     return GraphExecutionContext(
         tables=table_contexts,
+        reporting_calendar=_reporting_calendar(session, workspace_id),
         relationships=relationships,
         available_slices=slice_contexts,
         slice_catalog_note=slice_catalog_note,
@@ -747,6 +749,41 @@ class _GraphReads:
     anchor_by_column: dict[str, str] = field(default_factory=dict)
     stored_sign_by_column: dict[str, str] = field(default_factory=dict)
     dimension_tables_by_view: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _reporting_calendar(
+    session: Session, workspace_id: str | None
+) -> ReportingCalendarContext | None:
+    """The workspace's reporting calendar for the served context (DAT-887).
+
+    ONE home for the calendar read: ``boundary_resolver`` owns it (it is the module
+    that binds against it), and this serves the same values to the author so the
+    prompt's instruction to leave the period axis alone names a window the author
+    can actually see. ``None`` — served as absence, never as a fabricated calendar
+    year — when there is no read surface or no calendar on it.
+    """
+    read_schema = _graph_read_schema(session, workspace_id)
+    if read_schema is None:
+        return None
+    from dataraum.graphs.boundary_resolver import read_reporting_calendar
+
+    # Same degrade-to-None guard the graph reads carry: a read schema materialized
+    # before DAT-730 has no og_period_grain, and an UndefinedTable raised here would
+    # abort the transaction and kill the ENTIRE context build for every table — not
+    # just this one section. Serving no calendar is the correct degraded state; the
+    # binding then abstains loudly rather than assuming a calendar year.
+    try:
+        calendar = read_reporting_calendar(session, read_schema)
+    except Exception as exc:  # noqa: BLE001 - degrade-to-absent IS the contract
+        logger.warning("reporting_calendar_unreadable", error=str(exc))
+        session.rollback()
+        return None
+    if calendar is None:
+        return None
+    return ReportingCalendarContext(
+        fiscal_year_start_month=calendar.fiscal_year_start_month,
+        source=calendar.source,
+    )
 
 
 def _graph_read_schema(session: Session, workspace_id: str | None) -> str | None:

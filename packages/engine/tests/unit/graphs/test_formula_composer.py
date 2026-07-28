@@ -204,11 +204,21 @@ class TestComposeExtractSql:
 
 class TestExtractPartsDict:
     def test_general_clause_shape(self) -> None:
+        """No binding ⇒ no key — a flow must never grow a half-filled period record."""
         assert extract_parts_dict("SUM(x)", "t", ["a = 1", " b = 2 "]) == {
             "select": [{"expr": "SUM(x)", "alias": "value"}],
             "from": ["t"],
             "where": ["a = 1", "b = 2"],
         }
+
+    def test_period_binding_rides_the_parts(self) -> None:
+        """DAT-887's observable: a resolved instant is PERSISTED with the clause parts.
+
+        This is the wire the read surface un-nests into ``current_groundings
+        .resolved_period``; without it the binding is applied but ungradeable.
+        """
+        record = {"as_of": "2025-12-01 00:00:00", "axis": "period"}
+        assert extract_parts_dict("SUM(x)", "t", [], record)["period_binding"] == record
 
     def test_fall_loud_has_empty_from(self) -> None:
         assert extract_parts_dict("NULL", None, []) == {

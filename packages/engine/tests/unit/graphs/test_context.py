@@ -29,6 +29,7 @@ from dataraum.graphs.context_models import (
     GroundingContext,
     GroundingUseContext,
     RelationshipContext,
+    ReportingCalendarContext,
     SliceContext,
     TableContext,
     ValidationContext,
@@ -72,6 +73,55 @@ class TestOverview:
     def test_empty_context_renders(self) -> None:
         out = format_served_context(GraphExecutionContext())
         assert out.startswith("# Data Catalog: dataset")
+
+
+class TestReportingCalendar:
+    """DAT-887: the author must SEE the window a stock extract's value will be as-of.
+
+    The instruction not to pin the period axis is only honest if the calendar behind
+    the binding is served — including whether it was declared or merely assumed.
+    """
+
+    def test_declared_calendar_names_its_month_and_basis(self) -> None:
+        ctx = GraphExecutionContext(
+            reporting_calendar=ReportingCalendarContext(
+                fiscal_year_start_month=4, source="declared"
+            )
+        )
+        out = format_served_context(ctx)
+        assert "## Reporting calendar" in out
+        assert "Fiscal year starts in April (declared by this workspace)." in out
+        assert "a period-labelled row carries the level at the END of its own period" in out
+
+    def test_calendar_section_carries_no_authoring_instruction(self) -> None:
+        """FACT only — this document is SHARED with the validation authors.
+
+        An imperative aimed at the grounding author ("leave the period axis out") would
+        silently become a rule for prompts the binding does not apply to. Its one home
+        is graph_sql_generation.yaml.
+        """
+        out = format_served_context(
+            GraphExecutionContext(
+                reporting_calendar=ReportingCalendarContext(
+                    fiscal_year_start_month=1, source="default"
+                )
+            )
+        )
+        assert "do not filter" not in out.lower()
+        assert "leave the period axis" not in out.lower()
+
+    def test_defaulted_calendar_says_it_is_assumed(self) -> None:
+        """A stamped default must never read as a declaration (DAT-730's discipline)."""
+        ctx = GraphExecutionContext(
+            reporting_calendar=ReportingCalendarContext(fiscal_year_start_month=1, source="default")
+        )
+        out = format_served_context(ctx)
+        assert "Fiscal year starts in January (not declared" in out
+        assert "the calendar-year default is assumed" in out
+
+    def test_absent_calendar_renders_no_section(self) -> None:
+        """No calendar on the read surface ⇒ absence, never a fabricated calendar year."""
+        assert "Reporting calendar" not in format_served_context(GraphExecutionContext())
 
 
 class TestAbsenceFallsLoud:

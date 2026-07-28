@@ -280,6 +280,20 @@ class EnrichedViewContext:
 
 
 @dataclass
+class ReportingCalendarContext:
+    """The workspace's reporting calendar, as served to the authoring prompt (DAT-887).
+
+    ``fiscal_year_start_month`` is 1–12 (1 = January = a calendar year). ``source`` is
+    ``'declared'`` when the workspace declared one and ``'default'`` when the
+    calendar-year default was stamped in its absence — served, not collapsed, so the
+    author can tell an assumed calendar from a declared one and caveat accordingly.
+    """
+
+    fiscal_year_start_month: int
+    source: str
+
+
+@dataclass
 class GroundingUseContext:
     """One column a grounding touches (the ``uses`` edge, provenance contract v2)."""
 
@@ -432,6 +446,15 @@ class GraphExecutionContext:
     # agent applies when authoring a measure. Opaque to the engine — see
     # OntologyConvention. Empty string when the vertical declares none.
     conventions: str = ""
+
+    # The workspace's reporting calendar (DAT-887 / DAT-730): the fiscal-year start
+    # month and whether it was DECLARED or defaulted. Served because a point-in-time
+    # extract's period is bound at composition to the last fiscal close — the author
+    # must be able to see which window its value will be as-of rather than infer one
+    # (and, seeing it, must not pin the period axis itself). None when the read
+    # surface serves no calendar: absence is served as absence, never as a
+    # fabricated calendar year.
+    reporting_calendar: ReportingCalendarContext | None = None
 
 
 # Value-set serving contract (DAT-621) — shared by the assembler that FETCHES a

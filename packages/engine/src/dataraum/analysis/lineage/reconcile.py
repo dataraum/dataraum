@@ -58,20 +58,32 @@ MIN_PERIODS = 4
 FIRE_RESIDUAL_MAX = 0.5
 
 # Near-tie margin (DAT-847) — DERIVED from the two levels the discriminator is
-# already built on, not fitted to any corpus.
+# already built on. It introduces no NEW fitted constant: it inherits
+# ``FIRE_RESIDUAL_MAX``'s probe-measured provenance (module docstring) and adds
+# no number of its own.
 #
-# Under a CORRECT anchor the false hypothesis sits at R ≈ 1 by construction: a
-# perfect flow (y == m) gives R_stock = Σ|m[t-1]| / Σ|m[t]| ≈ 1, and a perfect
-# stock gives R_flow ≈ 1 symmetrically — the same ≈ 1.0 level the wrong-anchor
-# guardrail is calibrated against. The true hypothesis sits at the
-# reconciliation noise, which ``FIRE_RESIDUAL_MAX`` already declares admissible
-# out to 0.5. So the WEAKEST separation this module still accepts as a fit is
-# ``FIRE_RESIDUAL_MAX`` against 1; a pair closer than that is inside the band
-# the module itself calls non-discriminating, and picking a side there reports
-# the noise. On the separation index (see :func:`separation`) that level is:
+# Under a CORRECT anchor the false hypothesis sits at R ≈ 1: a perfect flow
+# (y == m) gives R_stock = Σ|m[t-1]| / Σ|m[t]|, and a perfect stock gives R_flow
+# the mirror ratio — both ≈ 1 for a STATIONARY movement scale, the same ≈ 1.0
+# level the wrong-anchor guardrail is calibrated against. Under a strongly
+# drifting scale the ratio sags (over 12 periods: m[t] = t → 0.86, m[t] = 2^t
+# → 0.50, against exactly 1.00 for a constant scale), which
+# shrinks the observed separation and so errs toward ABSTENTION — the safe
+# direction. The true hypothesis sits at the reconciliation noise, which
+# ``FIRE_RESIDUAL_MAX`` already declares admissible out to 0.5. So the WEAKEST
+# separation this module still accepts as a fit is ``FIRE_RESIDUAL_MAX`` against
+# 1; a pair closer than that is inside the band the module itself calls
+# non-discriminating, and picking a side there reports the noise. On the
+# separation index (see :func:`separation`) that level is:
 MIN_SEPARATION = (1.0 - FIRE_RESIDUAL_MAX) / (1.0 + FIRE_RESIDUAL_MAX)
 """Minimum lead the winning hypothesis must hold — 1/3, i.e. the loser's
-residual must be at least twice the winner's, at any residual magnitude."""
+residual must be at least twice the winner's, at any residual magnitude.
+
+The two gates are COUPLED by this derivation: moving ``FIRE_RESIDUAL_MAX`` to
+1.0 drives ``MIN_SEPARATION`` to 0 and silently disables the tie gate, while
+moving it to 0.0 drives the margin to 1 and lets nothing fire. Retune the fit
+gate only with that in view.
+"""
 
 # A candidate's verdict needs at least this many voting entities and this much
 # agreement among them — a lone entity or a split vote is ignorance, not lineage.

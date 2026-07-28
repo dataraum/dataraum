@@ -4,17 +4,20 @@ The LLM answers one bit (fact vs dimension); the PeriodicSnapshot subtype is
 structural (the reporting period in the grain), derived here and persisted so the
 additivity COUNT rule reads a subtype instead of re-deriving it.
 
-The period is not always a date column: the standard warehouse snapshot keys it
-as an FK into a period dimension (DAT-847), which is resolved from the same
-synthesis output that carries the tables — see
-``TableSynthesisOutput.period_axis_columns``.
+The period is usually not a date column. The standard warehouse snapshot keys it
+as an FK into a SURROGATE-keyed calendar — ``balances(account_id, period_id)`` →
+``dim_period(period_id PK, period_date DATE)`` — where no date appears in either
+table's grain (DAT-847). That shape is recognized by a cardinality witness on the
+dimension: one row per period means its event date is unique across its rows.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
+
 from dataraum.analysis.semantic.db_models import TableRole, derive_table_role
 from dataraum.analysis.semantic.models import (
-    KeyColumnPair,
     RelationshipOutput,
     TableEntityOutput,
     TableSynthesisOutput,
@@ -80,44 +83,61 @@ def _fk(
     to_column: str,
     *,
     kind: str = "foreign_key",
-    key_columns: list[KeyColumnPair] | None = None,
 ) -> RelationshipOutput:
     return RelationshipOutput(
         from_table=from_table,
         from_column=from_column,
         to_table=to_table,
         to_column=to_column,
-        key_columns=key_columns or [],
+        key_columns=[],
         relationship_type=kind,  # type: ignore[arg-type]
         confidence=0.9,
         reasoning="test fixture",
     )
 
 
-def _period_dimension() -> TableEntityOutput:
-    """A calendar dimension: one row per period, so its grain IS its date."""
+def _calendar() -> TableEntityOutput:
+    """The standard warehouse calendar: surrogate int key, the date an attribute.
+
+    Note what is NOT true of it — its date is not in its own grain. That is the
+    whole reason the role has to be decided by cardinality rather than by shape.
+    """
     return _table(
-        "dim_period", is_fact=False, grain=["period_date"], time_columns=[_time("period_date")]
+        "dim_period",
+        is_fact=False,
+        grain=["period_id"],
+        time_columns=[_time("period_date")],
     )
 
 
-def _role_of(synthesis: TableSynthesisOutput, table_name: str) -> TableRole:
+# One row per period: the calendar's key AND its date are both unique.
+_CALENDAR_WITNESS = {"dim_period": {"period_id", "period_date"}}
+
+
+def _role_of(
+    synthesis: TableSynthesisOutput,
+    table_name: str,
+    unique_columns: Mapping[str, AbstractSet[str]],
+) -> TableRole:
     table = next(t for t in synthesis.tables if t.table_name == table_name)
-    return derive_table_role(table.is_fact_table, table.grain, synthesis.period_axis_columns(table))
+    dimensions = synthesis.period_columns_by_dimension(unique_columns)
+    return derive_table_role(
+        table.is_fact_table, table.grain, synthesis.period_axis_columns(table, dimensions)
+    )
 
 
 def test_period_fk_in_grain_is_a_periodic_snapshot() -> None:
     # The defect: ``balances`` holds NO date at all — its period is the integer
-    # key ``period_id``, so the date-column test alone read it as a plain FACT
-    # and the additivity COUNT rule then allowed summing across time.
+    # key ``period_id``, so the date-column test read it as a plain FACT and the
+    # additivity COUNT rule then allowed counting across time.
     synthesis = TableSynthesisOutput(
         tables=[
             _table("balances", is_fact=True, grain=["account_id", "period_id"]),
-            _period_dimension(),
+            _calendar(),
         ],
-        relationships=[_fk("balances", "period_id", "dim_period", "period_date")],
+        relationships=[_fk("balances", "period_id", "dim_period", "period_id")],
     )
-    assert _role_of(synthesis, "balances") == TableRole.PERIODIC_SNAPSHOT
+    assert _role_of(synthesis, "balances", _CALENDAR_WITNESS) == TableRole.PERIODIC_SNAPSHOT
 
 
 def test_period_fk_outside_the_grain_stays_a_fact() -> None:
@@ -126,17 +146,18 @@ def test_period_fk_outside_the_grain_stays_a_fact() -> None:
     synthesis = TableSynthesisOutput(
         tables=[
             _table("journal_lines", is_fact=True, grain=["line_id"]),
-            _period_dimension(),
+            _calendar(),
         ],
-        relationships=[_fk("journal_lines", "period_id", "dim_period", "period_date")],
+        relationships=[_fk("journal_lines", "period_id", "dim_period", "period_id")],
     )
-    assert _role_of(synthesis, "journal_lines") == TableRole.FACT
+    assert _role_of(synthesis, "journal_lines", _CALENDAR_WITNESS) == TableRole.FACT
 
 
-def test_fk_to_a_dimension_that_merely_carries_a_date_stays_a_fact() -> None:
-    # The soundness case. ``dim_customer`` has an event date, but it is not the
-    # dimension's grain — the dimension is many rows per period, so a customer
-    # key in the grain is an entity axis, never a reporting period.
+def test_a_dimension_whose_date_repeats_is_not_a_period() -> None:
+    # The soundness case, now decided by DATA rather than by the model's grain
+    # choice. ``dim_customer`` is shaped exactly like the calendar — surrogate
+    # key, one event date — and is separated from it ONLY by the witness: many
+    # customers share a signup date, so the date does not identify a row.
     synthesis = TableSynthesisOutput(
         tables=[
             _table("subscriptions", is_fact=True, grain=["customer_id"]),
@@ -149,43 +170,78 @@ def test_fk_to_a_dimension_that_merely_carries_a_date_stays_a_fact() -> None:
         ],
         relationships=[_fk("subscriptions", "customer_id", "dim_customer", "customer_id")],
     )
-    assert _role_of(synthesis, "subscriptions") == TableRole.FACT
+    witness = {"dim_customer": {"customer_id"}}  # signup_date NOT unique
+    assert _role_of(synthesis, "subscriptions", witness) == TableRole.FACT
+
+
+def test_the_same_dimension_with_a_unique_date_is_a_period() -> None:
+    # The converse, isolating the witness as the ONLY difference: identical
+    # synthesis, one extra unique column, opposite role.
+    synthesis = TableSynthesisOutput(
+        tables=[
+            _table("subscriptions", is_fact=True, grain=["customer_id"]),
+            _table(
+                "dim_customer",
+                is_fact=False,
+                grain=["customer_id"],
+                time_columns=[_time("signup_date")],
+            ),
+        ],
+        relationships=[_fk("subscriptions", "customer_id", "dim_customer", "customer_id")],
+    )
+    witness = {"dim_customer": {"customer_id", "signup_date"}}
+    assert _role_of(synthesis, "subscriptions", witness) == TableRole.PERIODIC_SNAPSHOT
+
+
+def test_missing_witness_fails_safe_to_fact() -> None:
+    # An unprofiled dimension has no witness — the role only ever tightens a
+    # verdict, so an absent witness must never mint a snapshot.
+    synthesis = TableSynthesisOutput(
+        tables=[
+            _table("balances", is_fact=True, grain=["account_id", "period_id"]),
+            _calendar(),
+        ],
+        relationships=[_fk("balances", "period_id", "dim_period", "period_id")],
+    )
+    assert _role_of(synthesis, "balances", {}) == TableRole.FACT
 
 
 def test_attribute_dated_dimension_is_not_a_period_axis() -> None:
-    # DAT-780 holds on the dimension side too: a dimension keyed on a date the
-    # row merely refers to is not a reporting period.
+    # DAT-780 holds on the dimension side too: a unique date the row merely
+    # REFERS to is not a reporting period, however well it identifies a row.
     synthesis = TableSynthesisOutput(
         tables=[
-            _table("accruals", is_fact=True, grain=["account_id", "due_date_key"]),
+            _table("accruals", is_fact=True, grain=["account_id", "due_date_id"]),
             _table(
                 "dim_due_date",
                 is_fact=False,
-                grain=["due_date"],
+                grain=["due_date_id"],
                 time_columns=[_time("due_date", role="attribute", anchor=False)],
             ),
         ],
-        relationships=[_fk("accruals", "due_date_key", "dim_due_date", "due_date")],
+        relationships=[_fk("accruals", "due_date_id", "dim_due_date", "due_date_id")],
     )
-    assert _role_of(synthesis, "accruals") == TableRole.FACT
+    witness = {"dim_due_date": {"due_date_id", "due_date"}}
+    assert _role_of(synthesis, "accruals", witness) == TableRole.FACT
 
 
 def test_fk_to_a_fact_is_not_a_period_axis() -> None:
-    # A period dimension is a DIMENSION. A fact grained on its own date is a
+    # A period dimension is a DIMENSION. A fact grained on its own period is a
     # snapshot in its own right, not a calendar other facts key against.
     synthesis = TableSynthesisOutput(
         tables=[
-            _table("allocations", is_fact=True, grain=["alloc_id", "period_date"]),
+            _table("allocations", is_fact=True, grain=["alloc_id", "period_id"]),
             _table(
                 "period_totals",
                 is_fact=True,
-                grain=["period_date"],
+                grain=["period_id"],
                 time_columns=[_time("period_date")],
             ),
         ],
-        relationships=[_fk("allocations", "period_date", "period_totals", "period_date")],
+        relationships=[_fk("allocations", "period_id", "period_totals", "period_id")],
     )
-    assert _role_of(synthesis, "allocations") == TableRole.FACT
+    witness = {"period_totals": {"period_id", "period_date"}}
+    assert _role_of(synthesis, "allocations", witness) == TableRole.FACT
 
 
 def test_hierarchy_edge_is_not_followed() -> None:
@@ -194,36 +250,24 @@ def test_hierarchy_edge_is_not_followed() -> None:
     synthesis = TableSynthesisOutput(
         tables=[
             _table("balances", is_fact=True, grain=["account_id", "period_id"]),
-            _period_dimension(),
+            _calendar(),
         ],
-        relationships=[_fk("balances", "period_id", "dim_period", "period_date", kind="hierarchy")],
+        relationships=[_fk("balances", "period_id", "dim_period", "period_id", kind="hierarchy")],
     )
-    assert _role_of(synthesis, "balances") == TableRole.FACT
+    assert _role_of(synthesis, "balances", _CALENDAR_WITNESS) == TableRole.FACT
 
 
-def test_period_reached_through_a_composite_key_counts() -> None:
-    # The period component of a composite FK is still the period.
+def test_fk_to_a_non_key_column_of_a_calendar_is_not_the_period() -> None:
+    # The reference has to land on the calendar's KEY. A join onto some other
+    # column of it does not say "this row's period".
     synthesis = TableSynthesisOutput(
         tables=[
-            _table("balances", is_fact=True, grain=["entity_id", "period_id"]),
-            _table(
-                "dim_entity_period",
-                is_fact=False,
-                grain=["entity_id", "period_date"],
-                time_columns=[_time("period_date")],
-            ),
+            _table("balances", is_fact=True, grain=["account_id", "fiscal_year"]),
+            _calendar(),
         ],
-        relationships=[
-            _fk(
-                "balances",
-                "entity_id",
-                "dim_entity_period",
-                "entity_id",
-                key_columns=[KeyColumnPair(from_column="period_id", to_column="period_date")],
-            )
-        ],
+        relationships=[_fk("balances", "fiscal_year", "dim_period", "fiscal_year")],
     )
-    assert _role_of(synthesis, "balances") == TableRole.PERIODIC_SNAPSHOT
+    assert _role_of(synthesis, "balances", _CALENDAR_WITNESS) == TableRole.FACT
 
 
 def test_event_date_in_grain_still_wins_without_any_relationship() -> None:
@@ -240,7 +284,7 @@ def test_event_date_in_grain_still_wins_without_any_relationship() -> None:
         ],
         relationships=[],
     )
-    assert _role_of(synthesis, "trial_balance") == TableRole.PERIODIC_SNAPSHOT
+    assert _role_of(synthesis, "trial_balance", {}) == TableRole.PERIODIC_SNAPSHOT
 
 
 def test_attribute_date_in_grain_does_not_flip_a_fact() -> None:
@@ -256,4 +300,4 @@ def test_attribute_date_in_grain_does_not_flip_a_fact() -> None:
         ],
         relationships=[],
     )
-    assert _role_of(synthesis, "invoices") == TableRole.FACT
+    assert _role_of(synthesis, "invoices", {}) == TableRole.FACT

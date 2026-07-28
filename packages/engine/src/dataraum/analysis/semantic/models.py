@@ -8,6 +8,8 @@ Includes tool-friendly models for LLM structured output via Anthropic tool use.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -342,28 +344,49 @@ class TableSynthesisOutput(BaseModel):
         ),
     )
 
-    def period_columns_by_table(self) -> dict[str, set[str]]:
-        """Each DIMENSION's period column(s) — the columns that are its own grain.
+    def period_columns_by_dimension(
+        self, unique_columns: Mapping[str, AbstractSet[str]]
+    ) -> dict[str, set[str]]:
+        """Each period dimension's KEY columns — what a fact's period FK points at.
 
-        A period (calendar) dimension is one row per period; structurally that is
-        a dimension whose GRAIN is a date. A dimension that merely *carries* a
-        date — ``dim_customer.signup_date`` — is many rows per period and fails
-        the grain half, which is what keeps a customer FK from reading as time.
+        A period (calendar) dimension is structurally **one row per period**, and
+        the witness for that is CARDINALITY, not naming and not grain membership:
+        the dimension carries an EVENT date (DAT-780, applied on this side too)
+        that is unique across its rows. ``unique_columns`` is that witness —
+        ``distinct_count == total_count``, see
+        :meth:`~dataraum.analysis.semantic.agent.SemanticAgent._unique_columns`.
 
-        EVENT dates only (DAT-780), applied to the dimension exactly as it is to
-        the fact: a dimension keyed on an attribute date is not a period axis.
+        Grain membership was the wrong test: the standard warehouse calendar is
+        SURROGATE-keyed — ``dim_period(period_id PK, period_date DATE, ...)`` —
+        so its date is almost never in its own grain, and requiring that missed
+        the primary shape entirely. Keying on uniqueness instead admits the
+        surrogate-keyed calendar while ``dim_customer`` still fails: many
+        customers share a ``signup_date``, so the date does not identify a row
+        and the dimension is many rows per period. The soundness case is now
+        decided by the data rather than by the model's choice of grain.
+
+        A dimension with no such witness — unprofiled, or no unique event date —
+        is not treated as a period. The role only ever tightens a verdict, so an
+        absent witness must fail safe (→ ``FACT``).
+
+        Known under-claim, deliberate: a calendar carrying NO date-typed column at
+        all (only smart integers, ``date_key = 20240131``) has no event
+        ``TimeColumn`` to witness and still resolves ``FACT``. Closing that is an
+        LLM-contract change — never a name heuristic.
         """
         periods: dict[str, set[str]] = {}
         for table in self.tables:
-            if table.is_fact_table:
+            if table.is_fact_table or not table.grain:
                 continue
+            unique = unique_columns.get(table.table_name, frozenset())
             events = {tc.column for tc in table.time_columns if tc.role == "event"}
-            grain_periods = set(table.grain) & events
-            if grain_periods:
-                periods[table.table_name] = grain_periods
+            if events & unique:
+                periods[table.table_name] = set(table.grain)
         return periods
 
-    def period_axis_columns(self, table: TableEntityOutput) -> list[str]:
+    def period_axis_columns(
+        self, table: TableEntityOutput, period_dimensions: Mapping[str, AbstractSet[str]]
+    ) -> set[str]:
         """Columns of ``table`` that can carry its reporting period.
 
         Two shapes, because a fact can hold its period either way:
@@ -373,29 +396,28 @@ class TableSynthesisOutput(BaseModel):
           ``due_date`` landing in the grain must not flip a plain fact to
           periodic_snapshot;
         - a **period FK** — an integer/varchar key into a period dimension. It
-          holds no date, so it is never a ``TimeColumn``, and reading time-in-grain
-          off the date columns alone mis-roled the standard warehouse snapshot
-          (grain ``(account_id, period_id)``) as a plain FACT (DAT-847). A
-          reference counts as the period exactly when the column it points at is
-          the referenced dimension's own period — see
-          :meth:`period_columns_by_table`.
+          holds no date, so it is never a ``TimeColumn``, and reading
+          time-in-grain off the date columns alone mis-roled the standard
+          warehouse snapshot (grain ``(account_id, period_id)``) as a plain FACT
+          (DAT-847). A reference counts as the period when it points at a key of
+          a one-row-per-period dimension — pass
+          :meth:`period_columns_by_dimension`'s result as ``period_dimensions``
+          (computed once per synthesis, not per table).
 
         Hierarchy edges are self-referential parent/child, never a period bridge,
         so only ``foreign_key`` relationships are followed, and only one hop: a
         period reached through an intermediate table is that table's grain, not
-        this one's.
+        this one's. The anchor pair is the whole FK: a dimension that passes the
+        one-row-per-period witness is keyed BY the period, so there is no
+        composite ``key_columns`` shape to follow into a calendar.
         """
-        names = [tc.column for tc in table.time_columns if tc.role == "event"]
-        periods = self.period_columns_by_table()
+        names = {tc.column for tc in table.time_columns if tc.role == "event"}
         for rel in self.relationships:
             if rel.relationship_type != "foreign_key" or rel.from_table != table.table_name:
                 continue
-            dimension_periods = periods.get(rel.to_table)
-            if not dimension_periods:
-                continue
-            pairs = [(rel.from_column, rel.to_column)]
-            pairs += [(kc.from_column, kc.to_column) for kc in rel.key_columns]
-            names += [frm for frm, to in pairs if to in dimension_periods]
+            keys = period_dimensions.get(rel.to_table)
+            if keys and rel.to_column in keys:
+                names.add(rel.from_column)
         return names
 
 

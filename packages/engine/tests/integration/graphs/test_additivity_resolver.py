@@ -279,12 +279,13 @@ def test_count_over_a_period_fk_snapshot_is_not_time_additive(
     """DAT-847: the snapshot role must survive a period carried as a FOREIGN KEY.
 
     ``balances`` holds no date column at all — its period is the integer key
-    ``period_id`` into a calendar dimension, the standard warehouse shape. The
-    role is derived through the production path rather than hand-set, so this
-    pins the whole chain: synthesis output → ``derive_table_role`` → the
+    ``period_id`` into a SURROGATE-keyed calendar, the standard warehouse shape,
+    where no date appears in either table's grain. The role is derived through
+    the production path rather than hand-set, so this pins the whole chain:
+    synthesis output + cardinality witness → ``derive_table_role`` → the
     persisted ``table_role`` → the resolver's snapshot read → the COUNT rule.
     Before the fix the fact read as FACT and ``COUNT(*)`` came back additive
-    across time, silently double-counting a population that is RE-STATED every
+    across time, silently re-counting a population that is RE-STATED every
     period.
     """
     synthesis = TableSynthesisOutput(
@@ -299,7 +300,7 @@ def test_count_over_a_period_fk_snapshot_is_not_time_additive(
             TableEntityOutput(
                 table_name="dim_period",
                 is_fact_table=False,
-                grain=["period_date"],
+                grain=["period_id"],
                 time_columns=[
                     TimeColumn(
                         column="period_date",
@@ -317,7 +318,7 @@ def test_count_over_a_period_fk_snapshot_is_not_time_additive(
                 from_table="balances",
                 from_column="period_id",
                 to_table="dim_period",
-                to_column="period_date",
+                to_column="period_id",
                 key_columns=[],
                 relationship_type="foreign_key",
                 confidence=0.95,
@@ -326,6 +327,11 @@ def test_count_over_a_period_fk_snapshot_is_not_time_additive(
         ],
     )
     fact = synthesis.tables[0]
+    # One row per period — what makes dim_period a calendar rather than any other
+    # surrogate-keyed dimension.
+    period_dimensions = synthesis.period_columns_by_dimension(
+        {"dim_period": {"period_id", "period_date"}}
+    )
     graph = _seed(
         session,
         fact_name="balances",
@@ -333,7 +339,7 @@ def test_count_over_a_period_fk_snapshot_is_not_time_additive(
         columns={"balance": "point_in_time"},
         grain_columns=list(fact.grain),
         time_columns=[],  # no date column on the fact — the period is the FK
-        period_axis_columns=synthesis.period_axis_columns(fact),
+        period_axis_columns=sorted(synthesis.period_axis_columns(fact, period_dimensions)),
         field="account_count",
         select_expr="COUNT(*)",
         aggregation="count",

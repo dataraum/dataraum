@@ -8,6 +8,8 @@ abstain guardrail. Properties and orderings, not fitted thresholds.
 
 from __future__ import annotations
 
+import pytest
+
 from dataraum.analysis.lineage.models import PATTERN_CUMULATIVE, PATTERN_PER_PERIOD
 from dataraum.analysis.lineage.reconcile import (
     FIRE_RESIDUAL_MAX,
@@ -95,8 +97,6 @@ class TestClassifyEntity:
         assert classify_entity([1.0] * _T, [0.0] * _T).label is None
 
     def test_reconcile_rejects_length_mismatch(self) -> None:
-        import pytest
-
         with pytest.raises(ValueError, match="length mismatch"):
             reconcile([1.0, 2.0], [1.0])
 
@@ -128,10 +128,13 @@ class TestNearTieAbstention:
         # width 3: R_flow = 0.30 vs R_stock = 0.20 — stock wins, but by a factor
         # of 1.5, inside the band this module already calls non-discriminating.
         # A bare `<` reported CUMULATIVE here with full confidence.
+        # (`approx` on the residuals: the plateau numbers are exactly
+        # representable today, but the RATIO is what this pins — an exact-equality
+        # assert would turn any future fixture tweak into a float puzzle.)
         y, m = _plateau(3)
         r = classify_entity(y, m)
-        assert r.r_flow == 0.30
-        assert r.r_stock == 0.20
+        assert r.r_flow == pytest.approx(0.30)
+        assert r.r_stock == pytest.approx(0.20)
         assert min(r.r_flow, r.r_stock) <= FIRE_RESIDUAL_MAX  # the fit gate passes
         assert r.label is None  # ...and the margin gate does not
 
@@ -139,8 +142,8 @@ class TestNearTieAbstention:
         # width 6 — the only thing that changed — puts stock 3× ahead of flow.
         y, m = _plateau(6)
         r = classify_entity(y, m)
-        assert r.r_flow == 0.60
-        assert r.r_stock == 0.20
+        assert r.r_flow == pytest.approx(0.60)
+        assert r.r_stock == pytest.approx(0.20)
         assert r.label == PATTERN_CUMULATIVE
 
     def test_exact_tie_abstains(self) -> None:

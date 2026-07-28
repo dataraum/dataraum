@@ -5,7 +5,7 @@ Contains database models for semantic annotations and entity detection.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -137,7 +137,7 @@ _DIMENSION_ORDERING_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in Dime
 def derive_table_role(
     is_fact: bool,
     grain_columns: Sequence[str],
-    period_axis_columns: Sequence[str],
+    period_axis_columns: Collection[str],
 ) -> TableRole:
     """Classify a table's role from the LLM's fact/dimension bit + its grain.
 

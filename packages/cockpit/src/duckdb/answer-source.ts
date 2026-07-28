@@ -143,6 +143,56 @@ export function narrowDeclaredSource(
 	return { selectExpr, relation, where };
 }
 
+/** One declared source as it arrives on the WIRE — the shape `/api/drill/parts`
+ *  receives, which is `AnswerSourceParts` spelling (`selectExpr`/`where`) rather
+ *  than the model's (`value_expr`/`filters`), because the client is echoing back
+ *  a handle this server produced. */
+export interface WireSource {
+	name: string;
+	parts: { selectExpr: string; relation: string; where: string[] };
+}
+
+/**
+ * Accept a drill request's wire sources as a composable candidate, or refuse by
+ * name (DAT-671).
+ *
+ * The relation reduction has exactly ONE home — `bareRelationName`, reached
+ * through `narrowDeclaredSource` — and this is how the request path reaches it.
+ * `/api/drill/parts` used to build `SnippetParts` straight off the parsed body,
+ * on the belief that a qualified name would resolve under the engine's scope.
+ * It does not: mosaic-sql's `Query.from("lake.typed.x")` quotes the WHOLE string
+ * as one identifier, so `USE lake.typed` never gets a chance to resolve it and
+ * the composition dies at bind time as an unexplained refusal. The route was
+ * safe only by accident — the client happens to echo back an already-reduced,
+ * already-proven handle — which is precisely the kind of safety that disappears
+ * the first time another caller appears.
+ *
+ * A source that cannot narrow is REFUSED rather than dropped: dropping it would
+ * compose a different calculation than the one asked for (the expression would
+ * reference an operand that is no longer there), and the user would be shown a
+ * number nobody requested.
+ */
+export function acceptWireSources(
+	sources: WireSource[],
+	expression: string,
+): AnswerDrillSource | { refusal: string } {
+	const accepted: AnswerSource[] = [];
+	for (const source of sources) {
+		const parts = narrowDeclaredSource({
+			relation: source.parts.relation,
+			valueExpr: source.parts.selectExpr,
+			filters: source.parts.where,
+		});
+		if (parts === null) {
+			return {
+				refusal: `'${source.name}' does not name a relation and a value this drill can recompose`,
+			};
+		}
+		accepted.push({ name: source.name, parts });
+	}
+	return { sources: accepted, expression };
+}
+
 /** The synthetic step id the combining formula composes under. Kept off the
  *  model's naming space: it is de-collided against the declared source names,
  *  which are the only other ids in the tree. */

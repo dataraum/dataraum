@@ -26,10 +26,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
-import {
-	type AnswerDrillSource,
-	composeAnswerSource,
-} from "#/duckdb/answer-source";
+import { acceptWireSources, composeAnswerSource } from "#/duckdb/answer-source";
 import { pinSteps, sliceSteps } from "#/duckdb/drill";
 import { describeColumns, errorLine } from "#/duckdb/drill-sql";
 import { applyEngineScope, withLakeConnection } from "#/duckdb/lake";
@@ -96,17 +93,13 @@ export const Route = createFileRoute("/api/drill/parts")({
 					);
 				}
 				const { sources, expression, steps } = parsed.data;
-				const source: AnswerDrillSource = {
-					sources: sources.map((s) => ({
-						name: s.name,
-						parts: {
-							selectExpr: s.parts.selectExpr,
-							relation: s.parts.relation,
-							where: s.parts.where,
-						},
-					})),
-					expression,
-				};
+				// The declared relation may arrive fully qualified — reduce it here,
+				// through the ONE home for that reduction. Skipping it emits
+				// FROM "lake.typed.<view>" as a single quoted identifier.
+				const source = acceptWireSources(sources, expression);
+				if ("refusal" in source) {
+					return Response.json({ ok: false, reason: source.refusal });
+				}
 				try {
 					const composed = composeAnswerSource(source, {
 						slices: sliceSteps(steps),
@@ -119,8 +112,9 @@ export const Route = createFileRoute("/api/drill/parts")({
 						return Response.json({ ok: false, reason: composed.refusal });
 					}
 					const result = await withLakeConnection(async (conn) => {
-						// Engine scope, matching /api/run-sql: a declared relation may be
-						// bare (the engine's own `lake.typed` scope) or fully qualified.
+						// Engine scope, matching /api/run-sql: the relation is BARE by the
+						// time it gets here (acceptWireSources reduced it), and
+						// `USE lake.typed` is what makes a bare enriched-view name resolve.
 						await applyEngineScope(conn);
 						try {
 							const columns = await describeColumns(

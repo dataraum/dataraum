@@ -511,9 +511,9 @@ describe("candidateSource", () => {
 	// The relation arrives in the model's `lake.<layer>.<name>` form and is
 	// reduced to the bare name here — the composer quotes it as one identifier,
 	// so the qualified spelling would never bind.
-	it("collects the steps that declared a source, relations reduced", () => {
+	it("collects the steps that declared a source, relations reduced", async () => {
 		expect(
-			candidateSource(
+			await candidateSource(
 				[
 					{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
 					{ name: "cost", source: declared("lake.typed.o", "SUM(cost)") },
@@ -521,57 +521,120 @@ describe("candidateSource", () => {
 				"revenue - cost",
 			),
 		).toEqual({
-			sources: [
-				{
-					name: "revenue",
-					parts: {
-						selectExpr: "SUM(amt)",
-						relation: "o",
-						where: [],
+			candidate: {
+				sources: [
+					{
+						name: "revenue",
+						parts: {
+							selectExpr: "SUM(amt)",
+							relation: "o",
+							where: [],
+						},
 					},
-				},
-				{
-					name: "cost",
-					parts: {
-						selectExpr: "SUM(cost)",
-						relation: "o",
-						where: [],
+					{
+						name: "cost",
+						parts: {
+							selectExpr: "SUM(cost)",
+							relation: "o",
+							where: [],
+						},
 					},
-				},
-			],
-			expression: "revenue - cost",
+				],
+				expression: "revenue - cost",
+			},
+			notes: [],
 		});
+	});
+
+	// The house empty-aggregation guard (DAT-671): a scalar arrives wrapped in
+	// CASE WHEN COUNT(*) = 0, i.e. THREE aggregate calls in one value
+	// expression. That is the normal shape of a correct answer and must sail
+	// straight through acceptance — the prompt's carve-out is worthless if the
+	// code then refuses what it invited.
+	it("accepts a CASE-guarded scalar — the house empty-aggregation shape", async () => {
+		const guarded =
+			"CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) END";
+		const outcome = await candidateSource(
+			[{ name: "net", source: declared("lake.typed.gl", guarded) }],
+			"net",
+		);
+		expect(outcome.notes).toEqual([]);
+		expect(outcome.candidate?.sources[0]?.parts.selectExpr).toBe(guarded);
 	});
 
 	// A step that abstained is simply absent from the candidate — the model is
 	// never pushed into decomposing a join or a window into a shape it does not
 	// have.
-	it("drops abstained steps and keeps the rest", () => {
-		const candidate = candidateSource(
+	it("drops abstained steps and keeps the rest", async () => {
+		const outcome = await candidateSource(
 			[
 				{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
 				{ name: "joined", source: declared("", "") },
 			],
 			"revenue",
 		);
-		expect(candidate?.sources.map((s) => s.name)).toEqual(["revenue"]);
+		expect(outcome.candidate?.sources.map((s) => s.name)).toEqual(["revenue"]);
+		// An abstention is the contract working, so it is NOT reported back.
+		expect(outcome.notes).toEqual([]);
+	});
+
+	// DAT-671: the silent failure this gate exists to end. `SUM(x) AS revenue`
+	// used to compose to `SUM(x) AS revenue AS "value"` — a parse error the
+	// executed proof swallowed into an unexplained tier-A downgrade.
+	it("refuses a value expression carrying its own alias, and says so", async () => {
+		const outcome = await candidateSource(
+			[
+				{
+					name: "revenue",
+					source: declared("lake.typed.o", "SUM(amt) AS rev"),
+				},
+				{ name: "cost", source: declared("lake.typed.o", "SUM(cost)") },
+			],
+			"revenue - cost",
+		);
+		expect(outcome.notes).toHaveLength(1);
+		expect(outcome.notes[0]).toContain("revenue");
+		expect(outcome.notes[0]).toContain("AS rev");
+		// The clean sibling still stands: the refusal is per-declaration.
+		expect(outcome.candidate?.sources.map((s) => s.name)).toEqual(["cost"]);
+	});
+
+	// A declaration that smuggles the whole query in also cannot compose — the
+	// relation belongs in `relation`, the predicates in `filters`.
+	it("refuses a value expression carrying its own FROM/WHERE", async () => {
+		const outcome = await candidateSource(
+			[
+				{
+					name: "revenue",
+					source: declared("lake.typed.o", "SUM(amt) FROM o WHERE x = 1"),
+				},
+			],
+			"revenue",
+		);
+		expect(outcome.candidate).toBeNull();
+		expect(outcome.notes[0]).toMatch(/FROM clause/);
 	});
 
 	// No combining arithmetic means final_sql is not a formula over the steps
 	// (a grouped breakdown, a join, a filter) — there is nothing to recompose,
 	// and tier A is the right path for exactly those results anyway.
-	it("yields no candidate without a combining expression", () => {
+	it("yields no candidate without a combining expression", async () => {
 		expect(
-			candidateSource(
+			await candidateSource(
 				[{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") }],
 				"   ",
 			),
-		).toBeNull();
+		).toEqual({ candidate: null, notes: [] });
 	});
 
-	it("yields no candidate when every step abstained", () => {
+	it("yields no candidate when every step abstained", async () => {
 		expect(
-			candidateSource([{ name: "joined", source: declared("", "") }], "joined"),
+			(
+				await candidateSource(
+					[{ name: "joined", source: declared("", "") }],
+					"joined",
+				)
+			).candidate,
 		).toBeNull();
 	});
 });

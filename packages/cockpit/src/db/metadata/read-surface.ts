@@ -62,9 +62,12 @@ export const cycleTypesRead = pgTable("cycle_types", {
  * LIBRARY/WORKSPACE split) — consumed by `readWorkspaceMetricDag`'s two callers
  * (`teachMetric`'s shadow detection + `/api/shipped-metric-dag`); the LIBRARY
  * reader (`readShippedMetrics`) rglobs the vertical's metrics/**​/*.yaml off disk
- * and never touches this table. `output` / `dependencies` stay `unknown` at
- * this boundary (rule 11) — opaque pass-through to the induction few-shot /
- * override-shadow canvas, never inspected here. */
+ * and never touches this table — the frame induction few-shot is a DIFFERENT,
+ * cross-vertical question this table cannot serve (empty pre-seed; scoped to
+ * one vertical), so it stays on that LIBRARY reader. `output` / `dependencies`
+ * stay `unknown` at this boundary (rule 11) — opaque pass-through to the
+ * override-shadow canvas (`teachMetric`'s result + `/api/shipped-metric-dag`),
+ * never inspected here. */
 export const metricDagRead = pgTable("metrics", {
 	graphId: varchar("graph_id"),
 	name: varchar("name"),

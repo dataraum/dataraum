@@ -50,7 +50,26 @@ vi.mock("#/db/metadata/client", () => ({
 	metadataWriteDb: { insert: vi.fn(() => ({ values: vi.fn() })) },
 }));
 
-import { nearestSeedVertical } from "./frame-family";
+// PINS THE BINDING, NOT JUST THE COMPOSITION (owner round 2, item 1): the tests
+// above call `nearestSeedVertical` with an EXPLICITLY passed reader — they prove
+// nearestSeedVertical's own fold logic + the reader's own behavior, but they
+// never exercise frame.ts:429/:479's DEFAULT parameter binding
+// (`readSeed: ... = readShippedCycles` / `= readShippedMetrics`), which is the
+// ONE-LINE swap that caused the original FAIL (a reviewer confirmed: swapping
+// both defaults to the WORKSPACE readers left every other test green — unit
+// 2256, IT 133, byte-identical). Partial-mock `./frame-family` (keep
+// `nearestSeedVertical`/`formatSeedExamples` REAL, replace only `induceNative`)
+// so `induceCycles`/`induceMetrics` run their REAL default-binding path end to
+// end, with the LLM call intercepted — the captured prompt is the observable
+// that proves the default resolved to real shipped content, not an empty
+// typed-table read.
+vi.mock("./frame-family", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./frame-family")>();
+	return { ...actual, induceNative: vi.fn() };
+});
+
+import { induceCycles, induceMetrics } from "./frame";
+import { induceNative, nearestSeedVertical } from "./frame-family";
 import { readShippedCycles } from "./teach-cycle";
 import { readShippedMetrics } from "./teach-metric";
 
@@ -90,5 +109,35 @@ describe("nearestSeedVertical + the LIBRARY readers, against the REAL shipped tr
 		);
 		expect(result.vertical).toBe("finance");
 		expect(result.specs.length).toBeGreaterThan(0);
+	});
+});
+
+const EMPTY_SCHEMA = {
+	sourceKind: "database" as const,
+	source: "test",
+	tables: [],
+};
+
+describe("induceCycles/induceMetrics DEFAULT readSeed binding (frame.ts:429/:479)", () => {
+	it("induceCycles's DEFAULT reader renders REAL shipped cycle content into the induce prompt", async () => {
+		let captured = "";
+		vi.mocked(induceNative).mockImplementationOnce(async (opts) => {
+			captured = opts.userMessage;
+			return { cycles: [] } as never;
+		});
+		// NO readSeed argument — exercises frame.ts's default parameter, not an
+		// explicitly-injected reader.
+		await induceCycles(EMPTY_SCHEMA, [], "retail");
+		expect(captured).toContain("order_to_cash");
+	});
+
+	it("induceMetrics's DEFAULT reader renders REAL shipped metric content into the induce prompt", async () => {
+		let captured = "";
+		vi.mocked(induceNative).mockImplementationOnce(async (opts) => {
+			captured = opts.userMessage;
+			return { metrics: [] } as never;
+		});
+		await induceMetrics(EMPTY_SCHEMA, [], "retail");
+		expect(captured).toContain("ebitda");
 	});
 });

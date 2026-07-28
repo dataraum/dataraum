@@ -20,7 +20,8 @@ const row = (
 ): AdHocSliceRow => ({
 	tableId: "fact-1",
 	columnName,
-	slicePriority: 1,
+	sliceRelevance: 0.8,
+	sliceInterest: "primary",
 	sliceType: "categorical",
 	distinctValues: ["a", "b"],
 	valueCount: 2,
@@ -35,7 +36,9 @@ describe("adHocAxesFromCatalog", () => {
 			[],
 			["region", "product", "value"],
 		);
-		expect(axes.map((a) => a.column)).toEqual(["region", "product"]);
+		// Equal curation ties break by column name (compareSliceRows), never by
+		// row insertion order — the same deterministic rule as every surface.
+		expect(axes.map((a) => a.column)).toEqual(["product", "region"]);
 	});
 
 	it("carries the catalog's curation onto the axis", () => {
@@ -68,10 +71,10 @@ describe("adHocAxesFromCatalog", () => {
 	it("keeps an ambiguous axis but drops curation that can't speak for it", () => {
 		const [axis] = adHocAxesFromCatalog(
 			[
-				row("region", { tableId: "fact-1", slicePriority: 5 }),
+				row("region", { tableId: "fact-1", sliceInterest: "supporting" }),
 				row("region", {
 					tableId: "fact-2",
-					slicePriority: 2,
+					sliceInterest: "primary",
 					businessContext: "the shipping region",
 					distinctValues: ["x"],
 				}),
@@ -84,9 +87,6 @@ describe("adHocAxesFromCatalog", () => {
 			values: [],
 			valueCount: null,
 			businessContext: null,
-			// The better of the two priorities survives — a curated dimension still
-			// outranks bare substrate in the menu.
-			priority: 2,
 		});
 	});
 
@@ -110,15 +110,15 @@ describe("adHocAxesFromCatalog", () => {
 		expect(axes.map((a) => a.column)).toEqual(["region", "entry_id__country"]);
 		expect(axes[1]).toMatchObject({
 			businessContext: null,
-			priority: Number.MAX_SAFE_INTEGER,
+			values: [],
 		});
 	});
 
-	it("orders by curated priority", () => {
+	it("orders by curation — interest tier first, then measured relevance", () => {
 		const axes = adHocAxesFromCatalog(
 			[
-				row("product", { slicePriority: 9 }),
-				row("region", { slicePriority: 1 }),
+				row("product", { sliceInterest: "supporting", sliceRelevance: 0.9 }),
+				row("region", { sliceInterest: "primary", sliceRelevance: 0.4 }),
 			],
 			[],
 			["product", "region"],

@@ -39,7 +39,11 @@ import {
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
 
-import type { DrillAxesResult, SliceRowInput } from "./drill-axes";
+import {
+	compareSliceRows,
+	type DrillAxesResult,
+	type SliceRowInput,
+} from "./drill-axes";
 
 /** A slice-catalog row plus the fact it was catalogued on — the table identity
  *  is what makes ambiguity detectable when two facts catalogue the same name. */
@@ -61,8 +65,9 @@ export interface AdHocSliceRow extends SliceRowInput {
  * the result column exists and grouping by it is valid arithmetic — but WHICH
  * fact's curation describes it is unknown, so the sample values and business
  * context are dropped rather than attributed to the wrong table. The axis keeps
- * the best (lowest) priority so a curated dimension still outranks bare
- * substrate.
+ * its best curation (per `compareSliceRows` — interest tier, then measured
+ * relevance, DAT-879) so a judged dimension still outranks bare substrate,
+ * which ranks last by being appended after the catalog axes.
  */
 export function adHocAxesFromCatalog(
 	rows: AdHocSliceRow[],
@@ -78,57 +83,60 @@ export function adHocAxesFromCatalog(
 		if (!spelling.has(key)) spelling.set(key, name);
 	}
 
-	const axes = new Map<string, DrillAxis>();
+	// Best-wins fold per column (order-independent): the row with the strongest
+	// curation (compareSliceRows: interest tier, then measured relevance, then
+	// name) speaks for the axis; ambiguity across facts blanks the descriptive
+	// fields below.
+	const best = new Map<string, AdHocSliceRow>();
 	const facts = new Map<string, Set<string>>();
 
 	for (const r of rows) {
 		if (!r.columnName) continue;
 		const key = r.columnName.toLowerCase();
-		const column = spelling.get(key);
-		if (column === undefined) continue;
+		if (!spelling.has(key)) continue;
 
 		const seenFacts = facts.get(key) ?? new Set<string>();
 		if (r.tableId) seenFacts.add(r.tableId);
 		facts.set(key, seenFacts);
 
-		const priority = r.slicePriority ?? Number.MAX_SAFE_INTEGER;
-		const existing = axes.get(key);
-		if (existing === undefined) {
-			axes.set(key, {
-				column,
-				priority,
-				sliceType: r.sliceType ?? "categorical",
-				values: Array.isArray(r.distinctValues)
-					? r.distinctValues.filter((v): v is string => typeof v === "string")
-					: [],
-				valueCount: r.valueCount,
-				businessContext: r.businessContext,
-				// Tier A never buckets time — see the module header.
-				temporal: null,
-			});
-			continue;
-		}
-		axes.set(key, {
-			...existing,
-			priority: Math.min(existing.priority, priority),
+		const prior = best.get(key);
+		if (prior === undefined || compareSliceRows(r, prior) < 0) best.set(key, r);
+	}
+
+	const axes: DrillAxis[] = [...best.entries()]
+		.sort(([, a], [, b]) => compareSliceRows(a, b))
+		.map(([key, r]) => {
 			// A second fact catalogues the same name: the curation can no longer
 			// speak for this column.
-			...(seenFacts.size > 1
-				? { values: [], valueCount: null, businessContext: null }
-				: {}),
+			const ambiguous = (facts.get(key)?.size ?? 0) > 1;
+			return {
+				// biome-ignore lint/style/noNonNullAssertion: key came from `spelling`
+				column: spelling.get(key)!,
+				sliceType: r.sliceType ?? "categorical",
+				values:
+					!ambiguous && Array.isArray(r.distinctValues)
+						? r.distinctValues.filter((v): v is string => typeof v === "string")
+						: [],
+				valueCount: ambiguous ? null : r.valueCount,
+				businessContext: ambiguous ? null : r.businessContext,
+				// Tier A never buckets time — see the module header.
+				temporal: null,
+			};
 		});
-	}
 
 	// The grain-verified substrate joins on the same terms as on the metric path:
 	// curation is an annotation layer, never a filter. A projected dim column the
-	// slicing agent never picked is still drillable when it is on the result.
-	for (const name of substrateColumns) {
+	// slicing agent never picked is still drillable when it is on the result —
+	// appended after the catalog axes, so ARRAY ORDER stays the ranking
+	// (DAT-879: there is no priority field).
+	const taken = new Set(best.keys());
+	for (const name of [...substrateColumns].sort()) {
 		const key = name.toLowerCase();
 		const column = spelling.get(key);
-		if (column === undefined || axes.has(key)) continue;
-		axes.set(key, {
+		if (column === undefined || taken.has(key)) continue;
+		taken.add(key);
+		axes.push({
 			column,
-			priority: Number.MAX_SAFE_INTEGER,
 			sliceType: "categorical",
 			values: [],
 			valueCount: null,
@@ -137,9 +145,7 @@ export function adHocAxesFromCatalog(
 		});
 	}
 
-	// Curated priority orders the menu; insertion order (catalog priority, then
-	// substrate) breaks ties stably.
-	return [...axes.values()].sort((a, b) => a.priority - b.priority);
+	return axes;
 }
 
 /**
@@ -159,17 +165,19 @@ export async function resolveAdHocDrillAxes(
 			.select({
 				tableId: currentSliceDefinitions.tableId,
 				columnName: currentSliceDefinitions.columnName,
-				slicePriority: currentSliceDefinitions.slicePriority,
+				sliceRelevance: currentSliceDefinitions.sliceRelevance,
+				sliceInterest: currentSliceDefinitions.sliceInterest,
 				sliceType: currentSliceDefinitions.sliceType,
 				distinctValues: currentSliceDefinitions.distinctValues,
 				valueCount: currentSliceDefinitions.valueCount,
 				businessContext: currentSliceDefinitions.businessContext,
 			})
 			.from(currentSliceDefinitions)
-			// Deterministic: the fold below is first-wins per name.
+			// Stable read order; the fold above is best-wins per name
+			// (compareSliceRows), so correctness is order-independent.
 			.orderBy(
-				asc(currentSliceDefinitions.slicePriority),
 				asc(currentSliceDefinitions.tableId),
+				asc(currentSliceDefinitions.columnName),
 			),
 		metadataDb
 			.select({ dimensionColumns: currentEnrichedViews.dimensionColumns })

@@ -29,6 +29,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.hierarchies.db_models import BusMatrixEntry
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.models.base import Result
@@ -140,6 +141,40 @@ def _seed_relation(
 
     conn.execute(f"CREATE TABLE {view_name} AS SELECT * FROM (VALUES {values}) t({columns})")
     return str(fact.table_id)
+
+
+def _seed_conformed_fold(session: Session, fact_ids: list[str], *, key: str = _AXIS) -> str:
+    """Judge-conformed FOLDED bus-matrix cells joining these facts on one axis (DAT-809).
+
+    A metric spanning several facts may only be broken down on a CONFIRMED conformed
+    dimension: two facts each happening to carry a column of the same name is not
+    evidence they mean the same thing, so the merge needs this. The folded leg is the
+    lighter one to seed — the fold key IS the fact's grouping column, and
+    ``_seed_relation`` already curates its slice.
+
+    Shape per ``derive_bus_matrix``: ``dimension_table_id`` NULL, exactly one entry in
+    ``roles``, ``confirmation_source='judge'`` on a conform verdict, and a
+    ``conform:{fact}:{key}|…`` group signature over the connected component.
+    """
+    group = "conform:" + "|".join(sorted(f"{f}:{key}" for f in fact_ids))
+    for fact_id in fact_ids:
+        session.add(
+            BusMatrixEntry(
+                run_id=_CATALOGUE_RUN,
+                fact_table_id=fact_id,
+                attachment="folded",
+                concept_label="account",
+                dimension_table_id=None,
+                roles=[key],
+                attributes=[],
+                confirmation_source="judge",
+                conformed_group=group,
+                needs_confirmation=False,
+                signature=f"bus:folded:{fact_id}:{key}",
+            )
+        )
+    session.flush()
+    return group
 
 
 def _seed_snippet(
@@ -530,6 +565,10 @@ class TestUnitGrainWireIn:
             expr="SUM(cogs)",
             where=[],
         )
+        # DPO spans TWO facts, so the merge axis must be a confirmed conformed
+        # dimension — a shared column NAME is not evidence the two facts mean the
+        # same thing by it (DAT-809).
+        _seed_conformed_fold(session, [ap_fact, cogs_fact])
 
         dpo = _metric_def(
             "dpo",

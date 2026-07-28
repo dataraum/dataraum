@@ -555,6 +555,8 @@ class GraphAgent(LLMFeature):
         *,
         axis: str,
         workspace_id: str,
+        sql_axis: str | None = None,
+        step_grain: Mapping[str, Sequence[tuple[str, str]]] | None = None,
     ) -> Result[UnitGrainBreakdown]:
         """Compose and execute a metric at UNIT GRAIN on one axis — NO LLM (DAT-671 B1).
 
@@ -582,6 +584,14 @@ class GraphAgent(LLMFeature):
         NULL, and — when the entity count exceeds
         :data:`~dataraum.graphs.unit_grain.UNIT_GRAIN_MAX_ENTITIES` — an ordered
         prefix with ``truncated_at`` set for the caller to disclose.
+
+        ``sql_axis`` and ``step_grain`` serve CROSS-FACT drill-across (DAT-809),
+        where the carriers sit on different facts. ``step_grain`` gives each carrier
+        the local column realizing the shared axis on its own fact, and ``sql_axis``
+        is the identity they all project under — the ``conformed_group``, which is
+        what makes the merge key drift-proof but is not a name to show anyone, so
+        ``axis`` stays the display label. Both default to the single-relation
+        reading, where the axis is its own column on the one fact.
         """
         from dataraum.graphs.formula_composer import quote_key
         from dataraum.graphs.unit_grain import (
@@ -591,10 +601,11 @@ class GraphAgent(LLMFeature):
         )
         from dataraum.query.execution import SQLStep, execute_sql_steps
 
+        key = sql_axis or axis
         resolved_params = self._resolve_parameters(session, graph, {})
         cached_snippets = self._lookup_snippets(session, graph, workspace_id)
         generated_code = self._compose_metric_from_dag(
-            graph, cached_snippets, resolved_params, group_by=[axis]
+            graph, cached_snippets, resolved_params, group_by=[key], step_grain=step_grain
         )
         if generated_code is None:
             return Result.fail(
@@ -620,7 +631,7 @@ class GraphAgent(LLMFeature):
         # counts the unwrapped statement separately, and DuckDB carries the inner
         # ordering through that wrapper (probed). Without it, a truncated
         # breakdown would name different entities on every run of identical data.
-        ordered_final = f"{generated_code.final_sql} ORDER BY {quote_key(axis)}"
+        ordered_final = f"{generated_code.final_sql} ORDER BY {quote_key(key)}"
         exec_result = execute_sql_steps(
             steps=steps,
             final_sql=ordered_final,
@@ -636,10 +647,10 @@ class GraphAgent(LLMFeature):
         # its key then its aggregate; a FORMULA projects the COALESCEd key then its
         # arithmetic). Anything else means the composition is not what this reader
         # thinks it is — say so rather than guess which column is the entity.
-        if columns != [axis, "value"]:
+        if columns != [key, "value"]:
             return Result.fail(
                 f"metric '{graph.graph_id}' composed per {axis!r} returned columns "
-                f"{columns} — expected exactly ['{axis}', 'value']"
+                f"{columns} — expected exactly ['{key}', 'value']"
             )
 
         rows: list[UnitGrainRow] = []

@@ -344,6 +344,9 @@ export const currentGroundings = pgView("current_groundings", {
 	relation: text(),
 	selectExpr: text("select_expr"),
 	wherePredicates: text("where_predicates"),
+	resolvedPeriod: text("resolved_period"),
+	reportingWindowClose: text("reporting_window_close"),
+	calendarSource: text("calendar_source"),
 	description: text(),
 	sql: text(),
 	parts: json(),
@@ -354,7 +357,7 @@ export const currentGroundings = pgView("current_groundings", {
 	createdAt: timestamp("created_at"),
 	updatedAt: timestamp("updated_at"),
 }).as(
-	sql`SELECT snippet_id, standard_field AS concept, statement, aggregation, (parts -> 'from'::text) ->> 0 AS relation, ((parts -> 'select'::text) -> 0) ->> 'expr'::text AS select_expr, (parts -> 'where'::text)::text AS where_predicates, description, sql, parts, provenance, failure_count > 0 AS failed, schema_mapping_id, workspace_id, created_at, updated_at FROM engine.sql_snippets s WHERE snippet_type::text = 'extract'::text AND source::text ~~ 'graph:%'::text`,
+	sql`SELECT snippet_id, standard_field AS concept, statement, aggregation, (parts -> 'from'::text) ->> 0 AS relation, ((parts -> 'select'::text) -> 0) ->> 'expr'::text AS select_expr, (parts -> 'where'::text)::text AS where_predicates, (parts -> 'period_binding'::text) ->> 'as_of'::text AS resolved_period, (parts -> 'period_binding'::text) ->> 'window_close'::text AS reporting_window_close, (parts -> 'period_binding'::text) ->> 'calendar_source'::text AS calendar_source, description, sql, parts, provenance, failure_count > 0 AS failed, schema_mapping_id, workspace_id, created_at, updated_at FROM engine.sql_snippets s WHERE snippet_type::text = 'extract'::text AND source::text ~~ 'graph:%'::text`,
 );
 
 export const currentInducedValidations = pgView("current_induced_validations", {

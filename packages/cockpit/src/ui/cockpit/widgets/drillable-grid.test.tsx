@@ -71,7 +71,11 @@ const axis = (
 	guidance: Partial<
 		Pick<
 			DrillAxis,
-			"driverGain" | "sliceRelevance" | "sliceInterest" | "hierarchyNext"
+			| "driverGain"
+			| "sliceRelevance"
+			| "sliceInterest"
+			| "hierarchyNext"
+			| "disabledReason"
 		>
 	> = {},
 ): DrillAxis => ({
@@ -85,6 +89,7 @@ const axis = (
 	sliceRelevance: guidance.sliceRelevance ?? null,
 	sliceInterest: guidance.sliceInterest ?? null,
 	hierarchyNext: guidance.hierarchyNext ?? null,
+	disabledReason: guidance.disabledReason ?? null,
 });
 
 const jsonResponse = (body: unknown) =>
@@ -604,6 +609,71 @@ describe("DrillableGrid — axis guidance badge", () => {
 		fireEvent.click(button);
 		await screen.findByText("region");
 		expect(screen.queryByText(/Driver|Primary|Supporting|Unjudged/)).toBeNull();
+	});
+});
+
+// --- DAT-671: already-in-result grey-out -------------------------------------
+
+describe("DrillableGrid — already-in-result grey-out (DAT-671)", () => {
+	it("keeps a disabled axis IN THE MENU, greyed, carrying its reason — never removes it", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, {
+					disabledReason:
+						"already at this grain — this column already breaks out the result",
+				}),
+				axis("product"),
+			],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		// The Slice button itself stays ENABLED — greying never empties the menu
+		// or disables the control (superseding the old "no axes" behavior for
+		// this class of state).
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+
+		// The item is still IN THE MENU (never removed) …
+		const disabledItem = await screen.findByTestId("drill-axis-region");
+		// … but disabled, and its reason is visible inline.
+		expect(disabledItem.getAttribute("data-disabled")).toBeTruthy();
+		expect(await screen.findByText(/already at this grain/i)).toBeTruthy();
+
+		// The other, non-matching axis stays fully offered.
+		const enabledItem = screen.getByTestId("drill-axis-product");
+		expect(enabledItem.getAttribute("data-disabled")).toBeFalsy();
+	});
+
+	it("clicking the disabled item does not fire a compose call", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { disabledReason: "already at this grain" })],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		const disabledItem = await screen.findByTestId("drill-axis-region");
+		fireEvent.click(disabledItem);
+		expect(composeQueue.length).toBe(0);
+	});
+
+	it("never promotes a hierarchy-descent suggestion for an axis that's simultaneously disabled", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product", null, { disabledReason: "already at this grain" }),
+			],
+		});
+		await sliceBy("region", "SQL1");
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
 	});
 });
 

@@ -129,5 +129,48 @@ describe.skipIf(!fx.available)(
 			]);
 			for (const axis of result.axes) expect(axis.temporal).toBeNull();
 		});
+
+		// DAT-671, "we should not slice on already existing slices": a result
+		// whose own SQL already groups by one of its catalogued dimensions offers
+		// that axis GREYED (disabledReason set), not absent — the menu never
+		// empties from this rule, and other catalogued axes on the same result
+		// stay fully enabled.
+		it("greys the axis a result's own GROUP BY already breaks out by, keeping others enabled", async () => {
+			const resultSql =
+				`SELECT ${REGION_NAME_COLUMN}, SUM(total_amount) AS total_amount ` +
+				"FROM lake.typed.current_orders_enriched " +
+				`GROUP BY ${REGION_NAME_COLUMN}`;
+			const result = await resolveAdHocDrillAxes(
+				[REGION_NAME_COLUMN, ACCOUNT_NAME_COLUMN, "total_amount"],
+				resultSql,
+			);
+
+			const region = result.axes.find((a) => a.column === REGION_NAME_COLUMN);
+			const account = result.axes.find((a) => a.column === ACCOUNT_NAME_COLUMN);
+			expect(region?.disabledReason).toMatch(/already at this grain/i);
+			// The item stays IN THE MENU — never removed.
+			expect(result.axes.map((a) => a.column)).toContain(REGION_NAME_COLUMN);
+			expect(account?.disabledReason).toBeNull();
+		});
+
+		it("greys nothing when resultSql is absent — the determination never runs without it", async () => {
+			const result = await resolveAdHocDrillAxes([
+				REGION_NAME_COLUMN,
+				ACCOUNT_NAME_COLUMN,
+				"total_amount",
+			]);
+			for (const axis of result.axes) expect(axis.disabledReason).toBeNull();
+		});
+
+		it("greys nothing on an UNGROUPED result — raw detail hasn't been sliced yet", async () => {
+			const resultSql =
+				`SELECT ${REGION_NAME_COLUMN}, ${ACCOUNT_NAME_COLUMN}, total_amount ` +
+				"FROM lake.typed.current_orders_enriched";
+			const result = await resolveAdHocDrillAxes(
+				[REGION_NAME_COLUMN, ACCOUNT_NAME_COLUMN, "total_amount"],
+				resultSql,
+			);
+			for (const axis of result.axes) expect(axis.disabledReason).toBeNull();
+		});
 	},
 );

@@ -699,8 +699,13 @@ export function DrillableGrid({
 	const hierarchyNextColumn = lastPin
 		? axisByColumn.get(lastPin.column)?.hierarchyNext
 		: undefined;
+	// DAT-671: never promote a "Suggested: Descend to X" for an axis that's
+	// simultaneously shown greyed (already-in-result) in the list below —
+	// same filter shape as the existing already-sliced check just beside it.
 	const hierarchySuggestion =
-		hierarchyNextColumn && !slicedColumns.has(hierarchyNextColumn)
+		hierarchyNextColumn &&
+		!slicedColumns.has(hierarchyNextColumn) &&
+		axisByColumn.get(hierarchyNextColumn)?.disabledReason == null
 			? axisByColumn.get(hierarchyNextColumn)
 			: undefined;
 
@@ -750,6 +755,15 @@ export function DrillableGrid({
 					Suggested (unmeasured): {guidanceTextFor(axis.column)}
 				</Text>
 			)}
+			{/* DAT-671: the short inline reason a greyed axis carries — the item
+			    STAYS in the menu (never removed), disabled, with this label; the
+			    fuller Tooltip on the item itself (below) carries the same text on
+			    hover. */}
+			{axis.disabledReason && (
+				<Text size="xs" c="dimmed" fs="italic">
+					{axis.disabledReason}
+				</Text>
+			)}
 		</>
 	);
 
@@ -789,16 +803,37 @@ export function DrillableGrid({
 							<Menu.Divider />
 						</>
 					)}
-					{axes.map((axis) => (
-						<Menu.Item
-							key={axis.column}
-							disabled={slicedColumns.has(axis.column)}
-							onClick={() => slice(axis)}
-							rightSection={axisRightSection(axis)}
-						>
-							{axisItemBody(axis, axis.column)}
-						</Menu.Item>
-					))}
+					{axes.map((axis) => {
+						const item = (
+							<Menu.Item
+								key={axis.column}
+								disabled={
+									slicedColumns.has(axis.column) || axis.disabledReason !== null
+								}
+								onClick={() => slice(axis)}
+								rightSection={axisRightSection(axis)}
+								data-testid={`drill-axis-${axis.column}`}
+							>
+								{axisItemBody(axis, axis.column)}
+							</Menu.Item>
+						);
+						// DAT-671: a disabled-because-already-in-result item stays in the
+						// menu (never removed) and carries its reason on hover too, not
+						// just the inline label inside axisItemBody.
+						return axis.disabledReason ? (
+							<Tooltip
+								key={axis.column}
+								label={axis.disabledReason}
+								position="right"
+								maw={280}
+								multiline
+							>
+								<div>{item}</div>
+							</Tooltip>
+						) : (
+							item
+						);
+					})}
 					{allUnmeasured && guidance === null && (
 						<>
 							<Menu.Divider />

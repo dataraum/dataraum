@@ -249,3 +249,130 @@ export async function declaredValueExprRefusal(
 	}
 	return null;
 }
+
+// --- existing-identifier read (DAT-671 slice-menu curation) ------------------
+
+/** One select-list item's exposed name: its own `AS` alias if given, else —
+ *  for a plain column reference — the referenced column's own bare name.
+ *  `null` for a computed, unaliased expression (nothing to name it by without
+ *  deeper parsing, and not needed here — see the callers). */
+function selectItemName(item: unknown): string | null {
+	if (typeof item !== "object" || item === null) return null;
+	const obj = item as Record<string, unknown>;
+	if (typeof obj.alias === "string" && obj.alias !== "") return obj.alias;
+	if (obj.class === "COLUMN_REF") return bareColumn(obj.column_names);
+	return null;
+}
+
+/**
+ * The result's own already-established non-measure identifier columns, read
+ * STRUCTURALLY off the OUTER statement only (DAT-671 lead ruling, "we should
+ * not slice on already existing slices," amended to grey-out): the columns
+ * GROUP BY already breaks the result out by (or, under `GROUP BY ALL`, every
+ * bare projected column) are the axes that would be a tautological re-slice —
+ * the result is already at that grain for them.
+ *
+ * ONE-HOP, by design (the amendment's hard line: no nested-CTE walking, no
+ * rewriting): reads `select_list` / `group_expressions` / `aggregate_handling`
+ * straight off the top-level SELECT_NODE and NOTHING below it. A CTE's own
+ * body is irrelevant and never walked — `cte_map` is never touched, so `WITH x
+ * AS (...) SELECT ... GROUP BY ...` resolves exactly like the same query
+ * without the CTE (verified against the real parser: the outer node still
+ * carries its own `select_list`/`group_expressions` regardless of `cte_map`).
+ *
+ * A statement that isn't shaped this simply — a set operation (UNION/INTERSECT/
+ * EXCEPT), more than one statement, or a parse failure — returns `null`:
+ * "could not determine structurally," never a guess. The caller then treats
+ * NOTHING as already-sliced (the tier-A post-execution fold probe,
+ * `drill-sql.ts`'s `foldsNothing`, remains the net for what this schema/name-
+ * only check misses on that path; the parts-at-source path has no equivalent
+ * net, so a miss there is a real, accepted gap — never a false claim).
+ *
+ * An UNGROUPED statement (no GROUP BY at all — `group_expressions` empty and
+ * `aggregate_handling` not `FORCE_AGGREGATES`) is a raw/detail result: nothing
+ * has been sliced yet, so this returns an EMPTY set rather than treating every
+ * projected column as "already there" — that distinction is essential, since
+ * treating every column of an ungrouped result as already-sliced would grey
+ * out the ordinary first-ever tier-A drill-down (raw rows grouped by a column
+ * for the first time, which is the intended, non-tautological use of Slice).
+ */
+export async function existingIdentifierColumns(
+	sql: string,
+): Promise<Set<string> | null> {
+	let ast: unknown;
+	try {
+		ast = await parseSqlToJson(sql);
+	} catch {
+		return null;
+	}
+	if (ast === null || typeof ast !== "object") return null;
+	const root = ast as Record<string, unknown>;
+	if (root.error) return null;
+	const statements = root.statements;
+	if (!Array.isArray(statements) || statements.length !== 1) return null;
+	const first = statements[0];
+	const node =
+		typeof first === "object" && first !== null
+			? (first as Record<string, unknown>).node
+			: null;
+	if (
+		typeof node !== "object" ||
+		node === null ||
+		(node as Record<string, unknown>).type !== "SELECT_NODE"
+	) {
+		return null;
+	}
+	const selectNode = node as Record<string, unknown>;
+	const selectList = Array.isArray(selectNode.select_list)
+		? selectNode.select_list
+		: [];
+
+	// GROUP BY ALL: no explicit group_expressions to read (verified: it stays
+	// empty) — every bare, non-aggregate projected column is implicitly a
+	// grouping column instead.
+	if (selectNode.aggregate_handling === "FORCE_AGGREGATES") {
+		const names = new Set<string>();
+		for (const item of selectList) {
+			if (
+				typeof item !== "object" ||
+				item === null ||
+				(item as Record<string, unknown>).class !== "COLUMN_REF"
+			) {
+				continue;
+			}
+			const name = selectItemName(item);
+			if (name !== null) names.add(name);
+		}
+		return names;
+	}
+
+	const groupExpressions = Array.isArray(selectNode.group_expressions)
+		? selectNode.group_expressions
+		: [];
+	if (groupExpressions.length === 0) return new Set(); // ungrouped: nothing sliced yet
+
+	const names = new Set<string>();
+	for (const expr of groupExpressions) {
+		if (typeof expr !== "object" || expr === null) continue;
+		const e = expr as Record<string, unknown>;
+		if (e.class === "COLUMN_REF") {
+			const name = bareColumn(e.column_names);
+			if (name !== null) names.add(name);
+			continue;
+		}
+		// An ordinal GROUP BY position (`GROUP BY 1`) resolves against the
+		// projection's own Nth item — a single lookup, not a walk.
+		if (e.class === "CONSTANT") {
+			const value = (e.value as Record<string, unknown> | undefined)?.value;
+			if (typeof value === "number" && Number.isInteger(value) && value >= 1) {
+				const item = selectList[value - 1] as unknown;
+				const name = item !== undefined ? selectItemName(item) : null;
+				if (name !== null) names.add(name);
+			}
+		}
+		// Anything else falls through unrepresented (a computed GROUP BY
+		// expression, e.g. date_trunc(...)) — can't be named without deeper
+		// parsing; simply not in the set (never a guess, never a crash).
+	}
+	return names;
+}

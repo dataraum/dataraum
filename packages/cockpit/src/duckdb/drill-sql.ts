@@ -26,6 +26,7 @@ import {
 	countAlias,
 	type DrillPinValue,
 	type DrillStep,
+	deCompoundedColumnRenames,
 	referencedColumns,
 	sliceColumns,
 } from "./drill";
@@ -197,5 +198,27 @@ export async function composeDrill(
 		);
 	}
 
-	return { ok: true, sql: composed.sql, params: composed.params, columns };
+	// DAT-671 drilled-projection hygiene: a re-wrap of an already-drilled base
+	// (e.g. re-drilling a minted report) compounds this wrap's own aggregate
+	// labels onto the base's — `sum(sum(x))`, `sum(count)`, a de-collided
+	// `_count` — over columns that are otherwise correct and already
+	// fold-probed above. Relabel them ONE more thin wrap; the ordinary,
+	// overwhelmingly common case (nothing compounded) costs nothing extra.
+	const renames = deCompoundedColumnRenames(columns);
+	if (renames.size === 0) {
+		return { ok: true, sql: composed.sql, params: composed.params, columns };
+	}
+	const renameClause = [...renames]
+		.map(([from, to]) => `${quoteIdentifier(from)} AS ${quoteIdentifier(to)}`)
+		.join(", ");
+	const cleanedSql = `SELECT * RENAME (${renameClause}) FROM (${composed.sql}) AS _clean`;
+	const cleanedColumns = columns.map((c) =>
+		renames.has(c.name) ? { ...c, name: renames.get(c.name) as string } : c,
+	);
+	return {
+		ok: true,
+		sql: cleanedSql,
+		params: composed.params,
+		columns: cleanedColumns,
+	};
 }

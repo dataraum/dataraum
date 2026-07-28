@@ -41,7 +41,7 @@ import { bareRelationName } from "#/duckdb/answer-source";
 import type { DrillAxis, DrillNodeRef } from "#/duckdb/drill";
 import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
 import { narrowSnippetParts } from "#/duckdb/parts";
-import { aggregatedColumns } from "#/duckdb/sql-ast";
+import { aggregatedColumns, existingIdentifierColumns } from "#/duckdb/sql-ast";
 
 import { parseMetricDag } from "./operating-model-graph";
 
@@ -137,6 +137,9 @@ export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
 			// curated row carries neither by itself.
 			driverGain: null,
 			hierarchyNext: null,
+			// Stamped later still, once the current SQL (if any) is read — see
+			// `markAlreadyInResult`.
+			disabledReason: null,
 		});
 	}
 	return [...byColumn.values()];
@@ -174,6 +177,7 @@ export function unionSubstrateAxes(
 			sliceInterest: null,
 			driverGain: null,
 			hierarchyNext: null,
+			disabledReason: null,
 		});
 	}
 	return out;
@@ -353,6 +357,39 @@ export function applyHierarchyDescent(
 			candidate !== undefined && columns.has(candidate) ? candidate : null;
 		return hierarchyNext === a.hierarchyNext ? a : { ...a, hierarchyNext };
 	});
+}
+
+/** DAT-671 grey-out reason: shown on a menu item whose column already breaks
+ *  out the result — see `DrillAxis.disabledReason` and `markAlreadyInResult`. */
+export const ALREADY_AT_GRAIN_REASON =
+	"already at this grain — this column already breaks out the result";
+
+/**
+ * Stamp the DAT-671 "already sliced" disabled-reason onto any axis whose
+ * column name matches one of the result's existing non-measure identifier
+ * columns (pure). Case-insensitive, matching the same spelling convention
+ * tier-A's ambiguity fold already uses (`adHocAxesFromCatalog`) — SQL
+ * identifiers are case-insensitive but case-PRESERVING, so comparing raw bytes
+ * would miss an axis for a difference the database itself doesn't recognise.
+ *
+ * `existing` is `null` when the structural read (`sql-ast.ts`'s
+ * `existingIdentifierColumns`) couldn't decide, or wasn't run at all (no
+ * current-SQL signal on this path) — every axis passes through unchanged
+ * rather than guessing; the post-execution fold probe remains the tier-A net
+ * for what this misses, and a miss on the parts-at-source path is an accepted
+ * gap (see `DrillAxis.disabledReason`'s doc comment).
+ */
+export function markAlreadyInResult(
+	axes: DrillAxis[],
+	existing: ReadonlySet<string> | null,
+): DrillAxis[] {
+	if (existing === null || existing.size === 0) return axes;
+	const lower = new Set([...existing].map((c) => c.toLowerCase()));
+	return axes.map((a) =>
+		a.disabledReason === null && lower.has(a.column.toLowerCase())
+			? { ...a, disabledReason: ALREADY_AT_GRAIN_REASON }
+			: a,
+	);
 }
 
 /** The measure standard fields the request targets: a measure names itself, a
@@ -996,6 +1033,7 @@ export async function resolveDrillAxes(
  */
 export async function resolveAnswerDrillAxes(
 	sources: AxisSource[],
+	currentSql?: string,
 ): Promise<DrillAxesResult> {
 	const reduced = sources.map((s) => ({
 		...s,
@@ -1004,9 +1042,15 @@ export async function resolveAnswerDrillAxes(
 		// and the "outside the current analysis" reason is then the true one.
 		relation: bareRelationName(s.relation) ?? s.relation,
 	}));
-	return gateAxes(
+	const result = gateAxes(
 		await resolveAxesForSources(reduced),
 		null,
 		"This answer computes an ad-hoc concept the engine has not classified for additivity — time-grain drill withheld; the date is still available as a raw slice.",
 	);
+	// DAT-671: grey any axis that already breaks out THIS answer's own current
+	// SQL — a structural, schema/name-only read (see markAlreadyInResult); no
+	// current-SQL signal or an empty axis list means nothing to determine.
+	if (result.axes.length === 0 || currentSql === undefined) return result;
+	const existing = await existingIdentifierColumns(currentSql);
+	return { ...result, axes: markAlreadyInResult(result.axes, existing) };
 }

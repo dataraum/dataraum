@@ -38,10 +38,12 @@ import {
 	currentSliceDefinitions,
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
+import { existingIdentifierColumns } from "#/duckdb/sql-ast";
 
 import {
 	compareSliceRows,
 	type DrillAxesResult,
+	markAlreadyInResult,
 	type SliceRowInput,
 } from "./drill-axes";
 
@@ -128,6 +130,7 @@ export function adHocAxesFromCatalog(
 				// can't speak for it either).
 				sliceRelevance: ambiguous ? null : r.sliceRelevance,
 				sliceInterest: ambiguous ? null : r.sliceInterest,
+				disabledReason: null,
 				// driverGain and hierarchyNext stay null on EVERY tier-A axis, always:
 				// both are fact-scoped (driver_rankings.measure_table_id,
 				// dimension_hierarchies.table_id), and tier A wraps an arbitrary result
@@ -161,6 +164,7 @@ export function adHocAxesFromCatalog(
 			sliceInterest: null,
 			driverGain: null,
 			hierarchyNext: null,
+			disabledReason: null,
 		});
 	}
 
@@ -171,9 +175,17 @@ export function adHocAxesFromCatalog(
  * Resolve the axes an arbitrary result can be sliced by. `resultColumns` comes
  * from the caller's DESCRIBE of the base statement — the route does that read,
  * so this stays a metadata-only function.
+ *
+ * `resultSql` (DAT-671, optional) is that SAME base statement's text — the
+ * route already holds it to produce `resultColumns` — carried here ONLY to
+ * grey any candidate axis that already breaks out THIS result (e.g. re-
+ * viewing a minted report whose own SQL already groups by a catalogued
+ * dimension): a structural, schema/name-only read (`markAlreadyInResult`),
+ * never SQL execution. Absent → nothing greyed by this rule.
  */
 export async function resolveAdHocDrillAxes(
 	resultColumns: string[],
+	resultSql?: string,
 ): Promise<DrillAxesResult> {
 	if (resultColumns.length === 0) {
 		return { axes: [], reason: "This result has no columns to slice by." };
@@ -221,5 +233,11 @@ export async function resolveAdHocDrillAxes(
 					: "None of this result's columns is a catalogued dimension. Slicing here groups the result itself, so the dimension has to be one of its own columns — project it in the query to slice by it.",
 		};
 	}
-	return { axes };
+	// DAT-671: grey any axis that already breaks out THIS result — a
+	// structural, schema/name-only read of the base statement's own outer
+	// GROUP BY (see markAlreadyInResult); no SQL text means nothing to
+	// determine, never a guess.
+	if (resultSql === undefined) return { axes };
+	const existing = await existingIdentifierColumns(resultSql);
+	return { axes: markAlreadyInResult(axes, existing) };
 }

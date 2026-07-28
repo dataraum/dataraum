@@ -47,6 +47,11 @@ const BodySchema = z
 			.min(1)
 			.max(16)
 			.optional(),
+		// DAT-671: the answer's own CURRENT rendered SQL, carried ONLY alongside
+		// `partsSources` so the resolver can grey an axis that already breaks out
+		// this exact result (a structural read, never executed) — an auxiliary
+		// field, not a fifth path selector, so it's outside the `.refine()` below.
+		currentSql: z.string().min(1).max(100_000).optional(),
 	})
 	.refine(
 		(b) =>
@@ -96,7 +101,10 @@ export const Route = createFileRoute("/api/drill/axes")({
 					}
 					if (parsed.data.partsSources !== undefined) {
 						return Response.json(
-							await resolveAnswerDrillAxes(parsed.data.partsSources),
+							await resolveAnswerDrillAxes(
+								parsed.data.partsSources,
+								parsed.data.currentSql,
+							),
 						);
 					}
 					// Tier A: the result's own columns decide what may be sliced.
@@ -135,7 +143,9 @@ export const Route = createFileRoute("/api/drill/axes")({
 							debugReason: described.bindError,
 						});
 					}
-					return Response.json(await resolveAdHocDrillAxes(described.columns));
+					return Response.json(
+						await resolveAdHocDrillAxes(described.columns, resultSql),
+					);
 				} catch (err) {
 					console.error("drill axes failed", err);
 					return new Response(

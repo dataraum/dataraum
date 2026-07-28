@@ -148,5 +148,36 @@ describe.skipIf(!fx.available)(
 			expect(atSource.axes.length).toBeGreaterThan(0);
 			for (const axis of atSource.axes) expect(axis.temporal).toBeNull();
 		});
+
+		// DAT-671, "we should not slice on already existing slices" — the
+		// parts-at-source path: the answer's OWN current rendered SQL (`currentSql`,
+		// what `answer-result.tsx` sends as `state.sql`) already groups by one of
+		// the catalog's resolved axes, so THAT axis renders greyed while the
+		// other catalogued dimension on the same fact stays a live option.
+		it("greys the axis the answer's OWN current SQL already groups by, keeping the other axis enabled", async () => {
+			const currentSql =
+				`SELECT ${REGION_NAME_COLUMN}, ${GUARDED_SUM} AS revenue ` +
+				`FROM lake.typed.${ENRICHED_VIEW} GROUP BY ${REGION_NAME_COLUMN}`;
+			const atSource = await resolveAnswerDrillAxes(
+				[{ relation: ENRICHED_VIEW, selectExpr: GUARDED_SUM }],
+				currentSql,
+			);
+
+			const region = atSource.axes.find((a) => a.column === REGION_NAME_COLUMN);
+			const account = atSource.axes.find(
+				(a) => a.column === ACCOUNT_NAME_COLUMN,
+			);
+			expect(region?.disabledReason).toMatch(/already at this grain/i);
+			// The item stays IN THE MENU — never removed.
+			expect(atSource.axes.map((a) => a.column)).toContain(REGION_NAME_COLUMN);
+			expect(account?.disabledReason).toBeNull();
+		});
+
+		it("greys nothing when currentSql is absent — unchanged from before DAT-671", async () => {
+			const atSource = await resolveAnswerDrillAxes([
+				{ relation: ENRICHED_VIEW, selectExpr: GUARDED_SUM },
+			]);
+			for (const axis of atSource.axes) expect(axis.disabledReason).toBeNull();
+		});
 	},
 );

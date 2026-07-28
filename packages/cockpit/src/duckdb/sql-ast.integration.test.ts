@@ -4,7 +4,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { aggregatedColumns, declaredValueExprRefusal } from "./sql-ast";
+import {
+	aggregatedColumns,
+	declaredValueExprRefusal,
+	existingIdentifierColumns,
+} from "./sql-ast";
 
 describe("aggregatedColumns", () => {
 	it("pulls columns from inside aggregates, ignoring bare refs", async () => {
@@ -115,5 +119,69 @@ describe("declaredValueExprRefusal", () => {
 		// `;` cannot smuggle a second statement in: json_serialize_sql refuses a
 		// non-SELECT outright, and the gate reports it rather than passing it on.
 		expect(await declaredValueExprRefusal("1; DROP TABLE orders")).toBeTruthy();
+	});
+});
+
+// DAT-671 slice-menu curation: the one-hop structural read of a base
+// statement's own outer GROUP BY / projection, deciding which of a result's
+// columns are ALREADY non-measure identifiers (already-broken-out dimensions)
+// rather than fresh candidates to slice by.
+describe("existingIdentifierColumns", () => {
+	it("reads a plain GROUP BY column, production-shaped (enriched view + aliased measure)", async () => {
+		const names = await existingIdentifierColumns(
+			"SELECT account_id__name, SUM(total_amount) AS revenue " +
+				"FROM lake.typed.current_orders_enriched GROUP BY account_id__name",
+		);
+		expect(names).toEqual(new Set(["account_id__name"]));
+	});
+
+	it("resolves an ordinal GROUP BY position against the projection", async () => {
+		const names = await existingIdentifierColumns(
+			"SELECT account_id__name, SUM(total_amount) AS revenue " +
+				"FROM lake.typed.current_orders_enriched GROUP BY 1",
+		);
+		expect(names).toEqual(new Set(["account_id__name"]));
+	});
+
+	it("treats every bare projected column as grouped under GROUP BY ALL", async () => {
+		const names = await existingIdentifierColumns(
+			"SELECT account_id__name, region_id__name, SUM(total_amount) AS revenue " +
+				"FROM lake.typed.current_orders_enriched GROUP BY ALL",
+		);
+		expect(names).toEqual(new Set(["account_id__name", "region_id__name"]));
+	});
+
+	it("returns an EMPTY set for an ungrouped (raw detail) statement — nothing sliced yet", async () => {
+		const names = await existingIdentifierColumns(
+			"SELECT account_id__name, total_amount FROM lake.typed.current_orders_enriched",
+		);
+		expect(names).toEqual(new Set());
+	});
+
+	it("resolves the outer GROUP BY through a CTE — the CTE body is never walked", async () => {
+		const names = await existingIdentifierColumns(
+			"WITH base AS (SELECT account_id__name, total_amount FROM lake.typed.current_orders_enriched) " +
+				"SELECT account_id__name, SUM(total_amount) AS revenue FROM base GROUP BY account_id__name",
+		);
+		expect(names).toEqual(new Set(["account_id__name"]));
+	});
+
+	it("returns null for a set operation — not a single plain SELECT", async () => {
+		const names = await existingIdentifierColumns(
+			"SELECT account_id__name FROM a GROUP BY account_id__name " +
+				"UNION SELECT region_id__name FROM b GROUP BY region_id__name",
+		);
+		expect(names).toBeNull();
+	});
+
+	it("returns null for more than one statement", async () => {
+		const names = await existingIdentifierColumns(
+			"SELECT a FROM t GROUP BY a; SELECT b FROM u GROUP BY b",
+		);
+		expect(names).toBeNull();
+	});
+
+	it("returns null for unparseable SQL rather than guessing", async () => {
+		expect(await existingIdentifierColumns("this is not sql )(")).toBeNull();
 	});
 });

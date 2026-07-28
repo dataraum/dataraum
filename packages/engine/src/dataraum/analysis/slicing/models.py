@@ -3,32 +3,40 @@
 Contains data structures for slice recommendations and analysis results.
 Slices are categorical only - each unique value in a dimension column
 creates one slice.
+
+Curation contract (DAT-879, replacing the DAT-725 ordinal): a catalog row
+carries a MEASURED ``slice_relevance`` (``slicing/relevance.py``) plus the
+agent's ABSOLUTE ``slice_interest`` judgment. The ordinal ``slice_priority``
+and its ``UNRANKED_SLICE_PRIORITY = 1000`` floor are gone, and so is the
+``CURATED_SLICE_BUDGET = 12`` LIMIT the reads used to truncate by. Curated
+reads now take the JUDGED rows ordered by measured relevance and REPORT what
+they left behind, instead of silently cutting at a constant whose remaining
+budget was filled alphabetically (every floor row tied at 1000, so the
+tiebreak ``column_name`` decided what an "interesting dimension" was).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from dataraum.core.models.base import DecisionSource
 
-# The priority floor for an un-ranked catalog row (DAT-725 rescope): existence is
-# deterministic (every grain-safe non-measure/non-timestamp column is persisted),
-# and the slicing agent only RANKS a curated subset (1 = most interesting). Rows
-# the ranker did not touch sort after every ranked row at the curation read
-# sites' ``ORDER BY slice_priority``. Well above any sane agent rank (the prompt
-# budget is ``max_recommendations``, deployed 12); a pathological larger rank
-# would merely interleave with the floor, never resurrect an election.
-UNRANKED_SLICE_PRIORITY = 1000
+# The agent's ABSOLUTE interest judgment. Absolute, not a rank: "primary" means
+# the same thing on a 3-column table and a 40-column one, which is exactly what
+# an ordinal could not do (rank 1 of 3 and rank 1 of 40 are different claims
+# wearing the same number). Both values mean the column IS a business breakdown
+# axis; they differ in whether a reader reaches for it first. A row the agent
+# did not return carries NULL — "not judged", which is not the same as "judged
+# uninteresting" and must never be rendered as if it were.
+SliceInterest = Literal["primary", "supporting"]
+SLICE_INTEREST_VALUES: tuple[str, ...] = ("primary", "supporting")
 
-# Curation read budget: how many catalog rows the LLM-facing context surfaces
-# (``ORDER BY slice_priority LIMIT budget`` at the cycles/graphs/validation reads
-# + the cockpit's ``<dimensions>`` block). Matches the DEPLOYED ranking budget
-# (``phases/slicing.yaml`` ``max_recommendations: 12``) so curated context stays
-# equivalent to the pre-rescope elected-set size while the persisted inventory
-# is complete. Existence consumers (drivers, lineage, bus_matrix) read UNbudgeted.
-CURATED_SLICE_BUDGET = 12
+# Curation sort order for the interest tier. Judged rows come before unjudged
+# ones; measured relevance orders WITHIN a tier. This is the whole ordering
+# contract — there is no budget constant to read.
+SLICE_INTEREST_RANK: dict[str | None, int] = {"primary": 0, "supporting": 1, None: 2}
 
 
 class SliceRecommendation(BaseModel):
@@ -45,7 +53,9 @@ class SliceRecommendation(BaseModel):
     column_name: str
 
     # Slice metadata
-    slice_priority: int = Field(description="Priority rank (1 = highest priority slice dimension)")
+    slice_interest: SliceInterest = Field(
+        description="The agent's absolute interest judgment for this dimension"
+    )
     distinct_values: list[str] = Field(
         default_factory=list,
         description="List of unique values that will become slices",
@@ -59,7 +69,12 @@ class SliceRecommendation(BaseModel):
             return [str(item) for item in v]
         return []
 
-    value_count: int = Field(description="Number of distinct values (number of slices to create)")
+    # The column's measured COUNT(DISTINCT), from the statistical profile —
+    # NOT the length of ``distinct_values``, which is a bounded echo (DAT-879).
+    # None when the column has no profile to read it from.
+    value_count: int | None = Field(
+        default=None, description="Measured number of distinct values on this axis"
+    )
 
     # Analysis reasoning
     reasoning: str = Field(description="Why this column is a good slicing dimension")
@@ -100,7 +115,16 @@ class SliceRecommendationOutput(BaseModel):
 
     table_name: str = Field(description="Name of the table containing the column")
     column_name: str = Field(description="Name of the column to slice on")
-    priority: int = Field(description="Priority rank (1 = highest priority slice dimension)")
+    interest: SliceInterest = Field(
+        description=(
+            "How a reader would reach for this dimension. "
+            '"primary" = a first-choice breakdown of a headline number for this '
+            'dataset; "supporting" = a genuine business axis, but one reached for '
+            "after the primary ones. Judge each dimension on its own merits — this "
+            "is NOT a ranking, so do not spread judgments to fill a distribution, "
+            "and do not let a column's position in the list influence it."
+        )
+    )
     distinct_values: list[str] = Field(description="List of unique values that will become slices")
     reasoning: str = Field(description="Why this column is a good slicing dimension")
     business_context: str = Field(
@@ -134,7 +158,12 @@ class SlicingAnalysisOutput(BaseModel):
     """
 
     recommendations: list[SliceRecommendationOutput] = Field(
-        description=("Recommended slicing dimensions, ordered by priority; [] when none qualify"),
+        description=(
+            "The dimensions that are genuine business breakdown axes, each with its "
+            "own interest judgment; [] when none qualify. Order carries no meaning — "
+            "a column you leave out is not removed from the catalog, it is recorded "
+            "as un-judged."
+        ),
     )
 
     time_columns: list[TableTimeColumnOutput] = Field(
@@ -152,8 +181,9 @@ class SlicingAnalysisOutput(BaseModel):
 
 
 __all__ = [
-    "CURATED_SLICE_BUDGET",
-    "UNRANKED_SLICE_PRIORITY",
+    "SLICE_INTEREST_RANK",
+    "SLICE_INTEREST_VALUES",
+    "SliceInterest",
     "SliceRecommendation",
     "TableTimeColumnOutput",
     "SlicingAnalysisResult",

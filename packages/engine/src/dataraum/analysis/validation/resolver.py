@@ -25,8 +25,8 @@ from dataraum.analysis.semantic.db_models import (
     TableEntity,
 )
 from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
@@ -209,19 +209,16 @@ def get_multi_table_schema_for_llm(
     # Run-versioned (DAT-448), sealed at begin_session's session grain — scoped by
     # the SAME pin as the relationships above; unpinned reads EMPTY, never
     # cross-run. CURATED read (DAT-725): the catalog is the full deterministic
-    # inventory, so only the top-priority budget decorates the schemas with
-    # value distributions (1 = most interesting; column_name tiebreak keeps the
-    # cut deterministic across floor-priority structural rows).
-    slices = (
+    # inventory, so only the JUDGED axes decorate the schemas with value
+    # distributions (DAT-879), ordered by measured relevance. What that left
+    # out is stated on the schema block below rather than silently dropped.
+    curated = curated_slices(
         list(
             session.execute(
-                select(SliceDefinition)
-                .where(
+                select(SliceDefinition).where(
                     SliceDefinition.table_id.in_(table_ids),
                     SliceDefinition.run_id == run_id,
                 )
-                .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
-                .limit(CURATED_SLICE_BUDGET)
             )
             .scalars()
             .all()
@@ -229,6 +226,7 @@ def get_multi_table_schema_for_llm(
         if run_id is not None
         else []
     )
+    slices = curated.served
 
     # Build column_id → distinct_values lookup
     column_slices: dict[str, list[str]] = {}
@@ -276,6 +274,11 @@ def get_multi_table_schema_for_llm(
         "tables": table_schemas,
         "relationships": formatted_rels,
         "enriched_views": formatted_views,
+        # What the value-distribution decoration left out (DAT-879/DAT-622).
+        # A column that carries no ``distinct_values`` here may be a column
+        # with no values worth listing OR one the catalogue agent never judged
+        # — this note is what lets the consumer tell those apart.
+        "slice_catalog_note": curated.note,
     }
 
 

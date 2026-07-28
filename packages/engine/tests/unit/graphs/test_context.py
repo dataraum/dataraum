@@ -13,6 +13,9 @@ verdict of a multi-grounded concept appear in the served text.
 
 from __future__ import annotations
 
+from dataraum.graphs.context_format import (
+    format_served_context,
+)
 from dataraum.graphs.context_models import (
     BusinessCycleContext,
     ColumnContext,
@@ -29,9 +32,6 @@ from dataraum.graphs.context_models import (
     SliceContext,
     TableContext,
     ValidationContext,
-)
-from dataraum.graphs.context_format import (
-    format_served_context,
 )
 
 

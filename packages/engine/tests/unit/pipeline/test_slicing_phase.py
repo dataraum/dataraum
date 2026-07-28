@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import duckdb
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
@@ -29,7 +30,7 @@ from structlog.testing import capture_logs
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.models import UNRANKED_SLICE_PRIORITY, SlicingAnalysisResult
+from dataraum.analysis.slicing.models import SlicingAnalysisResult
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.models.base import Result
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
@@ -713,7 +714,7 @@ class TestRunTimeAxisFill:
         rows = session.execute(select(SliceDefinition)).scalars().all()
         assert rows, "the eligible set is persisted regardless of the ranking"
         assert all(r.detection_source == "structural" for r in rows)
-        assert all(r.slice_priority == UNRANKED_SLICE_PRIORITY for r in rows)
+        assert all(r.slice_interest is None for r in rows)
 
     def test_high_cardinality_time_axis_survives_prefilter(
         self,
@@ -1007,7 +1008,7 @@ class TestSliceDefinitionWriterIdempotent:
             table_name="invoices",
             column_id=seeded["fk_col"].column_id,
             column_name="invoice_id__status",
-            slice_priority=1,
+            slice_interest="primary",
             distinct_values=["open", "paid"],
             value_count=2,
             reasoning="status partitions",
@@ -1101,7 +1102,7 @@ class TestSliceDefinitionWriterIdempotent:
                 "table_id": seeded["fact"].table_id,
                 "column_id": seeded["fk_col"].column_id,
                 "column_name": "invoice_id__status",
-                "slice_priority": 1,
+                "slice_interest": "primary",
                 "slice_type": "categorical",
                 "distinct_values": ["open", "paid"],
                 "value_count": 2,
@@ -1196,7 +1197,7 @@ class TestReferencedDimensionIdentity:
             table_name="invoices",
             column_id=column_id,
             column_name=column_name,
-            slice_priority=1,
+            slice_interest="primary",
             distinct_values=["a", "b"],
             value_count=2,
             reasoning="partitions",
@@ -1312,7 +1313,9 @@ class TestDeterministicInventory:
     """
 
     @staticmethod
-    def _ranked_status(seeded: dict[str, Any], priority: int = 1) -> Result[SlicingAnalysisResult]:
+    def _ranked_status(
+        seeded: dict[str, Any], interest: str = "primary"
+    ) -> Result[SlicingAnalysisResult]:
         from dataraum.analysis.slicing.models import SliceRecommendation
 
         rec = SliceRecommendation(
@@ -1320,7 +1323,7 @@ class TestDeterministicInventory:
             table_name="invoices",
             column_id=seeded["fk_col"].column_id,
             column_name="invoice_id__status",
-            slice_priority=priority,
+            slice_interest=interest,  # type: ignore[arg-type]
             distinct_values=["open", "paid"],
             value_count=2,
             reasoning="status partitions",
@@ -1375,18 +1378,76 @@ class TestDeterministicInventory:
                 "invoice_id__status",
             }
         )
-        # Enrichment differs — priority/source follow the ranking, existence does not.
+        # Enrichment differs — interest/source follow the judgment, existence does not.
         a_status = next(
             r for r in rows if r.run_id == "run-A" and r.column_name == "invoice_id__status"
         )
         b_status = next(
             r for r in rows if r.run_id == "run-B" and r.column_name == "invoice_id__status"
         )
-        assert (a_status.slice_priority, a_status.detection_source) == (1, "llm")
-        assert (b_status.slice_priority, b_status.detection_source) == (
-            UNRANKED_SLICE_PRIORITY,
-            "structural",
+        assert (a_status.slice_interest, a_status.detection_source) == ("primary", "llm")
+        assert (b_status.slice_interest, b_status.detection_source) == (None, "structural")
+        # Relevance is MEASURED, so it lands on BOTH rows — the un-judged one is
+        # not a sentinel any more (DAT-879). Same column, same profile, same run
+        # inputs ⇒ the same number; only the judgment differs.
+        assert a_status.slice_relevance == b_status.slice_relevance
+
+    def test_unjudged_row_still_carries_a_measured_relevance(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """DAT-879's core claim: with a profile present, a row the agent never
+        judged is still SCORED — that is what let the 1000 floor be retired.
+
+        The floor existed because an un-judged row had no number; it therefore
+        sorted last, and (every floor row tying) alphabetically among its peers.
+        A measured score removes the need for a sentinel entirely.
+        """
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+        # An un-judged own column with an EVEN two-way split and no NULLs:
+        # coverage 1.0 x evenness 1.0 = 1.0, computed with no free parameters.
+        session.add(
+            StatisticalProfile(
+                column_id=seeded["fk_col"].column_id,
+                layer="typed",
+                total_count=100,
+                null_count=0,
+                distinct_count=2,
+                null_ratio=0.0,
+                cardinality_ratio=0.02,
+                profile_data={
+                    "top_values": [
+                        {"value": "open", "count": 50},
+                        {"value": "paid", "count": 50},
+                    ]
+                },
+            )
         )
+        session.flush()
+        # No recommendations at all — nothing is judged.
+        mock_agent_cls.return_value.analyze.return_value = Result.ok(
+            SlicingAnalysisResult(recommendations=[], time_columns={})
+        )
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        by_name = {
+            r.column_name: r for r in session.execute(select(SliceDefinition)).scalars().all()
+        }
+        scored = by_name["invoice_id"]
+        assert scored.slice_interest is None, "nothing was judged"
+        assert scored.detection_source == "structural"
+        assert scored.slice_relevance == pytest.approx(1.0)
 
     def test_folded_key_without_fk_survives(
         self,
@@ -1446,7 +1507,7 @@ class TestDeterministicInventory:
         assert row.dimension_table_id is None, "folded — no referenced identity"
         assert row.fk_role is None
         assert row.detection_source == "structural"
-        assert row.slice_priority == UNRANKED_SLICE_PRIORITY
+        assert row.slice_interest is None
         assert row.distinct_values == ["1000", "1200"], "profile top values as evidence"
         assert row.value_count == 27, "honest full distinct count"
 
@@ -1668,9 +1729,9 @@ class TestDeterministicInventory:
         mock_agent_cls.return_value.analyze.assert_not_called()
         rows = session.execute(select(SliceDefinition)).scalars().all()
         assert sorted(r.column_name or "" for r in rows) == ["invoice_id", "invoice_id__status"]
-        assert all(r.slice_priority == UNRANKED_SLICE_PRIORITY for r in rows)
+        assert all(r.slice_interest is None for r in rows)
 
-    def test_ranked_row_carries_enrichment_unranked_gets_floor(
+    def test_judged_row_carries_enrichment_unjudged_carries_none(
         self,
         mock_load_config: MagicMock,
         mock_create_provider: MagicMock,
@@ -1679,10 +1740,13 @@ class TestDeterministicInventory:
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
     ) -> None:
-        """The ranked row is 'llm' with the agent's fields; the rest floor as 'structural'."""
+        """The judged row is 'llm' with the agent's fields; the rest are 'structural'
+        with a NULL judgment — but still a MEASURED relevance (DAT-879)."""
         mock_load_config.return_value = _mock_llm_config()
         seeded = _seed(session)
-        mock_agent_cls.return_value.analyze.return_value = self._ranked_status(seeded, priority=2)
+        mock_agent_cls.return_value.analyze.return_value = self._ranked_status(
+            seeded, interest="supporting"
+        )
 
         result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
         assert result.status == PhaseStatus.COMPLETED
@@ -1693,12 +1757,18 @@ class TestDeterministicInventory:
         }
         ranked = by_name["invoice_id__status"]
         assert ranked.detection_source == "llm"
-        assert ranked.slice_priority == 2
+        assert ranked.slice_interest == "supporting"
         assert ranked.confidence == 0.9
         assert ranked.business_context == "document lifecycle state"
         assert ranked.distinct_values == ["open", "paid"]
         floor = by_name["invoice_id"]
         assert floor.detection_source == "structural"
-        assert floor.slice_priority == UNRANKED_SLICE_PRIORITY
+        assert floor.slice_interest is None
         assert floor.confidence is None
         assert floor.reasoning is None
+        # This seed carries NO StatisticalProfile rows, so relevance is NULL —
+        # "unmeasured", which is deliberately distinct from "measured as bad".
+        # Both rows agree on it, judged or not: relevance tracks the profile,
+        # never the judgment. The measured case is pinned below.
+        assert ranked.slice_relevance is None
+        assert floor.slice_relevance is None

@@ -98,8 +98,8 @@ def build_execution_context(
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
     from dataraum.analysis.relationships.surrogate import is_surrogate_column
     from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+    from dataraum.analysis.slicing.curation import curated_slices
     from dataraum.analysis.slicing.db_models import SliceDefinition
-    from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
     from dataraum.analysis.statistics.db_models import (
         StatisticalProfile,
     )
@@ -257,22 +257,18 @@ def build_execution_context(
     # promoted catalog run (the begin_session run that derived them). With no
     # resolved catalog run this fails CLOSED (a cross-run read would mix in
     # superseded definitions — the DAT-429 isolation discipline). CURATED read
-    # (DAT-725): the catalog is the full deterministic inventory, so this
-    # LLM-facing context takes the top-priority budget in DB order — ascending,
-    # 1 = most interesting (the old in-Python ``reverse=True`` sort put the
-    # LEAST interesting first; harmless while the catalog was elected-only,
-    # load-bearing wrong once floor-priority structural rows exist).
+    # (DAT-879): fetch the whole run-scoped inventory and let ``curated_slices``
+    # decide — judged rows, ordered by measured relevance, with the count of
+    # what was left out carried alongside so the formatter can SAY it. The old
+    # ``LIMIT CURATED_SLICE_BUDGET`` cut here silently, and past the judged rows
+    # it cut alphabetically.
     slice_contexts: list[SliceContext] = []
-    slice_stmt = (
-        select(SliceDefinition)
-        .where(SliceDefinition.table_id.in_(table_ids))
-        .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
-        .limit(CURATED_SLICE_BUDGET)
-    )
+    slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
     if run_id is not None:
         slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
-    slice_defs = [] if run_id is None else session.execute(slice_stmt).scalars().all()
-    for slice_def in slice_defs:
+    slice_defs = [] if run_id is None else list(session.execute(slice_stmt).scalars().all())
+    curated = curated_slices(slice_defs)
+    for slice_def in curated.served:
         slice_col = next((c for c in columns if c.column_id == slice_def.column_id), None)
         slice_tbl = table_map.get(slice_def.table_id)
         if slice_col and slice_tbl:
@@ -280,12 +276,14 @@ def build_execution_context(
                 SliceContext(
                     column_name=slice_def.column_name or slice_col.column_name,
                     table_name=slice_tbl.table_name,
-                    priority=slice_def.slice_priority,
+                    interest=slice_def.slice_interest,
+                    relevance=slice_def.slice_relevance,
                     value_count=slice_def.value_count or 0,
                     business_context=slice_def.business_context,
                     distinct_values=slice_def.distinct_values or [],
                 )
             )
+    slice_catalog_note = curated.note
 
     # 10c. Load driver rankings (DAT-616) — begin_session value-layer artifact
     # (DAT-546), run-versioned; same fail-closed catalog-run scoping as the slices.
@@ -698,6 +696,7 @@ def build_execution_context(
         tables=table_contexts,
         relationships=relationships,
         available_slices=slice_contexts,
+        slice_catalog_note=slice_catalog_note,
         drivers=driver_contexts,
         business_cycles=business_cycle_contexts,
         cycle_health=cycle_health_report,

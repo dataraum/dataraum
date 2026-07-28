@@ -276,14 +276,14 @@ class TestEndpointMissesDropLoudNotCrash:
             # A conformed pair whose shared dimension table is t9.
             "INSERT INTO slice_definitions (slice_id, run_id, table_id, column_id, "
             " column_name, dimension_table_id, dimension_attribute, fk_role, "
-            " slice_priority, slice_type, detection_source, created_at) "
+            " slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('sl_9', '{run}', 't1', 'c_k1', 'ghost__region', 't9', 'region9', "
-            f"'account_id', 2, 'categorical', 'llm', '{ts}')",
+            f"'account_id', 0.7, 'supporting', 'categorical', 'llm', '{ts}')",
             "INSERT INTO slice_definitions (slice_id, run_id, table_id, column_id, "
             " column_name, dimension_table_id, dimension_attribute, fk_role, "
-            " slice_priority, slice_type, detection_source, created_at) "
+            " slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('sl_9b', '{run}', 't4', 'c_k4', 'ghost__region', 't9', 'region9', "
-            f"'account_id', 2, 'categorical', 'llm', '{ts}')",
+            f"'account_id', 0.7, 'supporting', 'categorical', 'llm', '{ts}')",
             # DAT-788: referenced cells so the t9 conformed edge FORMS (same account_id
             # role → one group) — it must then drop on the unresolvable t9 endpoint,
             # not silently vanish for want of a cell.

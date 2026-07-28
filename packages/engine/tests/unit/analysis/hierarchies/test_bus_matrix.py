@@ -141,7 +141,6 @@ def _seed_ref_fact(
                 dimension_table_id=dim_tid,
                 dimension_attribute=None,
                 fk_role=role,
-                slice_priority=1,
                 slice_type="categorical",
                 detection_source="llm",
             )

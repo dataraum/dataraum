@@ -657,7 +657,6 @@ class TestEnrichedViewsAndAxes:
                     dimension_table_id=dim.table_id if dim else None,
                     dimension_attribute=attr,
                     fk_role=col if dim else None,
-                    slice_priority=5,
                     slice_type="categorical",
                 )
             )
@@ -690,7 +689,6 @@ class TestEnrichedViewsAndAxes:
                     dimension_table_id=vendors.table_id,
                     dimension_attribute="region",
                     fk_role=col,
-                    slice_priority=5,
                     slice_type="categorical",
                 )
             )
@@ -721,7 +719,6 @@ class TestEnrichedViewsAndAxes:
                     dimension_table_id=vendors.table_id,
                     dimension_attribute="region",
                     fk_role="vendor_id",
-                    slice_priority=5,
                     slice_type="categorical",
                 )
             )
@@ -750,7 +747,6 @@ class TestEnrichedViewsAndAxes:
                     dimension_table_id=vendors.table_id,
                     dimension_attribute="region",
                     fk_role="vendor_id",
-                    slice_priority=5,
                     slice_type="categorical",
                 )
             )
@@ -775,7 +771,6 @@ class TestEnrichedViewsAndAxes:
                 dimension_table_id=vendors.table_id,
                 dimension_attribute="region",
                 fk_role="vendor_id",
-                slice_priority=5,
                 slice_type="categorical",
             )
         )

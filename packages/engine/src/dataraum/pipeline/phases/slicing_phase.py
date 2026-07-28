@@ -8,11 +8,16 @@ Persists the dimension inventory deterministically and ranks it with an LLM
   ``SliceDefinition``. Same data + same code ⇒ every COMPLETED run persists
   the same set (a ranker runtime failure fails the whole activity loudly;
   Temporal retries it — never a partially-ranked or elected subset).
-- **The agent is a ranker, not an elector**: its priority/context/reasoning/
-  confidence merge onto rows that exist regardless; un-ranked rows carry the
-  ``UNRANKED_SLICE_PRIORITY`` floor. LLM-unavailable modes (no config, feature
-  disabled) skip only the ranking — the inventory and the deterministic
-  time-axis backstop (DAT-720) still land.
+- **The agent is a judge, not an elector**: its interest/context/reasoning/
+  confidence merge onto rows that exist regardless; un-judged rows carry NULL
+  there. LLM-unavailable modes (no config, feature disabled) skip only the
+  judgment — the inventory and the deterministic time-axis backstop (DAT-720)
+  still land.
+- **Relevance is measured, not judged** (DAT-879): every inventory row is
+  scored from its own statistical profile (``slicing/relevance.py``), whether
+  or not the agent looked at it. That is what retired the ordinal
+  ``slice_priority`` and its 1000 floor — an un-judged row now carries a real,
+  comparable number instead of a sentinel that sorted it alphabetically.
 """
 
 from __future__ import annotations
@@ -25,10 +30,11 @@ from sqlalchemy import select
 from dataraum.analysis.slicing.agent import SlicingAgent
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.models import (
-    UNRANKED_SLICE_PRIORITY,
+    SLICE_INTEREST_RANK,
     SliceRecommendation,
     SlicingAnalysisResult,
 )
+from dataraum.analysis.slicing.relevance import score_axis
 from dataraum.analysis.views.served_columns import enriched_dimension_columns
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
@@ -74,9 +80,9 @@ _MAX_NULL_RATIO = 0.5  # majority-NULL => most rows fall in the NULL bucket
 #   (account_name inlined next to its key) — the role is judged per-table by
 #   an LLM, so "not used for grouping" is a soft read, not a structural fact;
 #   excluding it would re-open the same hole in its descriptive form. A kept
-#   attribute is grain-safe by the pre-filter; the priority floor + the
-#   curation budget keep it out of LLM context, and the driver-tree's
-#   min_support folds it if its support is thin.
+#   attribute is grain-safe by the pre-filter; going un-judged keeps it out of
+#   LLM context (DAT-879), and the driver-tree's min_support folds it if its
+#   support is thin.
 _EXCLUDED_SLICE_ROLES = frozenset({"measure", "timestamp"})
 
 
@@ -401,17 +407,22 @@ class SlicingPhase(BasePhase):
         # omitted so the model's Python-side default applies.
         run_id = ctx.require_run_id()
 
-        # The ranker's enrichment by (table_id, column_name). Grounding in the
+        # The agent's enrichment by (table_id, column_name). Grounding in the
         # agent + propagation both operate on the same filtered context, so every
-        # rec targets an eligible row; ties keep the later rec (the pre-rescope
-        # writer's last-wins), a better (lower) rank always wins.
+        # rec targets an eligible row. On a duplicate the stronger judgment wins
+        # ('primary' over 'supporting'); equal judgments keep the later rec, the
+        # pre-rescope writer's last-wins.
         ranked: dict[tuple[str, str], SliceRecommendation] = {}
         if slicing is not None:
             for rec in slicing.recommendations:
                 if not rec.column_name:
                     continue
                 prev = ranked.get((rec.table_id, rec.column_name))
-                if prev is None or rec.slice_priority <= prev.slice_priority:
+                if (
+                    prev is None
+                    or SLICE_INTEREST_RANK[rec.slice_interest]
+                    <= (SLICE_INTEREST_RANK[prev.slice_interest])
+                ):
                     ranked[(rec.table_id, rec.column_name)] = rec
 
         # Referenced-dimension identity (DAT-756): the slice's ``column_id`` is the
@@ -455,6 +466,17 @@ class SlicingPhase(BasePhase):
                     distinct_values = [
                         str(v.get("value", "")) for v in (col.get("top_values") or [])
                     ]
+                # Measured relevance for EVERY inventory row (DAT-879), from this
+                # column's own profile — independent of whether the agent judged
+                # it. ``top_values`` is the profiler's top-K, so the scorer is
+                # told the true ``distinct_count`` separately and reports a
+                # bounded score when the two disagree.
+                relevance = score_axis(
+                    total_rows=col.get("total_count") or 0,
+                    null_count=col.get("null_count") or 0,
+                    bucket_counts=[int(v.get("count") or 0) for v in (col.get("top_values") or [])],
+                    distinct_groups=col.get("distinct_count"),
+                )
                 rows[(table_id, column_name, run_id)] = {
                     "run_id": run_id,
                     "table_id": table_id,
@@ -463,10 +485,17 @@ class SlicingPhase(BasePhase):
                     "dimension_table_id": dimension_table_id,
                     "dimension_attribute": dimension_attribute,
                     "fk_role": fk_role,
-                    "slice_priority": rank.slice_priority if rank else UNRANKED_SLICE_PRIORITY,
+                    "slice_relevance": relevance.score if relevance else None,
+                    "slice_interest": rank.slice_interest if rank else None,
                     "slice_type": "categorical",
                     "distinct_values": distinct_values,
-                    "value_count": rank.value_count if rank else col.get("distinct_count"),
+                    # The profile's COUNT(DISTINCT), always — never the length of
+                    # the bounded ``distinct_values`` list (DAT-879, a DAT-622
+                    # instance): the agent used to report ``len(distinct_values)``
+                    # here, so a judged 500-value dimension was persisted as
+                    # having however many values the model happened to echo, and
+                    # the cockpit rendered that as "(N values)".
+                    "value_count": col.get("distinct_count"),
                     "reasoning": rank.reasoning if rank else None,
                     "business_context": rank.business_context if rank else None,
                     "confidence": rank.confidence if rank else None,
@@ -673,7 +702,7 @@ class SlicingPhase(BasePhase):
                     table_name=target_table_name,
                     column_id=target_col_id,
                     column_name=col_name,
-                    slice_priority=rec.slice_priority,
+                    slice_interest=rec.slice_interest,
                     distinct_values=rec.distinct_values,
                     value_count=rec.value_count,
                     reasoning=f"Propagated from {rec.table_name}: {rec.reasoning}",

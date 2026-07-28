@@ -490,7 +490,7 @@ def discover_aggregation_lineage(
                 SliceDefinition.table_id.in_(table_ids),
                 SliceDefinition.run_id == run_id,
             )
-            .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
+            .order_by(SliceDefinition.slice_relevance.desc(), SliceDefinition.column_name)
         )
         .scalars()
         .all()

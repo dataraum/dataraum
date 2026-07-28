@@ -433,7 +433,8 @@ def sliced_status_column(session):
             table_id=tbl.table_id,
             column_id=col.column_id,
             column_name="status",
-            slice_priority=1,
+            slice_interest="primary",
+            slice_relevance=0.9,
             distinct_values=["paid", "open"],
         )
     )
@@ -483,12 +484,14 @@ def test_value_counts_fail_closed_without_generation_pin(session, sliced_status_
     assert slices[0]["value_counts"] == []
 
 
-def test_curated_slice_budget_and_priority_order(session) -> None:
-    """DAT-725: the catalog is the full deterministic inventory, so this LLM-facing
-    context reads only the top-priority budget, ascending (1 = most interesting),
-    with a deterministic column_name tiebreak across floor-priority rows."""
-    from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET, UNRANKED_SLICE_PRIORITY
+def test_curated_read_serves_judged_axes_and_reports_the_rest(session) -> None:
+    """DAT-879: the LLM-facing context serves the axes the agent JUDGED, ordered by
+    measured relevance, and states how many catalogued axes it did not show.
 
+    Replaces the DAT-725 budget test, which pinned the behaviour this ticket
+    removed: a bare ``LIMIT 12`` whose leftover budget was filled in alphabetical
+    order, because every un-judged row tied at the priority floor.
+    """
     source = Source(name="s", source_type="csv")
     session.add(source)
     session.flush()
@@ -502,7 +505,8 @@ def test_curated_slice_budget_and_priority_order(session) -> None:
     session.add(tbl)
     session.flush()
 
-    n_total = CURATED_SLICE_BUDGET + 3
+    n_total = 15
+    n_judged = 2
     for i in range(n_total):
         col = Column(
             table_id=tbl.table_id,
@@ -512,17 +516,20 @@ def test_curated_slice_budget_and_priority_order(session) -> None:
         )
         session.add(col)
         session.flush()
-        # Two ranked rows (priorities 1 and 2), the rest structural at the floor.
-        priority = i + 1 if i < 2 else UNRANKED_SLICE_PRIORITY
+        judged = i < n_judged
         session.add(
             SliceDefinition(
                 run_id="cat",
                 table_id=tbl.table_id,
                 column_id=col.column_id,
                 column_name=f"dim_{i:02d}",
-                slice_priority=priority,
+                # dim_00 is judged but measures WORSE than dim_01: the served
+                # order must follow the measurement, not the insertion order and
+                # not the name.
+                slice_interest="primary" if judged else None,
+                slice_relevance=(0.4 if i == 0 else 0.8) if judged else 0.99,
                 distinct_values=["a", "b"],
-                detection_source="llm" if i < 2 else "structural",
+                detection_source="llm" if judged else "structural",
             )
         )
     session.commit()
@@ -533,13 +540,72 @@ def test_curated_slice_budget_and_priority_order(session) -> None:
         base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={}),
     )
     slices = ctx["slice_definitions"]
-    assert len(slices) == CURATED_SLICE_BUDGET, "inventory is complete; context is curated"
-    priorities = [s["priority"] for s in slices]
-    assert priorities == sorted(priorities), "ascending — 1 = most interesting first"
-    assert slices[0]["column_name"] == "dim_00"
-    # The floor rows fill the remaining budget in deterministic name order.
-    floor_names = [s["column_name"] for s in slices if s["priority"] == UNRANKED_SLICE_PRIORITY]
-    assert floor_names == sorted(floor_names)
+
+    # Only the judged axes are served — an un-judged row does not reach the
+    # prompt however well it measures (0.99 above), because relevance says the
+    # axis is usable, not that a reader wants it.
+    assert [s["column_name"] for s in slices] == ["dim_01", "dim_00"]
+
+    summary = ctx["summary"]
+    assert summary["slice_dimensions_found"] == n_total, "the CATALOGUED count, not the served one"
+    assert summary["slice_dimensions_served"] == n_judged
+    note = summary["slice_catalog_note"]
+    assert "2 of 15" in note
+    assert "13" in note and "NOT judged" in note
+
+
+def test_curated_read_falls_back_and_says_so_when_nothing_was_judged(session) -> None:
+    """Ranker-skipped runs (no LLM config / feature off) leave every row un-judged.
+
+    Serving nothing would hide the catalog; serving it silently would present a
+    structural ordering as a curated one. Serve it, ordered by measurement, and
+    say which of the two happened.
+    """
+    source = Source(name="s", source_type="csv")
+    session.add(source)
+    session.flush()
+    tbl = Table(
+        source_id=source.source_id,
+        table_name="facts",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_facts",
+    )
+    session.add(tbl)
+    session.flush()
+
+    for i, relevance in enumerate([0.1, 0.9, 0.5]):
+        col = Column(
+            table_id=tbl.table_id,
+            column_name=f"dim_{i}",
+            column_position=i,
+            raw_type="VARCHAR",
+        )
+        session.add(col)
+        session.flush()
+        session.add(
+            SliceDefinition(
+                run_id="cat",
+                table_id=tbl.table_id,
+                column_id=col.column_id,
+                column_name=f"dim_{i}",
+                slice_interest=None,
+                slice_relevance=relevance,
+                distinct_values=["a", "b"],
+                detection_source="structural",
+            )
+        )
+    session.commit()
+
+    ctx = _build(
+        session,
+        [tbl.table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={}),
+    )
+    assert [s["column_name"] for s in ctx["slice_definitions"]] == ["dim_1", "dim_2", "dim_0"]
+    note = ctx["summary"]["slice_catalog_note"]
+    assert "did not run" in note
+    assert "measured partition quality only" in note
 
 
 # ---------------------------------------------------------------------------

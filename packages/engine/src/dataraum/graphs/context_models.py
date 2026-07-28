@@ -144,12 +144,20 @@ class RelationshipContext:
 
 @dataclass
 class SliceContext:
-    """Available slice dimension for filtering/grouping."""
+    """Available slice dimension for filtering/grouping.
+
+    ``interest`` is the cataloguing agent's absolute judgment ('primary' /
+    'supporting'), None when it never judged this row. ``relevance`` is the
+    MEASURED score in [0, 1] (coverage x evenness — ``slicing/relevance.py``),
+    None when the column had no statistical profile to measure. The pair
+    replaced the ordinal ``priority`` + its 1000 floor (DAT-879).
+    """
 
     column_name: str
     table_name: str
-    priority: int = 0  # Higher = more recommended for slicing
-    value_count: int = 0  # Number of distinct values
+    interest: str | None = None
+    relevance: float | None = None
+    value_count: int = 0  # Measured COUNT(DISTINCT) on this axis
     business_context: str | None = None  # e.g., "Regional breakdown"
     distinct_values: list[str] = field(default_factory=list)  # Actual categorical values
 
@@ -373,8 +381,12 @@ class GraphExecutionContext:
     # excluded by the element view's typing, DAT-756).
     relationships: list[RelationshipContext] = field(default_factory=list)
 
-    # Available slice dimensions (from slicing analysis)
+    # Available slice dimensions (from slicing analysis) — the CURATED subset.
     available_slices: list[SliceContext] = field(default_factory=list)
+    # What that curation left out, in one sentence (DAT-879/DAT-622); "" when it
+    # served everything. The renderer must print this wherever it prints the
+    # slices — a curated list without its own caveat is the silent cap again.
+    slice_catalog_note: str = ""
 
     # Driver rankings per measure (DAT-616): which dims/values move each measure +
     # target_type. The engine GraphAgent served none before — the cockpit/engine

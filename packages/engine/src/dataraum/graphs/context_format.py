@@ -228,10 +228,19 @@ def format_served_context(
             # DAT-621: list the slice dimension NAMES only — their value-sets are served
             # COMPLETE (or size-stated) in the per-table Value sets block, so re-rendering a
             # capped [:10] sample here was redundant duplication + a partial sample.
+            # DAT-879: each name carries its measured relevance, so the agent can see
+            # WHY the order is what it is instead of trusting a bare sequence.
             view_slices = slices_by_table.get(ev.fact_table, [])
             if view_slices:
-                names = ", ".join(f"{s.column_name} ({s.value_count} values)" for s in view_slices)
+                names = ", ".join(_format_slice_axis(s) for s in view_slices)
                 lines.append(f"Slice dimensions: {names} — see Value sets for the values.")
+
+    # What the slice curation left out (DAT-879/DAT-622). Rendered ONCE, next to
+    # the dimensions it qualifies: an agent told "these are the dimensions" with
+    # no indication that forty more exist will reason as if the list is complete.
+    if context.slice_catalog_note:
+        lines.append("")
+        lines.append(f"_{context.slice_catalog_note}_")
 
     # --- Business Processes ---
     if not context.business_cycles and not context.operating_model_analyzed:
@@ -431,6 +440,24 @@ def _build_value_sets(table: TableContext) -> list[str]:
             f"- **{col.column_name}** (complete, {dc if dc is not None else served} distinct): {rendered}"
         )
     return out
+
+
+def _format_slice_axis(s: SliceContext) -> str:
+    """Render one curated slice axis: name, cardinality, and why it ranks here.
+
+    The relevance number is shown rather than implied by position — an agent
+    that can see 0.94 next to one axis and 0.11 next to another can weigh them,
+    where a bare ordered list only invites it to trust the order. Omitted when
+    unmeasured (no statistical profile), because printing 0.00 there would
+    assert the axis resolves nothing when in truth nothing measured it.
+    """
+    parts = [f"{s.column_name} ({s.value_count} values"]
+    if s.relevance is not None:
+        parts.append(f", relevance {s.relevance:.2f}")
+    if s.interest:
+        parts.append(f", {s.interest}")
+    parts.append(")")
+    return "".join(parts)
 
 
 def _build_column_notes(col: ColumnContext) -> str:

@@ -579,7 +579,8 @@ def _element_view_sql(name: str) -> str:
         return (
             f"CREATE VIEW {READ_TOKEN}.og_has_dimension AS\n"
             f"SELECT slice_id::text AS slice_id, table_id::text AS table_id,\n"
-            f"       column_id::text AS column_id, column_name, slice_type, slice_priority,\n"
+            f"       column_id::text AS column_id, column_name, slice_type,\n"
+            f"       slice_relevance, slice_interest,\n"
             f"       dimension_table_id::text AS dimension_table_id,\n"
             f"       dimension_attribute, fk_role\n"
             f"FROM {READ_TOKEN}.current_slice_definitions;"
@@ -1259,7 +1260,7 @@ def _property_graph_sql() -> str:
         f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
         f"      LABEL has_dimension\n"
-        f"      PROPERTIES (column_name, slice_type, slice_priority,\n"
+        f"      PROPERTIES (column_name, slice_type, slice_relevance, slice_interest,\n"
         f"                  dimension_table_id, dimension_attribute, fk_role),\n"
         f"    {READ_TOKEN}.og_derived_from KEY (edge_key)\n"
         f"      SOURCE KEY (view_table_id) REFERENCES og_tables (table_id)\n"

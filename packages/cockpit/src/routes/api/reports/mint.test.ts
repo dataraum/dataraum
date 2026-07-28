@@ -23,7 +23,7 @@ vi.mock("#/duckdb/report-fingerprint-read", () => ({
 }));
 
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
-import { handleMint, type MintBody } from "./mint";
+import { handleMint, type MintBody, MintBodySchema } from "./mint";
 
 const confidence: AnswerConfidence = {
 	band: "ready",
@@ -153,5 +153,103 @@ describe("handleMint", () => {
 			expect.objectContaining({ summaryFingerprint: null }),
 		);
 		error.mockRestore();
+	});
+
+	// CRITICAL (both reviewers, live-verified against duckdb-neo): the
+	// fingerprint call MUST receive the report's own sqlParams — a pinned
+	// drill's `sql` carries `$1…` placeholders, and without them DuckDB throws
+	// "Expected 1 parameters, but none were supplied", swallowed by the
+	// try/catch above (DAT-625 staleness silently dead for every pinned
+	// report).
+	it("threads sqlParams into the fingerprint call for a PINNED mint (DAT-627)", async () => {
+		const d = deps();
+		await handleMint(
+			baseBody({ sql: "SELECT 1 WHERE region = $1", sqlParams: ["EU"] }),
+			d,
+		);
+		expect(d.fingerprint).toHaveBeenCalledWith("SELECT 1 WHERE region = $1", [
+			"EU",
+		]);
+	});
+
+	it("calls the fingerprint with undefined params for an unparameterized mint", async () => {
+		const d = deps();
+		await handleMint(baseBody(), d);
+		expect(d.fingerprint).toHaveBeenCalledWith("SELECT 1", undefined);
+	});
+});
+
+// --- MintBodySchema (fold-in, both reviewers) ---------------------------------
+//
+// The transport-boundary gate, mirroring /api/drill/compose's convention:
+// strict objects, bounded arrays/strings, and a cross-field refine that
+// catches the one shape that mints a report unrenderable on every open — a
+// bound-param placeholder in `sql` with nothing to satisfy it.
+
+describe("MintBodySchema", () => {
+	it("accepts a well-formed undrilled mint body", () => {
+		const result = MintBodySchema.safeParse(baseBody());
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts a well-formed pinned mint body (placeholder + matching params)", () => {
+		const result = MintBodySchema.safeParse(
+			baseBody({ sql: "SELECT 1 WHERE region = $1", sqlParams: ["EU"] }),
+		);
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts a null confidence (a drilled mint)", () => {
+		const result = MintBodySchema.safeParse(baseBody({ confidence: null }));
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects sql with a bound-param placeholder and no sqlParams — the unrenderable-report shape", () => {
+		const noParams = MintBodySchema.safeParse(
+			baseBody({ sql: "SELECT 1 WHERE region = $1" }),
+		);
+		expect(noParams.success).toBe(false);
+
+		const emptyParams = MintBodySchema.safeParse(
+			baseBody({ sql: "SELECT 1 WHERE region = $1", sqlParams: [] }),
+		);
+		expect(emptyParams.success).toBe(false);
+	});
+
+	it("rejects an unrecognized top-level key (strictObject)", () => {
+		const result = MintBodySchema.safeParse({
+			...baseBody(),
+			unexpected: "field",
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects a confidence object with an unrecognized key (strictObject)", () => {
+		const result = MintBodySchema.safeParse(
+			baseBody({ confidence: { ...confidence, extra: true } as never }),
+		);
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects a confidence.band outside the closed vocabulary", () => {
+		const result = MintBodySchema.safeParse(
+			baseBody({ confidence: { ...confidence, band: "constructor" } as never }),
+		);
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects an oversized sqlParams array (resource-use cap)", () => {
+		const result = MintBodySchema.safeParse(
+			baseBody({
+				sql: "SELECT 1 WHERE region = $1",
+				sqlParams: Array.from({ length: 65 }, () => "x"),
+			}),
+		);
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects an empty title", () => {
+		const result = MintBodySchema.safeParse(baseBody({ title: "" }));
+		expect(result.success).toBe(false);
 	});
 });

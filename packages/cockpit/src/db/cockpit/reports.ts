@@ -164,16 +164,29 @@ export async function getReport(reportId: string): Promise<ReportRow | null> {
  * The lineage title for a report's parent (DAT-627) — "evolved from …" on the
  * detail page. A separate, minimal query (not a join on every `getReport`
  * call, which is the hot path): most reports have no parent, and a join would
- * pay a cost every open for a field almost never present. Null when the report
- * has no parent, OR the parent id no longer resolves (soft-deleted or foreign
- * — `getReport` already fences on the boot workspace) — either way the detail
- * page just omits the link rather than rendering a dead one.
+ * pay a cost every open for a field almost never present. SELECTS ONLY
+ * `title` (fold-in fix — this used to call the full `getReport`, pulling
+ * `sql` + `chartConfig` + `confidence` jsonb for a page that renders one
+ * varchar). Null when the report has no parent, OR the parent id no longer
+ * resolves (soft-deleted or foreign — scoped to the boot workspace exactly
+ * like `getReport`) — either way the detail page just omits the link rather
+ * than rendering a dead one.
  */
 export async function getReportParentTitle(
 	parentId: string,
 ): Promise<string | null> {
-	const parent = await getReport(parentId);
-	return parent?.title ?? null;
+	const [row] = await cockpitDb
+		.select({ title: reports.title })
+		.from(reports)
+		.where(
+			and(
+				eq(reports.id, parentId),
+				eq(reports.workspaceId, bootWorkspaceId()),
+				isNull(reports.deletedAt),
+			),
+		)
+		.limit(1);
+	return row?.title ?? null;
 }
 
 /**

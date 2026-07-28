@@ -262,11 +262,15 @@ describe("getReport", () => {
 });
 
 describe("getReportParentTitle", () => {
-	it("returns the parent's title when it resolves (DAT-627)", async () => {
-		h.selectResult = [
-			{ id: "parent-1", title: "Revenue by month", confidence },
-		];
+	it("returns the parent's title when it resolves (DAT-627), scoped by id + workspace + live rows", async () => {
+		// SELECTS ONLY title (fold-in fix) — the fixture carries just that
+		// column, unlike getReport's full-row fixtures elsewhere in this file.
+		h.selectResult = [{ title: "Revenue by month" }];
 		expect(await getReportParentTitle("parent-1")).toBe("Revenue by month");
+		const where = JSON.stringify(h.whereArgs);
+		expect(where).toContain('"eq","id","parent-1"');
+		expect(where).toContain("workspace_id");
+		expect(where).toContain("deleted_at");
 	});
 
 	it("returns null when the parent id no longer resolves (soft-deleted or foreign)", async () => {

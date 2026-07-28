@@ -68,6 +68,21 @@ describe("humanizeBand", () => {
 		expect(humanizeBand("blocked")).toBe("Blocked");
 		expect(humanizeBand(null)).toBe("—");
 	});
+
+	it("falls through to the raw string for an unmapped-but-real band", () => {
+		expect(humanizeBand("unmeasured")).toBe("unmeasured");
+	});
+
+	// `band` is untrusted persisted text (band-badge.tsx calls this on the
+	// same input its own BAND_COLOR lookup guards) — a plain `?? band`
+	// fallback resolves an inherited key like "constructor" through
+	// Object.prototype to a FUNCTION instead of falling through to the
+	// string, which then can't render as a React child at all.
+	it("never resolves an inherited Object.prototype key (DAT-627 hardening)", () => {
+		expect(humanizeBand("constructor")).toBe("constructor");
+		expect(humanizeBand("toString")).toBe("toString");
+		expect(humanizeBand("hasOwnProperty")).toBe("hasOwnProperty");
+	});
 });
 
 describe("groupLogicalTables", () => {

@@ -37,9 +37,18 @@ const BAND_LABELS: Record<string, string> = {
 	blocked: "Blocked",
 };
 
-/** Title-case a readiness band; an absent band (unanalyzed) reads as a dash. */
+/** Title-case a readiness band; an absent band (unanalyzed) reads as a dash.
+ *  `band` is untrusted persisted text (band-badge.tsx calls this immediately
+ *  after its own `BAND_COLOR` lookup, on the exact same input) — a plain
+ *  `BAND_LABELS[band] ?? band` resolves an inherited key like "constructor"
+ *  through Object.prototype to a FUNCTION (truthy, so `?? band` never fires),
+ *  which then fails to render as a React child. `Object.hasOwn` guards the
+ *  lookup to the object's own keys; an unrecognized-but-real band string
+ *  still falls through to itself (the pre-existing "show the raw value"
+ *  behavior for a genuinely new-but-unmapped band). */
 export function humanizeBand(band: string | null): string {
-	return band ? (BAND_LABELS[band] ?? band) : "—";
+	if (!band) return "—";
+	return Object.hasOwn(BAND_LABELS, band) ? BAND_LABELS[band] : band;
 }
 
 /**

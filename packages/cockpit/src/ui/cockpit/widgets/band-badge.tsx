@@ -33,6 +33,19 @@ const BAND_COLOR: Record<string, string> = {
 	blocked: "red",
 };
 
+// `band` is untrusted persisted text — a report's `confidence.band` is
+// validated at MINT (mint.ts's MintBodySchema) but not on every read, and a
+// direct DB edit or a future writer could still put anything in the column.
+// A plain `BAND_COLOR[band]` lookup resolves an inherited key like
+// "constructor" through Object.prototype to a FUNCTION (truthy, so `??
+// "gray"` never fires), and Mantine's color parser throws on a non-string
+// color deep inside render — taking the whole page down for one bad row
+// (the step-check-badge.tsx `severityColor` precedent, same bug class).
+// `Object.hasOwn` guards the lookup to the object's OWN keys only.
+function bandColor(band: string): string {
+	return Object.hasOwn(BAND_COLOR, band) ? BAND_COLOR[band] : "gray";
+}
+
 /** The readiness-band badge: title-cased label, band color, muted dash for an
  * absent band. ONE rendering everywhere — band vocabulary must not drift.
  *
@@ -63,12 +76,7 @@ export function BandBadge({
 		);
 	}
 	const badge = (
-		<Badge
-			color={BAND_COLOR[band] ?? "gray"}
-			variant="light"
-			size="sm"
-			tt="none"
-		>
+		<Badge color={bandColor(band)} variant="light" size="sm" tt="none">
 			{humanizeBand(band)}
 		</Badge>
 	);

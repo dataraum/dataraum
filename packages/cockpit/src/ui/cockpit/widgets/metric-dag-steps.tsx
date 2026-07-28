@@ -1,12 +1,16 @@
 // MetricDagSteps (DAT-482) — the shared full-step render of a metric's shipped
 // computation DAG: the output node + each step (extract → the concept it pulls;
-// formula → its expression), in dependency order. The teach-override shadow
-// widget shows this so a user replacing a shipped metric SEES the graph they're
-// discarding. Pure render of an already-narrowed DAG (rule 12) — the narrow +
-// shape live in metric-dag.ts.
+// formula → its expression), in dependency order, plus any declared
+// post-execution checks a step carries (DAT-840 — `StepCheckBadges`, shared
+// with the model-canvas node so the check vocabulary never diverges between
+// surfaces). The teach-override shadow widget shows this so a user replacing
+// a shipped metric SEES the graph — checks included — they're discarding.
+// Pure render of an already-narrowed DAG (rule 12) — the narrow + shape live
+// in metric-dag.ts.
 
 import { Badge, Code, Group, Stack, Text } from "@mantine/core";
 import type { DagStep, MetricOutputView } from "#/lib/metric-dag";
+import { StepCheckBadges } from "#/ui/cockpit/widgets/step-check-badge";
 
 // Bound the steps rendered into the DOM (rule 15). A curated metric DAG is a
 // handful of steps, but the surface stays honest if a graph is unusually large.
@@ -39,6 +43,7 @@ function DagStepRow({ step }: { step: DagStep }) {
 				</Text>
 			)}
 			{step.expression && <Code block>{step.expression}</Code>}
+			<StepCheckBadges checks={step.validation} />
 		</Stack>
 	);
 }

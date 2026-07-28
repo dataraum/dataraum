@@ -375,6 +375,12 @@ class ConformedDimensionContext:
     table_b: str
     dimension_table: str
     attribute: str | None = None
+    #: The ``conformed_group`` both cells carry — the IDENTITY a drill-across merges
+    #: on (DAT-809). Carried rather than dropped so a consumer groups by the served
+    #: identity instead of re-deriving one from the label, which drifts (DAT-800).
+    conformed_group: str | None = None
+    #: Who asserted the underlying structure. Only CONFIRMED pairings reach here.
+    confirmation_source: str | None = None
 
 
 @dataclass

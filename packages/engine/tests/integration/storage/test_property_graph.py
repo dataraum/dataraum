@@ -298,6 +298,9 @@ def _seed(engine: Engine) -> None:
     # so no conformed edge forms across them on region — role-separated axes. The
     # seg1/seg2 roles are differently-named but share ONE group (as the judge assigns
     # after a CONFORM verdict), so they DO conform on segment — the positive path.
+    # confirmation_source is 'judge' because og_conformed_dimension serves CONFIRMED
+    # cells only (DAT-809): an unconfirmed pairing is not a legal merge key, and
+    # test_conformed_dimension_drops_an_unconfirmed_pairing pins that separately.
     for eid, tid, role, group in [
         ("bm_1", "t1", "account_id", "ref:t2:account_id"),
         ("bm_2", "t4", "account_id", "ref:t2:account_id"),
@@ -313,7 +316,7 @@ def _seed(engine: Engine) -> None:
             " roles, attributes, confirmation_source, conformed_group, needs_confirmation, "
             " signature, created_at) "
             f"VALUES ('{eid}', '{RUN}', '{tid}', 'referenced', 'accounts', 't2', "
-            f"'[\"{role}\"]', '[]', 'unconfirmed', '{group}', false, "
+            f"'[\"{role}\"]', '[]', 'judge', '{group}', false, "
             f"'bus:referenced:{tid}:t2:{role}', '{TS}')"
         )
     # DAT-867 FOLDED bus-matrix cells for the region_flat fold on TWO facts (journal,
@@ -1427,6 +1430,59 @@ def test_conformed_dimension_gates_on_role_identity(graph_engine: Engine) -> Non
     assert ("statement", "journal", "segment") in rows
     # Bill-to vs ship-to on accounts.region → separate roles, NEVER a conformed edge.
     assert not any(attr == "region" for _, _, attr in rows), "role-playing FKs conformed spuriously"
+
+
+def test_conformed_dimension_projects_the_merge_key(graph_engine: Engine) -> None:
+    """DAT-809: the edge carries the conformed_group a drill-across merges ON.
+
+    Gating on the group while dropping it left the consumer told two facts "share a
+    dimension" with no way to name the identity — and the only thing left to name it
+    with is the label, which drifts and collides (DAT-800).
+    """
+    sql = (
+        f"SELECT src, dst, grp, src_conf FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst, e.conformed_group AS grp, "
+        "e.confirmation_source AS src_conf))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst, r.grp, r.src_conf) for r in conn.execute(text(sql))}
+    assert ("journal", "statement", "ref:t2:account_id", "judge") in rows
+    # The judge-merged pair carries the SHARED group, not either fact's own role.
+    assert ("journal", "statement", "ref:t2:seg1_acct|seg2_acct", "judge") in rows
+    assert all(grp for _, _, grp, _ in rows), "a served merge key must never be NULL"
+
+
+def test_conformed_dimension_drops_an_unconfirmed_pairing(graph_engine: Engine) -> None:
+    """DAT-809: only CONFIRMED conformance is a legal merge key.
+
+    Two facts referencing one dim in a same-named role auto-conform STRUCTURALLY —
+    the group key matches on both sides with nobody having confirmed the underlying
+    relationship. Serving that as a drill-across path is exactly how a name match
+    becomes a silent join, so the edge must not form. Absence falls loud at the
+    consumer (a typed refusal naming the unconfirmed pairing), never a quiet merge.
+    """
+    with graph_engine.begin() as conn:
+        for eid, tid in [("bm_u1", "t1"), ("bm_u2", "t4")]:
+            conn.execute(
+                text(
+                    "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
+                    " concept_label, dimension_table_id, roles, attributes, "
+                    " confirmation_source, conformed_group, needs_confirmation, signature, "
+                    " created_at) "
+                    f"VALUES ('{eid}', '{RUN}', '{tid}', 'referenced', 'accounts', 't2', "
+                    f"'[\"unconf_acct\"]', '[]', 'unconfirmed', 'ref:t2:unconf_acct', false, "
+                    f"'bus:referenced:{tid}:t2:unconf_acct', '{TS}')"
+                )
+            )
+    sql = (
+        f"SELECT grp FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (e.conformed_group AS grp))"
+    )
+    with graph_engine.connect() as conn:
+        groups = {r.grp for r in conn.execute(text(sql))}
+    assert "ref:t2:unconf_acct" not in groups
 
 
 def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:

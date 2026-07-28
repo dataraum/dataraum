@@ -160,7 +160,9 @@ CREATE VIEW __READ__.og_conformed_dimension AS
 SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,
        s1.table_id::text AS from_table_id, s2.table_id::text AS to_table_id,
        s1.dimension_table_id::text AS dimension_table_id,
-       s1.dimension_attribute AS dimension_attribute
+       s1.dimension_attribute AS dimension_attribute,
+       b1.conformed_group AS conformed_group,
+       b1.confirmation_source AS confirmation_source
 FROM __READ__.current_slice_definitions s1
 JOIN __READ__.current_bus_matrix b1
   ON b1.attachment = 'referenced'
@@ -179,7 +181,11 @@ JOIN __READ__.current_bus_matrix b2
  AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)
              WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))
 WHERE s1.dimension_table_id IS NOT NULL
- AND b1.conformed_group = b2.conformed_group;
+ AND b1.conformed_group = b2.conformed_group
+ AND b1.confirmation_source <> 'unconfirmed'
+ AND b2.confirmation_source <> 'unconfirmed'
+ AND NOT b1.needs_confirmation
+ AND NOT b2.needs_confirmation;
 
 CREATE VIEW __READ__.og_grounded_by AS
 SELECT (c.concept_id || '_' || g.snippet_id)::text AS edge_key,
@@ -610,7 +616,8 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
       LABEL conformed_dimension
-      PROPERTIES (dimension_table_id, dimension_attribute),
+      PROPERTIES (dimension_table_id, dimension_attribute,
+                  conformed_group, confirmation_source),
     __READ__.og_grounded_by KEY (edge_key)
       SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)
       DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)
